@@ -13,7 +13,11 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "framing";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 5;
+
+/// The face detector, when downloaded: a face box with landmarks per
+/// face on every sampled frame.
+pub const FACE_MODEL_ID: &str = "yunet_face_2023mar";
 /// The detectors in the registry, best first: the medium tier where it
 /// is downloaded, else the preview tier. `MODEL_ID` names what
 /// `download_models` fetches.
@@ -59,18 +63,47 @@ pub struct Framing {
     pub samples: Vec<FrameSample>,
 }
 
-/// The people in one sampled frame, as normalised boxes (x, y, w, h).
+/// The people in one sampled frame, as normalised boxes (x, y, w, h),
+/// and the faces when the face model is there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FrameSample {
     pub secs: f64,
     pub people: Vec<(f32, f32, f32, f32)>,
+    #[serde(default)]
+    pub faces: Vec<FaceBox>,
+}
+
+/// A face: box and landmarks (right eye, left eye, nose, mouth corners)
+/// as fractions of the frame, and the detector's confidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FaceBox {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub score: f32,
+    pub landmarks: Vec<(f32, f32)>,
+}
+
+/// The face model in the app's model cache, if downloaded.
+pub fn face_model_path() -> Option<std::path::PathBuf> {
+    let manifest = klipp_ml::manifest::load_effective().ok()?;
+    let cache = klipp_ml::cache::ModelCache::open().ok()?;
+    let entry = manifest.get(FACE_MODEL_ID)?;
+    let p = cache.path_for(entry);
+    p.is_file().then_some(p)
 }
 
 impl Framing {
     /// The people nearest `secs` of the file, when a frame was looked at
     /// within `within` seconds of it.
     pub fn people_at(&self, secs: f64, within: f64) -> Option<&FrameSample> {
-        self.samples.iter().filter(|s| (s.secs - secs).abs() <= within).min_by(|a, b| (a.secs - secs).abs().total_cmp(&(b.secs - secs).abs()))
+        let near = |s: &&FrameSample| (s.secs - secs).abs() <= within;
+        let by_distance = |a: &&FrameSample, b: &&FrameSample| (a.secs - secs).abs().total_cmp(&(b.secs - secs).abs());
+        // The nearest frame that saw someone, within the window; else the
+        // nearest at all.
+        self.samples.iter().filter(near).filter(|s| !s.people.is_empty() || !s.faces.is_empty()).min_by(by_distance)
+            .or_else(|| self.samples.iter().filter(near).min_by(by_distance))
     }
 }
 
@@ -192,8 +225,18 @@ pub fn ensure_model(download: bool) -> Result<std::path::PathBuf, String> {
         return Err(format!("the detection model {MODEL_ID} is not downloaded; ask with download_models"));
     }
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
-    let entry = manifest.get(MODEL_ID).ok_or_else(|| format!("no manifest entry {MODEL_ID}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    // The face model rides along: small, and what a skin read needs.
+    if let Some(face) = manifest.get(FACE_MODEL_ID) {
+        if !cache.path_for(face).is_file() {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let mut progress = klipp_ml::download::NoOpProgress;
+            if let Err(e) = klipp_ml::download::download_to_cache(&cache, face, &mut progress, &cancel) {
+                tracing::warn!("face model download: {e:?}");
+            }
+        }
+    }
+    let entry = manifest.get(MODEL_ID).ok_or_else(|| format!("no manifest entry {MODEL_ID}"))?;
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut progress = klipp_ml::download::NoOpProgress;
     klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))
@@ -292,6 +335,21 @@ impl crate::Analyser for FramingAnalyser {
                 times.push((si, t.min(duration - 0.05).max(0.0)));
             }
         }
+        // And a time grid, so a face is never more than a couple of
+        // seconds from a sample whatever the shots: what a skin read and
+        // a title's keep-out need. Capped, so a long file thins the grid
+        // rather than looking at hundreds of frames.
+        const GRID_SECS: f64 = 2.0;
+        const MAX_FRAMES: usize = 360;
+        let step = GRID_SECS.max(duration / MAX_FRAMES as f64);
+        let mut t = step / 2.0;
+        while t < duration {
+            if !times.iter().any(|(_, x)| (x - t).abs() < step * 0.5) {
+                let si = chosen.iter().position(|(a, b)| t >= *a && t < *b).unwrap_or(chosen.len().saturating_sub(1));
+                times.push((si, t.min(duration - 0.05).max(0.0)));
+            }
+            t += step;
+        }
         times.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let t0 = std::time::Instant::now();
         let frames = frames_at(&ctx.ffmpeg, item, &times.iter().map(|(_, t)| *t).collect::<Vec<_>>())?;
@@ -306,6 +364,7 @@ impl crate::Analyser for FramingAnalyser {
             .map_err(|e| format!("detector: {e}"))?;
         let mut facts: Vec<Vec<FrameFacts>> = vec![Vec::new(); chosen.len()];
         let mut samples: Vec<FrameSample> = Vec::new();
+        let mut faces_model = face_model_path().and_then(|p| klipp_ml_ort::yunet::FaceDetector::open(&p).map_err(|e| tracing::warn!("face detector: {e}")).ok());
         let mut linear = vec![0.0f32; (FRAME_SIZE * FRAME_SIZE * 4) as usize];
         let t1 = std::time::Instant::now();
         for ((si, t), rgba) in times.iter().zip(frames.iter()) {
@@ -338,7 +397,16 @@ impl crate::Analyser for FramingAnalyser {
                     _ => {}
                 }
             }
-            samples.push(FrameSample { secs: *t, people: f.people.clone() });
+            let faces = match faces_model.as_mut() {
+                Some(fd) => fd.detect(rgba, FRAME_SIZE, FRAME_SIZE).unwrap_or_default().into_iter().map(|face| {
+                    let (x, y, w, h) = to_content(klipp_ml::BBox { x: face.x, y: face.y, w: face.w, h: face.h }, rect);
+                    let (rx, ry, rw, rh) = rect;
+                    let map = |p: (f32, f32)| if rw > 0.0 && rh > 0.0 { (((p.0 - rx) / rw).clamp(0.0, 1.0), ((p.1 - ry) / rh).clamp(0.0, 1.0)) } else { p };
+                    FaceBox { x, y, w, h, score: face.score, landmarks: face.landmarks.iter().map(|p| map(*p)).collect() }
+                }).collect(),
+                None => Vec::new(),
+            };
+            samples.push(FrameSample { secs: *t, people: f.people.clone(), faces });
             facts[*si].push(f);
         }
         tracing::info!(

@@ -53,6 +53,7 @@ pub mod postprocess;
 pub mod ppocr;
 pub mod preprocess;
 pub mod rf_detr_seg;
+pub mod yunet;
 pub mod runtime_resolve;
 
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};

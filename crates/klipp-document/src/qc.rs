@@ -280,6 +280,14 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 break;
             }
         }
+        // Over a face: the first thing the eye goes to, under words.
+        if let Some(tb) = crate::ops::title_box(td) {
+            let faces = crate::ops::faces_under(seq, pool, transcripts, a, b);
+            if let Some(face) = faces.iter().find(|f| crate::ops::boxes_overlap(tb, **f, 0.04)) {
+                let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &faces).and_then(|(_, z)| z);
+                add(Severity::Error, "title_over_face", Some(a), format!("{} sits over a face (at {:.0}% across, {:.0}% down) while it is up from {a:.2} to {b:.2} s", clip_label(pool, c), (face[0] + face[2] / 2.0) * 100.0, (face[1] + face[3] / 2.0) * 100.0), &match zone { Some(z) => format!("Move it to the {z}, which is clear of every face for its span (a title op with x and y, or leave x and y out and it is placed clear)"), None => "No zone is clear of a face for its whole span: hold it where the shot has no face, or make it a card".to_string() });
+            }
+        }
         let low = td.objects.iter().any(|o| o.visible && o.transform.center.y > 0.72);
         if low {
             if let Some(cap) = captions.iter().find(|k| secs(k.timeline_in) < b && secs(k.timeline_out) > a) {
@@ -509,6 +517,31 @@ mod tests {
         fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
             (item.id == self.0).then(|| ScreenBeats { action: vec![(10.0, 12.0), (30.0, 33.0)], settles: vec![12.0, 33.0], holds: vec![(0.0, 10.0), (12.0, 30.0), (33.0, 60.0)], spots: vec![(10.5, 0.3, 0.4), (31.0, 0.7, 0.6)] })
         }
+        fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+            // A face top-centre from 40 to 44 s of the file.
+            if item.id == self.0 { vec![(40.5, [0.4, 0.06, 0.2, 0.28]), (42.5, [0.4, 0.06, 0.2, 0.28])] } else { vec![] }
+        }
+    }
+
+    /// A title over the face at 40-44 s of the file is an error naming a
+    /// clear zone; the same title low in the frame is not.
+    #[test]
+    fn a_title_over_a_face_is_an_error_with_a_clear_zone() {
+        // Timeline 0-10 s shows 40-50 s of the file, where the faces are.
+        let (mut seq, pool, screen) = screencast(&[(0.0, 10.0, 40.0)]);
+        let mut over = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over".into(), font_size: 72.0, ..Default::default() });
+        over.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.15 };
+        let mut low = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Low".into(), font_size: 40.0, ..Default::default() });
+        low.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.85 };
+        let mut text = Track::new("T", TrackKind::Text);
+        text.clips.push(Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(over), source_in: tc(0.0), source_out: tc(3.0), ..Clip::gap(tc(1.0), tc(4.0)) });
+        text.clips.push(Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(low), source_in: tc(0.0), source_out: tc(3.0), ..Clip::gap(tc(5.0), tc(8.0)) });
+        seq.tracks.insert(0, text);
+        let r = check(&seq, &pool, &Screen(screen));
+        let f: Vec<_> = r.findings.iter().filter(|f| f.rule == "title_over_face").collect();
+        assert_eq!(f.len(), 1, "{}", r.text());
+        assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
+        assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);
     }
 
     /// One screen recording cut into shots, no sound.

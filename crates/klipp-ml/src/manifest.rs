@@ -60,6 +60,8 @@ pub enum ModelKind {
     TextRecognizer,
     /// A voice for narration: text to speech.
     Voice,
+    /// Faces in a picture, with landmarks.
+    FaceDetector,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

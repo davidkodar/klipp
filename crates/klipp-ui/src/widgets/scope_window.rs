@@ -23,6 +23,11 @@ pub struct ScopeWindowRuntime {
     pub dot_menu_open: bool,
     /// Whether the pointer is currently over the scope window (blocks background interaction).
     pub pointer_over: bool,
+    /// The frame read in Lab — lightness points, cast, skin — as a line
+    /// of text, made at most a few times a second.
+    pub colour_read: String,
+    colour_gen: u64,
+    colour_at: Option<Instant>,
     /// Per pane, the engine scope mode it showed this frame and the
     /// physical size it drew the image at: what the engine is asked to draw.
     pub shown_sizes: [Option<(u8, (u32, u32))>; 9],
@@ -40,6 +45,9 @@ impl Default for ScopeWindowRuntime {
             type_dropdown_pane: None,
             dot_menu_open: false,
             pointer_over: false,
+            colour_read: String::new(),
+            colour_gen: u64::MAX,
+            colour_at: None,
             shown_sizes: [None; 9],
             hdr_levels: false,
         }
@@ -150,6 +158,27 @@ pub fn show_scope_window(
             .max()
             .unwrap_or(2);
 
+        // The Lab readout, refreshed when the frame has changed and not
+        // more than a few times a second: a few milliseconds of a
+        // quarter-million samples.
+        {
+            let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let due = runtime.colour_at.is_none_or(|t| t.elapsed().as_millis() >= 400);
+            if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() && fb.generation != runtime.colour_gen && due {
+                let m = klipp_color::measure::measure_frame(&fb.data, fb.width, fb.height, &[]);
+                let cast = if m.cast() < 3.0 { "neutral".to_string() } else { format!("cast {:.0} {}", m.cast(), klipp_color::measure::cast_name(m.cast_a, m.cast_b)) };
+                let skin = match m.skin_all {
+                    Some(s) => {
+                        let mark = if (klipp_color::measure::SKIN_HUE_LOW..=klipp_color::measure::SKIN_HUE_HIGH).contains(&s.hue) { "on band" } else { "OFF band" };
+                        format!(" · skin {:.0}° {mark} ({:.0}%)", s.hue, s.pct)
+                    }
+                    None => String::new(),
+                };
+                runtime.colour_read = format!("L* {:.0}/{:.0}/{:.0} · {cast}{skin}", m.l_p1, m.l_p50, m.l_p99);
+                runtime.colour_gen = fb.generation;
+                runtime.colour_at = Some(Instant::now());
+            }
+        }
         viewer_pointer_pos.and_then(|pos| {
             let image_rect = viewer_image_rect?;
             let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -193,6 +222,11 @@ pub fn show_scope_window(
                             // Scopes label
                             ui.label(egui::RichText::new("Scopes").size(11.0).color(theme.text_secondary));
                             ui.separator();
+                            if !runtime.colour_read.is_empty() {
+                                ui.label(egui::RichText::new(&runtime.colour_read).size(10.0).monospace().color(theme.text_secondary))
+                                    .on_hover_text("The frame read in CIELAB: black, mid and white lightness (L*), the cast on the neutrals, and skin-coloured pixels' hue against the 40–65° band real skin sits in. The same numbers klipp_frame_stats and the check read.");
+                                ui.separator();
+                            }
                             // Layout buttons
                             for (layout, label) in [(ScopeLayout::OnePane, "1"), (ScopeLayout::TwoPane, "2"),
                                 (ScopeLayout::FourPane, "4"), (ScopeLayout::NinePane, "9")] {

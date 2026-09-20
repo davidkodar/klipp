@@ -777,7 +777,93 @@ pub trait Transcripts {
     fn screen_sensitive(&self, _item: &klipp_media::MediaItem) -> Vec<SensitiveText> {
         Vec::new()
     }
+    /// Where the faces are in `item`, per sampled frame: (file seconds,
+    /// the head as left, top, width, height in fractions of the frame).
+    /// What a title keeps clear of.
+    fn faces(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+        Vec::new()
+    }
 }
+
+/// The faces under a stretch of the timeline: every picture clip that
+/// overlaps `from..to`, its file's faces inside the stretch it shows.
+pub fn faces_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, from: f64, to: f64) -> Vec<[f32; 4]> {
+    let mut out = Vec::new();
+    for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible) {
+        for c in t.clips.iter().filter(|c| c.enabled && secs(c.timeline_in) < to && secs(c.timeline_out) > from) {
+            let Some(item) = c.media_id().and_then(|id| pool.get(&id)) else { continue };
+            let (lo, hi) = (from.max(secs(c.timeline_in)), to.min(secs(c.timeline_out)));
+            let file_at = |x: f64| secs(c.source_in) + (x - secs(c.timeline_in)) * c.speed.max(0.001);
+            let (f_lo, f_hi) = (file_at(lo) - 0.75, file_at(hi) + 0.75);
+            out.extend(transcripts.faces(item).into_iter().filter(|(s, _)| *s >= f_lo && *s <= f_hi).map(|(_, b)| b));
+        }
+    }
+    out
+}
+
+/// Whether two boxes (left, top, width, height) overlap, with `margin`
+/// round the first.
+pub fn boxes_overlap(a: [f32; 4], b: [f32; 4], margin: f32) -> bool {
+    a[0] - margin < b[0] + b[2] && a[0] + a[2] + margin > b[0] && a[1] - margin < b[1] + b[3] && a[1] + a[3] + margin > b[1]
+}
+
+/// The box a title covers, as fractions of the frame: its text boxes
+/// sized from their type and words, its shapes and images from their
+/// transforms. `None` for a title with nothing visible.
+pub fn title_box(td: &klipp_timeline::TitleData) -> Option<[f32; 4]> {
+    use klipp_timeline::TitleObjectContent;
+    let mut acc: Option<[f32; 4]> = None;
+    for o in td.objects.iter().filter(|o| o.visible) {
+        let (cx, cy) = (o.transform.center.x, o.transform.center.y);
+        let (w, h) = match &o.content {
+            TitleObjectContent::TextBox(tb) => text_extent(&tb.text, tb.font_size),
+            _ => (o.transform.size.x, o.transform.size.y),
+        };
+        let b = [cx - w / 2.0, cy - h / 2.0, w, h];
+        acc = Some(match acc {
+            None => b,
+            Some(a) => {
+                let (x0, y0) = (a[0].min(b[0]), a[1].min(b[1]));
+                let (x1, y1) = ((a[0] + a[2]).max(b[0] + b[2]), (a[1] + a[3]).max(b[1] + b[3]));
+                [x0, y0, x1 - x0, y1 - y0]
+            }
+        });
+    }
+    acc
+}
+
+/// About how much of the frame text of `size` (px of a 1080-line frame)
+/// covers: the longest line at a bit over half an em a character, the
+/// lines at 1.3 em.
+pub fn text_extent(text: &str, size: f32) -> (f32, f32) {
+    let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
+    let lines = text.lines().count().max(1) as f32;
+    ((longest * size * 0.55 / 1920.0).min(0.94), (lines * size * 1.3 / 1080.0).min(0.9))
+}
+
+/// The nine zones of the frame a title can sit in, by the centre they
+/// give a box of `size`.
+pub const ZONES: [(&str, f32, f32); 9] = [
+    ("top left", 0.22, 0.12), ("top centre", 0.5, 0.12), ("top right", 0.78, 0.12),
+    ("middle left", 0.22, 0.5), ("centre", 0.5, 0.5), ("middle right", 0.78, 0.5),
+    ("lower left", 0.22, 0.85), ("lower centre", 0.5, 0.85), ("lower right", 0.78, 0.85),
+];
+
+/// Where a box of `size` centred at `center` should go so it covers no
+/// keep-out: where it is, when it is clear; else the nearest of the
+/// nine zones that is, with its name. `None` when no zone is clear.
+pub fn clear_zone(center: (f32, f32), size: (f32, f32), keep_out: &[[f32; 4]]) -> Option<((f32, f32), Option<&'static str>)> {
+    const MARGIN: f32 = 0.04;
+    let boxed = |c: (f32, f32)| [(c.0 - size.0 / 2.0).clamp(0.02, 0.98 - size.0), (c.1 - size.1 / 2.0).clamp(0.02, 0.98 - size.1), size.0, size.1];
+    let clear = |c: (f32, f32)| !keep_out.iter().any(|k| boxes_overlap(boxed(c), *k, MARGIN));
+    if keep_out.is_empty() || clear(center) {
+        return Some((center, None));
+    }
+    let mut zones: Vec<&(&str, f32, f32)> = ZONES.iter().collect();
+    zones.sort_by(|a, b| ((a.1 - center.0).powi(2) + (a.2 - center.1).powi(2)).total_cmp(&((b.1 - center.0).powi(2) + (b.2 - center.1).powi(2))));
+    zones.into_iter().find(|z| clear((z.1, z.2))).map(|z| ((z.1, z.2), Some(z.0)))
+}
+
 
 /// A secret left on screen, as the check reads it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1285,7 +1371,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let look = look.unwrap_or_default();
             let full_frame_color = full_frame.clone().or_else(|| look.full_frame.filter(|f| *f).map(|_| look.fill.clone().unwrap_or_else(|| "#101418".into())));
             let backing_color = backing_color.clone().or_else(|| if look.full_frame.unwrap_or(false) { None } else { look.fill.clone() });
+            let keep_out = faces_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs);
             let args = TitleArgs {
+                keep_out,
                 text, secs: *secs, track: track.as_ref(), x: x.or(look.x), y: y.or(look.y), size: size.or(look.size),
                 color: color.as_deref().or(look.color.as_deref()), font: font.clone().or(look.font.clone()), bold: bold.or(look.bold), align: align.as_deref().or(look.align.as_deref()),
                 backing: backing.or(if backing_color.is_some() { None } else { look.backing }), backing_color: backing_color.as_deref(), full_frame: full_frame_color.as_deref(),
@@ -2625,13 +2713,27 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             return Err(refuse(i, "no secondary to remove", "this clip has no qualifier on it"));
         }
         let mut graph = clip.node_graph.clone();
-        for node in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier) {
-            if let Some(q) = node.params.qualifier.as_mut() {
-                q.enabled = false;
-                q.exposure = 0.0;
-                q.saturation = 1.0;
-                q.hue_shift = 0.0;
-                q.temperature = 0.0;
+        // The keyer off, and the corrections it gated back to neutral.
+        let keyed: Vec<klipp_nodes::NodeId> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == klipp_nodes::NodeKind::Qualifier)
+            .filter_map(|q| graph.edges.iter().find(|e| e.from_node == q.id && e.to_port == 1).map(|e| e.to_node))
+            .collect();
+        for node in graph.nodes.iter_mut() {
+            if node.kind == klipp_nodes::NodeKind::Qualifier {
+                if let Some(q) = node.params.qualifier.as_mut() {
+                    q.enabled = false;
+                    q.exposure = 0.0;
+                    q.saturation = 1.0;
+                    q.hue_shift = 0.0;
+                    q.temperature = 0.0;
+                }
+            }
+            if keyed.contains(&node.id) {
+                for (name, v) in [("hue", 0.0), ("temperature", 0.0), ("tint", 0.0), ("exposure", 0.0), ("saturation", 1.0)] {
+                    node.params.apply_override(name, v);
+                }
             }
         }
         let what = format!("clear the secondary on {}", clip_name(seq, pool, clip));
@@ -2680,17 +2782,43 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     if graph.is_identity() {
         graph = klipp_nodes::defaults::default_graph();
     }
-    let qid = graph.ensure_qualifier();
-    let node = graph.nodes.iter_mut().find(|n| n.id == qid).expect("ensure_qualifier made it");
-    for (name, v, _, _) in knobs {
-        if let Some(v) = v {
-            if !node.params.apply_override(name, v) {
-                return Err(refuse(i, format!("the qualifier has no \"{name}\""), "this is a bug: tell the user the secondary param went nowhere"));
+    // A secondary is two nodes: the keyer writes a matte, and the
+    // correction it gates gets the change. A qualifier alone in the
+    // chain puts its matte on screen where the picture should be.
+    let turns_hue = a.hue_shift.is_some() || a.temperature.is_some();
+    if turns_hue && (a.exposure.is_some() || a.saturation.is_some()) {
+        return Err(refuse(
+            i,
+            "one secondary either turns the hue or lifts and saturates, not both",
+            "send one qualify with hue_shift or temperature, and another with the same key for exposure or saturation",
+        ));
+    }
+    let kind = if turns_hue { klipp_nodes::NodeKind::ColorBalance } else { klipp_nodes::NodeKind::Corrector };
+    let (qid, cid) = graph.ensure_masked_secondary(kind);
+    {
+        let node = graph.nodes.iter_mut().find(|n| n.id == qid).expect("the keyer was made");
+        for (name, v, _, _) in knobs.iter().take(6) {
+            if let Some(v) = v {
+                if !node.params.apply_override(name, *v) {
+                    return Err(refuse(i, format!("the qualifier has no \"{name}\""), "this is a bug: tell the user the secondary key went nowhere"));
+                }
             }
         }
+        node.params.apply_override("qual_enabled", 1.0);
+        if a.invert {
+            node.params.apply_override("qual_invert", 1.0);
+        }
     }
-    if a.invert {
-        node.params.apply_override("qual_invert", 1.0);
+    {
+        // The correction, in the node's own names: a hue turn is the
+        // colour balance's `hue`, the rest the corrector's knobs.
+        let node = graph.nodes.iter_mut().find(|n| n.id == cid).expect("the correction was made");
+        for (name, v) in [("hue", a.hue_shift), ("temperature", a.temperature), ("exposure", a.exposure), ("saturation", a.saturation)] {
+            let Some(v) = v else { continue };
+            if !node.params.apply_override(name, v) {
+                return Err(refuse(i, format!("the secondary has no \"{name}\""), "this is a bug: tell the user the secondary correction went nowhere"));
+            }
+        }
     }
 
     let mut said = Vec::new();
@@ -3254,6 +3382,8 @@ struct TitleArgs<'a> {
     loop_effect: Option<&'a str>,
     glitch: Option<f32>,
     chromatic: Option<f32>,
+    /// Faces under the title's span: the words keep clear of them.
+    keep_out: Vec<[f32; 4]>,
 }
 
 /// Build a styled, animated title from scratch and place it on a text
@@ -3386,6 +3516,26 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             }
         }
     }
+    // Never over a face: the words move to the nearest clear zone and
+    // the reply says so. A full-frame card has nothing behind it to keep
+    // clear of.
+    let mut moved: Option<&'static str> = None;
+    if !a.keep_out.is_empty() && a.full_frame.is_none() {
+        let font = td.font_size();
+        if let Some(obj) = td.objects.get_mut(0) {
+            let size = text_extent(text, font);
+            let center = (obj.transform.center.x, obj.transform.center.y);
+            match clear_zone(center, size, &a.keep_out) {
+                Some((c, Some(zone))) => {
+                    obj.transform.center.x = c.0;
+                    obj.transform.center.y = c.1;
+                    moved = Some(zone);
+                }
+                Some(_) => {}
+                None => return Err(refuse(i, "a face is under every zone of the frame for the title's whole span", "hold it where the shot has no face, or make it a card")),
+            }
+        }
+    }
     if let Some(ff) = a.full_frame {
         let color = parse_color(ff).ok_or_else(|| refuse(i, format!("\"{ff}\" is not a colour"), "write the full-frame colour as #rrggbb"))?;
         td.background = TitleBackground::FullFrame { color };
@@ -3420,7 +3570,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     let id = clip.id;
     let short: String = text.chars().take(24).collect();
     let what = format!(
-        "title \"{short}\" at {:.2}-{:.2} s on {}",
+        "title \"{short}\" at {:.2}-{:.2} s on {}{}",
         secs(tl_in),
         secs(tl_out),
         match existing {
@@ -3428,6 +3578,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             None if seq.tracks.is_empty() => "a new text track 0".to_string(),
             None => "a new text track 0; every other track's index moves down by one".to_string(),
         },
+        moved.map(|z| format!(", moved to the {z} to keep clear of a face")).unwrap_or_default(),
     );
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
     Ok((what, edit, vec![id]))
@@ -3595,6 +3746,70 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
 
 #[cfg(test)]
 mod tests {
+    /// A secondary is a keyer gating a correction, never a keyer alone
+    /// in the picture chain: that would put its matte on screen. The
+    /// hue turn lands on the colour balance the qualifier gates.
+    #[test]
+    fn a_secondary_keys_a_correction_and_leaves_the_picture_in_the_chain() {
+        use klipp_nodes::NodeKind;
+        let (seq, pool, _, a, _) = fixture();
+        let op = |hue_shift: Option<f32>, saturation: Option<f32>| Op::Qualify {
+            clip_id: ClipRef::Id(a), target: Some("skin".into()), hue: None, hue_width: None,
+            sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
+            exposure: None, saturation, hue_shift, temperature: None, remove: false,
+        };
+        let plan = resolve(&seq, &pool, &[op(Some(20.0), None)]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
+        let qual = new_graph.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("a keyer");
+        assert!(qual.params.qualifier.as_ref().is_some_and(|q| q.enabled && q.hue_center > 0.0), "{:?}", qual.params.qualifier);
+        // The keyer feeds a correction's matte port, not the picture.
+        let edge = new_graph.edges.iter().find(|e| e.from_node == qual.id).expect("the keyer is wired");
+        assert_eq!(edge.to_port, 1, "a keyer feeds a matte port");
+        let corr = new_graph.nodes.iter().find(|n| n.id == edge.to_node).expect("the correction");
+        assert_eq!(corr.kind, NodeKind::ColorBalance);
+        assert_eq!(corr.params.hue, Some(20.0), "the hue turn is on the correction");
+        // And nothing in the picture chain is the keyer.
+        assert_ne!(new_graph.input_of(new_graph.output_node_id, 0), Some(qual.id), "the matte is not the picture");
+        // Saturation alone goes to a corrector instead.
+        let plan = resolve(&seq, &pool, &[op(None, Some(0.8))]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!() };
+        let qual = new_graph.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap();
+        let edge = new_graph.edges.iter().find(|e| e.from_node == qual.id).unwrap();
+        let corr = new_graph.nodes.iter().find(|n| n.id == edge.to_node).unwrap();
+        assert_eq!(corr.kind, NodeKind::Corrector);
+        assert_eq!(corr.params.saturation, Some(0.8));
+        // Asking one secondary for both is refused with what to do.
+        let err = resolve(&seq, &pool, &[op(Some(20.0), Some(0.8))]).unwrap_err();
+        assert!(format!("{err:?}").contains("either turns the hue"), "{err:?}");
+    }
+
+    /// A title placed over a face moves to the nearest clear zone and
+    /// says so; one placed clear stays; a card is never moved.
+    #[test]
+    fn a_title_keeps_clear_of_a_face() {
+        struct Faces(MediaId);
+        impl Transcripts for Faces {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                if item.id == self.0 { vec![(1.0, [0.4, 0.05, 0.2, 0.3]), (2.0, [0.4, 0.05, 0.2, 0.3])] } else { vec![] }
+            }
+        }
+        let (seq, pool, media, _, _) = fixture();
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
+        let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
+        assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let ClipKind::Title(td) = &clip.kind else { panic!() };
+        assert!(td.objects[0].transform.center.y > 0.4 || (td.objects[0].transform.center.x - 0.5).abs() > 0.2, "moved off the face: {:?}", td.objects[0].transform.center);
+        let plan = resolve_with(&seq, &pool, &[op(0.85, None)], &Faces(media)).unwrap();
+        assert!(!plan.steps[0].what.contains("face"), "{}", plan.steps[0].what);
+        let plan = resolve_with(&seq, &pool, &[op(0.12, Some("#101418"))], &Faces(media)).unwrap();
+        assert!(!plan.steps[0].what.contains("face"), "a card is not moved: {}", plan.steps[0].what);
+        assert_eq!(clear_zone((0.5, 0.5), (0.2, 0.1), &[]).unwrap().1, None);
+    }
+
     /// A pan keys scale and position from frame points, held at the
     /// picture's edge; a highlight's spot is four panels round the
     /// region on a faded title clip; a ramp's clip length follows the
@@ -4190,7 +4405,12 @@ mod tests {
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
         let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).expect("a qualifier");
         let qs = node.params.qualifier.as_ref().expect("qualifier settings");
-        assert!(qs.enabled && (qs.hue_center - 220.0).abs() < 1.0 && (qs.saturation - 0.6).abs() < 1e-4);
+        assert!(qs.enabled && (qs.hue_center - 220.0).abs() < 1.0, "{qs:?}");
+        // The change is on the correction the key gates, never on the
+        // keyer: a qualifier writes a matte, not a picture.
+        let gated = new_graph.edges.iter().find(|e| e.from_node == node.id && e.to_port == 1).map(|e| e.to_node).expect("the key gates a correction");
+        let corr = new_graph.nodes.iter().find(|n| n.id == gated).expect("the correction");
+        assert_eq!(corr.params.saturation, Some(0.6));
 
         // Reuse, not stack: a second qualify edits the same node, and undo clears it.
         let mut seqs = vec![seq.clone()];

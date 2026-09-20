@@ -124,13 +124,86 @@ pub const SKIN_CHROMA_HIGH: f32 = 45.0;
 pub const SKIN_L_LOW: f32 = 18.0;
 pub const SKIN_L_HIGH: f32 = 85.0;
 
+/// Lab → XYZ (D65) → linear BT.709, the way back.
+pub fn lab_to_linear(c: Lab) -> [f32; 3] {
+    let fy = (c.l + 16.0) / 116.0;
+    let fx = fy + c.a / 500.0;
+    let fz = fy - c.b / 200.0;
+    let g = |f: f32| if f * f * f > 216.0 / 24389.0 { f * f * f } else { (116.0 * f - 16.0) * 27.0 / 24389.0 };
+    let (x, y, z) = (g(fx) * D65[0], g(fy) * D65[1], g(fz) * D65[2]);
+    [
+        3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
+        -0.9692660 * x + 1.8760108 * y + 0.0415560 * z,
+        0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
+    ]
+}
+
+/// A Lab colour as sRGB 8-bit.
+pub fn lab_to_srgb8(c: Lab) -> [u8; 3] {
+    let enc = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    let lin = lab_to_linear(c);
+    [enc(lin[0]), enc(lin[1]), enc(lin[2])]
+}
+
+/// The hue of an sRGB colour in the 0–360 degrees a colour wheel and
+/// the qualifier node use (red 0, green 120, blue 240) — not Lab's.
+pub fn srgb_hue(rgb: [u8; 3]) -> f32 {
+    let (r, g, b) = (rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let d = mx - mn;
+    if d <= 1e-6 {
+        return 0.0;
+    }
+    let h = if mx == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0).rem_euclid(360.0)
+}
+
+/// The Lab colour at a hue, holding a lightness and chroma: where a
+/// face's colour should sit once its hue is put right.
+pub fn lab_at(hue_deg: f32, chroma: f32, l: f32) -> Lab {
+    let r = hue_deg.to_radians();
+    Lab { l, a: chroma * r.cos(), b: chroma * r.sin() }
+}
+
+/// The signed difference between two hue angles, -180 to 180: hues are
+/// a circle, and 358° is two degrees under 0, not 358 above it.
+pub fn hue_diff(from: f32, to: f32) -> f32 {
+    let d = (to - from).rem_euclid(360.0);
+    if d > 180.0 { d - 360.0 } else { d }
+}
+
+/// How far a hue sits outside the skin band, in degrees; 0 inside it.
+pub fn hue_off_skin_band(hue: f32) -> f32 {
+    if hue_diff(SKIN_HUE_LOW, hue) >= 0.0 && hue_diff(hue, SKIN_HUE_HIGH) >= 0.0 {
+        return 0.0;
+    }
+    hue_diff(SKIN_HUE_LOW, hue).abs().min(hue_diff(SKIN_HUE_HIGH, hue).abs())
+}
+
+/// How much of a face's grid must hold skin for its reading to be
+/// worth anything: a quarter of the patches, never under three.
+pub const MIN_SKIN_PATCHES: u32 = 3;
+
 /// A face's colour, measured over a grid of patches inside its region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FaceMeasure {
     /// The region measured, as fractions of the frame (x, y, w, h).
     pub region: [f32; 4],
-    /// Patches that held skin, of the grid's 64.
+    /// Patches that held skin, of the grid the face's size asked for
+    /// (8×8 for a face that fills the frame, down to 3×3 for a small one).
     pub patches: u32,
+    /// The grid's side: 8, 5 or 3.
+    pub grid: u32,
     /// The face's colour: the median of the patches.
     pub median: Lab,
     pub hue: f32,
@@ -171,8 +244,22 @@ pub struct FrameMeasure {
     pub cast_b: f32,
     pub neutral_pct: f32,
     pub faces: Vec<FaceMeasure>,
+    /// Every skin-coloured pixel in the frame read together, for a frame
+    /// with no detected person: rougher than a face (clothes and wood
+    /// can pass the gate), so advisory.
+    pub skin_all: Option<SkinRead>,
     /// Pixels read (the frame is sub-sampled).
     pub sampled: u32,
+}
+
+/// Skin-coloured pixels read as one: their median hue, chroma and
+/// lightness, and how much of the frame they are.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SkinRead {
+    pub hue: f32,
+    pub chroma: f32,
+    pub l: f32,
+    pub pct: f32,
 }
 
 impl FrameMeasure {
@@ -200,8 +287,16 @@ fn iqr(v: &mut [f32]) -> f32 {
     percentile(v, 0.75) - percentile(v, 0.25)
 }
 
-/// Whether a Lab colour could be skin at all: the wide gate, before the
-/// patches decide.
+/// Whether a pixel inside a known face can carry its colour: anything
+/// but the eyes, the teeth, a specular and the shadows. No hue test —
+/// the hue is what is being measured.
+fn in_face_candidate(c: Lab) -> bool {
+    c.l >= 12.0 && c.l <= 92.0 && c.chroma() >= 4.0
+}
+
+/// Whether a Lab colour could be skin at all: the wide gate, for
+/// searching a person's box and the frame, where nothing says the
+/// pixels are a face.
 fn skin_candidate(c: Lab) -> bool {
     let (h, ch) = (c.hue(), c.chroma());
     ch >= 8.0 && (20.0..=90.0).contains(&h) && c.l >= 12.0 && c.l <= 92.0
@@ -210,7 +305,11 @@ fn skin_candidate(c: Lab) -> bool {
 }
 
 /// Measure an sRGB8 RGBA frame. `faces` are regions (x, y, w, h as
-/// fractions of the frame) to read skin in — a person's head; each is
+/// fractions of the frame) known to be skin — the cheek band of a
+/// detected face, or where a skin search found one. They are read as
+/// they are, not filtered by hue: a face with the wrong colour is the
+/// thing we are looking for, and a hue gate would throw it away and
+/// report no face. Each is
 /// laid out as an 8×8 grid of patches and the patches that hold skin
 /// decide. The whole frame is read sub-sampled to about a quarter of a
 /// million pixels, so a 4K frame costs a few milliseconds.
@@ -225,6 +324,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
     // still has "neutrals" to read the cast from — under a blue light the
     // greys are blue, and that is the finding.
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
+    let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
     let (mut clip_hi, mut clip_lo, mut n) = (0usize, 0usize, 0usize);
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
@@ -244,9 +344,15 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
         }
+        if skin_candidate(c) && c.chroma() >= SKIN_CHROMA_LOW {
+            skin_h.push(c.hue());
+            skin_c.push(c.chroma());
+            skin_l.push(c.l);
+        }
         n += 1;
         i += step;
     }
+    let skin_all = (skin_h.len() as f32 >= 0.005 * n.max(1) as f32 && skin_h.len() >= 50).then(|| SkinRead { hue: median(&mut skin_h), chroma: median(&mut skin_c), l: median(&mut skin_l), pct: skin_h.len() as f32 / n.max(1) as f32 * 100.0 });
     let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
     chroma_sorted.sort_by(|a, b| a.total_cmp(b));
     let gate = percentile(&chroma_sorted, 0.25).max(6.0).min(25.0);
@@ -276,29 +382,37 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         cast_b: median(&mut nb),
         neutral_pct: na.len() as f32 / nn * 100.0,
         faces,
+        skin_all,
         sampled: n as u32,
     }
 }
 
-/// One face region as a grid of 8×8 patches: each patch the median of
-/// its skin candidates, kept when at least 40% of it is skin.
+/// One face region as a grid of patches: each patch the median of the
+/// skin it holds, kept when enough of it is skin. The region is taken
+/// on trust — it is a face — so only what cannot be skin at all is
+/// dropped: too dark, too bright, or colourless (eyes, teeth, a
+/// specular). Its colour, right or wrong, is what comes back.
 pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMeasure {
-    const GRID: usize = 8;
+    // A face far away is a few dozen pixels across: an 8×8 grid over it
+    // would be patches of four pixels, too few to take a median of. The
+    // grid follows the face's size so a patch is always a real sample.
+    let px = (region[2] * w as f32).max(1.0) * (region[3] * h as f32).max(1.0);
+    let grid: usize = if px >= 120.0 * 120.0 { 8 } else if px >= 40.0 * 40.0 { 5 } else { 3 };
     let x0 = ((region[0] * w as f32).round().max(0.0) as usize).min(w.saturating_sub(1));
     let y0 = ((region[1] * h as f32).round().max(0.0) as usize).min(h.saturating_sub(1));
     let x1 = (((region[0] + region[2]) * w as f32).round() as usize).clamp(x0 + 1, w);
     let y1 = (((region[1] + region[3]) * h as f32).round() as usize).clamp(y0 + 1, h);
     let (rw, rh) = (x1 - x0, y1 - y0);
     // Enough pixels per patch to take a median of, never more than needed.
-    let stride = ((rw * rh) / (GRID * GRID * 64)).max(1);
+    let stride = ((rw * rh) / (grid * grid * 64)).max(1);
     let mut patch_l: Vec<f32> = Vec::new();
     let mut patch_h: Vec<f32> = Vec::new();
     let mut patch_c: Vec<f32> = Vec::new();
     let mut patch_ab: Vec<(f32, f32)> = Vec::new();
-    for gy in 0..GRID {
-        for gx in 0..GRID {
-            let (px0, px1) = (x0 + rw * gx / GRID, x0 + rw * (gx + 1) / GRID);
-            let (py0, py1) = (y0 + rh * gy / GRID, y0 + rh * (gy + 1) / GRID);
+    for gy in 0..grid {
+        for gx in 0..grid {
+            let (px0, px1) = (x0 + rw * gx / grid, x0 + rw * (gx + 1) / grid);
+            let (py0, py1) = (y0 + rh * gy / grid, y0 + rh * (gy + 1) / grid);
             let (mut ls, mut hs, mut cs, mut as_, mut bs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
             let mut seen = 0usize;
             let mut k = 0usize;
@@ -314,7 +428,7 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
                     }
                     seen += 1;
                     let c = srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]);
-                    if skin_candidate(c) {
+                    if in_face_candidate(c) {
                         ls.push(c.l);
                         hs.push(c.hue());
                         cs.push(c.chroma());
@@ -323,7 +437,7 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
                     }
                 }
             }
-            if seen == 0 || (ls.len() as f32) < 0.4 * seen as f32 {
+            if seen == 0 || (ls.len() as f32) < 0.35 * seen as f32 {
                 continue;
             }
             patch_l.push(median(&mut ls));
@@ -334,21 +448,146 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
     }
     let patches = patch_l.len() as u32;
     if patches == 0 {
-        return FaceMeasure { region, patches, median: Lab::default(), hue: 0.0, chroma: 0.0, hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 0.0, mixed_light: false, hue_off_band: 0.0 };
+        return FaceMeasure { region, patches, grid: grid as u32, median: Lab::default(), hue: 0.0, chroma: 0.0, hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 0.0, mixed_light: false, hue_off_band: 0.0 };
     }
     let mut a_all: Vec<f32> = patch_ab.iter().map(|p| p.0).collect();
     let mut b_all: Vec<f32> = patch_ab.iter().map(|p| p.1).collect();
+    // The median of a* and b* rather than of the hues: an average of
+    // angles either side of 0 is meaningless.
     let median_lab = Lab { l: median(&mut patch_l.clone()), a: median(&mut a_all), b: median(&mut b_all) };
     let hue = median_lab.hue();
-    let worst_hue = patch_h.iter().copied().max_by(|a, b| (a - SKIN_HUE_CENTRE).abs().total_cmp(&(b - SKIN_HUE_CENTRE).abs())).unwrap_or(hue);
-    let hue_iqr = iqr(&mut patch_h.clone());
+    let worst_hue = patch_h.iter().copied().max_by(|a, b| hue_diff(SKIN_HUE_CENTRE, *a).abs().total_cmp(&hue_diff(SKIN_HUE_CENTRE, *b).abs())).unwrap_or(hue);
+    let mut about_median: Vec<f32> = patch_h.iter().map(|h| hue_diff(hue, *h)).collect();
+    let hue_iqr = iqr(&mut about_median);
     let l_iqr = iqr(&mut patch_l.clone());
-    let hue_off_band = if hue < SKIN_HUE_LOW { SKIN_HUE_LOW - hue } else if hue > SKIN_HUE_HIGH { hue - SKIN_HUE_HIGH } else { 0.0 };
-    FaceMeasure { region, patches, median: median_lab, hue, chroma: median_lab.chroma(), hue_iqr, l_iqr, worst_hue, mixed_light: hue_iqr > 18.0 && patches >= 8, hue_off_band }
+    let hue_off_band = hue_off_skin_band(hue);
+    FaceMeasure { region, patches, grid: grid as u32, median: median_lab, hue, chroma: median_lab.chroma(), hue_iqr, l_iqr, worst_hue, mixed_light: hue_iqr > 18.0 && patches >= 8, hue_off_band }
+}
+
+impl FaceMeasure {
+    /// Whether the reading stands on enough of the face to judge.
+    pub fn readable(&self) -> bool {
+        self.patches >= MIN_SKIN_PATCHES.max(self.grid * self.grid / 4)
+    }
+}
+
+/// The band of a face a colourist samples: the cheeks and the nose,
+/// between the eyes and the mouth, as wide as the eyes are apart. It
+/// holds almost nothing but skin at any size of face — no hair, no
+/// background, no eyes, no lips — which a box round the whole face does
+/// not. `landmarks` are the face model's five: right eye, left eye,
+/// nose, right mouth corner, left mouth corner, as fractions of the
+/// frame. `None` when they do not look like a face.
+pub fn skin_band(landmarks: &[(f32, f32)]) -> Option<[f32; 4]> {
+    let [re, le, _nose, rm, lm] = landmarks.get(..5)? else { return None };
+    let eye_y = (re.1 + le.1) / 2.0;
+    let mouth_y = (rm.1 + lm.1) / 2.0;
+    let drop = mouth_y - eye_y;
+    let span = (le.0 - re.0).abs().max((lm.0 - rm.0).abs());
+    if !(drop > 0.0005) || !(span > 0.0005) {
+        return None;
+    }
+    // Down from just under the eyes to just above the lips, and a little
+    // wider than the eyes are apart: cheek, nose, cheek.
+    let (top, bottom) = (eye_y + drop * 0.18, mouth_y - drop * 0.18);
+    let cx = (re.0 + le.0) / 2.0;
+    let w = (span * 1.15).min(1.0);
+    let x = (cx - w / 2.0).clamp(0.0, 1.0 - w);
+    let h = (bottom - top).max(0.004).min(1.0 - top.clamp(0.0, 1.0));
+    Some([x, top.clamp(0.0, 1.0), w, h])
+}
+
+/// Where the skin is inside a detected person's box: a coarse grid of
+/// patches over the box, the skin patches' cluster in its upper part
+/// (the face, for a person facing the camera; a window with a video of
+/// one, too). `None` when the box holds no skin cluster worth reading.
+pub fn skin_region(rgba: &[u8], width: u32, height: u32, person: [f32; 4]) -> Option<[f32; 4]> {
+    const GRID: usize = 12;
+    let (w, h) = (width as usize, height as usize);
+    let [px, py, pw, ph] = person;
+    let (x0, y0) = (((px * w as f32).max(0.0)) as usize, ((py * h as f32).max(0.0)) as usize);
+    let (x1, y1) = ((((px + pw) * w as f32) as usize).clamp(x0 + 1, w), (((py + ph) * h as f32) as usize).clamp(y0 + 1, h));
+    let (rw, rh) = (x1 - x0, y1 - y0);
+    let stride = ((rw * rh) / (GRID * GRID * 48)).max(1);
+    let mut skin = vec![false; GRID * GRID];
+    for gy in 0..GRID {
+        for gx in 0..GRID {
+            let (ax, bx) = (x0 + rw * gx / GRID, x0 + rw * (gx + 1) / GRID);
+            let (ay, by) = (y0 + rh * gy / GRID, y0 + rh * (gy + 1) / GRID);
+            let (mut seen, mut hit, mut k) = (0usize, 0usize, 0usize);
+            for y in ay..by {
+                for x in ax..bx {
+                    k += 1;
+                    if k % stride != 0 {
+                        continue;
+                    }
+                    let p = (y * w + x) * 4;
+                    if p + 3 >= rgba.len() {
+                        continue;
+                    }
+                    seen += 1;
+                    let c = srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]);
+                    if skin_candidate(c) && c.chroma() >= SKIN_CHROMA_LOW {
+                        hit += 1;
+                    }
+                }
+            }
+            skin[gy * GRID + gx] = seen > 0 && hit as f32 >= 0.5 * seen as f32;
+        }
+    }
+    // The largest connected cluster of skin patches, the upper one when
+    // two are alike (a face over hands).
+    let mut seen = vec![false; GRID * GRID];
+    let mut best: Option<(usize, f32, [usize; 4])> = None;
+    for start in 0..GRID * GRID {
+        if !skin[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut cells = Vec::new();
+        seen[start] = true;
+        while let Some(c) = stack.pop() {
+            cells.push(c);
+            let (cx, cy) = (c % GRID, c / GRID);
+            for (nx, ny) in [(cx.wrapping_sub(1), cy), (cx + 1, cy), (cx, cy.wrapping_sub(1)), (cx, cy + 1)] {
+                if nx < GRID && ny < GRID {
+                    let n = ny * GRID + nx;
+                    if skin[n] && !seen[n] {
+                        seen[n] = true;
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        let (mut gx0, mut gy0, mut gx1, mut gy1) = (GRID, GRID, 0, 0);
+        for c in &cells {
+            gx0 = gx0.min(c % GRID);
+            gx1 = gx1.max(c % GRID);
+            gy0 = gy0.min(c / GRID);
+            gy1 = gy1.max(c / GRID);
+        }
+        let centre_y = (gy0 + gy1) as f32 / 2.0;
+        let score = cells.len() as f32 * (1.0 + (GRID as f32 - centre_y) / GRID as f32 * 0.5);
+        if best.is_none_or(|(_, s, _)| score > s) {
+            best = Some((cells.len(), score, [gx0, gy0, gx1 + 1, gy1 + 1]));
+        }
+    }
+    let (n, _, [gx0, gy0, gx1, gy1]) = best?;
+    if n < 3 {
+        return None;
+    }
+    let cell = |g: usize, len: usize| g as f32 / GRID as f32 * len as f32;
+    Some([
+        (x0 as f32 + cell(gx0, rw)) / w as f32,
+        (y0 as f32 + cell(gy0, rh)) / h as f32,
+        cell(gx1 - gx0, rw) / w as f32,
+        cell(gy1 - gy0, rh) / h as f32,
+    ])
 }
 
 /// The head of a detected person: the upper part of the box, the
-/// middle of its width.
+/// middle of its width. The guess when the picture is not to hand;
+/// `skin_region` reads where the skin is.
 pub fn head_region(person: [f32; 4]) -> [f32; 4] {
     let [x, y, w, h] = person;
     let head_h = (h * 0.32).max(0.02);
@@ -417,7 +656,7 @@ impl LookTarget {
         }
         let n = measures.len() as f32;
         let mean = |f: &dyn Fn(&FrameMeasure) -> f32| measures.iter().map(f).sum::<f32>() / n;
-        let skin: Vec<f32> = measures.iter().flat_map(|m| m.faces.iter().filter(|f| f.patches >= 4).map(|f| f.hue)).collect();
+        let skin: Vec<f32> = measures.iter().flat_map(|m| m.faces.iter().filter(|f| f.readable()).map(|f| f.hue)).collect();
         Some(LookTarget {
             name: name.to_string(),
             black_l: Some(mean(&|m| m.l_p1)),
@@ -495,8 +734,18 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         }
     }
     let skin_target = t.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
+    // A whole-frame skin read is advisory, and never on a screen
+    // recording, whose orange buttons are not skin.
+    if !t.screencast && m.faces.iter().all(|f| !f.readable()) {
+        if let Some(s) = m.skin_all {
+            let off = hue_off_skin_band(s.hue);
+            if s.pct >= 2.0 && off > 6.0 {
+                out.push(Finding { rule: "skin_hue", verdict: Verdict::Warn, reading: s.hue, target: skin_target, tolerance: 6.0, what: format!("skin-coloured pixels ({:.0}% of the frame, no face detected) sit at hue {:.0}°, {off:.0}° outside the skin band", s.pct, s.hue), fix: "if a face is in the picture, analyze with the detector for a proper read; else temperature and tint" });
+            }
+        }
+    }
     for (i, f) in m.faces.iter().enumerate() {
-        if f.patches < 4 {
+        if !f.readable() {
             continue;
         }
         let who = if m.faces.len() > 1 { format!("face {}", i + 1) } else { "the face".to_string() };
@@ -625,6 +874,89 @@ mod tests {
         }
     }
 
+    /// Hues are a circle: a face at 358° is two degrees under red, not
+    /// 358 above it, and it is 42° outside the skin band.
+    #[test]
+    fn hue_distances_go_round_the_circle() {
+        assert!((hue_diff(358.0, 2.0) - 4.0).abs() < 1e-4);
+        assert!((hue_diff(2.0, 358.0) + 4.0).abs() < 1e-4);
+        assert!((hue_diff(SKIN_HUE_CENTRE, 52.0)).abs() < 1e-4);
+        assert_eq!(hue_off_skin_band(50.0), 0.0);
+        assert!((hue_off_skin_band(358.0) - 42.0).abs() < 1e-4, "{}", hue_off_skin_band(358.0));
+        assert!((hue_off_skin_band(75.0) - 10.0).abs() < 1e-4);
+        assert!((hue_off_skin_band(30.0) - 10.0).abs() < 1e-4);
+    }
+
+    /// The wheel's hue and Lab's are different circles: a skin
+    /// secondary keyed on the wrong one selects nothing. Lab 52° is the
+    /// wheel's low twenties; a magenta-cast face is up near 340.
+    #[test]
+    fn a_lab_hue_becomes_the_wheel_hue_a_qualifier_keys_on() {
+        let skin = lab_at(SKIN_HUE_CENTRE, 25.0, 60.0);
+        let wheel = srgb_hue(lab_to_srgb8(skin));
+        assert!((10.0..40.0).contains(&wheel), "skin on the wheel: {wheel}");
+        let cast = srgb8_to_lab(200, 156, 169);
+        let cast_wheel = srgb_hue([200, 156, 169]);
+        assert!(cast.hue() > 340.0, "the tape's pink in Lab: {}", cast.hue());
+        assert!(cast_wheel > 320.0 && cast_wheel < 360.0, "and on the wheel: {cast_wheel}");
+        // Round trip: a Lab colour survives being turned into sRGB.
+        let back = srgb8_to_lab(lab_to_srgb8(skin)[0], lab_to_srgb8(skin)[1], lab_to_srgb8(skin)[2]);
+        assert!(delta_e2000(skin, back) < 1.0, "{skin:?} vs {back:?}");
+    }
+
+    /// A face with a magenta cast is read and reported off the band,
+    /// not thrown away for not looking like skin.
+    #[test]
+    fn a_face_with_the_wrong_colour_is_still_read() {
+        let (w, h) = (200, 120);
+        let face = [0.4f32, 0.4, 0.2, 0.2];
+        // The washed-out pink an old tape gives skin: a* 18, b* 0.
+        let frame = frame_of(w, h, |x, y| {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [200, 156, 169] } else { [120, 120, 120] }
+        });
+        let m = measure_frame(&frame, w as u32, h as u32, &[face]);
+        let f = &m.faces[0];
+        assert!(f.readable(), "{} of {}x{} patches", f.patches, f.grid, f.grid);
+        assert!(f.hue > 340.0 || f.hue < 20.0, "a magenta face: {}", f.hue);
+        assert!(f.hue_off_band > 30.0, "far outside the band: {}", f.hue_off_band);
+        let findings = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap());
+        let skin = findings.iter().find(|x| x.rule == "skin_hue").expect("a skin finding");
+        assert_eq!(skin.verdict, Verdict::Fail, "{skin:?}");
+    }
+
+    /// The cheek band sits under the eyes, over the lips, and between
+    /// the cheeks; bad landmarks give none.
+    #[test]
+    fn the_cheek_band_is_between_the_eyes_and_the_mouth() {
+        let marks = [(0.40, 0.30), (0.52, 0.30), (0.46, 0.38), (0.42, 0.46), (0.50, 0.46)];
+        let [x, y, w, h] = skin_band(&marks).expect("a band");
+        assert!(y > 0.30 && y < 0.34, "under the eyes: {y}");
+        assert!(y + h > 0.42 && y + h < 0.46, "over the lips: {}", y + h);
+        assert!(x < 0.40 && x + w > 0.52, "wider than the eyes: {x}..{}", x + w);
+        assert!(skin_band(&[(0.4, 0.4), (0.5, 0.4), (0.45, 0.4), (0.42, 0.39), (0.48, 0.39)]).is_none(), "a mouth above the eyes is not a face");
+        assert!(skin_band(&marks[..3]).is_none());
+    }
+
+    /// A person box that is a window with a face in its lower middle:
+    /// the skin search finds the face where the head guess finds none.
+    #[test]
+    fn the_skin_search_finds_a_face_inside_a_window() {
+        let (w, h) = (320, 240);
+        let person = [0.3f32, 0.1, 0.4, 0.8];
+        let face = [0.42f32, 0.45, 0.16, 0.2];
+        let frame = frame_of(w, h, |x, y| {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [194, 150, 130] } else if fx >= person[0] && fx < person[0] + person[2] && fy >= person[1] && fy < person[1] + person[3] { [30, 30, 40] } else { [120, 120, 120] }
+        });
+        let guess = measure_face(&frame, w, h, head_region(person));
+        assert!(guess.patches < 4, "the head guess reads the window's top: {}", guess.patches);
+        let region = skin_region(&frame, w as u32, h as u32, person).expect("a skin cluster");
+        assert!((region[0] - face[0]).abs() < 0.06 && (region[1] - face[1]).abs() < 0.08, "{region:?}");
+        let read = measure_face(&frame, w, h, region);
+        assert!(read.readable() && (SKIN_HUE_LOW..=SKIN_HUE_HIGH).contains(&read.hue), "{read:?}");
+    }
+
     fn srgb8_to_lab_from_linear(p: [f32; 4]) -> Lab {
         linear_to_lab(p[0], p[1], p[2])
     }
@@ -669,7 +1001,7 @@ mod tests {
         let m = measure_frame(&frame, w as u32, h as u32, &[face]);
         assert_eq!(m.faces.len(), 1);
         let f = &m.faces[0];
-        assert!(f.patches >= 60, "{}", f.patches);
+        assert!(f.readable(), "{} of {}x{} patches", f.patches, f.grid, f.grid);
         assert!((SKIN_HUE_LOW..=SKIN_HUE_HIGH).contains(&f.hue), "hue {}", f.hue);
         assert!(m.cast() < 1.5, "neutral grey reads neutral: {} {}", m.cast_a, m.cast_b);
         let findings = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap());

@@ -364,6 +364,7 @@ mod tests {
             ],
             music: Some(PlanMusic { media_id: bed, duck_db: None, source_in_secs: Some(0.5), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(1.5) }),
             approved: true,
+            snap_to_bars: false,
             notes: String::new(),
         };
         validate(&plan, &pool, Some(&brief)).unwrap();

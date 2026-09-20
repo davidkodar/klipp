@@ -368,6 +368,60 @@ impl NodeGraph {
     /// Ensure a single Qualifier node (an HSL secondary), wired after the
     /// corrector so it keys and corrects the graded image, and return its
     /// id. If one exists already it is reused.
+    /// A secondary: a keyer whose matte gates a correction, which is
+    /// the only shape that grades one colour and passes the rest of the
+    /// picture through. A Qualifier alone in the chain writes its matte
+    /// where the picture should be — it is a matte source, not a grade.
+    ///
+    /// Builds, or finds, `source → corr(port 0)`, `source → qualifier`,
+    /// `qualifier → corr(port 1)`, `corr → output`, and answers with the
+    /// qualifier's and the correction's ids. `kind` is the correction's
+    /// node kind: `ColorBalance` turns a hue, `Corrector` lifts or
+    /// saturates.
+    pub fn ensure_masked_secondary(&mut self, kind: NodeKind) -> (NodeId, NodeId) {
+        // One already there, keying exactly this kind of correction.
+        let found = self.nodes.iter().filter(|n| n.kind == NodeKind::Qualifier).find_map(|q| {
+            let consumer = self.edges.iter().find(|e| e.from_node == q.id && e.to_port == 1)?.to_node;
+            self.nodes.iter().find(|n| n.id == consumer && n.kind == kind).map(|n| (q.id, n.id))
+        });
+        if let Some(pair) = found {
+            return pair;
+        }
+        let output_id = self.output_node_id;
+        let source = self.input_of(output_id, 0);
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id).unwrap_or(self.nodes.len());
+        let (qual_id, corr_id) = (NodeId::new_v4(), NodeId::new_v4());
+        let make = |id: NodeId, kind: NodeKind, label: &str| Node {
+            id,
+            kind,
+            label: label.to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        };
+        self.nodes.insert(insert_at, make(corr_id, kind, "Secondary"));
+        self.nodes.insert(insert_at, make(qual_id, NodeKind::Qualifier, "Qualifier"));
+        // The correction takes the output's place at the end of the chain.
+        for edge in &mut self.edges {
+            if edge.to_node == output_id && edge.to_port == 0 {
+                edge.to_node = corr_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge { from_node: corr_id, from_port: 0, to_node: output_id, to_port: 0 });
+        // The keyer looks at the same picture the correction does.
+        if let Some(src) = source {
+            self.edges.push(Edge { from_node: src, from_port: 0, to_node: qual_id, to_port: 0 });
+        }
+        self.edges.push(Edge { from_node: qual_id, from_port: 0, to_node: corr_id, to_port: 1 });
+        let base = self.node_positions.get(&output_id).copied().unwrap_or(NodePos { x: 440.0, y: 0.0 });
+        self.node_positions.insert(corr_id, NodePos { x: base.x - 160.0, y: base.y });
+        self.node_positions.insert(qual_id, NodePos { x: base.x - 320.0, y: base.y - 140.0 });
+        (qual_id, corr_id)
+    }
+
     pub fn ensure_qualifier(&mut self) -> NodeId {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Qualifier) {
             return self.nodes[idx].id;

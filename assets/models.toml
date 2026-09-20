@@ -270,3 +270,19 @@ sources = [
 kind = "voice"
 runtime = "piper"
 prompts = ""
+
+# ── Faces: YuNet (OpenCV), a quarter of a megabyte, with landmarks ──
+
+[[model]]
+id = "yunet_face_2023mar"
+display_name = "YuNet face detector (2023 March)"
+size_bytes = 232589
+sha256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+license = "MIT"
+attribution = "Shiqi Yu et al., OpenCV Zoo (opencv/opencv_zoo)"
+sources = [
+    { url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" },
+]
+kind = "face_detector"
+runtime = "ort"
+prompts = ""

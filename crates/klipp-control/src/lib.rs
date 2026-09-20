@@ -414,18 +414,30 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let (data, width, height) = {
-        let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
-        let (d, w, h, _) = fb.latest_frame();
-        (d.to_vec(), w, h)
+    // The bytes: the stack presents zero-copy and the frame buffer's copy
+    // can be a beat behind the texture, so a short wait for them.
+    let (data, width, height) = loop {
+        let (data, width, height) = {
+            let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+            let (d, w, h, _) = fb.latest_frame();
+            (d.to_vec(), w, h)
+        };
+        let expected = (width as usize) * (height as usize) * 4;
+        if width > 0 && height > 0 && data.len() >= expected {
+            break (data, width, height);
+        }
+        if std::time::Instant::now() >= deadline {
+            if let Some(t) = was_at {
+                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
+            }
+            return Err("the viewer has no frame to measure yet".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     };
     if let Some(t) = was_at {
         let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
     }
     let expected = (width as usize) * (height as usize) * 4;
-    if width == 0 || height == 0 || data.len() < expected {
-        return Err("the viewer has no frame to measure yet".into());
-    }
     Ok((data[..expected].to_vec(), width, height))
 }
 
@@ -1018,6 +1030,9 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
     }
 
+    fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
+    }
     fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<klipp_document::ops::ScreenBeats> {
         let bs = klipp_analysis::report::MediaAnalysis::load(&item.path).beatsheet?;
         if !bs.has_freeze {
@@ -1081,13 +1096,65 @@ fn faces_at(ctx: &ControlContext, secs: f64) -> Vec<[f32; 4]> {
     }) else { return Vec::new() };
     let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
-    framing.people_at(source, 1.5).map(|s| s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()).unwrap_or_default()
+    framing.people_at(source, 4.0).map(|s| face_or_head_regions(s)).unwrap_or_default()
+}
+
+/// A sample's faces as boxes, else its people's heads.
+fn face_or_head_regions(s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4]> {
+    if !s.faces.is_empty() {
+        s.faces.iter().map(|f| [f.x, f.y, f.w, f.h]).collect()
+    } else {
+        s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()
+    }
+}
+
+/// The people in the picture at a timeline second, as their whole boxes.
+fn people_at(ctx: &ControlContext, secs: f64) -> Vec<[f32; 4]> {
+    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
+    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
+        let (_, c) = t.clip_at_timecode(tc)?;
+        let item = pool.get(&c.media_id()?)?;
+        c.enabled.then_some((c.clone(), item.clone()))
+    }) else { return Vec::new() };
+    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    framing.people_at(source, 4.0).map(|s| s.people.iter().map(|p| [p.0, p.1, p.2, p.3]).collect()).unwrap_or_default()
+}
+
+/// The skin regions to read in a frame: each detected face, its box
+/// drawn in a little so hair and background stay out; with no face
+/// model, each person's skin cluster, else the head's place in the box.
+fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) -> Vec<[f32; 4]> {
+    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
+    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
+        let (_, c) = t.clip_at_timecode(tc)?;
+        let item = pool.get(&c.media_id()?)?;
+        c.enabled.then_some((c.clone(), item.clone()))
+    }) else { return Vec::new() };
+    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    let Some(sample) = framing.people_at(source, 4.0) else { return Vec::new() };
+    if !sample.faces.is_empty() {
+        // The cheek band between the eyes and the mouth, which is skin
+        // and nothing else; the box drawn in, when the landmarks are no
+        // good.
+        return sample
+            .faces
+            .iter()
+            .map(|f| klipp_color::measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72]))
+            .collect();
+    }
+    sample.people.iter().map(|p| { let p = [p.0, p.1, p.2, p.3]; klipp_color::measure::skin_region(data, w, h, p).unwrap_or_else(|| klipp_color::measure::head_region(p)) }).collect()
 }
 
 /// The frame at a timeline second, measured: Lab readings and the faces.
 fn measure_at(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
     let (data, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
-    let faces = faces_at(ctx, secs);
+    let faces = skin_regions(ctx, secs, &data, w, h);
     Ok(klipp_color::measure::measure_frame(&data, w, h, &faces))
 }
 
@@ -1678,21 +1745,42 @@ fn handle(
                 return Err("skin_balance measures and applies; send it on its own".into());
             }
             use klipp_color::measure::{SKIN_HUE_CENTRE, SKIN_HUE_HIGH, SKIN_HUE_LOW};
+            // Read where the face is largest in the clip, not at its
+            // midpoint: a face a hundred pixels across is what a skin
+            // read needs, and the clip's middle may hold none at all.
             let (mid, name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let id = klipp_core::ClipId(clip_id.parse().map_err(|e| format!("clip_id is not a uuid: {e}"))?);
                 let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).ok_or_else(|| format!("no clip {clip_id}"))?;
-                let name = clip.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "the clip".into());
-                ((clip.timeline_in.to_secs_f64() + clip.timeline_out.to_secs_f64()) / 2.0, name)
+                let item = clip.media_id().and_then(|m| pool.get(&m));
+                let name = item.map(|it| it.filename.clone()).unwrap_or_else(|| "the clip".into());
+                let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+                let speed = clip.speed.max(0.001);
+                let biggest = item
+                    .and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).framing)
+                    .and_then(|f| {
+                        f.samples
+                            .iter()
+                            .filter(|s| s.secs >= s_in && s.secs < s_out)
+                            .filter_map(|s| {
+                                let area = face_or_head_regions(s).into_iter().map(|b| b[2] * b[3]).fold(0.0f32, f32::max);
+                                (area > 0.0).then_some((s.secs, area))
+                            })
+                            .max_by(|a, b| a.1.total_cmp(&b.1))
+                            .map(|(secs, _)| t_in + (secs - s_in) / speed)
+                    })
+                    .filter(|t| *t >= t_in && *t < t_out);
+                (biggest.unwrap_or((t_in + t_out) / 2.0), name)
             };
             let look = look_for(ctx, mid);
             let target = look.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
             let mut rounds = Vec::new();
             let mut shift = 0.0f32;
             let mut m = measure_at(ctx, mid, Some(6000))?;
-            let Some(face0) = m.faces.iter().find(|f| f.patches >= 4).cloned() else {
-                return Err(format!("no face to read in {name} at {mid:.2} s: the framing analysis found no person there (analyze with the detector), or the face is too small"));
+            let Some(face0) = m.faces.iter().find(|f| f.readable()).cloned() else {
+                return Err(format!("no face to read in {name} at {mid:.2} s, where the largest face in the clip is: the framing analysis found no face there (analyze — the face model comes with the detector), or the face is too small or too dark to read skin in"));
             };
             if face0.mixed_light {
                 return Err(format!("{name}: the face is lit by two colours of light (hue spread {:.0}°); a skin secondary would fix one side and break the other — grade the light, not the skin", face0.hue_iqr));
@@ -1705,14 +1793,35 @@ fn handle(
             }
             let n_rounds = if apply { 3 } else { 0 };
             for round in 0..n_rounds {
-                let Some(face) = m.faces.iter().find(|f| f.patches >= 4) else { break };
-                let off = if face.hue < SKIN_HUE_LOW { SKIN_HUE_LOW - face.hue } else if face.hue > SKIN_HUE_HIGH { face.hue - SKIN_HUE_HIGH } else { 0.0 };
-                let want = target - face.hue;
+                let Some(face) = m.faces.iter().find(|f| f.readable()) else { break };
+                let off = klipp_color::measure::hue_off_skin_band(face.hue);
+                let want = klipp_color::measure::hue_diff(face.hue, target);
                 if off <= 2.0 && want.abs() <= 4.0 {
                     break;
                 }
-                shift = (shift + want * 0.8).clamp(-30.0, 30.0);
-                let op: klipp_document::ops::Op = serde_json::from_value(json!({ "op": "qualify", "clip_id": clip_id, "target": "skin", "hue_shift": shift })).map_err(|e| e.to_string())?;
+                // The secondary keys on the wheel's hue, not Lab's, and on
+                // the face's own colour: a face with a cast falls outside
+                // the generic skin key, which would select nothing and
+                // change nothing. The shift is the same two colours'
+                // distance on the wheel.
+                let now_rgb = klipp_color::measure::lab_to_srgb8(face.median);
+                let want_rgb = klipp_color::measure::lab_to_srgb8(klipp_color::measure::lab_at(target, face.chroma.max(6.0), face.median.l));
+                let (key_hue, want_hue) = (klipp_color::measure::srgb_hue(now_rgb), klipp_color::measure::srgb_hue(want_rgb));
+                shift = (shift + klipp_color::measure::hue_diff(key_hue, want_hue) * 0.8).clamp(-60.0, 60.0);
+                // The whole key, and the hue turn alone: a secondary
+                // either turns a hue or lifts and saturates, and this one
+                // turns skin onto its band.
+                let op: klipp_document::ops::Op = serde_json::from_value(json!({
+                    "op": "qualify",
+                    "clip_id": clip_id,
+                    "hue": key_hue,
+                    "hue_width": 30.0,
+                    "sat_low": 0.12,
+                    "sat_high": 1.0,
+                    "lum_low": 0.08,
+                    "lum_high": 0.95,
+                    "hue_shift": shift,
+                })).map_err(|e| e.to_string())?;
                 let (plan, revision) = resolve_plan(ctx, &[op])?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                 send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Skin Balance".into()))?;
@@ -1720,9 +1829,9 @@ fn handle(
                 let after = m.faces.iter().find(|f| f.patches >= 4).map(|f| json!({ "hue": f.hue, "chroma": f.chroma }));
                 rounds.push(json!({ "round": round + 1, "hue_shift": shift, "after": after }));
             }
-            let face_now = m.faces.iter().find(|f| f.patches >= 4);
+            let face_now = m.faces.iter().find(|f| f.readable());
             let text = match face_now {
-                Some(f) => format!("{name}: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°", rounds.len()) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
+                Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°", rounds.len()) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
                 None => format!("{name}: the face could not be read after the change"),
             };
             Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step per round." } }))
@@ -3445,15 +3554,17 @@ reference:   {}",
             }
             let (data, width, height) = grab_frame_rgba(ctx, secs, timeout_ms)?;
             let mut v = frame_stats(&data, width, height, secs);
-            let faces = faces_at(ctx, secs);
+            let faces = skin_regions(ctx, secs, &data, width, height);
             let m = klipp_color::measure::measure_frame(&data, width, height, &faces);
             let look = look_for(ctx, secs);
             let findings = klipp_color::measure::judge(&m, &look);
             let mut text = v["text"].as_str().unwrap_or("").to_string();
             text.push_str(&format!("\nLab (D65): L* p1 {:.0} p50 {:.0} p99 {:.0}, contrast {:.0}, chroma mean {:.0}; neutrals a* {:.1} b* {:.1} ({}, {:.0}% of the frame)", m.l_p1, m.l_p50, m.l_p99, m.contrast_range, m.chroma_mean, m.cast_a, m.cast_b, if m.cast() < 3.0 { "neutral".to_string() } else { format!("cast toward {}", klipp_color::measure::cast_name(m.cast_a, m.cast_b)) }, m.neutral_pct));
             for (i, f) in m.faces.iter().enumerate() {
-                if f.patches >= 4 {
-                    text.push_str(&format!("\nface {}: skin hue {:.0}° (band {:.0}–{:.0}), chroma {:.0}, L* {:.0}, {} patches, hue spread {:.0}°{}", i + 1, f.hue, klipp_color::measure::SKIN_HUE_LOW, klipp_color::measure::SKIN_HUE_HIGH, f.chroma, f.median.l, f.patches, f.hue_iqr, if f.mixed_light { " (two lights)" } else { "" }));
+                if f.readable() {
+                    text.push_str(&format!("\nface {}: skin hue {:.0}° (band {:.0}–{:.0}), chroma {:.0}, L* {:.0}, {} of {}×{} patches, hue spread {:.0}°{}", i + 1, f.hue, klipp_color::measure::SKIN_HUE_LOW, klipp_color::measure::SKIN_HUE_HIGH, f.chroma, f.median.l, f.patches, f.grid, f.grid, f.hue_iqr, if f.mixed_light { " (two lights)" } else { "" }));
+                } else if f.patches > 0 {
+                    text.push_str(&format!("\nface {}: too little skin to read ({} of {}×{} patches at {:.0}%,{:.0}% of the frame)", i + 1, f.patches, f.grid, f.grid, (f.region[0] + f.region[2] / 2.0) * 100.0, (f.region[1] + f.region[3] / 2.0) * 100.0));
                 }
             }
             text.push_str(&format!("\nAgainst the look \"{}\": {}", look.name, findings.iter().filter(|f| f.verdict != klipp_color::measure::Verdict::Pass).map(|f| format!("{:?} {}", f.verdict, f.what)).collect::<Vec<_>>().join("; ").replace("Fail", "FAIL").replace("Warn", "warn")));
