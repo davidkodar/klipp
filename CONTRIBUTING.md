@@ -388,6 +388,32 @@ Before you open a PR:
 
 ---
 
+## The day the repo goes public
+
+For the maintainer. Several things in here are waiting on that moment,
+and they are waiting *silently*, so this is the list.
+
+1. **Fill in the code of conduct's contact address.**
+   `CODE_OF_CONDUCT.md` carries a `TODO` where the enforcement contact
+   goes. A code of conduct with nowhere to report to is worse than
+   none, because it promises a process that does not exist.
+2. **Check what is in the history.** It becomes readable by everyone,
+   all of it, not just the current tree. Paths, hostnames, anything
+   pasted into a commit message years ago.
+3. **Flip the repository to public.**
+4. **Run `scripts/protect-main.sh`.** Branch protection and rulesets
+   are gated behind GitHub Pro on private repositories, so `main`
+   cannot be protected server-side before this point — until now the
+   pre-push hook has been the only thing refusing a direct push, and it
+   only binds people who installed it. This is the step that makes the
+   rule apply to everybody. It is also the easiest one to forget,
+   because nothing breaks when you do.
+5. **CI needs nothing.** Both jobs are guarded on the repository being
+   public and switch themselves on. Watch the first run: it has never
+   executed, and it will want a fix or two.
+6. **Enable private vulnerability reporting** in Settings → Security,
+   which is what `SECURITY.md` tells people to use.
+
 ## Releasing
 
 For the maintainer, and written down so it is the same every time.
