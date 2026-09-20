@@ -552,7 +552,23 @@ impl AudioOutput {
                                     let frames = SKIM_DIAG_FRAMES.with(|c| c.replace(0));
                                     let nonzero = SKIM_DIAG_NONZERO.with(|c| c.replace(0));
                                     let disc = SKIM_DIAG_DISCONNECTED.with(|c| c.replace(0));
-                                    if frames > 0 {
+                                    // Only when the skim path is doing
+                                    // something. "frames > 0" is true
+                                    // whenever the audio callback runs,
+                                    // so this line was emitted once a
+                                    // second for the whole life of the
+                                    // process, at INFO, in release —
+                                    // 260 copies of
+                                    // "disconnected=38, nothing read"
+                                    // in a four-minute session, which
+                                    // is the ordinary idle state and
+                                    // says nothing. It was written to
+                                    // chase skim flicker, so it fires
+                                    // when skim actually read audio, or
+                                    // when only some callbacks saw a
+                                    // disconnected source — the mixed
+                                    // case that a flicker looks like.
+                                    if frames > 0 && (nonzero > 0 || (disc > 0 && disc != frames)) {
                                         tracing::info!(
                                             "cpal_skim_diag: frames={} nonzero={} disconnected={} last_read={}",
                                             frames, nonzero, disc, skim_read_this_call,

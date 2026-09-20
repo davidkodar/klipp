@@ -41,7 +41,7 @@ impl ToolbarPanel {
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 14.0), 28.0);
         let ic = icon_color(&resp, false, theme);
         draw_export_icon(&painter, resp.rect, ic);
-        styled_tooltip(&resp, theme, "Export / Share", Some("Ctrl+E"));
+        styled_tooltip(&resp, theme, "Export / Share", Some(&kb.display_for("export")));
         if resp.clicked() { cmds.push(AppCommand::ShowExportDialog); }
 
         rx -= 2.0;
@@ -1106,6 +1106,43 @@ mod shortcut_label_tests {
             Some(i) => &SRC[..i],
             None => SRC,
         }
+    }
+
+    /// Every file that can print a key combo at the user. A tooltip is
+    /// the same promise a menu label is, and the tooltips drifted the
+    /// same way: the timeline's edit-mode button said "W" after the
+    /// binding moved to Shift+W, and its Fit button said "Shift+Z"
+    /// while fit_to_window has always been Z.
+    fn shortcut_printing_sources() -> Vec<(&'static str, &'static str)> {
+        const TB: &str = include_str!("toolbar.rs");
+        let tb = match TB.find("mod shortcut_label_tests") {
+            Some(i) => &TB[..i],
+            None => TB,
+        };
+        vec![
+            ("panels/toolbar.rs", tb),
+            ("timeline/toolbar.rs", include_str!("../timeline/toolbar.rs")),
+        ]
+    }
+
+    #[test]
+    fn no_tooltip_writes_its_own_key_combo() {
+        let mut offenders = Vec::new();
+        for (name, src) in shortcut_printing_sources() {
+            for (n, line) in src.lines().enumerate() {
+                // `styled_tooltip(.., Some("Ctrl+E"))` — a literal combo
+                // rather than `Some(&kb.display_for("export"))`.
+                if line.contains("styled_tooltip(") && line.contains("Some(\"") {
+                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "tooltips must take their combo from kb.display_for so it cannot disagree \
+             with the binding:\n{}",
+            offenders.join("\n")
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use klipp_timeline::magnetic::EditMode;
 /// the timeline behaves lives here and nowhere else. Left to right:
 /// the edit tools, the insert / overwrite mode, snap and skimming, the
 /// marker button; on the right the zoom.
-pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, kb: &crate::keybindings::KeyBindings) {
     let btn = crate::theme::control::REGULAR;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -17,15 +17,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         // ── Edit tools ──
         #[allow(clippy::type_complexity)]
         let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
-            (klipp_core::Tool::Select, "Select Tool", "V", draw_tl_select_icon),
-            (klipp_core::Tool::Trim, "Trim Tool", "T", draw_tl_trim_icon),
-            (klipp_core::Tool::Blade, "Blade Tool", "B", draw_tl_blade_icon),
-            (klipp_core::Tool::Range, "Range Tool", "R", draw_tl_range_icon),
+            (klipp_core::Tool::Select, "Select Tool", "select_tool", draw_tl_select_icon),
+            (klipp_core::Tool::Trim, "Trim Tool", "trim_tool", draw_tl_trim_icon),
+            (klipp_core::Tool::Blade, "Blade Tool", "blade_tool", draw_tl_blade_icon),
+            (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
         ];
-        for (tool, tip, key, draw_fn) in tool_defs {
+        for (tool, tip, action, draw_fn) in tool_defs {
             let active = state.active_tool == *tool;
             let resp = icon_button(ui, theme, btn, active, *draw_fn);
-            styled_tooltip(&resp, theme, tip, Some(key));
+            let key = kb.display_for(action);
+            styled_tooltip(&resp, theme, tip, Some(&key));
             if resp.clicked() {
                 cmds.push(AppCommand::SetActiveTool(*tool));
             }
@@ -49,7 +50,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             };
             let rect = egui::Rect::from_min_max(before, ui.cursor().min + egui::vec2(0.0, crate::theme::control::COMPACT));
             let hover = ui.interact(rect, ui.id().with("edit_mode_tip"), egui::Sense::hover());
-            styled_tooltip(&hover, theme, tip, Some("W"));
+            styled_tooltip(&hover, theme, tip, Some(&kb.display_for("toggle_edit_mode")));
         }
 
         separator(ui, theme);
@@ -70,7 +71,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             egui::FontId::proportional(10.0),
             chevron,
         );
-        styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some("N"));
+        styled_tooltip(&resp, theme, "Snap (right-click for per-target options)", Some(&kb.display_for("toggle_snap")));
         if resp.clicked() {
             cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
@@ -104,7 +105,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 
         // ── Skimming ──
         let resp = icon_button(ui, theme, btn, state.skimming_enabled, draw_tl_skim_icon);
-        styled_tooltip(&resp, theme, "Skimming", Some("S"));
+        styled_tooltip(&resp, theme, "Skimming", Some(&kb.display_for("toggle_skimming")));
         if resp.clicked() {
             state.skimming_enabled = !state.skimming_enabled;
             let msg = if state.skimming_enabled { "Skimming On" } else { "Skimming Off" };
@@ -115,7 +116,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 
         // ── Add marker ──
         let resp = icon_button(ui, theme, btn, false, draw_tl_marker_icon);
-        styled_tooltip(&resp, theme, "Add Marker", Some("M"));
+        styled_tooltip(&resp, theme, "Add Marker", Some(&kb.display_for("add_marker")));
         if resp.clicked() {
             cmds.push(AppCommand::AddMarker {
                 position: state.playhead,
@@ -126,7 +127,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
 
         // ── Add title ──
         let resp = icon_button(ui, theme, btn, false, draw_tl_title_icon);
-        styled_tooltip(&resp, theme, "Add Title", Some("Ctrl+T"));
+        styled_tooltip(&resp, theme, "Add Title", Some(&kb.display_for("create_title")));
         if resp.clicked() {
             cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
         }
@@ -135,7 +136,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
             let fit_resp = ui.add(egui::Button::new("Fit").min_size(egui::vec2(36.0, crate::theme::control::COMPACT)));
-            styled_tooltip(&fit_resp, theme, "Fit timeline to window", Some("Shift+Z"));
+            styled_tooltip(&fit_resp, theme, "Fit timeline to window", Some(&kb.display_for("fit_to_window")));
             if fit_resp.clicked() {
                 cmds.push(AppCommand::ZoomTimelineToFit);
             }

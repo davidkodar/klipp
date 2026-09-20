@@ -837,20 +837,41 @@ unsafe fn install_hw_frames_ctx(
     hw_pix_fmt: ffmpeg_next::ffi::AVPixelFormat,
 ) -> bool {
     use ffmpeg_next::ffi::*;
+
+    // Say each distinct failure once. `get_format` runs on every
+    // decoder open, and a decoder is opened per seek — so a session
+    // spent skimming logged the same warning 81 times, at WARN, in the
+    // file that is the first place anyone looks when something is
+    // wrong. The condition is worth knowing; the eighty-first copy of
+    // it is not. The neighbouring `info!` already does this.
+    fn warn_once(slot: &std::sync::atomic::AtomicBool, msg: std::fmt::Arguments<'_>) {
+        use std::sync::atomic::Ordering;
+        if !slot.swap(true, Ordering::Relaxed) {
+            warn!("{msg} (further copies suppressed)");
+        }
+    }
+    use std::sync::atomic::AtomicBool;
+    static NULL_DEVICE: AtomicBool = AtomicBool::new(false);
+    static NO_PARAMS: AtomicBool = AtomicBool::new(false);
+    static INIT_FAILED: AtomicBool = AtomicBool::new(false);
+
     if (*ctx).hw_device_ctx.is_null() {
-        warn!("install_hw_frames_ctx: hw_device_ctx is NULL");
+        warn_once(&NULL_DEVICE, format_args!("install_hw_frames_ctx: hw_device_ctx is NULL"));
         return false;
     }
     let device_ref = (*ctx).hw_device_ctx;
     let mut frames_ref: *mut AVBufferRef = std::ptr::null_mut();
     let rc = avcodec_get_hw_frames_parameters(ctx, device_ref, hw_pix_fmt, &mut frames_ref);
     if rc < 0 || frames_ref.is_null() {
-        warn!("install_hw_frames_ctx: avcodec_get_hw_frames_parameters returned {rc}");
+        warn_once(
+            &NO_PARAMS,
+            format_args!("install_hw_frames_ctx: avcodec_get_hw_frames_parameters returned {rc}; falling back to software decode"),
+        );
         return false;
     }
     let init_rc = av_hwframe_ctx_init(frames_ref);
     if init_rc < 0 {
-        warn!("install_hw_frames_ctx: av_hwframe_ctx_init returned {init_rc}");
+        warn_once(&INIT_FAILED, format_args!("install_hw_frames_ctx: av_hwframe_ctx_init returned {init_rc}"));
         av_buffer_unref(&mut frames_ref);
         return false;
     }
