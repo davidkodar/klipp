@@ -565,7 +565,25 @@ impl<'a> DisplayScopeFrame<'a> {
 }
 
 /// The longest the scopes wait between passes, however cheap or costly.
-const SCOPE_MAX_INTERVAL: Duration = Duration::from_millis(100);
+/// The longest the scopes may go unrefreshed, and so the point at which
+/// the one-third rule in [`Engine::should_render_scope`] stops being
+/// honoured.
+///
+/// This was 100 ms, which quietly inverted the pacing it was meant to
+/// provide. The interval is twice the last pass's cost — 33% duty — but
+/// capped here, so the cap binds as soon as a pass costs more than
+/// 50 ms and the duty climbs instead: a 200 ms pass ran every 300 ms
+/// (66%), and the 1 s passes seen while skimming ran every 1.1 s (90%).
+/// The engine then had 10% of itself left, the UI painted at 1 fps and
+/// input arrived 376 events to a frame, while audio — on its own
+/// thread — carried on, which is exactly what a frozen GUI with working
+/// skim audio looks like.
+///
+/// Two seconds lets the backoff actually back off across every cost the
+/// scopes realistically reach, at the price of scopes that are a couple
+/// of seconds stale when a pass is that expensive. Stale scopes on a
+/// responsive app beat live scopes on a frozen one.
+const SCOPE_MAX_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -7574,10 +7592,13 @@ impl PlaybackEngine {
     }
 
     /// How long after one scope pass the next may start: twice what the
-    /// last one cost, at most [`SCOPE_MAX_INTERVAL`].
+    /// last one cost, so the scopes keep to a third of the engine —
+    /// bounded by [`SCOPE_MAX_INTERVAL`] so they cannot go unboundedly
+    /// stale if a pass is pathological.
     fn scope_interval(&self) -> Duration {
         (self.last_scope_cost * 2).min(SCOPE_MAX_INTERVAL)
     }
+
 
     /// Draw the scopes from `linear` or `display` (see
     /// [`Self::render_active_scopes`]), note when and what it cost, and
@@ -11416,5 +11437,42 @@ mod audio_continuity_tests {
             !audio_resync_needed(&s, tc(0), active),
             "with no active audio sources there is nothing to resync",
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_pacing {
+    use super::*;
+
+    /// The rule the scopes are supposed to obey, stated as arithmetic.
+    fn duty(cost_ms: u64) -> f64 {
+        let cost = Duration::from_millis(cost_ms);
+        let wait = (cost * 2).min(SCOPE_MAX_INTERVAL);
+        cost.as_secs_f64() / (cost + wait).as_secs_f64()
+    }
+
+    #[test]
+    fn scopes_keep_to_a_third_of_the_engine() {
+        // Every cost the scopes actually reach, cheap to pathological.
+        // With the cap at 100 ms this failed from 51 ms upward: a 1 s
+        // pass took 90% of the engine, the UI fell to 1 fps and the app
+        // read as frozen while audio kept playing.
+        for cost_ms in [1, 4, 15, 30, 50, 100, 200, 500, 1000] {
+            let d = duty(cost_ms);
+            assert!(
+                d <= 0.34,
+                "a {cost_ms} ms scope pass would take {:.0}% of the engine; \
+                 the pacing is meant to hold it to a third",
+                d * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_cheap_pass_still_refreshes_promptly() {
+        // The cap must not have been bought by making cheap scopes
+        // sluggish: 15 ms costs 30 ms of wait, as the docs say.
+        let wait = (Duration::from_millis(15) * 2).min(SCOPE_MAX_INTERVAL);
+        assert_eq!(wait, Duration::from_millis(30));
     }
 }
