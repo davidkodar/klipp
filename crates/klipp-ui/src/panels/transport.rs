@@ -454,6 +454,7 @@ impl TransportBar {
         &self,
         ctx: &egui::Context,
         state: &AppState,
+        kb: &crate::keybindings::KeyBindings,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -492,39 +493,41 @@ impl TransportBar {
             } else {
                 state.playback
             };
-            if !text_editing && !state.files_panel_focused && i.key_pressed(egui::Key::Space) {
+            if !text_editing && !state.files_panel_focused && kb.is_action_pressed("play_pause", i) {
                 if focus_playback == PlaybackState::Playing {
                     cmds.push(route_for_viewer(AppCommand::Pause, state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
-            if !text_editing && i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
+            if !text_editing && !i.modifiers.alt
+                && (kb.is_action_pressed("step_backward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowLeft))) {
                 if i.modifiers.shift {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(-fps_rate), state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
                 }
             }
-            if !text_editing && i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
+            if !text_editing && !i.modifiers.alt
+                && (kb.is_action_pressed("step_forward", i) || (i.modifiers.shift && i.key_pressed(egui::Key::ArrowRight))) {
                 if i.modifiers.shift {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(fps_rate), state));
                 } else {
                     cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
                 }
             }
-            if !text_editing && i.key_pressed(egui::Key::Home) {
+            if !text_editing && kb.is_action_pressed("go_to_start", i) {
                 cmds.push(route_for_viewer(
                     AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())),
                     state,
                 ));
             }
-            if !text_editing && i.key_pressed(egui::Key::End) {
+            if !text_editing && kb.is_action_pressed("go_to_end", i) {
                 let dur = state.sequence_duration();
                 cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
             // J — reverse/faster reverse
-            if !text_editing && i.key_pressed(egui::Key::J) {
+            if !text_editing && kb.is_action_pressed("shuttle_reverse", i) {
                 let s = state.playback_speed;
                 let new_speed = if s > 0.0 { -2.0 }
                     else if s == -2.0 { -4.0 }
@@ -536,12 +539,12 @@ impl TransportBar {
                 }
             }
             // K — pause, reset speed
-            if !text_editing && i.key_pressed(egui::Key::K) {
+            if !text_editing && kb.is_action_pressed("shuttle_pause", i) {
                 cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
                 cmds.push(route_for_viewer(AppCommand::Pause, state));
             }
             // L — forward/faster forward
-            if !text_editing && i.key_pressed(egui::Key::L) {
+            if !text_editing && kb.is_action_pressed("shuttle_forward", i) {
                 let s = state.playback_speed;
                 let new_speed = if s < 0.0 { 2.0 }
                     else if s == 2.0 { 4.0 }

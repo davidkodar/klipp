@@ -105,6 +105,21 @@ impl KeyBindings {
         bind(&mut b, "import_media", vec![KeyCombo::ctrl("I")]);
         bind(&mut b, "export", vec![KeyCombo::ctrl("E")]);
         bind(&mut b, "preferences", vec![KeyCombo::ctrl(",")]);
+        // These four were advertised by the File/Window/Help menus for a
+        // long time without ever being bound — `shortcut_text` only draws
+        // a label. They are the platform-standard combos for what they do,
+        // so they are bound rather than un-advertised.
+        bind(&mut b, "new_project", vec![KeyCombo::ctrl("N")]);
+        bind(&mut b, "quit", vec![KeyCombo::ctrl("Q")]);
+        bind(&mut b, "toggle_audio_mixer", vec![KeyCombo::ctrl_shift("M")]);
+        bind(&mut b, "toggle_subtitle_editor", vec![KeyCombo::ctrl_shift("T")]);
+        // Handled ad hoc in app.rs until now, with the combo written out
+        // twice — once in the handler and once in the menu label. Here
+        // so there is one copy, and so they are remappable like the rest.
+        bind(&mut b, "close_project", vec![KeyCombo::ctrl("W")]);
+        bind(&mut b, "command_palette", vec![KeyCombo::ctrl("K")]);
+        bind(&mut b, "toggle_browser_panel", vec![KeyCombo::ctrl_shift("B")]);
+        bind(&mut b, "toggle_inspector_panel", vec![KeyCombo::ctrl_shift("I")]);
 
         // Edit
         bind(&mut b, "undo", vec![KeyCombo::ctrl("Z")]);
@@ -143,7 +158,7 @@ impl KeyBindings {
 
         // Timeline editing
         bind(&mut b, "insert_edit", vec![KeyCombo::new(","), KeyCombo::new("F10")]);
-        bind(&mut b, "overwrite_edit", vec![KeyCombo::new("."), KeyCombo::new("F11")]);
+        bind(&mut b, "overwrite_edit", vec![KeyCombo::new(".")]);
         bind(&mut b, "lift_edit", vec![KeyCombo::new(";")]);
         bind(&mut b, "extract_edit", vec![KeyCombo::new("'")]);
         bind(&mut b, "toggle_edit_mode", vec![KeyCombo::shift("W")]);
@@ -185,10 +200,10 @@ impl KeyBindings {
         // Fullscreen toggle moved off F (which is the NLE-standard
         // Match Frame shortcut) onto F11 (the OS convention).
         bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F11")]);
-        bind(&mut b, "toggle_before_after", vec![KeyCombo::new("B")]);
+        bind(&mut b, "toggle_before_after", vec![KeyCombo::alt("B")]);
         bind(&mut b, "toggle_color_panel", vec![KeyCombo::new("C")]);
         bind(&mut b, "toggle_scopes", vec![KeyCombo::new("Alt+V")]);
-        bind(&mut b, "toggle_zebra", vec![KeyCombo::new("Z")]);
+        bind(&mut b, "toggle_zebra", vec![KeyCombo::alt("Z")]);
         bind(&mut b, "toggle_false_color", vec![KeyCombo::alt("F")]);
         bind(&mut b, "toggle_perf_overlay", vec![KeyCombo::new("P")]);
         bind(&mut b, "toggle_perf_recording", vec![KeyCombo::ctrl_shift("P")]);
@@ -223,7 +238,7 @@ impl KeyBindings {
         // Markers & Keyframes
         bind(&mut b, "add_marker", vec![KeyCombo::new("M")]);
         bind(&mut b, "add_clip_marker", vec![KeyCombo::shift("M")]);
-        bind(&mut b, "toggle_keyframe", vec![KeyCombo::new("K")]);
+        bind(&mut b, "toggle_keyframe", vec![KeyCombo::alt("K")]);
         bind(&mut b, "toggle_keyframe_editor", vec![KeyCombo::shift("K")]);
         bind(&mut b, "prev_keyframe", vec![KeyCombo::alt("ArrowLeft")]);
         bind(&mut b, "next_keyframe", vec![KeyCombo::alt("ArrowRight")]);
@@ -401,9 +416,6 @@ impl KeyBindings {
             "step_backward" => "Step Backward",
             "go_to_start" => "Go to Start",
             "go_to_end" => "Go to End",
-            "shuttle_reverse" => "Shuttle Reverse (J)",
-            "shuttle_pause" => "Shuttle Pause (K)",
-            "shuttle_forward" => "Shuttle Forward (L)",
             "toggle_loop" => "Toggle Loop Playback",
             "toggle_fullscreen" => "Toggle Fullscreen",
             "toggle_before_after" => "Toggle Before/After",
@@ -426,6 +438,9 @@ impl KeyBindings {
             "zoom_out" => "Zoom Out",
             "add_marker" => "Add Marker",
             "add_clip_marker" => "Add Clip Marker",
+            "shuttle_reverse" => "Shuttle Reverse (J)",
+            "shuttle_pause" => "Shuttle Pause (K)",
+            "shuttle_forward" => "Shuttle Forward (L)",
             "toggle_keyframe" => "Toggle Keyframe",
             "toggle_keyframe_editor" => "Toggle Keyframe Editor",
             "prev_keyframe" => "Previous Keyframe",
@@ -575,4 +590,123 @@ pub fn key_event_to_combo(input: &egui::InputState) -> Option<KeyCombo> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod registry_coverage {
+    //! Which bindings actually do anything.
+    //!
+    //! A binding in this table only has an effect if some handler asks
+    //! for it by name with `is_action_pressed`. Most of these keys *do*
+    //! work — but from a hardcoded `key_pressed(Key::X)` in `app.rs`
+    //! rather than through here, and the two have drifted. The visible
+    //! consequence is that **Preferences → Keybindings silently does
+    //! nothing for these actions**: the row is there, it accepts a new
+    //! combo, and the key carries on doing what the hardcoded check
+    //! says.
+    //!
+    //! The fix is to convert each hardcoded check to
+    //! `is_action_pressed`, which is mechanical but touches a lot of
+    //! call sites. Until then this is a ratchet: the list may shrink,
+    //! never grow.
+
+    use super::KeyBindings;
+
+    /// Actions declared here that no handler reads. Down from 54 to 11.
+    ///
+    /// What is left is not the same kind of thing as what was fixed.
+    /// The nine multicam angles and `set_range_to_clip` have no
+    /// keyboard handler *anywhere* — the feature is reachable by menu
+    /// and mouse only, so there is nothing to convert, and wiring them
+    /// means writing the handler rather than moving one.
+    /// `toggle_edit_mode` is declared as Shift+W but implemented on
+    /// bare W, and deciding which is right is a call about the edit
+    /// model, not a mechanical change.
+    ///
+    /// Remove entries as they are converted; never add.
+    const UNWIRED: &[&str] = &[
+        "multicam_angle_1", "multicam_angle_2", "multicam_angle_3", "multicam_angle_4",
+        "multicam_angle_5", "multicam_angle_6", "multicam_angle_7", "multicam_angle_8",
+        "multicam_angle_9", "set_range_to_clip", "toggle_edit_mode",
+    ];
+
+    fn sources() -> String {
+        // Every file that dispatches a key. Adding a handler somewhere
+        // else means adding it here too, or the ratchet quietly stops
+        // seeing it — which is how the transport keys looked unwired
+        // after they had been converted.
+        format!(
+            "{}{}{}",
+            include_str!("app.rs"),
+            include_str!("keybindings.rs"),
+            include_str!("panels/transport.rs"),
+        )
+    }
+
+    /// Combos deliberately shared by more than one action, each with
+    /// the reason it is safe. Anything else is a bug: two handlers fire
+    /// on one press, which is how bare B ran the Blade tool *and*
+    /// toggled before/after, and bare Z drew zebras *and* zoomed to fit.
+    const SHARED_ON_PURPOSE: &[(&str, &str)] = &[
+        ("Ctrl+C", "copy_clip / copy_color_nodes — resolved by active panel"),
+        ("Ctrl+V", "paste_clip / paste_color_nodes — resolved by active panel"),
+    ];
+
+    #[test]
+    fn no_combo_runs_two_actions() {
+        use std::collections::BTreeMap;
+        let kb = KeyBindings::defaults();
+        let mut by_combo: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (action, combos) in &kb.bindings {
+            for c in combos {
+                by_combo.entry(c.display()).or_default().push(action.clone());
+            }
+        }
+        let allowed: std::collections::BTreeSet<&str> =
+            SHARED_ON_PURPOSE.iter().map(|(c, _)| *c).collect();
+        let clashes: Vec<String> = by_combo
+            .iter()
+            .filter(|(c, acts)| acts.len() > 1 && !allowed.contains(c.as_str()))
+            .map(|(c, acts)| format!("{c} -> {}", acts.join(", ")))
+            .collect();
+        assert!(
+            clashes.is_empty(),
+            "these combos would fire more than one action on a single press: {clashes:#?}"
+        );
+    }
+
+    #[test]
+    fn no_new_unwired_actions() {
+        let src = sources();
+        let kb = KeyBindings::defaults();
+        let unwired: Vec<String> = kb
+            .bindings
+            .keys()
+            .filter(|a| !src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .cloned()
+            .collect();
+
+        let known: std::collections::BTreeSet<&str> = UNWIRED.iter().copied().collect();
+        let new: Vec<&String> = unwired.iter().filter(|a| !known.contains(a.as_str())).collect();
+        assert!(
+            new.is_empty(),
+            "new keybinding actions that no handler reads — they will look remappable in \
+             Preferences and do nothing: {new:?}"
+        );
+    }
+
+    #[test]
+    fn the_unwired_list_has_no_stale_entries() {
+        // Keeps the ratchet honest: once an action is wired up, its
+        // entry has to go, or the list stops meaning anything.
+        let src = sources();
+        let stale: Vec<&&str> = UNWIRED
+            .iter()
+            .filter(|a| src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "these are wired up now and should be removed from UNWIRED: {stale:?}"
+        );
+    }
 }
