@@ -49,6 +49,13 @@ anything that touches the colour pipeline's numerical output.
 green, and nothing is pushed to it directly — not by contributors, not
 by the maintainer. Everything arrives as a pull request.
 
+The pre-push hook refuses a direct push to `main`, because GitHub will
+not: branch protection and rulesets are both behind GitHub Pro on a
+private repository. While the repo is private that costs nothing —
+everyone who can push has the hook. When it goes public, server-side
+protection becomes available free and should be turned on, and this
+becomes a second line rather than the only one.
+
 ```
 main  ──●──●──●──●──●──●──●──▶   protected, always green
          ╲        ╱      ╲  ╱

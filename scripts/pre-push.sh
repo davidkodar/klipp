@@ -72,6 +72,34 @@ fi
 printf '\n  pre-push: sign-off, clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
 
+# Direct pushes to main, refused here because GitHub will not refuse
+# them for us: branch protection and rulesets are both gated behind
+# GitHub Pro on a private repository. The same trade as the CI one —
+# while the repo is private everyone pushing to it has this hook, so
+# local enforcement covers everybody; when it goes public, server-side
+# protection becomes available free and should be turned on, at which
+# point this block is belt-and-braces rather than the only belt.
+#
+# CONTRIBUTING.md: main is the only long-lived branch, and everything
+# reaches it through a pull request.
+if [ "$KLIPP_ALLOW_MAIN_PUSH" != "1" ]; then
+    branch=$(git symbolic-ref --short -q HEAD || echo "")
+    if [ "$branch" = "main" ] \
+       && git rev-parse --verify --quiet origin/main >/dev/null 2>&1 \
+       && [ -n "$(git rev-list origin/main..HEAD 2>/dev/null)" ]; then
+        n=$(git rev-list --count origin/main..HEAD)
+        printf '\n  pre-push: %s commit(s) on main that are not on origin/main.\n\n' "$n" >&2
+        printf '            main takes pull requests, not pushes. Move them onto\n' >&2
+        printf '            a branch and open one:\n\n' >&2
+        printf '              git switch -c <type>/<what>\n' >&2
+        printf '              git switch main && git reset --hard origin/main\n' >&2
+        printf '              git switch -\n' >&2
+        printf '              git push -u origin HEAD && gh pr create --fill\n\n' >&2
+        printf '            KLIPP_ALLOW_MAIN_PUSH=1 git push   if you truly mean it.\n\n' >&2
+        exit 1
+    fi
+fi
+
 if ! "$ROOT/scripts/check-signoff.sh"; then
     printf '  pre-push: authorship check failed — push refused.\n\n' >&2
     exit 1
