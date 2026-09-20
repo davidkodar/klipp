@@ -47,6 +47,18 @@ pub fn wheel_offset_to_rgb(offset_x: f32, offset_y: f32, master: f32) -> (f32, f
 /// Generate RGBA pixel data for a color wheel texture of given radius.
 /// Center = neutral grey, perimeter = full saturation hues, V=0.82.
 /// Returns a (2*radius × 2*radius) RGBA buffer.
+/// How saturated the wheel disc gets at its rim, and how bright it is.
+///
+/// Deliberately short of full. The wheel is a control, not a colour
+/// reference, and it sits a few centimetres from the image being
+/// judged: a fully saturated disc at high value is the brightest, most
+/// saturated thing on screen and drags the eye's adaptation with it.
+/// Grading rooms dim the surround for the same reason, and every
+/// grading application ships a desaturated interface. The hue mapping
+/// is unaffected — only how loudly it is drawn.
+pub const WHEEL_RIM_SATURATION: f32 = 0.62;
+pub const WHEEL_VALUE: f32 = 0.68;
+
 pub fn generate_wheel_texture(radius: u32) -> Vec<u8> {
     let size = radius * 2;
     let mut pixels = vec![0u8; (size * size * 4) as usize];
@@ -70,7 +82,15 @@ pub fn generate_wheel_texture(radius: u32) -> Vec<u8> {
 
             let hue = (dy.atan2(dx).to_degrees() + 360.0) % 360.0;
             let sat = (dist / r).clamp(0.0, 1.0);
-            let (rv, gv, bv) = hsv_to_rgb(hue, sat, 0.82);
+            // Muted on purpose. The wheel is a control, not a colour
+            // reference, and it sits a few centimetres from the image
+            // being judged — a fully saturated disc at 82% value is the
+            // brightest, most saturated thing on the screen and drags
+            // the eye's adaptation with it. Grading rooms dim the
+            // surround for the same reason, and every grading
+            // application ships a desaturated UI. The hue mapping is
+            // unchanged; only its shout is.
+            let (rv, gv, bv) = hsv_to_rgb(hue, sat * WHEEL_RIM_SATURATION, WHEEL_VALUE);
 
             let alpha = (r + 1.0 - dist).clamp(0.0, 1.0);
 
@@ -134,8 +154,11 @@ mod tests {
         let cx = radius;
         let cy = radius;
         let idx = ((cy * size + cx) * 4) as usize;
-        // Center should be grey (V=0.82, S=0)
-        let expected = (0.82 * 255.0) as u8;
+        // The centre is neutral: saturation 0, whatever the disc's
+        // brightness is set to. Read from the constant rather than
+        // repeating it, so changing how loud the wheel is does not
+        // look like breaking what the centre means.
+        let expected = (WHEEL_VALUE * 255.0) as u8;
         assert!((pixels[idx] as i16 - expected as i16).unsigned_abs() < 2);
         assert_eq!(pixels[idx + 3], 255); // opaque
     }
