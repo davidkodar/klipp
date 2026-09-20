@@ -203,7 +203,7 @@ pub fn show(
                     // No drop/blur icon — leaving blank reads cleaner than
                     // a wrong-fit stand-in. TODO: bespoke blur glyph.
                     (EffectCategory::Blur, "Blur", None),
-                    (EffectCategory::Color, "Color", Some(Icon::Eyedropper)),
+                    (EffectCategory::Color, "Colour", Some(Icon::Eyedropper)),
                     (EffectCategory::Stylize, "Stylize", Some(Icon::Sliders)),
                     // No keying-specific icon — leaving blank. TODO.
                     (EffectCategory::Keying, "Keying", None),
@@ -1282,7 +1282,11 @@ fn segmented_source_filter(
     let pad = 2.0;
     let segments = [
         (SourceFilter::Builtin, "Built-in", builtin_count),
-        (SourceFilter::Installed, "Installed", ofx_count),
+        // "Plug-ins", not "Installed": this pill counts OFX and frei0r
+        // plugins, while the sidebar row three centimetres away says
+        // "Installed" and counts the whole registry. One word cannot
+        // mean 102 things and 401 things on the same screen.
+        (SourceFilter::Installed, "Plug-ins", ofx_count),
         (SourceFilter::All, "All", all_count),
     ];
 
@@ -1687,7 +1691,7 @@ pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -
 pub fn category_label(fx: &crate::browser::effect_registry::EffectEntry) -> &'static str {
     match fx.category {
         EffectCategory::Blur => "Blur",
-        EffectCategory::Color => "Color",
+        EffectCategory::Color => "Colour",
         EffectCategory::Stylize => "Stylize",
         EffectCategory::Keying => "Keying",
         EffectCategory::Distort => "Distort",
@@ -2040,7 +2044,7 @@ mod tests {
             category: EffectCategory::Color,
             source: EffectSource::Ofx(id.into()),
             source_label: "OFX",
-            grouping: "Color".into(),
+            grouping: "Colour".into(),
             description: String::new(),
         }
     }

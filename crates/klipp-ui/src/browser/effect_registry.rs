@@ -107,7 +107,7 @@ impl EffectRegistry {
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Opacity { value: 1.0 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Gaussian Blur".into(),
@@ -263,7 +263,7 @@ impl EffectRegistry {
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Invert { mix: 1.0 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Posterize".into(),
@@ -307,7 +307,7 @@ impl EffectRegistry {
                 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Directional Blur".into(),
@@ -391,7 +391,7 @@ impl EffectRegistry {
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "HSV Adjust".into(),
@@ -401,7 +401,7 @@ impl EffectRegistry {
                 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Noise".into(),
@@ -559,7 +559,7 @@ impl EffectRegistry {
                 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Equalize".into(),
@@ -567,7 +567,7 @@ impl EffectRegistry {
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Equalize { strength: 1.0 }),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Color".into(),
+                grouping: "Colour".into(),
             },
             EffectEntry {
                 name: "Letterbox".into(),
@@ -1317,7 +1317,7 @@ mod tests {
                     ),
                     source_label: "Built-in",
                     description: String::new(),
-                    grouping: "Color".into(),
+                    grouping: "Colour".into(),
                 },
             ],
             reference_frame: None,

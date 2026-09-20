@@ -69,7 +69,7 @@ pub fn show_color_and_luts(
                     .find_map(|n| n.params.log_format))
                 .unwrap_or_default();
 
-            section_card(ui, "INPUT COLOR SPACE", None, theme, |ui| {
+            section_card(ui, "INPUT COLOUR SPACE", None, theme, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 use klipp_core::LogFormat as LF;
@@ -108,8 +108,8 @@ pub fn show_color_and_luts(
         ui.horizontal(|ui| {
             ui.add_space(12.0);
             let w = ui.available_width() - 12.0;
-            if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open Color Panel"))
-                .on_hover_text("Switch to the Color workspace (C)")
+            if ui.add_sized([w, crate::theme::control::REGULAR], egui::Button::new("Open Colour Panel"))
+                .on_hover_text("Switch to the Colour workspace (C)")
                 .clicked()
             {
                 cmds.push(AppCommand::ToggleColorPanel);

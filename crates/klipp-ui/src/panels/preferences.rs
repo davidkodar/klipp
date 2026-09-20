@@ -228,7 +228,7 @@ impl PreferencesPanel {
                             ("PERFORMANCE", &[(PrefsTab::System, "\u{1F5A5}", "System"), (PrefsTab::Playback, "\u{25B6}", "Playback"), (PrefsTab::MediaCache, "\u{1F4BE}", "Cache")]),
                             ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
                             ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy"), (PrefsTab::ExternalTools, "\u{1F517}", "External Tools")]),
-                            ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
+                            ("COLOUR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Colour"), (PrefsTab::Export, "\u{2B07}", "Export")]),
                             ("AI", &[(PrefsTab::Ai, "\u{2728}", "AI")]),
                             ("INTERFACE", &[(PrefsTab::Title, "T", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
@@ -368,7 +368,11 @@ impl PreferencesPanel {
     fn tab_search_keywords(tab: PrefsTab) -> &'static [&'static str] {
         match tab {
             PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
-            PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent color", "role colors", "video", "dialogue", "music", "sfx"],
+            // Both spellings on purpose: these are what a user types
+            // into the preferences search, and half the world spells it
+            // the other way. The labels are British; the search is not
+            // fussy.
+            PrefsTab::Appearance => &["appearance", "theme", "ui scale", "accent colour", "accent color", "role colours", "role colors", "colour", "color", "video", "dialogue", "music", "sfx"],
             PrefsTab::Ai => &["ai", "artificial intelligence", "transcription", "transcribe", "whisper", "speech", "subtitles", "captions", "model", "models", "download", "gpu", "cpu", "mcp", "assistant", "opt out", "disable", "enable", "vision", "onnx", "ocr", "screen text", "text on screen", "redact"],
             PrefsTab::System => &["system", "gpu", "hardware", "decode", "threads", "frame queue", "playback resolution", "nvdec", "vaapi", "cuda"],
             PrefsTab::Playback => &["playback", "quality", "background render", "pre-roll", "jkl", "speed", "loop"],
@@ -380,10 +384,10 @@ impl PreferencesPanel {
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
             PrefsTab::ExternalTools => &["external tools", "external app", "handoff", "round-trip", "round trip", "gimp", "krita", "audacity", "kdenlive", "editor", "image editor", "audio editor", "video editor"],
             PrefsTab::Color => &["color", "working space", "rec.709", "lut", "interpolation", "scopes", "vectorscope", "skin angle"],
-            PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "color space", "audio sample rate", "overwrite", "parallel render"],
+            PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "colour space", "color space", "audio sample rate", "overwrite", "parallel render"],
             PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
-            PrefsTab::Timeline => &["timeline", "clip colors", "clip gap", "trim handle", "track height", "waveform"],
-            PrefsTab::Viewer => &["viewer", "overlay", "scope quality", "false color", "zebra"],
+            PrefsTab::Timeline => &["timeline", "clip colours", "clip colors", "clip gap", "trim handle", "track height", "waveform"],
+            PrefsTab::Viewer => &["viewer", "overlay", "scope quality", "false colour", "zebra"],
             PrefsTab::Keyboard => &["keyboard", "shortcuts", "keybindings", "hotkeys", "remap"],
             PrefsTab::Advanced => &["advanced", "toast", "notification", "performance", "debug", "logging", "reset", "clear"],
             PrefsTab::About => &["about", "version", "license", "gpu", "cpu", "memory", "hardware", "technology"],
@@ -1697,7 +1701,7 @@ impl PreferencesPanel {
                 });
         });
 
-        Self::setting_row(ui, "Color space tagging", theme, |ui| {
+        Self::setting_row(ui, "Colour space tagging", theme, |ui| {
             use klipp_core::ColorSpace;
             let label = match prefs.export.color_space_tag {
                 ColorSpace::Srgb => "sRGB",
@@ -2235,7 +2239,7 @@ impl PreferencesPanel {
         // ── GPU section ──
         Self::section_header(ui, "GPU", theme);
 
-        Self::setting_row_with_subtitle(ui, "GPU preference", "Affects effects, color grading, and decode", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "GPU preference", "Affects effects, colour grading, and decode", theme, |ui| {
             egui::ComboBox::from_id_salt("gpu_pref")
                 .selected_text(match prefs.system.gpu_preference {
                     klipp_core::GpuPreference::Auto => "Auto (recommended)",
@@ -2431,7 +2435,7 @@ impl PreferencesPanel {
         });
 
         // ── ROLE COLORS section ──
-        Self::section_header(ui, "ROLE COLORS", theme);
+        Self::section_header(ui, "ROLE COLOURS", theme);
 
         // Helper for role color row with swatch + Edit button
         let role_color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool, _id_salt: &str| {
@@ -3238,7 +3242,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Color").strong().size(16.0).color(theme.text_primary));
+            ui.label(egui::RichText::new("Colour").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
 
@@ -3248,7 +3252,7 @@ impl PreferencesPanel {
         // project, the way every professional NLE handles it.
         Self::section_header(ui, "LUTs", theme);
 
-        Self::setting_row_with_subtitle(ui, "Viewer LUT", "Applied after color pipeline for display", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Viewer LUT", "Applied after colour pipeline for display", theme, |ui| {
             let display = prefs.color.viewer_lut_path.as_ref()
                 .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
                 .unwrap_or_else(|| "None".into());
@@ -3438,7 +3442,7 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default color", theme, |ui| {
+        Self::setting_row(ui, "Default colour", theme, |ui| {
             let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
             if ui.color_edit_button_srgba(&mut c).changed() {
                 prefs.title.default_color = [c.r(), c.g(), c.b()];
@@ -3482,12 +3486,12 @@ impl PreferencesPanel {
     }
 
     fn show_timeline(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, _theme: &KlippTheme) {
-        ui.label(egui::RichText::new("Clip Colors").strong().size(12.0));
+        ui.label(egui::RichText::new("Clip Colours").strong().size(12.0));
         ui.add_space(4.0);
         let mut colors_changed = false;
         for (i, color) in prefs.timeline.clip_colors.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(format!("Color {}:", i + 1));
+                ui.label(format!("Colour {}:", i + 1));
                 let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b()];
@@ -3587,7 +3591,7 @@ impl PreferencesPanel {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Color:");
+            ui.label("Colour:");
             let pc = &mut prefs.viewer.focus_peaking_color;
             let mut c = egui::Color32::from_rgb(pc[0], pc[1], pc[2]);
             if ui.color_edit_button_srgba(&mut c).changed() {
@@ -3597,7 +3601,7 @@ impl PreferencesPanel {
         });
 
         ui.add_space(12.0);
-        ui.label(egui::RichText::new("False Color").strong().size(12.0));
+        ui.label(egui::RichText::new("False Colour").strong().size(12.0));
         ui.add_space(4.0);
         Self::show_false_color_editor(ui, prefs, dirty, theme);
 
@@ -3605,7 +3609,7 @@ impl PreferencesPanel {
         ui.label(egui::RichText::new("Overlays").strong().size(12.0));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label("Grid color:");
+            ui.label("Grid colour:");
             let gc = &mut prefs.viewer.grid_color;
             let mut c = egui::Color32::from_rgba_unmultiplied(gc[0], gc[1], gc[2], gc[3]);
             if ui.color_edit_button_srgba(&mut c).changed() {
@@ -3683,7 +3687,7 @@ impl PreferencesPanel {
         }
         if unmapped > 0 {
             ui.colored_label(theme.marker_warning,
-                format!("{unmapped} luma value(s) unmapped (will show source color)"));
+                format!("{unmapped} luma value(s) unmapped (will show source colour)"));
         }
 
         ui.add_space(4.0);
@@ -3698,7 +3702,7 @@ impl PreferencesPanel {
             ui.add_space(16.0);
             ui.label(egui::RichText::new("Max").color(dim_text).size(10.0));
             ui.add_space(10.0);
-            ui.label(egui::RichText::new("Color").color(dim_text).size(10.0));
+            ui.label(egui::RichText::new("Colour").color(dim_text).size(10.0));
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Label").color(dim_text).size(10.0));
         });
@@ -4301,7 +4305,7 @@ impl PreferencesPanel {
         ack_row(ui, "egui by Emil Ernerfeldt \u{2014} MIT License");
         ack_row(ui, "wgpu contributors \u{2014} Apache 2.0 / MIT");
         ack_row(ui, "Phosphor Icons \u{2014} MIT License");
-        ack_row(ui, "OpenColorIO / ACES \u{2014} color science references");
+        ack_row(ui, "OpenColourIO / ACES \u{2014} colour science references");
         ack_row(ui, "The Rust community and crate ecosystem");
 
         ui.add_space(12.0);

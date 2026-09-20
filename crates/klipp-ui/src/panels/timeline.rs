@@ -10894,7 +10894,7 @@ impl TimelinePanel {
         );
         for (i, m) in clip.clip_markers.iter().enumerate() {
             tracing::debug!(
-                "  marker {}: t={:.3}s ({:.1}%) color={:?}",
+                "  marker {}: t={:.3}s ({:.1}%) colour={:?}",
                 i, m.time_secs, (m.time_secs / clip_dur) * 100.0, m.color
             );
         }

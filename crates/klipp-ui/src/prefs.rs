@@ -2622,10 +2622,10 @@ mod tests {
         prefs.general.collapsed_sections = vec![
             "Transform".into(),
             "Effects".into(),
-            "Color".into(),
+            "Colour".into(),
         ];
         let rt = round_trip(&prefs);
-        assert_eq!(rt.general.collapsed_sections, vec!["Transform", "Effects", "Color"]);
+        assert_eq!(rt.general.collapsed_sections, vec!["Transform", "Effects", "Colour"]);
     }
 
     #[test]

@@ -250,7 +250,7 @@ fn render_layout_summary(ui: &mut egui::Ui, ws: &SavedWorkspaceLayout) {
             kv(ui, "Browser", if ws.show_browser { "visible" } else { "hidden" });
             kv(ui, "Inspector", if ws.show_inspector { "visible" } else { "hidden" });
             kv(ui, "Scopes", if ws.show_scopes { "visible" } else { "hidden" });
-            kv(ui, "Color panel", if ws.show_color_panel { "visible" } else { "hidden" });
+            kv(ui, "Colour panel", if ws.show_color_panel { "visible" } else { "hidden" });
             kv(ui, "Curve editor", if ws.show_curve_editor { "visible" } else { "hidden" });
             kv(ui, "Markers", if ws.show_markers { "visible" } else { "hidden" });
             kv(ui, "History", if ws.show_history { "visible" } else { "hidden" });
@@ -264,7 +264,7 @@ fn render_layout_summary(ui: &mut egui::Ui, ws: &SavedWorkspaceLayout) {
                 kv(ui, "Timeline height", &format!("{h:.0} px"));
             }
             if let Some(h) = ws.color_panel_height {
-                kv(ui, "Color panel height", &format!("{h:.0} px"));
+                kv(ui, "Colour panel height", &format!("{h:.0} px"));
             }
         });
 }

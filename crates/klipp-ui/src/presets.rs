@@ -21,7 +21,7 @@ impl ToolScope {
             ToolScope::Curves => "Curves",
             ToolScope::HueSat => "Hue/Sat",
             ToolScope::Warper => "Warper",
-            ToolScope::Color => "Color",
+            ToolScope::Color => "Colour",
             ToolScope::FullGrade => "Full Grade",
         }
     }

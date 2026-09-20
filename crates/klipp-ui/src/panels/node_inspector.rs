@@ -139,7 +139,7 @@ impl NodeInspectorPanel {
 
         // ── Tab row: the same strip as the Edit inspector ──
         let tabs = [
-            (ColorTab::Adjustments, "COLOR", "COL"),
+            (ColorTab::Adjustments, "COLOUR", "COL"),
             (ColorTab::Wheels, "WHEELS", "WHL"),
             (ColorTab::Curves, "CURVES", "CRV"),
             (ColorTab::HueSat, "HUE/SAT", "HUE"),
@@ -1140,7 +1140,7 @@ impl NodeInspectorPanel {
 
         // ── Color Balance section — with gradient sliders ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::ColorBalance) {
-            let (reset, is_open) = section_header(ui, "COLOR BALANCE", enabled, theme);
+            let (reset, is_open) = section_header(ui, "COLOUR BALANCE", enabled, theme);
             if is_open { if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
                 if reset {
                     for (p, d) in [("temperature", 0.0), ("tint", 0.0), ("hue", 0.0), ("global_mix", 1.0)] {
