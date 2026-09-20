@@ -49,6 +49,13 @@ anything that touches the colour pipeline's numerical output.
 green, and nothing is pushed to it directly — not by contributors, not
 by the maintainer. Everything arrives as a pull request.
 
+The pre-push hook refuses a direct push to `main`, because GitHub will
+not: branch protection and rulesets are both behind GitHub Pro on a
+private repository. While the repo is private that costs nothing —
+everyone who can push has the hook. When it goes public, server-side
+protection becomes available free and should be turned on, and this
+becomes a second line rather than the only one.
+
 ```
 main  ──●──●──●──●──●──●──●──▶   protected, always green
          ╲        ╱      ╲  ╱
@@ -234,14 +241,27 @@ That is right on a machine with no GPU — and it means a cloud runner
 reports a confident green on a build where a shader stopped compiling.
 Your laptop is a *better* gate than GitHub's runner, not a worse one.
 
-There is a CI workflow in `.github/workflows/`, and it is dormant:
-it is guarded on the repository being public, because Actions minutes
-are metered on private repositories and a cold build of this workspace
-would spend a month's budget in a handful of runs. It switches itself
-on when the repo goes public — which is both when minutes become free
-and when people start contributing from forks, where nobody can be made
-to install a hook. Even then it will be **advisory**, for the GPU
-reason above.
+**There is no CI, and that is the current answer rather than a gap.**
+A workflow was written and then deleted unrun, which is worth recording
+so it is not rediscovered as an oversight:
+
+* On a private repository Actions minutes are metered, and a cold build
+  of this workspace — ffmpeg and whisper.cpp both build C — would spend
+  a month's budget in a handful of runs.
+* Whatever it reported would be **advisory** for the GPU reason above,
+  and a check that cannot be trusted must not be able to block a merge.
+* A check nobody trusts is worse than no check. A red mark that is
+  routinely correct to ignore teaches everyone to ignore red marks.
+
+If CI is ever added it should be because someone wants a specific
+signal, and it should be got green before it is wired to anything. Two
+notes from the attempt, so the next person starts further along: the
+Ubuntu package list in the [Prerequisites](#build-prerequisites) works
+on a runner, and installing `mesa-vulkan-drivers` gives it **lavapipe**,
+a software Vulkan driver — a real adapter, so shaders genuinely compile
+and `klipp-effects`' `gpu_pipelines_build` canary is not a no-op. That
+closes the largest hole a GPU-less runner would otherwise leave, though
+it does not make the parity tests meaningful.
 
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
@@ -380,6 +400,35 @@ Before you open a PR:
    the thread's entry point in `catch_unwind` instead.
 
 ---
+
+## The day the repo goes public
+
+For the maintainer. Several things in here are waiting on that moment,
+and they are waiting *silently*, so this is the list.
+
+1. **Fill in the code of conduct's contact address.**
+   `CODE_OF_CONDUCT.md` carries a `TODO` where the enforcement contact
+   goes. A code of conduct with nowhere to report to is worse than
+   none, because it promises a process that does not exist.
+2. **Check what is in the history.** It becomes readable by everyone,
+   all of it, not just the current tree. Paths, hostnames, anything
+   pasted into a commit message years ago.
+3. **Flip the repository to public.**
+4. **Run `scripts/protect-main.sh`.** Branch protection and rulesets
+   are gated behind GitHub Pro on private repositories, so `main`
+   cannot be protected server-side before this point — until now the
+   pre-push hook has been the only thing refusing a direct push, and it
+   only binds people who installed it. This is the step that makes the
+   rule apply to everybody. It is also the easiest one to forget,
+   because nothing breaks when you do.
+5. **Enable private vulnerability reporting** in Settings → Security,
+   which is what `SECURITY.md` tells people to use.
+6. **Check a fork's sign-offs before merging it.** A fork contributor
+   has no pre-push hook, so nothing has checked their commits:
+   `scripts/check-signoff.sh main..their-branch` after
+   `gh pr checkout`. This is the one rule that stops being
+   self-enforcing the moment the repo is public, and there is no CI to
+   catch it.
 
 ## Releasing
 
