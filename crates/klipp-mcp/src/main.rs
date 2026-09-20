@@ -356,6 +356,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "clip_id": args.get("clip_id").cloned().unwrap_or(serde_json::Value::Null),
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
+            "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
+        "klipp_measure_region" => json!({
+            "method": "measure_region",
+            "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
+            "x": args.get("x").and_then(|v| v.as_f64()).ok_or("missing required argument: x")?,
+            "y": args.get("y").and_then(|v| v.as_f64()).ok_or("missing required argument: y")?,
+            "w": args.get("w").and_then(|v| v.as_f64()).ok_or("missing required argument: w")?,
+            "h": args.get("h").and_then(|v| v.as_f64()).ok_or("missing required argument: h")?,
+            "timeout_ms": args.get("timeout_ms").cloned().unwrap_or(serde_json::Value::Null),
         }),
         "klipp_review" => json!({
             "method": "review",
@@ -728,7 +738,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1000,7 +1010,13 @@ fn tool_definitions() -> Vec<Value> {
               grades them, one undo step a round. A screen recording is held only to its cast \
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
-             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
+             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
+        tool("klipp_measure_region",
+             "One box of the frame read on its own, in the same numbers as klipp_frame_stats: a \
+              face against its background, a sky, a product, a corner of a screen. x, y, w and h \
+              are fractions of the frame. Use it when the whole-frame reading is the average of \
+              two different things.",
+             json!({ "secs": { "type": "number" }, "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs", "x", "y", "w", "h"]),
         tool("klipp_skin_balance",
              "Skin onto the skin band, by measurement: the faces in the clip's frame (the framing \
               analysis's people, the head of each) are read as an 8×8 grid of skin patches in \

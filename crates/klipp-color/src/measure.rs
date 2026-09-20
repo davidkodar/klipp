@@ -271,6 +271,20 @@ pub struct FrameMeasure {
     /// has no white to balance to, and its "cast" is the grass.
     #[serde(default)]
     pub neutral_solid: bool,
+    /// The noise floor: the lightness deviation in the flattest parts of
+    /// the picture, in L*. Grain, sensor noise, compression. A colourist
+    /// reads this before lifting shadows, because lifting multiplies it.
+    #[serde(default)]
+    pub noise_l: f32,
+    /// How much of the flat picture shows the staircase of banding: a
+    /// run of identical values and then a step. Per cent of flat tiles.
+    #[serde(default)]
+    pub banding_pct: f32,
+    /// Pixels with a channel pinned at the rail while the others are
+    /// not: a colour pushed past what the delivery can hold, which the
+    /// parade shows as a channel flat against the top or the bottom.
+    #[serde(default)]
+    pub gamut_clip_pct: f32,
     pub faces: Vec<FaceMeasure>,
     /// Every skin-coloured pixel in the frame read together, for a frame
     /// with no detected person: rougher than a face (clothes and wood
@@ -353,7 +367,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
     // greys are blue, and that is the finding.
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut clip_hi, mut clip_lo, mut n) = (0usize, 0usize, 0usize);
+    let (mut clip_hi, mut clip_lo, mut gamut_clip, mut n) = (0usize, 0usize, 0usize, 0usize);
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
         let p = i * 4;
@@ -368,6 +382,12 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         }
         if c.l >= 15.0 && c.l <= 85.0 {
             chromas.push(c.chroma());
+        }
+        // One channel on the rail while another is nowhere near it: a
+        // colour the delivery could not hold, clamped on its way out.
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        if (mx == 255 && mn < 240) || (mn == 0 && mx > 15) {
+            gamut_clip += 1;
         }
         if c.l >= 20.0 && c.l <= 90.0 {
             mids.push((c.chroma(), c.a, c.b));
@@ -420,6 +440,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
     chromas.sort_by(|a, b| a.total_cmp(b));
     let nn = n.max(1) as f32;
     let mut faces: Vec<FaceMeasure> = faces.iter().map(|f| measure_face(rgba, w, h, *f)).collect();
+    let (noise_l, banding_pct) = flat_field(rgba, w, h);
     // Skin judged as a colourist does: the scene's cast off first.
     let (ca, cb) = (median(&mut na.clone()), median(&mut nb.clone()));
     for f in faces.iter_mut().filter(|f| f.patches > 0) {
@@ -436,6 +457,9 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         contrast_range: percentile(&ls, 0.95) - percentile(&ls, 0.05),
         clip_hi_pct: clip_hi as f32 / nn * 100.0,
         clip_lo_pct: clip_lo as f32 / nn * 100.0,
+        noise_l,
+        banding_pct,
+        gamut_clip_pct: gamut_clip as f32 / nn * 100.0,
         chroma_mean: if chromas.is_empty() { 0.0 } else { chromas.iter().sum::<f32>() / chromas.len() as f32 },
         chroma_p95: percentile(&chromas, 0.95),
         cast_a: median(&mut na),
@@ -447,6 +471,121 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         sampled: n as u32,
     }
 }
+
+/// The flat parts of a picture, where noise and banding show: the
+/// lightness spread of the flattest tiles (the noise floor, in L*), and
+/// how many of them carry the staircase of banding — a run of identical
+/// values ending in a step. Grain hides banding and banding hides in
+/// grain, so both are read in the same places.
+pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
+    const TILE: usize = 24;
+    if w < TILE * 2 || h < TILE * 2 || rgba.len() < w * h * 4 {
+        return (0.0, 0.0);
+    }
+    // At most a few hundred tiles, spread over the picture.
+    let step_x = (w / TILE / 16).max(1) * TILE;
+    let step_y = (h / TILE / 16).max(1) * TILE;
+    let luma = |x: usize, y: usize| {
+        let p = (y * w + x) * 4;
+        srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]).l
+    };
+    let mut spreads: Vec<f32> = Vec::new();
+    let mut banded_tiles = 0usize;
+    let mut y0 = 0;
+    while y0 + TILE <= h {
+        let mut x0 = 0;
+        while x0 + TILE <= w {
+            let mut ls = Vec::with_capacity(TILE * TILE);
+            for y in y0..y0 + TILE {
+                for x in x0..x0 + TILE {
+                    ls.push(luma(x, y));
+                }
+            }
+            let mean = ls.iter().sum::<f32>() / ls.len() as f32;
+            let sd = (ls.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / ls.len() as f32).sqrt();
+            // A tile with detail in it says nothing about noise.
+            if sd < 4.0 && mean > 6.0 && mean < 94.0 {
+                spreads.push(sd);
+                // The staircase: along a row, a run of one value and
+                // then a step of a whole code or more.
+                let mut banded = false;
+                for y in (y0..y0 + TILE).step_by(4) {
+                    let (mut run, mut last) = (0usize, luma(x0, y));
+                    for x in x0 + 1..x0 + TILE {
+                        let v = luma(x, y);
+                        let d = (v - last).abs();
+                        if d < 0.02 {
+                            run += 1;
+                        } else {
+                            if run >= 6 && d > 0.35 {
+                                banded = true;
+                            }
+                            run = 0;
+                        }
+                        last = v;
+                    }
+                }
+                if banded {
+                    banded_tiles += 1;
+                }
+            }
+            x0 += step_x;
+        }
+        y0 += step_y;
+    }
+    if spreads.is_empty() {
+        return (0.0, 0.0);
+    }
+    spreads.sort_by(|a, b| a.total_cmp(b));
+    // The floor, not the average: the quietest fifth of the flat tiles.
+    (percentile(&spreads, 0.2), banded_tiles as f32 / spreads.len() as f32 * 100.0)
+}
+
+/// A box of a frame as its own picture, for measuring one region: a
+/// face, a sky, a product. `region` is (x, y, w, h) in fractions.
+pub fn crop(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> (Vec<u8>, u32, u32) {
+    let x0 = ((region[0] * w as f32).round().max(0.0) as usize).min(w.saturating_sub(1));
+    let y0 = ((region[1] * h as f32).round().max(0.0) as usize).min(h.saturating_sub(1));
+    let x1 = (((region[0] + region[2]) * w as f32).round() as usize).clamp(x0 + 1, w);
+    let y1 = (((region[1] + region[3]) * h as f32).round() as usize).clamp(y0 + 1, h);
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut out = vec![0u8; cw * ch * 4];
+    for y in 0..ch {
+        let src = ((y0 + y) * w + x0) * 4;
+        out[y * cw * 4..(y + 1) * cw * 4].copy_from_slice(&rgba[src..src + cw * 4]);
+    }
+    (out, cw as u32, ch as u32)
+}
+
+/// Whether a picture looks like camera log with no input transform on
+/// it: flat, desaturated, black sitting well off zero, nothing near
+/// white. Grading that as a finished picture is the classic mistake —
+/// contrast and saturation instead of the transform the footage asks
+/// for, which throws away the latitude the format exists to keep.
+pub fn looks_like_log(m: &FrameMeasure) -> bool {
+    // Measured: a graded studio portrait reads contrast 78 chroma 12; the
+    // same picture flattened the way a camera log curve flattens it reads
+    // contrast 49 chroma 2 with its black sitting at L* 20 and nothing
+    // near white.
+    m.contrast_range < 55.0
+        && m.chroma_mean < 13.0
+        && m.l_p1 > 12.0
+        && m.l_p99 < 88.0
+        && m.clip_hi_pct < 0.05
+}
+
+/// Where the craft rules sit, measured on real pictures rather than
+/// chosen: a clean studio JPEG reads noise 0.46 L* and the same picture
+/// with sensor noise on it 1.49; an 8-bit gradient bands over a quarter
+/// of its flat tiles where a dithered one bands none; a portrait pushed
+/// to saturation 3.2 pins a channel on 17.8% of its pixels where the
+/// original pins none.
+pub const NOISE_WARN: f32 = 1.2;
+pub const NOISE_FAIL: f32 = 2.5;
+pub const BANDING_WARN: f32 = 25.0;
+pub const BANDING_FAIL: f32 = 45.0;
+pub const GAMUT_WARN: f32 = 2.0;
+pub const GAMUT_FAIL: f32 = 8.0;
 
 /// One face region as a grid of patches: each patch the median of the
 /// skin it holds, kept when enough of it is skin. The region is taken
@@ -834,6 +973,29 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
             out.push(Finding { rule: "cast", verdict, reading: off, target: 0.0, tolerance: 3.0, what: format!("neutrals sit {off:.1} toward {dir} (a* {:.1}, b* {:.1}; {how})", m.cast_a, m.cast_b), fix: "temperature (b*) and tint (a*) until the neutrals read a* b* near the target" });
         }
     }
+    // Camera log with no input transform on it: everything below would
+    // be read against a picture that is not meant to be looked at yet.
+    if looks_like_log(m) {
+        out.push(Finding {
+            rule: "looks_like_log",
+            verdict: Verdict::Warn,
+            reading: m.contrast_range,
+            target: 0.0,
+            tolerance: 0.0,
+            what: format!("this looks like camera log with no input transform: flat (5–95 range {:.0}), almost no colour (chroma {:.0}), black sitting at L* {:.0} and nothing near white", m.contrast_range, m.chroma_mean, m.l_p1),
+            fix: "set the clip's log format so the transform is applied, then grade; contrast and saturation on top of log throw away the latitude the format exists to keep",
+        });
+    }
+    let level = |v: f32, warn: f32, fail: f32| if v > fail { Verdict::Fail } else if v > warn { Verdict::Warn } else { Verdict::Pass };
+    if m.noise_l > NOISE_WARN {
+        out.push(Finding { rule: "noise", verdict: level(m.noise_l, NOISE_WARN, NOISE_FAIL), reading: m.noise_l, target: 0.0, tolerance: NOISE_WARN, what: format!("the flat parts of the picture carry {:.1} L* of noise", m.noise_l), fix: "denoise before lifting the shadows — a lift multiplies what is already there" });
+    }
+    if m.banding_pct > BANDING_WARN {
+        out.push(Finding { rule: "banding", verdict: level(m.banding_pct, BANDING_WARN, BANDING_FAIL), reading: m.banding_pct, target: 0.0, tolerance: BANDING_WARN, what: format!("{:.0}% of the flat picture steps in bands", m.banding_pct), fix: "less stretch in the shadows, or a touch of grain to break the steps" });
+    }
+    if m.gamut_clip_pct > GAMUT_WARN {
+        out.push(Finding { rule: "gamut", verdict: level(m.gamut_clip_pct, GAMUT_WARN, GAMUT_FAIL), reading: m.gamut_clip_pct, target: 0.0, tolerance: GAMUT_WARN, what: format!("{:.1}% of the picture has a channel pinned at the rail — colour the delivery cannot hold", m.gamut_clip_pct), fix: "saturation down, or pull the offending colour back with a secondary" });
+    }
     let skin_target = t.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
     // A whole-frame skin read is advisory, and never on a screen
     // recording, whose orange buttons are not skin.
@@ -1070,6 +1232,78 @@ mod tests {
         let m2 = measure_frame(&hot, w as u32, h as u32, &[face]);
         assert!(m2.faces[0].chroma > SKIN_CHROMA_HIGH, "cooked: {:.0}", m2.faces[0].chroma);
         assert!(primaries_toward(&m2, &look).saturation < -0.1, "pull it back");
+    }
+
+    /// Noise, banding and out-of-gamut colour, on pictures made to
+    /// carry exactly those faults. The numbers come from real ones:
+    /// see the constants.
+    #[test]
+    fn noise_banding_and_gamut_read_what_they_are_named_for() {
+        let (w, h) = (240, 160);
+        // A clean ramp: no noise, but 8-bit steps across a dark gradient
+        // are what banding is.
+        let ramp = frame_of(w, h, |x, _| {
+            let v = (20.0 + x as f32 * 0.08) as u8;
+            [v, v, (v as f32 * 1.1) as u8]
+        });
+        let m = measure_frame(&ramp, w as u32, h as u32, &[]);
+        assert!(m.noise_l < 0.6, "a clean ramp has no noise: {:.2}", m.noise_l);
+        assert!(m.banding_pct > BANDING_WARN, "an 8-bit ramp bands: {:.0}%", m.banding_pct);
+        // The same ramp with a pixel of dither: the steps break up.
+        let dithered = frame_of(w, h, |x, y| {
+            let v = (20.0 + x as f32 * 0.08 + ((x * 7 + y * 13) % 3) as f32 - 1.0) as u8;
+            [v, v, (v as f32 * 1.1) as u8]
+        });
+        let m2 = measure_frame(&dithered, w as u32, h as u32, &[]);
+        assert!(m2.banding_pct < m.banding_pct, "dither breaks the staircase: {:.0}% vs {:.0}%", m2.banding_pct, m.banding_pct);
+        assert!(m2.noise_l > m.noise_l, "and reads as noise instead");
+        // A colour past what the delivery holds: a channel on the rail
+        // while the others are nowhere near it.
+        let hot = frame_of(w, h, |x, _| if x < w / 2 { [255, 40, 30] } else { [120, 120, 120] });
+        let m3 = measure_frame(&hot, w as u32, h as u32, &[]);
+        assert!(m3.gamut_clip_pct > GAMUT_FAIL, "{:.1}%", m3.gamut_clip_pct);
+        assert!(judge(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).iter().any(|f| f.rule == "gamut" && f.verdict == Verdict::Fail));
+    }
+
+    /// Camera log with no input transform is named as such, and a
+    /// graded picture is not.
+    #[test]
+    fn log_without_its_transform_is_recognised() {
+        let (w, h) = (200, 120);
+        // Flat, desaturated, black off the floor, nothing near white.
+        let log = frame_of(w, h, |x, y| {
+            let v = (95.0 + (x as f32 / w as f32) * 90.0 + ((y % 5) as f32)) as u8;
+            [v, v, (v as f32 * 0.99) as u8]
+        });
+        let m = measure_frame(&log, w as u32, h as u32, &[]);
+        assert!(looks_like_log(&m), "{m:?}");
+        assert!(judge(&m, &LookTarget::preset("broadcast_neutral").unwrap()).iter().any(|f| f.rule == "looks_like_log"));
+        // A normal picture: blacks near zero, whites near the top, colour in it.
+        let graded = frame_of(w, h, |x, y| {
+            let v = ((x as f32 / w as f32) * 250.0) as u8;
+            if y < h / 2 { [v, (v as f32 * 0.6) as u8, 30] } else { [v, v, v] }
+        });
+        let m2 = measure_frame(&graded, w as u32, h as u32, &[]);
+        assert!(!looks_like_log(&m2), "{m2:?}");
+    }
+
+    /// A region reads on its own: the face, not the frame it sits in.
+    #[test]
+    fn a_region_is_measured_by_itself() {
+        let (w, h) = (200, 120);
+        let face = [0.4f32, 0.35, 0.2, 0.3];
+        let frame = frame_of(w, h, |x, y| {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [194, 150, 130] } else { [60, 60, 62] }
+        });
+        let whole = measure_frame(&frame, w as u32, h as u32, &[]);
+        let (cut, cw, ch) = crop(&frame, w, h, face);
+        let region = measure_frame(&cut, cw, ch, &[]);
+        assert!(region.l_p50 > 60.0 && whole.l_p50 < 40.0, "the face is lighter than the frame: {:.0} vs {:.0}", region.l_p50, whole.l_p50);
+        // The frame has a neutral to read, and reads neutral; the face
+        // on its own has none, and reads as its own warm colour.
+        assert!(whole.neutral_solid && whole.cast() < 2.0, "the frame: {:?}", (whole.cast_a, whole.cast_b));
+        assert!(!region.neutral_solid && region.cast_b > 5.0, "the face alone: {:?}", (region.cast_a, region.cast_b));
     }
 
     /// A picture that is already clipping is never brightened further,

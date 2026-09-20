@@ -258,6 +258,17 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// One region of the frame read on its own: a face, a sky, a
+    /// product. `x`,`y`,`w`,`h` are fractions of the frame.
+    MeasureRegion {
+        secs: f64,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Grade every shot of the top picture track (or one clip) to the
     /// brief's look: measure, move the primaries toward the target,
     /// measure again, up to three rounds each; every round one undo
@@ -269,6 +280,12 @@ pub enum ControlCommand {
         apply: bool,
         #[serde(default)]
         rounds: Option<u32>,
+        /// Grade a clip that looks like camera log with no input
+        /// transform anyway. Off: such a clip is left alone and named,
+        /// because grading log as if it were a finished picture throws
+        /// away the latitude the format exists to keep.
+        #[serde(default)]
+        force: bool,
     },
     /// Where every requested item stands.
     AnalysisStatus,

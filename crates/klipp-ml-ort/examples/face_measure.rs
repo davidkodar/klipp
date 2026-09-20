@@ -72,6 +72,7 @@ fn main() {
         let cast = if m.cast() < 3.0 { "neutral".to_string() } else { format!("{:.1} toward {}", m.cast(), measure::cast_name(m.cast_a, m.cast_b)) };
         println!("{name}  {w}x{h}");
         println!("   L* {:.0}/{:.0}/{:.0}  contrast {:.0}  chroma {:.0}  cast {cast}  clip {:.1}%/{:.1}%", m.l_p1, m.l_p50, m.l_p99, m.contrast_range, m.chroma_mean, m.clip_hi_pct, m.clip_lo_pct);
+        println!("   noise {:.2} L*  banding {:.0}%  gamut-clipped {:.1}%{}", m.noise_l, m.banding_pct, m.gamut_clip_pct, if measure::looks_like_log(&m) { "  LOOKS LIKE LOG (no input transform)" } else { "" });
         for (n, f) in m.faces.iter().enumerate() {
             if f.readable() {
                 let off = if f.hue_off_band > 0.0 { format!("{:.0}° OFF the band", f.hue_off_band) } else { "on the band".to_string() };
