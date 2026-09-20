@@ -1276,6 +1276,30 @@ impl BrowserPanel {
                         ui.add_space(2.0);
                         ui.add(pin_icon.max_size(egui::vec2(10.0, 10.0)));
                     }
+
+                    // Collapse, at the far end of the tab row. The
+                    // keyboard and the divider can both do this, but
+                    // neither is visible; this is the one that can be
+                    // found without being told.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(6.0);
+                        let (btn_rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(btn_rect.shrink(2.0), 4.0, theme.bg_hover);
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        let tint = if resp.hovered() { theme.text_primary } else { theme.text_dim };
+                        let icon_rect = egui::Rect::from_center_size(btn_rect.center(), egui::vec2(12.0, 12.0));
+                        ui.put(
+                            icon_rect,
+                            Icon::CaretLeft.image(12.0).tint(tint).max_size(egui::vec2(12.0, 12.0)),
+                        );
+                        let resp = resp.on_hover_text("Collapse browser  (Ctrl+Shift+B)");
+                        if resp.clicked() {
+                            cmds.push(AppCommand::ToggleBrowserPanel);
+                        }
+                    });
                 });
             },
         );

@@ -571,6 +571,15 @@ pub const INSPECTOR_DEFAULT_W: f32 = 320.0;
 pub const INSPECTOR_MIN_W: f32 = 260.0;
 pub const INSPECTOR_MAX_W: f32 = 800.0;
 pub const RESIZER_THICKNESS: f32 = 5.0;
+/// Width of the rail a collapsed side panel leaves behind.
+///
+/// A collapsed panel is not a gone panel: it keeps a strip carrying its
+/// tab icons, so the way back is visible and is the same click that got
+/// you there. Collapsing to nothing would leave the edge of the window
+/// as the only affordance, which is a thing you have to already know
+/// about. 30 px is wide enough for a 16 px icon with breathing room and
+/// narrow enough to be worth collapsing to.
+pub const COLLAPSED_RAIL_W: f32 = 30.0;
 /// Height of the transport chrome below each viewer's video area
 /// (16-px scrub bar + 40-px playbar). Used by `layout.rs` so the
 /// video portion of the viewer can be sized to project aspect with

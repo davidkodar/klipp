@@ -7,7 +7,18 @@ use egui::{CursorIcon, Rect, Sense, Ui};
 /// the affordance is obvious while interacting. The wider hit area makes it
 /// easy to grab without bloating the visual divider.
 pub fn vertical_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
-    let response = ui.allocate_rect(rect, Sense::drag());
+    vertical_resizer_full(ui, rect, theme).0
+}
+
+/// What a vertical resizer was asked to do: a drag delta, and whether it
+/// was double-clicked.
+///
+/// Double-click to collapse is the gesture every pane-based editor
+/// shares — Resolve, Premiere, VS Code, every IDE — and it costs
+/// nothing to honour, because the divider is already the thing under
+/// the pointer when someone wants the panel gone.
+pub fn vertical_resizer_full(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> (f32, bool) {
+    let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter();
 
     let active = response.hovered() || response.dragged();
@@ -22,11 +33,8 @@ pub fn vertical_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
         );
     }
 
-    if response.dragged() {
-        response.drag_delta().x
-    } else {
-        0.0
-    }
+    let delta = if response.dragged() { response.drag_delta().x } else { 0.0 };
+    (delta, response.double_clicked())
 }
 
 /// Draw a horizontal resizer strip and return the vertical drag delta.

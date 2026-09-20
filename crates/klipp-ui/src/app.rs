@@ -565,6 +565,10 @@ impl KlippApp {
             cc.egui_ctx.set_zoom_factor(scale_pct as f32 / 100.0);
         }
         let layout = LayoutState::load();
+        // Panel visibility is persisted, so a panel collapsed last
+        // session is still collapsed. AppState's defaults say visible;
+        // the saved layout is what the user actually last chose.
+        let (restore_browser, restore_inspector) = (layout.browser_visible, layout.inspector_visible);
 
         // Heavy field inits — extracted from the struct literal so we can
         // measure each one independently for STARTUP_PERF.
@@ -734,6 +738,11 @@ impl KlippApp {
             }));
         }
         // Build false color LUT from loaded preferences
+        // A panel collapsed last session stays collapsed. Assigned
+        // directly rather than through the setters: this is adopting
+        // what was already saved, so there is nothing new to mark dirty.
+        app.state.show_browser_panel = restore_browser;
+        app.state.show_inspector_panel = restore_inspector;
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
         // Probe audio backend status
         app.state.audio_sample_rate = app.cpal_sample_rate;
@@ -14676,6 +14685,16 @@ impl KlippApp {
                 self.layout.active_browser_tab = crate::layout_state::BrowserTab::Library;
                 true
             }
+            AppCommand::ToggleBrowserPanel => {
+                let now = !self.state.show_browser_panel;
+                self.set_browser_visible(now);
+                true
+            }
+            AppCommand::ToggleInspectorPanel => {
+                let now = !self.state.show_inspector_panel;
+                self.set_inspector_visible(now);
+                true
+            }
             AppCommand::ToggleBeforeAfter => {
                 self.state.before_after_active = !self.state.before_after_active;
                 if self.state.before_after_active {
@@ -23662,6 +23681,16 @@ impl KlippApp {
                     cmds.push(AppCommand::CutClip { clip_id });
                 }
             }
+            // Ctrl+Shift+B / Ctrl+Shift+I — collapse a side panel to its
+            // rail. The View menu has advertised shortcuts for these
+            // since it was written; `shortcut_text` only draws a label,
+            // so until now they did nothing when pressed.
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::B) {
+                cmds.push(AppCommand::ToggleBrowserPanel);
+            }
+            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::I) {
+                cmds.push(AppCommand::ToggleInspectorPanel);
+            }
             // B key (bare) — toggle before/after
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::B)
@@ -29837,8 +29866,10 @@ impl KlippApp {
     /// customisation when an older layout JSON doesn't carry sizes (the
     /// serde `#[default]` lands them as `None`).
     fn apply_workspace_layout(&mut self, layout: &crate::state::SavedWorkspaceLayout) {
-        self.state.show_browser_panel = layout.show_browser;
-        self.state.show_inspector_panel = layout.show_inspector;
+        // Through the setters, so the persisted copy follows a workspace
+        // switch rather than silently disagreeing with the screen.
+        self.set_browser_visible(layout.show_browser);
+        self.set_inspector_visible(layout.show_inspector);
         self.state.show_history_panel = layout.show_history;
         self.state.show_markers_panel = layout.show_markers;
         self.state.show_curve_editor = layout.show_curve_editor;
@@ -31002,9 +31033,17 @@ impl KlippApp {
                     self.render_toolbar_panel(ui, toolbar_rect, all_cmds);
                     self.render_status_bar_panel(ui, statusbar_rect);
 
-                    self.render_browser_panel(ui, browser_rect, all_cmds);
+                    if self.state.show_browser_panel {
+                        self.render_browser_panel(ui, browser_rect, all_cmds);
+                    } else {
+                        self.render_browser_rail(ui, browser_rect);
+                    }
 
-                    self.render_inspector_panel(ui, inspector_rect, all_cmds);
+                    if self.state.show_inspector_panel {
+                        self.render_inspector_panel(ui, inspector_rect, all_cmds);
+                    } else {
+                        self.render_inspector_rail(ui, inspector_rect);
+                    }
 
 
                     let color_tools_bottom = in_color_ws
@@ -31164,17 +31203,39 @@ impl KlippApp {
         max_timeline_h: f32,
     ) {
         let theme = self.theme.clone();
-        let left_delta = resizer::vertical_resizer(ui, left_resizer_rect, &theme);
-        let right_delta = resizer::vertical_resizer(ui, right_resizer_rect, &theme);
+        let (left_delta, left_dbl) = resizer::vertical_resizer_full(ui, left_resizer_rect, &theme);
+        let (right_delta, right_dbl) = resizer::vertical_resizer_full(ui, right_resizer_rect, &theme);
+        if left_dbl {
+            let now = !self.state.show_browser_panel;
+            self.set_browser_visible(now);
+        }
+        if right_dbl {
+            let now = !self.state.show_inspector_panel;
+            self.set_inspector_visible(now);
+        }
         let h_delta = resizer::horizontal_resizer(ui, h_resizer_rect, &theme);
 
+        // Dragging a panel well under its minimum collapses it rather
+        // than sticking at the clamp. Without this the divider simply
+        // refuses to move and the gesture reads as broken; with it,
+        // "drag it away" works the way people expect and the rail
+        // catches the result.
+        const COLLAPSE_DRAG_SLOP: f32 = 60.0;
         if left_delta != 0.0 {
-            self.layout.browser_width = (self.layout.browser_width + left_delta)
-                .clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
+            let wanted = self.layout.browser_width + left_delta;
+            if self.state.show_browser_panel && wanted < theme::BROWSER_MIN_W - COLLAPSE_DRAG_SLOP {
+                self.set_browser_visible(false);
+            } else {
+                self.layout.browser_width = wanted.clamp(theme::BROWSER_MIN_W, theme::BROWSER_MAX_W);
+            }
         }
         if right_delta != 0.0 {
-            self.layout.inspector_width = (self.layout.inspector_width - right_delta)
-                .clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
+            let wanted = self.layout.inspector_width - right_delta;
+            if self.state.show_inspector_panel && wanted < theme::INSPECTOR_MIN_W - COLLAPSE_DRAG_SLOP {
+                self.set_inspector_visible(false);
+            } else {
+                self.layout.inspector_width = wanted.clamp(theme::INSPECTOR_MIN_W, theme::INSPECTOR_MAX_W);
+            }
         }
         if h_delta != 0.0 {
             if self.state.show_color_panel {
@@ -31441,6 +31502,81 @@ impl KlippApp {
         });
     }
 
+    /// The collapsed browser's rail: its three tabs, stacked, each of
+    /// which reopens the panel on that tab.
+    fn render_browser_rail(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use crate::layout_state::BrowserTab;
+        use crate::widgets::panel_rail::{self, RailAction, RailGlyph, RailItem, RailSide};
+
+        let active = self.layout.active_browser_tab;
+        let tabs = [BrowserTab::Files, BrowserTab::Media, BrowserTab::Library];
+        let items = [
+            RailItem { glyph: RailGlyph::Icon(crate::icons::Icon::Folder), label: "Files", active: active == BrowserTab::Files },
+            RailItem { glyph: RailGlyph::Icon(crate::icons::Icon::FilmStrip), label: "Media", active: active == BrowserTab::Media },
+            RailItem { glyph: RailGlyph::Icon(crate::icons::Icon::Sliders), label: "Library", active: active == BrowserTab::Library },
+        ];
+        let theme = self.theme.clone();
+        match panel_rail::show(ui, rect, &theme, RailSide::Left, &items, "browser") {
+            RailAction::None => {}
+            RailAction::Open(i) => {
+                if let Some(tab) = tabs.get(i) {
+                    self.layout.active_browser_tab = *tab;
+                }
+                self.set_browser_visible(true);
+            }
+        }
+    }
+
+    /// The collapsed inspector's rail. Its tabs depend on what is
+    /// selected, so the rail shows the ones the panel would show.
+    fn render_inspector_rail(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        use crate::layout_state::InspectorTab;
+        use crate::widgets::panel_rail::{self, RailAction, RailGlyph, RailItem, RailSide};
+
+        let active = self.layout.active_inspector_tab;
+        let tabs = [InspectorTab::Video, InspectorTab::Audio, InspectorTab::Color, InspectorTab::Effects, InspectorTab::Info];
+        // The inspector's own short forms, so the rail says what the tab
+        // row says when it is narrow.
+        let items = [
+            RailItem { glyph: RailGlyph::Text("VID"), label: "Video", active: active == InspectorTab::Video },
+            RailItem { glyph: RailGlyph::Text("AUD"), label: "Audio", active: active == InspectorTab::Audio },
+            RailItem { glyph: RailGlyph::Text("COL"), label: "Colour", active: active == InspectorTab::Color },
+            RailItem { glyph: RailGlyph::Text("FX"), label: "Effects", active: active == InspectorTab::Effects },
+            RailItem { glyph: RailGlyph::Text("INFO"), label: "Info", active: active == InspectorTab::Info },
+        ];
+        let theme = self.theme.clone();
+        match panel_rail::show(ui, rect, &theme, RailSide::Right, &items, "inspector") {
+            RailAction::None => {}
+            RailAction::Open(i) => {
+                if let Some(tab) = tabs.get(i) {
+                    self.layout.active_inspector_tab = *tab;
+                }
+                self.set_inspector_visible(true);
+            }
+        }
+    }
+
+    /// Show or hide the browser, and remember which across restarts.
+    /// Visibility lives in two places — `AppState` is what the frame
+    /// reads, `LayoutState` is what survives — so it is set in one
+    /// place rather than at each call site, where the pair would drift.
+    fn set_browser_visible(&mut self, visible: bool) {
+        self.state.show_browser_panel = visible;
+        if self.layout.browser_visible != visible {
+            self.layout.browser_visible = visible;
+            self.layout_dirty = true;
+        }
+    }
+
+    /// Show or hide the inspector, and remember which across restarts.
+    fn set_inspector_visible(&mut self, visible: bool) {
+        self.state.show_inspector_panel = visible;
+        if self.layout.inspector_visible != visible {
+            self.layout.inspector_visible = visible;
+            self.layout_dirty = true;
+        }
+    }
+
     fn render_inspector_panel(
         &mut self,
         ui: &mut egui::Ui,
@@ -31457,6 +31593,10 @@ impl KlippApp {
         // feedback_defer_drop_texture).
         self.refresh_letter_picker_texture(ui.ctx());
 
+        // The Export column's title row carries the same collapse button
+        // as the clip inspector's; it is applied after the closure so
+        // the borrow of `self` inside it stays untouched.
+        let mut collapse_requested = false;
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, inspector_rect, |ui| {
             ui.set_min_size(inspector_rect.size());
@@ -31471,7 +31611,9 @@ impl KlippApp {
             if self.state.active_workspace == crate::state::Workspace::Export {
                 let theme = self.theme.clone();
                 self.prepare_export_defaults();
-                crate::widgets::inspector_group::panel_title_row(ui, "Export", false, &theme);
+                if crate::widgets::inspector_group::panel_title_row(ui, "Export", false, &theme) {
+                    collapse_requested = true;
+                }
                 let all_presets: Vec<ExportPreset> = builtin_presets()
                     .into_iter()
                     .chain(self.prefs.export.custom_presets.iter().cloned())
@@ -31516,7 +31658,9 @@ impl KlippApp {
                         .and_then(|m| self.state.media_pool.get(&m))
                         .map(|m| m.filename.clone())
                         .unwrap_or_else(|| "Clip".into());
-                    crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme);
+                    if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
+                        collapse_requested = true;
+                    }
 
                     // Versions, stills and looks: the grade's own library,
                     // one section above the tabs, collapsible like any
@@ -31731,6 +31875,9 @@ impl KlippApp {
                 all_cmds.extend(panel_cmds);
             }
         });
+        if collapse_requested {
+            self.set_inspector_visible(false);
+        }
         self.state.focus_title_text = self.state.focus_title_text.saturating_sub(1);
     }
 

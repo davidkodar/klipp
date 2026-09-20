@@ -58,8 +58,15 @@ pub(crate) fn compute_layout(
     let main_bottom = statusbar_rect.min.y;
     let main_height = main_bottom - main_top;
 
-    // Browser (left) — collapsible
-    let browser_w = if state.show_browser_panel { layout.browser_width } else { 0.0 };
+    // Browser (left) — collapsible to a rail, never to nothing. The
+    // rail carries the tab icons, so the panel can be brought back by
+    // the same click that sent it away; collapsing to zero would leave
+    // only a menu item nobody knows about.
+    let browser_w = if state.show_browser_panel {
+        layout.browser_width
+    } else {
+        theme::COLLAPSED_RAIL_W
+    };
     let browser_rect = egui::Rect::from_min_size(
         egui::pos2(full.min.x, main_top),
         egui::vec2(browser_w, main_height),
@@ -76,7 +83,7 @@ pub(crate) fn compute_layout(
         let max_inspector_w = (full.width() - browser_w - theme::RESIZER_THICKNESS * 2.0 - 100.0).max(theme::INSPECTOR_MIN_W);
         layout.inspector_width.min(max_inspector_w)
     } else {
-        0.0
+        theme::COLLAPSED_RAIL_W
     };
     let inspector_rect = egui::Rect::from_min_size(
         egui::pos2(full.max.x - inspector_w, main_top),
@@ -320,14 +327,46 @@ mod tests {
     }
 
     #[test]
-    fn test_browser_zero_width_when_hidden() {
+    fn a_collapsed_browser_keeps_its_rail() {
+        // Not zero: the rail is the way back. A panel that collapses to
+        // nothing can only be restored from a menu, which is the part
+        // people do not find.
         let layout = LayoutState::default();
         let state = AppState {
             show_browser_panel: false,
             ..Default::default()
         };
         let rects = compute_layout(test_full_rect(), &layout, &state);
-        assert_eq!(rects.browser_rect.width(), 0.0);
+        assert_eq!(rects.browser_rect.width(), theme::COLLAPSED_RAIL_W);
+    }
+
+    #[test]
+    fn a_collapsed_inspector_keeps_its_rail() {
+        let layout = LayoutState::default();
+        let state = AppState {
+            show_inspector_panel: false,
+            ..Default::default()
+        };
+        let rects = compute_layout(test_full_rect(), &layout, &state);
+        assert_eq!(rects.inspector_rect.width(), theme::COLLAPSED_RAIL_W);
+    }
+
+    #[test]
+    fn collapsing_both_panels_gives_the_centre_the_width_back() {
+        let full = test_full_rect();
+        let layout = LayoutState::default();
+        let open = compute_layout(full, &layout, &AppState::default());
+        let shut = compute_layout(
+            full,
+            &layout,
+            &AppState { show_browser_panel: false, show_inspector_panel: false, ..Default::default() },
+        );
+        let open_centre = open.viewer_rect.width() + open.source_viewer_rect.width();
+        let shut_centre = shut.viewer_rect.width() + shut.source_viewer_rect.width();
+        assert!(
+            shut_centre > open_centre,
+            "collapsing both panels should widen the centre: {open_centre} -> {shut_centre}"
+        );
     }
 
     #[test]
