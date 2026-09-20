@@ -258,32 +258,7 @@ pub fn show_scope_window(
                         });
 
                         // ── Pane grid ──
-                        let (cols, rows) = state.layout.grid();
-                        let cursor = ui.cursor().min;
-                        let avail = ui.available_size();
-                        let grid_w = avail.x.max(100.0);
-                        let grid_h = avail.y.max(80.0);
-                        let gap = 2.0;
-                        let pane_w = ((grid_w - (cols.saturating_sub(1)) as f32 * gap) / cols as f32).max(40.0);
-                        let pane_h = ((grid_h - (rows.saturating_sub(1)) as f32 * gap) / rows as f32).max(30.0);
-
-                        for row in 0..rows {
-                            for col in 0..cols {
-                                let pane_idx = row * cols + col;
-                                if pane_idx >= state.panes.len() { break; }
-                                let x = cursor.x + col as f32 * (pane_w + gap);
-                                let y = cursor.y + row as f32 * (pane_h + gap);
-                                let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
-                                // Per-pane border in pure #000000 so it
-                                // blends into the pane's own true-black
-                                // interior (matching the scope texture
-                                // and the main-dock paint path).
-                                ui.painter().rect_stroke(pane_rect, 0.0,
-                                    egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
-                                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
-                            }
-                        }
+                        draw_pane_grid(ui, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
 
                         // ··· menu popup
                         if runtime.dot_menu_open {
@@ -297,6 +272,69 @@ pub fn show_scope_window(
     if let Some(hover_pos) = ctx.input(|i| i.pointer.hover_pos()) {
         if area_resp.response.rect.contains(hover_pos) {
             runtime.pointer_over = true;
+        }
+    }
+}
+
+/// Lay `state.layout`'s grid of panes across the `ui`'s remaining area.
+///
+/// Shared by the floating scope window and the Colour workspace's
+/// docked scopes, so a pane behaves and looks the same wherever it is
+/// drawn — same header, same type dropdown, same per-pane settings —
+/// and neither can drift from the other.
+///
+/// The caller owns the `ScopeWindowState` and `ScopeWindowRuntime`, so
+/// the dock and the window keep their own pane sets and their own
+/// textures: opening the floating window does not disturb the dock.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pane_grid(
+    ui: &mut egui::Ui,
+    state: &mut ScopeWindowState,
+    scope_options: &mut ScopeOptions,
+    runtime: &mut ScopeWindowRuntime,
+    frame_buffer: &SharedFrameBuffer,
+    skin_tone_angle: f32,
+    is_playing: bool,
+    scope_cursor: Option<crate::state::ScopeCursorData>,
+    spectrum_bins: &[f32],
+    correlation_samples: &[f32],
+    lufs_history: &[f32],
+    lufs_target: f32,
+    spectrum_history: &[Vec<f32>],
+    theme: &KlippTheme,
+    basis: klipp_color::scopes::ScopeBasis,
+) {
+    // A layout change leaves the pane list the wrong length; refill it
+    // before indexing. The floating window does this before its cursor
+    // sampling, the dock has no such step, so it belongs here too.
+    let needed = state.layout.pane_count();
+    if state.panes.len() != needed {
+        state.panes = PaneConfig::default_for_layout(state.layout);
+    }
+
+    let (cols, rows) = state.layout.grid();
+    let cursor = ui.cursor().min;
+    let avail = ui.available_size();
+    let grid_w = avail.x.max(100.0);
+    let grid_h = avail.y.max(80.0);
+    let gap = 2.0;
+    let pane_w = ((grid_w - (cols.saturating_sub(1)) as f32 * gap) / cols as f32).max(40.0);
+    let pane_h = ((grid_h - (rows.saturating_sub(1)) as f32 * gap) / rows as f32).max(30.0);
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let pane_idx = row * cols + col;
+            if pane_idx >= state.panes.len() { break; }
+            let x = cursor.x + col as f32 * (pane_w + gap);
+            let y = cursor.y + row as f32 * (pane_h + gap);
+            let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
+            // Per-pane border in pure #000000 so it blends into the
+            // pane's own true-black interior (matching the scope
+            // texture and the main-dock paint path).
+            ui.painter().rect_stroke(pane_rect, 0.0,
+                egui::Stroke::new(0.5_f32, egui::Color32::BLACK));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            draw_pane(&mut child, pane_idx, state, scope_options, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme, basis);
         }
     }
 }
