@@ -2,6 +2,7 @@
 name = "klipp-app"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [features]
 # AI features ship by default so `cargo r` produces a fully-loaded

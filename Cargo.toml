@@ -36,6 +36,21 @@ members = [
 ]
 resolver = "2"
 
+# ─── What every crate in the workspace says about itself ────────────────────
+# Klipp is GPL-3.0, and each crate has to say so itself: cargo does not
+# infer a licence from a LICENSE file at the repo root, so a crate with
+# no `license` field reads as unlicensed to anything mechanical —
+# `cargo deny check licenses` reported all 33 of ours that way.
+#
+# GPL-3.0-only rather than -or-later, to match the ffmpeg we link
+# (Arch's is GPL-3.0-only). MIT was considered and declined in September
+# 2026: every Rust crate in the tree is permissive, but the ffmpeg build
+# we link is GPL because of x264/x265, and frei0r is GPL-2.0-or-later.
+# A permissive label would have been a false one unless we shipped our
+# own LGPL ffmpeg and gave up software H.264/H.265 export.
+[workspace.package]
+license = "GPL-3.0-only"
+
 # ─── Shared dependency versions across all crates ───────────────────────────
 # Lints the workspace deliberately declines, each with the reason.
 #

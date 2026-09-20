@@ -2,6 +2,7 @@
 name = "klipp-document"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 
 # The document: what a project is when nothing is looking at it. The

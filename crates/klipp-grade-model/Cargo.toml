@@ -2,6 +2,7 @@
 name = "klipp-grade-model"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "The primary grade's model: the ASC CDL wheels, contrast and the tone bands in the grade encoding. A leaf crate, so the colour science and the GPU grade share one definition."
 
 [dependencies]

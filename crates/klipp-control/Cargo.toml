@@ -2,6 +2,7 @@
 name = "klipp-control"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 
 # Control surface for a running Klipp instance.

@@ -2,6 +2,7 @@
 name = "klipp-compose"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "One definition of how a timeline frame is rendered, shared by the viewer and export"
 
 [dependencies]
