@@ -1,5 +1,19 @@
-# Advisory CI. Read the "On CI, and why the real gate is local" section
-# of CONTRIBUTING.md before trusting a green tick here.
+# Dormant while the repository is private. Both jobs are guarded on
+# `repository.private == false`, so they are skipped — at no cost in
+# Actions minutes — until the day the repo goes public, and switch
+# themselves on that day with no edit needed.
+#
+# That is the right moment for two reasons at once: minutes are free on
+# public repositories, and public is when contributors appear who cannot
+# be made to install the pre-push hook. Until then everyone pushing here
+# has it, and it is a strictly better gate than this workflow — the
+# machine it runs on has a GPU.
+#
+# While private, the same authorship rules are enforced by
+# scripts/check-signoff.sh from the hook, instantly and for nothing.
+#
+# When it does run: advisory. Read the "On CI, and why the real gate is
+# local" section of CONTRIBUTING.md before trusting a green tick.
 #
 # The short version: Klipp's correctness argument for the colour
 # pipeline is that its CPU and GPU paths agree, and ~90 of the tests
@@ -37,6 +51,10 @@ jobs:
     name: clippy, rustdoc, tests
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # Skipped entirely while private: a cold build of this workspace
+    # (ffmpeg and whisper.cpp both build C) would spend the month's
+    # budget in a handful of runs.
+    if: github.event.repository.private == false
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +105,11 @@ jobs:
   dco:
     name: sign-off
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    # Cheap, but a private-repo job still bills a whole minute, and at
+    # this project's rate that is a third of the budget for something
+    # the hook already did. scripts/check-signoff.sh is the same three
+    # checks, locally.
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
     steps:
       - uses: actions/checkout@v4
         with:

@@ -293,6 +293,11 @@ AI agent is never the author, committer or co-author of a commit.
 Security problems go through [SECURITY.md](SECURITY.md), not the issue
 tracker.
 
+Klipp's tests run on your machine rather than in CI — `scripts/install-hooks.sh`
+after cloning, and every `git push` then runs the suite. That is not a
+gap: the colour pipeline's correctness argument is that its CPU and GPU
+paths agree, and a cloud runner has no GPU to check it with.
+
 ## License
 
 **GPL-3.0** — see [LICENSE](LICENSE) for the full text.

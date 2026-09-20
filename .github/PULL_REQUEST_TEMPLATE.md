@@ -9,9 +9,10 @@
      the GPU parity tests will have skipped on your machine and the
      maintainer will run them before merging. -->
 
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean
-- [ ] `cargo test --workspace` green
-- [ ] Ran on a machine with a GPU  <!-- if not, say what you have -->
+- [ ] `scripts/install-hooks.sh` installed, and `git push` passed its gate
+- [ ] Ran on a machine with a GPU  <!-- if not, say what you have: the
+      parity tests will have skipped silently and the maintainer will
+      run them before merging -->
 
 ## Checklist
 

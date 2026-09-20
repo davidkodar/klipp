@@ -68,6 +68,7 @@ promotion chore.
 
 The flow:
 
+0. Run `scripts/install-hooks.sh` if you have not already.
 1. Fork, or branch if you have push access. Name the branch for what it
    does: `fix/decode-eagain-retry`, `feat/focus-peaking`.
 2. Keep it short-lived. A branch that lives a week is a branch that
@@ -75,7 +76,8 @@ The flow:
 3. Open a PR against `main`. Fill in the template; link the issue.
 4. It gets reviewed. Expect questions about invariants more than about
    style.
-5. It lands **squash-merged**, so `main` keeps one commit per logical
+5. The maintainer runs the full suite locally on a machine with a GPU.
+6. It lands **squash-merged**, so `main` keeps one commit per logical
    change. Write your PR title as the commit subject you want — see
    [Commit style](#commit-style).
 
@@ -209,33 +211,61 @@ cargo install cargo-audit cargo-deny cargo-outdated cargo-udeps cargo-nextest to
 * **cargo nextest run** — faster test runner with better reporting.
 * **tokei crates/** — LOC / comments / blanks per crate.
 
-### On CI, and why the real gate is local
+### The gate runs on your machine
 
-There is a GitHub Actions workflow, and it is **advisory**. It runs
-clippy, rustdoc and the tests on a cloud runner with a software Vulkan
-driver (lavapipe), which is enough to catch a shader that stopped
-compiling, a lint regression and any CPU-side test failure.
-
-It is not the real gate, and a green tick on your PR does not mean the
-change is safe. Klipp's correctness argument for the colour pipeline is
-that its CPU and GPU paths agree, and the tests that check this can
-only tell you something on real hardware. Around ninety of them are
-written to skip when a GPU constructor returns `None` — which is right
-on a machine with no GPU, and is exactly why a cloud runner can report
-a confident green on a build that is broken.
-
-So the real gate is the pre-push hook, which runs the whole suite on a
-machine with a GPU:
+**Install the hooks. This is step one, before you write anything:**
 
 ```bash
 scripts/install-hooks.sh     # once, after cloning
 ```
 
-After that every `git push` runs clippy with `-D warnings`, a rustdoc
-pass, and `cargo test --workspace` — about 75 s warm — and refuses the
-push on any failure. `KLIPP_SKIP_TESTS=1 git push` bypasses it for a
-genuine reason (a work-in-progress branch, a mid-bisect push, a machine
-with no GPU); it is not for getting a red suite past the gate.
+After that every `git push` runs the authorship check, clippy with
+`-D warnings`, a rustdoc pass, and `cargo test --workspace` — about
+75 s warm — and refuses the push on any failure.
+
+Klipp's tests run locally rather than in CI, and this is a deliberate
+choice rather than a gap we have not got round to.
+
+The reason is that **the tests need a GPU and a cloud runner does not
+have one**. Klipp's correctness argument for the colour pipeline is
+that its CPU and GPU paths agree, and around ninety of the tests that
+check this are written to skip when a GPU constructor returns `None`.
+That is right on a machine with no GPU — and it means a cloud runner
+reports a confident green on a build where a shader stopped compiling.
+Your laptop is a *better* gate than GitHub's runner, not a worse one.
+
+There is a CI workflow in `.github/workflows/`, and it is dormant:
+it is guarded on the repository being public, because Actions minutes
+are metered on private repositories and a cold build of this workspace
+would spend a month's budget in a handful of runs. It switches itself
+on when the repo goes public — which is both when minutes become free
+and when people start contributing from forks, where nobody can be made
+to install a hook. Even then it will be **advisory**, for the GPU
+reason above.
+
+`KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
+work-in-progress branch, a mid-bisect push, a machine with no GPU). It
+is not for getting a red suite past the gate.
+
+**If you have no GPU**, say so in the PR. Your run will have skipped
+the parity tests without telling you, and the maintainer will run the
+full suite on real hardware before merging. That is the backstop, and
+it is why an unverifiable "I ran the tests" costs nobody anything: the
+claim is a courtesy that saves a round-trip, not the thing being
+trusted.
+
+### Checking authorship without pushing
+
+The sign-off and authorship rules are checked by the same hook, and you
+can run them over any range yourself:
+
+```bash
+scripts/check-signoff.sh                 # origin/main..HEAD
+scripts/check-signoff.sh main..my-branch
+```
+
+It is instant, and it runs before clippy so a commit that needs
+amending does not cost you 75 s first.
 
 If you do not have a GPU, say so in the PR. The maintainer will run the
 full suite locally before merging.
