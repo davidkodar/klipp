@@ -2275,6 +2275,27 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::ColorWarper => {
+                // The same header every other grade section uses, so
+                // the warper resets where a colourist already looks for
+                // it. Its reset was a text button under the wheel,
+                // alone in the panel in using that shape.
+                let (reset, _open) = section_header(ui, "COLOUR WARPER", true, theme);
+                if reset {
+                    if let Some(w) = params.warper_params.as_mut() {
+                        w.hue_shifts = [0.0; 12];
+                        w.sat_shifts = [0.0; 12];
+                    }
+                    atomic_node_edit_batch(cmds, clip_id, |c| {
+                        for s in 0..12 {
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id, param: format!("warper_hue_{s}"), value: 0.0,
+                            });
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id, param: format!("warper_sat_{s}"), value: 0.0,
+                            });
+                        }
+                    });
+                }
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => {
@@ -3043,28 +3064,6 @@ impl NodeInspectorPanel {
             }
         }
 
-        // Reset button
-        ui.add_space(6.0);
-        if ui.small_button("Reset Warper").clicked() {
-            warper.hue_shifts = [0.0; 12];
-            warper.sat_shifts = [0.0; 12];
-            atomic_node_edit_batch(cmds, clip_id, |c| {
-                for s in 0..12 {
-                    c.push(AppCommand::SetNodeParam {
-                        clip_id,
-                        node_id,
-                        param: format!("warper_hue_{s}"),
-                        value: 0.0,
-                    });
-                    c.push(AppCommand::SetNodeParam {
-                        clip_id,
-                        node_id,
-                        param: format!("warper_sat_{s}"),
-                        value: 0.0,
-                    });
-                }
-            });
-        }
 
         // Show active sector values as compact readout
         ui.add_space(4.0);
@@ -3097,7 +3096,16 @@ impl NodeInspectorPanel {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
+            // Says which of the two it is. A Look in the GRADE header
+            // above saves the whole grade; this saves the tool you are
+            // looking at. Two preset systems a few centimetres apart
+            // with nothing distinguishing them is how people end up
+            // trusting neither.
+            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim))
+                .on_hover_text(
+                    "A preset for this tool only.\n\
+                     Looks, in the GRADE header, save the whole grade.",
+                );
 
             // Preset dropdown
             let combo_id = format!("tool_preset_{:?}", tool);

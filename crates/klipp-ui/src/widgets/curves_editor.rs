@@ -197,6 +197,33 @@ pub fn curves_editor_in(
         }
     }
 
+    // Numbers on the axis the strip only colours.
+    //
+    // The spectrum says which hue is where; it does not say where 180
+    // is, and "shift the oranges by twenty degrees" needs the number.
+    // Three marks is enough to read the scale without crowding a
+    // ninety-pixel canvas.
+    if axis != CurveAxis::Level {
+        for t in [0.0_f32, 0.5, 1.0] {
+            let label = axis.format_in(t);
+            let x = rect.min.x + t * rect.width();
+            let anchor = if t <= 0.0 {
+                egui::Align2::LEFT_BOTTOM
+            } else if t >= 1.0 {
+                egui::Align2::RIGHT_BOTTOM
+            } else {
+                egui::Align2::CENTER_BOTTOM
+            };
+            painter.text(
+                egui::pos2(x, rect.max.y - 7.0),
+                anchor,
+                label,
+                egui::FontId::monospace(8.0),
+                theme.overlay(120),
+            );
+        }
+    }
+
     // Grid lines (25% intervals)
     let grid_color = theme.border_light;
     for i in 1..4 {
