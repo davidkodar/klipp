@@ -1957,8 +1957,39 @@ fn handle(
                     if measures.iter().filter(|m| klipp_color::measure::looks_like_log(m)).count() * 2 > measures.len() {
                         return Err(format!("{filename} looks like camera log with no input transform, so its numbers are the camera's encoding and not a look; set its log format, or pick a finished reference"));
                     }
-                    let t = LookTarget::from_measures(&format!("like {filename}"), &measures)
+                    let mut t = LookTarget::from_measures(&format!("like {filename}"), &measures)
                         .ok_or_else(|| format!("no frame of {filename} could be read"))?;
+                    // A look with no skin target meters exposure on the
+                    // frame's median, which on a dark reference drives
+                    // every face far too dark. The commonest cause is
+                    // simply that the reference has not been analysed
+                    // yet, so its face regions are not known — say so
+                    // rather than quietly handing back a look that
+                    // cannot expose a face.
+                    // A stylised reference can put its faces off the
+                    // skin band entirely — Tears of Steel, graded teal
+                    // and orange, reads 89°, which is yellow-green and
+                    // no complexion at all. Adopting that would aim
+                    // every face in the piece at a hue no face has. A
+                    // colourist matching to such a reference takes its
+                    // contrast and its cast and still keeps skin on the
+                    // line; that is what the skin line on a vectorscope
+                    // is for.
+                    if let Some(hue) = t.skin_hue {
+                        if klipp_color::measure::hue_off_skin_band(hue) > 0.0 {
+                            t.skin_hue = None;
+                            t.name = format!("like {filename} (its own skin sits {hue:.0}°, off the band, so skin stays on the band)");
+                        }
+                    }
+                    if t.skin_hue.is_none() && t.skin_l.is_none() {
+                        let state = klipp_analysis::service::status(mid).map(|s| format!("{:?}", s.state).to_lowercase()).unwrap_or_else(|| "not asked for".into());
+                        if state != "done" {
+                            return Err(format!(
+                                "{filename} has no face regions to read skin from (its analysis is {state}). A look without a skin target meters exposure on the frame's median, which on a dark reference grades every face far too dark. Analyse it first, then adopt_look again."
+                            ));
+                        }
+                        t.name = format!("like {filename} (no face in it)");
+                    }
                     (t, filename)
                 }
                 (None, true) => {
@@ -2033,6 +2064,10 @@ fn handle(
                 },
                 match (target.skin_hue, target.skin_l) {
                     (Some(h), Some(l)) => format!(", skin {h:.0}° at L* {l:.0}"),
+                    // The hue was dropped as off the band (a stylised
+                    // reference), but its exposure is still a real
+                    // reading of where it puts a face.
+                    (None, Some(l)) => format!(", faces exposed to L* {l:.0}, and skin held on its own band rather than the reference's"),
                     _ => ", no face in the reference, so exposure is metered on the frame's median rather than on skin".to_string(),
                 },
             );
@@ -2211,9 +2246,20 @@ fn handle(
             for w in read.windows(2) {
                 let d = match_distance(&w[0].2, &w[1].2);
                 let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
-                if same_scene && d > MATCH_WARN {
+                if d > MATCH_WARN {
                     let (a, b): (String, String) = (shots[w[0].0].3.chars().take(18).collect(), shots[w[1].0].3.chars().take(18).collect());
-                    lines.push(format!("  [warn] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step inside one scene — the viewer sees the join", w[1].1));
+                    // A join between two scenes is often meant to look
+                    // different — a cut to another location should.
+                    // But an interview on two cameras, or one where a
+                    // lamp was changed half way, splits into "scenes"
+                    // the viewer reads as one, and then the boundary is
+                    // precisely the fault. So every join is reported
+                    // and the person decides which are intended.
+                    lines.push(if same_scene {
+                        format!("  [warn] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step inside one scene — the viewer sees the join", w[1].1)
+                    } else {
+                        format!("  [note] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step between two scenes — meant, if they are different places; a fault if the viewer is meant to read them as one", w[1].1)
+                    });
                 }
                 joins.push(json!({ "at": w[1].1, "residual": d, "same_scene": same_scene }));
             }
@@ -2510,6 +2556,7 @@ fn handle(
                 let before = colour_report(&m, &look, *mid);
                 let mut step = klipp_color::measure::primaries_toward(&m, &look);
                 let mut done_rounds = 0u32;
+                let mut stalled: Option<String> = None;
                 for _ in 0..n_rounds {
                     let fails = colour_report(&m, &look, *mid);
                     let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.5 || step.tint.abs() > 0.5 || step.saturation.abs() > 0.03;
@@ -2535,6 +2582,33 @@ fn handle(
                     send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Grade To Target".into()))?;
                     done_rounds += 1;
                     m = measure_at(ctx, *mid, Some(6000))?;
+                    // A round that leaves the shot worse off is not a
+                    // step toward anything. The commonest case is a
+                    // cast the primaries cannot reach — a tungsten shot
+                    // against a daylight target — where the loop pushes
+                    // exposure around for ever, crushes the blacks, and
+                    // never moves the cast at all. Put the knobs back
+                    // where they were and say why it stopped.
+                    let after_round = colour_report(&m, &look, *mid);
+                    if after_round.len() > fails.len() {
+                        let op: klipp_document::ops::Op = serde_json::from_value(json!({
+                            "op": "grade", "clip_id": id,
+                            "exposure": now.exposure, "lift": now.lift, "gain": now.gain,
+                            "temperature": now.temperature, "tint": now.tint, "saturation": now.saturation,
+                        })).map_err(|e| e.to_string())?;
+                        let (plan, revision) = resolve_plan(ctx, &[op])?;
+                        let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                        send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Grade To Target".into()))?;
+                        m = measure_at(ctx, *mid, Some(6000))?;
+                        done_rounds -= 1;
+                        stalled = Some(format!(
+                            "stopped after {done_rounds} round(s): the next one made it worse ({} findings against {}), so it was put back. What is left is past what the primaries can reach — {}",
+                            after_round.len(),
+                            fails.len(),
+                            if m.cast() >= 3.0 { "the cast needs the white balance set at the source, or a qualified secondary" } else { "try a secondary, or accept it" },
+                        ));
+                        break;
+                    }
                     step = klipp_color::measure::primaries_toward(&m, &look);
                 }
                 let after = colour_report(&m, &look, *mid);
@@ -2546,9 +2620,14 @@ fn handle(
                     after.len(),
                     if done_rounds > 0 { format!(" ({done_rounds} round(s))") } else { String::new() },
                     if after.is_empty() { "; on target".to_string() } else { format!("; left: {}", after.iter().map(|f| f.2.clone()).collect::<Vec<_>>().join(", ")) },
-                    drift.as_ref().map(|d| format!("; {d}")).unwrap_or_default(),
+                    match (&drift, &stalled) {
+                        (Some(d), Some(s)) => format!("; {d}; {s}"),
+                        (Some(d), None) => format!("; {d}"),
+                        (None, Some(s)) => format!("; {s}"),
+                        (None, None) => String::new(),
+                    },
                 ));
-                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "drift": drift, "frames_read": reads.len(), "lab": m }));
+                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "stalled": stalled, "drift": drift, "frames_read": reads.len(), "lab": m }));
             }
             // A preset is a guess at what the piece wants; a reference
             // is what it was actually asked for.
@@ -2972,7 +3051,20 @@ fn handle(
                 return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
             }
             drop(pool);
-            let mut v = send(AppCommand::ImportMedia { path: p })?;
+            let mut v = send(AppCommand::ImportMedia { path: p.clone() })?;
+            // The id it just made, waited for. Without this the first
+            // call answers with no media_id at all and only a *second*
+            // one finds the path in the pool — so an agent importing a
+            // batch gets a list of nothing and has to ask again for
+            // every file.
+            match imported_id(ctx, &p) {
+                Some(id) => {
+                    v["media_id"] = json!(id);
+                }
+                None => {
+                    v["note"] = json!("the import was sent but the item has not reached the pool yet; list_media will show it");
+                }
+            }
             v["next"] = json!("Imported. Analysis runs on import; set the brief first (set_brief) so the transcript gets the cast's names and the spellings. Watch analysis_status, then read the transcript and shots.");
             Ok(v)
         }
@@ -4033,14 +4125,36 @@ reference:   {}",
                 }
             }
 
-            let next = if report.errors > 0 {
+            // The headline counts everything the check found, colour
+            // and sound included. It used to count only the craft
+            // findings, so a timeline with ten colour errors under it
+            // was announced as "0 errors, 0 warnings" and `next` said
+            // "Clean. Export." — which is what an agent reads.
+            let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
+            let errors = report.errors + colour_errors;
+            let warnings = report.warnings + (color_findings.len() - colour_errors) + audio_findings.len();
+            let next = if errors > 0 {
                 "Fix the errors before you deliver — each finding says what and where. Then check again."
-            } else if report.warnings > 0 {
+            } else if warnings > 0 {
                 "No errors. Decide each warning: fix it, or keep it on purpose and be able to say why. Then export."
             } else {
                 "Clean. Export at the brief's loudness, poll export_status, then save_project."
             };
             let mut text = report.text();
+            if errors != report.errors || warnings != report.warnings {
+                let notes = report.findings.len() - report.errors - report.warnings;
+                let head = format!(
+                    "Checked {:.2} s: {errors} error{}, {warnings} warning{}, {notes} note{}.",
+                    report.duration_secs,
+                    if errors == 1 { "" } else { "s" },
+                    if warnings == 1 { "" } else { "s" },
+                    if notes == 1 { "" } else { "s" },
+                );
+                match text.find('\n') {
+                    Some(i) => text.replace_range(..i, &head),
+                    None => text = head,
+                }
+            }
             if color {
                 text.push_str(&format!("\n\nColour (measured in Lab on {} shot{}, {shots_on_target} on target):", color_times.len(), if color_times.len() == 1 { "" } else { "s" }));
                 if color_findings.is_empty() {
@@ -4058,9 +4172,8 @@ reference:   {}",
                 }
             }
             let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
-            let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
             let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
-            Ok(json!({ "text": text, "errors": report.errors + colour_errors, "warnings": report.warnings + (color_findings.len() - colour_errors) + audio_findings.len(), "findings": report.findings, "color_findings": findings_json, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         ControlCommand::Undo => send(AppCommand::Undo),

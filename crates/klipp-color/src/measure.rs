@@ -494,8 +494,8 @@ pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
         let p = (y * w + x) * 4;
         srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]).l
     };
-    let mut spreads: Vec<f32> = Vec::new();
-    let mut banded_tiles = 0usize;
+    // Pass one: where the flat tiles are, and how quiet they are.
+    let mut flat: Vec<(usize, usize, f32)> = Vec::new();
     let mut y0 = 0;
     while y0 + TILE <= h {
         let mut x0 = 0;
@@ -510,40 +510,59 @@ pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
             let sd = (ls.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / ls.len() as f32).sqrt();
             // A tile with detail in it says nothing about noise.
             if sd < 4.0 && mean > 6.0 && mean < 94.0 {
-                spreads.push(sd);
-                // The staircase: along a row, a run of one value and
-                // then a step of a whole code or more.
-                let mut banded = false;
-                for y in (y0..y0 + TILE).step_by(4) {
-                    let (mut run, mut last) = (0usize, luma(x0, y));
-                    for x in x0 + 1..x0 + TILE {
-                        let v = luma(x, y);
-                        let d = (v - last).abs();
-                        if d < 0.02 {
-                            run += 1;
-                        } else {
-                            if run >= 6 && d > 0.35 {
-                                banded = true;
-                            }
-                            run = 0;
-                        }
-                        last = v;
-                    }
-                }
-                if banded {
-                    banded_tiles += 1;
-                }
+                flat.push((x0, y0, sd));
             }
             x0 += step_x;
         }
         y0 += step_y;
     }
-    if spreads.is_empty() {
+    if flat.is_empty() {
         return (0.0, 0.0);
     }
+    let mut spreads: Vec<f32> = flat.iter().map(|t| t.2).collect();
     spreads.sort_by(|a, b| a.total_cmp(b));
     // The floor, not the average: the quietest fifth of the flat tiles.
-    (percentile(&spreads, 0.2), banded_tiles as f32 / spreads.len() as f32 * 100.0)
+    let noise = percentile(&spreads, 0.2);
+
+    // Pass two: the staircase. Along a row, a run of one value and then
+    // a step out of it.
+    //
+    // The step has to be large *against the picture's noise floor* for
+    // the band to be visible at all — that is what dithering exploits,
+    // and why a 0.4 L* step inside grain of 1 L* cannot be seen.
+    // Judged against a fixed 0.35 instead, this counted every smooth,
+    // clean, low-noise area as banded: twelve pristine reference
+    // portraits read between 1% and 46%, which is a measurement of
+    // smoothness and not of banding.
+    //
+    // The floor is the reference rather than each tile's own spread,
+    // because a banded tile's steps are most of its spread — judging a
+    // step against it would hide exactly what is being looked for.
+    let visible_step = (noise * 2.5).max(0.35);
+    let mut banded_tiles = 0usize;
+    for (x0, y0, _) in &flat {
+        let mut banded = false;
+        for y in (*y0..*y0 + TILE).step_by(4) {
+            let (mut run, mut last) = (0usize, luma(*x0, y));
+            for x in *x0 + 1..*x0 + TILE {
+                let v = luma(x, y);
+                let d = (v - last).abs();
+                if d < 0.02 {
+                    run += 1;
+                } else {
+                    if run >= 6 && d > visible_step {
+                        banded = true;
+                    }
+                    run = 0;
+                }
+                last = v;
+            }
+        }
+        if banded {
+            banded_tiles += 1;
+        }
+    }
+    (noise, banded_tiles as f32 / flat.len() as f32 * 100.0)
 }
 
 /// A box of a frame as its own picture, for measuring one region: a
@@ -587,8 +606,21 @@ pub fn looks_like_log(m: &FrameMeasure) -> bool {
 /// original pins none.
 pub const NOISE_WARN: f32 = 1.2;
 pub const NOISE_FAIL: f32 = 2.5;
-pub const BANDING_WARN: f32 = 25.0;
-pub const BANDING_FAIL: f32 = 45.0;
+/// Banding thresholds, set by what real material reads once a step is
+/// judged against the picture's noise floor rather than a fixed number.
+///
+/// Twelve pristine reference portraits read 0–2%. An 8-bit ffmpeg
+/// gradient, which genuinely bands, reads 29%; the dithered version of
+/// the same ramp reads 0%. There is no material in between, so the
+/// thresholds sit in the gap rather than near either end.
+///
+/// The earlier pair, 25 and 45, were set against the synthetic gradient
+/// alone and never held against a clean photograph. With the old fixed
+/// step they made a smooth studio backdrop an *error* on every shot of
+/// an ordinary 8-bit interview — found by running the tools end to end
+/// on real footage, which is the only way that kind of fault shows.
+pub const BANDING_WARN: f32 = 10.0;
+pub const BANDING_FAIL: f32 = 25.0;
 pub const GAMUT_WARN: f32 = 2.0;
 pub const GAMUT_FAIL: f32 = 8.0;
 
@@ -1431,8 +1463,17 @@ mod tests {
         let (w, h) = (240, 160);
         // A clean ramp: no noise, but 8-bit steps across a dark gradient
         // are what banding is.
+        //
+        // The plateaus are wider than a tile, which is what a real
+        // banded gradient looks like: most tiles sit inside one flat
+        // step, so the picture's noise floor is measured off them and
+        // is near zero, and the tiles that straddle a boundary show the
+        // step against it. A ramp steep enough to put a step inside
+        // every tile has no quiet tiles to set the floor from, and its
+        // steps are then not visible — which the detector is right to
+        // pass, and which is why this ramp is gentle.
         let ramp = frame_of(w, h, |x, _| {
-            let v = (20.0 + x as f32 * 0.08) as u8;
+            let v = 20 + (x / 40) as u8;
             [v, v, (v as f32 * 1.1) as u8]
         });
         let m = measure_frame(&ramp, w as u32, h as u32, &[]);
@@ -1440,7 +1481,7 @@ mod tests {
         assert!(m.banding_pct > BANDING_WARN, "an 8-bit ramp bands: {:.0}%", m.banding_pct);
         // The same ramp with a pixel of dither: the steps break up.
         let dithered = frame_of(w, h, |x, y| {
-            let v = (20.0 + x as f32 * 0.08 + ((x * 7 + y * 13) % 3) as f32 - 1.0) as u8;
+            let v = (20 + (x / 40) as i32 + ((x * 7 + y * 13) % 3) as i32 - 1).clamp(0, 255) as u8;
             [v, v, (v as f32 * 1.1) as u8]
         });
         let m2 = measure_frame(&dithered, w as u32, h as u32, &[]);
