@@ -240,11 +240,17 @@ impl ViewerPanel {
     /// can render matching chrome under their own video rects.
     ///
     /// `viewer_kind` selects which playhead the scrub bar and play-bar
-    /// timecode reflect (Program → timeline; Source → source clip). For
-    /// now the transport buttons (play/pause, step, skip, etc.) still
-    /// target the timeline regardless of `viewer_kind` — real source
-    /// playback needs a persistent engine decoder, which is a separate
-    /// follow-up.
+    /// timecode reflect (Program → timeline; Source → source clip), and
+    /// which engine the buttons drive: every command from this bar goes
+    /// through `route_command_for_viewer`, so the source playbar plays
+    /// the source and the program playbar plays the timeline.
+    ///
+    /// This paragraph used to say the opposite — that the buttons all
+    /// targeted the timeline regardless — which was true before source
+    /// routing landed and has been wrong since. Left uncorrected it
+    /// argues for merging the two bars as duplicates, which they are
+    /// not: two viewers with independent playback need two transports,
+    /// the same as every other dual-viewer NLE.
     pub fn draw_transport_chrome(
         &mut self,
         ui: &mut egui::Ui,
@@ -2189,11 +2195,38 @@ impl ViewerPanel {
         }
 
         // ── Center: Transport buttons ──
+        //
+        // The group is centred in the rect, which on a narrow viewer put
+        // it straight on top of the timecode: at ~330 px the leading
+        // edge lands about 50 px in, while the timecode runs to about
+        // 98 px, so the buttons painted over it and it read as "00:0".
+        //
+        // The right-hand controls already solve this by dropping in a
+        // priority order. The same idea, mirrored: the timecode is the
+        // one readout in this bar that must never be half-drawn, so it
+        // keeps its space and the transport sheds its outermost pairs —
+        // skip-to-end first, then the 10-second jumps. Step and play are
+        // the core and always survive.
         let btn_size = 30.0;
         let play_size = 38.0;
         let btn_spacing = 4.0;
-        let total_w = 7.0 * btn_size + play_size - btn_size + 6.0 * btn_spacing;
-        let mut x = rect.center().x - total_w / 2.0;
+        // Everything left of the centre group: the timecode's 110 px
+        // slot at +8, or the viewer switcher at +126 when it is shown.
+        let left_reserved = if !state.viewers_side_by_side() && !state.single_viewer_is_program() {
+            196.0
+        } else {
+            126.0
+        };
+        let group_w = |pairs: f32| pairs * 2.0 * (btn_size + btn_spacing) + play_size;
+        // 3 pairs is the full set, then 2, then 1.
+        let mut pairs = 3.0_f32;
+        while pairs > 1.0 && rect.center().x - group_w(pairs) / 2.0 < rect.min.x + left_reserved {
+            pairs -= 1.0;
+        }
+        let show_skip = pairs >= 3.0;
+        let show_jump = pairs >= 2.0;
+        let total_w = group_w(pairs);
+        let mut x = (rect.center().x - total_w / 2.0).max(rect.min.x + left_reserved);
 
         let nav_fg = theme.text_primary;
         let nav_bg = theme.bg_panel;
@@ -2208,11 +2241,15 @@ impl ViewerPanel {
         use crate::panels::transport::route_command_for_viewer;
         let route = |c: AppCommand| route_command_for_viewer(c, viewer_kind);
 
-        // Skip back
+        // Skip back — outermost pair, first to go when space is tight.
+        if show_skip {
         x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(route(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())))));
-        // Rewind
+        }
+        // Rewind — the 10-second jump, second to go.
+        if show_jump {
         x += self.playbar_nav_btn(ui, Icon::Rewind, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Rewind (J)", cmds, Some(route(AppCommand::SeekRelative(-(fps_val * 10.0) as i64))));
-        // Step back
+        }
+        // Step back — core, always shown.
         x += self.playbar_nav_btn(ui, Icon::CaretLeft, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step back 1 frame", cmds, Some(route(AppCommand::SeekRelative(-1))));
 
         // Play / Pause (larger, amber)
@@ -2251,9 +2288,11 @@ impl ViewerPanel {
         // Step forward
         x += self.playbar_nav_btn(ui, Icon::CaretRight, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step forward 1 frame", cmds, Some(route(AppCommand::SeekRelative(1))));
         // Fast forward
+        if show_jump {
         x += self.playbar_nav_btn(ui, Icon::FastForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Fast forward (L)", cmds, Some(route(AppCommand::SeekRelative((fps_val * 10.0) as i64))));
+        }
         // Skip forward
-        {
+        if show_skip {
             let dur = state.sequence_duration();
             self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(route(AppCommand::SeekTo(dur))));
         }
