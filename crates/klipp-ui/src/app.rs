@@ -25,6 +25,11 @@ use klipp_engine::{PlaybackState, SharedFrameBuffer};
 /// menu would route through SetStickyNoteColor (not yet shipped).
 /// Stored packed RGBA u32 (little-endian: r, g, b, a).
 const STICKY_DEFAULT_COLOR_RGBA: u32 = u32::from_le_bytes([0xd4, 0xc8, 0x9a, 0xff]);
+
+/// Height reserved at the foot of the Export workspace's column for its
+/// action bar. Enough for one row of regular controls plus the rule
+/// above it and breathing room either side.
+const EXPORT_ACTION_BAR_H: f32 = 48.0;
 use crossbeam_queue::ArrayQueue;
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::{Marker, Sequence};
@@ -29379,15 +29384,24 @@ impl KlippApp {
                             ui.end_row();
                         }
 
-                        // Tone-map operator — the "colour science" picker.
-                        // Applied at the display-boundary inside
-                        // `Encoder::encode_linear_frame` during export,
-                        // after the grade and before sRGB quantise.
-                        // ACES is the industry-standard filmic look;
-                        // Hable is the previous default. An HDR delivery
-                        // keeps its highlights instead, so it has none.
+                        // Tone-map operator. Applied at the display
+                        // boundary inside `Encoder::encode_linear_frame`
+                        // during export, after the grade and before sRGB
+                        // quantise. ACES is the industry-standard filmic
+                        // look; Hable is the previous default. An HDR
+                        // delivery keeps its highlights instead, so it
+                        // has none.
+                        //
+                        // Labelled "Tone map", not "Colour science".
+                        // In Resolve "colour science" names the pipeline
+                        // a project is graded through — YRGB against
+                        // ACES — and a colourist reading that word here
+                        // would expect to be choosing that, not a
+                        // highlight roll-off curve. The control picks
+                        // None / Reinhard / Hable / ACES, which is a
+                        // tone map and nothing else.
                         if delivery == klipp_core::HdrMode::Sdr {
-                            ui.label("Colour science:");
+                            ui.label("Tone map:");
                             egui::ComboBox::from_id_salt("export_tone_map")
                                 .selected_text(klipp_color::display::tone_map_op_label(
                                     self.export_dialog.tone_map_op,
@@ -29761,71 +29775,140 @@ impl KlippApp {
 
         }); });
 
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
+                // In the Export workspace these live in a bar pinned
+                // to the foot of the column, so they cannot scroll away
+                // — see `export_action_bar`. The dialog has no such
+                // problem: it sizes itself to its contents.
+                if in_dialog {
                     ui.add_space(12.0);
-                    if in_dialog && ui.button("Cancel").clicked() {
-                        self.state.show_export_dialog = false;
+                    self.export_action_bar(ui, cmds, true);
+                }
+    }
+
+    /// The two things this panel exists to do.
+    ///
+    /// Drawn as its own row so the Export workspace can pin it to the
+    /// foot of the column rather than let it scroll off the bottom of
+    /// the form. It did scroll off: at a half-height window the button
+    /// that starts a render sat below the fold behind a scrollbar that
+    /// egui only paints on hover, so the primary action of a page named
+    /// Export had to be hunted for.
+    ///
+    /// `Export` is filled with the accent and `Add to Queue` is left as
+    /// a plain button. They were previously identical, which left the
+    /// panel with no primary action at all.
+    fn export_action_bar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+        let theme = self.theme.clone();
+        let path_ok = !self.export_dialog.output_path.trim().is_empty();
+        let h = crate::theme::control::REGULAR;
+        ui.horizontal(|ui| {
+            // Secondary actions run from the left, the primary one is
+            // pushed to the right edge. Two same-sized buttons huddled
+            // at the left of a wide bar read as leftovers from the form
+            // above rather than as the point of the panel.
+            ui.add_space(12.0);
+            if in_dialog
+                && ui.add_sized([84.0, h], egui::Button::new("Cancel")).clicked()
+            {
+                self.state.show_export_dialog = false;
+            }
+            if ui
+                .add_enabled(
+                    path_ok,
+                    egui::Button::new("Add to Queue").min_size(egui::vec2(120.0, h)),
+                )
+                .on_disabled_hover_text("Choose an output file first")
+                .clicked()
+            {
+                let path = PathBuf::from(&self.export_dialog.output_path);
+                let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
+                let use_marked = self.export_dialog.range_mode == 1;
+                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                    &self.state.sequences[self.state.active_sequence_idx],
+                    &self.state.sequences,
+                    &self.state.media_pool,
+                    &settings,
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                    use_marked,
+                    self.state.project_working_colorspace,
+                );
+                if self.export_dialog.range_mode == 2 {
+                    if let Ok(ref mut snap) = snapshot {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                     }
-                    let path_ok = !self.export_dialog.output_path.trim().is_empty();
-                    if ui.add_enabled(path_ok, egui::Button::new("Add to Queue"))
-                        .on_disabled_hover_text("Choose an output file first")
-                        .clicked()
-                    {
-                        let path = PathBuf::from(&self.export_dialog.output_path);
-                        let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
-                        let use_marked = self.export_dialog.range_mode == 1;
-                        let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
-                            &self.state.sequences[self.state.active_sequence_idx],
-                            &self.state.sequences,
-                            &self.state.media_pool,
-                            &settings,
-                            self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
-                            use_marked,
-                            self.state.project_working_colorspace,
-                        );
-                        if self.export_dialog.range_mode == 2 {
-                            if let Ok(ref mut snap) = snapshot {
-                                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                                snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
-                            }
-                        }
-                        if let Ok(ref mut snap) = snapshot {
-                            snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
-                        }
-                        let label = path.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "Render".into());
-                        match snapshot {
-                            Ok(snap) => {
-                                self.state.render_queue.add_job(path, settings, label, snap);
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to create render snapshot: {e}");
-                            }
-                        }
-                        self.state.show_export_dialog = false;
-                        self.state.show_render_queue = true;
-                        self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
-                        self.prefs_dirty = true;
+                }
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
+                }
+                let label = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Render".into());
+                match snapshot {
+                    Ok(snap) => {
+                        self.state.render_queue.add_job(path, settings, label, snap);
                     }
-                    if ui.add_enabled(path_ok, egui::Button::new("Export"))
-                        .on_disabled_hover_text("Choose an output file first")
-                        .clicked()
-                    {
-                        let path = PathBuf::from(&self.export_dialog.output_path);
-                        if path.exists() {
-                            self.export_dialog.confirm_overwrite = true;
-                        } else {
-                            self.state.show_export_dialog = false;
-                            self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
-                            self.prefs_dirty = true;
-                            cmds.push(AppCommand::ExportSequence {
-                                settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
-                            });
-                        }
+                    Err(e) => {
+                        tracing::error!("Failed to create render snapshot: {e}");
                     }
-                });
+                }
+                self.state.show_export_dialog = false;
+                self.state.show_render_queue = true;
+                self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                self.prefs_dirty = true;
+            }
+            // The primary action, and the only thing in the row painted
+            // with the accent.
+            //
+            // Disabled, it drops to a flat raised fill: an explicit
+            // `.fill()` survives `add_enabled(false, ..)`, and a button
+            // wearing the accent that does nothing when clicked is
+            // worse than no emphasis at all.
+            let (fill, fg) = if path_ok {
+                (theme.accent, theme.text_on_accent)
+            } else {
+                (theme.bg_raised, theme.text_dim)
+            };
+            let draw_export = |ui: &mut egui::Ui| {
+                let btn = egui::Button::new(egui::RichText::new("Export").color(fg))
+                    .fill(fill)
+                    .rounding(4.0)
+                    .min_size(egui::vec2(140.0, h));
+                ui.add_enabled(path_ok, btn)
+                    .on_disabled_hover_text("Choose an output file first")
+                    .clicked()
+            };
+
+            // In the workspace bar the button is anchored to the right
+            // edge, so which one does the thing the page is named after
+            // is legible without reading either label. The dialog is
+            // too narrow for that: right-aligning there pushed Export
+            // on top of Add to Queue, so its buttons keep flowing from
+            // the left with the accent alone carrying the emphasis.
+            let export_clicked = if in_dialog {
+                draw_export(ui)
+            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    draw_export(ui)
+                })
+                .inner
+            };
+
+            if export_clicked {
+                let path = PathBuf::from(&self.export_dialog.output_path);
+                if path.exists() {
+                    self.export_dialog.confirm_overwrite = true;
+                } else {
+                    self.state.show_export_dialog = false;
+                    self.prefs.export.last_preset_id = self.export_dialog.selected_preset_id.clone();
+                    self.prefs_dirty = true;
+                    cmds.push(AppCommand::ExportSequence {
+                        settings: build_export_settings(&self.export_dialog, self.prefs.audio.pan_law),
+                    });
+                }
+            }
+        });
     }
 
     fn show_export_dialog(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
@@ -31749,27 +31832,61 @@ impl KlippApp {
                     .into_iter()
                     .chain(self.prefs.export.custom_presets.iter().cloned())
                     .collect();
-                egui::ScrollArea::vertical().id_salt("export_ws_scroll").show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    self.export_settings_contents(ui, &all_presets, all_cmds, false);
-                    ui.add_space(12.0);
-                    // The queue lives under the form here; the Render
-                    // Queue window is the same list elsewhere.
-                    let jobs = self.state.render_queue.jobs.len();
-                    let badge = if jobs > 0 { Some(format!("{jobs}")) } else { None };
-                    let mut actions = Vec::new();
-                    crate::widgets::inspector_group::section_card(ui, "RENDER QUEUE", badge, &theme, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_space(12.0);
-                            ui.vertical(|ui| {
-                                ui.set_max_width(ui.available_width() - 12.0);
-                                crate::panels::render_queue::RenderQueuePanel::show_contents(
-                                    ui, &self.state.render_queue, &theme, true, &mut actions,
-                                );
+                // Reserve the foot of the column for the actions before
+                // the form gets to claim the space, so Export and Add to
+                // Queue are on screen at every window height. The form
+                // scrolls inside what is left.
+                let full = ui.available_rect_before_wrap();
+                let bar_h = EXPORT_ACTION_BAR_H.min(full.height() * 0.5);
+                let body_rect = egui::Rect::from_min_max(
+                    full.min,
+                    egui::pos2(full.max.x, full.max.y - bar_h),
+                );
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::pos2(full.min.x, full.max.y - bar_h),
+                    full.max,
+                );
+
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+                    egui::ScrollArea::vertical().id_salt("export_ws_scroll").show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        self.export_settings_contents(ui, &all_presets, all_cmds, false);
+                        ui.add_space(12.0);
+                        // The queue lives under the form here; the Render
+                        // Queue window is the same list elsewhere.
+                        let jobs = self.state.render_queue.jobs.len();
+                        let badge = if jobs > 0 { Some(format!("{jobs}")) } else { None };
+                        let mut actions = Vec::new();
+                        crate::widgets::inspector_group::section_card(ui, "RENDER QUEUE", badge, &theme, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(12.0);
+                                ui.vertical(|ui| {
+                                    ui.set_max_width(ui.available_width() - 12.0);
+                                    crate::panels::render_queue::RenderQueuePanel::show_contents(
+                                        ui, &self.state.render_queue, &theme, true, &mut actions,
+                                    );
+                                });
                             });
                         });
+                        self.apply_render_queue_actions(actions);
                     });
-                    self.apply_render_queue_actions(actions);
+                });
+
+                // The bar sits on the panel's own background with a rule
+                // above it, so it reads as a pinned foot rather than as
+                // the last thing in the form.
+                ui.painter().rect_filled(bar_rect, 0.0, theme.bg_panel);
+                ui.painter().hline(
+                    bar_rect.x_range(),
+                    bar_rect.top(),
+                    egui::Stroke::new(1.0_f32, theme.border),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                    // Centre the row in the reserved strip rather than
+                    // letting it sit against the rule.
+                    let pad = ((bar_h - crate::theme::control::REGULAR) * 0.5).max(0.0);
+                    ui.add_space(pad);
+                    self.export_action_bar(ui, all_cmds, false);
                 });
                 return;
             }

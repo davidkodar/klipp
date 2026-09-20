@@ -66,7 +66,9 @@ pub fn show_workspace_manager_dialog(
                                     let is_selected = state
                                         .workspace_manager_selected
                                         .as_deref() == Some(p.name.as_str());
-                                    let label = format!("\u{1F512} {}", p.name);
+                                    // Shown, not stored — see
+                                    // `SavedWorkspaceLayout::display_name`.
+                                    let label = format!("\u{1F512} {}", p.display_name());
                                     if ui.selectable_label(is_selected, label).clicked() {
                                         state.workspace_manager_selected = Some(p.name.clone());
                                     }
