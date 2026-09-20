@@ -1953,15 +1953,19 @@ fn handle(
                 .iter()
                 .filter_map(|n| LookTarget::preset(n))
                 .filter_map(|p| {
-                    let d = [
+                    let pairs: Vec<f32> = [
                         (p.mid_l, target.mid_l),
                         (p.contrast_range, target.contrast_range),
                         (p.chroma_mean, target.chroma_mean),
                     ]
                     .iter()
                     .filter_map(|(a, b)| Some((a.as_ref()? - b.as_ref()?).abs()))
-                    .sum::<f32>();
-                    Some((p.name.clone(), d))
+                    .collect();
+                    // A preset that names no numbers — "screencast",
+                    // which is a rule about what to judge rather than a
+                    // set of targets — has nothing to be near, and
+                    // would otherwise win every comparison at zero.
+                    (pairs.len() == 3).then(|| (p.name.clone(), pairs.iter().sum::<f32>()))
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             let describe = format!(
@@ -2163,7 +2167,7 @@ fn handle(
             }
             Ok(json!({
                 "text": format!(
-                    "{}\n\nMatched on what the eye notices across a cut, in its order: the face first (a viewer knows what a person looks like and not what colour the wall was), then exposure, then the cast on the neutrals, then contrast. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
+                    "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
                     lines.join("\n"),
                     if apply { "" } else { " Run it with apply true to grade each shot onto its scene's hero, one undo step a round." },
                 ),

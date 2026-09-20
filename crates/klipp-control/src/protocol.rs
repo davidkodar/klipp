@@ -292,6 +292,7 @@ pub enum ControlCommand {
     /// Send a published colour chart through the render path and read
     /// it back, to find out whether the path itself moves colour before
     /// trusting anything it is asked to measure.
+    #[serde(rename = "colour_selfcheck")]
     ColourSelfCheck {
         #[serde(default)]
         size: Option<u32>,
