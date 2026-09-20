@@ -31496,6 +31496,7 @@ impl KlippApp {
                 &mut self.state,
                 &self.theme,
                 &mut self.timeline,
+                &self.key_bindings,
             );
             all_cmds.extend(panel_cmds);
         });

@@ -27,6 +27,7 @@ impl NewTimelinePanel {
         state: &mut AppState,
         theme: &KlippTheme,
         old_timeline: &mut crate::panels::timeline::TimelinePanel,
+        kb: &crate::keybindings::KeyBindings,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let full_rect = ui.max_rect();
@@ -49,7 +50,7 @@ impl NewTimelinePanel {
                     toolbar_rect.max.y,
                     egui::Stroke::new(1.0_f32, theme.border),
                 );
-                toolbar::show(ui, state, theme, &mut cmds);
+                toolbar::show(ui, state, theme, &mut cmds, kb);
             });
         }
 
