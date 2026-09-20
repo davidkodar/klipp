@@ -105,6 +105,21 @@ impl KeyBindings {
         bind(&mut b, "import_media", vec![KeyCombo::ctrl("I")]);
         bind(&mut b, "export", vec![KeyCombo::ctrl("E")]);
         bind(&mut b, "preferences", vec![KeyCombo::ctrl(",")]);
+        // These four were advertised by the File/Window/Help menus for a
+        // long time without ever being bound — `shortcut_text` only draws
+        // a label. They are the platform-standard combos for what they do,
+        // so they are bound rather than un-advertised.
+        bind(&mut b, "new_project", vec![KeyCombo::ctrl("N")]);
+        bind(&mut b, "quit", vec![KeyCombo::ctrl("Q")]);
+        bind(&mut b, "toggle_audio_mixer", vec![KeyCombo::ctrl_shift("M")]);
+        bind(&mut b, "toggle_subtitle_editor", vec![KeyCombo::ctrl_shift("T")]);
+        // Handled ad hoc in app.rs until now, with the combo written out
+        // twice — once in the handler and once in the menu label. Here
+        // so there is one copy, and so they are remappable like the rest.
+        bind(&mut b, "close_project", vec![KeyCombo::ctrl("W")]);
+        bind(&mut b, "command_palette", vec![KeyCombo::ctrl("K")]);
+        bind(&mut b, "toggle_browser_panel", vec![KeyCombo::ctrl_shift("B")]);
+        bind(&mut b, "toggle_inspector_panel", vec![KeyCombo::ctrl_shift("I")]);
 
         // Edit
         bind(&mut b, "undo", vec![KeyCombo::ctrl("Z")]);
@@ -575,4 +590,88 @@ pub fn key_event_to_combo(input: &egui::InputState) -> Option<KeyCombo> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod registry_coverage {
+    //! Which bindings actually do anything.
+    //!
+    //! A binding in this table only has an effect if some handler asks
+    //! for it by name with `is_action_pressed`. Most of these keys *do*
+    //! work — but from a hardcoded `key_pressed(Key::X)` in `app.rs`
+    //! rather than through here, and the two have drifted. The visible
+    //! consequence is that **Preferences → Keybindings silently does
+    //! nothing for these actions**: the row is there, it accepts a new
+    //! combo, and the key carries on doing what the hardcoded check
+    //! says.
+    //!
+    //! The fix is to convert each hardcoded check to
+    //! `is_action_pressed`, which is mechanical but touches a lot of
+    //! call sites. Until then this is a ratchet: the list may shrink,
+    //! never grow.
+
+    use super::KeyBindings;
+
+    /// Actions declared here that no handler reads, as of 2026-09-20.
+    /// Remove entries as they are converted; never add.
+    const UNWIRED: &[&str] = &[
+        "add_clip_marker", "add_marker", "blade_tool", "clear_in_out", "clear_in_point",
+        "clear_out_point", "connect_clip", "create_title", "delete_clip", "disconnect_clip",
+        "fit_to_window", "go_to_end", "go_to_start", "lift_clip", "multicam_angle_1",
+        "multicam_angle_2", "multicam_angle_3", "multicam_angle_4", "multicam_angle_5",
+        "multicam_angle_6", "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
+        "next_keyframe", "play_pause", "prev_keyframe", "range_tool", "select_tool",
+        "set_in_point", "set_out_point", "set_range_to_clip", "shuttle_forward",
+        "shuttle_pause", "shuttle_reverse", "step_backward", "step_forward",
+        "toggle_before_after", "toggle_color_panel", "toggle_edit_mode", "toggle_false_color",
+        "toggle_fullscreen", "toggle_keyframe", "toggle_keyframe_editor",
+        "toggle_matte_preview", "toggle_perf_overlay", "toggle_perf_recording",
+        "toggle_project_notes", "toggle_skimming", "toggle_snap", "toggle_zebra",
+        "trim_tool", "zoom_in", "zoom_out", "zoom_to_selection",
+    ];
+
+    fn sources() -> String {
+        // Every handler lives in klipp-ui; reading the two files that
+        // dispatch keys is enough and keeps the test hermetic.
+        format!(
+            "{}{}",
+            include_str!("app.rs"),
+            include_str!("keybindings.rs"),
+        )
+    }
+
+    #[test]
+    fn no_new_unwired_actions() {
+        let src = sources();
+        let kb = KeyBindings::defaults();
+        let unwired: Vec<String> = kb
+            .bindings
+            .keys()
+            .filter(|a| !src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .cloned()
+            .collect();
+
+        let known: std::collections::BTreeSet<&str> = UNWIRED.iter().copied().collect();
+        let new: Vec<&String> = unwired.iter().filter(|a| !known.contains(a.as_str())).collect();
+        assert!(
+            new.is_empty(),
+            "new keybinding actions that no handler reads — they will look remappable in \
+             Preferences and do nothing: {new:?}"
+        );
+    }
+
+    #[test]
+    fn the_unwired_list_has_no_stale_entries() {
+        // Keeps the ratchet honest: once an action is wired up, its
+        // entry has to go, or the list stops meaning anything.
+        let src = sources();
+        let stale: Vec<&&str> = UNWIRED
+            .iter()
+            .filter(|a| src.contains(&format!("is_action_pressed(\"{a}\"")))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "these are wired up now and should be removed from UNWIRED: {stale:?}"
+        );
+    }
 }

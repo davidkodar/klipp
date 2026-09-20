@@ -23316,6 +23316,21 @@ impl KlippApp {
             if kb.is_action_pressed("save_project", i) {
                 cmds.push(AppCommand::SaveProject);
             }
+            // Ctrl+N / Ctrl+Q / Ctrl+Shift+M / Ctrl+Shift+T. The menus
+            // have advertised all four for a long time with nothing
+            // behind them, because `shortcut_text` only draws a label.
+            if kb.is_action_pressed("new_project", i) {
+                cmds.push(AppCommand::NewProject);
+            }
+            if kb.is_action_pressed("quit", i) {
+                cmds.push(AppCommand::Quit);
+            }
+            if kb.is_action_pressed("toggle_audio_mixer", i) {
+                self.state.show_audio_mixer = !self.state.show_audio_mixer;
+            }
+            if kb.is_action_pressed("toggle_subtitle_editor", i) {
+                self.state.show_subtitle_editor = !self.state.show_subtitle_editor;
+            }
             // Ctrl+Shift+S — Save As
             if kb.is_action_pressed("save_project_as", i) {
                 if let Some(path) = rfd::FileDialog::new()
@@ -23360,7 +23375,7 @@ impl KlippApp {
                 self.state.show_preferences = true;
             }
             // Ctrl+K — Command palette
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::K) {
+            if kb.is_action_pressed("command_palette", i) {
                 self.state.show_command_palette = true;
                 self.state.command_palette_query.clear();
                 self.state.command_palette_selected = 0;
@@ -23375,7 +23390,7 @@ impl KlippApp {
                 self.state.focus_search_request = self.state.active_panel;
             }
             // Ctrl+W — Close Project (return to project selector)
-            if i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::W) {
+            if kb.is_action_pressed("close_project", i) {
                 cmds.push(AppCommand::CloseProject);
             }
             // Ctrl+Z — Undo, Ctrl+Shift+Z or Ctrl+Y — Redo
@@ -23685,10 +23700,10 @@ impl KlippApp {
             // rail. The View menu has advertised shortcuts for these
             // since it was written; `shortcut_text` only draws a label,
             // so until now they did nothing when pressed.
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::B) {
+            if kb.is_action_pressed("toggle_browser_panel", i) {
                 cmds.push(AppCommand::ToggleBrowserPanel);
             }
-            if i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::I) {
+            if kb.is_action_pressed("toggle_inspector_panel", i) {
                 cmds.push(AppCommand::ToggleInspectorPanel);
             }
             // B key (bare) — toggle before/after
@@ -31295,6 +31310,7 @@ impl KlippApp {
                 &mut self.state,
                 &recent,
                 &self.theme,
+                &self.key_bindings,
             );
             all_cmds.extend(panel_cmds);
         });
