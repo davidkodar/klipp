@@ -50,6 +50,7 @@
 pub mod measure;
 pub mod aces;
 pub mod camera_log;
+pub mod chart;
 pub mod color_match;
 pub mod curves;
 pub mod denoise;

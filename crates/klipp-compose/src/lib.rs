@@ -9,6 +9,7 @@
 pub mod eval;
 pub mod synth;
 pub mod render;
+pub mod selfcheck;
 
 pub use render::{
     active_layers, frame_snapshot, ActiveLayer, DisplayDelivery, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,

@@ -1818,6 +1818,62 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::ColourSelfCheck { size } => {
+            if in_batch {
+                return read_in_batch("colour_selfcheck");
+            }
+            // Big enough that a resample cannot smear a patch, small
+            // enough to render in a blink: the patches are flat.
+            let w = size.unwrap_or(480).clamp(120, 1920);
+            let h = (w * 2) / 3;
+            let working = klipp_engine::video_decoder::working_colorspace();
+            let both = klipp_compose::selfcheck::run_both(w, h, working, klipp_compose::RenderOptions::default());
+            let mut lines = Vec::new();
+            let mut worst_severity = "ok";
+            for (gpu, check) in &both {
+                let path = if *gpu { "GPU" } else { "CPU" };
+                for (severity, what) in check.findings() {
+                    if severity == "error" || (severity == "warning" && worst_severity == "ok") {
+                        worst_severity = severity;
+                    }
+                    lines.push(format!("{path}: {what}"));
+                }
+            }
+            // The two paths against each other: the viewer shows one and
+            // an export may take the other, so a disagreement about a
+            // flat patch means an approved grade is not the shipped one.
+            let (cpu, gpu) = (&both[0].1, &both[1].1);
+            let mut worst_pair = (0.0f32, String::new());
+            for (a, b) in cpu.patches.iter().zip(gpu.patches.iter()) {
+                let de = klipp_color::measure::delta_e2000(a.back, b.back);
+                if de > worst_pair.0 {
+                    worst_pair = (de, a.name.clone());
+                }
+            }
+            if worst_pair.0 >= 1.0 {
+                worst_severity = "error";
+                lines.push(format!("the CPU and the GPU disagree about the chart by {:.1} ΔE ({}) — a grade approved in the viewer is not the grade that exports", worst_pair.0, worst_pair.1));
+            }
+            let trustworthy = both.iter().all(|(_, c)| c.trustworthy()) && worst_pair.0 < 1.0;
+            Ok(json!({
+                "text": format!(
+                    "Colour self-check, a 24-patch ColorChecker at {w}x{h} through the render path in {working:?}:\n{}\n{}",
+                    lines.join("\n"),
+                    if trustworthy {
+                        "Readings from this path can be graded on."
+                    } else {
+                        "Fix the path before grading to measured targets: every cast and skin reading is partly the pipeline's until this is clean."
+                    },
+                ),
+                "trustworthy": trustworthy,
+                "severity": worst_severity,
+                "working_colorspace": format!("{working:?}"),
+                "cpu": cpu,
+                "gpu": gpu,
+                "cpu_gpu_max_de": worst_pair.0,
+            }))
+        }
+
         ControlCommand::MeasureRegion { secs, x, y, w, h, timeout_ms } => {
             if in_batch {
                 return read_in_batch("measure_region");

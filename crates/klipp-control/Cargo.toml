@@ -30,6 +30,7 @@ klipp-audio-search = { workspace = true }
 klipp-engine = { workspace = true }
 klipp-analysis = { workspace = true }
 klipp-nodes = { workspace = true }
+klipp-compose = { workspace = true }
 crossbeam-channel = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

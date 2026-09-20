@@ -2753,6 +2753,7 @@ dependencies = [
  "klipp-analysis",
  "klipp-audio-search",
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-document",
  "klipp-engine",

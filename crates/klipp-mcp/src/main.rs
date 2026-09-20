@@ -358,6 +358,10 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_colour_selfcheck" => json!({
+            "method": "colour_selfcheck",
+            "size": args.get("size").cloned().unwrap_or(serde_json::Value::Null),
+        }),
         "klipp_measure_region" => json!({
             "method": "measure_region",
             "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
@@ -738,7 +742,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1011,6 +1015,14 @@ fn tool_definitions() -> Vec<Value> {
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
+        tool("klipp_colour_selfcheck",
+             "Send a published 24-patch ColorChecker through the render path and read it back, \
+              to find out whether the path itself moves colour. Run it once before grading to \
+              measured targets: if the chart does not come back where it went in, every cast \
+              and skin-tone reading is partly a measurement of the pipeline, and a grading loop \
+              will chase it for ever. Checks the CPU and GPU paths and holds them against each \
+              other, because the viewer shows one and an export may take the other.",
+             json!({ "size": { "type": "integer" } }), vec![]),
         tool("klipp_measure_region",
              "One box of the frame read on its own, in the same numbers as klipp_frame_stats: a \
               face against its background, a sky, a product, a corner of a screen. x, y, w and h \
