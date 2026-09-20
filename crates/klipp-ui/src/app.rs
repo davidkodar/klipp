@@ -380,6 +380,12 @@ pub struct KlippApp {
     /// `Surface::get_current_texture` when the compositor is not
     /// returning buffers for an occluded window. A long update means
     /// the opposite, and `ui_stage` then says where.
+    /// Playhead position the Colour workspace last followed, so the
+    /// follow fires on movement rather than every frame.
+    last_graded_playhead: Option<klipp_core::Timecode>,
+    /// Browser visibility before the Colour workspace borrowed its
+    /// width, restored on leaving.
+    browser_before_colour: Option<bool>,
     hb_max_gap: std::time::Duration,
     hb_max_update: std::time::Duration,
     /// When the last `update()` returned, for the gap above.
@@ -691,6 +697,8 @@ impl KlippApp {
             last_heartbeat_frame: 0,
             hb_input_events: 0,
             hb_max_batch: 0,
+            last_graded_playhead: None,
+            browser_before_colour: None,
             hb_max_gap: std::time::Duration::ZERO,
             hb_max_update: std::time::Duration::ZERO,
             last_update_end: std::time::Instant::now(),
@@ -14690,9 +14698,30 @@ impl KlippApp {
                 if self.state.active_workspace == Workspace::Color {
                     self.state.active_workspace = Workspace::Edit;
                     self.state.show_color_panel = false;
+                    // Give the browser back exactly as it was found.
+                    if let Some(was) = self.browser_before_colour.take() {
+                        self.set_browser_visible(was);
+                    }
                 } else {
                     self.state.active_workspace = Workspace::Color;
                     self.state.show_color_panel = true;
+                    // The picture is the instrument here. The built-in
+                    // Colour workspace layout has said `show_browser:
+                    // false` — "browser hidden to maximise scopes +
+                    // viewer real estate" — since it was written, but
+                    // the workspace switcher never applied it, so
+                    // grading happened with the effects library holding
+                    // a third of the window and the image reduced to a
+                    // thumbnail between it and the scopes.
+                    //
+                    // Collapsed rather than removed: the rail keeps the
+                    // browser one click away, and what it was is
+                    // restored on the way out, so this borrows the
+                    // space rather than taking it.
+                    if self.browser_before_colour.is_none() {
+                        self.browser_before_colour = Some(self.state.show_browser_panel);
+                    }
+                    self.set_browser_visible(false);
                 }
                 true
             }
@@ -26596,6 +26625,16 @@ impl eframe::App for KlippApp {
         let kb_cmds = self.handle_global_shortcuts(ctx);
         all_cmds.extend(kb_cmds);
 
+        // 2b. In the Colour workspace the grade follows the playhead.
+        self.follow_playhead_for_grading();
+
+        // 2c. The curves draw the viewer frame's histogram behind them.
+        // Gated on the frame buffer's generation inside, so a paused
+        // viewer costs one pass rather than one per repaint.
+        if self.state.active_workspace == crate::state::Workspace::Color {
+            self.node_inspector_panel.refresh_curve_histogram(&self.frame_buffer);
+        }
+
         // 3. Handle transport keyboard shortcuts
         let transport_cmds = self.transport.handle_keyboard(ctx, &self.state, &self.key_bindings);
         all_cmds.extend(transport_cmds);
@@ -31533,6 +31572,55 @@ impl KlippApp {
 
     /// The collapsed browser's rail: its three tabs, stacked, each of
     /// which reopens the panel on that tab.
+    /// In the Colour workspace, the clip under the playhead is the clip
+    /// being graded.
+    ///
+    /// Every grading suite works this way: you scrub to a shot and the
+    /// panel is already showing that shot's grade. Klipp selected only
+    /// on click, so moving the playhead left the panel pointed at
+    /// whatever was last clicked — which does not merely cost a click,
+    /// it invites grading the wrong shot and not noticing.
+    ///
+    /// Only when the playhead has actually moved. A click that selects
+    /// a clip without moving the playhead is left alone, so selecting
+    /// and grading a clip that is not under the playhead still works
+    /// and the two never fight over the same frame. Edit is untouched:
+    /// there the selection is the user's, and a scrub should not
+    /// silently reselect under them.
+    fn follow_playhead_for_grading(&mut self) {
+        if self.state.active_workspace != crate::state::Workspace::Color {
+            // Forget the last position, so returning to Colour follows
+            // immediately rather than waiting for the next move.
+            self.last_graded_playhead = None;
+            return;
+        }
+        let now = self.state.playhead;
+        if self.last_graded_playhead == Some(now) {
+            return;
+        }
+        self.last_graded_playhead = Some(now);
+
+        // The topmost enabled video track that has a clip here — what
+        // the viewer is showing, and so what the grade should address.
+        let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else { return };
+        let found = seq
+            .tracks
+            .iter()
+            .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video) && t.visible)
+            .find_map(|t| t.clip_at_timecode(now).map(|(_, c)| c.id));
+
+        match found {
+            Some(id) if self.state.selected_clip != Some(id) => {
+                self.state.selected_clip = Some(id);
+                self.state.selected_clips.clear();
+            }
+            // No clip under the playhead: leave the panel on the last
+            // one rather than blanking it, so a gap between shots does
+            // not throw away the context you were working in.
+            _ => {}
+        }
+    }
+
     fn render_browser_rail(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         use crate::layout_state::BrowserTab;
         use crate::widgets::panel_rail::{self, RailAction, RailGlyph, RailItem, RailSide};

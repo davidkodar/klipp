@@ -211,7 +211,18 @@ pub fn color_wheel_sized(
         );
         let bg = theme.bg_deep;
         let is_zero = val.abs() < 0.005;
-        let border = if is_zero { theme.border } else { border_c };
+        // The channel's own colour, dimmed at rest rather than dropped.
+        //
+        // At neutral all three pills fell back to the panel border and
+        // became indistinguishable: three identical "+0.000" boxes with
+        // nothing saying which was red. Since a wheel sits at neutral
+        // most of the time, that is most of the time. Tinted faintly
+        // instead, so the channels are identifiable without shouting.
+        let border = if is_zero {
+            egui::Color32::from_rgba_unmultiplied(border_c.r(), border_c.g(), border_c.b(), 90)
+        } else {
+            border_c
+        };
         let text = if is_zero { neutral_text } else { text_c };
         painter.rect_filled(pill_rect, 2.0, bg);
         painter.rect_stroke(pill_rect, 2.0, egui::Stroke::new(0.5_f32, border));
@@ -238,7 +249,9 @@ pub fn color_wheel_sized(
     painter.text(
         egui::pos2(center_x - pills_total / 2.0, track_y),
         egui::Align2::LEFT_CENTER,
-        "M",
+        // "Y" for the luma master. "M" on a colour wheel reads as
+        // Magenta first — an ambiguity the one place it should not be.
+        "Y",
         egui::FontId::proportional(10.0),
         theme.text_dim,
     );

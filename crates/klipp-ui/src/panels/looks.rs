@@ -54,20 +54,20 @@ pub fn show(
             [56.0, crate::theme::control::COMPACT],
             egui::Label::new(egui::RichText::new("Looks").size(crate::theme::type_scale::CAPTION).color(theme.text_dim)).selectable(false),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(6.0);
-            let label = if state.save_field_open { "Cancel" } else { "Save current" };
-            let resp = ui.small_button(label);
-            let resp = resp.on_hover_text(
-                "Snapshot the selected clip's grade as a reusable Look"
-            );
-            if resp.clicked() {
-                state.save_field_open = !state.save_field_open;
-                if !state.save_field_open {
-                    state.new_look_name.clear();
-                }
+        // Left-aligned after the label, like the Versions and Stills
+        // rows above. This one pushed its action to the far edge, so
+        // three rows that are one group read as three different things.
+        let label = if state.save_field_open { "Cancel" } else { "Save current" };
+        let resp = ui.small_button(label).on_hover_text(
+            "Snapshot this clip's whole grade as a reusable Look.\n\
+             Tool presets, under the tab strip, save one tool instead."
+        );
+        if resp.clicked() {
+            state.save_field_open = !state.save_field_open;
+            if !state.save_field_open {
+                state.new_look_name.clear();
             }
-        });
+        }
     });
 
     // Inline "save as" field — only shown after the user clicks the

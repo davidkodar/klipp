@@ -32,6 +32,19 @@ pub struct NodeInspectorPanel {
     pub curves_presets: Vec<ToolPreset>,
     pub huesat_presets: Vec<ToolPreset>,
     pub warper_presets: Vec<ToolPreset>,
+    /// The viewer frame's histogram, drawn behind the curves.
+    ///
+    /// A curve without the image's distribution behind it is placed
+    /// blind: you cannot see where the data you are moving actually
+    /// lives, which is most of what the tool is for. The widget has
+    /// taken an optional histogram since it was written and every call
+    /// site passed `None`.
+    ///
+    /// Computed from the same `SharedFrameBuffer` the Colour Check
+    /// window reads, and gated on its generation, so a paused viewer
+    /// costs one pass and not one per repaint.
+    curve_histogram: Option<klipp_color::scopes::HistogramData>,
+    curve_histogram_generation: u64,
     pub color_presets: Vec<ToolPreset>,
     pub preset_save_name_tool: String,
     pub preset_saving_tool: Option<ToolScope>,
@@ -52,6 +65,8 @@ impl Default for NodeInspectorPanel {
             curves_presets: presets::load_tool_presets(&ToolScope::Curves),
             huesat_presets: presets::load_tool_presets(&ToolScope::HueSat),
             warper_presets: presets::load_tool_presets(&ToolScope::Warper),
+            curve_histogram: None,
+            curve_histogram_generation: u64::MAX,
             color_presets: presets::load_tool_presets(&ToolScope::Color),
             preset_save_name_tool: String::new(),
             preset_saving_tool: None,
@@ -60,6 +75,34 @@ impl Default for NodeInspectorPanel {
 }
 
 impl NodeInspectorPanel {
+    /// Recompute the curves' histogram when the viewer shows a new
+    /// frame. Cheap enough to call every frame: it returns immediately
+    /// unless the generation moved.
+    pub fn refresh_curve_histogram(&mut self, frame_buffer: &klipp_engine::SharedFrameBuffer) {
+        let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+            return;
+        }
+        if fb.generation == self.curve_histogram_generation {
+            return;
+        }
+        self.curve_histogram_generation = fb.generation;
+        self.curve_histogram = Some(klipp_color::scopes::compute_histogram(
+            &fb.data, fb.width, fb.height,
+        ));
+    }
+
+    /// The 256 bins for one curve channel, if a frame has been measured.
+    fn histogram_for(&self, channel: curves_editor::CurveChannel) -> Option<&[u32; 256]> {
+        let h = self.curve_histogram.as_ref()?;
+        Some(match channel {
+            curves_editor::CurveChannel::Red => &h.r,
+            curves_editor::CurveChannel::Green => &h.g,
+            curves_editor::CurveChannel::Blue => &h.b,
+            _ => &h.luma,
+        })
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -205,6 +248,21 @@ impl NodeInspectorPanel {
         };
         if let Some(tool) = tool_scope {
             self.show_tool_preset_bar(ui, &tool, graph, clip_id, cmds, theme);
+        }
+
+        // Contrast belongs with the wheels. It is the control a
+        // colourist works against them continuously — set the lift,
+        // check the contrast, adjust the gain, check it again — and
+        // having it only on the COLOUR tab meant leaving the wheels to
+        // reach it and coming back to see what it did. Every grading
+        // suite puts contrast on the primaries bar for this reason.
+        //
+        // Pivot deliberately not offered: this grade model pivots
+        // contrast on mid grey, 0.18 linear, as a fixed point in the
+        // grade encoding. Making it adjustable is a change to the
+        // colour science and its CPU/GPU parity, not a slider.
+        if *color_tab == ColorTab::Wheels {
+            self.show_wheels_contrast_row(ui, graph, clip_id, cmds, theme);
         }
 
         match color_tab {
@@ -868,6 +926,81 @@ impl NodeInspectorPanel {
         }
     }
 
+    /// Contrast, and a reset for every wheel, sitting above the wheels
+    /// themselves.
+    ///
+    /// Contrast is worked against the wheels continuously, so reaching
+    /// it meant leaving the tab. Reset-all exists because the wheels
+    /// each reset individually (double-click or right-click) and
+    /// starting the primaries over meant eight separate gestures.
+    fn show_wheels_contrast_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        // Same target the wheels themselves write to: the Corrector when
+        // there is one, else a standalone node of the right kind.
+        let target = graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Corrector)
+            .map(|n| n.id)
+            .or_else(|| graph.nodes.iter().find(|n| n.kind == NodeKind::Contrast).map(|n| n.id));
+        let Some(nid) = target else { return };
+
+        ui.add_space(4.0);
+        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+            let mut val = node.params.contrast.unwrap_or(0.0);
+            if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
+                node.params.contrast = Some(val);
+                cmds.push(AppCommand::SetNodeParam {
+                    clip_id, node_id: nid, param: "contrast".into(), value: val,
+                });
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+                let resp = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("Reset wheels").size(10.0).color(theme.text_dim),
+                    )
+                    .frame(true),
+                );
+                if resp.on_hover_text("Lift, Gamma, Gain and Offset back to neutral").clicked() {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
+                        let p = &mut node.params;
+                        p.lift_x = Some(0.0); p.lift_y = Some(0.0); p.lift_master = Some(0.0);
+                        p.gamma_x = Some(0.0); p.gamma_y = Some(0.0); p.gamma_master = Some(0.0);
+                        p.gain_x = Some(0.0); p.gain_y = Some(0.0); p.gain_master = Some(0.0);
+                        p.offset_x = Some(0.0); p.offset_y = Some(0.0); p.offset_master = Some(0.0);
+                    }
+                    // One undo step for the lot, like every other
+                    // multi-parameter reset in this panel.
+                    atomic_node_edit_batch(cmds, clip_id, |c| {
+                        for param in [
+                            "lift_x", "lift_y", "lift_master",
+                            "gamma_x", "gamma_y", "gamma_master",
+                            "gain_x", "gain_y", "gain_master",
+                            "offset_x", "offset_y", "offset_master",
+                        ] {
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id: nid, param: param.into(), value: 0.0,
+                            });
+                        }
+                    });
+                }
+            });
+        });
+        ui.add_space(4.0);
+        section_divider(ui, theme);
+    }
+
     fn show_adjustments_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -964,8 +1097,25 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id: target_id });
                     }
                 }
-                ui.label(egui::RichText::new(format!("Bypass — {target_label}"))
-                    .size(11.0).color(theme.text_dim));
+                // The checkbox is bound to `effective_on` — ticked means
+                // the grade is *running*. Labelling that "Bypass" said
+                // the opposite of what the tick meant, on the one
+                // control that answers "am I looking at the graded
+                // picture or not". Getting that backwards is how a
+                // colourist spends ten minutes grading a shot that was
+                // bypassed the whole time.
+                //
+                // So the label states the state rather than naming a
+                // mode, and the dangerous state is the loud one: an
+                // active grade reads quietly, a bypassed one says so in
+                // the warning colour.
+                if shown {
+                    ui.label(egui::RichText::new(target_label.to_string())
+                        .size(11.0).color(theme.text_dim));
+                } else {
+                    ui.label(egui::RichText::new(format!("BYPASSED — {target_label}"))
+                        .size(11.0).strong().color(theme.marker_warning));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(12.0);
                     let diamond_color = if kf_at_playhead {
@@ -1087,7 +1237,12 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.saturation.unwrap_or(1.0);
-                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme, cmds, clip_id) {
+                    // Saturation is a multiplier: 1.0 is neutral, unlike
+                    // every other row in this panel where neutral is 0.
+                    // Rendered in the same widget with no unit it read as
+                    // an inconsistency — "1.00" sitting under "0.00" with
+                    // nothing to say why. The multiplier sign says why.
+                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "\u{00D7}", theme, cmds, clip_id) {
                         node.params.saturation = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
                     }
@@ -1773,7 +1928,10 @@ impl NodeInspectorPanel {
                     };
                     ui.horizontal(|ui| {
                         ui.add_space(PAD);
-                        let resp = curves_editor::curves_editor_sized(ui, theme, ch, points, curve_h, None);
+                        let hist = self.histogram_for(ch).copied();
+                        let resp = curves_editor::curves_editor_sized(
+                            ui, theme, ch, points, curve_h, hist.as_ref(),
+                        );
                         if resp.changed { curves_changed = true; }
                     });
                 }
@@ -1805,14 +1963,32 @@ impl NodeInspectorPanel {
             NodeKind::HueSatCurves => {
                 let huesat = params.huesat.get_or_insert_with(Default::default);
 
-                // Stacked curve editors: LUMA (HvH), RED (HvS), GREEN (HvL), BLUE (LvS)
-                // Plus SvS and OvS as additional curves
-                // Matching FCP's Color Curves layout
+                // All six curves the pipeline implements.
+                //
+                // Two were missing here and only here: the data model
+                // has carried `sat_vs_sat` and `orange_vs_sat` all
+                // along, the CPU executor builds all six into its
+                // 1536-entry LUT, and the compute shader samples all
+                // six — the comment below the table even said "Plus SvS
+                // and OvS as additional curves". Only the table stopped
+                // at four, so two working tools were unreachable. Sat
+                // vs Sat in particular is what tames an oversaturated
+                // red without touching its hue.
+                //
+                // Named for what they do, too. These were labelled
+                // LUMA / RED / GREEN / BLUE, which are channel names
+                // borrowed from the RGB curves tab — but none of these
+                // is a channel curve, and a colourist reading "RED"
+                // here would reasonably expect the red channel rather
+                // than Hue vs Sat. The colours stay as a way to tell
+                // the rows apart; the words now say what each curve is.
                 let curve_entries: Vec<(&str, egui::Color32, CurveChannel, usize)> = vec![
-                    ("LUMA", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc), CurveChannel::Master, 0),
-                    ("RED", egui::Color32::from_rgb(0xff, 0x50, 0x50), CurveChannel::Red, 1),
-                    ("GREEN", egui::Color32::from_rgb(0x40, 0xcc, 0x50), CurveChannel::Green, 2),
-                    ("BLUE", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
+                    ("HUE vs HUE", egui::Color32::from_rgb(0xcc, 0xcc, 0xcc), CurveChannel::Master, 0),
+                    ("HUE vs SAT", egui::Color32::from_rgb(0xff, 0x50, 0x50), CurveChannel::Red, 1),
+                    ("HUE vs LUM", egui::Color32::from_rgb(0x40, 0xcc, 0x50), CurveChannel::Green, 2),
+                    ("LUM vs SAT", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
+                    ("SAT vs SAT", egui::Color32::from_rgb(0xe0, 0xa0, 0x40), CurveChannel::Master, 4),
+                    ("ORANGE vs SAT", egui::Color32::from_rgb(0xff, 0x90, 0x40), CurveChannel::Master, 5),
                 ];
 
                 let curve_h = 90.0_f32;
@@ -1878,7 +2054,9 @@ impl NodeInspectorPanel {
                             0 => huesat.hue_vs_hue.clear(),
                             1 => huesat.hue_vs_sat.clear(),
                             2 => huesat.hue_vs_lum.clear(),
-                            _ => huesat.lum_vs_sat.clear(),
+                            3 => huesat.lum_vs_sat.clear(),
+                            4 => huesat.sat_vs_sat.clear(),
+                            _ => huesat.orange_vs_sat.clear(),
                         }
                         huesat_changed = true;
                     }
@@ -1888,11 +2066,29 @@ impl NodeInspectorPanel {
                         0 => &mut huesat.hue_vs_hue,
                         1 => &mut huesat.hue_vs_sat,
                         2 => &mut huesat.hue_vs_lum,
-                        _ => &mut huesat.lum_vs_sat,
+                        3 => &mut huesat.lum_vs_sat,
+                        4 => &mut huesat.sat_vs_sat,
+                        _ => &mut huesat.orange_vs_sat,
                     };
 
-                    let resp = curves_editor::curves_editor_sized(
-                        ui, theme, *channel, points, curve_h, None,
+                    // Hue/Sat curves read against luma: their x axis is
+                    // hue, luma or saturation, so the luma distribution
+                    // is the useful backdrop rather than a per-primary one.
+                    let hist = self.curve_histogram.as_ref().map(|h| h.luma);
+                    // What the horizontal axis of each curve measures.
+                    // Named on the row above; drawn as a strip below, so
+                    // the oranges are findable by eye.
+                    let x_axis = match curve_idx {
+                        0..=2 => curves_editor::CurveAxis::Hue,
+                        3 => curves_editor::CurveAxis::Luma,
+                        _ => curves_editor::CurveAxis::Saturation,
+                    };
+                    let resp = curves_editor::curves_editor_in(
+                        ui, theme, *channel, points, curve_h, hist.as_ref(),
+                        // Relative: the pipeline fills these LUTs with
+                        // 0.5 and reads them as (v - 0.5) * 2.
+                        curves_editor::CurveSpace::Relative,
+                        x_axis,
                     );
                     if resp.changed { huesat_changed = true; }
                     ui.add_space(4.0);
@@ -2079,6 +2275,27 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::ColorWarper => {
+                // The same header every other grade section uses, so
+                // the warper resets where a colourist already looks for
+                // it. Its reset was a text button under the wheel,
+                // alone in the panel in using that shape.
+                let (reset, _open) = section_header(ui, "COLOUR WARPER", true, theme);
+                if reset {
+                    if let Some(w) = params.warper_params.as_mut() {
+                        w.hue_shifts = [0.0; 12];
+                        w.sat_shifts = [0.0; 12];
+                    }
+                    atomic_node_edit_batch(cmds, clip_id, |c| {
+                        for s in 0..12 {
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id, param: format!("warper_hue_{s}"), value: 0.0,
+                            });
+                            c.push(AppCommand::SetNodeParam {
+                                clip_id, node_id, param: format!("warper_sat_{s}"), value: 0.0,
+                            });
+                        }
+                    });
+                }
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => {
@@ -2604,10 +2821,20 @@ impl NodeInspectorPanel {
     ) {
         let warper = params.warper_params.get_or_insert_with(Default::default);
 
-        let size = ui.available_width().min(250.0);
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+        // Allocate the full width so the wheel lands in the middle of
+        // the panel. Allocating only the circle's own footprint left it
+        // pinned to the left edge with a hand's width of dead space
+        // beside it, and the sector labels on the left — CG, C, CB —
+        // ran off the panel because they are drawn outside the radius.
+        let avail = ui.available_width();
+        let side = avail.min(260.0);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(avail, side), egui::Sense::click_and_drag());
         let center = rect.center();
-        let radius = size / 2.0 - 16.0;
+        // Room outside the ring for the twelve sector labels: they sit
+        // at radius + 12 and are centred on that point, so the longest
+        // of them needs about another dozen pixels beyond that.
+        let radius = side / 2.0 - 28.0;
         let painter = ui.painter();
 
         // Background circle
@@ -2648,14 +2875,20 @@ impl NodeInspectorPanel {
                 egui::Stroke::new(0.3_f32, theme.overlay(12)),
             );
 
-            // Subtle hue dot at center of each sector
-            let dot_x = center.x + angle.cos() * radius * 0.5;
-            let dot_y = center.y - angle.sin() * radius * 0.5;
+            // A faint tint marking which way each sector lies.
+            //
+            // This was an eight-pixel filled circle, which at a glance
+            // was indistinguishable from a control point — twelve dim
+            // dots inside the ring that looked like handles and did
+            // nothing. Smaller and dimmer: enough to place the sector,
+            // not enough to be mistaken for something to grab.
+            let dot_x = center.x + angle.cos() * radius * 0.42;
+            let dot_y = center.y - angle.sin() * radius * 0.42;
             painter.circle_filled(
                 egui::pos2(dot_x, dot_y),
-                8.0,
+                2.0,
                 egui::Color32::from_rgba_premultiplied(
-                    (hr * 40.0) as u8, (hg * 40.0) as u8, (hb * 40.0) as u8, 40
+                    (hr * 60.0) as u8, (hg * 60.0) as u8, (hb * 60.0) as u8, 60
                 ),
             );
 
@@ -2676,6 +2909,60 @@ impl NodeInspectorPanel {
             );
         }
 
+        // ── The mesh ──
+        //
+        // A warper is a field, not twelve unrelated nudges, and until
+        // now it was drawn as twelve unconnected dots: you could see
+        // that a point had moved but not what the warp was doing
+        // between them. Joining the control points into a closed loop
+        // makes the deformation the thing you look at — the ring bulges
+        // where saturation is pushed and leans where hue is rotated,
+        // against the neutral circle it started from.
+        let positions: Vec<egui::Pos2> = (0..12)
+            .map(|i| {
+                let base_angle = (i as f32 * 30.0).to_radians();
+                let a = base_angle + warper.hue_shifts[i].to_radians() * 0.02;
+                let r = neutral_r + warper.sat_shifts[i] * radius * 0.25;
+                egui::pos2(center.x + a.cos() * r, center.y - a.sin() * r)
+            })
+            .collect();
+
+        // The shape the warp started from, so the deformation is read
+        // against something rather than in the abstract.
+        painter.circle_stroke(
+            center,
+            neutral_r,
+            egui::Stroke::new(1.0_f32, theme.overlay(35)),
+        );
+
+        // Catmull-Rom through the twelve points, closed, so the mesh
+        // curves the way the warp does instead of showing twelve
+        // straight chords that imply corners the grade does not have.
+        let mut mesh: Vec<egui::Pos2> = Vec::with_capacity(12 * 8);
+        for i in 0..12 {
+            let p0 = positions[(i + 11) % 12];
+            let p1 = positions[i];
+            let p2 = positions[(i + 1) % 12];
+            let p3 = positions[(i + 2) % 12];
+            for step in 0..8 {
+                let t = step as f32 / 8.0;
+                let t2 = t * t;
+                let t3 = t2 * t;
+                let x = 0.5 * ((2.0 * p1.x) + (-p0.x + p2.x) * t
+                    + (2.0 * p0.x - 5.0 * p1.x + 4.0 * p2.x - p3.x) * t2
+                    + (-p0.x + 3.0 * p1.x - 3.0 * p2.x + p3.x) * t3);
+                let y = 0.5 * ((2.0 * p1.y) + (-p0.y + p2.y) * t
+                    + (2.0 * p0.y - 5.0 * p1.y + 4.0 * p2.y - p3.y) * t2
+                    + (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) * t3);
+                mesh.push(egui::pos2(x, y));
+            }
+        }
+        for w in 0..mesh.len() {
+            let a = mesh[w];
+            let b = mesh[(w + 1) % mesh.len()];
+            painter.line_segment([a, b], egui::Stroke::new(1.6_f32, theme.overlay(150)));
+        }
+
         // Draw control points and shift indicators
         for i in 0..12 {
             let base_angle = (i as f32 * 30.0).to_radians();
@@ -2686,15 +2973,7 @@ impl NodeInspectorPanel {
             let nx = center.x + base_angle.cos() * neutral_r;
             let ny = center.y - base_angle.sin() * neutral_r;
 
-            // Shifted position: tangential = hue shift, radial = sat shift
-            let hue_offset_angle = warper.hue_shifts[i].to_radians() * 0.02; // scale down for UI
-            let sat_offset_r = warper.sat_shifts[i] * radius * 0.25;
-
-            let point_angle = base_angle + hue_offset_angle;
-            let point_r = neutral_r + sat_offset_r;
-
-            let px = center.x + point_angle.cos() * point_r;
-            let py = center.y - point_angle.sin() * point_r;
+            let (px, py) = (positions[i].x, positions[i].y);
 
             // Draw shift line from neutral to current position
             if warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01 {
@@ -2747,6 +3026,29 @@ impl NodeInspectorPanel {
                 warper.hue_shifts[sector] = new_hue_shift;
                 warper.sat_shifts[sector] = new_sat_shift;
 
+                // Say what the drag is doing, in the units the
+                // parameters are in. Without it the warper can be
+                // moved but not set: you cannot match a sector across
+                // two shots, or put back what you just changed.
+                let label = format!(
+                    "{}   hue {:+.0}\u{00B0}   sat {:+.0}%",
+                    sector_labels[sector], new_hue_shift, new_sat_shift * 100.0,
+                );
+                let galley = painter.layout_no_wrap(
+                    label,
+                    egui::FontId::monospace(10.0),
+                    theme.text_primary,
+                );
+                // Top-left of the wheel, clear of the ring and of the
+                // pointer wherever it is.
+                let at = egui::pos2(rect.min.x + 8.0, rect.min.y + 6.0);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(at, galley.size()).expand(4.0),
+                    3.0,
+                    theme.bg_deep,
+                );
+                painter.galley(at, galley, theme.text_primary);
+
                 cmds.push(AppCommand::SetNodeParam {
                     clip_id,
                     node_id,
@@ -2762,28 +3064,6 @@ impl NodeInspectorPanel {
             }
         }
 
-        // Reset button
-        ui.add_space(6.0);
-        if ui.small_button("Reset Warper").clicked() {
-            warper.hue_shifts = [0.0; 12];
-            warper.sat_shifts = [0.0; 12];
-            atomic_node_edit_batch(cmds, clip_id, |c| {
-                for s in 0..12 {
-                    c.push(AppCommand::SetNodeParam {
-                        clip_id,
-                        node_id,
-                        param: format!("warper_hue_{s}"),
-                        value: 0.0,
-                    });
-                    c.push(AppCommand::SetNodeParam {
-                        clip_id,
-                        node_id,
-                        param: format!("warper_sat_{s}"),
-                        value: 0.0,
-                    });
-                }
-            });
-        }
 
         // Show active sector values as compact readout
         ui.add_space(4.0);
@@ -2816,7 +3096,16 @@ impl NodeInspectorPanel {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
+            // Says which of the two it is. A Look in the GRADE header
+            // above saves the whole grade; this saves the tool you are
+            // looking at. Two preset systems a few centimetres apart
+            // with nothing distinguishing them is how people end up
+            // trusting neither.
+            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim))
+                .on_hover_text(
+                    "A preset for this tool only.\n\
+                     Looks, in the GRADE header, save the whole grade.",
+                );
 
             // Preset dropdown
             let combo_id = format!("tool_preset_{:?}", tool);
@@ -3508,4 +3797,50 @@ fn push_wheel_cmds(cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId,
     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{}_x", prefix), value: offset[0] });
     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{}_y", prefix), value: offset[1] });
     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("{}_master", prefix), value: master });
+}
+
+#[cfg(test)]
+mod huesat_curve_coverage {
+    //! Every Hue/Sat curve the pipeline applies must be reachable.
+    //!
+    //! `sat_vs_sat` and `orange_vs_sat` existed in `HueSatCurves`, were
+    //! built into the executor's 1536-entry LUT, and were sampled by
+    //! the compute shader — and could not be touched, because the
+    //! inspector's table listed four of the six. Two finished tools
+    //! were invisible for want of two rows.
+
+    const SRC: &str = include_str!("node_inspector.rs");
+
+    /// The fields of `klipp_core::HueSatCurves`, which is what the LUT
+    /// builder walks in order.
+    const CURVES: &[&str] = &[
+        "hue_vs_hue", "hue_vs_sat", "hue_vs_lum",
+        "lum_vs_sat", "sat_vs_sat", "orange_vs_sat",
+    ];
+
+    #[test]
+    fn every_pipeline_curve_is_editable() {
+        // The inspector reaches a curve by naming its field in the
+        // points match; a curve absent there has no editor.
+        let missing: Vec<&&str> = CURVES
+            .iter()
+            .filter(|c| !SRC.contains(&format!("&mut huesat.{c}")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these Hue/Sat curves are applied by the pipeline but have no editor: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_editable_curve_can_be_reset() {
+        let missing: Vec<&&str> = CURVES
+            .iter()
+            .filter(|c| !SRC.contains(&format!("huesat.{c}.clear()")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these Hue/Sat curves have an editor but no reset: {missing:?}"
+        );
+    }
 }
