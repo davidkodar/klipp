@@ -1046,6 +1046,9 @@ pub struct AppState {
     /// The Colour Check window: what a colourist would read off the
     /// frame on screen, with the fault named and the knob to turn.
     pub show_colour_check: bool,
+    /// The Sound Over Time window: a whole file's sound as frequency
+    /// against time, with what is wrong with it named.
+    pub show_sound_over_time: bool,
     /// What the Edit Plan window last did or could not do, shown under
     /// its buttons.
     pub edit_plan_note: Option<String>,
@@ -3631,6 +3634,7 @@ impl Default for AppState {
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,
+            show_sound_over_time: false,
             edit_plan_note: None,
             tp_oversample: true,
             project_notes: String::new(),

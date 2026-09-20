@@ -310,6 +310,9 @@ pub struct KlippApp {
     /// The Colour Check window's own state: the last reading of the
     /// displayed frame, and the last render-path self-check.
     colour_check: crate::panels::colour_check::ColourCheckPanel,
+    /// The Sound Over Time window's own state: the reading in hand or
+    /// the thread still making it.
+    sound_over_time: crate::panels::sound_over_time::SoundOverTimePanel,
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
@@ -619,6 +622,7 @@ impl KlippApp {
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
             colour_check: Default::default(),
+            sound_over_time: Default::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
             timeline: {
@@ -26658,6 +26662,13 @@ impl eframe::App for KlippApp {
             if action == crate::panels::colour_check::ColourAction::SelfCheck {
                 self.run_colour_self_check();
             }
+        }
+
+        // Sound Over Time window: a whole file's sound at once.
+        if self.state.show_sound_over_time {
+            let mut open = self.state.show_sound_over_time;
+            self.sound_over_time.show(ctx, &self.state, &self.theme, &mut open);
+            self.state.show_sound_over_time = open;
         }
 
         // Edit Plan window: the paper edit awaiting the person's word.

@@ -896,6 +896,7 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(toggle_label(state.show_project_notes, "Project Notes")).shortcut_text("Ctrl+Shift+N")).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
             if ui.button(toggle_label(state.show_edit_plan, "Edit Plan")).on_hover_text("The paper edit an assistant proposed: read it, approve it, build it.").clicked() { state.show_edit_plan = !state.show_edit_plan; ui.close_menu(); }
             if ui.button(toggle_label(state.show_colour_check, "Colour Check")).on_hover_text("The frame on screen read the way a colourist reads it: skin against its band, neutrals, exposure, noise, banding, gamut — each fault named with the knob to turn.").clicked() { state.show_colour_check = !state.show_colour_check; ui.close_menu(); }
+            if ui.button(toggle_label(state.show_sound_over_time, "Sound Over Time")).on_hover_text("A whole file's sound as frequency against time: where a hum starts, when a hiss creeps in. The scrolling analyser shows what is playing; this shows the file.").clicked() { state.show_sound_over_time = !state.show_sound_over_time; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text("Alt+A")).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
             ui.separator();
             // Modal dialogs — distinct from panels because they
