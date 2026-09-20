@@ -897,29 +897,53 @@ impl LookTarget {
 /// So the number that matters between neighbours is a *difference*, not
 /// a distance from a target.
 ///
+/// **What is compared is the light, not the people.** A scene holds an
+/// interview and its reverse, a two-shot, a cutaway — different faces,
+/// legitimately different complexions. Comparing two faces' colours
+/// directly would call a correctly lit pair of shots a bad match
+/// because one person is darker than the other, which is both wrong and
+/// the kind of wrong that is worth being careful about. (This was the
+/// first version of this function, and twelve real portraits caught
+/// it: it scored two well-exposed shots from one session 40 ΔE apart.)
+///
+/// So the face enters as a difference of *errors*: how far each face
+/// sits off the skin band once the scene's own cast is taken off. Two
+/// faces both sitting on the band match, whoever they belong to; the
+/// same face on the band in one shot and 10° off it in the next does
+/// not. That is what a colourist actually checks — balance to neutral,
+/// then see that skin falls where skin falls.
+///
 /// What the eye notices across a cut, in the order it notices it:
 ///
-/// 1. **The face.** A viewer knows what a person looks like and will
-///    forgive the wall being a different colour before they forgive the
-///    face changing. Weighted highest, and in ΔE2000 on the skin patch
-///    itself rather than on a hue angle, because a hue that matches at
-///    half the chroma still does not match.
-/// 2. **Exposure.** A jump in level reads as a cut to a different take.
-///    A 1 L* step is about the threshold on a smooth pan and 2–3 L*
-///    across a hard cut, so L* enters at roughly its own scale.
+/// 1. **Exposure.** A jump in level reads as a cut to a different take.
+///    About 1 L* is the threshold on a smooth pan and 3 L* across a
+///    hard cut, so L* enters at roughly its own scale.
+/// 2. **Skin sitting differently against its band**, weighted highest
+///    per degree, because a face that has gone ruddy in one shot and
+///    sallow in the next is the fault a viewer names even when they
+///    cannot say why.
 /// 3. **The cast on the neutrals** — the wall, the paper, the shirt.
+///    Forgiven more: nobody knows what colour the wall was.
 /// 4. **Contrast**, which the eye is most forgiving of, and which is
 ///    partly a property of the shot's own content rather than its grade.
 ///
 /// The result is comparable with a ΔE: under [`MATCH_GOOD`] the cut is
-/// invisible, over [`MATCH_WARN`] a viewer sees the join. A 2 ΔE shift
-/// on skin crosses the first threshold on its own; the same shift on
-/// the neutrals does not.
+/// invisible, over [`MATCH_WARN`] a viewer sees the join.
 pub fn match_distance(a: &FrameMeasure, b: &FrameMeasure) -> f32 {
     let face_a = a.faces.iter().find(|f| f.readable());
     let face_b = b.faces.iter().find(|f| f.readable());
     let face = match (face_a, face_b) {
-        (Some(x), Some(y)) => delta_e2000(x.median, y.median),
+        (Some(x), Some(y)) => {
+            // How differently each face sits against the band, with the
+            // scene's own cast taken off — a difference of errors, so
+            // two different people both graded right come out at zero.
+            let off = (x.hue_off_band_wb - y.hue_off_band_wb).abs();
+            // Skin saturation does vary by complexion, but a grade
+            // moves it far more than a person does, so it enters
+            // lightly rather than not at all.
+            let chroma = (x.chroma - y.chroma).abs();
+            off + chroma * 0.25
+        }
         // Only one shot has a face: the faces cannot be compared, so the
         // rest of the picture carries the whole judgement.
         _ => 0.0,
@@ -931,13 +955,15 @@ pub fn match_distance(a: &FrameMeasure, b: &FrameMeasure) -> f32 {
     };
     let contrast = (a.contrast_range - b.contrast_range).abs();
     // The weights are the order above, scaled so the result reads like
-    // a ΔE: a 2 ΔE shift on skin across a cut lands past MATCH_GOOD,
-    // because it is visible; the same shift on the wall does not,
-    // because nobody knows what colour the wall was. A 3 L* step in
-    // exposure lands between the two thresholds, which is where a hard
-    // cut starts to read as a change rather than an edit. Contrast is
+    // a ΔE. A 3 L* step in exposure lands between the two thresholds,
+    // which is where a hard cut starts to read as a change rather than
+    // an edit. Skin counts about twice the neutrals per unit of error,
+    // which is the long-standing finding about memory colours: skin,
+    // sky and foliage carry tighter acceptability tolerances than an
+    // arbitrary colour, because the viewer is comparing them with a
+    // memory rather than with the shot beside them. Contrast is
     // discounted hardest: much of it is the shot's own content.
-    face * 1.5 + exposure + cast * 0.6 + contrast * 0.2
+    face * 1.2 + exposure + cast * 0.6 + contrast * 0.2
 }
 
 /// Two shots this close cut together without the join showing. A ΔE2000
@@ -1578,16 +1604,38 @@ mod match_tests {
     }
 
     #[test]
-    fn a_face_that_changes_across_the_cut_costs_more_than_the_wall() {
-        // The same total error, once on the face and once on the
-        // neutrals. The face must read as the worse match: a viewer
-        // knows what a person looks like and does not know what colour
-        // the wall was.
+    fn two_different_people_lit_the_same_way_match() {
+        // The fault twelve real portraits caught in the first version
+        // of this: an interview and its reverse hold two complexions,
+        // and calling that a bad match is both wrong and the kind of
+        // wrong worth being careful about. Both faces sit on the band,
+        // so both are right, so the shots match.
+        let pale = with_face(flat(50.0, 0.0, 0.0), Lab { l: 72.0, a: 12.0, b: 15.0 });
+        let dark = with_face(flat(50.0, 0.0, 0.0), Lab { l: 34.0, a: 13.0, b: 16.0 });
+        assert!(pale.faces[0].hue_off_band_wb == 0.0 && dark.faces[0].hue_off_band_wb == 0.0, "both on the band to begin with");
+        let d = match_distance(&pale, &dark);
+        assert!(d < MATCH_GOOD, "two complexions, one light: {d:.2}");
+    }
+
+    #[test]
+    fn one_face_off_the_band_and_one_on_it_does_not_match() {
+        // The same person, ruddy in one shot and not in the next: the
+        // fault a viewer names without being able to say why.
+        let ok = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        let ruddy = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 30.0, b: 6.0 });
+        assert!(ruddy.faces[0].hue_off_band_wb > 8.0, "the fixture is off the band: {}", ruddy.faces[0].hue_off_band_wb);
+        assert!(match_distance(&ok, &ruddy) > MATCH_GOOD, "{}", match_distance(&ok, &ruddy));
+    }
+
+    #[test]
+    fn a_wall_that_changes_colour_is_forgiven_more_than_a_face_that_does() {
+        // Per degree of error: nobody knows what colour the wall was.
         let base = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
-        let face_moved = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 20.0, b: 16.0 });
-        let wall_moved = with_face(flat(50.0, 6.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
-        let (df, dw) = (match_distance(&base, &face_moved), match_distance(&base, &wall_moved));
-        assert!(df > dw, "the face should dominate: face {df:.2}, wall {dw:.2}");
+        let face_off = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 26.0, b: 8.0 });
+        let wall_off = with_face(flat(50.0, 8.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        let off_deg = face_off.faces[0].hue_off_band_wb;
+        let (df, dw) = (match_distance(&base, &face_off), match_distance(&base, &wall_off));
+        assert!(df / off_deg > dw / 8.0, "per degree the face costs more: face {df:.2} over {off_deg:.1}°, wall {dw:.2} over 8");
     }
 
     #[test]

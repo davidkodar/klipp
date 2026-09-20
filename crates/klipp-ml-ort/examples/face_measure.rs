@@ -2,7 +2,11 @@
 //! the same code the check and `frame_stats` run, over a folder of test
 //! material.
 //!
-//!   cargo run --release -p klipp-ml-ort --features ort --example face_measure -- [--look NAME] [--secs N] FILE...
+//!   cargo run --release -p klipp-ml-ort --features ort --example face_measure -- [--look NAME] [--secs N] [--match] FILE...
+//!
+//! `--match` adds the matching table: how far every file is from every
+//! other by `measure::match_distance`, which is what a colourist is
+//! judging when they ask whether two shots cut together.
 //!
 //! Prints one line of frame readings and one per face, then the
 //! findings that are not a pass. The face model is the one in the app's
@@ -38,11 +42,13 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut look_name = "broadcast_neutral".to_string();
     let mut secs = 0.0f64;
+    let mut matching = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--look" => { look_name = args.remove(i + 1); args.remove(i); }
             "--secs" => { secs = args.remove(i + 1).parse().unwrap_or(0.0); args.remove(i); }
+            "--match" => { matching = true; args.remove(i); }
             _ => i += 1,
         }
     }
@@ -50,6 +56,7 @@ fn main() {
     let model = klipp_analysis_face_model().expect("the face model is not in the model cache: run an analysis with the detector once, or download yunet_face_2023mar");
     let mut detector = klipp_ml_ort::yunet::FaceDetector::open(&model).expect("the face model loads");
     println!("Look \"{look_name}\". Skin band {:.0}-{:.0}°.\n", measure::SKIN_HUE_LOW, measure::SKIN_HUE_HIGH);
+    let mut measured: Vec<(String, measure::FrameMeasure)> = Vec::new();
     for path in &args {
         let Some((w0, h0)) = probe(path) else { println!("{path}: not a picture"); continue };
         let w = w0.min(1280);
@@ -92,6 +99,27 @@ fn main() {
         }
         let step = measure::primaries_toward(&m, &look);
         println!("   toward the look: exposure {:+.2} lift {:+.3} gain {:+.3} temp {:+.3} tint {:+.3} sat {:+.2}\n", step.exposure, step.lift, step.gain, step.temperature, step.tint, step.saturation);
+        measured.push((name, m));
+    }
+    if matching && measured.len() > 1 {
+        // What a colourist means by "do these cut together": not how
+        // good each is, but how far apart they are.
+        println!("Matching — ΔE between each pair. Under {:.0} the cut is invisible; over {:.0} the viewer sees the join; over {:.0} they are different lighting setups.\n", measure::MATCH_GOOD, measure::MATCH_WARN, measure::SCENE_SPLIT);
+        // Numbered columns: the filenames in a test set differ in
+        // their last few characters, so a truncated name names nothing.
+        let width = measured.iter().map(|(n, _)| n.len()).max().unwrap_or(10).min(34);
+        print!("{:width$}   ", "", width = width + 4);
+        for i in 0..measured.len() {
+            print!("{:>7}", format!("[{}]", i + 1));
+        }
+        println!();
+        for (i, (an, a)) in measured.iter().enumerate() {
+            print!("[{:>2}] {:width$}  ", i + 1, &an[..an.len().min(width)], width = width);
+            for (_, b) in &measured {
+                print!("{:7.1}", measure::match_distance(a, b));
+            }
+            println!();
+        }
     }
 }
 
