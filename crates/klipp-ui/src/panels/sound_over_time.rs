@@ -232,8 +232,7 @@ mod tests {
         assert!(found.iter().any(|(_, w, _)| w.starts_with("hum")), "{found:?}");
 
         let state = AppState::default();
-        let mut panel = SoundOverTimePanel::default();
-        panel.reading = Reading::Done("take-1.wav".into(), Box::new(spec), found);
+        let mut panel = SoundOverTimePanel { reading: Reading::Done("take-1.wav".into(), Box::new(spec), found), ..Default::default() };
         let theme = KlippTheme::default();
         let ctx = ctx();
         let mut open = true;
@@ -255,8 +254,7 @@ mod tests {
     #[test]
     fn a_failed_reading_says_why_instead_of_drawing_nothing() {
         let state = AppState::default();
-        let mut panel = SoundOverTimePanel::default();
-        panel.reading = Reading::Failed("take-1.wav".into(), "ffmpeg could not read the sound".into());
+        let mut panel = SoundOverTimePanel { reading: Reading::Failed("take-1.wav".into(), "ffmpeg could not read the sound".into()), ..Default::default() };
         let theme = KlippTheme::default();
         let ctx = ctx();
         let mut open = true;
@@ -272,8 +270,7 @@ mod tests {
         // spinning with no way back.
         let (tx, rx) = std::sync::mpsc::channel::<Result<Spectrogram, String>>();
         drop(tx);
-        let mut panel = SoundOverTimePanel::default();
-        panel.reading = Reading::Working("take-1.wav".into(), rx);
+        let mut panel = SoundOverTimePanel { reading: Reading::Working("take-1.wav".into(), rx), ..Default::default() };
         panel.poll();
         assert!(matches!(panel.reading, Reading::Failed(..)));
     }

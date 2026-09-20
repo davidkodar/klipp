@@ -422,7 +422,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
     } else {
         let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
         chroma_sorted.sort_by(|a, b| a.total_cmp(b));
-        let gate = percentile(&chroma_sorted, 0.25).max(6.0).min(25.0);
+        let gate = percentile(&chroma_sorted, 0.25).clamp(6.0, 25.0);
         for (c, a, b) in &mids {
             if *c <= gate {
                 na.push(*a);
@@ -656,7 +656,7 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
             for y in py0..py1 {
                 for x in px0..px1 {
                     k += 1;
-                    if k % stride != 0 {
+                    if !k.is_multiple_of(stride) {
                         continue;
                     }
                     let p = (y * w + x) * 4;
@@ -746,7 +746,7 @@ pub fn skin_region(rgba: &[u8], width: u32, height: u32, person: [f32; 4]) -> Op
     let (x1, y1) = ((((px + pw) * w as f32) as usize).clamp(x0 + 1, w), (((py + ph) * h as f32) as usize).clamp(y0 + 1, h));
     let (rw, rh) = (x1 - x0, y1 - y0);
     let stride = ((rw * rh) / (GRID * GRID * 48)).max(1);
-    let mut skin = vec![false; GRID * GRID];
+    let mut skin = [false; GRID * GRID];
     for gy in 0..GRID {
         for gx in 0..GRID {
             let (ax, bx) = (x0 + rw * gx / GRID, x0 + rw * (gx + 1) / GRID);
@@ -774,7 +774,7 @@ pub fn skin_region(rgba: &[u8], width: u32, height: u32, person: [f32; 4]) -> Op
     }
     // The largest connected cluster of skin patches, the upper one when
     // two are alike (a face over hands).
-    let mut seen = vec![false; GRID * GRID];
+    let mut seen = [false; GRID * GRID];
     let mut best: Option<(usize, f32, [usize; 4])> = None;
     for start in 0..GRID * GRID {
         if !skin[start] || seen[start] {

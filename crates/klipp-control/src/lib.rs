@@ -1082,23 +1082,6 @@ fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std:
 }
 
 /// An absolute output path the caller gave, or one in the temp dir.
-/// The heads of the people in the picture at a timeline second: the top
-/// picture clip there, its file's framing samples nearest the source
-/// second, each person's box cut down to the head.
-fn faces_at(ctx: &ControlContext, secs: f64) -> Vec<[f32; 4]> {
-    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
-    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
-    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
-    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
-        let (_, c) = t.clip_at_timecode(tc)?;
-        let item = pool.get(&c.media_id()?)?;
-        c.enabled.then_some((c.clone(), item.clone()))
-    }) else { return Vec::new() };
-    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
-    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
-    framing.people_at(source, 4.0).map(|s| face_or_head_regions(s)).unwrap_or_default()
-}
-
 /// A sample's faces as boxes, else its people's heads.
 fn face_or_head_regions(s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4]> {
     if !s.faces.is_empty() {
@@ -1108,20 +1091,6 @@ fn face_or_head_regions(s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4
     }
 }
 
-/// The people in the picture at a timeline second, as their whole boxes.
-fn people_at(ctx: &ControlContext, secs: f64) -> Vec<[f32; 4]> {
-    let seq = match ctx.sequence.read() { Ok(s) => s, Err(_) => return Vec::new() };
-    let pool = match ctx.media_pool.read() { Ok(p) => p, Err(_) => return Vec::new() };
-    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
-    let Some((clip, item)) = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).find_map(|t| {
-        let (_, c) = t.clip_at_timecode(tc)?;
-        let item = pool.get(&c.media_id()?)?;
-        c.enabled.then_some((c.clone(), item.clone()))
-    }) else { return Vec::new() };
-    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
-    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
-    framing.people_at(source, 4.0).map(|s| s.people.iter().map(|p| [p.0, p.1, p.2, p.3]).collect()).unwrap_or_default()
-}
 
 /// The skin regions to read in a frame: each detected face, its box
 /// drawn in a little so hair and background stay out; with no face
@@ -1948,7 +1917,7 @@ fn handle(
                                 .framing
                                 .as_ref()
                                 .and_then(|f| f.people_at(t, 1.5))
-                                .map(|s| face_or_head_regions(s))
+                                .map(face_or_head_regions)
                                 .unwrap_or_default();
                             measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
                         }

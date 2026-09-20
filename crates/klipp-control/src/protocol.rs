@@ -23,6 +23,13 @@ pub struct Request {
     pub command: ControlCommand,
 }
 
+// One of these is deserialised per request off a socket, used, and
+// dropped. It is never stored in a collection and never on a hot path,
+// so the gap between the smallest variant and the largest costs one
+// stack frame per command. Boxing a variant to close it would put an
+// allocation and an indirection in the way, and — on an enum whose
+// shape *is* the wire format — risk the JSON for nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum ControlCommand {

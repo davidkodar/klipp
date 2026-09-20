@@ -602,11 +602,13 @@ mod tests {
     fn the_look_is_the_briefs_when_there_is_one_and_neutral_otherwise() {
         let mut state = AppState::default();
         assert_eq!(look_for(&state).name, "broadcast_neutral", "no brief, no look: a neutral target");
-        let mut brief = klipp_timeline::Brief::default();
-        brief.look = LookTarget::from_measures(
-            "like the reference",
-            &[measure::measure_frame(&[128, 120, 110, 255].repeat(64 * 64), 64, 64, &[])],
-        );
+        let brief = klipp_timeline::Brief {
+            look: LookTarget::from_measures(
+                "like the reference",
+                &[measure::measure_frame(&[128, 120, 110, 255].repeat(64 * 64), 64, 64, &[])],
+            ),
+            ..Default::default()
+        };
         state.sequence_mut().brief = Some(brief);
         assert_eq!(look_for(&state).name, "like the reference", "the brief's look leads");
     }
@@ -617,8 +619,10 @@ mod tests {
         // that never resolved. Judging against it would pass every
         // frame silently, which is worse than judging against neutral.
         let mut state = AppState::default();
-        let mut brief = klipp_timeline::Brief::default();
-        brief.look = Some(LookTarget { name: "whatever".into(), ..Default::default() });
+        let brief = klipp_timeline::Brief {
+            look: Some(LookTarget { name: "whatever".into(), ..Default::default() }),
+            ..Default::default()
+        };
         state.sequence_mut().brief = Some(brief);
         assert_eq!(look_for(&state).name, "broadcast_neutral");
     }
