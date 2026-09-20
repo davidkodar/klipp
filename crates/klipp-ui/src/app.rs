@@ -26327,6 +26327,31 @@ impl eframe::App for KlippApp {
             self.prefs_dirty = true;
         }
 
+        // Collapsing or expanding a section is a preference change made
+        // by a widget with no access to `self`, so nothing marks the
+        // prefs dirty and the mirror below — which only runs when they
+        // already are — never sees it. It went unnoticed while every
+        // section started open and most are never collapsed; with GRADE
+        // starting closed, a colourist who wants it open would have had
+        // to re-open it on every launch.
+        if self.state.remember_inspector_layout {
+            let key = egui::Id::new("klipp_collapsed_sections");
+            let differs = ctx.data_mut(|d| {
+                let set: &std::collections::HashSet<String> =
+                    d.get_temp_mut_or_default(key);
+                set.len() != self.prefs.general.collapsed_sections.len()
+                    || self
+                        .prefs
+                        .general
+                        .collapsed_sections
+                        .iter()
+                        .any(|name| !set.contains(name))
+            });
+            if differs {
+                self.prefs_dirty = true;
+            }
+        }
+
         // Debounced preferences save (at most once per second)
         if self.prefs_dirty && self.prefs_last_save.elapsed().as_secs() >= 1 {
             // Sync prefs to state
