@@ -166,6 +166,119 @@ pub enum NodeKind {
     Unknown,
 }
 
+/// Where a node belongs in the order a colourist works in.
+///
+/// The order is not a style; it is what makes each step mean anything.
+/// A balance made *after* a look is a balance fighting the look's own
+/// cast, and it will never settle: every correction the loop makes
+/// shows up partly undone at the next measurement. A secondary pulled
+/// *before* the balance keys on the uncorrected picture, so the key
+/// drifts the moment the balance moves under it. A look applied before
+/// the balance grades a picture that is still wrong.
+///
+/// So:
+///
+/// 1. **Input** — the camera's own encoding undone. Log or raw becomes
+///    scene-linear in the working space. Nothing below means anything
+///    until this has happened; see `measure::looks_like_log`.
+/// 2. **Balance** — the picture made *correct*: neutrals neutral,
+///    exposure where the face wants it, contrast placed. This is the
+///    step that is measured, and the only one with a right answer.
+/// 3. **Secondary** — one thing changed and the rest left alone: skin
+///    held on its band, a sky pulled down, a window on a face. Keyed
+///    off a balanced picture, so the key is stable.
+/// 4. **Look** — the creative pass, which has no right answer and is
+///    therefore last among the choices: a LUT, a film emulation, a
+///    deliberate cast, grain.
+/// 5. **Output** — the delivery encoding. Everything above is in the
+///    working space; this is what leaves.
+///
+/// This is the order of the classic DaVinci node graph and of the ASC's
+/// own CDL-then-look convention, and it is the order the grading loop
+/// works in: balance to a measured target first, secondaries second,
+/// look last, because only the first two have numbers to hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GradeStage {
+    Input,
+    Balance,
+    Secondary,
+    Look,
+    Output,
+    /// Plumbing with no place of its own: reroutes, splitters, mattes
+    /// feeding something else. Ordering says nothing about these.
+    Plumbing,
+}
+
+impl GradeStage {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GradeStage::Input => "input transform",
+            GradeStage::Balance => "balance",
+            GradeStage::Secondary => "secondary",
+            GradeStage::Look => "look",
+            GradeStage::Output => "output transform",
+            GradeStage::Plumbing => "plumbing",
+        }
+    }
+
+    /// What this stage is for, in one line.
+    pub fn purpose(&self) -> &'static str {
+        match self {
+            GradeStage::Input => "the camera's encoding undone, so the numbers below mean something",
+            GradeStage::Balance => "the picture made correct: neutrals neutral, the face exposed, contrast placed",
+            GradeStage::Secondary => "one thing changed and the rest left alone, keyed off a balanced picture",
+            GradeStage::Look => "the creative pass, which has no right answer and so comes last",
+            GradeStage::Output => "the delivery encoding",
+            GradeStage::Plumbing => "wiring",
+        }
+    }
+}
+
+impl NodeKind {
+    /// Where this kind belongs in [`GradeStage`]'s order.
+    ///
+    /// `Corrector` is the bundled do-everything node the inspector
+    /// writes to, so it counts as balance: that is what it is used for,
+    /// and what the grading loop drives. A `Corrector` gated by a matte
+    /// is a secondary instead, which the chain reader works out from the
+    /// wiring rather than from the kind.
+    pub fn grade_stage(&self) -> GradeStage {
+        match self {
+            NodeKind::Source => GradeStage::Plumbing,
+            NodeKind::Output => GradeStage::Output,
+            NodeKind::InputTransform => GradeStage::Input,
+            // Balance: everything with a right answer.
+            NodeKind::Corrector
+            | NodeKind::Exposure
+            | NodeKind::Contrast
+            | NodeKind::Saturation
+            | NodeKind::ToneControls
+            | NodeKind::ColorWheels
+            | NodeKind::WheelSatBri
+            | NodeKind::RGBCurves
+            | NodeKind::ColorBalance
+            | NodeKind::PrimariesMatrix
+            | NodeKind::ColorMatch => GradeStage::Balance,
+            // Secondary: a key, a window, or a correction gated by one.
+            NodeKind::Qualifier
+            | NodeKind::LumaKey
+            | NodeKind::Mask
+            | NodeKind::CombineMattes
+            | NodeKind::ExternalMatte
+            | NodeKind::DifferenceKey
+            | NodeKind::ApplyMatte
+            | NodeKind::MaskCutout
+            | NodeKind::HueSatCurves => GradeStage::Secondary,
+            // Look: no right answer, so last among the choices.
+            NodeKind::Lut3D | NodeKind::FilmGrain | NodeKind::ColorWarper | NodeKind::SoftClip => GradeStage::Look,
+            // Denoise belongs before anything that would amplify what it
+            // leaves behind, which in practice means with the balance.
+            NodeKind::Denoise => GradeStage::Balance,
+            _ => GradeStage::Plumbing,
+        }
+    }
+}
+
 impl NodeKind {
     /// How many input ports this node has — STATIC minimum count.
     /// `LayerMixer` actually grows past this in practice; UI + executor

@@ -1090,3 +1090,214 @@ mod tests {
         let _ = effective_signal_role_at(&g, r1_id, 0); // must not loop
     }
 }
+
+/// One node on a clip's chain, in the order the picture flows through
+/// it, with the stage it belongs to.
+#[derive(Debug, Clone)]
+pub struct ChainLink {
+    pub id: NodeId,
+    pub kind: NodeKind,
+    pub label: String,
+    pub enabled: bool,
+    pub stage: crate::GradeStage,
+    /// A correction gated by a matte is a secondary whatever its kind:
+    /// `Corrector` alone balances the whole picture, and the same
+    /// `Corrector` on port 1 of a key changes one thing only.
+    pub gated: bool,
+}
+
+impl NodeGraph {
+    /// The chain from the source to the output, in flow order, with each
+    /// node's grading stage — what a colourist means by "the order of
+    /// operations".
+    ///
+    /// Only the main signal path: matte producers and the nodes that
+    /// feed them are named by the correction they gate, not walked as a
+    /// separate branch, because their position in the picture's order is
+    /// the position of the thing they gate.
+    pub fn chain(&self) -> Vec<ChainLink> {
+        let by_id: std::collections::HashMap<NodeId, &Node> = self.nodes.iter().map(|n| (n.id, n)).collect();
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut at = Some(self.output_node_id);
+        // Walk backwards from the output along port 0 — the picture's
+        // own path — then reverse, so a graph with dangling branches
+        // still reports the chain that renders.
+        while let Some(id) = at {
+            if !seen.insert(id) {
+                break;
+            }
+            if let Some(n) = by_id.get(&id) {
+                let gated = self.edges.iter().any(|e| e.to_node == id && e.to_port == 1)
+                    && matches!(
+                        n.kind,
+                        NodeKind::Corrector
+                            | NodeKind::ColorBalance
+                            | NodeKind::Exposure
+                            | NodeKind::Contrast
+                            | NodeKind::Saturation
+                            | NodeKind::ColorWheels
+                            | NodeKind::ToneControls
+                            | NodeKind::RGBCurves
+                    );
+                out.push(ChainLink {
+                    id,
+                    kind: n.kind,
+                    label: n.label.clone(),
+                    enabled: n.enabled,
+                    stage: if gated { crate::GradeStage::Secondary } else { n.kind.grade_stage() },
+                    gated,
+                });
+            }
+            at = self.input_of(id, 0);
+        }
+        out.reverse();
+        out
+    }
+
+    /// Where the chain departs from the order a colourist works in, as
+    /// sentences. Empty when the chain is in order.
+    ///
+    /// Plumbing and the source are skipped: they have no place of their
+    /// own. Only the stages that carry meaning are held to the order.
+    pub fn chain_out_of_order(&self) -> Vec<String> {
+        let chain = self.chain();
+        let meaningful: Vec<&ChainLink> = chain
+            .iter()
+            .filter(|l| l.enabled && !matches!(l.stage, crate::GradeStage::Plumbing))
+            .collect();
+        let mut said = Vec::new();
+        for pair in meaningful.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if b.stage < a.stage {
+                said.push(match (a.stage, b.stage) {
+                    (crate::GradeStage::Look, crate::GradeStage::Balance) => format!(
+                        "the balance ({}) sits after the look ({}) — the balance is then correcting the look's own cast, and the loop will never settle",
+                        b.label, a.label
+                    ),
+                    (crate::GradeStage::Look, crate::GradeStage::Secondary) => format!(
+                        "the secondary ({}) keys off the look ({}) rather than the balanced picture — move the look last or the key drifts with it",
+                        b.label, a.label
+                    ),
+                    (crate::GradeStage::Secondary, crate::GradeStage::Balance) => format!(
+                        "the balance ({}) sits after the secondary ({}) — the key was pulled on an uncorrected picture and will drift as the balance moves under it",
+                        b.label, a.label
+                    ),
+                    (_, crate::GradeStage::Input) => format!(
+                        "the input transform ({}) is not first — everything before it grades the camera's own encoding, where the numbers mean nothing",
+                        b.label
+                    ),
+                    _ => format!(
+                        "{} ({}) comes after {} ({}); the order is input, balance, secondary, look, output",
+                        b.label,
+                        b.stage.label(),
+                        a.label,
+                        a.stage.label()
+                    ),
+                });
+            }
+        }
+        said
+    }
+}
+
+#[cfg(test)]
+mod chain_order_tests {
+    use super::*;
+    use crate::GradeStage;
+
+    fn node(kind: NodeKind, label: &str) -> Node {
+        Node {
+            id: NodeId::new_v4(),
+            kind,
+            label: label.to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        }
+    }
+
+    /// A chain from a list of kinds, wired source → ... → output.
+    fn chain_of(kinds: &[NodeKind]) -> NodeGraph {
+        let mut nodes = vec![node(NodeKind::Source, "Source")];
+        for k in kinds {
+            nodes.push(node(*k, k.display_name()));
+        }
+        nodes.push(node(NodeKind::Output, "Output"));
+        let edges = (0..nodes.len() - 1)
+            .map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 })
+            .collect();
+        let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+        NodeGraph {
+            output_node_id: nodes.last().unwrap().id,
+            nodes,
+            edges,
+            node_positions,
+            working_space_override: None,
+            frames: vec![],
+            sticky_notes: vec![],
+        }
+    }
+
+    #[test]
+    fn the_professional_order_passes() {
+        let g = chain_of(&[NodeKind::InputTransform, NodeKind::Corrector, NodeKind::Qualifier, NodeKind::Lut3D]);
+        assert!(g.chain_out_of_order().is_empty(), "{:?}", g.chain_out_of_order());
+        let stages: Vec<GradeStage> = g.chain().iter().map(|l| l.stage).collect();
+        assert_eq!(
+            stages,
+            vec![GradeStage::Plumbing, GradeStage::Input, GradeStage::Balance, GradeStage::Secondary, GradeStage::Look, GradeStage::Output]
+        );
+    }
+
+    #[test]
+    fn a_balance_after_a_look_is_named_as_the_fault_it_is() {
+        // The commonest way a grading loop fails to converge: a LUT on
+        // the front, so every measured correction is measured through it.
+        let g = chain_of(&[NodeKind::Lut3D, NodeKind::Corrector]);
+        let said = g.chain_out_of_order();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("correcting the look's own cast"), "{}", said[0]);
+    }
+
+    #[test]
+    fn a_key_pulled_before_the_balance_is_named() {
+        let g = chain_of(&[NodeKind::Qualifier, NodeKind::Corrector]);
+        let said = g.chain_out_of_order();
+        assert!(said.iter().any(|s| s.contains("drift")), "{said:?}");
+    }
+
+    #[test]
+    fn an_input_transform_that_is_not_first_is_named() {
+        let g = chain_of(&[NodeKind::Corrector, NodeKind::InputTransform]);
+        let said = g.chain_out_of_order();
+        assert!(said.iter().any(|s| s.contains("input transform")), "{said:?}");
+    }
+
+    #[test]
+    fn a_gated_correction_reads_as_a_secondary_not_a_balance() {
+        // The shape `ensure_masked_secondary` builds: the same kind of
+        // node that balances the whole picture, gated by a key, is a
+        // secondary — and so the chain is in order, not out of it.
+        let mut g = chain_of(&[NodeKind::Corrector]);
+        let (_qual, _corr) = g.ensure_masked_secondary(NodeKind::ColorBalance);
+        let chain = g.chain();
+        let gated: Vec<&ChainLink> = chain.iter().filter(|l| l.gated).collect();
+        assert_eq!(gated.len(), 1, "one gated correction: {:?}", chain.iter().map(|l| (&l.label, l.stage)).collect::<Vec<_>>());
+        assert_eq!(gated[0].stage, GradeStage::Secondary);
+        assert!(g.chain_out_of_order().is_empty(), "{:?}", g.chain_out_of_order());
+    }
+
+    #[test]
+    fn a_disabled_node_is_not_held_to_the_order() {
+        let mut g = chain_of(&[NodeKind::Lut3D, NodeKind::Corrector]);
+        for n in g.nodes.iter_mut() {
+            if n.kind == NodeKind::Lut3D {
+                n.enabled = false;
+            }
+        }
+        assert!(g.chain_out_of_order().is_empty(), "a bypassed look is not in the picture's way");
+    }
+}

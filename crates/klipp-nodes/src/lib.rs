@@ -42,7 +42,7 @@ pub mod auto_layout;
 
 pub use graph::{Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNote, NodeStickyNoteId, PHANTOM_CORRECTOR_ID, effective_signal_role_at};
 pub use auto_layout::auto_layout;
-pub use kinds::{NodeKind, PortRole};
+pub use kinds::{GradeStage, NodeKind, PortRole};
 pub use params::{
     LayerMixerParams, MatteChannel, MatteCombineOp, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,
 };

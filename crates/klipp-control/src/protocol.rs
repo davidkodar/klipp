@@ -258,6 +258,13 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// A clip's grade chain in the order the picture flows through it,
+    /// each node named with the stage it belongs to, and whatever the
+    /// chain does out of a colourist's order.
+    GradeChain {
+        #[serde(default)]
+        clip_id: Option<String>,
+    },
     /// Send a published colour chart through the render path and read
     /// it back, to find out whether the path itself moves colour before
     /// trusting anything it is asked to measure.

@@ -1818,6 +1818,56 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::GradeChain { clip_id } => {
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
+            let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .flat_map(|t| t.clips.iter())
+                .filter(|c| matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) && want.is_none_or(|w| c.id.0 == w))
+                .take(48)
+                .collect();
+            if clips.is_empty() {
+                return Err("no picture clip to read a grade chain from".into());
+            }
+            let mut lines = Vec::new();
+            let mut out = Vec::new();
+            for c in &clips {
+                let name: String = c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into()).chars().take(28).collect();
+                let chain = c.node_graph.chain();
+                let faults = c.node_graph.chain_out_of_order();
+                let shown: Vec<String> = chain.iter()
+                    .filter(|l| !matches!(l.stage, klipp_nodes::GradeStage::Plumbing) || l.kind == klipp_nodes::NodeKind::Source)
+                    .map(|l| format!("{} [{}]{}{}", l.label, l.stage.label(), if l.gated { ", gated by a key" } else { "" }, if l.enabled { "" } else { ", bypassed" }))
+                    .collect();
+                lines.push(format!("{name}: {}", if shown.is_empty() { "no grade".to_string() } else { shown.join(" → ") }));
+                for f in &faults {
+                    lines.push(format!("  [warn] {f}"));
+                }
+                out.push(json!({
+                    "clip_id": c.id.0.to_string(),
+                    "name": name,
+                    "chain": chain.iter().map(|l| json!({
+                        "node_id": l.id.to_string(),
+                        "kind": format!("{:?}", l.kind),
+                        "label": l.label,
+                        "stage": l.stage.label(),
+                        "gated": l.gated,
+                        "enabled": l.enabled,
+                    })).collect::<Vec<_>>(),
+                    "out_of_order": faults,
+                }));
+            }
+            Ok(json!({
+                "text": format!(
+                    "{}\n\nThe order a colourist works in, and why: input transform (the camera's encoding undone, so the numbers below mean something), balance (neutrals neutral, the face exposed, contrast placed — the only step with a right answer), secondary (one thing changed, keyed off a balanced picture), look (no right answer, so last), output transform.",
+                    lines.join("\n"),
+                ),
+                "clips": out,
+            }))
+        }
+
         ControlCommand::ColourSelfCheck { size } => {
             if in_batch {
                 return read_in_batch("colour_selfcheck");
@@ -3525,6 +3575,17 @@ reference:   {}",
                 let (_, m) = median_measure(&reads);
                 let look = look_for(ctx, *t);
                 let mut found = colour_report(&m, &look, *t);
+                // The chain's own order, which no measurement can see:
+                // a balance behind a look never settles, however many
+                // rounds the loop runs.
+                {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    if let Some(c) = seq.tracks.iter().flat_map(|tr| tr.clips.iter()).find(|c| c.timeline_in.to_secs_f64() <= *t && c.timeline_out.to_secs_f64() > *t && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })) {
+                        for fault in c.node_graph.chain_out_of_order() {
+                            found.push(("warning".to_string(), *t, format!("{fault} [grade order]"), "grade_chain shows the chain; the order is input, balance, secondary, look, output".to_string()));
+                        }
+                    }
+                }
                 if let Some(d) = drift {
                     found.push(("warning".to_string(), *t, format!("{d} [drift]"), "keyframe the grade across the shot, or cut where the light changes".to_string()));
                 }
