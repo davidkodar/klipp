@@ -307,6 +307,9 @@ pub struct KlippApp {
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,
+    /// The Colour Check window's own state: the last reading of the
+    /// displayed frame, and the last render-path self-check.
+    colour_check: crate::panels::colour_check::ColourCheckPanel,
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
@@ -615,6 +618,7 @@ impl KlippApp {
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
+            colour_check: Default::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
             timeline: {
@@ -1288,6 +1292,43 @@ impl KlippApp {
     /// one undo step — with the document marked changed and the engine
     /// told. What the control socket's plans go through; the Edit Plan
     /// window's buttons too.
+    /// Send a published colour chart through the same renderer the
+    /// viewer and the export use, and read it back.
+    ///
+    /// Everything the Colour Check window says is a reading of pixels
+    /// that came out of that renderer. If the path itself moves colour,
+    /// those readings are partly a measurement of Klipp, and a person
+    /// chasing them will be grading the pipeline. It runs on both the
+    /// CPU and the GPU path, because the viewer shows one and an export
+    /// may take the other.
+    fn run_colour_self_check(&mut self) {
+        let working = klipp_engine::video_decoder::working_colorspace();
+        let both = klipp_compose::selfcheck::run_both(480, 320, working, klipp_compose::RenderOptions::default());
+        let mut said = Vec::new();
+        let mut ok = true;
+        for (gpu, check) in &both {
+            let path = if *gpu { "GPU" } else { "CPU" };
+            for (severity, what) in check.findings() {
+                if severity != "ok" {
+                    ok = false;
+                }
+                said.push(format!("{path}: {what}"));
+            }
+        }
+        let worst = both[0]
+            .1
+            .patches
+            .iter()
+            .zip(both[1].1.patches.iter())
+            .map(|(a, b)| klipp_color::measure::delta_e2000(a.back, b.back))
+            .fold(0.0f32, f32::max);
+        if worst >= 1.0 {
+            ok = false;
+            said.push(format!("The CPU and the GPU disagree about the chart by {worst:.1} ΔE — a grade approved in the viewer is not the grade that exports."));
+        }
+        self.colour_check.selfcheck = Some((ok, said.join("\n")));
+    }
+
     fn apply_edits_as_one(&mut self, edits: &[EditCommand], label: &str) {
         if edits.is_empty() {
             return;
@@ -26603,6 +26644,20 @@ impl eframe::App for KlippApp {
                 &mut open,
             );
             self.state.show_project_notes = open;
+        }
+
+        // Colour Check window: the frame on screen read the way a
+        // colourist reads it, with the fault named and the knob to turn.
+        if self.state.show_colour_check {
+            let mut open = self.state.show_colour_check;
+            let action = {
+                let fb = self.frame_buffer.clone();
+                self.colour_check.show(ctx, &self.state, &fb, &self.theme, &mut open)
+            };
+            self.state.show_colour_check = open;
+            if action == crate::panels::colour_check::ColourAction::SelfCheck {
+                self.run_colour_self_check();
+            }
         }
 
         // Edit Plan window: the paper edit awaiting the person's word.

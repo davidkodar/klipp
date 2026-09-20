@@ -544,6 +544,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.show_curve_editor = !s.show_curve_editor), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Markers Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_markers_panel = !s.show_markers_panel), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Colour Check"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.show_colour_check = !s.show_colour_check), enabled: true });
     // Focus the search field of whichever panel was last clicked.
     // Routes through the same one-shot focus_search_request flag the
     // Ctrl+F dispatcher uses, so the next show() of the active panel

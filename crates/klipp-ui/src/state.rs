@@ -1043,6 +1043,9 @@ pub struct AppState {
     pub show_project_notes: bool,
     /// Whether the Edit Plan window is open.
     pub show_edit_plan: bool,
+    /// The Colour Check window: what a colourist would read off the
+    /// frame on screen, with the fault named and the knob to turn.
+    pub show_colour_check: bool,
     /// What the Edit Plan window last did or could not do, shown under
     /// its buttons.
     pub edit_plan_note: Option<String>,
@@ -3627,6 +3630,7 @@ impl Default for AppState {
             show_subtitle_editor: false,
             show_project_notes: false,
             show_edit_plan: false,
+            show_colour_check: false,
             edit_plan_note: None,
             tp_oversample: true,
             project_notes: String::new(),

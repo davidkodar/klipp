@@ -929,6 +929,95 @@ impl LookTarget {
 ///
 /// The result is comparable with a ΔE: under [`MATCH_GOOD`] the cut is
 /// invisible, over [`MATCH_WARN`] a viewer sees the join.
+/// The lightness a match should read the exposure from, for a *pair* of
+/// shots — the same kind of reading from both, or none.
+///
+/// The frame's median is what fills most of the picture, so it moves
+/// when the *framing* moves and not only when the light does. Measured
+/// on the test footage, a big close-up of the same subject under the
+/// same lamp read 10.6 ΔE from its own source shot on the median
+/// alone, past the scene split, so the two would have been called
+/// different setups. The subject's own level did not move at all:
+/// 51.1 against 51.2.
+///
+/// Two readings of the subject exist and they are **not
+/// interchangeable**: the detected face is the median of the cheek
+/// band, and the skin fallback is the median of every skin-coloured
+/// pixel, which includes foreheads and specular highlights and so runs
+/// systematically lighter. Comparing one against the other invents a
+/// difference. So the pair has to agree on a basis: both faces, else
+/// both skin, else neither and the frame leads.
+///
+/// The skin fallback earns its place because a face that *fills* the
+/// frame defeats the detector, which is trained on smaller ones — and
+/// that is precisely the framing that breaks the median.
+fn subject_pair(a: &FrameMeasure, b: &FrameMeasure) -> Option<(f32, f32)> {
+    let face = |m: &FrameMeasure| m.faces.iter().find(|f| f.readable()).map(|f| f.median.l);
+    if let (Some(x), Some(y)) = (face(a), face(b)) {
+        return Some((x, y));
+    }
+    let skin = |m: &FrameMeasure| m.skin_all.as_ref().filter(|s| s.pct >= 2.0).map(|s| s.l);
+    match (skin(a), skin(b)) {
+        (Some(x), Some(y)) => Some((x, y)),
+        _ => None,
+    }
+}
+
+/// How far two shots are from matching, in ΔE-like units.
+///
+/// "Matching" is the job that fills most of a colourist's day and it is
+/// not the same as "graded well": two shots can each be defensible on
+/// their own and still cut badly, because the eye tracks a change
+/// across a cut far more readily than an absolute error inside a shot.
+/// So the number that matters between neighbours is a *difference*, not
+/// a distance from a target.
+///
+/// **What is compared is the light, not the people, and not the
+/// framing.** Two blind spots have to be worked around, and each of
+/// them was found by measuring real footage rather than by reasoning:
+///
+/// *A different person is not a mismatch.* A scene holds an interview
+/// and its reverse, a two-shot, a cutaway. The first version of this
+/// compared two faces' colours in ΔE2000 directly and scored two
+/// well-exposed shots from one session 40 ΔE apart because one person
+/// was darker than the other. The face now enters as a difference of
+/// *errors*: how far each sits off the skin band once the scene's own
+/// cast is taken off. Two faces both on the band match, whoever they
+/// belong to.
+///
+/// *A different framing is not a mismatch either.* See [`subject_pair`].
+/// The exposure is read two ways, from the subject and from the whole
+/// frame, and the smaller difference is the one that counts. Each
+/// reading has its own blind spot — re-framing fools the frame, a new
+/// subject fools the face — and neither fools both, so a difference is
+/// only believed when both ways of looking agree there is one. A
+/// genuine change in the light moves both.
+///
+/// *A cast can only be compared where there are neutrals to read it
+/// off.* When a face fills the frame the "neutrals" are the skin, and
+/// the cast reading becomes a reading of the complexion. `neutral_solid`
+/// already says when that has happened, so the cast term drops out
+/// rather than lying; the skin-band term still catches a light that has
+/// changed colour, because skin turns with it.
+///
+/// What the eye notices across a cut, in the order it notices it:
+///
+/// 1. **Exposure.** A jump in level reads as a cut to a different take.
+///    About 1 L* is the threshold on a smooth pan and 3 L* across a
+///    hard cut, so L* enters at roughly its own scale.
+/// 2. **Skin sitting differently against its band**, weighted highest
+///    per degree, because a face that has gone ruddy in one shot and
+///    sallow in the next is the fault a viewer names even when they
+///    cannot say why.
+/// 3. **The cast on the neutrals** — the wall, the paper, the shirt.
+///    Forgiven more: nobody knows what colour the wall was.
+/// 4. **Contrast**, which the eye is most forgiving of, and which is
+///    partly a property of the shot's own content rather than its grade.
+///
+/// The result is comparable with a ΔE: under [`MATCH_GOOD`] the cut is
+/// invisible, over [`MATCH_WARN`] a viewer sees the join. A 2 ΔE shift
+/// on skin crosses the first threshold on its own; the same shift on
+/// the neutrals does not.
 pub fn match_distance(a: &FrameMeasure, b: &FrameMeasure) -> f32 {
     let face_a = a.faces.iter().find(|f| f.readable());
     let face_b = b.faces.iter().find(|f| f.readable());
@@ -948,10 +1037,16 @@ pub fn match_distance(a: &FrameMeasure, b: &FrameMeasure) -> f32 {
         // rest of the picture carries the whole judgement.
         _ => 0.0,
     };
-    let exposure = (a.l_p50 - b.l_p50).abs();
-    let cast = {
+    let frame_exposure = (a.l_p50 - b.l_p50).abs();
+    let exposure = match subject_pair(a, b) {
+        Some((x, y)) => (x - y).abs().min(frame_exposure),
+        None => frame_exposure,
+    };
+    let cast = if a.neutral_solid && b.neutral_solid {
         let (da, db) = (a.cast_a - b.cast_a, a.cast_b - b.cast_b);
         (da * da + db * db).sqrt()
+    } else {
+        0.0
     };
     let contrast = (a.contrast_range - b.contrast_range).abs();
     // The weights are the order above, scaled so the result reads like
@@ -1647,6 +1742,75 @@ mod match_tests {
         assert!(match_distance(&a, &far) > MATCH_WARN, "{}", match_distance(&a, &far));
         let near = flat(51.0, 0.0, 0.0);
         assert!(match_distance(&a, &near) < MATCH_GOOD, "{}", match_distance(&a, &near));
+    }
+
+    #[test]
+    fn re_framing_the_same_shot_is_not_a_mismatch() {
+        // A big close-up of the subject and a wider shot of the same
+        // setup: the frame's median moves a long way because the median
+        // is whatever fills the frame, and the light has not changed at
+        // all. Measured on the test footage this read 10.6 ΔE on the
+        // median alone, past the scene split.
+        let wide = with_face(flat(30.0, 0.0, 0.0), Lab { l: 51.0, a: 14.0, b: 16.0 });
+        let close = with_face(flat(44.0, 0.0, 0.0), Lab { l: 51.0, a: 14.0, b: 16.0 });
+        let d = match_distance(&wide, &close);
+        assert!(d < MATCH_GOOD, "the same light framed two ways: {d:.2}");
+    }
+
+    #[test]
+    fn a_real_exposure_change_still_moves_both_readings() {
+        // The subject and the frame darken together, so the smaller of
+        // the two differences is still a real one.
+        let lit = with_face(flat(30.0, 0.0, 0.0), Lab { l: 51.0, a: 14.0, b: 16.0 });
+        let dim = with_face(flat(25.0, 0.0, 0.0), Lab { l: 46.0, a: 14.0, b: 16.0 });
+        let d = match_distance(&lit, &dim);
+        assert!(d > MATCH_WARN, "half a stop down is a mismatch: {d:.2}");
+    }
+
+    #[test]
+    fn a_frame_with_no_neutrals_is_not_judged_on_its_cast() {
+        // A face filling the frame makes the "neutrals" the skin, and
+        // the cast reading becomes a reading of the complexion. The
+        // measurement already says when that has happened.
+        let wall = flat(50.0, 0.0, 0.0);
+        let mut no_wall = flat(50.0, 9.0, 4.0);
+        no_wall.neutral_solid = false;
+        assert!(match_distance(&wall, &no_wall) < MATCH_GOOD, "a cast that cannot be read is not compared");
+        // …and where both frames do hold neutrals, it is.
+        let real_cast = flat(50.0, 9.0, 4.0);
+        assert!(match_distance(&wall, &real_cast) > MATCH_GOOD);
+    }
+
+    #[test]
+    fn skin_carries_the_exposure_when_the_detector_misses_the_face() {
+        // A face that fills the frame defeats the detector, which is
+        // trained on smaller ones — and that is precisely the framing
+        // that breaks the frame median, so the fallback matters.
+        let skin = |l: f32, pct: f32| Some(SkinRead { hue: 40.0, chroma: 20.0, l, pct });
+        let mut wide = flat(30.0, 0.0, 0.0);
+        wide.skin_all = skin(55.0, 12.0);
+        let mut close = flat(44.0, 0.0, 0.0);
+        close.skin_all = skin(55.0, 44.0);
+        assert!(match_distance(&wide, &close) < MATCH_GOOD, "{}", match_distance(&wide, &close));
+        // Too little skin to be the subject: the frame leads again.
+        let mut sliver = flat(44.0, 0.0, 0.0);
+        sliver.skin_all = skin(55.0, 0.4);
+        assert!(match_distance(&wide, &sliver) > MATCH_WARN);
+    }
+
+    #[test]
+    fn a_face_reading_is_never_compared_with_a_skin_reading() {
+        // The cheek-band median and the all-skin median are different
+        // measurements — the second includes foreheads and highlights
+        // and runs lighter — so comparing one against the other invents
+        // a difference. With no basis in common the frame leads, which
+        // here means the two are judged different, as they should be.
+        let detected = with_face(flat(30.0, 0.0, 0.0), Lab { l: 51.0, a: 14.0, b: 16.0 });
+        let mut fallback = flat(48.0, 0.0, 0.0);
+        fallback.skin_all = Some(SkinRead { hue: 40.0, chroma: 20.0, l: 51.0, pct: 44.0 });
+        // 18 L* apart on the frame, and no common subject reading to
+        // overrule it: the pair is not quietly called a match.
+        assert!(match_distance(&detected, &fallback) > MATCH_WARN);
     }
 
     #[test]
