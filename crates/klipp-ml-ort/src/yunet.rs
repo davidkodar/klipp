@@ -41,27 +41,41 @@ impl FaceDetector {
         Ok(Self { session })
     }
 
-    /// The faces in an RGBA8 picture. The picture is padded to a multiple
-    /// of 32 on each side, as the model wants; boxes come back as
-    /// fractions of the unpadded picture.
+    /// The faces in an RGBA8 picture. The model takes a fixed square,
+    /// so the picture is fitted into it whole — scaled to fit, centred,
+    /// the rest black — and the boxes and landmarks come back as
+    /// fractions of the picture that was given, not of the square.
     pub fn detect(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<Vec<Face>, String> {
         let (w, h) = (width as usize, height as usize);
         if w == 0 || h == 0 || rgba.len() < w * h * 4 {
             return Ok(Vec::new());
         }
-        let (pw, ph) = (w.div_ceil(32) * 32, h.div_ceil(32) * 32);
-        let n = pw * ph;
-        // BGR, raw 0..255, as OpenCV feeds it.
+        const SIDE: usize = 640;
+        let scale = (SIDE as f32 / w as f32).min(SIDE as f32 / h as f32);
+        let (sw, sh) = (((w as f32 * scale).round() as usize).clamp(1, SIDE), ((h as f32 * scale).round() as usize).clamp(1, SIDE));
+        let (ox, oy) = ((SIDE - sw) / 2, (SIDE - sh) / 2);
+        let n = SIDE * SIDE;
+        // BGR, raw 0..255, as OpenCV feeds it; the picture bilinear into
+        // the middle of the square.
         let mut chw = vec![0f32; 3 * n];
-        for y in 0..h {
-            for x in 0..w {
-                let p = (y * w + x) * 4;
-                let o = y * pw + x;
-                chw[o] = rgba[p + 2] as f32;
-                chw[n + o] = rgba[p + 1] as f32;
-                chw[2 * n + o] = rgba[p] as f32;
+        for y in 0..sh {
+            let fy = ((y as f32 + 0.5) / scale - 0.5).clamp(0.0, h as f32 - 1.0);
+            let (y0, ty) = (fy.floor() as usize, fy - fy.floor());
+            let y1 = (y0 + 1).min(h - 1);
+            for x in 0..sw {
+                let fx = ((x as f32 + 0.5) / scale - 0.5).clamp(0.0, w as f32 - 1.0);
+                let (x0, tx) = (fx.floor() as usize, fx - fx.floor());
+                let x1 = (x0 + 1).min(w - 1);
+                let o = (oy + y) * SIDE + ox + x;
+                for (c, src) in [(0usize, 2usize), (1, 1), (2, 0)] {
+                    let p = |yy: usize, xx: usize| rgba[(yy * w + xx) * 4 + src] as f32;
+                    let top = p(y0, x0) * (1.0 - tx) + p(y0, x1) * tx;
+                    let bot = p(y1, x0) * (1.0 - tx) + p(y1, x1) * tx;
+                    chw[c * n + o] = top * (1.0 - ty) + bot * ty;
+                }
             }
         }
+        let (pw, ph) = (SIDE, SIDE);
         let input = ort::value::Value::from_array(([1i64, 3, ph as i64, pw as i64], chw)).map_err(|e| format!("face input: {e}"))?;
         let outputs = self.session.run(ort::inputs![input]).map_err(|e| format!("face run: {e}"))?;
         let take = |name: &str| -> Result<Vec<f32>, String> {
@@ -81,7 +95,27 @@ impl FaceDetector {
                 kps: take(&format!("kps_{stride}"))?,
             });
         }
-        Ok(decode(&heads, w as f32, h as f32, SCORE_THRESHOLD))
+        // Back from the square to the picture that was given.
+        let faces = decode(&heads, SIDE as f32, SIDE as f32, SCORE_THRESHOLD);
+        let (fx, fy) = (SIDE as f32 / sw as f32, SIDE as f32 / sh as f32);
+        let (dx, dy) = (ox as f32 / SIDE as f32, oy as f32 / SIDE as f32);
+        Ok(faces
+            .into_iter()
+            .map(|f| Face {
+                x: ((f.x - dx) * fx).clamp(0.0, 1.0),
+                y: ((f.y - dy) * fy).clamp(0.0, 1.0),
+                w: (f.w * fx).min(1.0),
+                h: (f.h * fy).min(1.0),
+                score: f.score,
+                landmarks: {
+                    let mut l = f.landmarks;
+                    for p in l.iter_mut() {
+                        *p = (((p.0 - dx) * fx).clamp(0.0, 1.0), ((p.1 - dy) * fy).clamp(0.0, 1.0));
+                    }
+                    l
+                },
+            })
+            .collect())
     }
 }
 

@@ -236,7 +236,10 @@ pub enum Op {
     /// given is set on the clip's primary grade, the rest is left. Every
     /// knob is zero at neutral, save `saturation` and `contrast`, whose
     /// neutral is one. `exposure` is in stops; `temperature` and `tint`
-    /// warm/cool and green/magenta the white balance; `lift`, `gamma`,
+    /// warm/cool and green/magenta the white balance, in mireds of
+    /// assumed light, -50 to 50 as the app's own sliders read (about 5
+    /// Lab b* at 25, 10 at 50 — a tenth of a unit does nothing);
+    /// `lift`, `gamma`,
     /// `gain` move the shadows, mids and highlights (their master);
     /// `saturation` at zero is grey, at one is as shot, above one is more.
     Grade {
@@ -1320,8 +1323,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 // 1 as shot, like saturation.
                 ("contrast", "contrast", contrast.map(|c| c - 1.0), -1.0, 3.0),
                 ("saturation", "saturation", *saturation, 0.0, 4.0),
-                ("temperature", "temperature", *temperature, -1.0, 1.0),
-                ("tint", "tint", *tint, -1.0, 1.0),
+                // Mireds of assumed light, as the node and the app's own
+                // slider use them: about 5 Lab b* at 25, 10 at 50. The
+                // old -1..1 was a fiftieth of a visible step — a white
+                // balance that did nothing at all.
+                ("temperature", "temperature", *temperature, -50.0, 50.0),
+                ("tint", "tint", *tint, -50.0, 50.0),
                 ("lift", "lift_master", *lift, -1.0, 1.0),
                 ("gamma", "gamma_master", *gamma, -1.0, 1.0),
                 ("gain", "gain_master", *gain, -1.0, 1.0),

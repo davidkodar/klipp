@@ -399,3 +399,37 @@ mod tests {
         assert!((d60 - 6000.0).abs() < 60.0, "ACES white at {d60} K");
     }
 }
+
+#[cfg(test)]
+mod matrix_reality_tests {
+    use super::*;
+
+    /// The knob is mireds of assumed light, and the app's own slider
+    /// runs to 50: at 25 a neutral must move about five Lab units. An
+    /// op that writes tenths here is writing nothing, which is what the
+    /// grade op did until 2026-09-20.
+    #[test]
+    fn twenty_five_mireds_moves_a_neutral_about_five_lab_units() {
+        let ws = WorkingColorspace::default();
+        let m = white_balance_matrix(25.0, 0.0, ws).expect("a matrix");
+        let grey = [0.18f32, 0.18, 0.18];
+        let out = [
+            m[0][0] * grey[0] + m[0][1] * grey[1] + m[0][2] * grey[2],
+            m[1][0] * grey[0] + m[1][1] * grey[1] + m[1][2] * grey[2],
+            m[2][0] * grey[0] + m[2][1] * grey[1] + m[2][2] * grey[2],
+        ];
+        assert!(out[0] > grey[0] && out[2] < grey[2], "warmer light means a redder picture: {out:?}");
+        // Five Lab units, give or take, on mid grey.
+        let lab = |c: [f32; 3]| {
+            let f = |t: f32| if t > 216.0 / 24389.0 { t.cbrt() } else { (24389.0 / 27.0 * t + 16.0) / 116.0 };
+            let x = 0.4124564 * c[0] + 0.3575761 * c[1] + 0.1804375 * c[2];
+            let y = 0.2126729 * c[0] + 0.7151522 * c[1] + 0.0721750 * c[2];
+            let z = 0.0193339 * c[0] + 0.1191920 * c[1] + 0.9503041 * c[2];
+            (200.0 * (f(y) - f(z / 1.08883)), 500.0 * (f(x / 0.95047) - f(y)))
+        };
+        let (b0, _) = lab(grey);
+        let (b1, _) = lab(out);
+        assert!((3.0..8.0).contains(&(b1 - b0)), "b* moved {:.1} at 25 mireds", b1 - b0);
+        assert!(white_balance_matrix(0.2, 0.0, ws).is_some_and(|m| (m[0][0] - 1.0).abs() < 0.001), "a fifth of a mired is nothing, and that is the point of the range");
+    }
+}

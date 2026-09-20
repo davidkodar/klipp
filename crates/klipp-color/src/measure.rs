@@ -116,9 +116,21 @@ pub fn delta_e2000(x: Lab, y: Lab) -> f32 {
 /// (red-yellow), the chroma a face carries, the lightness that is
 /// neither blown nor lost. Hue is the invariant; the rest varies with
 /// the person and the light.
-pub const SKIN_HUE_LOW: f32 = 40.0;
-pub const SKIN_HUE_HIGH: f32 = 65.0;
-pub const SKIN_HUE_CENTRE: f32 = 52.0;
+///
+/// The band is set from measurement, not from the textbook. An X-Rite
+/// ColorChecker photographed under studio light (its own neutral
+/// patches at a* 0.06, b* 0.08 — a properly balanced photograph) reads
+/// its two skin patches at 44.8° and 37.8°, where the published sRGB
+/// values for the same patches give 49.2° and 51.0°: real photography
+/// renders skin lower than the ideal. Twelve studio and daylight
+/// portraits of people of many skin tones measured 25–47° as shot.
+/// What is not skin sits well outside: a magenta-cast face from an old
+/// tape reads 359°, a green cast reads past 100°, jaundiced yellow
+/// past 75°. Hence 25–70, and 45 to aim at — the photographed chart's
+/// own skin patch.
+pub const SKIN_HUE_LOW: f32 = 25.0;
+pub const SKIN_HUE_HIGH: f32 = 70.0;
+pub const SKIN_HUE_CENTRE: f32 = 45.0;
 pub const SKIN_CHROMA_LOW: f32 = 12.0;
 pub const SKIN_CHROMA_HIGH: f32 = 45.0;
 pub const SKIN_L_LOW: f32 = 18.0;
@@ -217,6 +229,16 @@ pub struct FaceMeasure {
     pub mixed_light: bool,
     /// How far the median hue sits outside the band, in degrees (0 inside).
     pub hue_off_band: f32,
+    /// The hue with the scene's own cast taken off, and how far that
+    /// sits outside the band. Skin turns with the light: under a cool
+    /// lamp every face in the room rotates toward magenta, and the fault
+    /// is the white balance, not the skin. Judged on this whenever the
+    /// frame's neutrals carry a cast; `hue` and `hue_off_band` when they
+    /// do not.
+    #[serde(default)]
+    pub hue_wb: f32,
+    #[serde(default)]
+    pub hue_off_band_wb: f32,
 }
 
 // ─── The frame ───────────────────────────────────────────────────────
@@ -243,6 +265,12 @@ pub struct FrameMeasure {
     pub cast_a: f32,
     pub cast_b: f32,
     pub neutral_pct: f32,
+    /// Whether the cast was read off pixels that are actually neutral
+    /// (chroma under 8), or only off the least-coloured quarter of the
+    /// frame because nothing in it is neutral. A frame of grass and sky
+    /// has no white to balance to, and its "cast" is the grass.
+    #[serde(default)]
+    pub neutral_solid: bool,
     pub faces: Vec<FaceMeasure>,
     /// Every skin-coloured pixel in the frame read together, for a frame
     /// with no detected person: rougher than a face (clothes and wood
@@ -353,20 +381,52 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         i += step;
     }
     let skin_all = (skin_h.len() as f32 >= 0.005 * n.max(1) as f32 && skin_h.len() >= 50).then(|| SkinRead { hue: median(&mut skin_h), chroma: median(&mut skin_c), l: median(&mut skin_l), pct: skin_h.len() as f32 / n.max(1) as f32 * 100.0 });
-    let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
-    chroma_sorted.sort_by(|a, b| a.total_cmp(b));
-    let gate = percentile(&chroma_sorted, 0.25).max(6.0).min(25.0);
+    // What is actually neutral, first: pixels with almost no colour in
+    // them are what a white balance is read from. Only when the frame
+    // holds too few — a close-up of grass, a neon sign — does the
+    // reading fall back to its least-coloured quarter, and then it says
+    // so, because that quarter may be the grass.
+    let solid: Vec<&(f32, f32, f32)> = mids.iter().filter(|(c, _, _)| *c < 8.0).collect();
+    let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
     let (mut na, mut nb): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
-    for (c, a, b) in &mids {
-        if *c <= gate {
+    if enough {
+        for (_, a, b) in solid {
             na.push(*a);
             nb.push(*b);
         }
+    } else {
+        let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
+        chroma_sorted.sort_by(|a, b| a.total_cmp(b));
+        let gate = percentile(&chroma_sorted, 0.25).max(6.0).min(25.0);
+        for (c, a, b) in &mids {
+            if *c <= gate {
+                na.push(*a);
+                nb.push(*b);
+            }
+        }
     }
+    // A grey wall under a tungsten lamp is not "neutral" by chroma any
+    // more — the cast moved it — but every part of it moved the same
+    // way, and that agreement is what makes it a white reference. Grass
+    // against sky never agrees, and its "cast" is the grass.
+    let (spread_a, spread_b) = (iqr(&mut na.clone()), iqr(&mut nb.clone()));
+    // …and it has to be a plausible white balance. Every lamp from
+    // candle to shade moves a grey surface by something under twenty
+    // Lab units; a teal backdrop sits further out than that and is a
+    // backdrop, not a white reference.
+    let candidate_chroma = median(&mut na.iter().zip(&nb).map(|(a, b)| (a * a + b * b).sqrt()).collect::<Vec<_>>());
+    let neutral_solid = !na.is_empty() && (enough || (spread_a < 6.0 && spread_b < 6.0 && candidate_chroma < 18.0));
     ls.sort_by(|a, b| a.total_cmp(b));
     chromas.sort_by(|a, b| a.total_cmp(b));
     let nn = n.max(1) as f32;
-    let faces = faces.iter().map(|f| measure_face(rgba, w, h, *f)).collect();
+    let mut faces: Vec<FaceMeasure> = faces.iter().map(|f| measure_face(rgba, w, h, *f)).collect();
+    // Skin judged as a colourist does: the scene's cast off first.
+    let (ca, cb) = (median(&mut na.clone()), median(&mut nb.clone()));
+    for f in faces.iter_mut().filter(|f| f.patches > 0) {
+        let wb = Lab { l: f.median.l, a: f.median.a - ca, b: f.median.b - cb };
+        f.hue_wb = wb.hue();
+        f.hue_off_band_wb = hue_off_skin_band(f.hue_wb);
+    }
     FrameMeasure {
         l_p1: percentile(&ls, 0.01),
         l_p5: percentile(&ls, 0.05),
@@ -381,6 +441,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         cast_a: median(&mut na),
         cast_b: median(&mut nb),
         neutral_pct: na.len() as f32 / nn * 100.0,
+        neutral_solid,
         faces,
         skin_all,
         sampled: n as u32,
@@ -448,7 +509,7 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
     }
     let patches = patch_l.len() as u32;
     if patches == 0 {
-        return FaceMeasure { region, patches, grid: grid as u32, median: Lab::default(), hue: 0.0, chroma: 0.0, hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 0.0, mixed_light: false, hue_off_band: 0.0 };
+        return FaceMeasure { region, patches, grid: grid as u32, median: Lab::default(), hue: 0.0, chroma: 0.0, hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 0.0, mixed_light: false, hue_off_band: 0.0, hue_wb: 0.0, hue_off_band_wb: 0.0 };
     }
     let mut a_all: Vec<f32> = patch_ab.iter().map(|p| p.0).collect();
     let mut b_all: Vec<f32> = patch_ab.iter().map(|p| p.1).collect();
@@ -461,7 +522,7 @@ pub fn measure_face(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> FaceMe
     let hue_iqr = iqr(&mut about_median);
     let l_iqr = iqr(&mut patch_l.clone());
     let hue_off_band = hue_off_skin_band(hue);
-    FaceMeasure { region, patches, grid: grid as u32, median: median_lab, hue, chroma: median_lab.chroma(), hue_iqr, l_iqr, worst_hue, mixed_light: hue_iqr > 18.0 && patches >= 8, hue_off_band }
+    FaceMeasure { region, patches, grid: grid as u32, median: median_lab, hue, chroma: median_lab.chroma(), hue_iqr, l_iqr, worst_hue, mixed_light: hue_iqr > 18.0 && patches >= 8, hue_off_band, hue_wb: hue, hue_off_band_wb: hue_off_band }
 }
 
 impl FaceMeasure {
@@ -625,6 +686,13 @@ pub struct LookTarget {
     /// Where skin hue should sit; the band's centre when left out.
     #[serde(default)]
     pub skin_hue: Option<f32>,
+    /// How light a face should be, L*. With a face in the picture this
+    /// is what the exposure is set by — a portrait against a dark
+    /// backdrop has a low median by design, and driving that median to
+    /// a number blows the face. The frame's median only leads when
+    /// there is no face to expose for.
+    #[serde(default)]
+    pub skin_l: Option<f32>,
     /// A screen recording: blacks and whites are by design; only the
     /// cast, the clipping a grade adds, and skin are judged.
     #[serde(default)]
@@ -637,11 +705,11 @@ impl LookTarget {
         let n = name.trim().to_lowercase();
         let base = |name: &str| LookTarget { name: name.to_string(), ..Default::default() };
         Some(match n.as_str() {
-            "broadcast_neutral" | "broadcast" | "neutral" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(48.0), contrast_range: Some(65.0), chroma_mean: Some(22.0), cast_a: Some(0.0), cast_b: Some(0.0), ..base("broadcast_neutral") },
-            "web_punchy" | "punchy" | "web" => LookTarget { black_l: Some(3.0), white_l: Some(97.0), mid_l: Some(50.0), contrast_range: Some(75.0), chroma_mean: Some(30.0), cast_a: Some(0.0), cast_b: Some(0.0), ..base("web_punchy") },
-            "film_soft" | "film" | "filmic" => LookTarget { black_l: Some(8.0), white_l: Some(92.0), mid_l: Some(46.0), contrast_range: Some(55.0), chroma_mean: Some(18.0), cast_a: Some(1.0), cast_b: Some(3.0), ..base("film_soft") },
-            "warm_interview" | "warm" | "interview" => LookTarget { black_l: Some(5.0), white_l: Some(94.0), mid_l: Some(50.0), contrast_range: Some(62.0), chroma_mean: Some(24.0), cast_a: Some(2.0), cast_b: Some(5.0), skin_hue: Some(50.0), ..base("warm_interview") },
-            "cool_tech" | "cool" | "tech" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(47.0), contrast_range: Some(68.0), chroma_mean: Some(20.0), cast_a: Some(-1.0), cast_b: Some(-5.0), ..base("cool_tech") },
+            "broadcast_neutral" | "broadcast" | "neutral" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(48.0), contrast_range: Some(65.0), chroma_mean: Some(22.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), ..base("broadcast_neutral") },
+            "web_punchy" | "punchy" | "web" => LookTarget { black_l: Some(3.0), white_l: Some(97.0), mid_l: Some(50.0), contrast_range: Some(75.0), chroma_mean: Some(30.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(63.0), ..base("web_punchy") },
+            "film_soft" | "film" | "filmic" => LookTarget { black_l: Some(8.0), white_l: Some(92.0), mid_l: Some(46.0), contrast_range: Some(55.0), chroma_mean: Some(18.0), cast_a: Some(1.0), cast_b: Some(3.0), skin_l: Some(58.0), ..base("film_soft") },
+            "warm_interview" | "warm" | "interview" => LookTarget { black_l: Some(5.0), white_l: Some(94.0), mid_l: Some(50.0), contrast_range: Some(62.0), chroma_mean: Some(24.0), cast_a: Some(2.0), cast_b: Some(5.0), skin_hue: Some(50.0), skin_l: Some(62.0), ..base("warm_interview") },
+            "cool_tech" | "cool" | "tech" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(47.0), contrast_range: Some(68.0), chroma_mean: Some(20.0), cast_a: Some(-1.0), cast_b: Some(-5.0), skin_l: Some(60.0), ..base("cool_tech") },
             "screencast" | "screen" => LookTarget { cast_a: Some(0.0), cast_b: Some(0.0), screencast: true, ..base("screencast") },
             _ => return None,
         })
@@ -667,6 +735,10 @@ impl LookTarget {
             cast_a: Some(mean(&|m| m.cast_a)),
             cast_b: Some(mean(&|m| m.cast_b)),
             skin_hue: (!skin.is_empty()).then(|| skin.iter().sum::<f32>() / skin.len() as f32),
+            skin_l: {
+                let ls: Vec<f32> = measures.iter().flat_map(|m| m.faces.iter().filter(|f| f.readable()).map(|f| f.median.l)).collect();
+                (!ls.is_empty()).then(|| ls.iter().sum::<f32>() / ls.len() as f32)
+            },
             screencast: false,
         })
     }
@@ -715,22 +787,51 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         if let Some(wv) = t.white_l {
             out.push(graded("white_point", m.l_p99, wv, 4.0, 9.0, format!("white point L* {:.0} (target {wv:.0})", m.l_p99), "gain"));
         }
-        if let Some(mid) = t.mid_l {
-            out.push(graded("mid_grey", m.l_p50, mid, 6.0, 12.0, format!("median L* {:.0} (target {mid:.0})", m.l_p50), "exposure or gamma"));
+        // With a face in the picture the exposure is judged on the face,
+        // not on the frame: a portrait against a dark backdrop has a low
+        // median by design, and a grade that chases the median blows the
+        // face off the top.
+        let face_l = m.faces.iter().find(|f| f.readable()).map(|f| f.median.l);
+        match (face_l, t.skin_l) {
+            (Some(l), Some(want)) => out.push(graded("skin_exposure", l, want, 7.0, 14.0, format!("the face is L* {l:.0} (target {want:.0}; the frame's median is {:.0})", m.l_p50), "exposure, until the face sits right — the frame's median follows the picture, not a number")),
+            _ => {
+                if let Some(mid) = t.mid_l {
+                    out.push(graded("mid_grey", m.l_p50, mid, 6.0, 12.0, format!("median L* {:.0} (target {mid:.0})", m.l_p50), "exposure or gamma"));
+                }
+            }
         }
         if let Some(c) = t.contrast_range {
             out.push(graded("contrast", m.contrast_range, c, 8.0, 16.0, format!("5–95 lightness range {:.0} (target {c:.0})", m.contrast_range), "contrast"));
         }
-        if let Some(c) = t.chroma_mean {
-            out.push(graded("saturation", m.chroma_mean, c, 5.0, 10.0, format!("mean chroma {:.0} (target {c:.0})", m.chroma_mean), "saturation, or vibrance to keep skin"));
+        // Likewise saturation: a face's own chroma says more than the
+        // frame's, which a red jumper or a green wall dominates.
+        if face_l.is_none() {
+            if let Some(c) = t.chroma_mean {
+                out.push(graded("saturation", m.chroma_mean, c, 5.0, 10.0, format!("mean chroma {:.0} (target {c:.0})", m.chroma_mean), "saturation, or vibrance to keep skin"));
+            }
         }
     }
     if let (Some(ta), Some(tb)) = (t.cast_a, t.cast_b) {
         if m.neutral_pct >= 1.0 {
             let off = ((m.cast_a - ta).powi(2) + (m.cast_b - tb).powi(2)).sqrt();
             let dir = cast_name(m.cast_a - ta, m.cast_b - tb);
-            let verdict = if off > 8.0 { Verdict::Fail } else if off > 3.0 { Verdict::Warn } else { Verdict::Pass };
-            out.push(Finding { rule: "cast", verdict, reading: off, target: 0.0, tolerance: 3.0, what: format!("neutrals sit {off:.1} toward {dir} (a* {:.1}, b* {:.1}; {:.0}% of the frame is neutral)", m.cast_a, m.cast_b, m.neutral_pct), fix: "temperature (b*) and tint (a*) until the neutrals read a* b* near the target" });
+            // Without a true neutral in the frame there is nothing to
+            // balance to, so the reading is a note, never a failure.
+            let verdict = if !m.neutral_solid {
+                if off > 3.0 { Verdict::Warn } else { Verdict::Pass }
+            } else if off > 8.0 {
+                Verdict::Fail
+            } else if off > 3.0 {
+                Verdict::Warn
+            } else {
+                Verdict::Pass
+            };
+            let how = if m.neutral_solid {
+                format!("{:.0}% of the frame is neutral", m.neutral_pct)
+            } else {
+                "nothing in the frame is neutral, so this is its least-coloured quarter and may be the subject's own colour".to_string()
+            };
+            out.push(Finding { rule: "cast", verdict, reading: off, target: 0.0, tolerance: 3.0, what: format!("neutrals sit {off:.1} toward {dir} (a* {:.1}, b* {:.1}; {how})", m.cast_a, m.cast_b), fix: "temperature (b*) and tint (a*) until the neutrals read a* b* near the target" });
         }
     }
     let skin_target = t.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
@@ -749,18 +850,25 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
             continue;
         }
         let who = if m.faces.len() > 1 { format!("face {}", i + 1) } else { "the face".to_string() };
+        // Judged as shot. The hue with the scene's cast taken off is
+        // reported beside it, never instead of it: that correction is
+        // only as good as the neutral estimate, and a room with no true
+        // neutral in it — wood, warm walls, a beer — gives a bad one.
+        let scene_cast = m.cast() >= 3.0;
+        let (hue, off) = (f.hue, f.hue_off_band);
+        let with_cast = if scene_cast { format!(" (the scene carries a {:.0} cast; without it the skin would read {:.0}°)", m.cast(), f.hue_wb) } else { String::new() };
         // Off the band is what matters; inside it, the distance to the
         // look's own skin hue is advisory.
         let (verdict, what) = if f.mixed_light {
             (Verdict::Warn, format!("{who} is lit by two colours of light (hue spread {:.0}°): median hue {:.0}°", f.hue_iqr, f.hue))
-        } else if f.hue_off_band > 10.0 {
-            (Verdict::Fail, format!("{who}: skin hue {:.0}°, {:.0}° outside the skin band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°)", f.hue, f.hue_off_band))
-        } else if f.hue_off_band > 4.0 {
-            (Verdict::Warn, format!("{who}: skin hue {:.0}°, {:.0}° outside the skin band", f.hue, f.hue_off_band))
+        } else if off > 10.0 {
+            (Verdict::Fail, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band ({SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°){with_cast}"))
+        } else if off > 4.0 {
+            (Verdict::Warn, format!("{who}: skin hue {hue:.0}°, {off:.0}° outside the skin band{with_cast}"))
         } else {
-            (Verdict::Pass, format!("{who}: skin hue {:.0}° on the band (chroma {:.0}, L* {:.0}, {} patches)", f.hue, f.chroma, f.median.l, f.patches))
+            (Verdict::Pass, format!("{who}: skin hue {hue:.0}° on the band (chroma {:.0}, L* {:.0}, {} patches){with_cast}", f.chroma, f.median.l, f.patches))
         };
-        out.push(Finding { rule: "skin_hue", verdict, reading: f.hue, target: skin_target, tolerance: 4.0, what, fix: "skin_balance, or if the neutrals carry the same cast, temperature and tint" });
+        out.push(Finding { rule: "skin_hue", verdict, reading: hue, target: skin_target, tolerance: 4.0, what, fix: if scene_cast { "put the white balance right first (temperature and tint, or grade_to_target); skin_balance for what is left" } else { "skin_balance" } });
         let chroma_verdict = if f.chroma < SKIN_CHROMA_LOW - 4.0 || f.chroma > SKIN_CHROMA_HIGH + 6.0 { Verdict::Fail } else if f.chroma < SKIN_CHROMA_LOW || f.chroma > SKIN_CHROMA_HIGH { Verdict::Warn } else { Verdict::Pass };
         if chroma_verdict != Verdict::Pass {
             out.push(Finding { rule: "skin_chroma", verdict: chroma_verdict, reading: f.chroma, target: (SKIN_CHROMA_LOW + SKIN_CHROMA_HIGH) / 2.0, tolerance: 0.0, what: format!("{who}: skin chroma {:.0} ({} the {SKIN_CHROMA_LOW:.0}–{SKIN_CHROMA_HIGH:.0} band)", f.chroma, if f.chroma < SKIN_CHROMA_LOW { "under" } else { "over" }), fix: if f.chroma < SKIN_CHROMA_LOW { "vibrance up, or a skin secondary with chroma up" } else { "saturation down, or a skin secondary with chroma down" } });
@@ -808,6 +916,10 @@ pub struct PrimaryStep {
 pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     const DAMP: f32 = 0.7;
     let mut s = PrimaryStep::default();
+    // Never brighten a picture that is already losing its highlights:
+    // chasing a mid-grey target by exposure alone blows the window and
+    // the sky, and no colourist trades detail for a number.
+    let clipping = m.clip_hi_pct > 1.0;
     if !t.screencast {
         if let Some(b) = t.black_l {
             // L* at the bottom: about 0.012 lift per L*.
@@ -816,22 +928,46 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
         if let Some(wv) = t.white_l {
             s.gain = ((wv - m.l_p99) * 0.010 * DAMP).clamp(-0.3, 0.3);
         }
-        if let Some(mid) = t.mid_l {
-            // A stop of exposure moves the median by about 15 L*.
-            s.exposure = ((mid - m.l_p50) / 15.0 * DAMP).clamp(-1.5, 1.5);
+        // Expose for the face when there is one, else for the frame.
+        let face = m.faces.iter().find(|f| f.readable());
+        let (have, want) = match (face, t.skin_l) {
+            (Some(f), Some(l)) => (Some(f.median.l), Some(l)),
+            _ => (Some(m.l_p50), t.mid_l),
+        };
+        if let (Some(have), Some(want)) = (have, want) {
+            // A stop of exposure moves a lightness by about 15 L*.
+            s.exposure = ((want - have) / 15.0 * DAMP).clamp(-1.5, 1.5);
+            if clipping {
+                s.exposure = s.exposure.min(0.0);
+                s.gain = s.gain.min(0.0);
+            }
         }
-        if let Some(c) = t.chroma_mean {
-            if m.chroma_mean > 1.0 {
-                s.saturation = (c / m.chroma_mean - 1.0) * DAMP;
+        match face {
+            // Saturation metered on the face: skin that has gone past
+            // the band it can live in is what "over-cooked" means, and
+            // the frame's mean chroma is whatever the subject wore.
+            Some(f) if !(SKIN_CHROMA_LOW..=SKIN_CHROMA_HIGH).contains(&f.chroma) && f.chroma > 1.0 => {
+                let want = (SKIN_CHROMA_LOW + SKIN_CHROMA_HIGH) / 2.0;
+                s.saturation = (want / f.chroma - 1.0) * DAMP;
+            }
+            Some(_) => {}
+            None => {
+                if let Some(c) = t.chroma_mean {
+                    if m.chroma_mean > 1.0 {
+                        s.saturation = (c / m.chroma_mean - 1.0) * DAMP;
+                    }
+                }
             }
         }
     }
     if let (Some(ta), Some(tb)) = (t.cast_a, t.cast_b) {
-        if m.neutral_pct >= 1.0 {
-            // b* is warmth: temperature; a* is green–magenta: tint. About
-            // 0.03 of the knob per unit.
-            s.temperature = ((tb - m.cast_b) * 0.03 * DAMP).clamp(-0.5, 0.5);
-            s.tint = ((ta - m.cast_a) * 0.03 * DAMP).clamp(-0.5, 0.5);
+        if m.neutral_pct >= 1.0 && m.neutral_solid {
+            // In mireds of assumed light, as the knobs take them: the
+            // white balance moves a neutral about 5 Lab units per 25, so
+            // five mireds a unit. b* is warmth (temperature), a* is
+            // green–magenta (tint).
+            s.temperature = ((tb - m.cast_b) * 5.0 * DAMP).clamp(-50.0, 50.0);
+            s.tint = ((ta - m.cast_a) * 5.0 * DAMP).clamp(-50.0, 50.0);
         }
     }
     s
@@ -880,11 +1016,12 @@ mod tests {
     fn hue_distances_go_round_the_circle() {
         assert!((hue_diff(358.0, 2.0) - 4.0).abs() < 1e-4);
         assert!((hue_diff(2.0, 358.0) + 4.0).abs() < 1e-4);
-        assert!((hue_diff(SKIN_HUE_CENTRE, 52.0)).abs() < 1e-4);
+        assert!((hue_diff(SKIN_HUE_CENTRE, 45.0)).abs() < 1e-4);
         assert_eq!(hue_off_skin_band(50.0), 0.0);
-        assert!((hue_off_skin_band(358.0) - 42.0).abs() < 1e-4, "{}", hue_off_skin_band(358.0));
-        assert!((hue_off_skin_band(75.0) - 10.0).abs() < 1e-4);
-        assert!((hue_off_skin_band(30.0) - 10.0).abs() < 1e-4);
+        // The old tape's magenta face, 26° under the band's floor.
+        assert!((hue_off_skin_band(359.0) - 26.0).abs() < 1e-4, "{}", hue_off_skin_band(359.0));
+        assert!((hue_off_skin_band(85.0) - 15.0).abs() < 1e-4);
+        assert!((hue_off_skin_band(15.0) - 10.0).abs() < 1e-4);
     }
 
     /// The wheel's hue and Lab's are different circles: a skin
@@ -904,6 +1041,80 @@ mod tests {
         assert!(delta_e2000(skin, back) < 1.0, "{skin:?} vs {back:?}");
     }
 
+    /// With a face in the picture the exposure and the saturation are
+    /// metered on it, not on the frame: a portrait against a dark
+    /// backdrop is not under-exposed, and a red jumper is not
+    /// over-saturated skin.
+    #[test]
+    fn a_face_meters_the_exposure_and_the_saturation() {
+        let (w, h) = (200, 120);
+        let face = [0.4f32, 0.35, 0.2, 0.3];
+        // A dark room, a well-lit face: the median is low by design.
+        let frame = frame_of(w, h, |x, y| {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [175, 138, 118] } else { [28, 28, 30] }
+        });
+        let m = measure_frame(&frame, w as u32, h as u32, &[face]);
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        assert!(m.l_p50 < 20.0 && m.faces[0].median.l > 60.0, "dark frame, bright face: {:.0} {:.0}", m.l_p50, m.faces[0].median.l);
+        let step = primaries_toward(&m, &look);
+        assert!(step.exposure.abs() < 0.25, "the face is already right, so the exposure holds: {:+.2}", step.exposure);
+        let findings = judge(&m, &look);
+        assert!(findings.iter().any(|f| f.rule == "skin_exposure" && f.verdict == Verdict::Pass), "{findings:?}");
+        assert!(findings.iter().all(|f| f.rule != "mid_grey"), "the frame's median is not the rule when a face is there");
+        // A face cooked past its band pulls the saturation down.
+        let hot = frame_of(w, h, |x, y| {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [255, 120, 60] } else { [28, 28, 30] }
+        });
+        let m2 = measure_frame(&hot, w as u32, h as u32, &[face]);
+        assert!(m2.faces[0].chroma > SKIN_CHROMA_HIGH, "cooked: {:.0}", m2.faces[0].chroma);
+        assert!(primaries_toward(&m2, &look).saturation < -0.1, "pull it back");
+    }
+
+    /// A picture that is already clipping is never brightened further,
+    /// whatever the mid-grey target says.
+    #[test]
+    fn the_step_does_not_brighten_what_is_already_clipping() {
+        let (w, h) = (60, 40);
+        // Dark overall, with a blown window in the corner.
+        let frame = frame_of(w, h, |x, y| if x > 48 && y < 12 { [255, 255, 255] } else { [40, 40, 42] });
+        let m = measure_frame(&frame, w as u32, h as u32, &[]);
+        assert!(m.clip_hi_pct > 1.0 && m.l_p50 < 30.0, "clipping {:.1}% median {:.0}", m.clip_hi_pct, m.l_p50);
+        let step = primaries_toward(&m, &LookTarget::preset("broadcast_neutral").unwrap());
+        assert!(step.exposure <= 0.0 && step.gain <= 0.0, "not brighter: {step:?}");
+        // The same picture without the window: brightening is right.
+        let dark = frame_of(w, h, |_, _| [40, 40, 42]);
+        let m2 = measure_frame(&dark, w as u32, h as u32, &[]);
+        assert!(primaries_toward(&m2, &LookTarget::preset("broadcast_neutral").unwrap()).exposure > 0.3);
+    }
+
+    /// A frame with real neutrals in it reads its cast off them; one
+    /// with none says so and does not fail for it.
+    #[test]
+    fn a_cast_is_read_off_true_neutrals_or_not_trusted() {
+        let (w, h) = (120, 80);
+        // Half grey, half skin: a real neutral to balance to.
+        let grey = frame_of(w, h, |x, _| if x < w / 2 { [128, 128, 128] } else { [194, 150, 130] });
+        let m = measure_frame(&grey, w as u32, h as u32, &[]);
+        assert!(m.neutral_solid, "grey is neutral");
+        assert!(m.cast() < 1.5, "{} {}", m.cast_a, m.cast_b);
+        // The same, warmed: still neutral enough to read, and the warmth
+        // is named. (A "neutral" is under chroma 8, so a readable cast
+        // off true neutrals is a few units, not twenty.)
+        let warm = frame_of(w, h, |x, _| if x < w / 2 { [137, 131, 124] } else { [210, 150, 110] });
+        let m2 = measure_frame(&warm, w as u32, h as u32, &[]);
+        assert!(m2.neutral_solid && m2.cast() > 3.5 && m2.cast_b > 0.0, "warm: {:?}", (m2.cast_a, m2.cast_b, m2.neutral_solid));
+        assert!(judge(&m2, &LookTarget::preset("broadcast_neutral").unwrap()).iter().any(|f| f.rule == "cast" && f.verdict != Verdict::Pass));
+        // Nothing neutral at all: grass and sky. The reading is kept but
+        // never a failure, and it does not drive the grade.
+        let colourful = frame_of(w, h, |x, _| if x < w / 2 { [40, 120, 40] } else { [60, 90, 190] });
+        let m3 = measure_frame(&colourful, w as u32, h as u32, &[]);
+        assert!(!m3.neutral_solid, "no true neutral here");
+        assert!(judge(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).iter().all(|f| f.rule != "cast" || f.verdict != Verdict::Fail));
+        assert_eq!(primaries_toward(&m3, &LookTarget::preset("broadcast_neutral").unwrap()).temperature, 0.0);
+    }
+
     /// A face with a magenta cast is read and reported off the band,
     /// not thrown away for not looking like skin.
     #[test]
@@ -919,7 +1130,7 @@ mod tests {
         let f = &m.faces[0];
         assert!(f.readable(), "{} of {}x{} patches", f.patches, f.grid, f.grid);
         assert!(f.hue > 340.0 || f.hue < 20.0, "a magenta face: {}", f.hue);
-        assert!(f.hue_off_band > 30.0, "far outside the band: {}", f.hue_off_band);
+        assert!(f.hue_off_band > 20.0, "far outside the band: {}", f.hue_off_band);
         let findings = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap());
         let skin = findings.iter().find(|x| x.rule == "skin_hue").expect("a skin finding");
         assert_eq!(skin.verdict, Verdict::Fail, "{skin:?}");
@@ -1006,13 +1217,14 @@ mod tests {
         assert!(m.cast() < 1.5, "neutral grey reads neutral: {} {}", m.cast_a, m.cast_b);
         let findings = judge(&m, &LookTarget::preset("broadcast_neutral").unwrap());
         assert!(findings.iter().all(|f| f.rule != "skin_hue" || f.verdict == Verdict::Pass), "{findings:?}");
-        // Under a strong blue cast: skin off the band, neutrals cast toward blue.
+        // Under a blue cast: the walls stay neutral enough to balance to,
+        // and the face turns with the light.
         let cast = frame_of(w, h, |x, y| {
             let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
-            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [150, 150, 190] } else { [100, 110, 160] }
+            if fx >= face[0] && fx < face[0] + face[2] && fy >= face[1] && fy < face[1] + face[3] { [150, 150, 190] } else { [116, 120, 132] }
         });
         let m2 = measure_frame(&cast, w as u32, h as u32, &[face]);
-        assert!(m2.cast_b < -10.0, "blue cast reads as negative b*: {}", m2.cast_b);
+        assert!(m2.neutral_solid && m2.cast_b < -4.0, "a blue cast reads as negative b*: {} (solid {})", m2.cast_b, m2.neutral_solid);
         assert_eq!(cast_name(m2.cast_a, m2.cast_b), "blue (cool)");
         let step = primaries_toward(&m2, &LookTarget::preset("broadcast_neutral").unwrap());
         assert!(step.temperature > 0.0, "warm it up: {step:?}");

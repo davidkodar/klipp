@@ -1148,7 +1148,7 @@ fn tool_definitions() -> Vec<Value> {
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance; \
+              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
@@ -1278,7 +1278,7 @@ fn tool_definitions() -> Vec<Value> {
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance; \
+              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
               lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\

@@ -5784,6 +5784,37 @@ mod tests {
         }
     }
 
+    /// The Corrector's own temperature must reach the picture. The knob
+    /// is mireds of assumed light (the app's slider runs to 50), and the
+    /// grade op wrote tenths of one into it until 2026-09-20: a white
+    /// balance that silently did nothing. Both executors.
+    #[test]
+    fn a_correctors_temperature_changes_the_picture() {
+        let grey = vec![128u8, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255];
+        let mut graph = crate::defaults::default_graph();
+        let corrector = graph.nodes.iter().find(|n| n.kind == NodeKind::Corrector).expect("a corrector").id;
+        let warm = |g: &mut NodeGraph, t: f32| {
+            let n = g.nodes.iter_mut().find(|n| n.id == corrector).unwrap();
+            n.params.temperature = Some(t);
+        };
+        if std::env::var_os("GRAPH_DEBUG").is_some() {
+            for n in &graph.nodes { eprintln!("node {:?} {} enabled={}", n.kind, n.id, n.enabled); }
+            for e in &graph.edges { eprintln!("edge {} p{} -> {} p{}", e.from_node, e.from_port, e.to_node, e.to_port); }
+        }
+        let mut cpu = GraphExecutor::new_cpu_only();
+        let (flat, _) = cpu.execute(&grey, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        warm(&mut graph, 25.0);
+        let (warmed, _) = cpu.execute(&grey, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (dr, db) = (warmed[0] as i32 - flat[0] as i32, warmed[2] as i32 - flat[2] as i32);
+        assert!(dr > 4 && db < -4, "warming grey on the CPU should redden it: r {dr:+} b {db:+}");
+        let mut gpu = GraphExecutor::new();
+        if gpu.gpu.is_some() {
+            let (g_warm, _) = gpu.execute(&grey, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+            let (gr, gb) = (g_warm[0] as i32 - flat[0] as i32, g_warm[2] as i32 - flat[2] as i32);
+            assert!(gr > 4 && gb < -4, "and on the GPU: r {gr:+} b {gb:+}");
+        }
+    }
+
     #[test]
     fn chain_multi_node_matches_cpu() {
         let mut gpu_executor = GraphExecutor::new();

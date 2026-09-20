@@ -1169,9 +1169,18 @@ fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget
         }
         let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
         if let Ok(pool) = ctx.media_pool.read() {
-            let screen = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?)).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).is_some_and(|b| b.has_freeze);
-            if screen {
-                return LookTarget::preset("screencast").unwrap();
+            // A screen recording, judged only for cast and clipping. A
+            // still picture held on screen also "never changes", and a
+            // locked-off camera shot holds too, so the beat sheet alone
+            // is not enough: a file with a person in it is footage.
+            let item = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?));
+            if let Some(item) = item {
+                let a = klipp_analysis::report::MediaAnalysis::load(&item.path);
+                let holds = a.beatsheet.as_ref().is_some_and(|b| b.has_freeze);
+                let people = a.framing.as_ref().is_some_and(|f| f.samples.iter().any(|s| !s.people.is_empty() || !s.faces.is_empty()));
+                if holds && !people {
+                    return LookTarget::preset("screencast").unwrap();
+                }
             }
         }
     }
@@ -1866,7 +1875,7 @@ fn handle(
                 let mut done_rounds = 0u32;
                 for _ in 0..n_rounds {
                     let fails = colour_report(&m, &look, *mid);
-                    let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.01 || step.tint.abs() > 0.01 || step.saturation.abs() > 0.03;
+                    let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.5 || step.tint.abs() > 0.5 || step.saturation.abs() > 0.03;
                     if fails.is_empty() || !moving {
                         break;
                     }
@@ -1880,8 +1889,8 @@ fn handle(
                         "exposure": (now.exposure + step.exposure).clamp(-6.0, 6.0),
                         "lift": (now.lift + step.lift).clamp(-1.0, 1.0),
                         "gain": (now.gain + step.gain).clamp(-1.0, 1.0),
-                        "temperature": (now.temperature + step.temperature).clamp(-1.0, 1.0),
-                        "tint": (now.tint + step.tint).clamp(-1.0, 1.0),
+                        "temperature": (now.temperature + step.temperature).clamp(-50.0, 50.0),
+                        "tint": (now.tint + step.tint).clamp(-50.0, 50.0),
                         "saturation": (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
                     })).map_err(|e| e.to_string())?;
                     let (plan, revision) = resolve_plan(ctx, &[op])?;
