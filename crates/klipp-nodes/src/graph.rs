@@ -381,7 +381,15 @@ impl NodeGraph {
     pub fn ensure_masked_secondary(&mut self, kind: NodeKind) -> (NodeId, NodeId) {
         // One already there, keying exactly this kind of correction.
         let found = self.nodes.iter().filter(|n| n.kind == NodeKind::Qualifier).find_map(|q| {
-            let consumer = self.edges.iter().find(|e| e.from_node == q.id && e.to_port == 1)?.to_node;
+            // The key's matte goes to the correction's port 1 — or, once
+            // the secondary has been given a window, to a combiner whose
+            // own output goes there. Both shapes are the same secondary,
+            // so following through the combiner is what stops a second
+            // one being built over the first.
+            let mut consumer = self.edges.iter().find(|e| e.from_node == q.id && e.to_port <= 1)?.to_node;
+            if self.nodes.iter().any(|n| n.id == consumer && n.kind == NodeKind::CombineMattes) {
+                consumer = self.edges.iter().find(|e| e.from_node == consumer && e.to_port == 1)?.to_node;
+            }
             self.nodes.iter().find(|n| n.id == consumer && n.kind == kind).map(|n| (q.id, n.id))
         });
         if let Some(pair) = found {
@@ -420,6 +428,136 @@ impl NodeGraph {
         self.node_positions.insert(corr_id, NodePos { x: base.x - 160.0, y: base.y });
         self.node_positions.insert(qual_id, NodePos { x: base.x - 320.0, y: base.y - 140.0 });
         (qual_id, corr_id)
+    }
+
+    /// A secondary held inside a window: the keyer's matte *and* a
+    /// shape, so the correction reaches only what is both the right
+    /// colour and in the right place.
+    ///
+    /// This is what a hue key alone cannot do, and the reason every
+    /// grading suite has power windows. A skin key is a band of hue,
+    /// and a red jumper, a brick wall, a wooden table and a tanned hand
+    /// are all inside that band: pull the face warmer and they all turn
+    /// with it. A window says *where*, the key says *what*, and the two
+    /// together say "this face". Tracked across the shot, it stays on
+    /// the face while the subject moves — which is the only way a
+    /// window survives anything but a locked-off camera.
+    ///
+    /// Builds, or finds, `source → corr(0)`, `source → qualifier`,
+    /// `qualifier → combine(0)`, `mask → combine(1)`,
+    /// `combine → corr(1)`, `corr → output`, and answers with the
+    /// qualifier's, the mask's and the correction's ids. The combiner
+    /// intersects by default, which is what "both" means.
+    pub fn ensure_windowed_secondary(&mut self, kind: NodeKind) -> (NodeId, NodeId, NodeId) {
+        let (qual_id, corr_id) = self.ensure_masked_secondary(kind);
+        // Already windowed: a combiner on the correction's matte port
+        // with a Mask feeding it.
+        let existing = self
+            .edges
+            .iter()
+            .find(|e| e.to_node == corr_id && e.to_port == 1)
+            .map(|e| e.from_node)
+            .and_then(|combine| {
+                let is_combine = self.nodes.iter().any(|n| n.id == combine && n.kind == NodeKind::CombineMattes);
+                if !is_combine {
+                    return None;
+                }
+                let mask = self.edges.iter().find(|e| e.to_node == combine && e.to_port == 1)?.from_node;
+                self.nodes.iter().find(|n| n.id == mask && n.kind == NodeKind::Mask).map(|n| n.id)
+            });
+        if let Some(mask_id) = existing {
+            return (qual_id, mask_id, corr_id);
+        }
+        let make = |id: NodeId, kind: NodeKind, label: &str| Node {
+            id,
+            kind,
+            label: label.to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        };
+        let (mask_id, combine_id) = (NodeId::new_v4(), NodeId::new_v4());
+        let insert_at = self.nodes.iter().position(|n| n.id == corr_id).unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, make(combine_id, NodeKind::CombineMattes, "Key ∩ Window"));
+        self.nodes.insert(insert_at, make(mask_id, NodeKind::Mask, "Window"));
+        // The keyer's matte now goes into the combiner instead of
+        // straight to the correction.
+        for edge in &mut self.edges {
+            if edge.from_node == qual_id && edge.to_node == corr_id && edge.to_port == 1 {
+                edge.to_node = combine_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge { from_node: mask_id, from_port: 0, to_node: combine_id, to_port: 1 });
+        self.edges.push(Edge { from_node: combine_id, from_port: 0, to_node: corr_id, to_port: 1 });
+        let base = self.node_positions.get(&corr_id).copied().unwrap_or(NodePos { x: 440.0, y: 0.0 });
+        self.node_positions.insert(combine_id, NodePos { x: base.x - 160.0, y: base.y - 140.0 });
+        self.node_positions.insert(mask_id, NodePos { x: base.x - 320.0, y: base.y - 260.0 });
+        (qual_id, mask_id, corr_id)
+    }
+
+    /// Set a window's shape to a circle following `track` — each entry
+    /// a time in clip seconds and a box in frame fractions
+    /// `[x, y, w, h]`, as a face detector gives them. `aspect` is the
+    /// frame's height over its width (0.5625 for 16:9).
+    ///
+    /// One entry is a still window. Several are keyframed, so the window
+    /// stays on a subject who moves; without that a window is only good
+    /// for a locked-off camera, and a face that walks out of it takes
+    /// the correction off with it half way through the shot.
+    ///
+    /// `MaskShape::Circle` measures its radius in frame *widths* and
+    /// divides the vertical offset by the aspect, so on a 16:9 frame its
+    /// "circle" reaches `radius` across and `radius × aspect` down. That
+    /// is the shipped convention for every mask a user has ever drawn,
+    /// so the radius is chosen to fit the face *under* it rather than
+    /// the convention changed: whichever of the two half-extents needs
+    /// the bigger radius wins.
+    ///
+    /// The window is padded past the face and feathered generously,
+    /// because a hard-edged window on a face reads as a sticker the
+    /// moment the subject moves — a colourist would soften it until the
+    /// edge cannot be found by looking.
+    pub fn set_window_track(&mut self, mask_id: NodeId, track: &[(f64, [f32; 4])], aspect: f32, feather: f32) {
+        use klipp_core::color_grade::{Mask, MaskShape, MaskStack};
+        use klipp_core::keyframe::Keyframe;
+        let Some(node) = self.nodes.iter_mut().find(|n| n.id == mask_id) else { return };
+        let Some(first) = track.first() else { return };
+        let aspect = if aspect.is_finite() && aspect > 0.01 { aspect } else { 9.0 / 16.0 };
+        let centre = |b: [f32; 4]| (b[0] + b[2] / 2.0, b[1] + b[3] / 2.0);
+        // A quarter past the face on every side: the detector's box is
+        // the face, and a grade that stops at the jaw is a mask.
+        const PAD: f32 = 1.25;
+        let radius = |b: [f32; 4]| ((b[2] / 2.0).max(b[3] / (2.0 * aspect)) * PAD).clamp(0.02, 1.2);
+        let (cx, cy) = centre(first.1);
+        let mut mask = Mask {
+            shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: radius(first.1) },
+            feather: feather.clamp(0.0, 1.0),
+            invert: false,
+            opacity: 1.0,
+            enabled: true,
+            keyframes: Default::default(),
+        };
+        if track.len() > 1 {
+            for (t, b) in track {
+                let (cx, cy) = centre(*b);
+                let key = |v: f32| Keyframe {
+                    time_secs: *t,
+                    value: v,
+                    // A face moves smoothly; a stepped window would jump
+                    // between samples and read as a glitch.
+                    interpolation: klipp_core::keyframe::Interpolation::Linear,
+                    tangent_out: (0.0, 0.0),
+                    tangent_in: (0.0, 0.0),
+                };
+                mask.keyframes.center_x.push(key(cx));
+                mask.keyframes.center_y.push(key(cy));
+                mask.keyframes.radius.push(key(radius(*b)));
+            }
+        }
+        node.params.masks = Some(MaskStack { masks: vec![mask] });
     }
 
     pub fn ensure_qualifier(&mut self) -> NodeId {
@@ -1299,5 +1437,95 @@ mod chain_order_tests {
             }
         }
         assert!(g.chain_out_of_order().is_empty(), "a bypassed look is not in the picture's way");
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use klipp_core::color_grade::MaskShape;
+
+    fn graph_with_corrector() -> NodeGraph {
+        crate::defaults::default_graph()
+    }
+
+    #[test]
+    fn a_window_intersects_the_key_rather_than_replacing_it() {
+        // "This face" is where and what: the correction must reach only
+        // what is both inside the window and inside the hue key.
+        let mut g = graph_with_corrector();
+        let (qual, mask, corr) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        let combine = g.edges.iter().find(|e| e.to_node == corr && e.to_port == 1).expect("the correction is gated").from_node;
+        assert_eq!(g.nodes.iter().find(|n| n.id == combine).unwrap().kind, NodeKind::CombineMattes);
+        assert!(g.edges.iter().any(|e| e.from_node == qual && e.to_node == combine && e.to_port == 0), "the key feeds the combiner");
+        assert!(g.edges.iter().any(|e| e.from_node == mask && e.to_node == combine && e.to_port == 1), "the window feeds the combiner");
+        // Nothing left wired straight from the key to the correction.
+        assert!(!g.edges.iter().any(|e| e.from_node == qual && e.to_node == corr), "the key no longer bypasses the window");
+        // And the chain still reads as a secondary, not a balance.
+        assert!(g.chain_out_of_order().is_empty(), "{:?}", g.chain_out_of_order());
+    }
+
+    #[test]
+    fn asking_twice_does_not_build_a_second_window() {
+        let mut g = graph_with_corrector();
+        let first = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        let before = g.nodes.len();
+        let second = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        assert_eq!(first, second);
+        assert_eq!(g.nodes.len(), before);
+    }
+
+    #[test]
+    fn a_window_built_over_a_plain_secondary_keeps_its_key() {
+        // The shape `qualify` has been building all along, upgraded.
+        let mut g = graph_with_corrector();
+        let (qual, corr) = g.ensure_masked_secondary(NodeKind::ColorBalance);
+        let (qual2, _mask, corr2) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        assert_eq!((qual, corr), (qual2, corr2), "the same key and correction, now windowed");
+    }
+
+    #[test]
+    fn the_window_covers_the_face_under_the_circles_own_convention() {
+        // MaskShape::Circle reaches `radius` across and `radius*aspect`
+        // down. A tall face box on a wide frame is the case that a naive
+        // radius gets wrong: it would cut the chin off.
+        let mut g = graph_with_corrector();
+        let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        let aspect = 9.0f32 / 16.0;
+        let face = [0.45f32, 0.20, 0.10, 0.30]; // narrow and tall
+        g.set_window_track(mask, &[(0.0, face)], aspect, 0.5);
+        let m = &g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.as_ref().unwrap().masks[0];
+        let MaskShape::Circle { center_x, center_y, radius } = m.shape else { panic!("a circle") };
+        assert!((center_x - 0.5).abs() < 1e-5 && (center_y - 0.35).abs() < 1e-5, "centred on the face");
+        assert!(radius >= face[3] / (2.0 * aspect), "the window reaches the chin: {radius}");
+        assert!(radius >= face[2] / 2.0, "and the cheeks");
+    }
+
+    #[test]
+    fn a_face_that_moves_keyframes_the_window() {
+        let mut g = graph_with_corrector();
+        let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        let track = [
+            (0.0f64, [0.10f32, 0.30, 0.10, 0.18]),
+            (1.0, [0.40, 0.30, 0.10, 0.18]),
+            (2.0, [0.70, 0.32, 0.12, 0.20]),
+        ];
+        g.set_window_track(mask, &track, 9.0 / 16.0, 0.5);
+        let m = &g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.as_ref().unwrap().masks[0];
+        assert_eq!(m.keyframes.center_x.len(), 3);
+        assert!(!m.keyframes.is_empty());
+        // Half way across the shot the window is half way across the
+        // frame: the correction travels with the subject.
+        let at = m.evaluated_at(1.0);
+        let MaskShape::Circle { center_x, .. } = at.shape else { panic!("a circle") };
+        assert!((center_x - 0.45).abs() < 1e-3, "the window follows the face: {center_x}");
+    }
+
+    #[test]
+    fn a_window_with_no_track_is_left_alone() {
+        let mut g = graph_with_corrector();
+        let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
+        g.set_window_track(mask, &[], 9.0 / 16.0, 0.5);
+        assert!(g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.is_none());
     }
 }

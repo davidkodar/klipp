@@ -1228,11 +1228,15 @@ fn tool_definitions() -> Vec<Value> {
               ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
               holding to; the clip's length follows.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
-              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
-              key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
-              saturation and luminance windows) and correct only it (exposure, saturation, \
-              hue_shift, temperature); invert grades all but the key. Fix a sky, calm a loud \
-              shirt, warm skin.\n\
+              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?, window?, \
+              window_feather?} — a secondary: key a colour or tone (target skin/sky/foliage/reds…, \
+              or a hue in degrees, with saturation and luminance windows) and correct only it \
+              (exposure, saturation, hue_shift, temperature); invert grades all but the key. \
+              window holds the key inside a shape as well — a list of {at, x, y, w, h}, boxes in \
+              frame fractions at times in clip seconds — because a hue key alone cannot tell a \
+              face from a red jumper, a brick wall or a wooden table, and turns all of them. \
+              Several entries keyframe the window so it follows a subject who moves. Fix a sky, \
+              calm a loud shirt, warm skin.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
@@ -1358,11 +1362,15 @@ fn tool_definitions() -> Vec<Value> {
               ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
               holding to; the clip's length follows.\n\
               qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
-              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?} — a secondary: \
-              key a colour or tone (target skin/sky/foliage/reds…, or a hue in degrees, with \
-              saturation and luminance windows) and correct only it (exposure, saturation, \
-              hue_shift, temperature); invert grades all but the key. Fix a sky, calm a loud \
-              shirt, warm skin.\n\
+              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?, window?, \
+              window_feather?} — a secondary: key a colour or tone (target skin/sky/foliage/reds…, \
+              or a hue in degrees, with saturation and luminance windows) and correct only it \
+              (exposure, saturation, hue_shift, temperature); invert grades all but the key. \
+              window holds the key inside a shape as well — a list of {at, x, y, w, h}, boxes in \
+              frame fractions at times in clip seconds — because a hue key alone cannot tell a \
+              face from a red jumper, a brick wall or a wooden table, and turns all of them. \
+              Several entries keyframe the window so it follows a subject who moves. Fix a sky, \
+              calm a loud shirt, warm skin.\n\
               transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \

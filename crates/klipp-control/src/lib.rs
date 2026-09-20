@@ -1151,6 +1151,52 @@ fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) ->
     sample.people.iter().map(|p| { let p = [p.0, p.1, p.2, p.3]; klipp_color::measure::skin_region(data, w, h, p).unwrap_or_else(|| klipp_color::measure::head_region(p)) }).collect()
 }
 
+/// The face's path across a clip, as window keys in clip time.
+///
+/// A skin key is a band of hue, and a red jumper, a brick wall, a
+/// wooden table and a tanned hand all sit inside it — a hue key alone
+/// turns every one of them when it turns the face. A window says
+/// *where*, and tracking it says where *now*: without the tracking a
+/// window is only good for a locked-off camera, and the face walks out
+/// of it half way through the shot, taking the correction with it.
+///
+/// Read from the framing analysis, which already holds face boxes over
+/// time, so this costs no inference. Empty when the clip has no
+/// analysis or no face in it, and the secondary is then keyed on hue
+/// alone as before.
+fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::WindowKey> {
+    let Ok(seq) = ctx.sequence.read() else { return Vec::new() };
+    let Ok(pool) = ctx.media_pool.read() else { return Vec::new() };
+    let Ok(uuid) = clip_id.parse() else { return Vec::new() };
+    let id = klipp_core::ClipId(uuid);
+    let Some(clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id) else { return Vec::new() };
+    let Some(item) = clip.media_id().and_then(|m| pool.get(&m)) else { return Vec::new() };
+    let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
+    let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+    let speed = clip.speed.max(0.001);
+    let mut keys: Vec<klipp_document::ops::WindowKey> = framing
+        .samples
+        .iter()
+        .filter(|s| s.secs >= s_in && s.secs < s_out)
+        .filter_map(|s| {
+            // The biggest face in the sample: the subject. A window on
+            // a face in the background would leave the subject's own
+            // face outside the correction.
+            let b = face_or_head_regions(s).into_iter().max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))?;
+            Some(klipp_document::ops::WindowKey { at: (s.secs - s_in) / speed, x: b[0], y: b[1], w: b[2], h: b[3] })
+        })
+        .collect();
+    keys.sort_by(|a, b| a.at.total_cmp(&b.at));
+    // A window keyframed every few frames is neither more accurate nor
+    // cheaper to read; thirty samples across a shot is a tracker's
+    // worth of path.
+    if keys.len() > 30 {
+        let step = keys.len() as f64 / 30.0;
+        keys = (0..30).map(|i| keys[((i as f64 * step) as usize).min(keys.len() - 1)]).collect();
+    }
+    keys
+}
+
 /// A clip's span on the timeline, by its id.
 fn shot_span(ctx: &ControlContext, clip_id: &str) -> Option<(f64, f64)> {
     let id = klipp_core::ClipId(clip_id.parse().ok()?);
@@ -2007,6 +2053,11 @@ fn handle(
             if same_way && face0.hue_off_band > 4.0 {
                 before["advice"] = json!("the neutrals carry a cast too: white balance first (grade temperature and tint, or grade_to_target), then skin_balance for what is left");
             }
+            // Where the face is, across the shot: the key alone cannot
+            // tell a face from anything else the same colour.
+            let window = face_track(ctx, &clip_id);
+            let windowed = window.len();
+            let window = (!window.is_empty()).then(|| serde_json::to_value(&window).unwrap_or(serde_json::Value::Null));
             let n_rounds = if apply { 3 } else { 0 };
             for round in 0..n_rounds {
                 let Some(face) = m.faces.iter().find(|f| f.readable()) else { break };
@@ -2037,6 +2088,7 @@ fn handle(
                     "lum_low": 0.08,
                     "lum_high": 0.95,
                     "hue_shift": shift,
+                    "window": window,
                 })).map_err(|e| e.to_string())?;
                 let (plan, revision) = resolve_plan(ctx, &[op])?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
@@ -2047,7 +2099,7 @@ fn handle(
             }
             let face_now = m.faces.iter().find(|f| f.readable());
             let text = match face_now {
-                Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°", rounds.len()) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
+                Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°{}", rounds.len(), match windowed { 0 => ", keyed on hue alone — no face track in this clip's analysis, so anything else in the skin band turns with the face".to_string(), 1 => ", held inside a window on the face".to_string(), n => format!(", held inside a window tracked on the face over {n} samples") }) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
                 None => format!("{name}: the face could not be read after the change"),
             };
             Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step per round." } }))

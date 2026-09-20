@@ -465,6 +465,23 @@ pub enum Op {
         temperature: Option<f32>,
         #[serde(default)]
         remove: bool,
+        /// Hold the key inside a shape as well: the correction then
+        /// reaches only what is both the right colour *and* in the right
+        /// place. A hue key alone cannot tell a face from a red jumper,
+        /// a brick wall or a wooden table — they are all in the skin
+        /// band, and pulling the face warmer turns all of them.
+        ///
+        /// Each entry is a box in frame fractions at a time in clip
+        /// seconds, as a face detector gives them. One entry is a still
+        /// window; several are keyframed, so the window stays on a
+        /// subject who moves.
+        #[serde(default)]
+        window: Option<Vec<WindowKey>>,
+        /// How soft the window's edge is, 0 to 1. Generous by default:
+        /// a hard-edged window on a face reads as a sticker the moment
+        /// the subject moves at all.
+        #[serde(default)]
+        window_feather: Option<f32>,
     },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); the clips after it on the
@@ -1301,9 +1318,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             apply_look(seq, pool, i, ti, clip, lut_path, name.as_deref(), *opacity, *remove)
         }
-        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove } => {
+        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove };
+            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather };
             qualify(seq, pool, i, ti, clip, q)
         }
         Op::Retime { clip_id, speed } => {
@@ -2680,6 +2697,21 @@ fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
     Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
 }
 
+/// One sample of a tracked window: where the thing is, and when.
+///
+/// `x`, `y`, `w`, `h` are fractions of the frame, the top-left corner
+/// and the size, as every detector in the program reports a box. `at`
+/// is seconds into the clip, so a window tracks with the picture rather
+/// than with the timeline and survives the clip being moved or trimmed.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WindowKey {
+    pub at: f64,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 struct QualifyArgs<'a> {
     target: Option<&'a str>,
     hue: Option<f32>,
@@ -2694,6 +2726,8 @@ struct QualifyArgs<'a> {
     hue_shift: Option<f32>,
     temperature: Option<f32>,
     remove: bool,
+    window: Option<&'a [WindowKey]>,
+    window_feather: Option<f32>,
 }
 
 /// A named colour target for the qualifier: its hue centre and width in
@@ -2801,7 +2835,37 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         ));
     }
     let kind = if turns_hue { klipp_nodes::NodeKind::ColorBalance } else { klipp_nodes::NodeKind::Corrector };
-    let (qid, cid) = graph.ensure_masked_secondary(kind);
+    // A window, when one is given: the key says what, the window says
+    // where, and the correction reaches only what is both.
+    let window: Vec<(f64, [f32; 4])> = a
+        .window
+        .unwrap_or(&[])
+        .iter()
+        .map(|k| (k.at, [k.x, k.y, k.w, k.h]))
+        .collect();
+    for (n, k) in window.iter().enumerate() {
+        let b = k.1;
+        if !k.0.is_finite() || k.0 < 0.0 || b.iter().any(|v| !v.is_finite()) || b[2] <= 0.0 || b[3] <= 0.0 || b[0] < -0.5 || b[1] < -0.5 || b[0] + b[2] > 1.5 || b[1] + b[3] > 1.5 {
+            return Err(refuse(i, format!("window key {n} is not a box in the frame"), "x, y, w and h are fractions of the frame and at is seconds into the clip"));
+        }
+    }
+    if let Some(f) = a.window_feather {
+        if !f.is_finite() || !(0.0..=1.0).contains(&f) {
+            return Err(refuse(i, format!("window_feather {f} is out of range"), "give it between 0 and 1"));
+        }
+    }
+    let (qid, cid) = if window.is_empty() {
+        graph.ensure_masked_secondary(kind)
+    } else {
+        let (q, mask, c) = graph.ensure_windowed_secondary(kind);
+        let res = seq.resolution;
+        let aspect = res.height as f32 / (res.width.max(1) as f32);
+        // Soft by default. A colourist softens a face window until its
+        // edge cannot be found by looking, and 0.5 of the radius is
+        // about where that lands.
+        graph.set_window_track(mask, &window, aspect, a.window_feather.unwrap_or(0.5));
+        (q, c)
+    };
     {
         let node = graph.nodes.iter_mut().find(|n| n.id == qid).expect("the keyer was made");
         for (name, v, _, _) in knobs.iter().take(6) {
@@ -2835,6 +2899,9 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
     let mut corr = Vec::new();
     for (label, v) in [("exposure", a.exposure), ("saturation", a.saturation), ("hue_shift", a.hue_shift), ("temperature", a.temperature)] {
         if let Some(v) = v { corr.push(format!("{label} {v}")); }
+    }
+    if !window.is_empty() {
+        said.push(if window.len() > 1 { format!("inside a window tracked over {} samples", window.len()) } else { "inside a window".to_string() });
     }
     let what = format!("secondary on {}: key {}, {}", clip_name(seq, pool, clip), said.join(", "), corr.join(", "));
     Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
@@ -3763,8 +3830,7 @@ mod tests {
         let op = |hue_shift: Option<f32>, saturation: Option<f32>| Op::Qualify {
             clip_id: ClipRef::Id(a), target: Some("skin".into()), hue: None, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
-            exposure: None, saturation, hue_shift, temperature: None, remove: false,
-        };
+            exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None };
         let plan = resolve(&seq, &pool, &[op(Some(20.0), None)]).unwrap();
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
         let qual = new_graph.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("a keyer");
@@ -4404,6 +4470,7 @@ mod tests {
             clip_id: ClipRef::Id(a), target: target.map(|s| s.to_string()), hue, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
             exposure, saturation, hue_shift: None, temperature: None, remove,
+            window: None, window_feather: None,
         };
 
         // Key the sky and cool it down.
@@ -4441,6 +4508,54 @@ mod tests {
         assert!(bad(q(Some("teapot"), None, Some(0.5), None, false)).why.contains("not a colour"));
         assert!(bad(q(None, Some(999.0), Some(0.5), None, false)).why.contains("out of range"));
         assert!(bad(q(None, None, None, None, true)).why.contains("no secondary to remove"));
+    }
+
+    #[test]
+    fn a_skin_secondary_can_be_held_inside_a_tracked_window() {
+        // The fault this exists to fix: a hue key on skin also keys a
+        // red jumper, a brick wall and a wooden table, so pulling the
+        // face warmer turns all of them. The window says where.
+        let (seq, pool, _media, a, _) = fixture();
+        let face = |at: f64, x: f32| WindowKey { at, x, y: 0.28, w: 0.12, h: 0.22 };
+        let op = Op::Qualify {
+            clip_id: ClipRef::Id(a),
+            target: Some("skin".into()),
+            hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
+            invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
+            window: Some(vec![face(0.0, 0.20), face(1.0, 0.44), face(2.0, 0.62)]),
+            window_feather: None,
+        };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        assert!(plan.steps[0].what.contains("window tracked over 3 samples"), "{}", plan.steps[0].what);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+
+        let qual = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).expect("a key");
+        let mask = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Mask).expect("a window");
+        let combine = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::CombineMattes).expect("the two together");
+        // Both mattes meet at the combiner, and only its output gates
+        // the correction: "the right colour AND in the right place".
+        assert!(new_graph.edges.iter().any(|e| e.from_node == qual.id && e.to_node == combine.id));
+        assert!(new_graph.edges.iter().any(|e| e.from_node == mask.id && e.to_node == combine.id));
+        assert!(!new_graph.edges.iter().any(|e| e.from_node == qual.id && new_graph.nodes.iter().any(|n| n.id == e.to_node && n.kind == klipp_nodes::NodeKind::ColorBalance)));
+        // The window follows the face rather than sitting still.
+        let masks = mask.params.masks.as_ref().expect("a mask stack");
+        assert_eq!(masks.masks.len(), 1);
+        assert!(masks.has_keyframes(), "a moving subject keyframes the window");
+        assert!(masks.masks[0].feather > 0.0, "a face window is soft, or it reads as a sticker");
+        // And the chain still reads in a colourist's order.
+        assert!(new_graph.chain_out_of_order().is_empty(), "{:?}", new_graph.chain_out_of_order());
+
+        // A window given as nonsense is refused rather than drawn wrong.
+        let bad = |w: Vec<WindowKey>| {
+            resolve(&seq, &pool, &[Op::Qualify {
+                clip_id: ClipRef::Id(a), target: Some("skin".into()),
+                hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
+                invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
+                window: Some(w), window_feather: None,
+            }]).unwrap_err()
+        };
+        assert!(bad(vec![WindowKey { at: 0.0, x: 0.2, y: 0.2, w: 0.0, h: 0.2 }]).why.contains("not a box"));
+        assert!(bad(vec![WindowKey { at: -1.0, x: 0.2, y: 0.2, w: 0.2, h: 0.2 }]).why.contains("not a box"));
     }
 
     #[test]
