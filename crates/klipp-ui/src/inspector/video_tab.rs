@@ -1401,7 +1401,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
 }
 
 fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
-    section_card(ui, "COLOR", theme, |ui| {
+    section_card(ui, "COLOUR", theme, |ui| {
         ui.add_space(6.0);
         egui::Frame::default()
             .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
@@ -1447,7 +1447,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                     if ui.add_sized(
                         egui::vec2(btn_w, 28.0),
                         egui::Button::new(
-                            egui::RichText::new("Open Color Panel")
+                            egui::RichText::new("Open Colour Panel")
                                 .size(11.0)
                                 .color(theme.text_primary),
                         )
@@ -3468,7 +3468,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
 }
 
 fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
-    section_card(ui, "COLOR FADE", theme, |ui| {
+    section_card(ui, "COLOUR FADE", theme, |ui| {
         ui.add_space(4.0);
         egui::Frame::default()
             .inner_margin(egui::Margin { left: 14.0, right: 14.0, top: 0.0, bottom: 0.0 })
@@ -3476,9 +3476,9 @@ fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, c
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Color");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour");
                 ui.add_space(6.0);
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Color");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour");
             });
         ui.add_space(6.0);
     });

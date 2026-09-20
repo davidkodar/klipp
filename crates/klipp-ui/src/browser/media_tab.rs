@@ -2222,7 +2222,7 @@ fn show_multi_context_menu(
     // every selected media id. ColorLabel::ALL keeps the swatch
     // list canonical with the single-item path so an added/removed
     // colour propagates to both surfaces in one place.
-    ui.menu_button("Set Color Label", |ui| {
+    ui.menu_button("Set Colour Label", |ui| {
         for label in klipp_media::ColorLabel::ALL {
             let mut text = egui::RichText::new(label.label()).size(11.0);
             if let Some((r, g, b)) = label.rgb() {

@@ -64,7 +64,7 @@ pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
             .collect(),
         other => {
             tracing::warn!(
-                "decode_png_or_fallback: unsupported PNG color type {:?}",
+                "decode_png_or_fallback: unsupported PNG colour type {:?}",
                 other
             );
             return fallback();

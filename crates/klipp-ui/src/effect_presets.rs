@@ -345,7 +345,7 @@ impl PresetManager {
             klipp_effects::BuiltinEffect::Gamma { gamma: 0.5 });
 
         // ── Invert ────────────────────────────────────────────
-        self.bi("invert", "Full Invert", "Complete color inversion",
+        self.bi("invert", "Full Invert", "Complete colour inversion",
             klipp_effects::BuiltinEffect::Invert { mix: 1.0 });
         self.bi("invert", "Partial Invert", "50% inverted blend",
             klipp_effects::BuiltinEffect::Invert { mix: 0.5 });
@@ -361,9 +361,9 @@ impl PresetManager {
         // ── HSV Adjust ────────────────────────────────────────
         self.bi("hsv_adjust", "Hue Shift 30\u{00b0}", "Subtle warm shift",
             klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 30.0, saturation: 1.0, value: 1.0 });
-        self.bi("hsv_adjust", "Desaturate", "Remove all color",
+        self.bi("hsv_adjust", "Desaturate", "Remove all colour",
             klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 });
-        self.bi("hsv_adjust", "Boost Saturation", "Vivid colors",
+        self.bi("hsv_adjust", "Boost Saturation", "Vivid colours",
             klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.8, value: 1.0 });
         self.bi("hsv_adjust", "Warm Shift", "Orange/warm tone shift",
             klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: -15.0, saturation: 1.2, value: 1.05 });

@@ -1566,7 +1566,7 @@ fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
             .chunks_exact(4)
             .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
             .collect(),
-        _ => return Err("Unsupported PNG color type".into()),
+        _ => return Err("Unsupported PNG colour type".into()),
     };
 
     Ok(egui::ColorImage {

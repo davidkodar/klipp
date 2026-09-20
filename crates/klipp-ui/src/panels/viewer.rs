@@ -891,7 +891,7 @@ impl ViewerPanel {
         let mut labels: Vec<&str> = Vec::new();
         let ov = &state.viewer_overlays;
         if ov.zebras { labels.push("ZEBRA"); }
-        if ov.false_color { labels.push("FALSE COLOR"); }
+        if ov.false_color { labels.push("FALSE COLOUR"); }
         if ov.focus_peaking { labels.push("FOCUS PEAKING"); }
         if ov.safe_areas { labels.push("SAFE AREAS"); }
         if ov.grid { labels.push("GRID"); }
@@ -4668,7 +4668,7 @@ impl ViewerPanel {
         ui.checkbox(&mut state.viewer_overlays.safe_areas, "Safe areas (Alt+S)");
         ui.checkbox(&mut state.viewer_overlays.grid, "Grid (Alt+G)");
         ui.checkbox(&mut state.viewer_overlays.zebras, "Zebras (Z)");
-        ui.checkbox(&mut state.viewer_overlays.false_color, "False color (Alt+F)");
+        ui.checkbox(&mut state.viewer_overlays.false_color, "False colour (Alt+F)");
         ui.checkbox(&mut state.viewer_overlays.focus_peaking, "Focus peaking (Ctrl+P)");
         ui.checkbox(&mut state.viewer_overlays.checkerboard, "Checkerboard");
 

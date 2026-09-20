@@ -61,7 +61,7 @@ impl ToolbarPanel {
         // ═══════════════════════════════════════════
         // A segmented control: three labels in one field, the active one
         // lit, sized to its titles so none is ever clipped.
-        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Color"), (Workspace::Export, "Export")];
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")];
         let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
         let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
         let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
@@ -526,7 +526,7 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
-            if ui.add(egui::Button::new("Open in Color Panel").shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
+            if ui.add(egui::Button::new("Open in Colour Panel").shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
                 state.show_color_panel = !state.show_color_panel;
                 ui.close_menu();
             }
@@ -558,11 +558,11 @@ impl ToolbarPanel {
             ui.separator();
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.menu_button("Add Generator", |ui| {
-                if ui.button("Solid Color").clicked() {
+                if ui.button("Solid Colour").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::SolidColor { color: [128, 128, 128, 255] } });
                     ui.close_menu();
                 }
-                if ui.button("Color Bars").clicked() {
+                if ui.button("Colour Bars").clicked() {
                     cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data: klipp_core::GeneratorData::ColorBars });
                     ui.close_menu();
                 }
@@ -704,7 +704,7 @@ impl ToolbarPanel {
             let fc_check = if state.viewer_overlays.false_color { "\u{2714} " } else { "  " };
             // Main button toggles false color on/off
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(format!("{fc_check}False Color")).shortcut_text(kb.display_for("toggle_false_color"))).clicked() {
+                if ui.add(egui::Button::new(format!("{fc_check}False Colour")).shortcut_text(kb.display_for("toggle_false_color"))).clicked() {
                     state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
                     ui.close_menu();
                 }
@@ -784,7 +784,7 @@ impl ToolbarPanel {
                 if ui.button(format!("{overlay_check}Overlay on Viewer")).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
             });
             let color_check = if state.show_color_panel { "\u{2714} " } else { "  " };
-            if ui.add(egui::Button::new(format!("{color_check}Color Panel")).shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
+            if ui.add(egui::Button::new(format!("{color_check}Colour Panel")).shortcut_text(kb.display_for("toggle_color_panel"))).clicked() {
                 state.show_color_panel = !state.show_color_panel;
                 ui.close_menu();
             }
@@ -844,7 +844,7 @@ impl ToolbarPanel {
             // inspector layout — not the same as a full workspace
             // preset below; kept as-is for backwards compatibility).
             ui.label(egui::RichText::new("ACTIVE MODE").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
-            for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Color Grading"), (Workspace::Export, "Audio Mixing")] {
+            for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Colour Grading"), (Workspace::Export, "Audio Mixing")] {
                 let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }

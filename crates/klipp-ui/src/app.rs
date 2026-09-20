@@ -5019,13 +5019,13 @@ impl KlippApp {
                     let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
                     let timeline_out = ph + duration;
                     let label = match &data {
-                        klipp_core::GeneratorData::SolidColor { .. } => "Solid Color",
+                        klipp_core::GeneratorData::SolidColor { .. } => "Solid Colour",
                         klipp_core::GeneratorData::LivingGradient { .. } => "Living Gradient",
                         klipp_core::GeneratorData::Grain { .. } => "Grain",
                         klipp_core::GeneratorData::Placeholder { .. } => "Placeholder",
                         klipp_core::GeneratorData::Gradient { .. } => "Gradient",
-                        klipp_core::GeneratorData::ColorBars => "Color Bars",
-                        klipp_core::GeneratorData::ColorBars100 => "Color Bars 100%",
+                        klipp_core::GeneratorData::ColorBars => "Colour Bars",
+                        klipp_core::GeneratorData::ColorBars100 => "Colour Bars 100%",
                         klipp_core::GeneratorData::Countdown => "Countdown",
                         klipp_core::GeneratorData::Timer { .. } => "Timer",
                         klipp_core::GeneratorData::Slate { .. } => "Slate",
@@ -13766,7 +13766,7 @@ impl KlippApp {
                     HashSet::new()
                 };
                 if selection.is_empty() {
-                    self.state.toast.show("Copy: no color node selected");
+                    self.state.toast.show("Copy: no colour node selected");
                     return true;
                 }
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -13786,17 +13786,17 @@ impl KlippApp {
                     self.state.grade_node_clipboard = Some(clipboard);
                     if edge_count > 0 {
                         self.state.toast.show(format!(
-                            "Copied {node_count} color node(s) + {edge_count} internal edge(s)"
+                            "Copied {node_count} colour node(s) + {edge_count} internal edge(s)"
                         ));
                     } else {
-                        self.state.toast.show(format!("Copied {node_count} color node(s)"));
+                        self.state.toast.show(format!("Copied {node_count} colour node(s)"));
                     }
                 }
                 true
             }
             AppCommand::PasteColorNodes { clip_id } => {
                 let Some(template) = self.state.grade_node_clipboard.clone() else {
-                    self.state.toast.show("Paste: nothing in the color clipboard");
+                    self.state.toast.show("Paste: nothing in the colour clipboard");
                     return true;
                 };
                 if template.nodes.is_empty() {
@@ -13814,10 +13814,10 @@ impl KlippApp {
                 });
                 if edge_count > 0 {
                     self.state.toast.show(format!(
-                        "Pasted {node_count} color node(s) + {edge_count} edge(s)"
+                        "Pasted {node_count} colour node(s) + {edge_count} edge(s)"
                     ));
                 } else {
-                    self.state.toast.show(format!("Pasted {node_count} color node(s)"));
+                    self.state.toast.show(format!("Pasted {node_count} colour node(s)"));
                 }
                 true
             }
@@ -14656,7 +14656,7 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     } else {
-                        self.state.toast.show("Add a Color Balance node to use Auto White Balance");
+                        self.state.toast.show("Add a Colour Balance node to use Auto White Balance");
                     }
                     *needs_refresh = true;
                 }
@@ -30011,7 +30011,7 @@ impl KlippApp {
                     let mut pa_speed = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(pa_id.with("spd"), || false));
 
                     ui.checkbox(&mut pa_effects, "Effects (built-in + OFX)");
-                    ui.checkbox(&mut pa_color, "Color Grade (node graph)");
+                    ui.checkbox(&mut pa_color, "Colour Grade (node graph)");
                     ui.checkbox(&mut pa_audio, "Audio (volume, pan, gain, fades, FX)");
                     ui.checkbox(&mut pa_transform, "Transform (position, scale, rotation, opacity)");
                     ui.checkbox(&mut pa_speed, "Speed");
@@ -32393,9 +32393,9 @@ impl KlippApp {
                     // Labelled by what clicking does.
                     let label = if is_bottom { "Dock right \u{2192}" } else { "Dock bottom \u{2193}" };
                     let tooltip = if is_bottom {
-                        "Move the color tools panel to the right side of the canvas (currently at the bottom)"
+                        "Move the colour tools panel to the right side of the canvas (currently at the bottom)"
                     } else {
-                        "Move the color tools panel to the bottom of the canvas (currently on the right)"
+                        "Move the colour tools panel to the bottom of the canvas (currently on the right)"
                     };
                     if ui.button(label).on_hover_text(tooltip).clicked() {
                         self.state.color_tools_position = if is_bottom {
@@ -32886,7 +32886,7 @@ impl KlippApp {
                         // — including on a node, the canvas background,
                         // or any inner widget. The keybinding dispatcher
                         // reads `state.active_panel` to decide whether
-                        // Ctrl+C means "copy color nodes" (here) or
+                        // Ctrl+C means "copy colour nodes" (here) or
                         // "copy clip" (elsewhere).
                         let ctx = ui.ctx().clone();
                         crate::state::note_active_panel(
@@ -34846,7 +34846,7 @@ fn generate_render_script(
     s.push_str("# This script reproduces the timeline CUTS of the current sequence by calling\n");
     s.push_str("# ffmpeg directly. It does NOT apply:\n");
     s.push_str("#   * Effects (blur, sharpen, chroma-key, transform, etc.)\n");
-    s.push_str("#   * Color grades / node graphs\n");
+    s.push_str("#   * Colour grades / node graphs\n");
     s.push_str("#   * Transitions (crossfades, wipes, etc.)\n");
     s.push_str("#   * Keyframes / automation (opacity, volume, pan, transform)\n");
     s.push_str("#   * Title, generator, or adjustment-layer clips\n");

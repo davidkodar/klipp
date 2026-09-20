@@ -92,7 +92,18 @@ impl NewInspectorPanel {
         } else if let Some(bm) = bin_media {
             (bm.filename.clone(), false)
         } else {
-            ("No clip selected".into(), true)
+            // Name what the panel is showing, not what it is missing.
+            // With nothing selected the body is the sequence's own
+            // properties -- resolution, frame rate, audio output,
+            // loudness -- so "No clip selected" described the selection
+            // while everything under it described the sequence.
+            let seq_name = state.sequence().name.clone();
+            let title = if seq_name.trim().is_empty() {
+                "Sequence".to_string()
+            } else {
+                format!("Sequence: {seq_name}")
+            };
+            (title, true)
         };
         if crate::widgets::inspector_group::panel_title_row(ui, &clip_name, name_dim, theme) {
             cmds.push(AppCommand::ToggleInspectorPanel);
@@ -164,7 +175,7 @@ impl NewInspectorPanel {
             vec![
                 (InspectorTab::Video, "VIDEO", "VID"),
                 (InspectorTab::Audio, "AUDIO", "AUD"),
-                (InspectorTab::Color, "COLOR", "COL"),
+                (InspectorTab::Color, "COLOUR", "COL"),
                 (InspectorTab::Effects, "EFFECTS", "FX"),
                 (InspectorTab::Info, "INFO", "INFO"),
             ]
@@ -2102,7 +2113,7 @@ fn show_title_effects_group(
             let mut radius = display_radius;
             let mut intensity = display_intensity;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("glow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Colour", &mut col, ("glow", clip_id));
             let pill_radius = format!("{} px", radius.round() as i32);
             let resp_radius = effect_param_row(
                 ui, theme, "Radius", &mut radius, 1.0..=40.0,
@@ -2257,7 +2268,7 @@ fn show_title_effects_group(
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut width = display_width;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("outline", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Colour", &mut col, ("outline", clip_id));
             let pill_width = format!("{} px", width.round() as i32);
             let resp_width = effect_param_row(
                 ui, theme, "Width", &mut width, 0.5..=12.0,
@@ -2417,7 +2428,7 @@ fn show_title_effects_group(
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("drop_shadow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Colour", &mut col, ("drop_shadow", clip_id));
             let pill_ox = format!("{} px", ox.round() as i32);
             let resp_ox = effect_param_row(
                 ui, theme, "Offset X", &mut ox, -20.0..=20.0,
@@ -2622,7 +2633,7 @@ fn show_title_effects_group(
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("inner_shadow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Colour", &mut col, ("inner_shadow", clip_id));
             let pill_ox = format!("{} px", ox.round() as i32);
             let resp_ox = effect_param_row(
                 ui, theme, "Offset X", &mut ox, -20.0..=20.0,
@@ -4882,7 +4893,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Dip Color")
+                        egui::RichText::new("Dip Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -4933,7 +4944,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Flash Color")
+                        egui::RichText::new("Flash Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -5006,7 +5017,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Leak Color")
+                        egui::RichText::new("Leak Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -5501,7 +5512,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Flare Color")
+                        egui::RichText::new("Flare Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -5635,7 +5646,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Halo Color")
+                        egui::RichText::new("Halo Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -5910,7 +5921,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Flash Color")
+                        egui::RichText::new("Flash Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -6153,7 +6164,7 @@ fn show_transition_inspector(
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Fade Color")
+                        egui::RichText::new("Fade Colour")
                             .color(theme.text_secondary)
                             .size(11.0),
                     );
@@ -6746,10 +6757,10 @@ fn show_generator_editor(
 
     match gd {
         klipp_core::GeneratorData::SolidColor { color } => {
-            ui.label(egui::RichText::new("Solid Color").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Solid Colour").size(11.0).color(theme.text_secondary));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
@@ -6975,13 +6986,13 @@ fn show_generator_editor(
         }
 
         klipp_core::GeneratorData::ColorBars => {
-            ui.label(egui::RichText::new("SMPTE 75% Color Bars").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("SMPTE 75% Colour Bars").size(11.0).color(theme.text_secondary));
             ui.add_space(2.0);
             ui.label(egui::RichText::new("No editable parameters.").size(10.0).color(theme.text_dim));
         }
 
         klipp_core::GeneratorData::ColorBars100 => {
-            ui.label(egui::RichText::new("SMPTE 100% Color Bars").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("SMPTE 100% Colour Bars").size(11.0).color(theme.text_secondary));
             ui.add_space(2.0);
             ui.label(egui::RichText::new("Full-intensity broadcast bars. No editable parameters.").size(10.0).color(theme.text_dim));
         }
@@ -7251,7 +7262,7 @@ fn show_generator_editor(
             });
 
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );
@@ -7324,7 +7335,7 @@ fn show_generator_editor(
             });
 
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").strong().size(11.0));
+                ui.label(egui::RichText::new("Colour").strong().size(11.0));
                 let mut c = egui::Color32::from_rgba_premultiplied(
                     color[0], color[1], color[2], color[3],
                 );

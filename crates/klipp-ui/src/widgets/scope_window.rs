@@ -1343,7 +1343,7 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
         .color(theme.text_dim).strong());
     ui.checkbox(&mut s.show_skin_tone_indicator, "Show Skin Tone Indicator");
     ui.checkbox(&mut s.show_iq_lines, "Show I/Q Lines")
-        .on_hover_text("Draw NTSC I and Q color axes as reference lines");
+        .on_hover_text("Draw NTSC I and Q colour axes as reference lines");
     ui.checkbox(&mut s.show_graticule, "Show Graticule");
 }
 

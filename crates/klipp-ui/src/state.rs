@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// Identifies which panel is currently the user's primary interaction
 /// target — set by panels via [`note_active_panel`] in their update
 /// fn and consulted by the keybinding dispatcher to scope shortcuts
-/// (e.g. Ctrl+C should mean "copy color nodes" only when the node
+/// (e.g. Ctrl+C should mean "copy colour nodes" only when the node
 /// graph or color inspector is active, not when the user happens to
 /// have the timeline panel's container under focus).
 ///
@@ -51,7 +51,7 @@ pub enum PanelKind {
 /// The setter never CLEARS the active panel — once a panel claims
 /// focus it stays active until another panel claims it. That matches
 /// the user's mental model: keyboard focus persists across mouse
-/// movement (e.g. Ctrl+C should still mean "copy color nodes" when
+/// movement (e.g. Ctrl+C should still mean "copy colour nodes" when
 /// the user has clicked the node graph and is now hovering the
 /// inspector to read details).
 pub fn note_active_panel(
@@ -1634,7 +1634,7 @@ pub struct AppState {
     pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
     /// Which panel is currently the user's primary interaction
     /// target. Read by the keybinding dispatcher to scope shortcuts
-    /// to a panel — e.g. Ctrl+C means "copy color nodes" only when
+    /// to a panel — e.g. Ctrl+C means "copy colour nodes" only when
     /// `Some(PanelKind::NodeGraph)` or `Some(PanelKind::NodeInspector)`.
     /// Panels mark themselves active via [`note_active_panel`].
     pub active_panel: Option<PanelKind>,
@@ -3038,7 +3038,7 @@ pub enum VectorscopeScaleStyle {
 
 impl VectorscopeScaleStyle {
     pub fn label(&self) -> &'static str {
-        match self { Self::SeventyFive => "75% color bars", Self::Hundred => "100% color bars" }
+        match self { Self::SeventyFive => "75% colour bars", Self::Hundred => "100% colour bars" }
     }
 }
 
@@ -4114,6 +4114,11 @@ mod tests {
         let layouts = builtin_workspace_layouts();
         let names: std::collections::HashSet<_> =
             layouts.iter().map(|l| l.name.clone()).collect();
+        // "Color" keeps the American spelling deliberately: this name
+        // is written into workspaces.json and matched back by string,
+        // so respelling it would orphan every saved workspace that
+        // refers to it. The label a user sees is British; this is an
+        // identifier that happens to look like a word.
         for expected in ["Logging", "Editing", "Effects", "Audio", "Color"] {
             assert!(names.contains(expected), "missing built-in: {expected}");
         }

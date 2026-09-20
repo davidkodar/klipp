@@ -487,7 +487,7 @@ pub fn show_bin_media(
 
         // Color transfer / primaries
         if media.color_transfer.is_some() || media.color_primaries.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Color", |ui, rx, cy| {
+            info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
                 let transfer = media.color_transfer.as_deref().unwrap_or("Unspecified");
                 let primaries = media.color_primaries.as_deref().unwrap_or("");
                 let text = if !primaries.is_empty() && primaries != "Unspecified" && primaries != transfer {

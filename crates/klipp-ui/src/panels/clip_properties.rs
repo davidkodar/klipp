@@ -520,11 +520,11 @@ fn render_metadata_tab(ui: &mut egui::Ui, media: &klipp_media::MediaItem) {
                 }
             }
             if let Some(ref pri) = media.color_primaries {
-                kv(ui, "Color primaries", pri);
+                kv(ui, "Colour primaries", pri);
                 any = true;
             }
             if let Some(ref trc) = media.color_transfer {
-                kv(ui, "Color transfer", trc);
+                kv(ui, "Colour transfer", trc);
                 any = true;
             }
             if media.detected_log_format != klipp_core::LogFormat::Srgb {

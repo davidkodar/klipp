@@ -386,7 +386,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.skimming_enabled = !s.skimming_enabled), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Audio Skim"), shortcut: Cow::Borrowed("Shift+S"),
         action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
-    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Colour Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
     // Node-graph auto-layout — gated on a selected clip so the
     // entry doesn't fire silently against an empty workspace.
@@ -424,14 +424,14 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     }
     // Copy / paste color nodes between clips. Both gated on having a
     // selected clip — Copy needs a source, Paste needs a target.
-    e.push(PaletteEntry { label: Cow::Borrowed("Copy Color Nodes"), shortcut: Cow::Borrowed(""),
+    e.push(PaletteEntry { label: Cow::Borrowed("Copy Colour Nodes"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
             if let Some(clip_id) = state.selected_clip {
                 cmds.push(AppCommand::CopyColorNodes { clip_id });
             }
         }),
         enabled: state.selected_clip.is_some() });
-    e.push(PaletteEntry { label: Cow::Borrowed("Paste Color Nodes"), shortcut: Cow::Borrowed(""),
+    e.push(PaletteEntry { label: Cow::Borrowed("Paste Colour Nodes"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Custom(|state, cmds| {
             if let Some(clip_id) = state.selected_clip {
                 cmds.push(AppCommand::PasteColorNodes { clip_id });
@@ -577,7 +577,7 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Zebras"), shortcut: Cow::Borrowed("Z"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.zebras = !s.viewer_overlays.zebras),
         enabled: true });
-    e.push(PaletteEntry { label: Cow::Borrowed("Toggle False Color"), shortcut: Cow::Borrowed("Alt+F"),
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle False Colour"), shortcut: Cow::Borrowed("Alt+F"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.false_color = !s.viewer_overlays.false_color),
         enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Focus Peaking"), shortcut: Cow::Borrowed("Ctrl+P"),

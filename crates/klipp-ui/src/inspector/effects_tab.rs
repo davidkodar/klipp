@@ -1115,7 +1115,7 @@ fn show_ofx_param(
 fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Cow<'static, str> {
     use std::borrow::Cow;
     match effect {
-        klipp_effects::BuiltinEffect::ColorFade { .. } => Cow::Borrowed("Color Fade"),
+        klipp_effects::BuiltinEffect::ColorFade { .. } => Cow::Borrowed("Colour Fade"),
         klipp_effects::BuiltinEffect::Opacity { .. } => Cow::Borrowed("Opacity"),
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => Cow::Borrowed("Gaussian Blur"),
         klipp_effects::BuiltinEffect::Sharpen { .. } => Cow::Borrowed("Sharpen"),
@@ -1646,7 +1646,7 @@ fn show_builtin_effect_params(
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, spill_method, spill_strength } => {
             // Color picker stays as-is (not a scrubby candidate)
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Key Color").size(10.0));
+                ui.label(egui::RichText::new("Key Colour").size(10.0));
                 let mut color = egui::Color32::from_rgb(key_color[0], key_color[1], key_color[2]);
                 if ui.color_edit_button_srgba(&mut color).changed() {
                     key_color[0] = color.r();
@@ -2260,7 +2260,7 @@ fn show_builtin_effect_params(
             let ks_co = Some(effect_keyframe_state(clip, effect_index, "color_sigma", clip_time_secs));
             let r_sp = scrubby_param_row(ui, "Spatial Sigma", spatial_sigma, 1.0..=20.0, 5.0, 0.5, 1, "", ks_sp);
             track_scrubby!("spatial_sigma", r_sp, *spatial_sigma);
-            let r_co = scrubby_param_row(ui, "Color Sigma", color_sigma, 0.01..=1.0, 0.1, 0.01, 2, "", ks_co);
+            let r_co = scrubby_param_row(ui, "Colour Sigma", color_sigma, 0.01..=1.0, 0.1, 0.01, 2, "", ks_co);
             track_scrubby!("color_sigma", r_co, *color_sigma);
             let mut iter_f = *iterations as f32;
             let ks_it = Some(effect_keyframe_state(clip, effect_index, "iterations", clip_time_secs));
@@ -2461,7 +2461,7 @@ fn show_builtin_effect_params(
             track_scrubby!("aspect_ratio", r_ar, *aspect_ratio);
             // Bar color toggle
             let mut bc_f = *bar_color as f32;
-            let r_bc = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Color (0=Black, 1=White)"));
+            let r_bc = ui.add(egui::Slider::new(&mut bc_f, 0.0..=1.0).step_by(1.0_f64).text("Bar Colour (0=Black, 1=White)"));
             *bar_color = bc_f as u32;
             if r_bc.drag_started() { any_drag_started = true; }
             if r_bc.drag_stopped() { any_drag_stopped = true; }
