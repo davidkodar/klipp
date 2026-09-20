@@ -32,6 +32,19 @@ pub struct NodeInspectorPanel {
     pub curves_presets: Vec<ToolPreset>,
     pub huesat_presets: Vec<ToolPreset>,
     pub warper_presets: Vec<ToolPreset>,
+    /// The viewer frame's histogram, drawn behind the curves.
+    ///
+    /// A curve without the image's distribution behind it is placed
+    /// blind: you cannot see where the data you are moving actually
+    /// lives, which is most of what the tool is for. The widget has
+    /// taken an optional histogram since it was written and every call
+    /// site passed `None`.
+    ///
+    /// Computed from the same `SharedFrameBuffer` the Colour Check
+    /// window reads, and gated on its generation, so a paused viewer
+    /// costs one pass and not one per repaint.
+    curve_histogram: Option<klipp_color::scopes::HistogramData>,
+    curve_histogram_generation: u64,
     pub color_presets: Vec<ToolPreset>,
     pub preset_save_name_tool: String,
     pub preset_saving_tool: Option<ToolScope>,
@@ -52,6 +65,8 @@ impl Default for NodeInspectorPanel {
             curves_presets: presets::load_tool_presets(&ToolScope::Curves),
             huesat_presets: presets::load_tool_presets(&ToolScope::HueSat),
             warper_presets: presets::load_tool_presets(&ToolScope::Warper),
+            curve_histogram: None,
+            curve_histogram_generation: u64::MAX,
             color_presets: presets::load_tool_presets(&ToolScope::Color),
             preset_save_name_tool: String::new(),
             preset_saving_tool: None,
@@ -60,6 +75,34 @@ impl Default for NodeInspectorPanel {
 }
 
 impl NodeInspectorPanel {
+    /// Recompute the curves' histogram when the viewer shows a new
+    /// frame. Cheap enough to call every frame: it returns immediately
+    /// unless the generation moved.
+    pub fn refresh_curve_histogram(&mut self, frame_buffer: &klipp_engine::SharedFrameBuffer) {
+        let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+            return;
+        }
+        if fb.generation == self.curve_histogram_generation {
+            return;
+        }
+        self.curve_histogram_generation = fb.generation;
+        self.curve_histogram = Some(klipp_color::scopes::compute_histogram(
+            &fb.data, fb.width, fb.height,
+        ));
+    }
+
+    /// The 256 bins for one curve channel, if a frame has been measured.
+    fn histogram_for(&self, channel: curves_editor::CurveChannel) -> Option<&[u32; 256]> {
+        let h = self.curve_histogram.as_ref()?;
+        Some(match channel {
+            curves_editor::CurveChannel::Red => &h.r,
+            curves_editor::CurveChannel::Green => &h.g,
+            curves_editor::CurveChannel::Blue => &h.b,
+            _ => &h.luma,
+        })
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -964,8 +1007,25 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id: target_id });
                     }
                 }
-                ui.label(egui::RichText::new(format!("Bypass — {target_label}"))
-                    .size(11.0).color(theme.text_dim));
+                // The checkbox is bound to `effective_on` — ticked means
+                // the grade is *running*. Labelling that "Bypass" said
+                // the opposite of what the tick meant, on the one
+                // control that answers "am I looking at the graded
+                // picture or not". Getting that backwards is how a
+                // colourist spends ten minutes grading a shot that was
+                // bypassed the whole time.
+                //
+                // So the label states the state rather than naming a
+                // mode, and the dangerous state is the loud one: an
+                // active grade reads quietly, a bypassed one says so in
+                // the warning colour.
+                if shown {
+                    ui.label(egui::RichText::new(target_label.to_string())
+                        .size(11.0).color(theme.text_dim));
+                } else {
+                    ui.label(egui::RichText::new(format!("BYPASSED — {target_label}"))
+                        .size(11.0).strong().color(theme.marker_warning));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(12.0);
                     let diamond_color = if kf_at_playhead {
@@ -1087,7 +1147,12 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.saturation.unwrap_or(1.0);
-                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "", theme, cmds, clip_id) {
+                    // Saturation is a multiplier: 1.0 is neutral, unlike
+                    // every other row in this panel where neutral is 0.
+                    // Rendered in the same widget with no unit it read as
+                    // an inconsistency — "1.00" sitting under "0.00" with
+                    // nothing to say why. The multiplier sign says why.
+                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "\u{00D7}", theme, cmds, clip_id) {
                         node.params.saturation = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
                     }
@@ -1773,7 +1838,10 @@ impl NodeInspectorPanel {
                     };
                     ui.horizontal(|ui| {
                         ui.add_space(PAD);
-                        let resp = curves_editor::curves_editor_sized(ui, theme, ch, points, curve_h, None);
+                        let hist = self.histogram_for(ch).copied();
+                        let resp = curves_editor::curves_editor_sized(
+                            ui, theme, ch, points, curve_h, hist.as_ref(),
+                        );
                         if resp.changed { curves_changed = true; }
                     });
                 }
@@ -1891,8 +1959,12 @@ impl NodeInspectorPanel {
                         _ => &mut huesat.lum_vs_sat,
                     };
 
+                    // Hue/Sat curves read against luma: their x axis is
+                    // hue or luma, so the luma distribution is the useful
+                    // backdrop rather than a per-primary one.
+                    let hist = self.curve_histogram.as_ref().map(|h| h.luma);
                     let resp = curves_editor::curves_editor_sized(
-                        ui, theme, *channel, points, curve_h, None,
+                        ui, theme, *channel, points, curve_h, hist.as_ref(),
                     );
                     if resp.changed { huesat_changed = true; }
                     ui.add_space(4.0);
