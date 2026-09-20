@@ -79,7 +79,7 @@ impl Default for LayoutState {
         Self {
             browser_width: BROWSER_DEFAULT_W,
             inspector_width: INSPECTOR_DEFAULT_W,
-            timeline_height: TIMELINE_DEFAULT_H,
+            timeline_height: TIMELINE_H_UNSET,
             active_browser_tab: BrowserTab::Media,
             active_inspector_tab: InspectorTab::Video,
             active_tool: EditTool::Select,

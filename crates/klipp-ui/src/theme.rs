@@ -562,7 +562,21 @@ pub mod control {
 pub const TOOLBAR_HEIGHT: f32 = 36.0;
 pub const STATUSBAR_HEIGHT: f32 = 26.0;
 pub const TIMELINE_MIN_H: f32 = 60.0;
-pub const TIMELINE_DEFAULT_H: f32 = 210.0;
+/// What share of the editing area the timeline starts with.
+///
+/// A proportion, not a pixel count. The old default was 210 px, which
+/// is a third of the room on a small window and a seventh on a large
+/// one — the editor's most-used surface shrinking as the display grows.
+/// Premiere, Resolve and Final Cut all give the edit timeline roughly
+/// 35-45% of the window; 38% sits in the middle of that.
+///
+/// Only the starting point. Dragging the divider stores a pixel height
+/// and that is honoured from then on, so nobody's arrangement moves.
+pub const TIMELINE_DEFAULT_FRAC: f32 = 0.38;
+
+/// Marks a timeline height that has never been set, so the proportion
+/// above decides it against the real window instead.
+pub const TIMELINE_H_UNSET: f32 = 0.0;
 pub const TIMELINE_MAX_H_PCT: f32 = 0.85;
 pub const BROWSER_DEFAULT_W: f32 = 300.0;
 pub const BROWSER_MIN_W: f32 = 220.0;

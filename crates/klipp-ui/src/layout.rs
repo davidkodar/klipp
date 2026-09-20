@@ -160,7 +160,18 @@ pub(crate) fn compute_layout(
     let timeline_min_h = theme::TIMELINE_MIN_H;
     // In Color the timeline is a strip: no toolbar, no tabs, its own
     // remembered height.
-    let wanted_timeline_h = if in_color_ws { layout.color_timeline_height } else { layout.timeline_height };
+    // The Edit timeline starts as a share of the editing area rather
+    // than a fixed height, so it is the same portion of the window on
+    // every display. A stored height means the divider has been dragged
+    // and that wins. Colour keeps its own short strip: grading is not
+    // cutting, and its timeline is deliberately a ribbon.
+    let wanted_timeline_h = if in_color_ws {
+        layout.color_timeline_height
+    } else if layout.timeline_height <= theme::TIMELINE_H_UNSET {
+        (main_bottom - main_top) * theme::TIMELINE_DEFAULT_FRAC
+    } else {
+        layout.timeline_height
+    };
     let timeline_h = wanted_timeline_h.clamp(timeline_min_h, max_timeline_h.max(timeline_min_h));
 
     let timeline_rect = egui::Rect::from_min_size(
@@ -324,6 +335,40 @@ mod tests {
         let state = AppState::default();
         let rects = compute_layout(test_full_rect(), &layout, &state);
         assert!(rects.timeline_rect.max.y <= rects.statusbar_rect.min.y);
+    }
+
+    #[test]
+    fn an_untouched_edit_timeline_is_the_same_share_of_any_window() {
+        // The point of a proportion: the editor's main surface should
+        // not shrink as the display grows. A fixed 210 px was a third
+        // of a small window and a seventh of a large one.
+        let layout = LayoutState::default();
+        let state = AppState::default();
+        let mut shares = Vec::new();
+        for (w, h) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let full = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w, h));
+            let r = compute_layout(full, &layout, &state);
+            let editing_area = r.statusbar_rect.min.y - r.toolbar_rect.max.y;
+            shares.push(r.timeline_rect.height() / editing_area);
+        }
+        for s in &shares {
+            assert!(
+                (*s - theme::TIMELINE_DEFAULT_FRAC).abs() < 0.02,
+                "timeline took {:.0}% of the editing area, expected {:.0}%",
+                s * 100.0,
+                theme::TIMELINE_DEFAULT_FRAC * 100.0,
+            );
+        }
+    }
+
+    #[test]
+    fn a_dragged_timeline_height_is_kept() {
+        // The proportion is only a starting point; once someone sets a
+        // height it is theirs.
+        let layout = LayoutState { timeline_height: 260.0, ..LayoutState::default() };
+        let state = AppState::default();
+        let r = compute_layout(test_full_rect(), &layout, &state);
+        assert!((r.timeline_rect.height() - 260.0).abs() < 1.0);
     }
 
     #[test]
