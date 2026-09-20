@@ -244,7 +244,12 @@ pub struct FaceMeasure {
 // ─── The frame ───────────────────────────────────────────────────────
 
 /// A frame's readings, in the numbers the rules use.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `Default` is every reading zero — a black frame with nothing in it.
+/// It exists so a test can state the two or three numbers a rule turns
+/// on without writing out twenty that do not matter; nothing in the
+/// program builds a measurement that way.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameMeasure {
     /// L* percentiles: 1, 5, 50, 95, 99.
     pub l_p1: f32,
@@ -883,6 +888,69 @@ impl LookTarget {
     }
 }
 
+/// How far two shots are from matching, in ΔE-like units.
+///
+/// "Matching" is the job that fills most of a colourist's day and it is
+/// not the same as "graded well": two shots can each be defensible on
+/// their own and still cut badly, because the eye tracks a change
+/// across a cut far more readily than an absolute error inside a shot.
+/// So the number that matters between neighbours is a *difference*, not
+/// a distance from a target.
+///
+/// What the eye notices across a cut, in the order it notices it:
+///
+/// 1. **The face.** A viewer knows what a person looks like and will
+///    forgive the wall being a different colour before they forgive the
+///    face changing. Weighted highest, and in ΔE2000 on the skin patch
+///    itself rather than on a hue angle, because a hue that matches at
+///    half the chroma still does not match.
+/// 2. **Exposure.** A jump in level reads as a cut to a different take.
+///    A 1 L* step is about the threshold on a smooth pan and 2–3 L*
+///    across a hard cut, so L* enters at roughly its own scale.
+/// 3. **The cast on the neutrals** — the wall, the paper, the shirt.
+/// 4. **Contrast**, which the eye is most forgiving of, and which is
+///    partly a property of the shot's own content rather than its grade.
+///
+/// The result is comparable with a ΔE: under [`MATCH_GOOD`] the cut is
+/// invisible, over [`MATCH_WARN`] a viewer sees the join. A 2 ΔE shift
+/// on skin crosses the first threshold on its own; the same shift on
+/// the neutrals does not.
+pub fn match_distance(a: &FrameMeasure, b: &FrameMeasure) -> f32 {
+    let face_a = a.faces.iter().find(|f| f.readable());
+    let face_b = b.faces.iter().find(|f| f.readable());
+    let face = match (face_a, face_b) {
+        (Some(x), Some(y)) => delta_e2000(x.median, y.median),
+        // Only one shot has a face: the faces cannot be compared, so the
+        // rest of the picture carries the whole judgement.
+        _ => 0.0,
+    };
+    let exposure = (a.l_p50 - b.l_p50).abs();
+    let cast = {
+        let (da, db) = (a.cast_a - b.cast_a, a.cast_b - b.cast_b);
+        (da * da + db * db).sqrt()
+    };
+    let contrast = (a.contrast_range - b.contrast_range).abs();
+    // The weights are the order above, scaled so the result reads like
+    // a ΔE: a 2 ΔE shift on skin across a cut lands past MATCH_GOOD,
+    // because it is visible; the same shift on the wall does not,
+    // because nobody knows what colour the wall was. A 3 L* step in
+    // exposure lands between the two thresholds, which is where a hard
+    // cut starts to read as a change rather than an edit. Contrast is
+    // discounted hardest: much of it is the shot's own content.
+    face * 1.5 + exposure + cast * 0.6 + contrast * 0.2
+}
+
+/// Two shots this close cut together without the join showing. A ΔE2000
+/// of about 1 is the textbook just-noticeable difference for patches
+/// side by side, and a cut is the hardest side-by-side there is.
+pub const MATCH_GOOD: f32 = 2.0;
+/// Past this a viewer sees the cut as a change, not as an edit.
+pub const MATCH_WARN: f32 = 4.0;
+/// Past this the two shots are not the same lighting setup at all, and
+/// asking one to match the other is asking for a broken grade rather
+/// than a matched one — they belong to different scenes.
+pub const SCENE_SPLIT: f32 = 9.0;
+
 /// How far off a reading is, and how bad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1462,5 +1530,105 @@ mod tests {
         assert_eq!(cast_name(m2.cast_a, m2.cast_b), "blue (cool)");
         let step = primaries_toward(&m2, &LookTarget::preset("broadcast_neutral").unwrap());
         assert!(step.temperature > 0.0, "warm it up: {step:?}");
+    }
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    fn flat(l: f32, a: f32, b: f32) -> FrameMeasure {
+        FrameMeasure {
+            l_p1: (l - 30.0).max(0.0),
+            l_p50: l,
+            l_p99: (l + 30.0).min(100.0),
+            contrast_range: 50.0,
+            chroma_mean: 12.0,
+            cast_a: a,
+            cast_b: b,
+            neutral_solid: true,
+            ..Default::default()
+        }
+    }
+
+    fn with_face(mut m: FrameMeasure, skin: Lab) -> FrameMeasure {
+        m.faces = vec![FaceMeasure {
+            region: [0.4, 0.2, 0.2, 0.3],
+            patches: 9,
+            grid: 3,
+            median: skin,
+            hue: skin.hue(),
+            chroma: skin.chroma(),
+            hue_iqr: 3.0,
+            l_iqr: 4.0,
+            worst_hue: skin.hue(),
+            mixed_light: false,
+            hue_off_band: hue_off_skin_band(skin.hue()),
+            hue_wb: skin.hue(),
+            hue_off_band_wb: hue_off_skin_band(skin.hue()),
+        }];
+        m
+    }
+
+    #[test]
+    fn a_shot_matches_itself() {
+        let m = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        assert!(match_distance(&m, &m) < 0.001);
+        assert!(match_distance(&m, &m) < MATCH_GOOD);
+    }
+
+    #[test]
+    fn a_face_that_changes_across_the_cut_costs_more_than_the_wall() {
+        // The same total error, once on the face and once on the
+        // neutrals. The face must read as the worse match: a viewer
+        // knows what a person looks like and does not know what colour
+        // the wall was.
+        let base = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        let face_moved = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 20.0, b: 16.0 });
+        let wall_moved = with_face(flat(50.0, 6.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        let (df, dw) = (match_distance(&base, &face_moved), match_distance(&base, &wall_moved));
+        assert!(df > dw, "the face should dominate: face {df:.2}, wall {dw:.2}");
+    }
+
+    #[test]
+    fn an_exposure_step_across_a_cut_is_seen() {
+        // Three L* between neighbours is about where a hard cut starts
+        // to read as a change rather than an edit.
+        let a = flat(50.0, 0.0, 0.0);
+        let far = flat(58.0, 0.0, 0.0);
+        assert!(match_distance(&a, &far) > MATCH_WARN, "{}", match_distance(&a, &far));
+        let near = flat(51.0, 0.0, 0.0);
+        assert!(match_distance(&a, &near) < MATCH_GOOD, "{}", match_distance(&a, &near));
+    }
+
+    #[test]
+    fn a_different_lighting_setup_reads_as_a_different_scene() {
+        // Daylight interview against a tungsten one: not a match to be
+        // nudged, a scene of its own.
+        let day = with_face(flat(55.0, -1.0, -6.0), Lab { l: 62.0, a: 12.0, b: 14.0 });
+        let tungsten = with_face(flat(42.0, 6.0, 18.0), Lab { l: 52.0, a: 20.0, b: 30.0 });
+        assert!(match_distance(&day, &tungsten) > SCENE_SPLIT, "{}", match_distance(&day, &tungsten));
+    }
+
+    #[test]
+    fn contrast_is_forgiven_more_than_level() {
+        let a = flat(50.0, 0.0, 0.0);
+        let mut contrasty = flat(50.0, 0.0, 0.0);
+        contrasty.contrast_range = 62.0;
+        let mut brighter = flat(50.0, 0.0, 0.0);
+        brighter.l_p50 = 62.0;
+        assert!(match_distance(&a, &contrasty) < match_distance(&a, &brighter));
+    }
+
+    #[test]
+    fn one_face_and_no_other_leaves_the_judgement_to_the_rest() {
+        // A cutaway with nobody in it cannot be matched on skin; the
+        // comparison must not silently score it as a perfect face match
+        // nor invent an error.
+        let a = with_face(flat(50.0, 0.0, 0.0), Lab { l: 60.0, a: 14.0, b: 16.0 });
+        let b = flat(50.0, 0.0, 0.0);
+        assert!(match_distance(&a, &b) < 0.001);
+        let c = flat(56.0, 0.0, 0.0);
+        assert!((match_distance(&a, &c) - match_distance(&b, &c)).abs() < 0.001, "the missing face changes nothing");
     }
 }

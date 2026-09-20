@@ -14,6 +14,14 @@
 //! codes, sRGB u8 words, LUT tables, mask geometry — are declared as
 //! something other than `array<vec4<f32>>` and are none of this test's
 //! business.
+//!
+//! A few buffers genuinely want four floats a element without being
+//! pixels: glyph poses, for one, where a `vec4` is a rectangle. Those
+//! say so on the binding line with a `// not-pixels:` comment and a
+//! word about what they hold. The marker is deliberately explicit and
+//! deliberately in the shader rather than in a list here, so that
+//! declaring a buffer exempt is a visible decision taken next to the
+//! declaration, and a new pixel buffer is caught by default.
 
 /// A pixel binding is one declared `array<vec4<f32>>`. Anything else is
 /// a different kind of buffer and is skipped.
@@ -22,6 +30,16 @@ fn pixel_bindings(shader: &str) -> Vec<String> {
     for line in shader.lines() {
         let line = line.trim();
         if !line.starts_with("@group(") || !line.contains("array<vec4<f32>>") {
+            continue;
+        }
+        // Four floats an element, but not a picture — see the module
+        // docs. The comment has to say what it holds, so the exemption
+        // cannot be a bare silencer.
+        if let Some((_, why)) = line.split_once("// not-pixels:") {
+            assert!(
+                why.trim().len() > 8,
+                "a not-pixels binding says what it holds instead: {line}"
+            );
             continue;
         }
         // `@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;`

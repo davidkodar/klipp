@@ -258,6 +258,30 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// Take a look's numbers off a reference — a file in the pool, or
+    /// the timeline's own best shot — and make them the target every
+    /// colour judgement is held to. A preset is a fallback; a reference
+    /// is what a grade is actually asked for.
+    AdoptLook {
+        /// A reference file in the media pool.
+        #[serde(default)]
+        media_id: Option<String>,
+        /// Or the timeline itself: its best-graded shot becomes the one
+        /// the rest are held to.
+        #[serde(default)]
+        from_timeline: bool,
+        #[serde(default)]
+        apply: bool,
+    },
+    /// Group the timeline's shots into scenes by how they were lit,
+    /// pick the best shot in each as the one the others are matched to,
+    /// and report how far each still is from it.
+    MatchScenes {
+        #[serde(default)]
+        apply: bool,
+        #[serde(default)]
+        rounds: Option<u32>,
+    },
     /// A clip's grade chain in the order the picture flows through it,
     /// each node named with the stage it belongs to, and whatever the
     /// chain does out of a colourist's order.

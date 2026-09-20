@@ -21,6 +21,7 @@ fn an_edit_plan_comes_back_with_the_project() {
         music: Some(PlanMusic { media_id: klipp_core::MediaId::new(), duck_db: Some(12.0), source_in_secs: Some(0.08), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(2.0) }),
         approved: true,
         notes: "second pass".into(),
+        snap_to_bars: true,
     };
     seq.edit_plan = Some(plan.clone());
     save_project(&dir, &[seq], &MediaPool::new()).unwrap();

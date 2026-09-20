@@ -9487,7 +9487,7 @@ struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> units: array<u32>;
-@group(0) @binding(4) var<storage, read> glyphs: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> glyphs: array<vec4<f32>>; // not-pixels: glyph poses (moved rect, pose, anchor), four vec4 each
 
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }

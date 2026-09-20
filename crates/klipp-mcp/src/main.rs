@@ -358,6 +358,17 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_adopt_look" => json!({
+            "method": "adopt_look",
+            "media_id": args.get("media_id").cloned().unwrap_or(serde_json::Value::Null),
+            "from_timeline": args.get("from_timeline").and_then(|v| v.as_bool()).unwrap_or(false),
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
+        "klipp_match_scenes" => json!({
+            "method": "match_scenes",
+            "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
+            "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
+        }),
         "klipp_grade_chain" => json!({
             "method": "grade_chain",
             "clip_id": args.get("clip_id").cloned().unwrap_or(serde_json::Value::Null),
@@ -746,7 +757,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1019,6 +1030,25 @@ fn tool_definitions() -> Vec<Value> {
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
+        tool("klipp_adopt_look",
+             "Take a look's numbers off a reference -- a file in the media pool, or the \
+              timeline's own best-graded shot -- and make them the target every colour \
+              judgement is held to. This is how a grade is briefed on a real job: somebody \
+              points at a picture and says \"like this\". The named presets are the fallback \
+              for when there is no such picture, not the normal path. apply false reports what \
+              it measured and which preset is nearest; apply true writes it to the brief, and \
+              check, grade_to_target and match_scenes all read it from there.",
+             json!({ "media_id": { "type": "string" }, "from_timeline": { "type": "boolean" }, "apply": { "type": "boolean" } }), vec![]),
+        tool("klipp_match_scenes",
+             "Group the timeline's shots into scenes by how they were lit, pick the shot in each \
+              that is already closest to the look as the hero, grade the rest onto it, and report \
+              how far each still is. This is the job that fills most of a colourist's day and it \
+              is not the same as grading each shot well: two shots can each be defensible alone \
+              and still cut badly, because the eye tracks a change across a cut far more readily \
+              than an absolute error inside a shot. Matched on the face first, then exposure, \
+              then the cast on the neutrals, then contrast. apply false reports; apply true \
+              grades, one undo step a round.",
+             json!({ "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
         tool("klipp_grade_chain",
              "A clip's grade chain in the order the picture flows through it, each node named \
               with the stage it belongs to -- input transform, balance, secondary, look, output \

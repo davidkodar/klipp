@@ -1864,6 +1864,316 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::AdoptLook { media_id, from_timeline, apply } => {
+            if in_batch {
+                return Err("adopt_look measures and writes the brief; send it on its own".into());
+            }
+            use klipp_color::measure::LookTarget;
+            // A preset is a guess at what a piece wants. A reference is
+            // the answer: the numbers a grade is actually being asked
+            // for, lifted off a picture somebody has already approved.
+            // This is how a grade is briefed on a real job — "like
+            // this" — and the presets exist for when there is no such
+            // picture, not the other way round.
+            let (target, source) = match (media_id.as_deref(), from_timeline) {
+                (Some(id), _) => {
+                    let mid = klipp_core::MediaId(id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+                    let (path, filename, dur) = {
+                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        let item = pool.get(&mid).ok_or_else(|| format!("no media item {}", mid.0))?;
+                        (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64())
+                    };
+                    let report = klipp_analysis::report::MediaAnalysis::load(&path);
+                    // A spread across the file, not one frame: a
+                    // reference's look is what it does throughout, and
+                    // one frame is one moment of its light.
+                    let n = 8usize;
+                    let mut measures = Vec::new();
+                    for i in 0..n {
+                        let t = (i as f64 + 0.5) / n as f64 * dur.max(0.1);
+                        if let Ok((data, w, h)) = decode_frame_rgba(&path, t) {
+                            let faces: Vec<[f32; 4]> = report
+                                .framing
+                                .as_ref()
+                                .and_then(|f| f.people_at(t, 1.5))
+                                .map(|s| face_or_head_regions(s))
+                                .unwrap_or_default();
+                            measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
+                        }
+                    }
+                    // A log reference would teach the grade to be flat.
+                    if measures.iter().filter(|m| klipp_color::measure::looks_like_log(m)).count() * 2 > measures.len() {
+                        return Err(format!("{filename} looks like camera log with no input transform, so its numbers are the camera's encoding and not a look; set its log format, or pick a finished reference"));
+                    }
+                    let t = LookTarget::from_measures(&format!("like {filename}"), &measures)
+                        .ok_or_else(|| format!("no frame of {filename} could be read"))?;
+                    (t, filename)
+                }
+                (None, true) => {
+                    let shots: Vec<(f64, f64, String)> = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                            .flat_map(|t| t.clips.iter())
+                            .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                            .map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64(), c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into())))
+                            .take(24)
+                            .collect()
+                    };
+                    if shots.is_empty() {
+                        return Err("no picture clip on the top video track to take a look from".into());
+                    }
+                    // The shot already closest to a defensible picture:
+                    // the fewest findings, and a face in it if any shot
+                    // has one, since a face is what the rest is judged
+                    // against.
+                    let mut best: Option<(f32, klipp_color::measure::FrameMeasure, String, f64)> = None;
+                    for (from, to, name) in &shots {
+                        let (frames, _) = measure_clip(ctx, *from, *to, Some(6000))?;
+                        let (at, m) = median_measure(&frames);
+                        if klipp_color::measure::looks_like_log(&m) {
+                            continue;
+                        }
+                        let look = look_for(ctx, at);
+                        let score = colour_report(&m, &look, at).len() as f32 + if m.faces.iter().any(|f| f.readable()) { 0.0 } else { 0.5 };
+                        if best.as_ref().is_none_or(|b| score < b.0) {
+                            best = Some((score, m, name.clone(), at));
+                        }
+                    }
+                    let (_, m, name, at) = best.ok_or("every shot on the timeline looks like ungraded camera log; set the log formats first")?;
+                    let t = LookTarget::from_measures(&format!("like {name}"), &[m]).ok_or("the shot could not be read")?;
+                    (t, format!("{name} at {at:.2} s"))
+                }
+                (None, false) => return Err("give a media_id for a reference file, or from_timeline true to take the look off the timeline's own best shot".into()),
+            };
+            // What the preset library would have said, for comparison:
+            // a reference that lands on a preset is worth knowing about,
+            // and so is one that lands nowhere near.
+            let nearest = LookTarget::PRESETS
+                .iter()
+                .filter_map(|n| LookTarget::preset(n))
+                .filter_map(|p| {
+                    let d = [
+                        (p.mid_l, target.mid_l),
+                        (p.contrast_range, target.contrast_range),
+                        (p.chroma_mean, target.chroma_mean),
+                    ]
+                    .iter()
+                    .filter_map(|(a, b)| Some((a.as_ref()? - b.as_ref()?).abs()))
+                    .sum::<f32>();
+                    Some((p.name.clone(), d))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            let describe = format!(
+                "black L* {:.0}, mid {:.0}, white {:.0}, 5–95 range {:.0}, chroma {:.0}, neutrals {}{}",
+                target.black_l.unwrap_or(0.0),
+                target.mid_l.unwrap_or(0.0),
+                target.white_l.unwrap_or(0.0),
+                target.contrast_range.unwrap_or(0.0),
+                target.chroma_mean.unwrap_or(0.0),
+                match (target.cast_a, target.cast_b) {
+                    (Some(a), Some(b)) if (a * a + b * b).sqrt() >= 1.5 => format!("{:.1} toward {}", (a * a + b * b).sqrt(), klipp_color::measure::cast_name(a, b)),
+                    _ => "neutral".to_string(),
+                },
+                match (target.skin_hue, target.skin_l) {
+                    (Some(h), Some(l)) => format!(", skin {h:.0}° at L* {l:.0}"),
+                    _ => ", no face in the reference, so exposure is metered on the frame's median rather than on skin".to_string(),
+                },
+            );
+            if !apply {
+                return Ok(json!({
+                    "text": format!("The look of {source}: {describe}. Nearest preset: {}. Run it with apply true to make it the target every colour judgement is held to.", nearest.as_ref().map(|(n, d)| format!("{n} ({d:.0} away)")).unwrap_or_else(|| "none".into())),
+                    "look_target": target,
+                    "source": source,
+                    "nearest_preset": nearest.as_ref().map(|(n, _)| n.clone()),
+                    "applied": false,
+                }));
+            }
+            let mut brief = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone().unwrap_or_default();
+            brief.look = Some(target.clone());
+            let mut v = handle(ctx, ControlCommand::SetBrief { brief }, &mut None)?;
+            v["text"] = json!(format!("Every colour judgement is now held to the look of {source}: {describe}. check, grade_to_target and match_scenes all read it from the brief."));
+            v["look_target"] = serde_json::to_value(&target).unwrap_or(serde_json::Value::Null);
+            v["source"] = json!(source);
+            v["applied"] = json!(true);
+            Ok(v)
+        }
+
+        ControlCommand::MatchScenes { apply, rounds } => {
+            if in_batch {
+                return Err("match_scenes measures and applies; send it on its own".into());
+            }
+            use klipp_color::measure::{match_distance, LookTarget, MATCH_GOOD, MATCH_WARN, SCENE_SPLIT};
+            let shots: Vec<(String, f64, f64, String)> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                    .flat_map(|t| t.clips.iter())
+                    .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                    .map(|c| (
+                        c.id.0.to_string(),
+                        c.timeline_in.to_secs_f64(),
+                        c.timeline_out.to_secs_f64(),
+                        c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into()),
+                    ))
+                    .take(48)
+                    .collect()
+            };
+            if shots.len() < 2 {
+                return Err("matching needs at least two shots on the top video track".into());
+            }
+            // Every shot read the way a colourist checks one: three
+            // frames, the middle reading grading it.
+            let mut read: Vec<(usize, f64, klipp_color::measure::FrameMeasure)> = Vec::new();
+            for (i, (id, from, to, _)) in shots.iter().enumerate() {
+                let _ = id;
+                let (frames, _drift) = measure_clip(ctx, *from, *to, Some(6000))?;
+                let (at, m) = median_measure(&frames);
+                read.push((i, at, m));
+            }
+            // Scenes: a run of shots lit the same way. A cut inside one
+            // has to be invisible; a cut between two is a change the
+            // viewer is meant to see, so matching across it would be
+            // wrong. The split is by how far apart the readings are,
+            // not by which file they came from -- one camera card can
+            // hold a whole day, and two cameras can shoot one setup.
+            let mut scenes: Vec<Vec<usize>> = Vec::new();
+            for (i, _, m) in &read {
+                let start_new = match scenes.last().and_then(|s| s.last()) {
+                    Some(&prev) => match_distance(&read[prev].2, m) > SCENE_SPLIT,
+                    None => true,
+                };
+                if start_new {
+                    scenes.push(vec![*i]);
+                } else {
+                    scenes.last_mut().expect("just pushed").push(*i);
+                }
+            }
+            let mut lines = Vec::new();
+            let mut out_scenes = Vec::new();
+            let n_rounds = if apply { rounds.unwrap_or(2).clamp(1, 4) } else { 0 };
+            for (s_i, members) in scenes.iter().enumerate() {
+                // The hero: the shot the others are matched to. It is
+                // the one already closest to the look, because matching
+                // a scene to its worst shot drags the whole scene down
+                // -- and, among equals, the one with a face in it, since
+                // a face is what the matching is judged on.
+                let hero = *members
+                    .iter()
+                    .min_by(|a, b| {
+                        let score = |i: &usize| {
+                            let (_, at, m) = &read[*i];
+                            let look = look_for(ctx, *at);
+                            let fails = colour_report(m, &look, *at).len() as f32;
+                            let no_face = if m.faces.iter().any(|f| f.readable()) { 0.0 } else { 0.5 };
+                            // Distance to the rest of the scene, so the
+                            // hero is not an outlier the others chase.
+                            let spread: f32 = members.iter().map(|j| match_distance(m, &read[*j].2)).sum::<f32>() / members.len() as f32;
+                            fails + no_face + spread * 0.1
+                        };
+                        score(a).total_cmp(&score(b))
+                    })
+                    .expect("a scene has members");
+                let hero_name: String = shots[hero].3.chars().take(24).collect();
+                lines.push(format!(
+                    "Scene {} — {} shot(s), hero {hero_name} at {:.2} s",
+                    s_i + 1,
+                    members.len(),
+                    read[hero].1
+                ));
+                let mut per_shot = Vec::new();
+                for &i in members {
+                    let name: String = shots[i].3.chars().take(24).collect();
+                    let before = match_distance(&read[hero].2, &read[i].2);
+                    let mut done = 0u32;
+                    if i != hero && apply && before > MATCH_GOOD {
+                        // The hero itself is the target: it already
+                        // carries the look, so matching to it is one
+                        // decision rather than two.
+                        for _ in 0..n_rounds {
+                            let Some(target) = LookTarget::from_measures(&format!("match {hero_name}"), &[read[hero].2.clone()]) else { break };
+                            let step = klipp_color::measure::primaries_toward(&read[i].2, &target);
+                            let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.5 || step.tint.abs() > 0.5 || step.saturation.abs() > 0.03;
+                            if !moving {
+                                break;
+                            }
+                            let now = {
+                                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                                let cid = klipp_core::ClipId(shots[i].0.parse().map_err(|e| format!("{e}"))?);
+                                seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
+                            };
+                            let op: klipp_document::ops::Op = serde_json::from_value(json!({
+                                "op": "grade", "clip_id": shots[i].0,
+                                "exposure": (now.exposure + step.exposure).clamp(-6.0, 6.0),
+                                "lift": (now.lift + step.lift).clamp(-1.0, 1.0),
+                                "gain": (now.gain + step.gain).clamp(-1.0, 1.0),
+                                "temperature": (now.temperature + step.temperature).clamp(-50.0, 50.0),
+                                "tint": (now.tint + step.tint).clamp(-50.0, 50.0),
+                                "saturation": (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
+                            })).map_err(|e| e.to_string())?;
+                            let (plan, revision) = resolve_plan(ctx, &[op])?;
+                            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                            send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Match Scene".into()))?;
+                            done += 1;
+                            read[i].2 = measure_at(ctx, read[i].1, Some(6000))?;
+                            if match_distance(&read[hero].2, &read[i].2) <= MATCH_GOOD {
+                                break;
+                            }
+                        }
+                    }
+                    let after = match_distance(&read[hero].2, &read[i].2);
+                    let verdict = if i == hero {
+                        "the hero".to_string()
+                    } else if after <= MATCH_GOOD {
+                        format!("matched, ΔE {after:.1}")
+                    } else if after <= MATCH_WARN {
+                        format!("close, ΔE {after:.1} — a careful eye finds the cut")
+                    } else {
+                        format!("OFF, ΔE {after:.1} — the cut reads as a change")
+                    };
+                    lines.push(format!(
+                        "  {name} at {:.2} s: {verdict}{}",
+                        read[i].1,
+                        if done > 0 { format!(" (was {before:.1}, {done} round(s))") } else { String::new() },
+                    ));
+                    per_shot.push(json!({
+                        "clip_id": shots[i].0,
+                        "secs": read[i].1,
+                        "name": name,
+                        "hero": i == hero,
+                        "residual_to_hero": after,
+                        "residual_before": before,
+                        "rounds": done,
+                    }));
+                }
+                out_scenes.push(json!({ "scene": s_i + 1, "hero_clip_id": shots[hero].0, "hero_secs": read[hero].1, "shots": per_shot }));
+            }
+            // The joins the viewer actually sees: each cut, in order.
+            // A shot can sit close to its hero and still cut badly
+            // against the shot beside it, and it is the cut that shows.
+            let mut joins = Vec::new();
+            for w in read.windows(2) {
+                let d = match_distance(&w[0].2, &w[1].2);
+                let same_scene = scenes.iter().any(|s| s.contains(&w[0].0) && s.contains(&w[1].0));
+                if same_scene && d > MATCH_WARN {
+                    let (a, b): (String, String) = (shots[w[0].0].3.chars().take(18).collect(), shots[w[1].0].3.chars().take(18).collect());
+                    lines.push(format!("  [warn] the cut from {a} to {b} at {:.2} s is a {d:.1} ΔE step inside one scene — the viewer sees the join", w[1].1));
+                }
+                joins.push(json!({ "at": w[1].1, "residual": d, "same_scene": same_scene }));
+            }
+            Ok(json!({
+                "text": format!(
+                    "{}\n\nMatched on what the eye notices across a cut, in its order: the face first (a viewer knows what a person looks like and not what colour the wall was), then exposure, then the cast on the neutrals, then contrast. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
+                    lines.join("\n"),
+                    if apply { "" } else { " Run it with apply true to grade each shot onto its scene's hero, one undo step a round." },
+                ),
+                "scenes": out_scenes,
+                "joins": joins,
+                "applied": apply,
+                "revision": ctx.shared.revision(),
+            }))
+        }
+
         ControlCommand::GradeChain { clip_id } => {
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
@@ -2184,7 +2494,13 @@ fn handle(
                 ));
                 per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "drift": drift, "frames_read": reads.len(), "lab": m }));
             }
-            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "revision": ctx.shared.revision(), "next": if apply { "check with color reads every shot again; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, one undo step a round." } }))
+            // A preset is a guess at what the piece wants; a reference
+            // is what it was actually asked for.
+            let briefed = ctx.sequence.read().ok().and_then(|s| s.brief.as_ref().and_then(|b| b.look.clone())).is_some();
+            if !briefed {
+                lines.push("These are held to a preset, because the brief names no look. adopt_look takes the numbers off a reference — a file you are matching, or this timeline's own best shot — and that is what a grade is normally briefed against.".to_string());
+            }
+            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, one undo step a round." } }))
         }
 
         ControlCommand::Review { max_width, frames, cols, path } => {
