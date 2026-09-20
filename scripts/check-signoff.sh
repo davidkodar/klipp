@@ -19,10 +19,11 @@
 #     scripts/check-signoff.sh main..my-branch
 #     scripts/check-signoff.sh HEAD~5..HEAD
 #
-# The same three rules run in CI, but only once the repository is
-# public — see .github/workflows/ci.yml. Until then this is the only
-# thing enforcing them, which is fine: while the repo is private,
-# everyone pushing to it has this hook.
+# This is the only thing enforcing them. There is no CI — see
+# CONTRIBUTING.md — which is fine while the repo is private, because
+# everyone who can push has this hook. It stops being true the day a
+# fork sends a pull request, so the maintainer runs this against a
+# fork's branch by hand before merging it.
 
 set -e
 

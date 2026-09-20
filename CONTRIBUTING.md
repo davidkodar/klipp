@@ -241,14 +241,27 @@ That is right on a machine with no GPU — and it means a cloud runner
 reports a confident green on a build where a shader stopped compiling.
 Your laptop is a *better* gate than GitHub's runner, not a worse one.
 
-There is a CI workflow in `.github/workflows/`, and it is dormant:
-it is guarded on the repository being public, because Actions minutes
-are metered on private repositories and a cold build of this workspace
-would spend a month's budget in a handful of runs. It switches itself
-on when the repo goes public — which is both when minutes become free
-and when people start contributing from forks, where nobody can be made
-to install a hook. Even then it will be **advisory**, for the GPU
-reason above.
+**There is no CI, and that is the current answer rather than a gap.**
+A workflow was written and then deleted unrun, which is worth recording
+so it is not rediscovered as an oversight:
+
+* On a private repository Actions minutes are metered, and a cold build
+  of this workspace — ffmpeg and whisper.cpp both build C — would spend
+  a month's budget in a handful of runs.
+* Whatever it reported would be **advisory** for the GPU reason above,
+  and a check that cannot be trusted must not be able to block a merge.
+* A check nobody trusts is worse than no check. A red mark that is
+  routinely correct to ignore teaches everyone to ignore red marks.
+
+If CI is ever added it should be because someone wants a specific
+signal, and it should be got green before it is wired to anything. Two
+notes from the attempt, so the next person starts further along: the
+Ubuntu package list in the [Prerequisites](#build-prerequisites) works
+on a runner, and installing `mesa-vulkan-drivers` gives it **lavapipe**,
+a software Vulkan driver — a real adapter, so shaders genuinely compile
+and `klipp-effects`' `gpu_pipelines_build` canary is not a no-op. That
+closes the largest hole a GPU-less runner would otherwise leave, though
+it does not make the parity tests meaningful.
 
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
@@ -408,11 +421,14 @@ and they are waiting *silently*, so this is the list.
    only binds people who installed it. This is the step that makes the
    rule apply to everybody. It is also the easiest one to forget,
    because nothing breaks when you do.
-5. **CI needs nothing.** Both jobs are guarded on the repository being
-   public and switch themselves on. Watch the first run: it has never
-   executed, and it will want a fix or two.
-6. **Enable private vulnerability reporting** in Settings → Security,
+5. **Enable private vulnerability reporting** in Settings → Security,
    which is what `SECURITY.md` tells people to use.
+6. **Check a fork's sign-offs before merging it.** A fork contributor
+   has no pre-push hook, so nothing has checked their commits:
+   `scripts/check-signoff.sh main..their-branch` after
+   `gh pr checkout`. This is the one rule that stops being
+   self-enforcing the moment the repo is public, and there is no CI to
+   catch it.
 
 ## Releasing
 

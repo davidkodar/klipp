@@ -48,10 +48,9 @@ fi
 # every merge is a squash with a reviewable diff. Raise this the day
 # there is a second person who can press approve.
 #
-# No required_status_checks here either. CI is advisory by design (the
-# runner has no GPU, so ~90 parity tests skip), and a check that cannot
-# be trusted should not be able to block a merge. If that changes —
-# a self-hosted runner with a GPU, say — add it here and nowhere else.
+# No required_status_checks either: there is no CI to require. If that
+# ever changes, add it here and nowhere else — and only once the check
+# is green and trusted, never as a way of finding out whether it works.
 cat > /tmp/klipp-ruleset.$$ <<'JSON'
 {
   "name": "main: pull requests only",
@@ -90,5 +89,6 @@ rm -f "/tmp/klipp-ruleset.$$"
 
 printf '\n  main is protected: pull requests only, squash merges, linear history,\n'
 printf '  no force pushes, no deletion.\n\n'
-printf '  The CI workflow switches itself on at the same time — both jobs are\n'
-printf '  guarded on the repository being public, so nothing else to do there.\n\n'
+printf '  There is no CI to switch on. A fork PR has had nothing check it, so\n'
+printf '  run this against one before merging it:\n\n'
+printf '    gh pr checkout <n> && scripts/check-signoff.sh main..HEAD\n\n'

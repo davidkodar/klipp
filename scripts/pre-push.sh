@@ -2,16 +2,14 @@
 # Run clippy, rustdoc and the workspace's tests before anything leaves
 # this machine.
 #
-# This is the project's real gate. There is a CI workflow, but it stays
-# dormant while the repository is private — Actions minutes are metered
-# there, and a cold build of this workspace would eat the month's budget
-# in a handful of runs. It switches itself on when the repo goes public,
-# which is both when the minutes become free and when contributors who
-# cannot be made to install this hook start showing up.
+# This is the project's only automated gate. There is no CI: on a private
+# repo the minutes are metered, and whatever a runner reported would be
+# advisory anyway, because it has no GPU. CONTRIBUTING.md has the long
+# version under "The gate runs on your machine".
 #
-# So for now, without this, nothing ever runs the test suite except a
-# human remembering to. That matters more here than it would elsewhere
-# for two reasons:
+# So without this, nothing ever runs the test suite except a human
+# remembering to. That matters more here than it would elsewhere for two
+# reasons:
 #
 #   * the suite is the correctness argument for a colour pipeline whose
 #     CPU and GPU paths have to agree, and most of those parity tests can
