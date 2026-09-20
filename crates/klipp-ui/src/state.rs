@@ -476,6 +476,26 @@ pub struct SavedWorkspaceLayout {
     pub color_panel_height: Option<f32>,
 }
 
+impl SavedWorkspaceLayout {
+    /// What to put in front of a user, as opposed to [`Self::name`],
+    /// which is an identifier written into `workspaces.json` and
+    /// matched back by string.
+    ///
+    /// The two differ for exactly one built-in: the layout is stored as
+    /// "Color" so respelling it would not orphan saved workspaces, but
+    /// the Window menu was rendering that identifier straight to the
+    /// screen — one line under an entry spelled "Colour", in an
+    /// application that is British everywhere else.
+    ///
+    /// A user's own saved workspace is shown exactly as they named it.
+    pub fn display_name(&self) -> &str {
+        match self.name.as_str() {
+            "Color" => "Colour",
+            other => other,
+        }
+    }
+}
+
 /// The 5 built-in workspace layouts shipped out of the box. Mirrors
 /// Kdenlive's workspace vocabulary (Logging / Editing / Effects /
 /// Audio / Color) so users coming from Kdenlive find familiar names.
@@ -4122,6 +4142,31 @@ mod tests {
         for expected in ["Logging", "Editing", "Effects", "Audio", "Color"] {
             assert!(names.contains(expected), "missing built-in: {expected}");
         }
+    }
+
+    /// The claim in the test above — that the stored name is an
+    /// identifier and the user sees a British label — was untrue for a
+    /// while: the Window menu and the workspace manager both rendered
+    /// `name` straight to the screen, so "Colour" and "Color" sat two
+    /// lines apart in the same menu. Hold the two apart here.
+    #[test]
+    fn no_built_in_shows_an_american_spelling() {
+        for layout in builtin_workspace_layouts() {
+            let shown = layout.display_name();
+            assert!(
+                !shown.contains("Color"),
+                "built-in {:?} would put {shown:?} on screen",
+                layout.name,
+            );
+        }
+        let color = builtin_workspace_layouts()
+            .into_iter()
+            .find(|l| l.name == "Color")
+            .expect("the Color built-in");
+        assert_eq!(color.display_name(), "Colour");
+        // …while the identifier that workspaces.json is matched against
+        // stays exactly as it was written.
+        assert_eq!(color.name, "Color");
     }
 
     #[test]

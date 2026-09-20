@@ -844,7 +844,12 @@ impl ToolbarPanel {
             // inspector layout — not the same as a full workspace
             // preset below; kept as-is for backwards compatibility).
             ui.label(egui::RichText::new("ACTIVE MODE").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
-            for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Colour Grading"), (Workspace::Export, "Audio Mixing")] {
+            // The same three names the workspace tabs use. These read
+            // "Default / Colour Grading / Audio Mixing" once, which made
+            // the third one plainly wrong — clicking "Audio Mixing" put
+            // you in Export — and the other two disagree with the tabs
+            // for no reason a user can see.
+            for (ws, label) in &[(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")] {
                 let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
@@ -855,7 +860,7 @@ impl ToolbarPanel {
             // layout.save() — stays in one place.
             ui.label(egui::RichText::new("BUILT-IN LAYOUTS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             for (i, layout) in crate::state::builtin_workspace_layouts().iter().enumerate() {
-                if ui.button(&layout.name).clicked() {
+                if ui.button(layout.display_name()).clicked() {
                     cmds.push(AppCommand::ApplyBuiltinWorkspaceLayout { index: i });
                     ui.close_menu();
                 }
