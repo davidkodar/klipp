@@ -484,7 +484,7 @@ impl ToolbarPanel {
                     ui.menu_button("Switch Angle", |ui| {
                         for angle in 1..=9_usize {
                             let label = format!("Angle {angle}");
-                            if ui.add(egui::Button::new(&label).shortcut_text(format!("{angle}"))).clicked() {
+                            if ui.add(egui::Button::new(&label).shortcut_text(kb.display_for(&format!("multicam_angle_{angle}")))).clicked() {
                                 cmds.push(AppCommand::SwitchMulticamAngle { angle });
                                 ui.close_menu();
                             }
@@ -1098,13 +1098,26 @@ mod shortcut_label_tests {
     //! `KeyBindings::display_for`, so it cannot disagree with the
     //! binding and it follows a user's remapping for free.
 
-    const SRC: &str = include_str!("toolbar.rs");
+    /// This file, minus this test module — which talks *about*
+    /// `shortcut_text` and would otherwise match itself.
+    fn menu_source() -> &'static str {
+        const SRC: &str = include_str!("toolbar.rs");
+        match SRC.find("mod shortcut_label_tests") {
+            Some(i) => &SRC[..i],
+            None => SRC,
+        }
+    }
 
     #[test]
     fn no_menu_writes_its_own_key_combo() {
-        let literals: Vec<&str> = SRC
+        let literals: Vec<&str> = menu_source()
             .lines()
-            .filter(|l| l.contains("shortcut_text(\""))
+            .filter(|l| {
+                // `shortcut_text("Ctrl+S")` and `shortcut_text(format!("{n}"))`
+                // are the same mistake wearing different clothes; the
+                // multicam angles were the second kind.
+                l.contains("shortcut_text(\"") || l.contains("shortcut_text(format!")
+            })
             .collect();
         assert!(
             literals.is_empty(),
@@ -1119,7 +1132,7 @@ mod shortcut_label_tests {
     fn every_action_a_menu_names_is_actually_bound() {
         let kb = crate::keybindings::KeyBindings::defaults();
         let mut unbound = Vec::new();
-        for line in SRC.lines() {
+        for line in menu_source().lines() {
             let mut rest = line;
             while let Some(i) = rest.find("display_for(\"") {
                 rest = &rest[i + "display_for(\"".len()..];

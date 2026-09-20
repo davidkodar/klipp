@@ -23645,8 +23645,10 @@ impl KlippApp {
     fn shortcuts_tools_and_clip_ops(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
-            // W — Toggle Insert/Overwrite mode
-            if i.key_pressed(egui::Key::W) {
+            // Shift+W — Insert/Overwrite. It was on bare W, which the
+            // registry gives to trim_in_to_playhead; that one is wired,
+            // so a single W did both.
+            if kb.is_action_pressed("toggle_edit_mode", i) {
                 self.state.edit_mode = match self.state.edit_mode {
                     klipp_timeline::magnetic::EditMode::Insert => klipp_timeline::magnetic::EditMode::Overwrite,
                     klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
@@ -23969,22 +23971,11 @@ impl KlippApp {
                 cmds.push(AppCommand::SetActiveTool(Tool::Trim));
             }
             // X — Set range to clip at playhead / Alt+X — Clear range
-            if i.key_pressed(egui::Key::X) && !i.modifiers.ctrl {
-                if i.modifiers.alt {
-                    // Alt+X: Clear both in and out
-                    let old_in = self.state.sequence().in_point;
-                    let old_out = self.state.sequence().out_point;
-                    if old_in.is_some() || old_out.is_some() {
-                        cmds.push(AppCommand::ClearSequenceInPoint);
-                        cmds.push(AppCommand::ClearSequenceOutPoint);
-                        self.state.active_history_mut().push(crate::history::HistoryEntry {
-                            command: crate::history::EditCommand::SetRange {
-                                old_in, old_out, new_in: None, new_out: None,
-                            },
-                        });
-                        self.state.toast.show("Range cleared");
-                    }
-                } else if !i.modifiers.shift {
+            // Clearing the range used to live in here as an Alt branch
+            // as well as in its own clear_in_out handler, so Alt+X ran
+            // it twice and left two entries in the history.
+            if kb.is_action_pressed("set_range_to_clip", i) {
+                {
                     // X: Set range to clip at playhead
                     let ph = self.state.playhead;
                     let pushed = {
