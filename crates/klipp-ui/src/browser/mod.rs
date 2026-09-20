@@ -1328,6 +1328,15 @@ impl BrowserPanel {
         let show_split = *files_pinned && *active_tab != BrowserTab::Files;
 
         // Styled search input + view mode toggle (for Media tab)
+        // Nothing in this row belongs to the Library tab: Media
+        // contributes the view-mode and sort buttons, Files the type
+        // filter and sort, and the search field is skipped because each
+        // Library sub-tab renders its own. What was left for Library
+        // was an empty horizontal row that still reserved its height —
+        // a band of blank panel between the FILES/MEDIA/LIBRARY tabs
+        // and the VIDEO FX strip under them, on the tab the browser
+        // opens on.
+        if *active_tab != BrowserTab::Library {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
 
@@ -1487,6 +1496,7 @@ impl BrowserPanel {
             }
         });
         ui.add_space(4.0);
+        }
 
         // ── Tab content ──
         // `show_split` was computed earlier (before the top-level toolbar
