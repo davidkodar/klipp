@@ -2649,6 +2649,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "klipp-analysis"
 version = "0.1.0"
 dependencies = [
+ "klipp-audio",
  "klipp-core",
  "klipp-jobs",
  "klipp-media",
@@ -2751,6 +2752,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "klipp-analysis",
+ "klipp-audio",
  "klipp-audio-search",
  "klipp-color",
  "klipp-compose",

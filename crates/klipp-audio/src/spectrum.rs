@@ -47,6 +47,23 @@ pub fn compute_spectrum(
         mono[pad + i] = (l + r) * 0.5;
     }
 
+    bins_of_window(&mut mono, sample_rate, num_bins, output);
+}
+
+/// One window of mono samples → log-frequency dBFS bins.
+///
+/// Shared by the live analyser and the whole-file spectrogram on
+/// purpose: a person comparing the scrolling display with the offline
+/// one of the same file has to be looking at the same measurement, or
+/// neither can be trusted. `mono` is windowed in place.
+pub fn bins_of_window(mono: &mut [f32], sample_rate: u32, num_bins: usize, output: &mut [f32]) {
+    let fft_size = mono.len();
+    if fft_size == 0 || num_bins == 0 || sample_rate == 0 {
+        for v in output.iter_mut() {
+            *v = -96.0;
+        }
+        return;
+    }
     // 2. Apply Hann window in-place.
     if fft_size > 1 {
         let denom = (fft_size - 1) as f32;
@@ -60,7 +77,7 @@ pub fn compute_spectrum(
     let mut planner = RealFftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(fft_size);
     let mut spectrum = fft.make_output_vec();
-    let _ = fft.process(&mut mono, &mut spectrum);
+    let _ = fft.process(mono, &mut spectrum);
 
     // 4. Map linear FFT bins onto `num_bins` log-frequency output bins in
     //    [20 Hz, Nyquist]. For each output bin, RMS-average the FFT magnitudes
@@ -184,5 +201,124 @@ mod tests {
             assert!((-96.0..=0.0).contains(&v),
                 "bin {} out of range: {}", i, v);
         }
+    }
+}
+
+/// A whole signal as a spectrogram: `slices` columns of `num_bins`
+/// log-frequency dBFS values, oldest first.
+///
+/// The scrolling analyser shows what is playing. That is the right
+/// instrument for setting a level and the wrong one for finding the
+/// two minutes of a long interview where a hum crept in, or the moment
+/// a radio mic started hissing — for that you want the whole file at
+/// once, which is what a spectrogram is actually for.
+///
+/// `slices` is chosen by the caller from the width it has to draw in,
+/// so a twenty-minute file and a twenty-second one both cost the same:
+/// each column is one hop, and the hop is the signal's length divided
+/// by the column count. Where a hop is shorter than the window the
+/// windows overlap, which is ordinary; where it is longer the gaps
+/// between them are not measured, which is the honest trade for a
+/// bounded cost and is why the hop is reported back.
+pub fn spectrogram(mono: &[f32], sample_rate: u32, fft_size: usize, slices: usize, num_bins: usize) -> (Vec<Vec<f32>>, f64) {
+    if mono.is_empty() || slices == 0 || num_bins == 0 || fft_size == 0 || sample_rate == 0 {
+        return (Vec::new(), 0.0);
+    }
+    let hop = (mono.len() as f64 / slices as f64).max(1.0);
+    let mut out = Vec::with_capacity(slices);
+    let mut window = vec![0.0f32; fft_size];
+    for i in 0..slices {
+        // Centre each window on its column's moment, so a transient
+        // lands in the column it happened in rather than the one after.
+        let centre = (i as f64 + 0.5) * hop;
+        let start = (centre - fft_size as f64 / 2.0).round() as i64;
+        for (k, w) in window.iter_mut().enumerate() {
+            let at = start + k as i64;
+            *w = if at >= 0 && (at as usize) < mono.len() { mono[at as usize] } else { 0.0 };
+        }
+        let mut bins = vec![-96.0f32; num_bins];
+        bins_of_window(&mut window, sample_rate, num_bins, &mut bins);
+        out.push(bins);
+    }
+    (out, hop / sample_rate as f64)
+}
+
+/// The frequency a log-spaced bin sits at, in Hz — the inverse of the
+/// mapping [`bins_of_window`] uses, so a reading can be named.
+pub fn bin_hz(bin: usize, num_bins: usize, sample_rate: u32) -> f32 {
+    if num_bins == 0 || sample_rate == 0 {
+        return 0.0;
+    }
+    let nyquist = sample_rate as f32 / 2.0;
+    let (log_min, log_max) = (20.0f32.log10(), nyquist.max(20.0).log10());
+    let t = (bin as f32 + 0.5) / num_bins as f32;
+    10.0f32.powf(log_min + (log_max - log_min) * t)
+}
+
+#[cfg(test)]
+mod whole_file_tests {
+    use super::*;
+
+    fn sine(hz: f32, secs: f32, sample_rate: u32, amp: f32) -> Vec<f32> {
+        let n = (secs * sample_rate as f32) as usize;
+        (0..n)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / sample_rate as f32).sin())
+            .collect()
+    }
+
+    /// The loudest bin of a column, and the frequency it stands for.
+    fn peak_hz(col: &[f32], sample_rate: u32) -> f32 {
+        let i = col.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap_or(0);
+        bin_hz(i, col.len(), sample_rate)
+    }
+
+    #[test]
+    fn a_tone_lands_on_its_own_frequency() {
+        let sr = 32_000;
+        let (spec, _) = spectrogram(&sine(1000.0, 2.0, sr, 0.5), sr, 2048, 20, 96);
+        assert_eq!(spec.len(), 20);
+        for (i, col) in spec.iter().enumerate() {
+            let hz = peak_hz(col, sr);
+            assert!((hz - 1000.0).abs() < 120.0, "column {i} peaked at {hz:.0} Hz, not 1 kHz");
+        }
+    }
+
+    #[test]
+    fn a_hum_that_starts_half_way_shows_only_in_the_second_half() {
+        // The whole point of the offline view: *when*, not just whether.
+        let sr = 32_000;
+        let mut signal = vec![0.0f32; sr as usize * 2];
+        for (i, s) in sine(50.0, 2.0, sr, 0.4).into_iter().enumerate() {
+            signal.push(s + 0.0 * i as f32);
+        }
+        let (spec, hop) = spectrogram(&signal, sr, 4096, 16, 96);
+        assert!((hop - 0.25).abs() < 0.02, "four seconds over sixteen columns: {hop}");
+        let hum_bin = (0..96).min_by(|a, b| {
+            (bin_hz(*a, 96, sr) - 50.0).abs().total_cmp(&(bin_hz(*b, 96, sr) - 50.0).abs())
+        }).unwrap();
+        let quiet: f32 = spec[..7].iter().map(|c| c[hum_bin]).sum::<f32>() / 7.0;
+        let humming: f32 = spec[9..].iter().map(|c| c[hum_bin]).sum::<f32>() / 7.0;
+        assert!(humming > quiet + 25.0, "the hum is found where it is: silent {quiet:.0} dB, humming {humming:.0} dB");
+    }
+
+    #[test]
+    fn a_long_file_and_a_short_one_cost_the_same() {
+        let sr = 16_000;
+        let short = sine(440.0, 1.0, sr, 0.3);
+        let long = sine(440.0, 600.0, sr, 0.3);
+        let (a, hop_a) = spectrogram(&short, sr, 1024, 200, 64);
+        let (b, hop_b) = spectrogram(&long, sr, 1024, 200, 64);
+        assert_eq!(a.len(), b.len(), "the column count is the caller's, not the file's");
+        assert!(hop_b > hop_a * 100.0, "and the hop says what was skipped: {hop_a} against {hop_b}");
+    }
+
+    #[test]
+    fn silence_and_nonsense_do_not_panic() {
+        let sr = 32_000;
+        assert!(spectrogram(&[], sr, 1024, 10, 64).0.is_empty());
+        assert!(spectrogram(&[0.0; 100], sr, 0, 10, 64).0.is_empty());
+        assert!(spectrogram(&[0.0; 100], 0, 1024, 10, 64).0.is_empty());
+        let (spec, _) = spectrogram(&[0.0; 4000], sr, 1024, 8, 32);
+        assert!(spec.iter().all(|c| c.iter().all(|v| *v <= -90.0)), "silence reads as silence");
     }
 }

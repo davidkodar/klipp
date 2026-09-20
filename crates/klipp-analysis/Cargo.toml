@@ -34,6 +34,7 @@ cuda = ["klipp-ml-ort/cuda"]
 libc = "0.2"
 
 [dependencies]
+klipp-audio = { workspace = true }
 klipp-core = { workspace = true }
 klipp-jobs = { path = "../klipp-jobs" }
 klipp-media = { workspace = true }

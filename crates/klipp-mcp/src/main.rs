@@ -358,6 +358,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
+        "klipp_audio_spectrum" => json!({
+            "method": "audio_spectrum",
+            "media_id": args.get("media_id").and_then(|v| v.as_str()).ok_or("missing required argument: media_id")?,
+            "from_secs": args.get("from_secs").cloned().unwrap_or(serde_json::Value::Null),
+            "to_secs": args.get("to_secs").cloned().unwrap_or(serde_json::Value::Null),
+        }),
         "klipp_adopt_look" => json!({
             "method": "adopt_look",
             "media_id": args.get("media_id").cloned().unwrap_or(serde_json::Value::Null),
@@ -757,7 +763,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -1030,6 +1036,16 @@ fn tool_definitions() -> Vec<Value> {
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
+        tool("klipp_audio_spectrum",
+             "A file's sound as frequency against time: where a hum starts, when a hiss creeps \
+              in, which stretch has the air conditioning in it. The scrolling analyser in the \
+              app shows what is playing; this reads the whole file at once, which is the only \
+              way to answer *when*. Answers with named findings and the band levels a second at \
+              a time -- rumble, hum, voice, sibilance, hiss -- each judged relative to the \
+              voice's own level rather than as an absolute, because a quiet recording of a clean \
+              room and a loud one of a noisy room have the same noise floor and different \
+              problems.",
+             json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }), vec!["media_id"]),
         tool("klipp_adopt_look",
              "Take a look's numbers off a reference -- a file in the media pool, or the \
               timeline's own best-graded shot -- and make them the target every colour \

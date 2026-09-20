@@ -29,6 +29,7 @@ pub mod hold;
 pub mod motion;
 pub mod report;
 pub mod sheet;
+pub mod spectrogram;
 pub mod service;
 pub mod shots;
 pub mod store;

@@ -258,6 +258,15 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// A file's sound as frequency against time: where a hum starts,
+    /// when a hiss creeps in, which stretch has the air conditioning.
+    AudioSpectrum {
+        media_id: String,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+    },
     /// Take a look's numbers off a reference — a file in the pool, or
     /// the timeline's own best shot — and make them the target every
     /// colour judgement is held to. A preset is a fallback; a reference

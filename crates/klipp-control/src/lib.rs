@@ -1864,6 +1864,58 @@ fn handle(
             Ok(v)
         }
 
+        ControlCommand::AudioSpectrum { media_id, from_secs, to_secs } => {
+            if in_batch {
+                return read_in_batch("audio_spectrum");
+            }
+            let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
+            let (path, filename, dur, has_audio) = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
+                (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio)
+            };
+            if !has_audio {
+                return Err(format!("{filename} has no sound in it"));
+            }
+            let from = from_secs.unwrap_or(0.0).max(0.0);
+            let to = to_secs.filter(|t| *t > from);
+            // Enough columns that a fault a second long is its own
+            // column on anything up to an hour, and the cost is the
+            // same whatever the file's length.
+            let spec = klipp_analysis::spectrogram::of_file(std::path::Path::new("ffmpeg"), &path, from, to, 600, 128)?;
+            let found = klipp_analysis::spectrogram::findings(&spec);
+            let lines: Vec<String> = found.iter().map(|(sev, what, fix)| format!("[{sev}] {what} — {fix}")).collect();
+            // The bands as numbers, thinned so a reply stays readable:
+            // the loudest column of each second.
+            let per_second = (1.0 / spec.hop_secs.max(0.001)).round().max(1.0) as usize;
+            let bands: Vec<serde_json::Value> = spec
+                .bands
+                .iter()
+                .map(|b| {
+                    let thinned: Vec<f32> = b.db.chunks(per_second).map(|c| c.iter().fold(-96.0f32, |a, v| a.max(*v))).collect();
+                    json!({ "name": b.name, "low_hz": b.low_hz, "high_hz": b.high_hz, "db_per_second": thinned })
+                })
+                .collect();
+            Ok(json!({
+                "text": format!(
+                    "The sound of {filename}{}, {:.1} s read in {:.2} s columns:\n{}\n\nEvery threshold here is a level *relative to the voice*, never an absolute one: a quiet recording of a clean room and a loud recording of a noisy one have the same absolute noise floor and different problems. Under about 30 dB below the voice a steady noise stops being audible under speech; at 20 dB down it is plainly there.",
+                    if from > 0.0 || to.is_some() { format!(" from {:.1} s", from) } else { String::new() },
+                    spec.duration_secs,
+                    spec.hop_secs,
+                    if lines.is_empty() { "Nothing to report: no band comes close enough to the voice to be heard under it.".to_string() } else { lines.join("\n") },
+                ),
+                "media_id": media_id,
+                "filename": filename,
+                "duration_secs": spec.duration_secs,
+                "media_duration_secs": dur,
+                "hop_secs": spec.hop_secs,
+                "rate": spec.rate,
+                "findings": found.iter().map(|(sev, what, fix)| json!({ "severity": sev, "what": what, "fix": fix })).collect::<Vec<_>>(),
+                "bands": bands,
+                "next": "clean_audio on the clip whose sound plays takes wind, hiss, hum and deess; run audio_spectrum again to see whether it worked.",
+            }))
+        }
+
         ControlCommand::AdoptLook { media_id, from_timeline, apply } => {
             if in_batch {
                 return Err("adopt_look measures and writes the brief; send it on its own".into());

@@ -31,6 +31,96 @@ pub enum ColourAction {
     SelfCheck,
 }
 
+/// One reading kept for the trend: small, because there is one per
+/// quarter-second of anything ever watched.
+#[derive(Debug, Clone, Copy)]
+pub struct TrendPoint {
+    pub l: f32,
+    pub cast_a: f32,
+    pub cast_b: f32,
+    /// The face's hue where the frame had a readable one, and how far
+    /// outside the skin band it sat.
+    pub skin_hue: Option<f32>,
+    pub skin_off: f32,
+    /// Whether anything in the frame failed against the look.
+    pub fails: bool,
+}
+
+/// How the colour of a piece moves over its length.
+///
+/// Every scope in every grading suite shows one frame. That is the
+/// right instrument for setting a shot and the wrong one for finding
+/// the two places in a twenty-minute piece where the light drifted, or
+/// the one cut where the join shows — for that you want the whole
+/// timeline at once, which is what a spectrogram is for sound and what
+/// nothing here was for picture.
+///
+/// It fills in as the piece is watched, from readings the window is
+/// taking anyway, which is the same way the audio spectrogram fills
+/// from the mix ring. Play the timeline once and the strip is complete;
+/// scrub and the parts scrubbed over fill in. Nothing extra is decoded
+/// and nothing is rendered twice.
+#[derive(Default)]
+pub struct ColourTrend {
+    /// Quarter-second bucket index → the reading taken there. Bucketed
+    /// so watching a passage twice does not grow the strip, and so the
+    /// memory is bounded by the piece's length rather than by how long
+    /// it has been open.
+    points: std::collections::BTreeMap<u64, TrendPoint>,
+}
+
+/// Readings a quarter-second apart: fine enough to show a light
+/// changing during a shot, coarse enough that an hour-long timeline
+/// costs a few thousand points.
+pub const TREND_BUCKET_SECS: f64 = 0.25;
+
+impl ColourTrend {
+    fn bucket(secs: f64) -> u64 {
+        (secs.max(0.0) / TREND_BUCKET_SECS).floor() as u64
+    }
+
+    pub fn record(&mut self, secs: f64, m: &FrameMeasure, look: &LookTarget) {
+        let face = m.faces.iter().find(|f| f.readable());
+        let fails = measure::judge(m, look).iter().any(|f| f.verdict == Verdict::Fail);
+        self.points.insert(
+            Self::bucket(secs),
+            TrendPoint {
+                l: m.l_p50,
+                cast_a: m.cast_a,
+                cast_b: m.cast_b,
+                skin_hue: face.map(|f| f.hue),
+                skin_off: face.map(|f| f.hue_off_band_wb).unwrap_or(0.0),
+                fails,
+            },
+        );
+    }
+
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    pub fn at(&self, secs: f64) -> Option<&TrendPoint> {
+        self.points.get(&Self::bucket(secs))
+    }
+
+    /// How much of `duration` has been read at all, 0 to 1.
+    pub fn coverage(&self, duration: f64) -> f32 {
+        if duration <= 0.0 {
+            return 0.0;
+        }
+        let total = (duration / TREND_BUCKET_SECS).ceil().max(1.0);
+        (self.points.len() as f64 / total).min(1.0) as f32
+    }
+
+    pub fn clear(&mut self) {
+        self.points.clear();
+    }
+}
+
 /// What the window keeps between frames: the last measurement, and
 /// enough to know when it is stale.
 pub struct ColourCheckPanel {
@@ -41,11 +131,13 @@ pub struct ColourCheckPanel {
     /// The last render-path self-check, and when it was run.
     pub selfcheck: Option<(bool, String)>,
     show_all: bool,
+    /// How the colour moves over the piece, filled in as it is watched.
+    pub trend: ColourTrend,
 }
 
 impl Default for ColourCheckPanel {
     fn default() -> Self {
-        Self { measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false }
+        Self { measured: None, generation: u64::MAX, at: None, selfcheck: None, show_all: false, trend: ColourTrend::default() }
     }
 }
 
@@ -66,8 +158,9 @@ fn look_for(state: &AppState) -> LookTarget {
 
 impl ColourCheckPanel {
     /// Measure the displayed frame, at most a few times a second and
-    /// only when it has actually changed.
-    fn refresh(&mut self, frame_buffer: &SharedFrameBuffer, faces: &[[f32; 4]]) {
+    /// only when it has actually changed, and keep the reading in the
+    /// trend so watching the piece draws the strip.
+    fn refresh(&mut self, frame_buffer: &SharedFrameBuffer, faces: &[[f32; 4]], at_secs: f64, look: &LookTarget) {
         let due = self.at.is_none_or(|t| t.elapsed().as_millis() >= 400);
         if !due {
             return;
@@ -76,7 +169,9 @@ impl ColourCheckPanel {
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() || fb.generation == self.generation {
             return;
         }
-        self.measured = Some(measure::measure_frame(&fb.data, fb.width, fb.height, faces));
+        let m = measure::measure_frame(&fb.data, fb.width, fb.height, faces);
+        self.trend.record(at_secs, &m, look);
+        self.measured = Some(m);
         self.generation = fb.generation;
         self.at = Some(Instant::now());
     }
@@ -93,8 +188,9 @@ impl ColourCheckPanel {
         // The faces the analysis already found for this clip, so the
         // skin reading is the cheek band and not the whole head.
         let faces = faces_at_playhead(state);
-        self.refresh(frame_buffer, &faces);
         let look = look_for(state);
+        let at_secs = state.playhead.to_secs_f64();
+        self.refresh(frame_buffer, &faces, at_secs, &look);
         egui::Window::new("Colour Check")
             .open(open)
             .default_size([420.0, 520.0])
@@ -116,6 +212,8 @@ impl ColourCheckPanel {
                     self.findings(ui, theme, &m, &look);
                     ui.add_space(4.0);
                     self.chain(ui, theme, state);
+                    ui.add_space(4.0);
+                    self.trend_strip(ui, theme, state);
                     ui.add_space(4.0);
                     action = self.render_path(ui, theme);
                 });
@@ -243,6 +341,112 @@ impl ColourCheckPanel {
         }
     }
 
+    /// The strip: the whole piece's colour along one axis.
+    ///
+    /// Three lanes, because three things go wrong and they go wrong
+    /// differently. Exposure as a line, so a drift reads as a slope and
+    /// a bad join as a step. The cast painted in its own colour, so a
+    /// shot lit differently from its neighbours is a different colour
+    /// of band rather than a number to compare. Skin as a mark per
+    /// reading, green on the band and amber off it, because that is the
+    /// fault a viewer names without being able to say why.
+    fn trend_strip(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
+        let seq = state.sequence();
+        let duration = seq.total_duration().to_secs_f64();
+        section(ui, theme, "OVER THE WHOLE PIECE");
+        if duration <= 0.0 {
+            ui.label(egui::RichText::new("Nothing on the timeline yet.").small().color(theme.text_secondary));
+            return;
+        }
+        let covered = self.trend.coverage(duration);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(if covered >= 0.98 {
+                    "Read end to end.".to_string()
+                } else {
+                    format!("{:.0}% read — play or scrub the rest to fill it in.", covered * 100.0)
+                })
+                .small()
+                .color(theme.text_secondary),
+            );
+            if ui.add(egui::Button::new("Clear").small()).on_hover_text("Forget the readings taken so far and start the strip again. Do this after a regrade.").clicked() {
+                self.trend.clear();
+            }
+        });
+        const LANE: f32 = 22.0;
+        let width = ui.available_width().max(80.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, LANE * 3.0 + 8.0), egui::Sense::hover());
+        let p = ui.painter_at(rect);
+        let x_of = |secs: f64| rect.left() + (secs / duration).clamp(0.0, 1.0) as f32 * rect.width();
+        let lane = |i: usize| {
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + i as f32 * (LANE + 2.0)),
+                egui::vec2(rect.width(), LANE),
+            )
+        };
+        for i in 0..3 {
+            p.rect_filled(lane(i), crate::theme::radius::CONTROL, theme.bg_deep);
+        }
+        // The cuts, so a step in the line can be read as a join rather
+        // than as a drift.
+        if let Some(track) = seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible) {
+            for c in &track.clips {
+                let x = x_of(c.timeline_in.to_secs_f64());
+                p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0_f32, theme.border));
+            }
+        }
+        let bucket_w = (rect.width() * (TREND_BUCKET_SECS / duration) as f32).max(1.0);
+        let mut last: Option<egui::Pos2> = None;
+        for (bucket, pt) in self.trend.points.iter() {
+            let secs = *bucket as f64 * TREND_BUCKET_SECS;
+            let x = x_of(secs);
+            // Exposure, 0–100 L* bottom to top of its lane.
+            let l = lane(0);
+            let y = l.bottom() - (pt.l / 100.0).clamp(0.0, 1.0) * l.height();
+            let here = egui::pos2(x, y);
+            if let Some(prev) = last {
+                if (here.x - prev.x).abs() <= bucket_w * 2.5 {
+                    p.line_segment([prev, here], egui::Stroke::new(1.5_f32, if pt.fails { theme.marker_warning } else { theme.accent }));
+                }
+            }
+            p.circle_filled(here, 1.2, if pt.fails { theme.marker_warning } else { theme.accent });
+            last = Some(here);
+            // The cast, painted as the colour it is.
+            let c = lane(1);
+            let rgb = measure::lab_to_srgb8(measure::Lab { l: 60.0, a: pt.cast_a * 3.0, b: pt.cast_b * 3.0 });
+            p.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(x, c.top()), egui::vec2(bucket_w, c.height())),
+                0.0,
+                egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+            );
+            // Skin: a mark where a face was read, coloured by the band.
+            let s = lane(2);
+            if pt.skin_hue.is_some() {
+                let colour = if pt.skin_off > 6.0 {
+                    theme.marker_error
+                } else if pt.skin_off > 0.0 {
+                    theme.marker_warning
+                } else {
+                    theme.marker_success
+                };
+                p.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(x, s.top() + 4.0), egui::vec2(bucket_w, s.height() - 8.0)),
+                    0.0,
+                    colour,
+                );
+            }
+        }
+        // Where the playhead is, so the reading above and the strip
+        // below are obviously the same moment.
+        let px = x_of(state.playhead.to_secs_f64());
+        p.line_segment([egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())], egui::Stroke::new(1.0_f32, theme.playhead));
+        ui.label(
+            egui::RichText::new("Exposure, the cast in its own colour, and skin against its band. A slope is a drift inside a shot; a step at a cut is a join the viewer will see.")
+                .small()
+                .color(theme.text_dim),
+        );
+    }
+
     fn render_path(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) -> ColourAction {
         let mut action = ColourAction::None;
         section(ui, theme, "THE RENDER PATH ITSELF");
@@ -333,7 +537,7 @@ mod tests {
     }
 
     /// One frame of the window, with whatever is on screen.
-    fn run(panel: &mut ColourCheckPanel, state: &AppState, fb: &SharedFrameBuffer) -> ColourAction {
+    pub(super) fn run(panel: &mut ColourCheckPanel, state: &AppState, fb: &SharedFrameBuffer) -> ColourAction {
         let ctx = ctx();
         let theme = KlippTheme::default();
         let mut open = true;
@@ -417,5 +621,79 @@ mod tests {
         brief.look = Some(LookTarget { name: "whatever".into(), ..Default::default() });
         state.sequence_mut().brief = Some(brief);
         assert_eq!(look_for(&state).name, "broadcast_neutral");
+    }
+}
+
+#[cfg(test)]
+mod trend_tests {
+    use super::*;
+
+    fn flat_measure(l: u8) -> FrameMeasure {
+        measure::measure_frame(&[l, l, l, 255].repeat(64 * 64), 64, 64, &[])
+    }
+
+    #[test]
+    fn watching_a_passage_twice_does_not_grow_the_strip() {
+        // The strip is bucketed by time, not appended to, so leaving
+        // the window open through three playthroughs costs what one
+        // costs. An unbounded list would be a leak that only shows up
+        // on a long session.
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut t = ColourTrend::default();
+        for pass in 0..3 {
+            for i in 0..40 {
+                let secs = i as f64 * 0.1 + pass as f64 * 0.001;
+                t.record(secs, &flat_measure(128), &look);
+            }
+        }
+        // Four seconds at a quarter-second apart.
+        assert_eq!(t.len(), 16, "one point a bucket, however often it is watched");
+    }
+
+    #[test]
+    fn a_reading_is_found_again_at_the_time_it_was_taken() {
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut t = ColourTrend::default();
+        t.record(3.1, &flat_measure(200), &look);
+        assert!(t.at(3.1).is_some());
+        assert!(t.at(3.2).is_some(), "the same quarter-second bucket");
+        assert!(t.at(3.6).is_none(), "the next one is still unread");
+        assert!(t.at(3.0).is_some());
+    }
+
+    #[test]
+    fn coverage_says_how_much_of_the_piece_has_been_read() {
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut t = ColourTrend::default();
+        assert_eq!(t.coverage(10.0), 0.0);
+        for i in 0..20 {
+            t.record(i as f64 * TREND_BUCKET_SECS, &flat_measure(128), &look);
+        }
+        // Five seconds of a ten-second piece.
+        assert!((t.coverage(10.0) - 0.5).abs() < 0.01, "{}", t.coverage(10.0));
+        assert_eq!(t.coverage(0.0), 0.0, "an empty timeline is not divided by");
+    }
+
+    #[test]
+    fn a_failing_frame_is_marked_in_the_strip() {
+        // The line changes colour where the picture is out of
+        // tolerance, so a bad passage is findable without reading it.
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut t = ColourTrend::default();
+        t.record(0.0, &flat_measure(8), &look);
+        assert!(t.at(0.0).expect("recorded").fails, "a near-black frame fails a neutral look");
+        t.clear();
+        assert!(t.is_empty(), "a regrade starts the strip again");
+    }
+
+    #[test]
+    fn the_strip_draws_on_an_empty_timeline_without_panicking() {
+        let state = AppState::default();
+        let fb: SharedFrameBuffer = std::sync::Arc::new(std::sync::Mutex::new(klipp_engine::FrameBuffer::new(0, 0)));
+        let mut panel = ColourCheckPanel::default();
+        // No clips, no duration, no readings: the commonest state a
+        // window is in the moment it is first opened.
+        super::tests::run(&mut panel, &state, &fb);
+        assert!(panel.trend.is_empty());
     }
 }
