@@ -209,6 +209,36 @@ pub fn curves_editor_sized(
         }
     }
 
+    // ── The dragged point's values, while it is being dragged ──
+    //
+    // A curve point is an input level mapped to an output level, and
+    // until now neither number was ever shown: you could place a point
+    // precisely only by eye, and could not say afterwards what you had
+    // set. Every grading application reads them out. Drawn only during
+    // the drag, in the corner furthest from the point, so it never
+    // covers the curve you are watching.
+    if let Some(idx) = dragging_idx {
+        if response.dragged() && idx < points.len() {
+            let pt = points[idx];
+            let text = format!("in {:.3}   out {:.3}", pt[0], pt[1]);
+            let font = egui::FontId::monospace(10.0);
+            let galley = painter.layout_no_wrap(text, font, theme.text_primary);
+            // Opposite corner from the point, so the readout and the
+            // thing it describes are never in the same place.
+            let pad = 6.0;
+            let pos = egui::pos2(
+                if pt[0] > 0.5 { rect.min.x + pad } else { rect.max.x - pad - galley.size().x },
+                if pt[1] > 0.5 { rect.max.y - pad - galley.size().y } else { rect.min.y + pad },
+            );
+            painter.rect_filled(
+                egui::Rect::from_min_size(pos, galley.size()).expand(3.0),
+                3.0,
+                theme.bg_panel.gamma_multiply(0.85),
+            );
+            painter.galley(pos, galley, theme.text_primary);
+        }
+    }
+
     if response.drag_stopped() {
         ui.data_mut(|d| d.insert_temp::<Option<usize>>(drag_id, None));
     }
