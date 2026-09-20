@@ -1660,6 +1660,10 @@ pub enum AppCommand {
     ToggleColorPanel,
     ShowEffectsBrowser,
     ToggleBeforeAfter,
+    /// Collapse the left browser to its rail, or bring it back.
+    ToggleBrowserPanel,
+    /// Collapse the right inspector to its rail, or bring it back.
+    ToggleInspectorPanel,
     /// Toggle stabilization compare split view (raw vs stabilized).
     /// Mutually exclusive with ToggleBeforeAfter and grade still compare.
     ToggleStabilizationCompare,

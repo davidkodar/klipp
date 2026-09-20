@@ -103,7 +103,8 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
 
 /// The one-row title of an inspector column: what is being inspected,
 /// nothing else, on the deep surface with a hairline below.
-pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) {
+pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) -> bool {
+    let mut collapse = false;
     let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), SECTION_HEADER_H));
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.painter().rect_filled(rect, 0.0, theme.bg_deep);
@@ -118,9 +119,34 @@ pub fn panel_title_row(ui: &mut Ui, title: &str, dim: bool, theme: &KlippTheme) 
                 .truncate()
                 .selectable(false),
             );
+
+            // Collapse, mirroring the browser's. Right-to-left so it
+            // sits at the far edge whatever the title's length.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                let (btn_rect, resp) =
+                    ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(btn_rect.shrink(2.0), 4.0, theme.bg_hover);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let tint = if resp.hovered() { theme.text_primary } else { theme.text_dim };
+                let icon_rect = Rect::from_center_size(btn_rect.center(), vec2(12.0, 12.0));
+                ui.put(
+                    icon_rect,
+                    crate::icons::Icon::CaretRight
+                        .image(12.0)
+                        .tint(tint)
+                        .max_size(vec2(12.0, 12.0)),
+                );
+                if resp.on_hover_text("Collapse inspector  (Ctrl+Shift+I)").clicked() {
+                    collapse = true;
+                }
+            });
         });
     });
     ui.advance_cursor_after_rect(rect);
+    collapse
 }
 
 /// One strip of tabs for every inspector column. Each tab is as wide as

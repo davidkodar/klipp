@@ -4,6 +4,7 @@ pub mod curves_editor;
 pub mod inspector_group;
 pub mod jog_wheel;
 pub mod keyframe_editor;
+pub mod panel_rail;
 pub mod resizer;
 pub mod scopes;
 pub mod scope_window;

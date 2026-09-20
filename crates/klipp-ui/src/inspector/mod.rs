@@ -94,7 +94,9 @@ impl NewInspectorPanel {
         } else {
             ("No clip selected".into(), true)
         };
-        crate::widgets::inspector_group::panel_title_row(ui, &clip_name, name_dim, theme);
+        if crate::widgets::inspector_group::panel_title_row(ui, &clip_name, name_dim, theme) {
+            cmds.push(AppCommand::ToggleInspectorPanel);
+        }
 
         // ── Amber context banner (timeline clip only) ──
         if let Some((track_idx, clip)) = clip_info {

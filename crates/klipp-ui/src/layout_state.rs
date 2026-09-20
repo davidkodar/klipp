@@ -47,6 +47,17 @@ pub struct LayoutState {
     #[serde(default = "default_color_inspector_width")]
     pub color_inspector_width: f32,
 
+    // ── Panel visibility ──
+    // Persisted, because a hidden panel that comes back on restart is
+    // not hidden, it is flickering. These mirror
+    // `AppState::show_browser_panel` / `show_inspector_panel`, which
+    // stay the runtime source of truth (a workspace preset writes them
+    // too); this is where that state survives a restart.
+    #[serde(default = "default_true")]
+    pub browser_visible: bool,
+    #[serde(default = "default_true")]
+    pub inspector_visible: bool,
+
     // ── Split browser (pinned files) ──
     /// When true, the FILES browser stays visible alongside MEDIA/LIBRARY.
     #[serde(default)]
@@ -81,6 +92,8 @@ impl Default for LayoutState {
             color_panel_height: default_color_panel_height(),
             color_viewer_height_ratio: default_color_viewer_ratio(),
             color_inspector_width: default_color_inspector_width(),
+            browser_visible: true,
+            inspector_visible: true,
             files_pinned: false,
             files_split_ratio: default_files_split_ratio(),
         }
