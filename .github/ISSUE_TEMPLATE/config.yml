@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/davidkodar/klipp/security/advisories/new
+    about: Report privately. Please do not open a public issue.
+  - name: Build or setup trouble
+    url: https://github.com/davidkodar/klipp/blob/main/CONTRIBUTING.md
+    about: Prerequisites and the build are documented in CONTRIBUTING.md.

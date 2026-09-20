@@ -1,0 +1,35 @@
+name: Feature request
+description: Klipp cannot do something you need it to
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem rather than the solution where you can. "I
+        cannot tell which take is sharpest" admits more answers than "add
+        a focus-peaking overlay", and one of them may already exist.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where Klipp stops you.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: >
+        Another tool, a manual step, or giving up. This tells us how much
+        the gap costs.
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: How other editors handle it
+      description: >
+        Optional, and genuinely useful. Resolve, Kdenlive, Premiere,
+        Final Cut — naming the thing you want it to work like is often
+        the fastest possible spec.
