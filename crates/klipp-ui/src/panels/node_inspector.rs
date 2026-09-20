@@ -2800,10 +2800,20 @@ impl NodeInspectorPanel {
     ) {
         let warper = params.warper_params.get_or_insert_with(Default::default);
 
-        let size = ui.available_width().min(250.0);
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+        // Allocate the full width so the wheel lands in the middle of
+        // the panel. Allocating only the circle's own footprint left it
+        // pinned to the left edge with a hand's width of dead space
+        // beside it, and the sector labels on the left — CG, C, CB —
+        // ran off the panel because they are drawn outside the radius.
+        let avail = ui.available_width();
+        let side = avail.min(260.0);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(avail, side), egui::Sense::click_and_drag());
         let center = rect.center();
-        let radius = size / 2.0 - 16.0;
+        // Room outside the ring for the twelve sector labels: they sit
+        // at radius + 12 and are centred on that point, so the longest
+        // of them needs about another dozen pixels beyond that.
+        let radius = side / 2.0 - 28.0;
         let painter = ui.painter();
 
         // Background circle
