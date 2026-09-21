@@ -29,7 +29,65 @@ const STICKY_DEFAULT_COLOR_RGBA: u32 = u32::from_le_bytes([0xd4, 0xc8, 0x9a, 0xf
 /// Height reserved at the foot of the Export workspace's column for its
 /// action bar. Enough for one row of regular controls plus the rule
 /// above it and breathing room either side.
-const EXPORT_ACTION_BAR_H: f32 = 48.0;
+/// The summary line above the Export buttons: one row of small text
+/// plus the gap under it.
+const EXPORT_SUMMARY_H: f32 = 18.0;
+
+/// The Export panel's pinned foot at a comfortable size. Tall enough
+/// for the summary line *and* the buttons — it was 48, sized for the
+/// buttons alone, and adding the line above them pushed them out of
+/// the reserved strip and under the status bar.
+const EXPORT_ACTION_BAR_H: f32 = 48.0 + EXPORT_SUMMARY_H;
+
+/// How tall the Export foot is for a panel of `available_h`, and
+/// whether the summary line fits inside it.
+///
+/// The buttons are the point of that strip: Export is the panel's
+/// reason to exist, and a primary action sliced in half by the status
+/// bar is worse than no summary at all. So when there is not room for
+/// both, the summary goes and the buttons keep their full height —
+/// and the strip is never taller than what it was given, whatever the
+/// window is doing.
+///
+/// Half the panel is the most the foot may take, so a short panel
+/// still shows some of the form above it.
+fn export_foot_layout(available_h: f32) -> ExportFoot {
+    let buttons = crate::theme::control::REGULAR;
+    let both = EXPORT_SUMMARY_H + buttons;
+    let cap = (available_h * 0.5).max(0.0);
+    let (bar_h, show_summary) = if cap >= both {
+        // Room for both: the comfortable height, clamped to the cap
+        // and never below what the content needs.
+        (EXPORT_ACTION_BAR_H.min(cap).max(both), true)
+    } else {
+        // Buttons only, whole — unless the panel is smaller than one
+        // row, at which point there is nothing to be done but not
+        // overflow.
+        (buttons.min(available_h.max(0.0)), false)
+    };
+    // Clamped to the strip as well. A panel with no height at all —
+    // mid-resize, or collapsed — has nowhere to put a button, and
+    // claiming otherwise is how content ends up drawn past the edge.
+    let content_h = if show_summary { both } else { buttons }.min(bar_h);
+    // The top pad the drawing uses. Halved, because the content is
+    // centred in the strip — and computed *here* rather than at the
+    // call site, because that is where it went wrong: the padding was
+    // worked out for the button row alone while the summary was drawn
+    // above it, so the two together ran past the bottom of the strip.
+    let pad = ((bar_h - content_h) * 0.5).max(0.0);
+    ExportFoot { bar_h, pad, content_h, show_summary }
+}
+
+/// The Export foot's measurements: the strip, the pad above the
+/// content, what the content comes to, and whether the summary is part
+/// of it.
+#[derive(Clone, Copy, Debug)]
+struct ExportFoot {
+    bar_h: f32,
+    pad: f32,
+    content_h: f32,
+    show_summary: bool,
+}
 use crossbeam_queue::ArrayQueue;
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::{Marker, Sequence};
@@ -24832,6 +24890,58 @@ fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {
     }
 }
 
+/// Megabits per second a codec writes at a given pixel count, where
+/// that is a fixed property of the codec rather than a choice.
+///
+/// The intra-frame masters have published rates: every frame is coded
+/// on its own at a set quality, so the file size follows from the
+/// resolution, the frame rate and the running time and nothing else.
+/// Scaled from the profile's quoted 1920x1080 rate by pixel count and
+/// by frame rate, which is how the published tables are built.
+///
+/// `None` for anything whose size depends on the picture — H.264 and
+/// H.265 under CRF spend what the shot needs, and no arithmetic here
+/// can know that.
+fn intra_frame_mbps(codec: klipp_core::ExportVideoCodec, px: f64, fps: f64) -> Option<f64> {
+    use klipp_core::ExportVideoCodec as C;
+    // At 1920x1080 and 29.97 fps, from Apple's and Avid's tables.
+    let at_1080p29 = match codec {
+        C::ProRes422 => 147.0,
+        C::ProRes422HQ => 220.0,
+        C::ProRes4444 => 330.0,
+        C::DNxHD115 => 115.0,
+        C::DNxHD145 => 145.0,
+        _ => return None,
+    };
+    let reference_px = 1920.0 * 1080.0;
+    Some(at_1080p29 * (px / reference_px) * (fps / 29.97))
+}
+
+/// Seconds, as a length someone reads rather than a number.
+fn humanise_secs(secs: f64) -> String {
+    // Clamped once, at the top. Clamping only the minute count let a
+    // negative range — which an in-point dragged past its out-point
+    // produces — fall through to the seconds branch and print itself.
+    let secs = secs.max(0.0);
+    let total = secs.round() as u64;
+    let (m, sec) = (total / 60, total % 60);
+    if m >= 60 {
+        format!("{} h {:02} min {:02} s", m / 60, m % 60, sec)
+    } else if m > 0 {
+        format!("{m} min {sec:02} s")
+    } else {
+        format!("{secs:.1} s")
+    }
+}
+
+fn humanise_bytes(bytes: f64) -> String {
+    if bytes >= 1_000_000_000.0 {
+        format!("{:.1} GB", bytes / 1_000_000_000.0)
+    } else {
+        format!("{:.0} MB", bytes / 1_000_000.0)
+    }
+}
+
 fn dialog_resolution(dialog: &ExportDialogState) -> Option<klipp_core::Resolution> {
     match dialog.resolution_override {
         1 => Some(klipp_core::Resolution { width: 1280, height: 720 }),
@@ -30005,7 +30115,10 @@ impl KlippApp {
                 // problem: it sizes itself to its contents.
                 if in_dialog {
                     ui.add_space(12.0);
-                    self.export_action_bar(ui, cmds, true);
+                    // The dialog lays out vertically and is not
+                    // squeezed against a status bar, so the summary
+                    // always fits there.
+                    self.export_action_bar(ui, cmds, true, true);
                 }
     }
 
@@ -30021,8 +30134,103 @@ impl KlippApp {
     /// `Export` is filled with the accent and `Add to Queue` is left as
     /// a plain button. They were previously identical, which left the
     /// panel with no primary action at all.
-    fn export_action_bar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+    /// What pressing Export is about to write: the range's length, the
+    /// size and rate, the codecs, whether subtitles are going into the
+    /// picture, and the file size where that can be said honestly.
+    ///
+    /// The form asked for seven things and described none of them. The
+    /// one that actually cost something was subtitles: `burn_in_subtitles`
+    /// defaults to on, its checkbox sits near the bottom of a long
+    /// scroll, and burning them in is irreversible in the output — the
+    /// only undo is rendering again. Saying so beside the button fixes
+    /// the surprise without settling whether the default is right.
+    fn export_summary(&self) -> String {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let seq_fps = seq.fps.as_f64();
+        let fps = dialog_fps(&self.export_dialog).map(|f| f.as_f64()).unwrap_or(seq_fps);
+        let res = dialog_resolution(&self.export_dialog)
+            .unwrap_or(klipp_core::Resolution { width: seq.resolution.width, height: seq.resolution.height });
+
+        // The range, in the sequence's own time.
+        let secs = match self.export_dialog.range_mode {
+            1 => match (seq.in_point, seq.out_point) {
+                (Some(a), Some(b)) => (b - a).to_secs_f64().abs(),
+                _ => seq.total_duration().to_secs_f64(),
+            },
+            2 => selected_clips_frame_range(&self.state.selected_clips, seq, seq_fps)
+                .map(|(a, b)| (b - a) as f64 / seq_fps.max(1.0))
+                .unwrap_or(0.0),
+            // Between markers is one file per segment; a single length
+            // would be the wrong number, so it is left out.
+            3 => 0.0,
+            _ => seq.total_duration().to_secs_f64(),
+        };
+
+        let mut parts: Vec<String> = Vec::new();
+        if self.export_dialog.range_mode == 3 {
+            parts.push("one file per marker range".to_string());
+        } else if secs > 0.0 {
+            parts.push(humanise_secs(secs));
+        }
+        parts.push(format!("{}x{}", res.width, res.height));
+        parts.push(format!("{fps:.4} fps").replace(".0000 fps", " fps"));
+        parts.push(format!(
+            "{} / {}",
+            self.export_dialog.video_codec.label(),
+            self.export_dialog.audio_codec.label(),
+        ));
+
+        // Size, only where it is arithmetic rather than a guess.
+        let px = res.width as f64 * res.height as f64;
+        let audio_mbps = self.export_dialog.audio_bitrate as f64 / 1000.0;
+        let video_mbps = match self.export_dialog.rate_control {
+            klipp_core::RateControl::Cbr | klipp_core::RateControl::Vbr => {
+                Some(self.export_dialog.video_bitrate_kbps as f64 / 1000.0)
+            }
+            // CRF has no target bitrate by construction: the encoder
+            // spends what the picture needs. A number here would be
+            // confidently wrong, which is worse than none.
+            klipp_core::RateControl::Crf => intra_frame_mbps(self.export_dialog.video_codec, px, fps),
+        };
+        if let Some(v) = video_mbps {
+            if secs > 0.0 {
+                let bytes = (v + audio_mbps) * 1_000_000.0 / 8.0 * secs;
+                parts.push(format!("~{}", humanise_bytes(bytes)));
+            }
+        }
+
+        let has_subtitles = seq.tracks.iter().any(|t| {
+            matches!(t.kind, klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text)
+                && !t.clips.is_empty()
+        });
+        if has_subtitles && self.export_dialog.burn_in_subtitles {
+            parts.push("subtitles burned in".to_string());
+        }
+        parts.join("  \u{00b7}  ")
+    }
+
+    fn export_action_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        cmds: &mut Vec<AppCommand>,
+        in_dialog: bool,
+        show_summary: bool,
+    ) {
         let theme = self.theme.clone();
+        // Said above the buttons rather than in the form, so it is read
+        // on the way to pressing Export rather than scrolled past.
+        let summary = if show_summary { self.export_summary() } else { String::new() };
+        if !summary.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(summary)
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+            });
+            ui.add_space(4.0);
+        }
         let path_ok = !self.export_dialog.output_path.trim().is_empty();
         let h = crate::theme::control::REGULAR;
         ui.horizontal(|ui| {
@@ -32124,7 +32332,8 @@ impl KlippApp {
                 // Queue are on screen at every window height. The form
                 // scrolls inside what is left.
                 let full = ui.available_rect_before_wrap();
-                let bar_h = EXPORT_ACTION_BAR_H.min(full.height() * 0.5);
+                let foot = export_foot_layout(full.height());
+                let bar_h = foot.bar_h;
                 let body_rect = egui::Rect::from_min_max(
                     full.min,
                     egui::pos2(full.max.x, full.max.y - bar_h),
@@ -32169,11 +32378,17 @@ impl KlippApp {
                     egui::Stroke::new(1.0_f32, theme.border),
                 );
                 ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
-                    // Centre the row in the reserved strip rather than
-                    // letting it sit against the rule.
-                    let pad = ((bar_h - crate::theme::control::REGULAR) * 0.5).max(0.0);
-                    ui.add_space(pad);
-                    self.export_action_bar(ui, all_cmds, false);
+                    // Centre the whole foot — summary line and buttons
+                    // together — in the reserved strip, rather than the
+                    // button row alone, which left the summary hanging
+                    // off the top and the buttons off the bottom.
+                    // Nothing at all in a strip with no room for it —
+                    // a panel collapsed or mid-resize draws no half
+                    // button rather than a clipped one.
+                    if foot.content_h > 0.0 {
+                        ui.add_space(foot.pad);
+                        self.export_action_bar(ui, all_cmds, false, foot.show_summary);
+                    }
                 });
                 return;
             }
@@ -38578,5 +38793,161 @@ mod screen_text_digest_tests {
         let st = ScreenText { spans: vec![span("SETTINGS", 0.0), span("General", 0.0), span("settings", 8.0), span("  General ", 12.0), span("x", 12.0)], ..Default::default() };
         assert_eq!(screen_text_digest(&st), "SETTINGS · General");
         assert_eq!(screen_text_digest(&ScreenText::default()), "");
+    }
+}
+
+#[cfg(test)]
+mod export_foot_tests {
+    use super::{export_foot_layout, EXPORT_ACTION_BAR_H, EXPORT_SUMMARY_H};
+    use crate::theme::control::REGULAR;
+
+    /// The rule: whatever the window is doing, the strip reserved for
+    /// the Export foot is never taller than what it was given, and the
+    /// buttons inside it are never shorter than a button.
+    ///
+    /// This is the one that matters. The summary line was added inside
+    /// a strip sized for the buttons alone, which pushed Export — the
+    /// panel's whole point — down under the status bar and sliced it in
+    /// half. A fix for that height is not a guarantee; this is.
+    #[test]
+    fn the_foot_never_overflows_and_the_buttons_are_never_clipped() {
+        let mut heights: Vec<f32> = (0..400).map(|i| i as f32 * 4.0).collect();
+        heights.extend([0.0, 1.0, REGULAR, REGULAR * 2.0, 47.0, 48.0, 1440.0, 4320.0]);
+        for h in heights {
+            let f = export_foot_layout(h);
+            assert!(f.bar_h >= 0.0, "negative strip at {h}");
+            assert!(f.bar_h <= h + 1e-3, "strip {} exceeds the panel's {h}", f.bar_h);
+
+            // What the drawing actually puts in: the pad, then the
+            // content. Both together must sit inside the strip, or the
+            // bottom of the content is under whatever follows it.
+            let laid_out = f.pad + f.content_h;
+            assert!(
+                laid_out <= f.bar_h + 1e-3,
+                "at {h}: pad {} + content {} = {laid_out} overflows the strip {}",
+                f.pad,
+                f.content_h,
+                f.bar_h,
+            );
+
+            // What is drawn, clamped to the strip: a panel too small
+            // for a button cannot be given one.
+            let want = if f.show_summary { EXPORT_SUMMARY_H + REGULAR } else { REGULAR };
+            let want = want.min(f.bar_h);
+            assert!(
+                (f.content_h - want).abs() < 1e-3,
+                "at {h}: content {} does not match what is drawn ({want})",
+                f.content_h,
+            );
+            if h >= REGULAR {
+                assert!(
+                    f.content_h >= REGULAR - 1e-3,
+                    "at {h}: the buttons were squeezed to {}",
+                    f.content_h,
+                );
+            }
+        }
+    }
+
+    /// When the panel is too short for both, the summary gives way and
+    /// the buttons keep their full height — not the other way round.
+    #[test]
+    fn a_short_panel_drops_the_summary_rather_than_the_buttons() {
+        // Half of this is under the two rows but over one.
+        let tight = (EXPORT_SUMMARY_H + REGULAR) * 2.0 - 4.0;
+        let f = export_foot_layout(tight);
+        assert!(!f.show_summary, "the summary was kept in a panel too short for it");
+        assert!(f.content_h >= REGULAR - 1e-3, "the buttons were squeezed: {}", f.content_h);
+        assert!(f.pad + f.content_h <= f.bar_h + 1e-3, "it still overflowed");
+    }
+
+    /// And a panel with room gets both.
+    #[test]
+    fn a_normal_panel_shows_the_summary() {
+        let f = export_foot_layout(1440.0);
+        assert!(f.show_summary, "a full-height panel hid the summary");
+        assert!((f.bar_h - EXPORT_ACTION_BAR_H).abs() < 1e-3, "got {}", f.bar_h);
+    }
+
+    /// The comfortable height has to actually fit what goes in it,
+    /// which is the invariant the original 48 quietly broke.
+    #[test]
+    fn the_declared_height_fits_its_contents() {
+        assert!(
+            EXPORT_ACTION_BAR_H >= EXPORT_SUMMARY_H + REGULAR,
+            "{EXPORT_ACTION_BAR_H} cannot hold {EXPORT_SUMMARY_H} + {REGULAR}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod export_summary_tests {
+    use super::{humanise_bytes, humanise_secs, intra_frame_mbps};
+    use klipp_core::ExportVideoCodec as C;
+
+    /// The rule the whole feature rests on: a number is only shown
+    /// where it is arithmetic. CRF has no target bitrate by
+    /// construction — the encoder spends what the picture needs — so
+    /// there is nothing to compute and nothing is claimed.
+    #[test]
+    fn the_codecs_that_cannot_be_sized_are_not_sized() {
+        let px = 1920.0 * 1080.0;
+        for codec in [C::H264, C::H265, C::Av1, C::Vp9, C::Gif] {
+            assert_eq!(
+                intra_frame_mbps(codec, px, 25.0),
+                None,
+                "{codec:?} was given a size it cannot have",
+            );
+        }
+    }
+
+    /// And the ones that can are, from their published rates.
+    #[test]
+    fn the_intra_frame_masters_are_sized_from_their_profiles() {
+        let hd = 1920.0 * 1080.0;
+        // Apple quotes ProRes 422 at 147 Mbps for 1080p29.97.
+        let at_reference = intra_frame_mbps(C::ProRes422, hd, 29.97).unwrap();
+        assert!((at_reference - 147.0).abs() < 0.5, "got {at_reference}");
+
+        // HQ is about half again, 4444 about double.
+        let hq = intra_frame_mbps(C::ProRes422HQ, hd, 29.97).unwrap();
+        assert!(hq > at_reference * 1.4 && hq < at_reference * 1.6, "got {hq}");
+
+        // Four times the pixels is four times the rate.
+        let uhd = intra_frame_mbps(C::ProRes422, 3840.0 * 2160.0, 29.97).unwrap();
+        assert!((uhd / at_reference - 4.0).abs() < 0.01, "got {}", uhd / at_reference);
+
+        // And half the frame rate is half the rate.
+        let slow = intra_frame_mbps(C::ProRes422, hd, 14.985).unwrap();
+        assert!((slow / at_reference - 0.5).abs() < 0.01, "got {}", slow / at_reference);
+    }
+
+    /// A ProRes 422 master of a minute at 1080p29.97 is about 1.1 GB,
+    /// which is the sort of number the form exists to warn about.
+    #[test]
+    fn a_minute_of_prores_is_about_a_gigabyte() {
+        let mbps = intra_frame_mbps(C::ProRes422, 1920.0 * 1080.0, 29.97).unwrap();
+        let bytes = mbps * 1_000_000.0 / 8.0 * 60.0;
+        assert!(
+            (1.0e9..1.3e9).contains(&bytes),
+            "expected about 1.1 GB, got {}",
+            humanise_bytes(bytes),
+        );
+    }
+
+    #[test]
+    fn lengths_read_as_lengths() {
+        assert_eq!(humanise_secs(4.25), "4.2 s");
+        assert_eq!(humanise_secs(84.0), "1 min 24 s");
+        assert_eq!(humanise_secs(3725.0), "1 h 02 min 05 s");
+        // A negative range — an in-point dragged past its out-point —
+        // must not print itself.
+        assert_eq!(humanise_secs(-3.0), "0.0 s");
+    }
+
+    #[test]
+    fn sizes_read_as_sizes() {
+        assert_eq!(humanise_bytes(148_000_000.0), "148 MB");
+        assert_eq!(humanise_bytes(1_100_000_000.0), "1.1 GB");
     }
 }

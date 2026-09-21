@@ -305,7 +305,14 @@ pub struct AudioPrefs {
     /// Apply a short anti-click crossfade (2ms) at clip boundaries to prevent pops.
     #[serde(default = "default_true")]
     pub anti_click_fade: bool,
-    /// Show crossfade indicator at adjacent clip boundaries.
+    /// Mark where one audio clip fades down into the next fading up.
+    ///
+    /// The field name says crossfade and is kept so saved preferences
+    /// keep loading, but a crossfade needs the two to overlap and the
+    /// timeline has no audio transition to make that with. What is
+    /// marked is the fade handoff — the dip to silence and back — which
+    /// is real and otherwise invisible. It used to mark every butted
+    /// pair whether or not either clip faded at all.
     #[serde(default = "default_true")]
     pub show_crossfade_indicators: bool,
     // ── Expanded fields ──
