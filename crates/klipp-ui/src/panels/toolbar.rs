@@ -68,12 +68,15 @@ impl ToolbarPanel {
         let ws_rect = egui::Rect::from_center_size(toolbar_rect.center(), ws_size);
         let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
         if let Some(i) = crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font) {
-            let ws = workspaces[i].0;
-            state.active_workspace = ws;
-            state.show_color_panel = ws == Workspace::Color;
-            if ws == Workspace::Color {
-                state.show_scopes = true;
-            }
+            // Just the workspace. What it implies — the colour panel,
+            // the browser borrow — is settled in one place by the app's
+            // `reconcile_workspace`, so this tab and the `C` shortcut
+            // can no longer give two different layouts for one switch.
+            //
+            // Scopes are deliberately not forced on: that decision was
+            // already taken for the shortcut route, and this one had
+            // quietly kept doing it.
+            state.active_workspace = workspaces[i].0;
         }
 
         // ═══════════════════════════════════════════
