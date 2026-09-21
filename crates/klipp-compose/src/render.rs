@@ -410,6 +410,11 @@ pub struct Renderer {
     /// it decodes three frames, and a paused viewer re-renders the same
     /// frame many times.
     rsc_motion: HashMap<(ClipId, i64), (klipp_effects::rolling_shutter::Homography, klipp_effects::rolling_shutter::Homography)>,
+    /// Frame providers for clips with temporal noise reduction on.
+    ///
+    /// Kept across frames: building one opens a decoder, and a
+    /// denoised clip asks for two neighbours on every rendered frame.
+    tnr_frames: HashMap<ClipId, klipp_plugin::FrameProviderFn>,
     /// The current render's inspection request, and what it has found.
     inspect: Inspect,
     found: Inspection,
@@ -470,6 +475,7 @@ impl Renderer {
             gpu_export_declined_after_work: false,
             global_lut: None,
             rsc_motion: HashMap::new(),
+            tnr_frames: HashMap::new(),
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
@@ -1742,10 +1748,17 @@ impl Renderer {
                 let at = source_secs(clip, time, fps);
                 let f = src.frame(clip, at, width, height)?;
                 let next = if frame_blends(clip, time) { src.frame_after(clip, at, width, height) } else { None };
+                // Temporal noise reduction happens here, on the source,
+                // before the grade — so a clip using it gives up the
+                // GPU-resident fast path below and comes down to the
+                // CPU. That cost is the feature, not an oversight: the
+                // neighbours it averages against are CPU-decoded source
+                // frames.
+                let tnr = temporal_denoise_of(clip);
                 match f {
                     // Left on the GPU for the grade to start from.
                     SourceFrame { pixels: SourcePixels::Gpu(g), width: w, height: h, .. }
-                        if next.is_none() && (w, h) == (width, height) =>
+                        if tnr.is_none() && next.is_none() && (w, h) == (width, height) =>
                     {
                         (GradeInput::Gpu(g), None)
                     }
@@ -1762,6 +1775,25 @@ impl Renderer {
                         let pixels = match (next, pts) {
                             (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
                             _ => pixels,
+                        };
+                        let pixels = match tnr {
+                            // Display-referred only. A scene-referred
+                            // source is rendered to scene linear here
+                            // and to display sRGB by the provider, and
+                            // averaging those is comparing two
+                            // renderings of the same picture rather
+                            // than two samples of it.
+                            Some((strength, threshold)) if hdr.is_none() => self.temporal_denoise(
+                                clip, at, pixels, width, height, fps, strength, threshold, src,
+                            ),
+                            Some(_) => {
+                                tracing::debug!(
+                                    "TNR skipped on {}: scene-referred source, which the frame provider renders differently",
+                                    clip.id,
+                                );
+                                pixels
+                            }
+                            None => pixels,
                         };
                         (GradeInput::Cpu(pixels), hdr)
                     }
@@ -1981,6 +2013,71 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// Average the source frame with its neighbours, before the grade.
+    ///
+    /// The neighbours come from the clip's own media through the frame
+    /// provider, which reads clip time — `source_secs` returns a
+    /// position in the media, so the clip's `source_in` comes back off
+    /// before asking.
+    ///
+    /// A neighbour of a different size is dropped rather than scaled:
+    /// it means the render size and the media size disagree, and a
+    /// resampled neighbour would blur the very detail the guard exists
+    /// to protect.
+    #[allow(clippy::too_many_arguments)]
+    fn temporal_denoise(
+        &mut self,
+        clip: &Clip,
+        source_at: f64,
+        pixels: Arc<Vec<f32>>,
+        width: u32,
+        height: u32,
+        fps: f64,
+        strength: f32,
+        threshold: f32,
+        src: &mut dyn FrameSource,
+    ) -> Arc<Vec<f32>> {
+        if !self.tnr_frames.contains_key(&clip.id) {
+            // One decoder per clip, kept. Bounded so a long timeline
+            // does not hold one open for every clip it has passed.
+            if self.tnr_frames.len() > 8 {
+                self.tnr_frames.clear();
+            }
+            let Some(provider) = src.temporal_frames(clip) else { return pixels };
+            self.tnr_frames.insert(clip.id, provider);
+        }
+        let Some(provider) = self.tnr_frames.get(&clip.id) else { return pixels };
+
+        let dt = 1.0 / fps.max(1.0);
+        let clip_at = source_at - clip.source_in.to_secs_f64();
+        let want = (width as usize) * (height as usize) * 4;
+        let mut neighbours: Vec<Vec<f32>> = Vec::with_capacity(2);
+        for t in [clip_at - dt, clip_at + dt] {
+            if t < 0.0 {
+                continue;
+            }
+            let Some((rgba, w, h)) = provider(t) else { continue };
+            if (w, h) != (width, height) {
+                continue;
+            }
+            let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba);
+            // The provider renders BT.709 sRGB; the frame beside it is
+            // in the working space.
+            self.authored_to_working(&mut linear);
+            if linear.len() == want {
+                neighbours.push(linear);
+            }
+        }
+        if neighbours.is_empty() {
+            return pixels;
+        }
+        let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
+        let t = Instant::now();
+        let out = klipp_effects::temporal_denoise::denoise_frame(&pixels, &refs, threshold, strength);
+        self.found.stats.effects_ms += ms_since(t);
+        Arc::new(out)
     }
 
     /// The clip's node graph, at clip-relative time. The inspected clip
@@ -2481,7 +2578,10 @@ pub fn clip_effects(
     let mut fx: Vec<BuiltinEffect> = fx
         .into_iter()
         .map(|(_, e)| e)
-        .filter(|e| !matches!(e, BuiltinEffect::Opacity { .. } | BuiltinEffect::SpeedRamp { .. }))
+        // TemporalDenoise joins them: it ran at the head of the
+        // pipeline, before the grade, and running again here would
+        // average the graded picture against source neighbours.
+        .filter(|e| !matches!(e, BuiltinEffect::Opacity { .. } | BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. }))
         .collect();
 
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
@@ -2744,6 +2844,18 @@ fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<
     }
 }
 
+/// The temporal noise reduction settings on `clip`, if it has any
+/// enabled and they would do something.
+pub fn temporal_denoise_of(clip: &Clip) -> Option<(f32, f32)> {
+    let enabled = |i: usize| clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
+    clip.builtin_effects.iter().enumerate().find_map(|(i, e)| match e {
+        BuiltinEffect::TemporalDenoise { strength, threshold } if enabled(i) && *strength > 0.0 => {
+            Some((*strength, *threshold))
+        }
+        _ => None,
+    })
+}
+
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,
 /// not frozen, with the clip running below real time.
 pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
@@ -2966,5 +3078,78 @@ mod stack_order_tests {
         seq.tracks = vec![text, picture, Track::new("A1", TrackKind::Audio), subs];
         let order: Vec<usize> = active_layers(&seq, tc(1.0)).iter().map(|l| l.track).collect();
         assert_eq!(order, vec![1, 0, 3], "bottom first: the picture, the title, and the captions last");
+    }
+}
+
+#[cfg(test)]
+mod temporal_denoise_placement_tests {
+    use super::*;
+    use klipp_core::ClipId;
+    use klipp_timeline::{Clip, ClipKind};
+
+    fn tc(f: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode::from_frames(f, 24)
+    }
+
+    fn clip_with(effects: Vec<BuiltinEffect>) -> Clip {
+        Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Gap,
+            builtin_effects: effects,
+            ..Clip::gap(tc(0), tc(48))
+        }
+    }
+
+    /// The chain must never see it. It ran at the head of the pipeline,
+    /// on the source; running again after the grade would average a
+    /// graded picture against source neighbours — the exact mistake the
+    /// placement exists to avoid.
+    #[test]
+    fn the_effects_chain_never_receives_it() {
+        let clip = clip_with(vec![
+            BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 },
+            BuiltinEffect::Sharpen { amount: 0.5 },
+        ]);
+        let (fx, _) = clip_effects(&clip, tc(0), 24.0, None);
+        assert!(
+            !fx.iter().any(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })),
+            "temporal denoise reached the chain: {fx:?}",
+        );
+        assert!(
+            fx.iter().any(|e| matches!(e, BuiltinEffect::Sharpen { .. })),
+            "the other effects were lost with it",
+        );
+    }
+
+    /// And the head of the pipeline has to find it wherever it sits,
+    /// because the inspector lets it be dragged anywhere.
+    #[test]
+    fn the_head_of_the_pipeline_finds_it_at_any_position() {
+        let tnr = BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 };
+        let other = BuiltinEffect::Sharpen { amount: 0.5 };
+        for effects in [
+            vec![tnr.clone(), other.clone()],
+            vec![other.clone(), tnr.clone()],
+        ] {
+            let clip = clip_with(effects);
+            assert_eq!(
+                temporal_denoise_of(&clip),
+                Some((0.8, 0.02)),
+                "not found at this position",
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_or_zero_strength_one_is_not_applied() {
+        let mut clip = clip_with(vec![BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 }]);
+        clip.builtin_effects_enabled = vec![false];
+        assert_eq!(temporal_denoise_of(&clip), None, "a disabled effect ran");
+
+        let off = clip_with(vec![BuiltinEffect::TemporalDenoise { strength: 0.0, threshold: 0.02 }]);
+        assert_eq!(temporal_denoise_of(&off), None, "strength 0 still took the CPU route");
+
+        let none = clip_with(vec![BuiltinEffect::Sharpen { amount: 0.5 }]);
+        assert_eq!(temporal_denoise_of(&none), None);
     }
 }

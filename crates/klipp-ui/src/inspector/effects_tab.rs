@@ -1157,6 +1157,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::Letterbox { .. } => Cow::Borrowed("Letterbox"),
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => Cow::Borrowed("Chromatic Aberration"),
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => Cow::Borrowed("Rolling Shutter Correction"),
+        klipp_effects::BuiltinEffect::TemporalDenoise { .. } => Cow::Borrowed("Temporal Noise Reduction"),
         klipp_effects::BuiltinEffect::Deflicker { .. } => Cow::Borrowed("Deflicker"),
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => Cow::Borrowed("Video Stabilization"),
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => Cow::Borrowed("Speed Ramp"),
@@ -1283,6 +1284,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::RollingShutterCorrection { .. } => BuiltinEffect::RollingShutterCorrection {
             strength: 0.5, readout_ratio: 0.5,
         },
+        BuiltinEffect::TemporalDenoise { .. } => BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 },
         BuiltinEffect::Deflicker { .. } => BuiltinEffect::Deflicker { strength: 0.8, window_secs: 1.0, gain: 1.0 },
         BuiltinEffect::VideoStabilization { .. } => BuiltinEffect::VideoStabilization {
             smoothing: 0.5, crop_ratio: 0.05, zoom: true,
@@ -1319,7 +1321,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } | BuiltinEffect::SpeedRamp { .. }
-        | BuiltinEffect::Deflicker { .. }
+        | BuiltinEffect::Deflicker { .. } | BuiltinEffect::TemporalDenoise { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. }
@@ -1899,6 +1901,35 @@ fn show_builtin_effect_params(
             track_scrubby!("strength", r_s, *strength);
             let r_r = scrubby_param_row(ui, "Readout Ratio", readout_ratio, 0.0..=1.0, 0.5, 0.005, 2, "", ks_r);
             track_scrubby!("readout_ratio", r_r, *readout_ratio);
+        }
+        klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } => {
+            ui.label(
+                egui::RichText::new(
+                    "Runs on the source, before the grade — where it sits in this list makes no difference.",
+                )
+                .size(10.0)
+                .color(theme.text_dim),
+            );
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 0.5, 0.01, 2, "", ks_s);
+            track_scrubby!("strength", r_s, *strength);
+            let ks_t = Some(effect_keyframe_state(clip, effect_index, "threshold", clip_time_secs));
+            let r_t = scrubby_param_row(ui, "Threshold", threshold, 0.001..=0.2, 0.02, 0.001, 3, "", ks_t);
+            track_scrubby!("threshold", r_t, *threshold);
+            ui.label(
+                egui::RichText::new(
+                    "How far a pixel may change between frames and still count as the same pixel. Too high and moving subjects ghost; too low and nothing is cleaned.",
+                )
+                .size(10.0)
+                .color(theme.text_dim),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Log, PQ and HLG sources are not denoised yet — the frames it reads are rendered differently from the one it would correct.",
+                )
+                .size(10.0)
+                .color(theme.text_dim),
+            );
         }
         klipp_effects::BuiltinEffect::Deflicker { strength, window_secs, .. } => {
             let has_data = clip.deflicker_data.is_some();

@@ -611,6 +611,30 @@ pub enum BuiltinEffect {
         /// Sensor readout ratio: fraction of frame duration for full sensor readout
         readout_ratio: f32,
     },
+    /// Temporal Noise Reduction: averages each pixel with itself in
+    /// the neighbouring frames, guarded so moved pixels keep their own
+    /// value.
+    ///
+    /// **Runs at the head of the clip's pipeline, before the grade**,
+    /// not where it sits in the effect list — the frames it reads are
+    /// source frames, so grading first would average a graded picture
+    /// against ungraded ones. The compositor lifts it out and the
+    /// chain never sees it. Resolve and Premiere place theirs the same
+    /// way, and for the same reason.
+    ///
+    /// Display-referred sources only for now. A log, PQ or HLG clip is
+    /// rendered to scene linear by the main path and to display sRGB
+    /// by the frame provider, and averaging those two would be
+    /// comparing different renderings of the same picture.
+    TemporalDenoise {
+        /// How much of the averaged result to mix back (0.0-1.0).
+        strength: f32,
+        /// How far a pixel's brightness may move between frames and
+        /// still count as the same pixel, in linear light. Sized for
+        /// the grain, not for the motion: too high and moving subjects
+        /// ghost, too low and nothing is cleaned.
+        threshold: f32,
+    },
     /// Deflicker: undoes whole-frame brightness pumping — a shutter
     /// beating against mains-frequency lighting.
     ///

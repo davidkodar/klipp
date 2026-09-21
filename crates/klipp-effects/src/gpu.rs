@@ -6588,6 +6588,11 @@ impl GpuEffectsPipeline {
                     // SpeedRamp is handled at the engine level (frame queue + GPU blend),
                     // not in the per-frame GPU effects chain. Pass through.
                 }
+                BuiltinEffect::TemporalDenoise { .. } => {
+                    // Ran at the head of the clip's pipeline, before
+                    // the grade — the compositor lifts it out and the
+                    // chain never normally sees it. Pass through.
+                }
                 BuiltinEffect::ColorFade { color, progress, .. } => {
                     let t = progress.clamp(0.0, 1.0);
                     if t >= 0.9999 {

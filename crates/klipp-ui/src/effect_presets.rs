@@ -514,6 +514,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Letterbox { .. } => "letterbox",
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => "chromatic_aberration",
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => "rolling_shutter_correction",
+        klipp_effects::BuiltinEffect::TemporalDenoise { .. } => "temporal_denoise",
         klipp_effects::BuiltinEffect::Deflicker { .. } => "deflicker",
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => "video_stabilization",
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => "speed_ramp",
