@@ -203,6 +203,27 @@ pub fn color_wheel_sized(
 
     let neutral_text = theme.text_dim;
 
+    // The pills are the wheel's only numeric surface, and they used to
+    // be `painter.text` — you could read a channel but not set one.
+    // Matching two shots means typing `+0.043`, not dragging a puck at
+    // it by eye, so each pill is now a `DragValue`: drag to scrub one
+    // channel, double-click to type, select and copy.
+    //
+    // `scrubby_param_row`, which the issue suggested reusing, is a
+    // 22 px inspector row — label, range fill, value, reset icon,
+    // keyframe diamond. It cannot live in a 37x13 pill. Its useful
+    // half is `DragValue`, which is what this uses directly.
+    //
+    // What a pill shows is derived: `wheel_offset_to_rgb` of the
+    // puck and the master. So setting one channel means rebuilding the
+    // triple and running `rgb_to_wheel_offset` back to a puck position
+    // — the inverse that already exists, with a round-trip test. A
+    // triple whose spread is wider than the rim can reach clamps to the
+    // rim, so a typed extreme lands where the wheel can actually go and
+    // the puck shows you that.
+    let mut rgb = [rgb_r, rgb_g, rgb_b];
+    let mut rgb_edited = false;
+
     for (i, &(val, border_c, text_c)) in pill_colors.iter().enumerate() {
         let px = pills_left + i as f32 * (pill_w + pill_gap);
         let pill_rect = egui::Rect::from_min_size(
@@ -226,14 +247,71 @@ pub fn color_wheel_sized(
         let text = if is_zero { neutral_text } else { text_c };
         painter.rect_filled(pill_rect, 2.0, bg);
         painter.rect_stroke(pill_rect, 2.0, egui::Stroke::new(0.5_f32, border));
-        painter.text(
-            pill_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            // Three decimals where they fit: a fine step is 0.001.
-            if pill_w >= 32.0 { format!("{val:+.3}") } else { format!("{val:+.2}") },
-            egui::FontId::monospace(pill_font_size),
-            text,
-        );
+
+        // The pill's own paint stays; the DragValue sits on it with no
+        // fill or stroke of its own, so the channel colouring survives
+        // and the field is the whole pill.
+        let mut v = val;
+        // Three decimals where they fit: a fine step is 0.001.
+        let decimals = if pill_w >= 32.0 { 3 } else { 2 };
+        let resp = {
+            let mut pill_ui = ui.new_child(
+                egui::UiBuilder::new().max_rect(pill_rect).layout(
+                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                ),
+            );
+            let st = pill_ui.style_mut();
+            st.spacing.interact_size = egui::vec2(pill_w, pill_h);
+            st.spacing.button_padding = egui::vec2(0.0, 0.0);
+            st.override_font_id = Some(egui::FontId::monospace(pill_font_size));
+            for w in [
+                &mut st.visuals.widgets.inactive,
+                &mut st.visuals.widgets.hovered,
+                &mut st.visuals.widgets.active,
+                &mut st.visuals.widgets.open,
+            ] {
+                w.weak_bg_fill = egui::Color32::TRANSPARENT;
+                w.bg_fill = egui::Color32::TRANSPARENT;
+                w.bg_stroke = egui::Stroke::NONE;
+                w.fg_stroke.color = text;
+                w.rounding = egui::Rounding::same(2.0);
+            }
+            // Hover needs to say "this is a field" without repainting
+            // the border the channel colour is carried by.
+            st.visuals.widgets.hovered.weak_bg_fill = theme.bg_hover;
+            pill_ui.add(
+                egui::DragValue::new(&mut v)
+                    .speed(0.002)
+                    .range(-1.0..=1.0)
+                    // The sign is always shown, as the painted pills
+                    // showed it and as the master slider beneath still
+                    // does: these are offsets from neutral, and "+0.08"
+                    // reads as a direction where "0.08" reads as a
+                    // level. `fixed_decimals` alone drops the plus.
+                    .custom_formatter(move |n, _| format!("{n:+.decimals$}"))
+                    // And accepted back, so a value can be copied out of
+                    // one pill and pasted into another.
+                    .custom_parser(|text| text.trim().trim_start_matches('+').parse().ok()),
+            )
+        };
+        if resp.drag_started() {
+            drag_started = true;
+        }
+        if resp.changed() {
+            rgb[i] = v;
+            rgb_edited = true;
+        }
+        if resp.drag_stopped() || resp.lost_focus() {
+            drag_ended = true;
+        }
+    }
+
+    if rgb_edited {
+        let (x, y, m) = klipp_color::rgb_to_wheel_offset((rgb[0], rgb[1], rgb[2]));
+        offset[0] = x;
+        offset[1] = y;
+        *master = m;
+        changed = true;
     }
 
     // ── Master slider ──
