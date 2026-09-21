@@ -500,6 +500,8 @@ mod tests {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            deflicker_data: None,
+            deflicker_gains: None,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),

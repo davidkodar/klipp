@@ -350,6 +350,16 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Deflicker".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Deflicker {
+                    strength: 0.8, window_secs: 1.0, gain: 1.0,
+                }),
+                source_label: "Built-in",
+                description: "Steadies whole-frame brightness pumping from mains-frequency lighting. Measures the clip first.".into(),
+                grouping: "Repair".into(),
+            },
+            EffectEntry {
                 name: "Video Stabilization".into(),
                 category: EffectCategory::Distort,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::VideoStabilization {

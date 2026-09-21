@@ -373,6 +373,23 @@ pub(crate) fn apply(
                 [o[0] + ray[0] * inv * intensity, o[1] + ray[1] * inv * intensity, o[2] + ray[2] * inv * intensity, o[3]]
             })
         }
+        Deflicker { strength, gain, .. } => {
+            // `SHADER_DEFLICKER`. A scale on the light, which is what
+            // an exposure change is. Unlike stabilization and rolling
+            // shutter — which pass through on the CPU because their
+            // per-frame data lives on the GPU — this one's gain rides
+            // in the effect, so the twin is real and parity-testable.
+            let g = 1.0 + (gain - 1.0) * strength.clamp(0.0, 1.0);
+            let mut p = p;
+            if (g - 1.0).abs() > f32::EPSILON {
+                p.par_chunks_exact_mut(4).for_each(|px| {
+                    px[0] *= g;
+                    px[1] *= g;
+                    px[2] *= g;
+                });
+            }
+            p
+        }
         Vignette { amount, size, softness, roundness } => {
             let (cx, cy) = (wf * 0.5, hf * 0.5);
             each_pixel(&p, w, h, |x, y, f| {

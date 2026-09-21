@@ -244,6 +244,7 @@ pub struct GpuEffectsPipeline {
     /// Corrector's mix over all its stages), and that picture's copy.
     grade_mix_pipeline: wgpu::ComputePipeline,
     apply_matte_pipeline: wgpu::ComputePipeline,
+    deflicker_pipeline: wgpu::ComputePipeline,
     blend_mix_pipeline: wgpu::ComputePipeline,
     layer_over_pipeline: wgpu::ComputePipeline,
     grade_mix_src: Option<wgpu::Buffer>,
@@ -1003,6 +1004,7 @@ impl GpuEffectsPipeline {
         let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
         let grade_mix_pipeline = create_pipeline(&device, &huesat_pl, "grade_mix", SHADER_GRADE_MIX);
         let apply_matte_pipeline = create_pipeline(&device, &apply_matte_pl, "apply_matte", SHADER_APPLY_MATTE_CHAIN);
+        let deflicker_pipeline = create_pipeline(&device, &pipeline_layout, "deflicker", SHADER_DEFLICKER);
         let blend_mix_pipeline = create_pipeline(&device, &huesat_pl, "blend_mix", SHADER_BLEND_MIX);
         let layer_over_pipeline = create_pipeline(&device, &huesat_pl, "layer_over", SHADER_LAYER_OVER);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
@@ -1377,6 +1379,7 @@ impl GpuEffectsPipeline {
             mask_cutout_pipeline,
             grade_mix_pipeline,
             apply_matte_pipeline,
+            deflicker_pipeline,
             blend_mix_pipeline,
             layer_over_pipeline,
             grade_mix_src: None,
@@ -6015,6 +6018,18 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.light_rays_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::Deflicker { strength, gain, .. } => {
+                    // `window_secs` shaped the gains during analysis
+                    // and the compositor picked this frame's out of
+                    // them; by here the answer is one number.
+                    self.write_params(&DeflickerParams {
+                        width, height,
+                        gain: *gain,
+                        strength: strength.clamp(0.0, 1.0),
+                    });
+                    self.dispatch(&self.deflicker_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::Vignette { amount, size, softness, roundness } => {
                     self.write_params(&VignetteParams {
                         width, height,
@@ -7873,6 +7888,12 @@ struct GpuRgbCurvesParams {
     luma_yg: f32,
     luma_yb: f32,
     _pad0: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DeflickerParams {
+    width: u32, height: u32, gain: f32, strength: f32,
 }
 
 #[repr(C)]
@@ -15674,6 +15695,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         o.z + (p.z - o.z) * params.mix,
         p.w,
     ));
+}
+"
+);
+
+const SHADER_DEFLICKER: &str = concat!(
+    "
+struct Params { width: u32, height: u32, gain: f32, strength: f32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+// A scale on the light, which is what an exposure change is: a
+// shutter catching less of a light's cycle multiplies the frame by a
+// constant, and undoing it multiplies back. Doing this on the encoded
+// values would make the correction depend on how dark the frame was.
+//
+// Alpha is left alone — the frame got darker, it did not become more
+// transparent.
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    let g = 1.0 + (params.gain - 1.0) * params.strength;
+    output[idx] = pack(vec4<f32>(p.x * g, p.y * g, p.z * g, p.w));
 }
 "
 );
