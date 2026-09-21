@@ -10,7 +10,7 @@
 //! on top and would shift every index after it, so it is made first
 //! and named by kind.
 
-use crate::ops::{Anchor, ClipRef, Op, TrackRef};
+use crate::ops::{Anchor, ClipRef, ComposePose, Op, TrackRef};
 use klipp_media::MediaPool;
 use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind, TypeStyle};
 
@@ -236,6 +236,23 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                 ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y });
             }
         }
+        // A placement that fills the frame is what a clip does anyway, so
+        // only a real one is lowered: an op that says nothing would be
+        // refused, and refusing a plan for saying the default is unkind.
+        if let Some(p) = s.placement.as_ref().filter(|p| !p.fills_frame()) {
+            ops.push(Op::Compose {
+                clip_id: clip(i),
+                poses: vec![ComposePose {
+                    secs: 0.0,
+                    x: p.x,
+                    y: p.y,
+                    width: p.width,
+                    height: p.height,
+                    rotation_deg: p.rotation_deg,
+                    opacity: p.opacity.unwrap_or(1.0),
+                }],
+            });
+        }
         // The delivery's size is the brief's, not the first file's: the
         // first place sets the sequence to the footage, this puts it right.
         if i == 0 && start == 0.0 && seq.tracks.iter().all(|t| t.clips.is_empty()) {
@@ -449,6 +466,30 @@ mod tests {
             ..Default::default()
         };
         assert!(validate(&astray, &pool, None).unwrap_err().contains("fractions of the frame"));
+    }
+
+    #[test]
+    fn a_placement_becomes_a_compose_op_and_the_frame_as_shot_becomes_nothing() {
+        let (seq, pool, screen, _bed) = fixture();
+        let built = |placement| {
+            let plan = EditPlan { segments: vec![PlanSegment { placement, ..seg(screen, 0.0, 2.0) }], ..Default::default() };
+            to_ops(&plan, &seq, &pool, None)
+        };
+
+        // Half the frame, left of centre and high, turned and half seen.
+        let ops = built(Some(PlanPlacement { x: 0.25, y: 0.3, width: 0.5, height: 0.5, rotation_deg: -6.0, opacity: Some(0.5) }));
+        let Some(Op::Compose { poses, .. }) = ops.iter().find(|o| matches!(o, Op::Compose { .. })) else {
+            panic!("a placement lowers to a compose op")
+        };
+        assert_eq!(poses.len(), 1);
+        assert!((poses[0].x - 0.25).abs() < 1e-6 && (poses[0].width - 0.5).abs() < 1e-6);
+        assert!((poses[0].rotation_deg + 6.0).abs() < 1e-6 && (poses[0].opacity - 0.5).abs() < 1e-6);
+        // And it builds: the op is one the timeline accepts.
+        assert!(resolve(&seq, &pool, &ops).is_ok(), "{:?}", resolve(&seq, &pool, &ops).err());
+
+        // The frame as shot is what a clip does anyway, so nothing is said.
+        assert!(!built(Some(PlanPlacement::default())).iter().any(|o| matches!(o, Op::Compose { .. })));
+        assert!(!built(None).iter().any(|o| matches!(o, Op::Compose { .. })));
     }
 
     #[test]
