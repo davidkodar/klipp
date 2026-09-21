@@ -258,6 +258,56 @@ impl FrameSource for ExportFrameSource<'_> {
         let file = self.media.get(media_id)?;
         crate::clip_decoder::decode_frame_at_size(&file.path, source_secs.max(0.0), max_width)
     }
+
+    /// Frames at other times, for OFX plugins that read them.
+    ///
+    /// Export had no implementation and took the trait's `None`, which
+    /// runs those plugins on the current frame alone. The viewer does
+    /// implement it. So a retime, a frame blend or a slit-scan showed
+    /// one picture while editing and wrote a different one to the file
+    /// — and the host advertises `OfxImageEffectPropTemporalClipAccess`
+    /// as supported, so a plugin that asks is being told yes and handed
+    /// the wrong thing.
+    ///
+    /// The main decoder cannot serve this: it is positioned on the
+    /// frame being written and reads forward, so seeking it would
+    /// derail the export. This opens the file per miss instead, which
+    /// is the honest cost of the correct picture — see the issue on
+    /// giving export a seekable reader. The memo below means a plugin
+    /// asking for N-1, N, N+1 pays once per frame rather than three
+    /// times, because each frame's N+1 is the next frame's N.
+    fn temporal_frames(&mut self, clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let path = self.media.get(media_id)?.path.clone();
+        let source_in = clip.source_in.to_secs_f64();
+        // Half a frame: the tolerance the viewer's cache uses, so the
+        // two agree on which stored frame answers a given time.
+        let tolerance = 0.5 / self.fps.max(1.0);
+        let memo: std::cell::RefCell<std::collections::VecDeque<(f64, Vec<u8>, u32, u32)>> =
+            std::cell::RefCell::new(std::collections::VecDeque::new());
+        Some(Box::new(move |t: f64| {
+            let secs = (source_in + t).max(0.0);
+            if let Some((_, rgba, w, h)) = memo
+                .borrow()
+                .iter()
+                .find(|(at, ..)| (at - secs).abs() < tolerance)
+            {
+                return Some((rgba.clone(), *w, *h));
+            }
+            // Full size: `decode_frame_at_size` scales by
+            // `(max_width / src_w).min(1.0)`, so anything at least as
+            // wide as the source leaves it alone.
+            let (rgba, w, h) = crate::clip_decoder::decode_frame_at_size(&path, secs, u32::MAX)?;
+            let mut memo = memo.borrow_mut();
+            memo.push_back((secs, rgba.clone(), w, h));
+            // Enough for a plugin reaching a couple of frames either
+            // way; a window, not a cache of the clip.
+            while memo.len() > 5 {
+                memo.pop_front();
+            }
+            Some((rgba, w, h))
+        }))
+    }
 }
 
 /// An export frame left as the scaler produced it, so the grade can
@@ -452,4 +502,119 @@ fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32>
             dst[3] = px[3] as f32 / 65535.0;
         });
     out
+}
+
+#[cfg(test)]
+mod temporal_frames_tests {
+    use super::*;
+    use klipp_timeline::{Clip, ClipKind};
+
+    /// `testsrc` puts a frame counter and a moving pattern in the
+    /// picture, so two times are two visibly different frames — which
+    /// is what tells a real seek from the same frame handed back twice.
+    fn test_clip_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let out = dir.join("temporal.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args([
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=3",
+                "-c:v", "mpeg4", "-q:v", "3",
+            ])
+            .arg(&out)
+            .status()
+            .ok()?;
+        ok.success().then_some(out)
+    }
+
+    fn source_and_clip(
+        path: std::path::PathBuf,
+        source_in_frames: i64,
+    ) -> (HashMap<MediaId, MediaFile>, Clip) {
+        let id = MediaId::new();
+        let mut media = HashMap::new();
+        media.insert(id, MediaFile { path, log_format: None, source_rotation: 0 });
+        let tc = |f: i64| klipp_core::RationalTime::from_frames(f, 24);
+        let clip = Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id: id },
+            timeline_in: tc(0),
+            timeline_out: tc(48),
+            source_in: tc(source_in_frames),
+            source_out: tc(source_in_frames + 48),
+            ..Clip::gap(tc(0), tc(48))
+        };
+        (media, clip)
+    }
+
+    /// Export used to take the trait's `None` here, so an OFX plugin
+    /// that reads other frames got only the current one and wrote
+    /// something different from what the viewer showed.
+    #[test]
+    fn export_gives_a_plugin_the_frames_it_asks_for() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = test_clip_file(&dir) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+        let (media, clip) = source_and_clip(path, 0);
+        let mut src =
+            ExportFrameSource::new(&media, 24.0, klipp_core::WorkingColorspace::Rec709Linear);
+
+        let frames = src.temporal_frames(&clip).expect("export must provide frames");
+
+        let (a, w, h) = frames(0.0).expect("frame at t=0");
+        assert!(w > 0 && h > 0 && a.len() == (w * h * 4) as usize);
+
+        // A different time has to be a different picture, or the
+        // provider is handing back one frame under several names.
+        let (b, _, _) = frames(1.0).expect("frame at t=1");
+        assert_ne!(a, b, "t=0 and t=1 returned the same picture");
+
+        // And asking again for one already seen gives exactly what it
+        // gave before — the memo, which is what keeps a plugin reading
+        // N-1, N, N+1 to one decode per frame.
+        let (a_again, _, _) = frames(0.0).expect("frame at t=0 again");
+        assert_eq!(a, a_again, "the same time gave two different pictures");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The time a plugin asks for is clip time; the file is read at
+    /// `source_in + t`. Getting this wrong reads the right frame of the
+    /// wrong part of the media, which looks plausible and is not.
+    #[test]
+    fn the_provider_reads_from_the_clips_source_in() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-si-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = test_clip_file(&dir) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+
+        // One clip starting at the file's head, one 24 frames in.
+        let (media_a, clip_a) = source_and_clip(path.clone(), 0);
+        let mut src_a =
+            ExportFrameSource::new(&media_a, 24.0, klipp_core::WorkingColorspace::Rec709Linear);
+        let frames_a = src_a.temporal_frames(&clip_a).unwrap();
+
+        let (media_b, clip_b) = source_and_clip(path, 24);
+        let mut src_b =
+            ExportFrameSource::new(&media_b, 24.0, klipp_core::WorkingColorspace::Rec709Linear);
+        let frames_b = src_b.temporal_frames(&clip_b).unwrap();
+
+        // Clip B at t=0 is the file at 1.0 s, which is clip A at t=1.0.
+        let (b_at_zero, _, _) = frames_b(0.0).expect("b at 0");
+        let (a_at_one, _, _) = frames_a(1.0).expect("a at 1");
+        assert_eq!(
+            b_at_zero, a_at_one,
+            "a clip starting 24 frames in did not offset its reads by source_in",
+        );
+
+        // And it is not simply ignoring the offset.
+        let (a_at_zero, _, _) = frames_a(0.0).expect("a at 0");
+        assert_ne!(b_at_zero, a_at_zero, "source_in had no effect at all");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
