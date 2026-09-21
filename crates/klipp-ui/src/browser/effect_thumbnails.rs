@@ -437,6 +437,18 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => {
             klipp_effects::BuiltinEffect::GaussianBlur { radius: 6.0 }
         }
+        // The layer effects only show where the picture is not the whole
+        // frame, so the thumbnail exaggerates: deep corners, and a
+        // shadow and a glow wide enough to read at thumbnail size.
+        klipp_effects::BuiltinEffect::RoundedCorners { .. } => {
+            klipp_effects::BuiltinEffect::RoundedCorners { radius: 0.3, feather: 0.01 }
+        }
+        klipp_effects::BuiltinEffect::DropShadow { color, .. } => {
+            klipp_effects::BuiltinEffect::DropShadow { offset_x: 0.04, offset_y: 0.06, blur: 0.06, color: *color, opacity: 0.8 }
+        }
+        klipp_effects::BuiltinEffect::OuterGlow { color, .. } => {
+            klipp_effects::BuiltinEffect::OuterGlow { radius: 0.12, intensity: 1.0, color: *color }
+        }
         klipp_effects::BuiltinEffect::Sharpen { .. } => {
             klipp_effects::BuiltinEffect::Sharpen { amount: 1.5 }
         }

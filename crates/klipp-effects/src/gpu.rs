@@ -6613,6 +6613,15 @@ impl GpuEffectsPipeline {
                     // arm means dispatcher policy was bypassed — passthrough
                     // rather than producing visually-broken output.
                 }
+                BuiltinEffect::RoundedCorners { .. }
+                | BuiltinEffect::DropShadow { .. }
+                | BuiltinEffect::OuterGlow { .. } => {
+                    // The layer effects have no shader yet, and
+                    // chain_supports_gpu keeps a chain carrying one of
+                    // them off this path entirely. Same policy as Frei0r
+                    // above: passthrough rather than a layer that
+                    // silently loses its corners and its shadow.
+                }
             }
         }
 

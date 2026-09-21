@@ -918,3 +918,34 @@ fn a_title_laid_over_display_bytes_matches_the_full_composite() {
     assert!(solid > 200 && clear > 10_000, "solid {solid} clear {clear}");
     assert!(edge_worst <= 48, "edge pixels differ by up to {edge_worst}");
 }
+
+/// A clip placed smaller than the frame leaves a transparent margin, and
+/// a shadow drawn into that margin is what the compositor lays over the
+/// track below. This is the rule that a shadow runs *after* the
+/// transform that made the margin: run before it, there is no margin to
+/// draw in and the shadow is invisible.
+#[test]
+fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
+    let mut top = media(0.0, 1.0);
+    // Placed at two fifths of the frame by keyframes, as `compose`
+    // writes it — so the transform is the one the renderer pushes.
+    klipp_core::keyframe::upsert_keyframe(&mut top.transform_scale_keyframes, 0.0, 0.4);
+    top.builtin_effects = vec![BuiltinEffect::DropShadow {
+        offset_x: 0.0,
+        offset_y: 0.06,
+        blur: 0.05,
+        color: [0, 0, 0],
+        opacity: 1.0,
+    }];
+    let under = solid([255, 0, 0], 0.0, 1.0);
+    let seq = sequence(vec![vec![top.clone()], vec![under]]);
+    let mut src = Flat::default().linear(&top, [1.0, 1.0, 1.0]);
+
+    for img in render(&seq, 0.5, &mut src) {
+        let clear = px(&img, 1, 1);
+        assert!(clear[0] > 0.9 && clear[1] < 0.05, "away from the layer it is the red below: {clear:?}");
+        assert!(px(&img, 16, 9)[1] > 0.9, "the middle of the frame is the white layer");
+        let shaded = px(&img, 16, 14);
+        assert!(shaded[0] < clear[0] * 0.75, "the shadow darkens the background under the layer: {shaded:?} against {clear:?}");
+    }
+}

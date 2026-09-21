@@ -267,7 +267,8 @@ hand edit.
   (`ops.rs`) is the agent-facing intent — place, trim, split, move,
   grade, `qualify` (HSL secondary), `look` (LUT), `match_grade`,
   `clean_audio`, `reframe`, `compose` (place a picture smaller than
-  the frame), `retime`, `transition`, `effect`, `captions`, and so on. `resolve` simulates a batch of ops on a clone
+  the frame, which `corners`, `shadow` and `outer_glow` then treat as a
+  layer), `retime`, `transition`, `effect`, `captions`, and so on. `resolve` simulates a batch of ops on a clone
   and returns a `Plan` of `EditCommand`s (or a `Refusal` naming the
   step, the reason, and the fix); the UI applies the plan as one
   history batch. `qc::check` is the delivery quality-check: black and

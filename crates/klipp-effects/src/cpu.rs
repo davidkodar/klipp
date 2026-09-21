@@ -48,14 +48,14 @@ fn mix(a: Px, b: Px, t: f32) -> Px {
 }
 
 /// A read-only frame.
-struct Frame<'a> {
+pub(crate) struct Frame<'a> {
     p: &'a [f32],
     w: usize,
     h: usize,
 }
 
 impl Frame<'_> {
-    fn at(&self, x: usize, y: usize) -> Px {
+    pub(crate) fn at(&self, x: usize, y: usize) -> Px {
         let i = (y * self.w + x) * 4;
         [self.p[i], self.p[i + 1], self.p[i + 2], self.p[i + 3]]
     }
@@ -67,7 +67,7 @@ impl Frame<'_> {
 }
 
 /// A new frame, each pixel computed from its coordinates and the input.
-fn each_pixel(input: &[f32], w: u32, h: u32, f: impl Fn(usize, usize, &Frame) -> Px + Sync) -> Vec<f32> {
+pub(crate) fn each_pixel(input: &[f32], w: u32, h: u32, f: impl Fn(usize, usize, &Frame) -> Px + Sync) -> Vec<f32> {
     let src = Frame { p: input, w: w as usize, h: h as usize };
     let mut out = vec![0.0f32; input.len()];
     out.par_chunks_mut(w as usize * 4).enumerate().for_each(|(y, row)| {
@@ -123,7 +123,7 @@ fn box_blur(p: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
 
 /// The Gaussian approximation every blur-based effect shares: three box
 /// passes sized by `boxes_for_gaussian`.
-fn gaussian(p: &[f32], w: u32, h: u32, sigma: f32, skip_zero: bool) -> Vec<f32> {
+pub(crate) fn gaussian(p: &[f32], w: u32, h: u32, sigma: f32, skip_zero: bool) -> Vec<f32> {
     let mut out = p.to_vec();
     for r in crate::blur::boxes_for_gaussian(sigma) {
         if r == 0 && skip_zero {
@@ -228,6 +228,11 @@ pub(crate) fn apply(
             }
             gaussian(&p, w, h, radius, true)
         }
+        RoundedCorners { radius, feather } => crate::layer::rounded_corners(p, w, h, radius, feather),
+        DropShadow { offset_x, offset_y, blur, color, opacity } => {
+            crate::layer::drop_shadow(p, w, h, offset_x, offset_y, blur, color, opacity)
+        }
+        OuterGlow { radius, intensity, color } => crate::layer::outer_glow(p, w, h, radius, intensity, color),
         Sharpen { amount } => {
             if amount.abs() < f32::EPSILON {
                 return p;
