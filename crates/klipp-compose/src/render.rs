@@ -332,6 +332,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
     Sequence {
         id: seq.id,
         name: seq.name.clone(),
+        camera: seq.camera.clone(),
         fps: seq.fps,
         resolution: seq.resolution,
         tracks,
@@ -871,6 +872,10 @@ impl Renderer {
             clip, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
             seq.resolution.width, seq.resolution.height,
         );
+        let resolved = match eval::camera_at(seq, time) {
+            Some(cam) => eval::apply_camera(resolved, cam, width, height),
+            None => resolved,
+        };
         let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved));
         if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
@@ -1150,6 +1155,7 @@ impl Renderer {
                 );
             }
         }
+        behind_the_camera(seq, time, width, height, &mut transforms);
 
         self.executor.set_working_colorspace(self.working);
         let luma = klipp_color::linear::luma_coefs(self.working);
@@ -1606,6 +1612,7 @@ impl Renderer {
                 );
             }
         }
+        behind_the_camera(seq, time, width, height, &mut transforms);
 
         // Clips whose rendered pixels another clip masks with.
         let mut matte_sources: HashSet<ClipId> = HashSet::new();
@@ -2467,6 +2474,26 @@ pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
         clip.speed_integral(elapsed, fps)
     };
     clip.source_in.to_secs_f64() + offset
+}
+
+/// Put every resolved layer behind the sequence's camera, once the map
+/// is complete.
+///
+/// `width` and `height` are what is being rendered, not the sequence's
+/// own size: a camera is written in fractions of the frame, and a
+/// transform's position is in the pixels of the buffer it lands in, so
+/// the two meet at the size actually in hand. A preview at a quarter
+/// size then makes the same move as the export.
+///
+/// It runs over the finished map rather than inside the resolver because
+/// the map is also the resolver's cache: a clip whose transform is
+/// linked to another reads that clip's entry, and a camera applied
+/// during the walk would be applied again through the link.
+fn behind_the_camera(seq: &Sequence, time: Timecode, width: u32, height: u32, transforms: &mut HashMap<ClipId, ResolvedTransform>) {
+    let Some(cam) = eval::camera_at(seq, time) else { return };
+    for t in transforms.values_mut() {
+        *t = eval::apply_camera(*t, cam, width, height);
+    }
 }
 
 /// A clip's built-in effects evaluated at `time`, with its opacity split

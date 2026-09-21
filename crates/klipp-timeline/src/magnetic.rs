@@ -2056,6 +2056,7 @@ mod tests {
             track.clips.push(media_clip(i, o));
         }
         Sequence {
+            camera: Default::default(),
             id: SequenceId::new(),
             name: "Test".to_string(),
             fps: Fps::film_24(),
@@ -2086,6 +2087,7 @@ mod tests {
             connected.clips.push(media_clip(i, o));
         }
         Sequence {
+            camera: Default::default(),
             id: SequenceId::new(),
             name: "Test".to_string(),
             fps: Fps::film_24(),
