@@ -64,7 +64,7 @@ pub use clip_kind::{
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, TypeStyle};
-pub use edit_plan::{EditPlan, PlanMusic, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
+pub use edit_plan::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 pub use marker::Marker;
 pub use sequence::{
     effective_timeline_duration_for_keyframes, speed_at_keyframes, speed_integral_keyframes,

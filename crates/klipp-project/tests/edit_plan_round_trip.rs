@@ -3,7 +3,7 @@
 
 use klipp_media::MediaPool;
 use klipp_project::{load_project, save_project};
-use klipp_timeline::{EditPlan, PlanMusic, PlanSegment, PlanTitle, Sequence};
+use klipp_timeline::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanTitle, Sequence};
 
 #[test]
 fn an_edit_plan_comes_back_with_the_project() {
@@ -15,8 +15,8 @@ fn an_edit_plan_comes_back_with_the_project() {
     let media = klipp_core::MediaId::new();
     let plan = EditPlan {
         segments: vec![
-            PlanSegment { feature: "Search".into(), media_id: media, source_in_secs: 12.0, source_out_secs: 18.5, note: "the search screen settles".into(), with_audio: false, title: Some(PlanTitle { text: "Search".into(), secs: Some(2.5), style: "heading".into(), color: Some("#7aa2f7".into()), fill: None, ..Default::default() }), transition: None, sfx: None, zoom: None },
-            PlanSegment { feature: String::new(), media_id: media, source_in_secs: 40.0, source_out_secs: 44.0, note: String::new(), with_audio: false, title: None, transition: Some("cross_dissolve".into()), sfx: None, zoom: None },
+            PlanSegment { feature: "Search".into(), media_id: media, source_in_secs: 12.0, source_out_secs: 18.5, note: "the search screen settles".into(), placement: Some(PlanPlacement { x: 0.3, y: 0.5, width: 0.55, height: 0.55, rotation_deg: -4.0, opacity: Some(0.9) }), background: Some(PlanBackground { generator: "gradient".into(), colors: vec!["#101018".into(), "#1a1b26".into()] }), section: "montage".into(), with_audio: false, title: Some(PlanTitle { text: "Search".into(), secs: Some(2.5), style: "heading".into(), color: Some("#7aa2f7".into()), fill: None, ..Default::default() }), transition: None, sfx: None, zoom: None },
+            PlanSegment { feature: String::new(), media_id: media, source_in_secs: 40.0, source_out_secs: 44.0, note: String::new(), with_audio: false, title: None, transition: Some("cross_dissolve".into()), sfx: None, zoom: None, placement: None, background: None, section: String::new() },
         ],
         music: Some(PlanMusic { media_id: klipp_core::MediaId::new(), duck_db: Some(12.0), source_in_secs: Some(0.08), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(2.0) }),
         approved: true,
