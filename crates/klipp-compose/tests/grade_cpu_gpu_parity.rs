@@ -95,6 +95,19 @@ fn huesat() -> HueSatCurves {
     HueSatCurves { hue_vs_sat: vec![[0.0, 0.5], [0.33, 0.8], [0.66, 0.4], [1.0, 0.5]], ..Default::default() }
 }
 
+/// Brightness by saturation: the seventh curve, on its own so a
+/// divergence here cannot hide behind another curve's.
+///
+/// Pulled well below the 0.5 identity at high saturation — darkening
+/// the most saturated pixels is the move the curve exists for — and
+/// left flat where there is no colour to act on.
+fn sat_vs_lum() -> HueSatCurves {
+    HueSatCurves {
+        sat_vs_lum: vec![[0.0, 0.5], [0.4, 0.5], [0.75, 0.3], [1.0, 0.2]],
+        ..Default::default()
+    }
+}
+
 fn warper() -> ColorWarperParams {
     let mut w = ColorWarperParams::default();
     w.hue_shifts[0] = 15.0;
@@ -119,6 +132,17 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("hue", Corrector, p(|p| p.hue = Some(30.0))),
         ("curves", Corrector, p(|p| p.curves = Some(curves()))),
         ("hue/sat curves", Corrector, p(|p| p.huesat = Some(huesat()))),
+        ("sat vs lum", Corrector, p(|p| p.huesat = Some(sat_vs_lum()))),
+        // The first curve and the last one together, at opposite ends
+        // of the LUT. If the seven curves' offsets overlapped, or the
+        // buffer were a curve short, this is where it would show: the
+        // CPU reads its own array and the GPU reads an uploaded
+        // buffer, so only a layout they both agree on survives.
+        ("first and last curve", Corrector, p(|p| p.huesat = Some(klipp_core::HueSatCurves {
+            hue_vs_hue: vec![[0.0, 0.5], [0.5, 0.62], [1.0, 0.5]],
+            sat_vs_lum: vec![[0.0, 0.5], [0.4, 0.5], [0.75, 0.3], [1.0, 0.2]],
+            ..Default::default()
+        }))),
         ("warper", Corrector, p(|p| p.warper_params = Some(warper()))),
         // Together: where the order shows.
         ("contrast+sat+wheels", Corrector, p(|p| { p.contrast = Some(0.3); p.saturation = Some(1.4); p.gain_x = Some(0.2); p.lift_master = Some(0.05) })),

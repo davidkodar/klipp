@@ -403,7 +403,7 @@ fn huesat_lookup(lut: &[f32], curve: usize, t: f32) -> f32 {
 /// `SHADER_HUESAT`. `lut` is the six curves, 256 each, as
 /// `build_huesat_lut_data` lays them out; bit `c` of `active` marks
 /// curve `c` as edited.
-pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
+pub fn huesat(px: &mut [f32], lut: &[f32; HUESAT_LUT_LEN], mix: f32, active: u32) {
     let on = |c: u32| active & (1 << c) != 0;
     px.par_chunks_exact_mut(4).for_each(|p| {
         let orig = [p[0], p[1], p[2]];
@@ -441,12 +441,36 @@ pub fn huesat(px: &mut [f32], lut: &[f32; 1536], mix: f32, active: u32) {
             let weight = (1.0 - orange_dist * 8.0).clamp(0.0, 1.0);
             s += (ovs - s) * weight;
         }
+        if on(6) {
+            // Brightness as a function of saturation, read off the
+            // *incoming* saturation like every other curve indexed by
+            // s, so a saturation curve earlier in the list does not
+            // silently move this one's input.
+            let svl = huesat_lookup(lut, 6, hsl.s);
+            v = (v + (svl - 0.5)).clamp(0.0, 1.0);
+        }
         let rgb = picture_rgb(h, s, v, hsl.magnitude);
         for c in 0..3 {
             p[c] = orig[c] + (rgb[c] - orig[c]) * mix;
         }
     });
 }
+
+/// How many hue/sat curves there are, and how long their LUT is.
+///
+/// One number for the buffer, the uploads, both twins and the
+/// executor's stage.
+///
+/// The shader binds the LUT as a runtime-sized `array<f32>`, so a
+/// buffer left a curve short does not fail to compile. It fails at the
+/// upload: `queue.write_buffer` validates the write, and an oversized
+/// one reaches the device's uncaptured-error handler — a logged
+/// validation error and a LUT that never arrives, rather than a silent
+/// out-of-bounds read. Loud, but nowhere near the change that caused
+/// it. The buffer was a curve short once while the seventh was being
+/// added; sizing everything from here is what stops a repeat.
+pub const HUESAT_CURVES: usize = 7;
+pub const HUESAT_LUT_LEN: usize = HUESAT_CURVES * 256;
 
 /// `SHADER_COLOR_WARPER`: twelve 30° sectors, cosine-blended.
 pub fn color_warper(px: &mut [f32], hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) {

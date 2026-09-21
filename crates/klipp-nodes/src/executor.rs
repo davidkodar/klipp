@@ -331,7 +331,7 @@ fn log_wheels(p: &NodeParams) -> Option<[(f32, f32, f32); 3]> {
 /// Which hue/sat curves were edited, bit per curve in
 /// `build_huesat_lut_data`'s order.
 fn huesat_active(h: &klipp_core::HueSatCurves) -> u32 {
-    [&h.hue_vs_hue, &h.hue_vs_sat, &h.hue_vs_lum, &h.lum_vs_sat, &h.sat_vs_sat, &h.orange_vs_sat]
+    [&h.hue_vs_hue, &h.hue_vs_sat, &h.hue_vs_lum, &h.lum_vs_sat, &h.sat_vs_sat, &h.orange_vs_sat, &h.sat_vs_lum]
         .iter()
         .enumerate()
         .filter(|(_, c)| !c.is_empty())
@@ -349,7 +349,7 @@ enum GradeStage {
     Vibrance(f32, [f32; 3]),
     WheelSatBri([f32; 8], [f32; 3]),
     Curves { lut: Box<[f32; 1024]>, preserve_luma: bool, mix: f32, luma: [f32; 3] },
-    HueSat { lut: Box<[f32; 1536]>, mix: f32, active: u32 },
+    HueSat { lut: Box<[f32; klipp_effects::cpu_grade::HUESAT_LUT_LEN]>, mix: f32, active: u32 },
     Warper { hue: [f32; 12], sat: [f32; 12] },
     /// Mix with the kept input.
     Mix(f32),
@@ -4211,8 +4211,10 @@ impl GraphExecutor {
 // ── Helper functions ────────────────────────────────────────────────────────
 
 /// Build the 6×256 f32 LUT data for GPU hue/sat curve application.
-fn build_huesat_lut_data(huesat: &klipp_core::HueSatCurves) -> [f32; 1536] {
-    let mut lut = [0.5f32; 1536]; // 0.5 = identity for relative curves
+fn build_huesat_lut_data(
+    huesat: &klipp_core::HueSatCurves,
+) -> [f32; klipp_effects::cpu_grade::HUESAT_LUT_LEN] {
+    let mut lut = [0.5f32; klipp_effects::cpu_grade::HUESAT_LUT_LEN]; // 0.5 = identity for relative curves
 
     let curves = [
         &huesat.hue_vs_hue,
@@ -4221,6 +4223,7 @@ fn build_huesat_lut_data(huesat: &klipp_core::HueSatCurves) -> [f32; 1536] {
         &huesat.lum_vs_sat,
         &huesat.sat_vs_sat,
         &huesat.orange_vs_sat,
+        &huesat.sat_vs_lum,
     ];
 
     for (c, points) in curves.iter().enumerate() {

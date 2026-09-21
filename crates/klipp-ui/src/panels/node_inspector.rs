@@ -2308,7 +2308,7 @@ impl NodeInspectorPanel {
                 // Two were missing here and only here: the data model
                 // has carried `sat_vs_sat` and `orange_vs_sat` all
                 // along, the CPU executor builds all six into its
-                // 1536-entry LUT, and the compute shader samples all
+                // LUT, and the compute shader samples all
                 // six — the comment below the table even said "Plus SvS
                 // and OvS as additional curves". Only the table stopped
                 // at four, so two working tools were unreachable. Sat
@@ -2329,6 +2329,10 @@ impl NodeInspectorPanel {
                     ("LUM vs SAT", egui::Color32::from_rgb(0x50, 0x60, 0xff), CurveChannel::Blue, 3),
                     ("SAT vs SAT", egui::Color32::from_rgb(0xe0, 0xa0, 0x40), CurveChannel::Master, 4),
                     ("ORANGE vs SAT", egui::Color32::from_rgb(0xff, 0x90, 0x40), CurveChannel::Master, 5),
+                    // Brightness by saturation — the direction the
+                    // other six leave out. It is how a neon sign or a
+                    // saturated sky is kept from reading too bright.
+                    ("SAT vs LUM", egui::Color32::from_rgb(0x90, 0xd0, 0xc0), CurveChannel::Master, 6),
                 ];
 
                 let curve_h = 90.0_f32;
@@ -2396,7 +2400,8 @@ impl NodeInspectorPanel {
                             2 => huesat.hue_vs_lum.clear(),
                             3 => huesat.lum_vs_sat.clear(),
                             4 => huesat.sat_vs_sat.clear(),
-                            _ => huesat.orange_vs_sat.clear(),
+                            5 => huesat.orange_vs_sat.clear(),
+                            _ => huesat.sat_vs_lum.clear(),
                         }
                         huesat_changed = true;
                     }
@@ -2408,7 +2413,8 @@ impl NodeInspectorPanel {
                         2 => &mut huesat.hue_vs_lum,
                         3 => &mut huesat.lum_vs_sat,
                         4 => &mut huesat.sat_vs_sat,
-                        _ => &mut huesat.orange_vs_sat,
+                        5 => &mut huesat.orange_vs_sat,
+                        _ => &mut huesat.sat_vs_lum,
                     };
 
                     // Hue/Sat curves read against luma: their x axis is
@@ -2421,6 +2427,7 @@ impl NodeInspectorPanel {
                     let x_axis = match curve_idx {
                         0..=2 => curves_editor::CurveAxis::Hue,
                         3 => curves_editor::CurveAxis::Luma,
+                        // 4, 5 and 6 all read the incoming saturation.
                         _ => curves_editor::CurveAxis::Saturation,
                     };
                     let resp = curves_editor::curves_editor_in(
@@ -4144,10 +4151,14 @@ mod huesat_curve_coverage {
     //! Every Hue/Sat curve the pipeline applies must be reachable.
     //!
     //! `sat_vs_sat` and `orange_vs_sat` existed in `HueSatCurves`, were
-    //! built into the executor's 1536-entry LUT, and were sampled by
-    //! the compute shader — and could not be touched, because the
-    //! inspector's table listed four of the six. Two finished tools
-    //! were invisible for want of two rows.
+    //! built into the executor's LUT, and were sampled by the compute
+    //! shader — and could not be touched, because the inspector's table
+    //! listed four of the six. Two finished tools were invisible for
+    //! want of two rows.
+    //!
+    //! Both matches below end in a catch-all, so a curve added to the
+    //! set and not to the table would quietly edit the last one rather
+    //! than fail to compile. This is what notices.
 
     const SRC: &str = include_str!("node_inspector.rs");
 
@@ -4155,7 +4166,7 @@ mod huesat_curve_coverage {
     /// builder walks in order.
     const CURVES: &[&str] = &[
         "hue_vs_hue", "hue_vs_sat", "hue_vs_lum",
-        "lum_vs_sat", "sat_vs_sat", "orange_vs_sat",
+        "lum_vs_sat", "sat_vs_sat", "orange_vs_sat", "sat_vs_lum",
     ];
 
     #[test]
