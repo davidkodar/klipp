@@ -82,6 +82,25 @@ if [ -z "$CARGO_BUILD_JOBS" ]; then
     export CARGO_BUILD_JOBS
 fi
 
+# A running Klipp competes with the GPU tests for the device.
+#
+# Several tests build their own wgpu device and render with it. With
+# the application running they contend, and what comes back is a
+# handful of failed assertions in the GPU suite with nothing pointing
+# at the cause — the same push passes once the app is closed. That has
+# happened three times in one session; each time it cost a detour
+# through "which test, and what did I break".
+#
+# Said before the tests run rather than after they fail, because the
+# point is to recognise the failure when it arrives.
+if command -v pgrep >/dev/null 2>&1 && pgrep -x klipp-app >/dev/null 2>&1; then
+    printf '\n  pre-push: Klipp is running.\n' >&2
+    printf '            The GPU tests build their own device and will\n' >&2
+    printf '            contend with it. If the suite fails somewhere in\n' >&2
+    printf '            the GPU tests, close Klipp and push again before\n' >&2
+    printf '            looking for the cause in your change.\n\n' >&2
+fi
+
 printf '\n  pre-push: sign-off, clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
 
@@ -174,6 +193,11 @@ fi
 
 printf '\n  pre-push: tests FAILED — push refused.\n' >&2
 printf '            They built, so these are assertions, not compile errors.\n' >&2
+if command -v pgrep >/dev/null 2>&1 && pgrep -x klipp-app >/dev/null 2>&1; then
+    printf '\n            Klipp is running, and the GPU tests contend with\n' >&2
+    printf '            it. Close it and push again before reading further:\n' >&2
+    printf '            this is the likeliest explanation, not your change.\n' >&2
+fi
 printf '            If gpu_pipelines_build is among them, a shader stopped\n' >&2
 printf '            compiling and the rest of the GPU suite is skipping\n' >&2
 printf '            rather than failing. Fix that one first.\n\n' >&2
