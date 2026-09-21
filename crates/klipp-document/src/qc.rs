@@ -111,6 +111,39 @@ fn uncovered(mut spans: Vec<(f64, f64)>, end: f64, min: f64) -> Vec<(f64, f64)> 
     out
 }
 
+/// Locate complete copies of the approved plan, including plans appended
+/// after existing footage. A stale or partial plan must not relax checks
+/// on unrelated clips merely because it has a montage label.
+fn montage_spans(seq: &Sequence) -> Vec<(f64, f64)> {
+    let Some(plan) = seq.edit_plan.as_ref().filter(|p| p.approved && !p.segments.is_empty()) else { return Vec::new() };
+    let tolerance = 1.0 / seq.fps.as_f64().max(1.0) + 1e-6;
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for track in seq.tracks.iter().filter(|t| t.visible && t.kind == TrackKind::Video) {
+        for clips in track.clips.windows(plan.segments.len()) {
+            let matches = clips.iter().zip(&plan.segments).all(|(c, s)| {
+                c.enabled && c.media_id() == Some(s.media_id)
+                    && (secs(c.source_in) - s.source_in_secs).abs() <= tolerance
+                    && (secs(c.source_out) - s.source_out_secs).abs() <= tolerance
+                    && (secs(c.timeline_out) - secs(c.timeline_in) - s.duration_secs()).abs() <= tolerance
+            }) && clips.windows(2).all(|pair| (secs(pair[1].timeline_in) - secs(pair[0].timeline_out)).abs() <= tolerance);
+            if !matches { continue; }
+            for (clip, segment) in clips.iter().zip(&plan.segments) {
+                if crate::edit_plan::is_montage(segment) {
+                    spans.push((secs(clip.timeline_in), secs(clip.timeline_out)));
+                }
+            }
+        }
+    }
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in spans {
+        if let Some(last) = merged.last_mut().filter(|last| a <= last.1 + 1e-6) {
+            last.1 = last.1.max(b);
+        } else { merged.push((a, b)); }
+    }
+    merged
+}
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -120,6 +153,8 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let fps = seq.fps.as_f64().max(1.0);
     let frame = 1.0 / fps;
     let duration = secs(seq.total_duration());
+    let montages = montage_spans(seq);
+    let in_montage = |a: f64, b: f64| montages.iter().any(|(start, end)| a + 1e-6 >= *start && b <= *end + 1e-6);
     let video_tracks: Vec<(usize, &klipp_timeline::Track)> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video && t.visible).collect();
     let pictures: Vec<(usize, &Clip)> = video_tracks.iter().flat_map(|(ti, t)| t.clips.iter().filter(|c| is_picture(c)).map(move |c| (*ti, c))).collect();
 
@@ -228,7 +263,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             add(Severity::Warning, "cut_mid_action", Some(t_out), format!("{label} cuts away at {s_out:.2} s of the file in the middle of a change ({a:.2}-{b:.2} s)"), &format!("Hold until it settles at {b:.2} s of the file, or cut before the change starts at {a:.2} s"));
         }
         let len = t_out - t_in;
-        if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 {
+        if len + 1e-6 < READ_MIN_SECS && (len * fps).round() as i64 >= 8 && !in_montage(t_in, t_out) {
             add(Severity::Warning, "too_short_to_read", Some(t_in), format!("{label} shows a screen for {len:.1} s"), "A screen needs about two seconds to be read: hold it, or take it out");
         }
     }
@@ -259,9 +294,10 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
         }
         let words: usize = td.objects.iter().filter_map(|o| match &o.content { TitleObjectContent::TextBox(tb) if o.visible => Some(tb.text.split_whitespace().count()), _ => None }).sum();
-        let needs = (words as f64 * 0.3).max(1.5);
+        let montage = in_montage(a, b);
+        let needs = (words as f64 * 0.3).max(if montage { 0.3 } else { 1.5 });
         if b - a + 1e-6 < needs {
-            add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word, never under a second and a half"));
+            add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
         }
         // Over a screen that is changing, a title fights the picture.
         for (_, p) in &pictures {
@@ -394,11 +430,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                     None => add(Severity::Note, "no_edit_plan", None, format!("the brief ranks {} feature{} and there is no edit plan to hold the cut to them", ranked.len(), if ranked.len() == 1 { "" } else { "s" }), "Propose one with set_edit_plan, a segment for each"),
                     Some(plan) => {
                         for fe in ranked {
-                            let total: f64 = plan.segments.iter().filter(|s| s.feature.trim().eq_ignore_ascii_case(fe.title.trim())).map(|s| s.duration_secs()).sum();
+                            let total: f64 = plan.segments.iter().filter(|s| crate::edit_plan::covers_feature(s, &fe.title)).map(|s| s.duration_secs()).sum();
+                            let montage = plan.segments.iter().any(|s| crate::edit_plan::is_montage(s) && crate::edit_plan::covers_feature(s, &fe.title));
                             if total <= 0.0 {
                                 add(Severity::Warning, "feature_unplanned", None, format!("the brief's feature \"{}\"{} is in no segment of the edit plan", fe.title, if fe.rank > 0 { format!(" (rank {})", fe.rank) } else { String::new() }), "Give it a segment, or take it out of the brief");
-                            } else if total + 1e-6 < FEATURE_MIN_SECS {
-                                add(Severity::Warning, "feature_short", None, format!("the brief's feature \"{}\" gets {total:.1} s in the edit plan", fe.title), "Three seconds at least for a feature to register: hold its reveal");
+                            } else if total + 1e-6 < if montage { 0.3 } else { FEATURE_MIN_SECS } {
+                                add(Severity::Warning, "feature_short", None, format!("the brief's feature \"{}\" gets {total:.1} s in the edit plan", fe.title), if montage { "Hold a montage feature for at least a third of a second" } else { "Three seconds at least for a feature to register: hold its reveal" });
                             }
                         }
                     }
@@ -559,6 +596,30 @@ mod tests {
         }
         seq.tracks = vec![v];
         (seq, pool, screen)
+    }
+
+    #[test]
+    fn only_the_built_montage_relaxes_read_time_and_counts_title_features() {
+        use klipp_timeline::{Brief, EditPlan, Feature, PlanSegment, PlanTitle};
+        let (mut seq, pool, screen) = screencast(&[(5.0, 5.85, 0.0), (5.85, 6.7, 20.0)]);
+        let segment = |source, section: &str, title: &str| PlanSegment { media_id: screen, source_in_secs: source, source_out_secs: source + 0.85, section: section.into(), title: Some(PlanTitle { text: title.into(), ..Default::default() }), feature: String::new(), note: String::new(), with_audio: false, transition: None, sfx: None, zoom: None, placement: None, background: None };
+        seq.edit_plan = Some(EditPlan { segments: vec![segment(0.0, "montage", "Search"), segment(20.0, "body", "Body")], approved: true, ..Default::default() });
+        seq.brief = Some(Brief { features: vec![Feature { title: "Search".into(), rank: 1, ..Default::default() }], ..Default::default() });
+        let mut text = Track::new("T", TrackKind::Text);
+        for (a, b, word) in [(5.0, 5.85, "Search"), (5.85, 6.7, "Body")] {
+            text.clips.push(Clip { kind: ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: word.into(), ..Default::default() })), ..Clip::gap(tc(a), tc(b)) });
+        }
+        seq.tracks.push(text);
+        let report = check(&seq, &pool, &Screen(screen));
+        for rule in ["too_short_to_read", "title_short"] {
+            let findings: Vec<_> = report.findings.iter().filter(|f| f.rule == rule).collect();
+            assert_eq!(findings.len(), 1, "{}", report.text());
+            assert!(findings[0].at_secs.unwrap() > 5.8);
+        }
+        assert!(!rules(&report).contains(&"feature_unplanned"));
+        assert!(!rules(&report).contains(&"feature_short"));
+        seq.edit_plan.as_mut().unwrap().segments[0].source_in_secs = 10.0;
+        assert_eq!(check(&seq, &pool, &Screen(screen)).findings.iter().filter(|f| f.rule == "too_short_to_read").count(), 2, "a stale plan must not suppress warnings");
     }
 
     #[test]

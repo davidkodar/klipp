@@ -14,6 +14,21 @@ use crate::ops::{Anchor, ClipRef, ComposePose, Op, TrackRef};
 use klipp_media::MediaPool;
 use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind, TypeStyle};
 
+/// A montage run uses beat-sized cuts and recognition rather than reading.
+/// A suffix permits distinct runs, for example `montage: opening`.
+pub fn is_montage(segment: &klipp_timeline::PlanSegment) -> bool {
+    segment.section.trim().split(':').next().is_some_and(|name| name.trim().eq_ignore_ascii_case("montage"))
+}
+
+/// Explicit feature names take precedence. In a montage, a title that
+/// exactly names a brief feature is also a feature label.
+pub fn covers_feature(segment: &klipp_timeline::PlanSegment, feature: &str) -> bool {
+    if !segment.feature.trim().is_empty() {
+        return segment.feature.trim().eq_ignore_ascii_case(feature.trim());
+    }
+    is_montage(segment) && segment.title.as_ref().is_some_and(|t| t.text.trim().eq_ignore_ascii_case(feature.trim()))
+}
+
 /// Whether a string is `#rrggbb`.
 fn is_hex_colour(s: &str) -> bool {
     let s = s.trim();
@@ -156,6 +171,7 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
 
 /// Round every segment to the music's bars: a length under a bar goes
 /// to the nearest half bar (at least one), longer ones to whole bars;
+/// montage sections use beats (one quarter of a bar) instead;
 /// a stretch that would run past its file is shortened by whole bars.
 /// The bed's in-point goes to its first beat when none was given. What
 /// changed, one line per segment.
@@ -166,7 +182,7 @@ pub fn snap_to_bars(plan: &mut EditPlan, bar_secs: f64, first_beat_secs: f64, po
     }
     for (i, s) in plan.segments.iter_mut().enumerate() {
         let dur = s.duration_secs();
-        let unit = if dur < bar_secs { bar_secs / 2.0 } else { bar_secs };
+        let unit = if is_montage(s) { bar_secs / 4.0 } else if dur < bar_secs { bar_secs / 2.0 } else { bar_secs };
         let mut want = ((dur / unit).round().max(1.0)) * unit;
         if let Some(file) = pool.get(&s.media_id).map(|it| it.duration.to_secs_f64()) {
             while s.source_in_secs + want > file + 1e-6 && want > unit + 1e-9 {
@@ -174,7 +190,7 @@ pub fn snap_to_bars(plan: &mut EditPlan, bar_secs: f64, first_beat_secs: f64, po
             }
         }
         if (want - dur).abs() > 0.01 {
-            notes.push(format!("segment {}: {:.2} s \u{2192} {:.2} s ({} of {:.2} s)", i + 1, dur, want, if unit < bar_secs { "half bars" } else { "bars" }, bar_secs));
+            notes.push(format!("segment {}: {:.2} s \u{2192} {:.2} s ({} of {:.2} s)", i + 1, dur, want, if is_montage(s) { "beats" } else if unit < bar_secs { "half bars" } else { "bars" }, unit));
             s.source_out_secs = s.source_in_secs + want;
         }
     }
@@ -415,6 +431,21 @@ mod tests {
 
     fn seg(media: MediaId, a: f64, b: f64) -> PlanSegment {
         PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() }
+    }
+
+    #[test]
+    fn montage_snaps_to_beats_and_can_name_features_with_titles() {
+        let (_, pool, screen, _) = fixture();
+        let mut plan = EditPlan { segments: (0..8).map(|i| PlanSegment { section: "montage: features".into(), title: Some(PlanTitle { text: "Search".into(), ..Default::default() }), ..seg(screen, i as f64 * 2.0, i as f64 * 2.0 + 0.85) }).collect(), ..Default::default() };
+        snap_to_bars(&mut plan, 3.4, 0.0, &pool);
+        assert!((plan.duration_secs() - 6.8).abs() < 1e-6);
+        assert!(plan.segments.iter().all(|s| (s.duration_secs() - 0.85).abs() < 1e-6));
+        assert!(covers_feature(&plan.segments[0], "search"));
+        plan.segments[0].feature = "Other".into();
+        assert!(!covers_feature(&plan.segments[0], "Search"));
+        plan.segments[0].section.clear();
+        snap_to_bars(&mut plan, 3.4, 0.0, &pool);
+        assert!((plan.segments[0].duration_secs() - 1.7).abs() < 1e-6);
     }
 
     #[test]

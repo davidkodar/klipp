@@ -1663,6 +1663,11 @@ fn tool_definitions() -> Vec<Value> {
               source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. With snap_to_bars \
               true the bed's beats are read and every segment is rounded to whole bars (half \
               bars under one) and the bed starts on its first beat; the reply says what moved. \
+              Give consecutive montage segments section: \"montage\" (or \"montage: name\"). \
+              These snap to beats instead of bars. Once built from an approved plan, their \
+              screen reading minimum is relaxed and short titles use word-count timing. \
+              A montage title exactly matching a brief feature counts as its label when \
+              feature is omitted; an explicit feature takes precedence. \
               Ground the stretches in \
               klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in \
               a hold window. The plan is stored unapproved; the reply says which of the brief's \

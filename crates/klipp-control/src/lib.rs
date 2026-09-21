@@ -3955,7 +3955,7 @@ reference:   {}",
                 let text = plan.text(seq.brief.as_ref().and_then(|b| b.target_secs));
                 (seq.edit_plan.clone(), seq.brief.clone(), text, snapped)
             };
-            let missing: Vec<String> = brief.as_ref().map(|b| b.ranked_features().iter().filter(|f| !plan.segments.iter().any(|s| s.feature.trim().eq_ignore_ascii_case(f.title.trim()))).map(|f| f.title.clone()).collect()).unwrap_or_default();
+            let missing: Vec<String> = brief.as_ref().map(|b| b.ranked_features().iter().filter(|f| !plan.segments.iter().any(|s| klipp_document::edit_plan::covers_feature(s, &f.title))).map(|f| f.title.clone()).collect()).unwrap_or_default();
             let edit = klipp_document::history::EditCommand::SetEditPlan { old: old.map(Box::new), new: Some(Box::new(plan)) };
             let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Edit Plan".into()))?;
             v["text"] = json!(text);
