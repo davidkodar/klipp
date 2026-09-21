@@ -1389,6 +1389,34 @@ impl GraphExecutor {
         // stall and a download for the qualifier alone.
         let secondaries = SecondaryChain::detect_all(graph, &order, &fan_out);
 
+        // Blend and Layer read a second picture, so neither is chainable
+        // the way a filter is. They become chainable if that picture is
+        // waiting in `composite_src` by the time they run, which means
+        // knowing in advance whose picture to keep: this maps each
+        // producer feeding a composite's port 1 to the composite that
+        // wants it. The chain start and the extend path both consult it,
+        // exactly as they consult `secondaries` for a kept source.
+        let composite_port1: HashMap<NodeId, NodeId> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.enabled && matches!(n.kind, NodeKind::Blend | NodeKind::Layer))
+            .filter_map(|n| graph.input_of(n.id, 1).map(|src| (src, n.id)))
+            .collect();
+        // Whose picture `composite_src` holds, and how many times this
+        // chain segment has written it. Same shape as `matte_in_buf`:
+        // the gate is an identity check, not a hope.
+        let mut composite_src_holds: Option<NodeId> = None;
+        // And whose picture `grade_mix_src` holds. A secondary's keyer
+        // and its ApplyMatte both read that buffer rather than the
+        // chain's current slot, so "a chain is live" was never enough
+        // to let them dispatch — the kept picture has to be this
+        // secondary's source. Without the check, a graph where the
+        // source ran on the CPU sent the keyer at a buffer nobody had
+        // filled, which panicked outright when it was the first frame
+        // and read the previous frame's picture when it was not.
+        let mut kept_picture: Option<NodeId> = None;
+        let mut segment_composite_writes: u32 = 0;
+
         // Output-on-GPU is single-shot, like the seed: take the request
         // here so a run that cannot honour it does not leave it set. The
         // final node qualifies only when Output is its sole reader and no
@@ -1455,7 +1483,8 @@ impl GraphExecutor {
             // root buffer), and Output is handled below. Nodes that combine
             // multiple inputs (CombineMattes, ApplyMatte, Blend, Layer) or
             // that generate mattes from geometry (Mask, Qualifier) are NOT
-            // no-ops even with default params and must still execute.
+            // no-ops even with default params and must still execute —
+            // a Blend at its default mix is still half of two pictures.
             let is_param_driven_filter = matches!(
                 node.kind,
                 NodeKind::InputTransform
@@ -1536,9 +1565,10 @@ impl GraphExecutor {
             // chain ops for this graph even though the kinds are not
             // chainable in general: one writes `matte_buf`, the other
             // reads it alongside the kept picture.
-            let secondary_chain_node = secondaries
-                .iter()
-                .any(|sec| sec.matte == node_id || sec.apply == node_id);
+            let secondary_chain_node = secondaries.iter().any(|sec| {
+                (sec.matte == node_id || sec.apply == node_id)
+                    && kept_picture == Some(sec.source)
+            });
             // The secondary's keyer reads the kept copy of its source,
             // not the chain's current picture, so it does not need to be
             // looking at the tail — the grade branch may already have
@@ -1547,11 +1577,35 @@ impl GraphExecutor {
                 sec.matte == node_id
                     && chain_tail.is_some()
                     && primary_input_id == Some(sec.source)
+                    && kept_picture == Some(sec.source)
             });
+            // A composite can ride the chain when port 0 is the tail
+            // (`primary_is_chain_tail`, below) and port 1's picture is
+            // reachable without a readback.
+            let composite_port1_id = if matches!(node.kind, NodeKind::Blend | NodeKind::Layer) {
+                graph.input_of(node_id, 1)
+            } else {
+                None
+            };
+            let composite_route = composite_port1_id.and_then(|src_id| {
+                if composite_src_holds == Some(src_id) {
+                    Some(CompositeRoute::Resident)
+                } else if segment_composite_writes == 0 {
+                    node_outputs
+                        .get(&src_id)
+                        .filter(|a| a.len() == (width as usize) * (height as usize) * 4)
+                        .map(|a| CompositeRoute::Upload(a.clone()))
+                } else {
+                    None
+                }
+            });
+            let composite_ready = composite_route.is_some() && self.gpu.is_some();
+
             let can_extend_chain = !bypass
                 && (primary_is_chain_tail || secondary_keyer_ready)
                 && chain_tail_fan_out_one
                 && (secondary_chain_node
+                    || composite_ready
                     || self.node_supports_gpu_chain(&node.kind, &node.params))
                 && mask_cutout_matte_ready
                 && Some(node_id) != matte_preview_node
@@ -1595,9 +1649,11 @@ impl GraphExecutor {
             //   - bypass / default-param nodes consuming the chain tail
             //     that can't tunnel (fan-out > 1, matte tap/preview)
             //   - Output node (terminal)
-            //   - matte generators + multi-input nodes (CombineMattes,
-            //     ApplyMatte, Blend, Layer, Mask, Qualifier) which either
-            //     touch GPU state directly or speak u8
+            //   - matte generators and the multi-input nodes that have
+            //     no chain dispatch (CombineMattes, Mask, Qualifier),
+            //     which touch GPU state directly. Blend and Layer are
+            //     no longer in this list: they ride the chain whenever
+            //     their port-1 picture is reachable without a readback.
             //   - chain tail with fan-out > 1 (output read elsewhere)
             //
             // We also flush if the current node is unrelated (doesn't
@@ -1616,6 +1672,7 @@ impl GraphExecutor {
                     &mut tapped_output,
                 );
                 chain_flush_count += 1;
+                segment_composite_writes = 0;
             }
 
             if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
@@ -1680,9 +1737,80 @@ impl GraphExecutor {
             // params — a keyframe may have flipped ColorWheels into
             // log-mode (CPU-only), which we can't dispatch.
             if can_extend_chain
-                && (secondary_chain_node || self.node_supports_gpu_chain(&node.kind, params))
+                && (secondary_chain_node
+                    || composite_ready
+                    || self.node_supports_gpu_chain(&node.kind, params))
                 && self.gpu.is_some()
             {
+                // Blend / Layer: port 0 is the chain's picture, port 1 is
+                // in `composite_src`. One dispatch, no readback, where
+                // the CPU path costs a flush and a full-frame lerp.
+                if let Some(route) = composite_route {
+                    let placed = match &route {
+                        CompositeRoute::Resident => true,
+                        CompositeRoute::Upload(px) => self
+                            .gpu
+                            .as_mut()
+                            .is_some_and(|g| g.upload_composite_src_linear(px, width, height)),
+                    };
+                    if placed {
+                        if matches!(route, CompositeRoute::Upload(_)) {
+                            segment_composite_writes += 1;
+                            composite_src_holds = composite_port1_id;
+                        }
+                        let gpu = self.gpu.as_mut().expect("gpu checked above");
+                        if node.kind == NodeKind::Blend {
+                            let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
+                            gpu.apply_blend_chain(chain_slot_a, width, height, mix);
+                        } else {
+                            gpu.apply_over_chain(chain_slot_a, width, height);
+                        }
+                        chain_slot_a = !chain_slot_a;
+                        chain_tail = Some(node_id);
+                        node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        // The same three hooks the generic extend path
+                        // runs after a dispatch. They live here too
+                        // because this arm returns early, and a composite
+                        // is as eligible as any other node to be a
+                        // secondary's source or another composite's port
+                        // 1 — a Layer feeding a qualifier secondary hit
+                        // exactly that and panicked in the keyer, which
+                        // reads a picture nobody had kept.
+                        if secondaries.iter().any(|sec| sec.source == node_id) {
+                            if let Some(gpu) = self.gpu.as_mut() {
+                                gpu.keep_chain_input(chain_slot_a, width, height);
+                            }
+                            kept_picture = Some(node_id);
+                        } else if takes_the_kept_buffer(&node.kind, params) {
+                            kept_picture = None;
+                        }
+                        if composite_port1.contains_key(&node_id) {
+                            if let Some(gpu) = self.gpu.as_mut() {
+                                gpu.keep_composite_src(chain_slot_a, width, height);
+                            }
+                            composite_src_holds = Some(node_id);
+                            segment_composite_writes += 1;
+                        }
+                        if secondaries.iter().any(|sec| sec.apply == node_id) {
+                            matte_in_buf = None;
+                        }
+                        if node_is_visible_for_thumbs {
+                            if let Some(i) = take_thumb(self, chain_slot_a) {
+                                gpu_thumb_of.insert(node_id, i);
+                            }
+                        }
+                        chain_extend_count += 1;
+                        per_node_ms.push((
+                            format!("{node_kind_name}#chain_composite"),
+                            t_node.elapsed().as_secs_f64() * 1000.0,
+                        ));
+                        continue;
+                    }
+                    // Upload refused (device lost, or a size that does
+                    // not match). Fall through: the generic dispatch
+                    // declines these kinds, which flushes and takes the
+                    // CPU path — slower, still right.
+                }
                 // Current input lives in the slot named by chain_slot_a.
                 // Dispatch reads from that slot, writes to the opposite.
                 // Some nodes (Contrast with both contrast+clarity, or
@@ -1721,6 +1849,19 @@ impl GraphExecutor {
                             if let Some(gpu) = self.gpu.as_mut() {
                                 gpu.keep_chain_input(chain_slot_a, width, height);
                             }
+                            kept_picture = Some(node_id);
+                        } else if takes_the_kept_buffer(&node.kind, params) {
+                            kept_picture = None;
+                        }
+                        // Same idea for a composite: this node's output is
+                        // some Blend's port 1, so park it before the chain
+                        // moves on. GPU to GPU, recorded in sequence.
+                        if composite_port1.contains_key(&node_id) {
+                            if let Some(gpu) = self.gpu.as_mut() {
+                                gpu.keep_composite_src(chain_slot_a, width, height);
+                            }
+                            composite_src_holds = Some(node_id);
+                            segment_composite_writes += 1;
                         }
                         if secondaries.iter().any(|sec| sec.apply == node_id) {
                             matte_in_buf = None;
@@ -1754,6 +1895,7 @@ impl GraphExecutor {
                             &mut tapped_output,
                         );
                         chain_flush_count += 1;
+                        segment_composite_writes = 0;
                     }
                 }
             }
@@ -1792,6 +1934,8 @@ impl GraphExecutor {
                     .filter(|arc| !arc.is_empty())
                     .map(|arc| arc.as_slice())
                     .unwrap_or(source_frame);
+                let keep_for_composite = primary_input_id
+                    .is_some_and(|id| composite_port1.contains_key(&id));
                 if let Some(n) = self.start_chain(
                     node_id,
                     &node.kind,
@@ -1800,16 +1944,24 @@ impl GraphExecutor {
                     width,
                     height,
                     frame_number,
+                    keep_for_composite,
                 ) {
                     chain_tail = Some(node_id);
                     chain_slot_a = n % 2 == 0;
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    if keep_for_composite {
+                        composite_src_holds = primary_input_id;
+                        segment_composite_writes += 1;
+                    }
                     // As in the extend path: a secondary's source keeps
                     // its picture for ApplyMatte to blend against.
                     if secondaries.iter().any(|sec| sec.source == node_id) {
                         if let Some(gpu) = self.gpu.as_mut() {
                             gpu.keep_chain_input(chain_slot_a, width, height);
                         }
+                        kept_picture = Some(node_id);
+                    } else if takes_the_kept_buffer(&node.kind, params) {
+                        kept_picture = None;
                     }
                     if node_is_visible_for_thumbs {
                         if let Some(i) = take_thumb(self, chain_slot_a) {
@@ -2183,6 +2335,7 @@ impl GraphExecutor {
     /// `chain_slot_a` exactly `n` times to track which buffer holds the
     /// output). Returns `None` if the node's GPU dispatch wasn't
     /// available (caller falls back).
+    #[allow(clippy::too_many_arguments)]
     fn start_chain(
         &mut self,
         node_id: NodeId,
@@ -2192,6 +2345,7 @@ impl GraphExecutor {
         width: u32,
         height: u32,
         frame_number: u64,
+        keep_input_for_composite: bool,
     ) -> Option<u32> {
         let gpu = self.gpu.as_mut()?;
         if gpu.is_device_lost() {
@@ -2230,6 +2384,13 @@ impl GraphExecutor {
         // cost ~2-5 ms on NVIDIA Vulkan and dominated `grade_ms` during
         // scrubbing before this.
         gpu.begin_chain();
+        // The picture just uploaded is some composite's port-1 input,
+        // and the dispatch below is about to overwrite the slot holding
+        // it. Park it first — this is the case a Blend against the
+        // ungraded source hits, and it is the common one.
+        if keep_input_for_composite {
+            gpu.keep_composite_src(/* in_is_a = */ true, width, height);
+        }
         // Dispatch this node with in = buf_a, out = buf_b. The first
         // node in a chain is always one of the whitelisted single-sub-
         // effect kinds (start_chain is only called via can_start_chain,
@@ -2251,6 +2412,28 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// Does this node's dispatch take `grade_mix_src` over for itself?
+///
+/// A Corrector with a `global_mix` other than 1 keeps its own input
+/// there to mix against later, which overwrites whatever a secondary
+/// had parked in it.
+fn takes_the_kept_buffer(kind: &NodeKind, params: &NodeParams) -> bool {
+    *kind == NodeKind::Corrector
+        && (params.global_mix.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
+}
+
+/// Where a chain-resident composite's port-1 picture comes from.
+enum CompositeRoute {
+    /// Already in `composite_src`: kept there on the GPU when its
+    /// producer ran, so there is nothing to move.
+    Resident,
+    /// On the CPU, to be uploaded. Allowed once per chain segment —
+    /// a queued write lands before the whole encoder rather than in
+    /// sequence with it, so a second one would decide what the first
+    /// composite's dispatch read.
+    Upload(Arc<Vec<f32>>),
 }
 
 /// How much of a run the GPU chain carried.
