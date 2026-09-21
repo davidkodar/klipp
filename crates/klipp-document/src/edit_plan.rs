@@ -14,6 +14,12 @@ use crate::ops::{Anchor, ClipRef, Op, TrackRef};
 use klipp_media::MediaPool;
 use klipp_timeline::{Brief, EditPlan, PlanTitle, Sequence, TrackKind, TypeStyle};
 
+/// Whether a string is `#rrggbb`.
+fn is_hex_colour(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// A join with no length given is this long.
 const DEFAULT_TRANSITION_SECS: f64 = 0.5;
 /// A title with no hold given holds this long, or the segment if shorter.
@@ -71,6 +77,9 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             if t.animate_secs.is_some_and(|x| !x.is_finite() || x <= 0.0 || x > 5.0) {
                 return Err(format!("segment {n}: a title's animate_secs is 0 to 5"));
             }
+            if [t.x, t.y].iter().flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+                return Err(format!("segment {n}: a title's x and y are fractions of the frame, 0 to 1"));
+            }
         }
         if let Some(x) = &s.sfx {
             let item = pool.get(&x.media_id).ok_or_else(|| format!("segment {n}: sfx: no media item {}; media ids are in list_media, and search_sfx brings one in", x.media_id.0))?;
@@ -93,8 +102,47 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
                 return Err(format!("segment {n}: a zoom goes from 1 to 4; 1 is as shot"));
             }
         }
+        if let Some(pl) = &s.placement {
+            if ![pl.x, pl.y, pl.width, pl.height, pl.rotation_deg].iter().all(|v| v.is_finite()) {
+                return Err(format!("segment {n}: a placement's numbers must be real"));
+            }
+            if !(0.0..=4.0).contains(&pl.width) || !(0.0..=4.0).contains(&pl.height) || pl.width <= 0.0 || pl.height <= 0.0 {
+                return Err(format!("segment {n}: a placement's width and height are fractions of the frame, above 0 and up to 4"));
+            }
+            // Off-frame is allowed, so a card can start outside and come in.
+            if !(-2.0..=3.0).contains(&pl.x) || !(-2.0..=3.0).contains(&pl.y) {
+                return Err(format!("segment {n}: a placement's x and y are the picture's centre, -2 to 3; 0.5,0.5 is the middle of the frame"));
+            }
+            if pl.opacity.is_some_and(|o| !o.is_finite() || !(0.0..=1.0).contains(&o)) {
+                return Err(format!("segment {n}: a placement's opacity is 0 to 1"));
+            }
+        }
+        if let Some(b) = &s.background {
+            if b.generator.trim().is_empty() {
+                return Err(format!("segment {n}: a background needs a generator by name"));
+            }
+            for c in &b.colors {
+                if !is_hex_colour(c) {
+                    return Err(format!("segment {n}: \"{c}\" is not a colour; use #rrggbb"));
+                }
+            }
+        }
         if i == 0 && s.transition.is_some() {
             return Err("segment 1 has nothing before it to join to; a transition is on the segment it leads into".into());
+        }
+    }
+    let mut seen_sections: Vec<&str> = Vec::new();
+    for (i, s) in plan.segments.iter().enumerate() {
+        let name = s.section.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let follows_same = i > 0 && plan.segments[i - 1].section.trim() == name;
+        if !follows_same && seen_sections.contains(&name) {
+            return Err(format!("segment {}: the \"{name}\" section starts again after something else; a section is a run of segments, so put them together", i + 1));
+        }
+        if !follows_same {
+            seen_sections.push(name);
         }
     }
     if let Some(m) = &plan.music {
@@ -325,7 +373,7 @@ mod tests {
     use super::*;
     use crate::ops::resolve;
     use klipp_core::{Fps, MediaId, Timecode};
-    use klipp_timeline::{Feature, PlanMusic, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
+    use klipp_timeline::{Feature, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 
     fn tc(secs: f64) -> Timecode {
         Timecode { value: (secs * 25.0).round() as i64, rate: 25 }
@@ -349,7 +397,58 @@ mod tests {
     }
 
     fn seg(media: MediaId, a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None }
+        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() }
+    }
+
+    #[test]
+    fn a_placement_a_background_and_a_section_are_checked_before_they_are_stored() {
+        let (_seq, pool, screen, _bed) = fixture();
+        let placed = |p: PlanPlacement| EditPlan {
+            segments: vec![PlanSegment { placement: Some(p), ..seg(screen, 0.0, 2.0) }],
+            ..Default::default()
+        };
+
+        // Half the frame, in the corner, turned and half seen: the point of the field.
+        let ok = placed(PlanPlacement { x: 0.25, y: 0.3, width: 0.5, height: 0.5, rotation_deg: -6.0, opacity: Some(0.5) });
+        assert!(validate(&ok, &pool, None).is_ok(), "{:?}", validate(&ok, &pool, None));
+
+        // A size of zero is a picture nobody can see.
+        let flat = placed(PlanPlacement { width: 0.0, ..Default::default() });
+        assert!(validate(&flat, &pool, None).unwrap_err().contains("width and height"));
+
+        // Off-frame is allowed so a card can fly in; far off is a mistake.
+        let adrift = placed(PlanPlacement { x: 9.0, ..Default::default() });
+        assert!(validate(&adrift, &pool, None).unwrap_err().contains("picture's centre"));
+
+        let murky = placed(PlanPlacement { opacity: Some(1.4), ..Default::default() });
+        assert!(validate(&murky, &pool, None).unwrap_err().contains("opacity"));
+
+        // A background names a generator, and its colours are colours.
+        let nameless = EditPlan {
+            segments: vec![PlanSegment { background: Some(PlanBackground { generator: String::new(), colors: vec![] }), ..seg(screen, 0.0, 2.0) }],
+            ..Default::default()
+        };
+        assert!(validate(&nameless, &pool, None).unwrap_err().contains("generator"));
+        let off_colour = EditPlan {
+            segments: vec![PlanSegment { background: Some(PlanBackground { generator: "gradient".into(), colors: vec!["blue".into()] }), ..seg(screen, 0.0, 2.0) }],
+            ..Default::default()
+        };
+        assert!(validate(&off_colour, &pool, None).unwrap_err().contains("#rrggbb"));
+
+        // A section is a run: the same name may not come back after something else.
+        let in_a_run = |names: [&str; 3]| EditPlan {
+            segments: names.iter().map(|n| PlanSegment { section: (*n).into(), ..seg(screen, 0.0, 2.0) }).collect(),
+            ..Default::default()
+        };
+        assert!(validate(&in_a_run(["montage", "montage", ""]), &pool, None).is_ok());
+        assert!(validate(&in_a_run(["montage", "", "montage"]), &pool, None).unwrap_err().contains("run of segments"));
+
+        // And a title sits inside the frame.
+        let astray = EditPlan {
+            segments: vec![PlanSegment { title: Some(PlanTitle { text: "Strata".into(), x: Some(1.8), ..Default::default() }), ..seg(screen, 0.0, 2.0) }],
+            ..Default::default()
+        };
+        assert!(validate(&astray, &pool, None).unwrap_err().contains("fractions of the frame"));
     }
 
     #[test]

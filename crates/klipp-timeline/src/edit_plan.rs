@@ -50,6 +50,18 @@ pub struct PlanTitle {
     pub animate_secs: Option<f64>,
     #[serde(default)]
     pub stagger: Option<String>,
+    /// Where it sits, as fractions of the frame: 0,0 is the top left,
+    /// 1,1 the bottom right, and the point is the title's centre. Left
+    /// out, the style decides.
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    /// Whether it fills the frame and hides the picture under it.
+    /// A "card" does by nature; this says so for any style, and lets a
+    /// card sit over the shot instead.
+    #[serde(default)]
+    pub full_frame: Option<bool>,
 }
 
 /// A sound effect on a segment: a whoosh on the cut, a click on a
@@ -88,6 +100,65 @@ pub struct PlanZoom {
 
 fn one() -> f32 { 1.0 }
 
+/// Where a segment's picture sits in the frame, as fractions of it:
+/// `x`,`y` is the centre, `width`,`height` the size. Full frame is
+/// 0.5, 0.5, 1, 1 — and anything smaller leaves room for whatever is
+/// behind it, which is the point.
+///
+/// A zoom magnifies a picture that still fills the frame; this places
+/// the picture itself, so two of them can sit side by side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanPlacement {
+    #[serde(default = "half")]
+    pub x: f32,
+    #[serde(default = "half")]
+    pub y: f32,
+    #[serde(default = "one")]
+    pub width: f32,
+    #[serde(default = "one")]
+    pub height: f32,
+    /// Turned, in degrees, clockwise about its own centre.
+    #[serde(default)]
+    pub rotation_deg: f32,
+    /// How much of it is seen, 0 to 1; 1 when left out.
+    #[serde(default)]
+    pub opacity: Option<f32>,
+}
+
+fn half() -> f32 { 0.5 }
+
+impl Default for PlanPlacement {
+    fn default() -> Self {
+        Self { x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: None }
+    }
+}
+
+impl PlanPlacement {
+    /// Whether this is what a clip does anyway: the whole frame, square
+    /// on, centred and fully seen. Anything else leaves some of the frame
+    /// to see past, which is when a background matters.
+    pub fn fills_frame(&self) -> bool {
+        self.width >= 1.0
+            && self.height >= 1.0
+            && self.rotation_deg == 0.0
+            && self.x == 0.5
+            && self.y == 0.5
+            && self.opacity.unwrap_or(1.0) >= 1.0
+    }
+}
+
+/// What goes behind a segment whose picture does not fill the frame:
+/// a generator by name ("gradient", "living_gradient", "grain",
+/// "solid"), with its colours when it takes any.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlanBackground {
+    pub generator: String,
+    /// `#rrggbb`, as many as the generator takes: one for a solid, two
+    /// for a gradient. Left out, the brief's brand colours.
+    #[serde(default)]
+    pub colors: Vec<String>,
+}
+
 /// One shot of the cut, in order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanSegment {
@@ -118,6 +189,18 @@ pub struct PlanSegment {
     /// A sound effect with the segment.
     #[serde(default)]
     pub sfx: Option<PlanSfx>,
+    /// Where the picture sits in the frame. Left out, it fills it.
+    #[serde(default)]
+    pub placement: Option<PlanPlacement>,
+    /// What is behind it when the placement leaves room.
+    #[serde(default)]
+    pub background: Option<PlanBackground>,
+    /// A name shared by consecutive segments that belong together — a
+    /// montage, a title sequence. A section is cut to its own rhythm
+    /// and read by its own rules: shots inside a montage are short on
+    /// purpose, and are not held long enough to read one by one.
+    #[serde(default)]
+    pub section: String,
 }
 
 impl PlanSegment {
@@ -191,6 +274,20 @@ impl EditPlan {
             if let Some(z) = &s.zoom {
                 line.push_str(&format!("  zoom {:.2}->{:.2}", z.from, z.to));
             }
+            if let Some(pl) = &s.placement {
+                if !pl.fills_frame() {
+                    line.push_str(&format!("  at {:.2},{:.2} sized {:.2}x{:.2}", pl.x, pl.y, pl.width, pl.height));
+                }
+                if pl.rotation_deg != 0.0 {
+                    line.push_str(&format!(" turned {:.0}°", pl.rotation_deg));
+                }
+            }
+            if let Some(b) = &s.background {
+                line.push_str(&format!("  over {}", b.generator));
+            }
+            if !s.section.trim().is_empty() {
+                line.push_str(&format!("  [{} section]", s.section.trim()));
+            }
             out.push(line);
             if !s.note.trim().is_empty() {
                 out.push(format!("      {}", s.note.trim()));
@@ -243,7 +340,7 @@ mod tests {
     use super::*;
 
     fn seg(a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None }
+        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() }
     }
 
     #[test]
