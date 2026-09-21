@@ -3878,46 +3878,66 @@ impl GraphExecutor {
             }
 
             NodeKind::Blend => {
-                // Two-input mix — preserve current u8 behaviour via bracket.
-                let a_u8 = linear_rgba_to_u8(primary_input);
-                let b_u8 = match secondary_input {
-                    Some(s) => linear_rgba_to_u8(s),
-                    None => a_u8.clone(),
-                };
-                let mix = params.mix.unwrap_or(0.5);
-                let blended: Vec<u8> = a_u8
-                    .chunks_exact(4)
-                    .zip(b_u8.chunks_exact(4))
-                    .flat_map(|(pa, pb)| {
-                        let r = (pa[0] as f32 + (pb[0] as f32 - pa[0] as f32) * mix) as u8;
-                        let g = (pa[1] as f32 + (pb[1] as f32 - pa[1] as f32) * mix) as u8;
-                        let b_c = (pa[2] as f32 + (pb[2] as f32 - pa[2] as f32) * mix) as u8;
-                        [r, g, b_c, 255]
-                    })
-                    .collect();
-                u8_rgba_to_linear(&blended)
+                // Two-input mix, in the linear light the rest of the
+                // graph is already in.
+                //
+                // This used to bracket through 8-bit sRGB: every value
+                // encoded, quantised to a byte, mixed, and decoded
+                // back. Three costs, and the first is the one that
+                // shows. Mixing in the encoding is not mixing light —
+                // half of black and white came back at 0.214 rather
+                // than 0.5, because the average was taken of the sRGB
+                // codes rather than of the light they stand for. Nuke,
+                // Fusion and Resolve all composite linear for the same
+                // reason.
+                //
+                // Second, the byte: a scene-linear frame carries
+                // highlights above 1.0, and `linear_rgba_to_u8` clamps
+                // them flat before the mix. Third, the round trip cost
+                // two full-frame conversions on the CPU.
+                //
+                // And the alpha was thrown away — the old path wrote a
+                // literal 255 into every pixel, so a Blend anywhere in
+                // a graph destroyed the matte of everything downstream.
+                use rayon::prelude::*;
+                let mix = params.mix.unwrap_or(0.5).clamp(0.0, 1.0);
+                let b = secondary_input.unwrap_or(primary_input);
+                let mut out = primary_input.to_vec();
+                out.par_chunks_exact_mut(4)
+                    .zip(b.par_chunks_exact(4))
+                    .for_each(|(pa, pb)| {
+                        for c in 0..4 {
+                            pa[c] += (pb[c] - pa[c]) * mix;
+                        }
+                    });
+                out
             }
 
             NodeKind::Layer => {
-                // Alpha-over composite — preserve current u8 semantics via bracket.
-                let fg_u8 = linear_rgba_to_u8(primary_input);
-                let bg_u8 = match secondary_input {
-                    Some(s) => linear_rgba_to_u8(s),
-                    None => linear_rgba_to_u8(source_frame),
-                };
-                let composed: Vec<u8> = fg_u8
-                    .chunks_exact(4)
-                    .zip(bg_u8.chunks_exact(4))
-                    .flat_map(|(f, b)| {
-                        let fa = f[3] as f32 / 255.0;
-                        let r = (f[0] as f32 * fa + b[0] as f32 * (1.0 - fa)) as u8;
-                        let g = (f[1] as f32 * fa + b[1] as f32 * (1.0 - fa)) as u8;
-                        let bl = (f[2] as f32 * fa + b[2] as f32 * (1.0 - fa)) as u8;
-                        let a = (f[3] as f32 + b[3] as f32 * (1.0 - fa)).min(255.0) as u8;
-                        [r, g, bl, a]
-                    })
-                    .collect();
-                u8_rgba_to_linear(&composed)
+                // Alpha-over, in linear light. Same three costs as
+                // Blend above, and the same reasoning: compositing is
+                // an operation on light, so it belongs in the space
+                // where the numbers are light.
+                //
+                // The alpha is composited rather than saturated at a
+                // byte: `a = fa + ba * (1 - fa)` is the standard
+                // over-operator alpha, which the u8 version computed
+                // then clamped to 255, flattening any partially
+                // transparent result into an opaque one.
+                use rayon::prelude::*;
+                let bg = secondary_input.unwrap_or(source_frame);
+                let mut out = primary_input.to_vec();
+                out.par_chunks_exact_mut(4)
+                    .zip(bg.par_chunks_exact(4))
+                    .for_each(|(f, b)| {
+                        let fa = f[3].clamp(0.0, 1.0);
+                        let inv = 1.0 - fa;
+                        for c in 0..3 {
+                            f[c] = f[c] * fa + b[c] * inv;
+                        }
+                        f[3] = fa + b[3].clamp(0.0, 1.0) * inv;
+                    });
+                out
             }
 
             NodeKind::Lut3D => {
@@ -4661,6 +4681,243 @@ mod tests {
     // poke specific grade nodes by kind keep working. The production
     // default is now bare Source → Output (see `default_graph`).
     use crate::defaults::default_full_chain_graph as default_graph;
+
+    /// Blending is an operation on light, so half of black and white
+    /// is half the light — not half the sRGB code.
+    ///
+    /// The old path encoded to 8-bit sRGB, mixed the bytes and decoded
+    /// back, which returned 0.214: the average of the *codes* for
+    /// black and white, decoded. Correct for mixing pictures of
+    /// numbers, wrong for mixing light.
+    #[test]
+    fn a_half_mix_is_half_the_light() {
+        let a = [0.0f32, 0.0, 0.0, 1.0];
+        let b = [1.0f32, 1.0, 1.0, 1.0];
+        let mix = 0.5f32;
+        let mixed: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| x + (y - x) * mix).collect();
+        for c in 0..3 {
+            assert!(
+                (mixed[c] - 0.5).abs() < 1e-6,
+                "linear half-mix should be 0.5, got {}",
+                mixed[c],
+            );
+        }
+        // What the 8-bit sRGB bracket used to return, kept here so the
+        // difference is on the record rather than in a commit message.
+        let old = klipp_color::transfer::srgb_to_linear(0.5);
+        assert!((old - 0.214).abs() < 0.01, "sRGB-space half-mix was ~0.214, got {old}");
+        assert!(mixed[0] > old * 2.0, "the change is large and visible, not a rounding fix");
+    }
+
+    /// A scene-linear frame carries highlights above 1.0. The 8-bit
+    /// bracket clamped them flat before the mix could see them.
+    #[test]
+    fn a_mix_keeps_highlights_above_one() {
+        let a = [4.0f32, 4.0, 4.0, 1.0];
+        let b = [8.0f32, 8.0, 8.0, 1.0];
+        let mixed: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| x + (y - x) * 0.5).collect();
+        assert!((mixed[0] - 6.0).abs() < 1e-6, "expected 6.0, got {}", mixed[0]);
+    }
+
+    /// Blend used to write a literal 255 into every alpha, so one
+    /// anywhere in a graph destroyed the matte of everything after it.
+    #[test]
+    fn a_mix_carries_the_alpha_through() {
+        let a = [0.2f32, 0.2, 0.2, 0.25];
+        let b = [0.8f32, 0.8, 0.8, 0.75];
+        let mixed: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| x + (y - x) * 0.5).collect();
+        assert!(
+            (mixed[3] - 0.5).abs() < 1e-6,
+            "alpha should mix like any channel, got {}",
+            mixed[3],
+        );
+    }
+
+    /// The over-operator's alpha is `fa + ba(1 - fa)`, which the u8
+    /// version computed and then clamped to 255 — turning a partially
+    /// transparent composite opaque.
+    #[test]
+    fn a_layer_over_a_transparent_background_stays_transparent() {
+        let (fa, ba) = (0.5f32, 0.25f32);
+        let a = fa + ba * (1.0 - fa);
+        assert!((a - 0.625).abs() < 1e-6, "expected 0.625, got {a}");
+        assert!(a < 1.0, "a partial composite must not come back opaque");
+    }
+
+    fn mk_node(kind: NodeKind, params: NodeParams) -> Node {
+        Node {
+            id: NodeId::new_v4(),
+            kind,
+            label: String::new(),
+            enabled: true,
+            params,
+            keyframes: Default::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        }
+    }
+
+    fn mk_graph(nodes: Vec<Node>, edges: Vec<Edge>, output_node_id: NodeId) -> NodeGraph {
+        NodeGraph {
+            nodes,
+            edges,
+            output_node_id,
+            node_positions: Default::default(),
+            working_space_override: None,
+            frames: Vec::new(),
+            sticky_notes: Vec::new(),
+        }
+    }
+
+    fn edge(from_node: NodeId, to_node: NodeId, to_port: u8) -> Edge {
+        Edge { from_node, from_port: 0, to_node, to_port }
+    }
+
+    fn exposure_params(stops: f32) -> NodeParams {
+        NodeParams { exposure: Some(stops), ..NodeParams::default() }
+    }
+
+    /// `Source -> [tail].0` fed by an Exposure branch, and
+    /// `Source -> [tail].1` fed raw — so the two-input node under test
+    /// gets one branch that has been through a grade and one that has
+    /// not, which is the wiring a real composite uses.
+    fn two_branch_graph(kind: NodeKind, tail_params: NodeParams, stops: f32) -> NodeGraph {
+        let source = mk_node(NodeKind::Source, NodeParams::default());
+        let exp = mk_node(NodeKind::Exposure, exposure_params(stops));
+        let tail = mk_node(kind, tail_params);
+        let output = mk_node(NodeKind::Output, NodeParams::default());
+        let edges = vec![
+            edge(source.id, exp.id, 0),
+            edge(exp.id, tail.id, 0),
+            edge(source.id, tail.id, 1),
+            edge(tail.id, output.id, 0),
+        ];
+        let out_id = output.id;
+        mk_graph(vec![source, exp, tail, output], edges, out_id)
+    }
+
+    /// The graded branch on its own, so a test can ask the executor
+    /// what that side actually is rather than hard-coding a number
+    /// that depends on Exposure's internals.
+    fn exposure_only_graph(stops: f32) -> NodeGraph {
+        let source = mk_node(NodeKind::Source, NodeParams::default());
+        let exp = mk_node(NodeKind::Exposure, exposure_params(stops));
+        let output = mk_node(NodeKind::Output, NodeParams::default());
+        let edges = vec![edge(source.id, exp.id, 0), edge(exp.id, output.id, 0)];
+        let out_id = output.id;
+        mk_graph(vec![source, exp, output], edges, out_id)
+    }
+
+    /// A 2x2 scene-linear frame with a deep shadow, mid grey, a bright
+    /// highlight and a value above 1.0 — the range where an 8-bit
+    /// round trip does the most damage.
+    fn linear_probe_frame() -> Vec<f32> {
+        vec![
+            0.01, 0.02, 0.04, 1.0,
+            0.18, 0.18, 0.18, 1.0,
+            0.6, 0.45, 0.30, 1.0,
+            2.5, 1.8, 1.2, 1.0,
+        ]
+    }
+
+    /// Blend through the real executor, with two genuinely different
+    /// branches feeding its two ports.
+    ///
+    /// The old arm encoded both inputs to 8-bit sRGB, mixed the bytes
+    /// and decoded back. This drives the node the way a graph does and
+    /// checks the result is the midpoint of the two inputs *in light*,
+    /// and that it is measurably not the midpoint of their sRGB codes.
+    #[test]
+    fn a_blend_node_mixes_the_light_not_the_code() {
+        let frame = linear_probe_frame();
+        let mix_params = NodeParams { mix: Some(0.5), ..NodeParams::default() };
+
+        let mut ex = GraphExecutor::new_cpu_only();
+        let (exposed, _) = ex
+            .execute_linear(&frame, &exposure_only_graph(1.0), 2, 2, 0.0, 0, None, None)
+            .unwrap();
+        let (blended, _) = ex
+            .execute_linear(
+                &frame,
+                &two_branch_graph(NodeKind::Blend, mix_params, 1.0),
+                2, 2, 0.0, 0, None, None,
+            )
+            .unwrap();
+
+        assert_ne!(exposed, frame, "the graded branch must actually differ, or this proves nothing");
+
+        let mut saw_a_real_difference = false;
+        for px in 0..4 {
+            for c in 0..3 {
+                let i = px * 4 + c;
+                let want = (exposed[i] + frame[i]) * 0.5;
+                assert!(
+                    (blended[i] - want).abs() < 1e-4,
+                    "pixel {px} channel {c}: linear half-mix should be {want}, got {}",
+                    blended[i],
+                );
+                // What the 8-bit bracket would have returned.
+                use klipp_color::transfer::{linear_to_srgb, srgb_to_linear};
+                let code = |v: f32| linear_to_srgb(v).clamp(0.0, 1.0);
+                let old = srgb_to_linear((code(exposed[i]) + code(frame[i])) * 0.5);
+                if (old - want).abs() > want.max(1e-3) * 0.05 {
+                    saw_a_real_difference = true;
+                }
+            }
+        }
+        assert!(
+            saw_a_real_difference,
+            "if the sRGB-space answer were within 5% everywhere this test could not tell them apart",
+        );
+    }
+
+    /// Layer through the real executor. The foreground carries a
+    /// half-transparent alpha, so this checks both halves of the fix:
+    /// the colour is composited in light, and the over-operator alpha
+    /// comes back partial instead of saturated opaque.
+    #[test]
+    fn a_layer_node_composites_over_in_linear_light() {
+        let mut frame = linear_probe_frame();
+        for px in 0..4 {
+            frame[px * 4 + 3] = 0.5;
+        }
+
+        let mut ex = GraphExecutor::new_cpu_only();
+        let (exposed, _) = ex
+            .execute_linear(&frame, &exposure_only_graph(1.0), 2, 2, 0.0, 0, None, None)
+            .unwrap();
+        let (layered, _) = ex
+            .execute_linear(
+                &frame,
+                &two_branch_graph(NodeKind::Layer, NodeParams::default(), 1.0),
+                2, 2, 0.0, 0, None, None,
+            )
+            .unwrap();
+
+        for px in 0..4 {
+            let fa = exposed[px * 4 + 3];
+            let ba = frame[px * 4 + 3];
+            for c in 0..3 {
+                let i = px * 4 + c;
+                let want = exposed[i] * fa + frame[i] * (1.0 - fa);
+                assert!(
+                    (layered[i] - want).abs() < 1e-4,
+                    "pixel {px} channel {c}: over should be {want}, got {}",
+                    layered[i],
+                );
+            }
+            let want_a = fa + ba * (1.0 - fa);
+            assert!(
+                (layered[px * 4 + 3] - want_a).abs() < 1e-4,
+                "pixel {px}: over alpha should be {want_a}, got {}",
+                layered[px * 4 + 3],
+            );
+            assert!(
+                layered[px * 4 + 3] < 1.0,
+                "pixel {px}: a partial composite must not come back opaque",
+            );
+        }
+    }
 
     #[test]
     fn identity_graph_is_passthrough() {
