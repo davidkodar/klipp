@@ -3,7 +3,7 @@
 //! The hue/sat curves themselves live in
 //! `klipp_effects::cpu_grade::huesat` (CPU) and the `SHADER_HUESAT`
 //! pass (GPU), both in the linear working colourspace; what is left
-//! here is the conversion pair they and [`crate::warper`] share.
+//! here is the conversion pair they share.
 
 pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);

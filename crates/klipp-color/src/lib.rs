@@ -4,7 +4,8 @@
 //! graph: exposure / contrast / saturation / temperature / tint /
 //! lift-gamma-gain-offset ([`linear`]), shape masks ([`masks`]),
 //! keying ([`luma_key`], [`difference_key`]), custom curves
-//! ([`curves`]), 3D LUTs ([`lut`]) and colour warping ([`warper`]).
+//! ([`curves`]) and 3D LUTs ([`lut`]). Colour warping lives with the
+//! grade twins in `klipp_effects::cpu_grade`, beside its shader.
 //! `klipp_effects` holds the GPU shaders for the same ops, and the
 //! CPU grade twins that read a whole frame at a time.
 //!
@@ -73,13 +74,11 @@ pub mod pipeline;
 pub mod scopes;
 pub mod transfer;
 pub mod transforms;
-pub mod warper;
 pub mod white_balance;
 pub mod wheels;
 
 pub use lut::{apply_3d_lut, apply_3d_lut_linear_ws, apply_3d_lut_linear_ws_with_overrides, apply_3d_lut_tetrahedral, generate_lut_preview, generate_lut_reference_image, load_cube, load_lut, parse_3dl, parse_csp, parse_cube, write_cube, LutData, LutError};
 pub use pipeline::ColorPipeline;
 pub use transforms::*;
-pub use warper::apply_color_warper;
 pub use klipp_core::ColorWarperParams;
 pub use wheels::{generate_wheel_texture, hsv_to_rgb, rgb_to_wheel_offset, wheel_offset_to_rgb};
