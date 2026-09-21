@@ -1451,7 +1451,7 @@ fn wait_until<T>(wait: bool, timeout_ms: Option<u64>, mut read: impl FnMut() -> 
 fn analysis_reply(ids: &[klipp_core::MediaId], wait: bool, timeout_ms: Option<u64>) -> Result<serde_json::Value, String> {
     let (items, finished) = wait_until(wait, timeout_ms, || {
         let items: Vec<_> = ids.iter().map(|id| klipp_analysis::service::status(*id).ok_or_else(|| format!("analysis {} is no longer available", id.0))).collect::<Result<_, _>>()?;
-        let finished = items.iter().all(|s| matches!(s.state, klipp_analysis::service::State::Done | klipp_analysis::service::State::Failed));
+        let finished = items.iter().all(|s| matches!(s.state, klipp_analysis::service::State::Done | klipp_analysis::service::State::Failed | klipp_analysis::service::State::Cancelled));
         Ok((items, finished))
     })?;
     let succeeded = finished && items.iter().all(|s| s.state == klipp_analysis::service::State::Done);
@@ -2721,7 +2721,7 @@ fn handle(
             if !done.status.success() || !out.is_file() {
                 return Err(format!("piper failed ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim()));
             }
-            let mut v = handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string() }, &mut None)?;
+            let mut v = handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string(), analyze: true }, &mut None)?;
             let media_id = imported_id(ctx, &out).ok_or("the narration was made but did not reach the media pool")?;
             v["media_id"] = json!(media_id);
             v["path"] = json!(out);
@@ -2806,7 +2806,7 @@ fn handle(
             }
             let mut v = json!({ "path": out, "secs": secs, "target": target });
             if import.unwrap_or(true) {
-                handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string() }, &mut None)?;
+                handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string(), analyze: true }, &mut None)?;
                 v["media_id"] = json!(imported_id(ctx, &out));
                 v["next"] = json!("Recorded and imported; analyze reads it (the beat sheet finds the reveals), then place or plan with it.");
             } else {
@@ -2814,6 +2814,13 @@ fn handle(
             }
             v["text"] = json!(format!("Recorded {secs:.1} s of {target} to {}", out.display()));
             Ok(v)
+        }
+
+        ControlCommand::AnalysisQueue { media_id, cancel_pending } => {
+            if in_batch { return read_in_batch("analysis_queue"); }
+            let id = media_id.as_deref().map(|s| parse_uuid(s, "media_id").map(klipp_core::MediaId)).transpose()?;
+            let cancelled = klipp_analysis::service::manage_queue(id, cancel_pending)?;
+            Ok(json!({ "cancelled": cancelled, "items": klipp_analysis::service::all() }))
         }
 
         ControlCommand::AnalysisStatus { wait, media_id, timeout_ms } => {
@@ -3040,7 +3047,7 @@ fn handle(
             }))
         }
 
-        ControlCommand::ImportMedia { path } => {
+        ControlCommand::ImportMedia { path, analyze } => {
             let p = std::path::PathBuf::from(&path);
             if !p.exists() {
                 return Err(format!("file not found: {path}"));
@@ -3052,7 +3059,7 @@ fn handle(
                 return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
             }
             drop(pool);
-            let mut v = send(AppCommand::ImportMedia { path: p.clone() })?;
+            let mut v = send(if analyze { AppCommand::ImportMedia { path: p.clone() } } else { AppCommand::ImportMediaWithAnalysis { path: p.clone(), analyze } })?;
             // The id it just made, waited for. Without this the first
             // call answers with no media_id at all and only a *second*
             // one finds the path in the pool — so an agent importing a
@@ -3065,6 +3072,11 @@ fn handle(
                 None => {
                     v["note"] = json!("the import was sent but the item has not reached the pool yet; list_media will show it");
                 }
+            }
+            v["analysis_requested"] = json!(analyze);
+            if !analyze {
+                v["next"] = json!("Imported without analysis. Call analyze with this media_id and wait true when results are needed.");
+                return Ok(v);
             }
             v["next"] = json!("Imported. Analysis runs on import; set the brief first (set_brief) so the transcript gets the cast's names and the spellings. Watch analysis_status, then read the transcript and shots.");
             Ok(v)
@@ -3612,7 +3624,7 @@ reference:   {}",
                 commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(),
             };
             let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
-            let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string() }, &mut None)?;
+            let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string(), analyze: true }, &mut None)?;
             v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track, mark the track Music, and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
             v["attribution"] = json!(track.attribution());
             v["next"] = json!("Place it on an audio track (append_clip), set the track's role to Music so the loudness check treats it right, and duck it under any speech. The credit is saved beside the file for your export notes.");

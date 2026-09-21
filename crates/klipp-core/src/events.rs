@@ -3070,6 +3070,9 @@ pub enum AppCommand {
     /// based on current state. Lets the command palette expose a single
     /// idempotent entry instead of two.
     ToggleClipStencil { clip_id: ClipId },
+
+    /// Import a file with explicit control over automatic analysis.
+    ImportMediaWithAnalysis { path: PathBuf, analyze: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

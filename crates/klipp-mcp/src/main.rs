@@ -218,7 +218,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_list_clips" => json!({ "method": "list_clips" }),
         "klipp_list_media" => json!({ "method": "list_media" }),
         "klipp_import_media" => json!({
-            "method": "import_media", "path": arg_str(args, "path")?,
+            "method": "import_media", "path": arg_str(args, "path")?, "analyze": args.get("analyze").and_then(Value::as_bool).unwrap_or(true),
         }),
         "klipp_append_clip" => {
             let mut v = json!({
@@ -430,6 +430,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_analysis_queue" => json!({ "method": "analysis_queue", "media_id": args.get("media_id"), "cancel_pending": args.get("cancel_pending").and_then(Value::as_bool).unwrap_or(false) }),
         "klipp_analysis_status" => json!({ "method": "analysis_status", "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false), "media_id": args.get("media_id"), "timeout_ms": args.get("timeout_ms") }),
         "klipp_media_analysis" => {
             let mut v = json!({ "method": "media_analysis", "media_id": arg_str(args, "media_id")? });
@@ -868,7 +869,7 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_import_media",
              "Import a file into the media pool. Asynchronous — the app probes the \
               file on a worker thread, so call klipp_list_media afterwards to see it.",
-             json!({ "path": { "type": "string", "description": "Absolute path to a media file" } }),
+             json!({ "path": { "type": "string", "description": "Absolute path to a media file" }, "analyze": { "type": "boolean", "description": "Automatically analyze on import (default true); false leaves the queue untouched" } }),
              vec!["path"]),
         tool("klipp_append_clip",
              "Append a media pool item to the timeline as a new clip. A clip at a different \
@@ -1146,6 +1147,8 @@ fn tool_definitions() -> Vec<Value> {
               up, the text and where on the frame.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
+        tool("klipp_analysis_queue", "Put media_id first in the pending analysis queue. With cancel_pending true, cancel other queued items (all if no ID). Running work finishes normally. Call analyze first for an item that has no active request.",
+             json!({ "media_id": { "type": "string" }, "cancel_pending": { "type": "boolean" } }), vec![]),
         tool("klipp_analysis_status", "Where analysis stands. With wait true, holds the response until the selected items end or timeout. Reports finished, succeeded and timed_out; failed items carry errors.",
              json!({ "wait": { "type": "boolean" }, "media_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; does not cancel work" } }), vec![]),
         tool("klipp_media_analysis",
@@ -1750,6 +1753,17 @@ fn tool_definitions() -> Vec<Value> {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn import_analysis_defaults_on_and_queue_options_are_forwarded() {
+        let old = tool_to_command("klipp_import_media", &json!({ "path": "/tmp/take.mp4" })).unwrap();
+        assert_eq!(old["analyze"], true);
+        let skip = tool_to_command("klipp_import_media", &json!({ "path": "/tmp/take.mp4", "analyze": false })).unwrap();
+        assert_eq!(skip["analyze"], false);
+        let queue = tool_to_command("klipp_analysis_queue", &json!({ "media_id": "take", "cancel_pending": true })).unwrap();
+        assert_eq!(queue["media_id"], "take");
+        assert_eq!(queue["cancel_pending"], true);
+    }
 
     #[test]
     fn wait_arguments_reach_control_and_old_calls_stay_nonblocking() {
