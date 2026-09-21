@@ -12,6 +12,7 @@ pub mod render;
 pub mod selfcheck;
 
 pub use render::{
+    LinearFrameProviderFn,
     active_layers, frame_snapshot, ActiveLayer, DisplayDelivery, FrameSource, GlobalLut, GpuPixels, Inspect, Inspection, RenderOptions,
     RenderStats, Renderer,
     SourceFrame, SourcePixels, frame_index, frame_blends, over_u8_straight, gpu_composite_enabled};

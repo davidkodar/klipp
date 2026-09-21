@@ -293,6 +293,21 @@ impl FrameSource for ExportFrameSource<'_> {
             reader.borrow_mut().decode_at((source_in + t).max(0.0))
         }))
     }
+
+    /// The same frames in linear light, for the renderer's own use.
+    fn temporal_frames_linear(
+        &mut self,
+        clip: &Clip,
+        working: WorkingColorspace,
+    ) -> Option<klipp_compose::LinearFrameProviderFn> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let file = self.media.get(media_id)?;
+        let (path, log_format) = (file.path.clone(), file.log_format);
+        let source_in = clip.source_in.to_secs_f64();
+        let mut reader =
+            klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
+        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0))))
+    }
 }
 
 /// An export frame left as the scaler produced it, so the grade can
@@ -620,6 +635,55 @@ mod temporal_frames_tests {
             assert_eq!(a.2, b.2, "height differs at t={t}");
             assert_eq!(a.0, b.0, "pixels differ at t={t}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The linear provider has to render a frame the way the main
+    /// path renders the one beside it, or anything averaging the two
+    /// is comparing pictures rather than samples. That is the whole
+    /// reason it exists separately from the OFX one.
+    ///
+    /// For a display-referred source in a Rec.709 working space the
+    /// two are the same conversion, so this holds `open_linear`
+    /// against decoding the 8-bit frame itself. A scene-referred
+    /// source takes a different branch, which `testsrc` cannot
+    /// produce and this does not claim to cover.
+    #[test]
+    fn the_linear_provider_decodes_what_the_srgb_one_encodes() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-lin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = test_clip_file(&dir) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+        let mut bytes =
+            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("u8 reader");
+        let mut linear = klipp_media::frame_reader::SeekableFrameReader::open_linear(
+            &path,
+            None,
+            WorkingColorspace::Rec709Linear,
+        )
+        .expect("linear reader");
+
+        for t in [0.0f64, 0.75, 1.5] {
+            let (u8s, w, h) = bytes.decode_at(t).expect("u8 frame");
+            let (lin, lw, lh) = linear.decode_at(t).expect("linear frame");
+            assert_eq!((w, h), (lw, lh), "size differs at t={t}");
+            assert_eq!(lin.len(), u8s.len(), "channel count differs at t={t}");
+            let want = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
+            let worst = lin
+                .iter()
+                .zip(want.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "t={t}: linear and decoded sRGB differ by {worst}");
+        }
+
+        // And it is a real picture, not zeroes agreeing with zeroes.
+        let (lin, _, _) = linear.decode_at(0.75).expect("linear frame");
+        let bright = lin.chunks_exact(4).filter(|p| p[0] + p[1] + p[2] > 0.05).count();
+        assert!(bright > 100, "the linear frame is essentially empty");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
