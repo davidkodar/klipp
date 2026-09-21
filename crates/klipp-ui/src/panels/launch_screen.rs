@@ -4,9 +4,45 @@ use klipp_core::AppCommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const CARD_W: f32 = 220.0;
-const CARD_H: f32 = 220.0;
+/// The narrowest a card may get before the grid drops a column, and
+/// the widest it may grow before one more column is better than more
+/// size.
+///
+/// The card used to be a fixed 220 square, and the column count came
+/// from dividing the available width by it — so a wider display got
+/// *more small cards*, not a better look at any of them. At 3072 px
+/// that meant ten cards across, their metadata truncated, and two
+/// thirds of the window empty below.
+/// Chosen so a wide window gives *fewer, larger* cards rather than
+/// more small ones. At 200 the grid produced twelve columns of 211 px
+/// on a 2715 px page — narrower than the fixed 220 it replaced, which
+/// is the opposite of the point. At 280 the same page gives nine
+/// columns of 287, and a half-width window four of 285: near enough
+/// the same card either way, and big enough that the metadata line
+/// stops truncating.
+const CARD_MIN_W: f32 = 280.0;
+const CARD_MAX_W: f32 = 380.0;
+/// A card is its thumbnail plus two lines of text under it. The
+/// thumbnail is 16:9 and takes 58% of the height (`draw_card`), so the
+/// card's own aspect follows from that rather than being squared off.
+const CARD_ASPECT: f32 = 1.0 / 1.18;
 const CARD_GAP: f32 = 16.0;
+
+/// How wide each card is, and how many fit, for a given grid width.
+///
+/// Columns are chosen from the *minimum* width, then the cards are
+/// stretched to fill the row — so the grid uses the width it has
+/// instead of leaving a ragged margin, and the thumbnails grow with
+/// the window.
+fn card_metrics(grid_width: f32) -> (usize, f32, f32) {
+    let usable = (grid_width - CARD_GAP).max(CARD_MIN_W);
+    let cols = ((usable + CARD_GAP) / (CARD_MIN_W + CARD_GAP))
+        .floor()
+        .max(1.0) as usize;
+    let gaps = CARD_GAP * (cols.saturating_sub(1)) as f32;
+    let w = ((grid_width - gaps) / cols as f32).clamp(CARD_MIN_W, CARD_MAX_W);
+    (cols, w, w / CARD_ASPECT)
+}
 const SIDEBAR_W: f32 = 300.0;
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -15,6 +51,10 @@ enum SortMode {
     Modified,
     Name,
     Size,
+    /// How long the cut is. The obvious fourth key for video work, and
+    /// `duration_secs` was already on every recent project — it is
+    /// printed on the cards, it just could not be sorted by.
+    Duration,
 }
 
 impl SortMode {
@@ -23,6 +63,7 @@ impl SortMode {
             Self::Modified => "Modified",
             Self::Name => "Name",
             Self::Size => "Size",
+            Self::Duration => "Duration",
         }
     }
 }
@@ -268,9 +309,21 @@ impl LaunchScreen {
                 theme.text_dim,
             );
 
+            // A few, not all of them.
+            //
+            // This filled the sidebar with as many as would fit — all
+            // twenty, on a tall window — beside a grid showing the same
+            // twenty. Two complete lists of the same projects, side by
+            // side.
+            //
+            // It is not redundant in principle: the grid follows the
+            // chosen sort, this always follows recency, so with sort
+            // set to Name or Size it is still the way back to what you
+            // had open. That is a shortcut, and a shortcut is short.
+            const MAX_RECENT: usize = 5;
             let item_h = 44.0;
-            let max_items = ((area.max.y - recent_y - 60.0) / item_h).floor().max(1.0) as usize;
-            let items_to_show = recent.len().min(max_items);
+            let fits = ((area.max.y - recent_y - 60.0) / item_h).floor().max(1.0) as usize;
+            let items_to_show = recent.len().min(fits).min(MAX_RECENT);
 
             for (i, rp) in recent.iter().take(items_to_show).enumerate() {
                 let y = recent_y + 20.0 + i as f32 * item_h;
@@ -422,10 +475,15 @@ impl LaunchScreen {
         let controls_y = area.min.y + pad + 56.0;
         let controls_right = area.max.x - pad;
 
-        // Search bar
-        let search_w = 200.0_f32.min(area.width() - pad * 2.0 - 200.0);
+        // Search bar, on the grid's left edge.
+        //
+        // It used to start at `pad + 200.0` — a fixed offset that put
+        // it neither under the title nor against anything else, so it
+        // floated in the middle of the header lining up with nothing.
+        // Sharing the grid's left margin makes the row read as a row.
+        let search_w = 260.0_f32.min((area.width() - pad * 2.0) * 0.4);
         let search_rect = egui::Rect::from_min_size(
-            egui::pos2(area.min.x + pad + 200.0, controls_y - 2.0),
+            egui::pos2(area.min.x + pad, controls_y - 2.0),
             egui::vec2(search_w, 26.0),
         );
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(search_rect), |ui| {
@@ -517,7 +575,7 @@ impl LaunchScreen {
         }
         // Sort dropdown menu
         sort_resp.context_menu(|ui| {
-            for mode in [SortMode::Modified, SortMode::Name, SortMode::Size] {
+            for mode in [SortMode::Modified, SortMode::Name, SortMode::Size, SortMode::Duration] {
                 if ui.button(mode.label()).clicked() {
                     self.sort_mode = mode;
                     ui.close_menu();
@@ -529,7 +587,8 @@ impl LaunchScreen {
             self.sort_mode = match self.sort_mode {
                 SortMode::Modified => SortMode::Name,
                 SortMode::Name => SortMode::Size,
-                SortMode::Size => SortMode::Modified,
+                SortMode::Size => SortMode::Duration,
+                SortMode::Duration => SortMode::Modified,
             };
         }
 
@@ -561,6 +620,15 @@ impl LaunchScreen {
             SortMode::Size => {
                 filtered.sort_by_key(|a| std::cmp::Reverse(a.total_size_bytes.unwrap_or(0)));
             }
+            SortMode::Duration => {
+                // Longest first, and an unknown duration sorts last
+                // rather than ahead of every real one.
+                filtered.sort_by(|a, b| {
+                    b.duration_secs
+                        .unwrap_or(0.0)
+                        .total_cmp(&a.duration_secs.unwrap_or(0.0))
+                });
+            }
         }
 
         // ── Project Grid / List ──
@@ -590,14 +658,14 @@ impl LaunchScreen {
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let cols = ((grid_width + CARD_GAP) / (CARD_W + CARD_GAP)).floor().max(1.0) as usize;
+        let (cols, card_w, card_h) = card_metrics(grid_width);
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // "New Project" card is first
                 let new_card_rect = egui::Rect::from_min_size(
                     ui.min_rect().min + egui::vec2(pad, 0.0),
-                    egui::vec2(CARD_W, CARD_H),
+                    egui::vec2(card_w, card_h),
                 );
                 self.draw_new_project_card(ui, new_card_rect, theme, cmds);
 
@@ -636,7 +704,7 @@ impl LaunchScreen {
                     // Start on fresh row
                     card_idx = card_idx.div_ceil(cols) * cols;
                     let row = card_idx / cols;
-                    let y_offset = row as f32 * (CARD_H + CARD_GAP);
+                    let y_offset = row as f32 * (card_h + CARD_GAP);
 
                     let header_rect = egui::Rect::from_min_size(
                         ui.min_rect().min + egui::vec2(pad, y_offset),
@@ -659,15 +727,15 @@ impl LaunchScreen {
                     for rp in projects {
                         let col = card_idx % cols;
                         let row = card_idx / cols;
-                        let x = pad + col as f32 * (CARD_W + CARD_GAP);
-                        let y = row as f32 * (CARD_H + CARD_GAP);
+                        let x = pad + col as f32 * (card_w + CARD_GAP);
+                        let y = row as f32 * (card_h + CARD_GAP);
 
                         let card_rect = egui::Rect::from_min_size(
                             ui.min_rect().min + egui::vec2(x, y),
-                            egui::vec2(CARD_W, CARD_H),
+                            egui::vec2(card_w, card_h),
                         );
                         ui.allocate_at_least(
-                            egui::vec2(grid_width, (row + 1) as f32 * (CARD_H + CARD_GAP)),
+                            egui::vec2(grid_width, (row + 1) as f32 * (card_h + CARD_GAP)),
                             egui::Sense::hover(),
                         );
                         self.draw_card(ctx, ui, card_rect, rp, theme, cmds);
@@ -681,7 +749,7 @@ impl LaunchScreen {
                 if !standalone.is_empty() && !workspace_groups.is_empty() {
                     card_idx = card_idx.div_ceil(cols) * cols;
                     let row = card_idx / cols;
-                    let y_offset = row as f32 * (CARD_H + CARD_GAP);
+                    let y_offset = row as f32 * (card_h + CARD_GAP);
                     let header_rect = egui::Rect::from_min_size(
                         ui.min_rect().min + egui::vec2(pad, y_offset),
                         egui::vec2(grid_width, 22.0),
@@ -703,15 +771,15 @@ impl LaunchScreen {
                 for rp in &standalone {
                     let col = card_idx % cols;
                     let row = card_idx / cols;
-                    let x = pad + col as f32 * (CARD_W + CARD_GAP);
-                    let y = row as f32 * (CARD_H + CARD_GAP);
+                    let x = pad + col as f32 * (card_w + CARD_GAP);
+                    let y = row as f32 * (card_h + CARD_GAP);
 
                     let card_rect = egui::Rect::from_min_size(
                         ui.min_rect().min + egui::vec2(x, y),
-                        egui::vec2(CARD_W, CARD_H),
+                        egui::vec2(card_w, card_h),
                     );
                     ui.allocate_at_least(
-                        egui::vec2(grid_width, (row + 1) as f32 * (CARD_H + CARD_GAP)),
+                        egui::vec2(grid_width, (row + 1) as f32 * (card_h + CARD_GAP)),
                         egui::Sense::hover(),
                     );
                     self.draw_card(ctx, ui, card_rect, rp, theme, cmds);
