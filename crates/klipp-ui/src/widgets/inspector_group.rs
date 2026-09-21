@@ -65,17 +65,39 @@ pub fn paint_section_header(ui: &Ui, rect: Rect, title: &str, is_open: bool, bad
     }
 }
 
+/// Sections that start closed rather than open.
+///
+/// `GRADE` — versions, stills and looks — is management: reached a few
+/// times a session, where the wheels and curves below it are reached a
+/// few times a minute. Open it cost ~140 px at the top of a panel whose
+/// constraint is height, pushing the constantly-used thing down to make
+/// room for the rarely-used one. Its header stays where it is, so it is
+/// one click away and the chevron says so.
+const DEFAULT_CLOSED: &[&str] = &["GRADE"];
+
+fn starts_open(title: &str) -> bool {
+    !DEFAULT_CLOSED.contains(&title)
+}
+
 /// A collapsible section: the shared header over `add_contents`, its
 /// open state remembered by title across the session.
+///
+/// The remembered set holds the titles whose state **differs from their
+/// default**, not the titles that are collapsed. That keeps one set
+/// working for sections that start open and sections that start closed,
+/// and it keeps every previously-saved entry meaning what it meant: a
+/// section that starts open and is listed is still collapsed.
 pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &KlippTheme, add_contents: impl FnOnce(&mut Ui)) {
     let w = ui.available_width();
     let collapsed_key = egui::Id::new("klipp_collapsed_sections");
-    let is_collapsed: bool = ui.ctx().data_mut(|d| {
+    let flipped: bool = ui.ctx().data_mut(|d| {
         let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
         set.contains(title)
     });
+    let default_open = starts_open(title);
+    let open_by_default = default_open != flipped;
     let id = ui.id().with(title).with("section");
-    let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
+    let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open_by_default);
     let (header_rect, header_resp) = ui.allocate_exact_size(vec2(w, SECTION_HEADER_H), Sense::click());
     let is_open = col_state.is_open();
     if ui.is_rect_visible(header_rect) {
@@ -86,7 +108,11 @@ pub fn section_card(ui: &mut Ui, title: &str, badge: Option<String>, theme: &Kli
         let now_open = col_state.is_open();
         ui.ctx().data_mut(|d| {
             let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-            if now_open {
+            // Listed only while it disagrees with its default, so a
+            // section left at its default costs nothing in the prefs
+            // file and a changed default reaches everyone who has not
+            // expressed a preference.
+            if now_open == default_open {
                 set.remove(title);
             } else {
                 set.insert(title.to_string());
@@ -400,4 +426,53 @@ pub fn quick_preset_button(
     );
 
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the remembered set means changed: it holds the titles whose
+    /// state disagrees with their default, not the titles that are
+    /// collapsed. Every entry a user already had saved still means the
+    /// same thing, because every section it can name starts open.
+    #[test]
+    fn a_saved_entry_still_collapses_a_section_that_starts_open() {
+        assert!(starts_open("EXPOSURE"));
+        // Listed, and it starts open, so it is collapsed — exactly what
+        // that entry meant before.
+        let listed = true;
+        assert!(!(starts_open("EXPOSURE") != listed));
+    }
+
+    #[test]
+    fn grade_starts_closed_and_nothing_else_does() {
+        assert!(!starts_open("GRADE"));
+        for title in [
+            "EXPOSURE", "CONTRAST", "SATURATION", "TONE CONTROLS",
+            "COLOUR BALANCE", "NOISE REDUCTION", "MASKS", "RENDER QUEUE",
+            "OUTPUT", "VIDEO", "AUDIO", "SIZE AND RATE", "RANGE",
+        ] {
+            assert!(starts_open(title), "{title} should start open");
+        }
+    }
+
+    /// Opening GRADE has to be remembered, which only works if the set
+    /// records the disagreement rather than the collapse. Expanding a
+    /// default-closed section lists it; collapsing it again clears it.
+    #[test]
+    fn expanding_a_default_closed_section_is_what_gets_remembered() {
+        let default_open = starts_open("GRADE");
+        assert!(!default_open);
+
+        // The user expands it: now_open = true, which differs from the
+        // default, so it is listed.
+        let now_open = true;
+        assert_ne!(now_open, default_open, "must be listed to persist");
+
+        // And collapses it again: back to the default, so it is dropped
+        // and costs nothing in the prefs file.
+        let now_open = false;
+        assert_eq!(now_open, default_open, "must be dropped, not listed");
+    }
 }
