@@ -22820,7 +22820,23 @@ impl KlippApp {
                 self.note_project_event(None);
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
-                    name: self.state.sequences[self.state.active_sequence_idx].name.clone(),
+                    // The project's own name, from the file on disk —
+                    // not the active sequence's.
+                    //
+                    // It used to be the sequence name, so the browser
+                    // labelled every project by whatever sequence
+                    // happened to be open in it. Three projects still
+                    // carrying the default "Main Sequence" drew three
+                    // identical cards for three different files, and
+                    // renaming a sequence renamed the project in the
+                    // browser without touching anything on disk.
+                    name: path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            self.state.sequences[self.state.active_sequence_idx].name.clone()
+                        }),
                     last_saved: Some(crate::app::iso8601_now()),
                     duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
                     fps: {
@@ -23013,7 +23029,23 @@ impl KlippApp {
                     .and_then(|rp| rp.last_saved.clone());
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
-                    name: self.state.sequences[self.state.active_sequence_idx].name.clone(),
+                    // The project's own name, from the file on disk —
+                    // not the active sequence's.
+                    //
+                    // It used to be the sequence name, so the browser
+                    // labelled every project by whatever sequence
+                    // happened to be open in it. Three projects still
+                    // carrying the default "Main Sequence" drew three
+                    // identical cards for three different files, and
+                    // renaming a sequence renamed the project in the
+                    // browser without touching anything on disk.
+                    name: path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            self.state.sequences[self.state.active_sequence_idx].name.clone()
+                        }),
                     last_saved: existing_saved,
                     duration_secs: Some(self.state.sequence_duration().to_secs_f64()),
                     fps: {
