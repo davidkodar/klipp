@@ -82,6 +82,25 @@ impl FrameSource for ViewerSource<'_> {
         let decoder = std::cell::RefCell::new(super::CachedFrameDecoder::open(&path)?);
         Some(Box::new(move |t: f64| decoder.borrow_mut().decode_at((source_in + t).max(0.0))))
     }
+
+    /// The same frames in linear light, for the renderer's own use.
+    ///
+    /// The log format comes from the same registry the viewer's own
+    /// decode consults, so a neighbour is rendered exactly as the
+    /// frame beside it was.
+    fn temporal_frames_linear(
+        &mut self,
+        clip: &Clip,
+        working: klipp_core::WorkingColorspace,
+    ) -> Option<klipp_compose::LinearFrameProviderFn> {
+        let path = self.original_path(clip)?;
+        let source_in = clip.source_in.to_secs_f64();
+        let log_format = crate::video_decoder::log_format_for_path(&path);
+        let mut reader = klipp_media::frame_reader::SeekableFrameReader::open_linear(
+            &path, log_format, working,
+        )?;
+        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0))))
+    }
 }
 
 /// A rendered viewer frame.

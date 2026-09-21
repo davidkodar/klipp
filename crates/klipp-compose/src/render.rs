@@ -130,6 +130,11 @@ pub struct SourceFrame {
 
 /// Where decoded frames come from. The viewer answers from its playback
 /// decoders, export from its sequential ones; the renderer does not care.
+/// Frames of a clip's media at other clip times, in linear RGBA f32 in
+/// the working space.
+pub type LinearFrameProviderFn =
+    Box<dyn FnMut(f64) -> Option<(Vec<f32>, u32, u32)> + Send>;
+
 pub trait FrameSource {
     /// `clip`'s media at `source_secs`, ideally at `width` × `height` (a
     /// different size is resampled). `source_secs` may lie before the
@@ -158,6 +163,24 @@ pub trait FrameSource {
     /// clip time to an sRGB RGBA8 frame. `None` (the default) runs those
     /// plugins on the current frame alone.
     fn temporal_frames(&mut self, _clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
+        None
+    }
+
+    /// Frames of `clip`'s media at other clip times, rendered the way
+    /// [`Self::frame`] renders the current one: linear RGBA f32 in the
+    /// working space.
+    ///
+    /// Distinct from [`Self::temporal_frames`], which gives an OFX
+    /// plugin 8-bit sRGB because that is what the API takes. Anything
+    /// that compares a neighbour with the frame beside it needs the
+    /// same rendering of both — a scene-referred source goes to scene
+    /// linear here and to display sRGB there, and averaging those
+    /// compares two pictures rather than two samples.
+    fn temporal_frames_linear(
+        &mut self,
+        _clip: &Clip,
+        _working: WorkingColorspace,
+    ) -> Option<LinearFrameProviderFn> {
         None
     }
 }
@@ -414,7 +437,9 @@ pub struct Renderer {
     ///
     /// Kept across frames: building one opens a decoder, and a
     /// denoised clip asks for two neighbours on every rendered frame.
-    tnr_frames: HashMap<ClipId, klipp_plugin::FrameProviderFn>,
+    /// The linear one, not the OFX one — a neighbour has to be the
+    /// same rendering as the frame it is averaged with.
+    tnr_frames: HashMap<ClipId, LinearFrameProviderFn>,
     /// The current render's inspection request, and what it has found.
     inspect: Inspect,
     found: Inspection,
@@ -1765,7 +1790,7 @@ impl Renderer {
                     // Scene-referred codes at the render size go to the
                     // grade as they are.
                     SourceFrame { pixels: SourcePixels::SceneReferred { codes, transfer, source_to_working }, width: w, height: h, .. }
-                        if next.is_none() && (w, h) == (width, height) && codes.len() == (w as usize) * (h as usize) =>
+                        if tnr.is_none() && next.is_none() && (w, h) == (width, height) && codes.len() == (w as usize) * (h as usize) =>
                     {
                         (GradeInput::Scene { codes, transfer, source_to_working }, Some(transfer))
                     }
@@ -1776,23 +1801,15 @@ impl Renderer {
                             (Some(n), Some(p0)) => blend_frames(pixels, hdr, p0, n, at, width, height),
                             _ => pixels,
                         };
+                        // Scene-referred sources included: the linear
+                        // provider renders them to scene linear, the
+                        // same as `to_linear` just did for this frame,
+                        // so the neighbours are samples of one picture
+                        // rather than renderings of two.
                         let pixels = match tnr {
-                            // Display-referred only. A scene-referred
-                            // source is rendered to scene linear here
-                            // and to display sRGB by the provider, and
-                            // averaging those is comparing two
-                            // renderings of the same picture rather
-                            // than two samples of it.
-                            Some((strength, threshold)) if hdr.is_none() => self.temporal_denoise(
+                            Some((strength, threshold)) => self.temporal_denoise(
                                 clip, at, pixels, width, height, fps, strength, threshold, src,
                             ),
-                            Some(_) => {
-                                tracing::debug!(
-                                    "TNR skipped on {}: scene-referred source, which the frame provider renders differently",
-                                    clip.id,
-                                );
-                                pixels
-                            }
                             None => pixels,
                         };
                         (GradeInput::Cpu(pixels), hdr)
@@ -2045,10 +2062,12 @@ impl Renderer {
             if self.tnr_frames.len() > 8 {
                 self.tnr_frames.clear();
             }
-            let Some(provider) = src.temporal_frames(clip) else { return pixels };
+            let Some(provider) = src.temporal_frames_linear(clip, self.working) else {
+                return pixels;
+            };
             self.tnr_frames.insert(clip.id, provider);
         }
-        let Some(provider) = self.tnr_frames.get(&clip.id) else { return pixels };
+        let Some(provider) = self.tnr_frames.get_mut(&clip.id) else { return pixels };
 
         let dt = 1.0 / fps.max(1.0);
         let clip_at = source_at - clip.source_in.to_secs_f64();
@@ -2058,17 +2077,11 @@ impl Renderer {
             if t < 0.0 {
                 continue;
             }
-            let Some((rgba, w, h)) = provider(t) else { continue };
-            if (w, h) != (width, height) {
+            let Some((linear, w, h)) = provider(t) else { continue };
+            if (w, h) != (width, height) || linear.len() != want {
                 continue;
             }
-            let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba);
-            // The provider renders BT.709 sRGB; the frame beside it is
-            // in the working space.
-            self.authored_to_working(&mut linear);
-            if linear.len() == want {
-                neighbours.push(linear);
-            }
+            neighbours.push(linear);
         }
         if neighbours.is_empty() {
             return pixels;

@@ -22,16 +22,21 @@
 
 use std::path::Path;
 
-/// Turn a decoded frame into sRGB RGBA8 at the given size.
-pub type ConvertFn =
-    Box<dyn FnMut(&ffmpeg_next::frame::Video, u32, u32) -> Result<Vec<u8>, String> + Send>;
+/// Turn a decoded frame into whatever the caller wants at the given
+/// size — sRGB RGBA8 for an OFX plugin, linear RGBA f32 for anything
+/// that has to sit beside the renderer's own frames.
+pub type ConvertFnTo<T> =
+    Box<dyn FnMut(&ffmpeg_next::frame::Video, u32, u32) -> Result<T, String> + Send>;
+
+/// The common case.
+pub type ConvertFn = ConvertFnTo<Vec<u8>>;
 
 /// How many decoded frames to keep. A plugin reaching a couple of
 /// frames either side of the one being rendered finds them here rather
 /// than decoding twice.
 const CACHE_FRAMES: usize = 8;
 
-pub struct SeekableFrameReader {
+pub struct SeekableFrameReader<T = Vec<u8>> {
     format_ctx: ffmpeg_next::format::context::Input,
     decoder: ffmpeg_next::decoder::Video,
     stream_index: usize,
@@ -39,13 +44,13 @@ pub struct SeekableFrameReader {
     /// Where the decoder is, in seconds. Negative before the first read.
     current_pts: f64,
     frame_duration: f64,
-    cache: Vec<(f64, Vec<u8>, u32, u32)>,
-    convert: ConvertFn,
+    cache: Vec<(f64, T, u32, u32)>,
+    convert: ConvertFnTo<T>,
 }
 
-impl SeekableFrameReader {
+impl<T: Clone> SeekableFrameReader<T> {
     /// Open `path` and decode through `convert`.
-    pub fn open(path: &Path, convert: ConvertFn) -> Option<Self> {
+    pub fn open(path: &Path, convert: ConvertFnTo<T>) -> Option<Self> {
         Self::open_with(path, |_, _| convert)
     }
 
@@ -57,7 +62,7 @@ impl SeekableFrameReader {
     /// them, which is what this exists to avoid.
     pub fn open_with<F>(path: &Path, make_convert: F) -> Option<Self>
     where
-        F: FnOnce(&ffmpeg_next::format::context::Input, usize) -> ConvertFn,
+        F: FnOnce(&ffmpeg_next::format::context::Input, usize) -> ConvertFnTo<T>,
     {
         let format_ctx = ffmpeg_next::format::input(path).ok()?;
         let (decoder, stream_index) = open_sw_decoder(&format_ctx).ok()?;
@@ -86,44 +91,13 @@ impl SeekableFrameReader {
         })
     }
 
-    /// Open `path` converting scene-referred sources (PQ, HLG, camera
-    /// log) as the viewer shows them ungraded, and everything else
-    /// with swscale.
-    ///
-    /// This is what a caller wants unless it has colour rules of its
-    /// own: the alternative renders log flat and PQ washed out.
-    pub fn open_colour_managed(
-        path: &Path,
-        log_format: Option<klipp_core::LogFormat>,
-    ) -> Option<Self> {
-        Self::open_with(path, |format_ctx, stream_index| {
-            let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
-            Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
-                if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
-                    return Ok(rgba);
-                }
-                swscale_rgba(frame, w, h)
-            })
-        })
-    }
-
-    /// Open `path` converting with plain swscale to RGBA.
-    ///
-    /// For callers with no colour rules of their own. A scene-referred
-    /// source (PQ, HLG, camera log) comes back as swscale renders it,
-    /// which is flat for log and washed out for PQ — see the issue on
-    /// the two paths disagreeing about colour.
-    pub fn open_rgba(path: &Path) -> Option<Self> {
-        Self::open(path, Box::new(swscale_rgba))
-    }
-
     /// The length of one frame, in seconds.
     pub fn frame_duration(&self) -> f64 {
         self.frame_duration
     }
 
     /// The frame at `seek_secs`, or `None` past the end of the file.
-    pub fn decode_at(&mut self, seek_secs: f64) -> Option<(Vec<u8>, u32, u32)> {
+    pub fn decode_at(&mut self, seek_secs: f64) -> Option<(T, u32, u32)> {
         for (t, rgba, w, h) in &self.cache {
             if (*t - seek_secs).abs() < self.frame_duration * 0.5 {
                 return Some((rgba.clone(), *w, *h));
@@ -275,6 +249,120 @@ impl SourceColour {
             klipp_core::WorkingColorspace::Rec709Linear,
         );
         Some(klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, transfer, m))
+    }
+}
+
+impl SourceColour {
+    /// Linear RGBA f32 in `working`, the way the renderer's own path
+    /// renders this source.
+    ///
+    /// The point of it: a frame read at another time has to be the
+    /// same rendering as the frame beside it, or anything comparing
+    /// them is comparing two pictures rather than two samples. A
+    /// scene-referred source (PQ, HLG, camera log) goes to *scene*
+    /// linear, which is what `to_linear` produces for it — not to the
+    /// display sRGB [`Self::scene_referred_rgba8`] gives a plugin.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be a valid software AVFrame.
+    pub unsafe fn scene_referred_linear(
+        &self,
+        frame: *const ffmpeg_next::ffi::AVFrame,
+        dst_w: u32,
+        dst_h: u32,
+        working: klipp_core::WorkingColorspace,
+    ) -> Option<Vec<f32>> {
+        let cs = self.colourspace_of(frame);
+        let ids = klipp_core::color_ids::ids(cs);
+        let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
+        let yuv = crate::yuv_samples::read_yuv_samples(frame)?;
+        let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, 0, ids);
+        let m = klipp_color::camera_log::primaries_to_working_matrix(cs.primaries, working);
+        Some(klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, m))
+    }
+}
+
+impl SeekableFrameReader<Vec<u8>> {
+    /// Open `path` converting scene-referred sources (PQ, HLG, camera
+    /// log) as the viewer shows them ungraded, and everything else
+    /// with swscale.
+    ///
+    /// This is what a caller wants unless it has colour rules of its
+    /// own: the alternative renders log flat and PQ washed out.
+    pub fn open_colour_managed(
+        path: &Path,
+        log_format: Option<klipp_core::LogFormat>,
+    ) -> Option<Self> {
+        Self::open_with(path, |format_ctx, stream_index| {
+            let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
+            Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
+                if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
+                    return Ok(rgba);
+                }
+                swscale_rgba(frame, w, h)
+            })
+        })
+    }
+
+    /// Open `path` converting with plain swscale to RGBA.
+    ///
+    /// For callers with no colour rules of their own. A scene-referred
+    /// source (PQ, HLG, camera log) comes back as swscale renders it,
+    /// which is flat for log and washed out for PQ — see the issue on
+    /// the two paths disagreeing about colour.
+    pub fn open_rgba(path: &Path) -> Option<Self> {
+        Self::open(path, Box::new(swscale_rgba))
+    }
+
+}
+
+impl SeekableFrameReader<Vec<f32>> {
+    /// Open `path` returning linear RGBA f32 in `working`.
+    ///
+    /// Scene-referred sources go through their own decode to scene
+    /// linear; everything else is swscale to sRGB, decoded, and put
+    /// into the working space. Either way the result is what the
+    /// renderer's `to_linear` would have produced for the same frame.
+    pub fn open_linear(
+        path: &Path,
+        log_format: Option<klipp_core::LogFormat>,
+        working: klipp_core::WorkingColorspace,
+    ) -> Option<Self> {
+        // BT.709 is what swscale hands back, and the authored colours
+        // of a display-referred source are in it.
+        let to_working = klipp_color::primaries::working_space_conversion_matrix(
+            klipp_core::WorkingColorspace::Rec709Linear,
+            working,
+        );
+        Self::open_with(path, move |format_ctx, stream_index| {
+            let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
+            Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
+                if let Some(linear) =
+                    unsafe { colour.scene_referred_linear(frame.as_ptr(), w, h, working) }
+                {
+                    return Ok(linear);
+                }
+                let rgba = swscale_rgba(frame, w, h)?;
+                let mut out: Vec<f32> = rgba
+                    .iter()
+                    .map(|&c| klipp_color::transfer::srgb_to_linear(c as f32 / 255.0))
+                    .collect();
+                // Alpha is linear already; the decode above bent it.
+                for (i, px) in rgba.chunks_exact(4).enumerate() {
+                    out[i * 4 + 3] = px[3] as f32 / 255.0;
+                }
+                if let Some(m) = to_working {
+                    out.chunks_exact_mut(4).for_each(|px| {
+                        let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
+                        px[0] = c[0];
+                        px[1] = c[1];
+                        px[2] = c[2];
+                    });
+                }
+                Ok(out)
+            })
+        })
     }
 }
 

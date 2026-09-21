@@ -1925,7 +1925,7 @@ fn show_builtin_effect_params(
             );
             ui.label(
                 egui::RichText::new(
-                    "Log, PQ and HLG sources are not denoised yet — the frames it reads are rendered differently from the one it would correct.",
+                    "A clip using this is rendered on the CPU rather than the GPU: the frames it averages against are decoded there.",
                 )
                 .size(10.0)
                 .color(theme.text_dim),
