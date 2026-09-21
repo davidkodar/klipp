@@ -13960,15 +13960,33 @@ impl TimelinePanel {
         zoom: f32,
         scroll: f32,
     ) {
-        // Draw audio crossfade indicators at adjacent clip boundaries
+        // Mark where one clip fades down into the next fading up.
+        //
+        // This used to mark every butted pair, fades or not, with the
+        // crossfade X and a pair of fade triangles — the iconography
+        // for something that was not happening. Two clips meeting at a
+        // cut is not a crossfade; it is a cut, and the timeline already
+        // shows it by drawing them next to each other.
+        //
+        // What is worth marking is a fade handoff: the left clip
+        // fading out and the right one fading in across the same
+        // boundary, so the sound dips to silence and comes back. That
+        // is a real thing an editor wants to see and cannot otherwise,
+        // and the triangles are then literally true.
+        //
+        // A crossfade proper — the two overlapping, with no dip —
+        // needs an audio transition, which the timeline model does not
+        // have yet. When it does, that is what should be marked here.
         if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
             let frame_dur = 1.0 / fps.rate() as f64;
             for i in 0..clips.len().saturating_sub(1) {
                 if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
                 let end_secs = clips[i].timeline_out.to_secs_f64();
                 let start_secs = clips[i + 1].timeline_in.to_secs_f64();
+                let handoff =
+                    clips[i].fade_out_secs > 0.001 && clips[i + 1].fade_in_secs > 0.001;
                 // Adjacent within 1 frame tolerance
-                if (end_secs - start_secs).abs() <= frame_dur * 1.5 {
+                if handoff && (end_secs - start_secs).abs() <= frame_dur * 1.5 {
                     let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;
                     // Only draw if visible
                     if boundary_x >= content_rect.left() - 10.0 && boundary_x <= content_rect.right() + 10.0 {
@@ -13977,7 +13995,7 @@ impl TimelinePanel {
                         let tt = theme();
                         let mi = tt.marker_info;
                         let xf_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
-                        // Draw "X" crossfade indicator
+                        // The X, and below it the two fades it stands for.
                         painter.line_segment(
                             [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
                             egui::Stroke::new(1.5_f32, xf_color),

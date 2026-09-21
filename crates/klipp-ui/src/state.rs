@@ -2268,6 +2268,8 @@ pub struct AppState {
     pub audio_show_rubber_band: bool,
     pub audio_show_waveform: bool,
     pub audio_anti_click_fade: bool,
+    /// See `prefs::AudioPrefs::show_crossfade_indicators`: a fade
+    /// handoff between two butted clips, not a crossfade.
     pub audio_show_crossfade_indicators: bool,
     /// Per-track waveform amplitude zoom. Default is 1.0 when a key is absent.
     /// Alt+scroll over an audio track adjusts this; right-click track header resets it.
