@@ -67,6 +67,53 @@ pub fn evaluate_clip_own_transform(
     (px, py, sc, sc, ro, tdef.5, tdef.6)
 }
 
+/// A camera resolved at one instant: where it looks (fractions of the
+/// frame), how far in, and its roll in degrees.
+pub type ResolvedCamera = (f32, f32, f32, f32);
+
+/// The sequence's camera at `playhead`, or `None` when there is none.
+/// Reading it costs nothing on a sequence without one.
+pub fn camera_at(seq: &klipp_timeline::Sequence, playhead: klipp_core::Timecode) -> Option<ResolvedCamera> {
+    let cam = &seq.camera;
+    if cam.is_still() {
+        return None;
+    }
+    // A camera is keyframes over timeline time and nothing else: no
+    // modifiers, because it belongs to no clip whose time they could be
+    // driven by.
+    let t = playhead.to_secs_f64().max(0.0);
+    let at = |kfs: &[klipp_core::Keyframe], default: f32| klipp_core::keyframe::evaluate(kfs, t, default);
+    Some((
+        at(&cam.x_keyframes, 0.5),
+        at(&cam.y_keyframes, 0.5),
+        at(&cam.zoom_keyframes, 1.0).max(0.01),
+        at(&cam.roll_keyframes, 0.0),
+    ))
+}
+
+/// Put a layer's own transform behind the camera.
+///
+/// The engine's transform maps a source pixel to the screen as
+/// `anchor + R(ro)·S(s)·(src - anchor) + p`. Laying a second transform
+/// `(r2, s2, p2)` over it about the same anchor gives
+/// `rotation ro + r2`, `scale s·s2` and `position R(r2)·S(s2)·p + p2` —
+/// so a layer already offset from the middle swings and scales with the
+/// move instead of sitting still in the corner, which is the whole
+/// difference between a camera and every clip being animated in step.
+///
+/// The camera looking at `(cx, cy)` with zoom `z` and roll `r` is that
+/// second transform with `r2 = -r`, `s2 = z` and `p2 = -R(-r)·S(z)·c`.
+pub fn apply_camera(own: ResolvedTransform, camera: ResolvedCamera, frame_w: u32, frame_h: u32) -> ResolvedTransform {
+    let (look_x, look_y, zoom, roll) = camera;
+    let (own_px, own_py, own_sx, own_sy, own_ro, own_ax, own_ay) = own;
+    let (cx, cy) = ((look_x - 0.5) * frame_w as f32, (look_y - 0.5) * frame_h as f32);
+    let (sin, cos) = (-roll).to_radians().sin_cos();
+    let turn = |x: f32, y: f32| (x * cos - y * sin, x * sin + y * cos);
+    let (tx, ty) = turn(-cx * zoom, -cy * zoom);
+    let (px, py) = turn(own_px * zoom, own_py * zoom);
+    (px + tx, py + ty, own_sx * zoom, own_sy * zoom, own_ro - roll, own_ax, own_ay)
+}
+
 /// Compose `own` with `target` per the link's mode and per-axis
 /// inherit flags. Anchor inheritance is always Absolute regardless
 /// of mode (see the `LinkMode` doc comment for why).
@@ -972,5 +1019,54 @@ mod transform_link_compose_tests {
         let mut cache = std::collections::HashMap::new();
         let out = resolve_for_test(&a_clone, &seq, &mut cache);
         approx_eq(out, (50.0, 60.0, 4.0, 4.0, 180.0, 0.1, 0.9));
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    //! The maths of a camera over the sequence. What separates it from
+    //! animating every clip in step is that a layer already off the
+    //! middle of the frame moves *with* the camera rather than staying
+    //! where it was put.
+    use super::{apply_camera, camera_at};
+
+    const MIDDLE: super::ResolvedTransform = (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5);
+
+    #[test]
+    fn a_zoom_carries_a_layer_that_sits_off_the_middle() {
+        let off = (100.0, -40.0, 1.0, 1.0, 0.0, 0.5, 0.5);
+        let (px, py, sx, _, _, _, _) = apply_camera(off, (0.5, 0.5, 2.0, 0.0), 1920, 1080);
+        // Twice as far in, so twice as far out from the middle and twice
+        // the size. Animating the clip alone would have left it at 100.
+        assert!((px - 200.0).abs() < 1e-3, "{px}");
+        assert!((py + 80.0).abs() < 1e-3, "{py}");
+        assert!((sx - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn looking_right_moves_the_scene_left() {
+        let (px, ..) = apply_camera(MIDDLE, (0.6, 0.5, 1.0, 0.0), 1000, 1000);
+        assert!((px + 100.0).abs() < 1e-3, "{px}");
+        // And looking at the middle changes nothing at all.
+        assert_eq!(apply_camera(MIDDLE, (0.5, 0.5, 1.0, 0.0), 1000, 1000), MIDDLE);
+    }
+
+    #[test]
+    fn a_roll_turns_the_scene_the_other_way_and_swings_what_is_off_centre() {
+        let off = (100.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5);
+        let (px, py, _, _, ro, _, _) = apply_camera(off, (0.5, 0.5, 1.0, 90.0), 1000, 1000);
+        assert!((ro + 90.0).abs() < 1e-6, "the picture turns against the camera");
+        // A card to the right of the middle swings to the top of frame.
+        assert!(px.abs() < 1e-3 && (py + 100.0).abs() < 1e-3, "{px}, {py}");
+    }
+
+    #[test]
+    fn a_sequence_with_no_camera_resolves_to_none() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        assert!(camera_at(&seq, klipp_core::RationalTime::from_frames(0, 24)).is_none());
+        klipp_core::keyframe::upsert_keyframe(&mut seq.camera.zoom_keyframes, 0.0, 1.5);
+        let got = camera_at(&seq, klipp_core::RationalTime::from_frames(0, 24)).unwrap();
+        // The lists left empty keep their resting values.
+        assert_eq!(got, (0.5, 0.5, 1.5, 0.0));
     }
 }

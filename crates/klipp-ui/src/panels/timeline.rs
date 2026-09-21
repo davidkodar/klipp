@@ -16908,6 +16908,7 @@ mod compound_filmstrip_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            camera: Default::default(),
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),

@@ -69,12 +69,58 @@ pub struct Sequence {
     /// [`crate::EditPlan`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit_plan: Option<crate::EditPlan>,
+    /// A move over the whole sequence; see [`Camera`]. Empty means none,
+    /// which is what every sequence made before this had.
+    #[serde(default, skip_serializing_if = "Camera::is_still")]
+    pub camera: Camera,
+}
+
+/// A move over the whole sequence, rather than over one clip.
+///
+/// `zoom`, `pan` and `follow` animate a single clip, so a drift across a
+/// scene that several layers live in has to be written into each of them
+/// and kept in step by hand. A camera is written once and every layer
+/// inherits it, including layers that come and go during the move.
+///
+/// It reads as a camera, not as a transform of the picture: `x` and `y`
+/// are the point in the scene the camera looks at, as fractions of the
+/// frame, so moving the camera right moves the scene left. `zoom` is how
+/// far in it is, 1 being the scene as composed. `roll` turns the camera
+/// clockwise in degrees, so the scene turns the other way.
+///
+/// Every list empty is no camera at all, which costs nothing to resolve.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    /// Where it looks, across: 0.5 is the middle of the scene.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub x_keyframes: Vec<klipp_core::Keyframe>,
+    /// Where it looks, down.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub y_keyframes: Vec<klipp_core::Keyframe>,
+    /// How far in, 1 being the scene as composed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zoom_keyframes: Vec<klipp_core::Keyframe>,
+    /// Its roll, clockwise in degrees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roll_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl Camera {
+    /// Whether there is no camera: nothing to resolve, and nothing to
+    /// write into a project file.
+    pub fn is_still(&self) -> bool {
+        self.x_keyframes.is_empty()
+            && self.y_keyframes.is_empty()
+            && self.zoom_keyframes.is_empty()
+            && self.roll_keyframes.is_empty()
+    }
 }
 
 impl Sequence {
     pub fn new_default() -> Self {
         Self {
             id: SequenceId::new(),
+            camera: Camera::default(),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
@@ -2994,6 +3040,7 @@ mod tests {
 
     fn make_swap_seq() -> Sequence {
         Sequence {
+            camera: Default::default(),
             id: SequenceId::new(),
             name: "test".to_string(),
             fps: Fps::new(24, 1),

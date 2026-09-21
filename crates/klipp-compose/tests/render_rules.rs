@@ -949,3 +949,36 @@ fn a_shadow_on_a_placed_layer_falls_on_the_track_below() {
         assert!(shaded[0] < clear[0] * 0.75, "the shadow darkens the background under the layer: {shaded:?} against {clear:?}");
     }
 }
+
+/// A camera over the sequence moves every layer at once, including one
+/// that was never animated. Two clips sit side by side, placed by their
+/// own keyframes; the camera looks left, and both move right together.
+#[test]
+fn a_camera_over_the_sequence_moves_every_layer_at_once() {
+    let place = |c: &mut Clip, x: f32| {
+        klipp_core::keyframe::upsert_keyframe(&mut c.transform_scale_keyframes, 0.0, 0.4);
+        klipp_core::keyframe::upsert_keyframe(&mut c.transform_pos_x_keyframes, 0.0, x);
+    };
+    let (mut left, mut right) = (media(0.0, 1.0), media(0.0, 1.0));
+    place(&mut left, -(W as f32) * 0.25);
+    place(&mut right, (W as f32) * 0.25);
+
+    let mut seq = sequence(vec![vec![left.clone()], vec![right.clone()]]);
+    let mut src = Flat::default().linear(&left, [1.0, 0.0, 0.0]).linear(&right, [0.0, 1.0, 0.0]);
+
+    // As composed, red is left of the middle and green right of it.
+    for img in render(&seq, 0.5, &mut src) {
+        assert!(px(&img, 8, 9)[0] > 0.5, "red sits left: {:?}", px(&img, 8, 9));
+        assert!(px(&img, 24, 9)[1] > 0.5, "green sits right: {:?}", px(&img, 24, 9));
+    }
+
+    // The camera looks a quarter of the frame to the left, so the whole
+    // scene slides a quarter of the frame right: red lands in the middle
+    // and green leaves the frame, and neither clip was touched to do it.
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.25);
+    for img in render(&seq, 0.5, &mut src) {
+        assert!(px(&img, 16, 9)[0] > 0.5, "red has moved to the middle: {:?}", px(&img, 16, 9));
+        assert!(px(&img, 8, 9)[0] < 0.5, "and left where it was: {:?}", px(&img, 8, 9));
+        assert!(px(&img, 24, 9)[1] < 0.5, "green has gone off the right: {:?}", px(&img, 24, 9));
+    }
+}

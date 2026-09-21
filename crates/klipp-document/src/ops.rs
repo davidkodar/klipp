@@ -642,6 +642,14 @@ pub enum Op {
         clip_id: ClipRef,
         poses: Vec<ComposePose>,
     },
+    /// Move a camera over the whole sequence. Every layer inherits it,
+    /// so one drift carries the scene rather than each clip being
+    /// animated in step with the others — including layers that come and
+    /// go during the move. `keys` are poses at seconds on the timeline,
+    /// not in a clip; an empty list takes the camera away again.
+    Camera {
+        keys: Vec<CameraKey>,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -697,6 +705,29 @@ fn default_follow_scale() -> f32 {
 
 fn default_follow_hold() -> f64 {
     1.2
+}
+
+/// One pose of the camera: at `secs` on the timeline, looking at the
+/// frame point `x`,`y`, `zoom` far in and rolled `roll_deg` clockwise.
+/// It reads as a camera, so moving it right moves the scene left.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CameraKey {
+    #[serde(default)]
+    pub secs: f64,
+    #[serde(default = "half")]
+    pub x: f32,
+    #[serde(default = "half")]
+    pub y: f32,
+    #[serde(default = "one")]
+    pub zoom: f32,
+    #[serde(default)]
+    pub roll_deg: f32,
+}
+
+impl Default for CameraKey {
+    fn default() -> Self {
+        Self { secs: 0.0, x: 0.5, y: 0.5, zoom: 1.0, roll_deg: 0.0 }
+    }
 }
 
 /// One pose of a composed picture: at `secs` into the clip, its centre
@@ -1740,6 +1771,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             compose(seq, pool, i, ti, clip, poses)
         }
+        Op::Camera { keys } => camera(seq, i, keys),
     }
 }
 
@@ -2475,6 +2507,48 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
 /// An animated crop through `keys`: at each, `scale` centred on the frame
 /// point; a scaled picture shifted so far that its edge would show is
 /// held at the edge.
+/// Move a camera over the whole sequence, or take it away.
+fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let old = seq.camera.clone();
+    if keys.is_empty() {
+        if old.is_still() {
+            return Err(refuse(i, "there is no camera to take away", "give keys to move a camera over the sequence"));
+        }
+        let what = "the camera is taken off the sequence".to_string();
+        return Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::default() }, Vec::new()));
+    }
+    let end = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0f64, f64::max);
+    for k in keys {
+        if !k.secs.is_finite() || k.secs < 0.0 || k.secs > end + 1e-6 {
+            return Err(refuse(i, format!("a key at {:.2} s is off the timeline", k.secs), format!("keys are seconds on the timeline, 0 to {end:.2}")));
+        }
+        for (name, v) in [("x", k.x), ("y", k.y)] {
+            if !v.is_finite() || !(-1.0..=2.0).contains(&v) {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("{name} is where the camera looks, a fraction of the frame, -1 to 2")));
+            }
+        }
+        if !k.zoom.is_finite() || !(0.1..=8.0).contains(&k.zoom) {
+            return Err(refuse(i, format!("a zoom of {}", k.zoom), "give zoom between 0.1 and 8; 1 is the scene as composed"));
+        }
+        if !k.roll_deg.is_finite() || !(-360.0..=360.0).contains(&k.roll_deg) {
+            return Err(refuse(i, format!("a roll of {} degrees", k.roll_deg), "give roll_deg between -360 and 360"));
+        }
+    }
+    let mut sorted: Vec<CameraKey> = keys.to_vec();
+    sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    let mut new = klipp_timeline::Camera::default();
+    for k in &sorted {
+        klipp_core::keyframe::upsert_keyframe(&mut new.x_keyframes, k.secs, k.x);
+        klipp_core::keyframe::upsert_keyframe(&mut new.y_keyframes, k.secs, k.y);
+        klipp_core::keyframe::upsert_keyframe(&mut new.zoom_keyframes, k.secs, k.zoom);
+        klipp_core::keyframe::upsert_keyframe(&mut new.roll_keyframes, k.secs, k.roll_deg);
+    }
+    let poses: Vec<String> = sorted.iter().map(|k| format!("{:.2}s {:.2}x at {:.2},{:.2}", k.secs, k.zoom, k.x, k.y)).collect();
+    let held = if sorted.len() == 1 { ", held" } else { "" };
+    let what = format!("camera over the sequence: {}{held}", poses.join(" \u{2192} "));
+    Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) }, Vec::new()))
+}
+
 /// Place a picture in the frame at one pose, or animate it between
 /// several. Unlike `reframe`, the picture may be smaller than the frame
 /// and may sit anywhere in it, including past its edge; what shows
@@ -4441,6 +4515,53 @@ mod tests {
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
         assert!(matches!(&ops[0], Op::Transition { kind, secs, .. } if kind == "cross_dissolve" && (*secs - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_camera_moves_over_the_whole_sequence_and_can_be_taken_off_again() {
+        let (seq, pool, _media, _a, _) = fixture();
+
+        // A push in from the middle to the left of the scene.
+        let keys = vec![
+            CameraKey { secs: 0.0, ..Default::default() },
+            CameraKey { secs: 4.0, x: 0.3, zoom: 1.4, roll_deg: -3.0, ..Default::default() },
+        ];
+        let plan = resolve(&seq, &pool, &[Op::Camera { keys }]).unwrap();
+        assert!(plan.steps[0].what.contains("1.40x at 0.30,0.50"), "{}", plan.steps[0].what);
+        let EditCommand::SetSequenceCamera { new, old } = &plan.steps[0].edit else { panic!("a camera edit") };
+        assert!(old.is_still(), "there was no camera before");
+        assert_eq!(new.x_keyframes.len(), 2);
+        assert!((new.zoom_keyframes[1].value - 1.4).abs() < 1e-6);
+        assert!((new.roll_keyframes[1].value + 3.0).abs() < 1e-6);
+
+        // It applies and undoes as one step.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(!view.sequences[0].camera.is_still());
+        view.apply_inverse(&plan.steps[0].edit);
+        assert!(view.sequences[0].camera.is_still());
+
+        // No keys takes it off again — and says so rather than doing
+        // nothing when there was none.
+        let mut moved = seq.clone();
+        moved.camera.zoom_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.2, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        let plan = resolve(&moved, &pool, &[Op::Camera { keys: vec![] }]).unwrap();
+        let EditCommand::SetSequenceCamera { new, .. } = &plan.steps[0].edit else { panic!("a camera edit") };
+        assert!(new.is_still());
+        assert!(resolve(&seq, &pool, &[Op::Camera { keys: vec![] }]).unwrap_err().why.contains("no camera"));
+
+        // Refusals: a key past the end of the timeline, an absurd zoom.
+        let bad = |k: CameraKey| resolve(&seq, &pool, &[Op::Camera { keys: vec![k] }]).unwrap_err();
+        assert!(bad(CameraKey { secs: 99.0, ..Default::default() }).why.contains("off the timeline"));
+        assert!(bad(CameraKey { zoom: 99.0, ..Default::default() }).why.contains("zoom"));
+
+        // As the tools send it: a key gives what it changes.
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"camera","keys":[{"secs":1.0,"zoom":1.5}]}]"#).unwrap();
+        let Op::Camera { keys } = &ops[0] else { panic!("a camera") };
+        assert_eq!(keys[0], CameraKey { secs: 1.0, zoom: 1.5, ..Default::default() });
     }
 
     #[test]

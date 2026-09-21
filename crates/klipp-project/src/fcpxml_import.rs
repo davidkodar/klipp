@@ -566,6 +566,8 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
             warnings.push("<sequence> has no <spine> — timeline will be empty".to_string());
             // Build an empty sequence and return — not an error.
             let sequence = Sequence {
+                // No interchange format carries a camera.
+                camera: klipp_timeline::Camera::default(),
                 id: SequenceId::new(),
                 name: project_name_from_tree(root),
                 fps: seq_fps,
@@ -635,6 +637,8 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
     }
 
     let sequence = Sequence {
+        // No interchange format carries a camera.
+        camera: klipp_timeline::Camera::default(),
         id: SequenceId::new(),
         name: project_name_from_tree(root),
         fps: seq_fps,

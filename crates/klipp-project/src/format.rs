@@ -103,6 +103,10 @@ pub struct SequenceJson {
     /// The paper edit awaiting or past approval. Absent when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit_plan: Option<klipp_timeline::EditPlan>,
+    /// The move over the whole sequence. Absent when there is no camera,
+    /// which is every project saved before there could be one.
+    #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_still")]
+    pub camera: klipp_timeline::Camera,
 }
 
 fn default_header_width() -> f32 { 160.0 }

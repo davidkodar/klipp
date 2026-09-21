@@ -1359,6 +1359,8 @@ pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
         .to_string();
 
     let mut sequence = Sequence {
+        // No interchange format carries a camera.
+        camera: klipp_timeline::Camera::default(),
         id: klipp_core::SequenceId::new(),
         name: project_name,
         fps: mlt.profile.fps,

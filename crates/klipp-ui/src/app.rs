@@ -4566,6 +4566,9 @@ impl KlippApp {
 
         // Create new sequence with same fps/resolution
         let mut nested_seq = klipp_timeline::Sequence {
+            // A new sequence starts without a camera; a nest that goes
+            // back into its parent is moved by the parent's.
+            camera: klipp_timeline::Camera::default(),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
             fps,
@@ -17978,6 +17981,9 @@ impl KlippApp {
                     sequence_name.clone()
                 };
                 let seq = klipp_timeline::Sequence {
+                    // A new sequence starts without a camera; a nest that goes
+                    // back into its parent is moved by the parent's.
+                    camera: klipp_timeline::Camera::default(),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
                     fps,
@@ -18079,6 +18085,9 @@ impl KlippApp {
             }
             AppCommand::AddSequence { name, fps_num, fps_den, width, height } => {
                 let seq = klipp_timeline::Sequence {
+                    // A new sequence starts without a camera; a nest that goes
+                    // back into its parent is moved by the parent's.
+                    camera: klipp_timeline::Camera::default(),
                     id: klipp_core::SequenceId::new(),
                     name: name.clone(),
                     fps: klipp_core::Fps::new(*fps_num, *fps_den),
@@ -36792,6 +36801,7 @@ mod compound_clip_cycle_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            camera: Default::default(),
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
