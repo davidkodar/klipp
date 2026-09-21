@@ -41,8 +41,23 @@ pub fn placements(
     reveals_of: &dyn Fn(MediaId) -> Vec<f64>,
     loudest_of: &dyn Fn(MediaId) -> Option<f64>,
 ) -> Vec<SfxPlacement> {
+    placements_with_lengths(seq, kit, reveals_of, loudest_of, &|id| pool.get(&id).map(|it| it.duration.to_secs_f64()).unwrap_or(0.0))
+}
+
+/// Preview a generated whoosh without creating a file or importing media.
+/// The placeholder media ID is local to this preview and must not be applied.
+pub fn preview_whoosh(seq: &Sequence, duration_secs: f64) -> Vec<SfxPlacement> {
+    placements_with_lengths(seq, SfxKit { whoosh: Some(MediaId::new()), ..Default::default() }, &|_| Vec::new(), &|_| Some(duration_secs / 2.0), &|_| duration_secs)
+}
+
+fn placements_with_lengths(
+    seq: &Sequence,
+    kit: SfxKit,
+    reveals_of: &dyn Fn(MediaId) -> Vec<f64>,
+    loudest_of: &dyn Fn(MediaId) -> Option<f64>,
+    file_len: &dyn Fn(MediaId) -> f64,
+) -> Vec<SfxPlacement> {
     let Some(video) = seq.tracks.iter().find(|t| t.kind == TrackKind::Video) else { return Vec::new() };
-    let file_len = |id: MediaId| pool.get(&id).map(|it| it.duration.to_secs_f64()).unwrap_or(0.0);
     let taken: Vec<(f64, f64)> = seq
         .tracks
         .iter()
@@ -113,6 +128,20 @@ pub fn placements(
         }
     }
     out.sort_by(|a, b| a.at_secs.total_cmp(&b.at_secs));
+    // Reserve each accepted placement as well as the existing clips.
+    // Match Place's frame rounding: separately snapped source endpoints
+    // determine duration, rather than snapping at + duration as one value.
+    let fps = seq.fps.as_f64();
+    let mut reserved: Vec<_> = taken.iter().map(|(a, b)| (a * fps, b * fps)).collect();
+    out.retain(|p| {
+        let start = (p.at_secs * fps).round();
+        let end = start + ((p.source_in_secs + p.secs) * fps).round() - (p.source_in_secs * fps).round();
+        if end <= start || reserved.iter().any(|(a, b)| start < *b && end > *a) {
+            return false;
+        }
+        reserved.push((start, end));
+        true
+    });
     out
 }
 
@@ -158,7 +187,31 @@ mod tests {
     }
 
     #[test]
-    fn a_whoosh_on_each_cut_a_click_on_each_reveal_a_riser_into_the_last() {
+    fn dense_montage_keeps_a_resolvable_sound_pass() {
+        for duration in [0.3, 1.5, 3.0] {
+            let mut pool = MediaPool::new();
+            let screen = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/montage.mp4".into(), None));
+            let mut fx = klipp_media::MediaItem::synthetic_for_test("/tmp/whoosh.wav".into(), None);
+            fx.duration = tc(duration);
+            fx.has_audio = true;
+            let whoosh = pool.add(fx);
+            let mut seq = Sequence::new_default();
+            seq.tracks.clear();
+            let mut video = Track::new("V1", TrackKind::Video);
+            for n in 0..8 {
+                // Each shot restarts the source, so these are real cuts.
+                video.clips.push(Clip::media(screen, Timecode::from_secs_f64(n as f64 * 0.85, 1000), Timecode::from_secs_f64((n + 1) as f64 * 0.85, 1000), tc(0.0), tc(0.85)));
+            }
+            seq.tracks.push(video);
+            let placements = placements(&seq, &pool, SfxKit { whoosh: Some(whoosh), click: None, riser: Some(whoosh) }, &|_| Vec::new(), &|_| Some(duration / 2.0));
+            assert!(!placements.is_empty());
+            let plan = crate::ops::resolve(&seq, &pool, &ops(&seq, &placements));
+            assert!(plan.is_ok(), "duration {duration}: {plan:?}");
+        }
+    }
+
+    #[test]
+    fn a_sound_pass_skips_conflicting_reveals_and_risers() {
         let mut pool = MediaPool::new();
         let mut screen = klipp_media::MediaItem::synthetic_for_test("/tmp/screen.mp4".into(), None);
         screen.duration = tc(60.0);
@@ -167,7 +220,9 @@ mod tests {
         fx.duration = tc(2.0);
         fx.has_audio = true;
         let whoosh = pool.add(fx.clone());
+        fx.id = MediaId::new();
         let click = pool.add(fx.clone());
+        fx.id = MediaId::new();
         fx.duration = tc(5.0);
         let riser = pool.add(fx);
         let mut seq = Sequence::new_default();
@@ -185,10 +240,9 @@ mod tests {
         let whooshes: Vec<f64> = got.iter().filter(|p| p.what == "whoosh").map(|p| p.at_secs).collect();
         assert_eq!(whooshes, vec![7.7, 11.7], "a whoosh leads each cut by its loudest moment: {got:?}");
         let clicks: Vec<f64> = got.iter().filter(|p| p.what == "click").map(|p| (p.at_secs * 100.0).round() / 100.0).collect();
-        // Reveals at 2.0, 21.0 (timeline 9.0) and 42.0 (timeline 14.0); 23.9 lands on the cut at 12 and is left out.
-        assert_eq!(clicks, vec![1.95, 8.95, 13.95], "{got:?}");
-        let riser_at = got.iter().find(|p| p.what == "riser").map(|p| (p.at_secs, p.secs)).unwrap();
-        assert!((riser_at.0 - 9.0).abs() < 1e-6 && (riser_at.1 - 3.0).abs() < 1e-6, "three seconds ending on the last cut: {riser_at:?}");
+        // The reveal at timeline 9 overlaps the whoosh; 23.9 lands on the cut at 12. Both are left out.
+        assert_eq!(clicks, vec![1.95, 13.95], "{got:?}");
+        assert!(!got.iter().any(|p| p.what == "riser"), "the riser overlaps the first whoosh and is skipped");
         let ops = ops(&seq, &got);
         assert!(matches!(&ops[0], Op::AddTrack { name: Some(n), .. } if n == "SFX"));
         assert_eq!(ops.len(), 1 + got.len() * 3);

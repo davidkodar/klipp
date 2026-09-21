@@ -1824,9 +1824,35 @@ fn handle(
             if in_batch {
                 return Err("auto_sfx is its own batch; send it on its own".into());
             }
-            if whoosh.is_none() && click.is_none() && riser.is_none() {
-                return Err("auto_sfx needs at least one effect: search_sfx for a whoosh, a click and a riser, then give their media ids as whoosh, click and riser".into());
+            let synthesized = whoosh.is_none() && click.is_none() && riser.is_none();
+            if synthesized && !apply {
+                let seq = ctx.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let placements = klipp_document::sound_design::preview_whoosh(&seq, f64::from(klipp_audio::WhooshVariant::Short.duration_secs()));
+                let summary: Vec<_> = placements.iter().map(|p| format!("whoosh at {:.2} s", p.at_secs)).collect();
+                return Ok(json!({ "text": format!("Would synthesize a short whoosh and place {} sounds: {}. Run auto_sfx with apply true to create the audio and place it.", summary.len(), summary.join("; ")), "placements": summary, "applied": false, "synthesized_whoosh": false }));
             }
+            let whoosh = if synthesized {
+                // Materialize and import the reusable asset only when applying.
+                // Serializing this small path
+                // avoids two socket clients writing/importing the same WAV.
+                static SYNTH_IMPORT: Mutex<()> = Mutex::new(());
+                let _guard = SYNTH_IMPORT.lock().unwrap_or_else(|e| e.into_inner());
+                let dir = klipp_media::disk_cache::cache_base_dir().join("auto-sfx");
+                std::fs::create_dir_all(&dir).map_err(|e| format!("create SFX cache: {e}"))?;
+                let path = dir.join("whoosh-short-v1.wav");
+                if !path.is_file() {
+                    let staging = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+                    let saved = klipp_audio::write_whoosh_wav(klipp_audio::WhooshVariant::Short, &staging)
+                        .and_then(|_| std::fs::rename(&staging, &path));
+                    if let Err(e) = saved {
+                        let _ = std::fs::remove_file(&staging);
+                        return Err(format!("synthesize whoosh: {e}"));
+                    }
+                }
+                let imported = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().into_owned(), analyze: false }, &mut None)?;
+                let id = imported["media_id"].as_str().ok_or("the whoosh was synthesized but its import has not completed")?;
+                Some(klipp_core::MediaId(parse_uuid(id, "media_id")?))
+            } else { whoosh };
             let (placements, ops) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
@@ -1839,7 +1865,7 @@ fn handle(
                     }
                 }
                 let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).map(|b| b.reveals).unwrap_or_default();
-                let loudest = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs);
+                let loudest = |id: klipp_core::MediaId| if synthesized && Some(id) == whoosh { Some(0.15) } else { pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs) };
                 let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser };
                 let placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);
                 let ops = klipp_document::sound_design::ops(&seq, &placements);
@@ -1860,6 +1886,7 @@ fn handle(
             };
             v["text"] = json!(format!("{}\n{}", summary.join("; "), plan.text()));
             v["placements"] = json!(summary);
+            v["synthesized_whoosh"] = json!(synthesized);
             v["steps_resolved"] = json!(plan.steps.len());
             Ok(v)
         }
