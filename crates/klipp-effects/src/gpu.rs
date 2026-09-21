@@ -127,6 +127,7 @@ impl GpuMaskDef {
 
 
 /// GPU effects pipeline — holds device, queue, compute pipelines, and reusable buffers.
+use crate::cpu::EQUALIZE_CDF_LEN;
 use crate::cpu_grade::HUESAT_LUT_LEN;
 
 pub struct GpuEffectsPipeline {
@@ -197,6 +198,20 @@ pub struct GpuEffectsPipeline {
     /// pre-secondary frame, and the matte.
     apply_matte_bgl: wgpu::BindGroupLayout,
     huesat_lut_buf: wgpu::Buffer,
+    /// The equalize pass's 256-entry CDF.
+    ///
+    /// Its own buffer, deliberately. It used to be written over the
+    /// start of `huesat_lut_buf`, which worked only because `upload`
+    /// flushes before every write — so a pending hue/sat dispatch was
+    /// always submitted before the CDF landed on top of the LUT it
+    /// reads. Nothing at either end had to say so for the code to run,
+    /// the two sites are thousands of lines apart, and the invariant
+    /// lived in a private helper neither mentioned. Batching or
+    /// deferring uploads would have broken grades, but only on a clip
+    /// carrying both hue/sat curves and an Equalize effect.
+    ///
+    /// 1 KiB is not worth that.
+    equalize_cdf_buf: wgpu::Buffer,
     // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
     lut3d_pipeline: wgpu::ComputePipeline,
     lut3d_buf: Option<wgpu::Buffer>,
@@ -1010,13 +1025,17 @@ impl GpuEffectsPipeline {
         // an oversized one reaches the uncaptured-error handler — so
         // the symptom is a logged validation error and a LUT that never
         // arrives, not a silent out-of-bounds read.
-        //
-        // Also handed to the equalize pass, which uploads 1024 bytes
-        // over the start of it. Safe only because every `upload`
-        // flushes first; see the issue on the sharing.
         let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("huesat_lut"),
             size: HUESAT_LUT_LEN as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // The equalize CDF: 256 f32. Its own buffer — see the field.
+        let equalize_cdf_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("equalize_cdf"),
+            size: EQUALIZE_CDF_LEN as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1346,6 +1365,7 @@ impl GpuEffectsPipeline {
             huesat_bgl,
             apply_matte_bgl,
             huesat_lut_buf,
+            equalize_cdf_buf,
             lut3d_pipeline,
             lut3d_buf: None,
             lut3d_buf_size: 0,
@@ -6356,20 +6376,8 @@ impl GpuEffectsPipeline {
 
                     // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
                     let cdf_bytes = bytemuck::cast_slice(&cdf);
-                    // Reuse huesat_lut_buf: 1024 bytes (256 × 4) into a
-                    // buffer sized for the hue/sat LUT, which is larger.
-                    // Sized from HUESAT_LUT_LEN rather than a number
-                    // written here, so adding a curve cannot leave this
-                    // comment claiming a size the buffer no longer has.
-                    //
-                    // This overwrites the start of whatever LUT the
-                    // hue/sat pass last uploaded. Safe because `upload`
-                    // flushes first, so any pending huesat dispatch is
-                    // submitted before this write, and a queue write is
-                    // ordered after prior submissions. The safety is in
-                    // that discipline, not in anything stated here — see
-                    // the issue on the two passes sharing a buffer.
-                    self.upload(&self.huesat_lut_buf, 0, cdf_bytes);
+                    debug_assert_eq!(cdf.len(), EQUALIZE_CDF_LEN);
+                    self.upload(&self.equalize_cdf_buf, 0, cdf_bytes);
 
                     self.write_params(&EqualizeParams {
                         width,
@@ -6389,7 +6397,7 @@ impl GpuEffectsPipeline {
                             wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
                             wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
-                            wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: self.equalize_cdf_buf.as_entire_binding() },
                         ],
                     });
 
