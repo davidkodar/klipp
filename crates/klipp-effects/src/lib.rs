@@ -38,7 +38,7 @@ pub mod cpu_grade;
 mod cpu_transition;
 mod wgsl;
 pub use cpu_transition::render_transition_linear;
-pub use cpu::{apply_3d_lut, equalize_cdf};
+pub use cpu::{apply_3d_lut, equalize_cdf, EQUALIZE_CDF_LEN};
 pub mod color_fade;
 pub mod color_wgsl;
 pub mod composite;

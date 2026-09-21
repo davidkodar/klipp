@@ -924,11 +924,21 @@ fn noise_hash(p: u32) -> f32 {
     x as f32 / 4294967295.0
 }
 
+/// Bins in the equalise CDF, and so the length of the GPU buffer that
+/// carries it.
+///
+/// Named rather than written as 256 at each site: the hue/sat LUT's
+/// size was once spelled out in a comment at a second site, and the
+/// comment went stale the moment a seventh curve arrived. A constant
+/// the function's own signature uses cannot drift from it.
+pub const EQUALIZE_CDF_LEN: usize = 256;
+
 /// Histogram equalisation's lookup: the cumulative distribution of the
-/// display-encoded luma in 256 bins, normalised past the first occupied
-/// bin. The GPU path builds it with this function too.
-pub fn equalize_cdf(linear: &[f32]) -> [f32; 256] {
-    let mut hist = [0u32; 256];
+/// display-encoded luma in [`EQUALIZE_CDF_LEN`] bins, normalised past
+/// the first occupied bin. The GPU path builds it with this function
+/// too, then uploads it to its own storage buffer.
+pub fn equalize_cdf(linear: &[f32]) -> [f32; EQUALIZE_CDF_LEN] {
+    let mut hist = [0u32; EQUALIZE_CDF_LEN];
     for c in linear.chunks_exact(4) {
         let l = (0.2126 * encode(c[0]) + 0.7152 * encode(c[1]) + 0.0722 * encode(c[2])).clamp(0.0, 1.0);
         hist[(l * 255.0) as usize] += 1;
