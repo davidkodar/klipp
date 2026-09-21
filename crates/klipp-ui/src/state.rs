@@ -440,6 +440,67 @@ pub enum Workspace {
     Export,
 }
 
+impl Workspace {
+    /// Does this workspace borrow the browser's width?
+    ///
+    /// Colour and Export both fill the window with something the
+    /// browser has no part in — scopes and the picture in one, the
+    /// export form and the picture in the other — and neither is a
+    /// workspace you drag effects in. Edit is, and keeps it.
+    ///
+    /// Borrowed, not taken: the panel rail leaves it one click away,
+    /// and [`browser_borrow_for`] puts back what was there on the way
+    /// out.
+    pub fn borrows_the_browser(self) -> bool {
+        matches!(self, Workspace::Color | Workspace::Export)
+    }
+}
+
+/// What a workspace switch should do to the browser panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserBorrow {
+    /// Record what the browser is doing now, then collapse it.
+    Take,
+    /// Collapse it; a borrow is already recorded and stands.
+    KeepTaken,
+    /// Put back whatever was recorded.
+    Give,
+    /// Neither workspace wants the space; leave the panel alone.
+    Leave,
+}
+
+/// The browser's fate when the workspace goes from `from` to `to`.
+///
+/// Split out from the app so the whole matrix can be checked without
+/// building one. The case that needs the care is Colour straight to
+/// Export: both borrow, and recording a second time would store a
+/// collapsed browser as the thing to restore — the panel would then
+/// never come back.
+pub fn browser_borrow_for(from: Workspace, to: Workspace) -> BrowserBorrow {
+    match (from.borrows_the_browser(), to.borrows_the_browser()) {
+        (false, true) => BrowserBorrow::Take,
+        (true, true) => BrowserBorrow::KeepTaken,
+        (true, false) => BrowserBorrow::Give,
+        (false, false) => BrowserBorrow::Leave,
+    }
+}
+
+/// Has the user taken the browser back while the borrower still holds
+/// it?
+///
+/// True when a borrow is recorded, the workspace is one that borrows,
+/// and the browser is nonetheless visible — which can only mean it was
+/// asked for, by the rail, a menu or Reveal in Browser. The recorded
+/// value is then dropped: leaving the workspace must not undo a choice
+/// the user made inside it.
+pub fn borrow_released_by_hand(
+    holding: bool,
+    workspace: Workspace,
+    browser_visible: bool,
+) -> bool {
+    holding && workspace.borrows_the_browser() && browser_visible
+}
+
 /// Where to dock the color grading tools (wheels, curves, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorToolsPosition {
@@ -4004,6 +4065,108 @@ pub(crate) fn find_clip_cached<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    use super::{
+        borrow_released_by_hand, browser_borrow_for, BrowserBorrow, Workspace,
+    };
+
+    /// Edit is where you drag effects from, so it is the one workspace
+    /// that keeps the browser.
+    #[test]
+    fn only_the_workspaces_with_nothing_to_browse_borrow_it() {
+        assert!(!Workspace::Edit.borrows_the_browser());
+        assert!(Workspace::Color.borrows_the_browser());
+        assert!(Workspace::Export.borrows_the_browser());
+    }
+
+    #[test]
+    fn entering_a_borrowing_workspace_records_and_collapses() {
+        assert_eq!(
+            browser_borrow_for(Workspace::Edit, Workspace::Export),
+            BrowserBorrow::Take,
+        );
+        assert_eq!(
+            browser_borrow_for(Workspace::Edit, Workspace::Color),
+            BrowserBorrow::Take,
+        );
+    }
+
+    #[test]
+    fn leaving_for_edit_puts_the_browser_back() {
+        assert_eq!(
+            browser_borrow_for(Workspace::Export, Workspace::Edit),
+            BrowserBorrow::Give,
+        );
+        assert_eq!(
+            browser_borrow_for(Workspace::Color, Workspace::Edit),
+            BrowserBorrow::Give,
+        );
+    }
+
+    /// The case that would break it. Both workspaces borrow, so
+    /// recording again would store a *collapsed* browser as the thing
+    /// to restore, and Edit would never get it back.
+    #[test]
+    fn moving_between_two_borrowers_does_not_record_a_second_time() {
+        for (a, b) in [
+            (Workspace::Color, Workspace::Export),
+            (Workspace::Export, Workspace::Color),
+        ] {
+            assert_eq!(browser_borrow_for(a, b), BrowserBorrow::KeepTaken, "{a:?} -> {b:?}");
+        }
+    }
+
+    #[test]
+    fn edit_to_edit_leaves_the_panel_alone() {
+        assert_eq!(
+            browser_borrow_for(Workspace::Edit, Workspace::Edit),
+            BrowserBorrow::Leave,
+        );
+    }
+
+    /// A round trip has to be lossless in both directions: someone who
+    /// had the browser hidden in Edit must not find it opened for them
+    /// on the way back.
+    #[test]
+    fn a_round_trip_restores_whatever_was_there() {
+        for started_visible in [true, false] {
+            let mut visible = started_visible;
+            // What the app would stash. `Take` always records, so this
+            // is a plain bool rather than the app's `Option`, which
+            // also carries "nothing borrowed".
+            let held: bool;
+
+            match browser_borrow_for(Workspace::Edit, Workspace::Export) {
+                BrowserBorrow::Take => {
+                    held = visible;
+                    visible = false;
+                }
+                other => panic!("expected Take, got {other:?}"),
+            }
+            assert!(!visible, "the browser should be collapsed inside Export");
+
+            match browser_borrow_for(Workspace::Export, Workspace::Edit) {
+                BrowserBorrow::Give => visible = held,
+                other => panic!("expected Give, got {other:?}"),
+            }
+            assert_eq!(visible, started_visible, "round trip changed the browser");
+        }
+    }
+
+    /// Opening the browser inside a borrowing workspace is an explicit
+    /// ask, and has to outrank the borrow — otherwise leaving quietly
+    /// undoes it.
+    #[test]
+    fn an_explicit_ask_inside_the_workspace_wins() {
+        assert!(borrow_released_by_hand(true, Workspace::Export, true));
+        assert!(borrow_released_by_hand(true, Workspace::Color, true));
+        // Still collapsed: the borrow stands.
+        assert!(!borrow_released_by_hand(true, Workspace::Export, false));
+        // Nothing borrowed, nothing to release.
+        assert!(!borrow_released_by_hand(false, Workspace::Export, true));
+        // Edit never borrows, so a visible browser there says nothing.
+        assert!(!borrow_released_by_hand(true, Workspace::Edit, true));
+    }
     use super::*;
 
     #[test]

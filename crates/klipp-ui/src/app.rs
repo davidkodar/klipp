@@ -388,9 +388,23 @@ pub struct KlippApp {
     /// Playhead position the Colour workspace last followed, so the
     /// follow fires on movement rather than every frame.
     last_graded_playhead: Option<klipp_core::Timecode>,
-    /// Browser visibility before the Colour workspace borrowed its
-    /// width, restored on leaving.
-    browser_before_colour: Option<bool>,
+    /// Browser visibility before a workspace borrowed its width,
+    /// restored on leaving.
+    ///
+    /// Cleared if the browser comes back up while the borrowing
+    /// workspace is still active — by the rail, a menu, Reveal in
+    /// Browser, any route — because an explicit ask outranks the
+    /// borrow, and restoring over it would undo the user's choice
+    /// without telling them.
+    browser_before_workspace: Option<bool>,
+    /// The workspace `reconcile_workspace` last saw.
+    ///
+    /// Switching is not funnelled through one command: the toolbar
+    /// tabs and the View menu assign `active_workspace` directly, and
+    /// only the `C` shortcut went through `ToggleColorPanel`. So the
+    /// enter/leave bookkeeping watches the field instead of trusting
+    /// the callers, and every route gets the same treatment.
+    last_workspace: crate::state::Workspace,
     hb_max_gap: std::time::Duration,
     hb_max_update: std::time::Duration,
     /// When the last `update()` returned, for the gap above.
@@ -706,7 +720,8 @@ impl KlippApp {
             hb_input_events: 0,
             hb_max_batch: 0,
             last_graded_playhead: None,
-            browser_before_colour: None,
+            browser_before_workspace: None,
+            last_workspace: crate::state::Workspace::default(),
             hb_max_gap: std::time::Duration::ZERO,
             hb_max_update: std::time::Duration::ZERO,
             last_update_end: std::time::Instant::now(),
@@ -775,6 +790,7 @@ impl KlippApp {
         // directly rather than through the setters: this is adopting
         // what was already saved, so there is nothing new to mark dirty.
         app.state.show_browser_panel = restore_browser;
+        app.last_workspace = app.state.active_workspace;
         app.state.show_inspector_panel = restore_inspector;
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
         // Probe audio backend status
@@ -14696,42 +14712,16 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleColorPanel => {
-                // Toggle between Edit and Color workspace.
-                // Entering the Color workspace no longer force-shows
-                // the Scopes panel — the user can toggle Scopes from
-                // the color-workspace toggle bar when they want it.
-                // Force-showing it meant hitting `C` always popped the
-                // full scope UI, even when the user just wanted to see
-                // the grade tabs / node canvas.
+                // Move the workspace and nothing else: the panel
+                // visibility and the browser borrow are settled by
+                // `reconcile_workspace`, so this route cannot drift
+                // from the toolbar tabs the way it had.
                 use crate::state::Workspace;
-                if self.state.active_workspace == Workspace::Color {
-                    self.state.active_workspace = Workspace::Edit;
-                    self.state.show_color_panel = false;
-                    // Give the browser back exactly as it was found.
-                    if let Some(was) = self.browser_before_colour.take() {
-                        self.set_browser_visible(was);
-                    }
+                self.state.active_workspace = if self.state.active_workspace == Workspace::Color {
+                    Workspace::Edit
                 } else {
-                    self.state.active_workspace = Workspace::Color;
-                    self.state.show_color_panel = true;
-                    // The picture is the instrument here. The built-in
-                    // Colour workspace layout has said `show_browser:
-                    // false` — "browser hidden to maximise scopes +
-                    // viewer real estate" — since it was written, but
-                    // the workspace switcher never applied it, so
-                    // grading happened with the effects library holding
-                    // a third of the window and the image reduced to a
-                    // thumbnail between it and the scopes.
-                    //
-                    // Collapsed rather than removed: the rail keeps the
-                    // browser one click away, and what it was is
-                    // restored on the way out, so this borrows the
-                    // space rather than taking it.
-                    if self.browser_before_colour.is_none() {
-                        self.browser_before_colour = Some(self.state.show_browser_panel);
-                    }
-                    self.set_browser_visible(false);
-                }
+                    Workspace::Color
+                };
                 true
             }
             AppCommand::ShowEffectsBrowser => {
@@ -25859,6 +25849,11 @@ impl eframe::App for KlippApp {
         // are logged from their own sites and correlated by timestamp.
         let t_update_start = std::time::Instant::now();
 
+        // Settle any workspace switch before the layout is computed, so
+        // the panel changes it implies land in the same frame the new
+        // workspace does rather than a frame behind it.
+        self.reconcile_workspace();
+
         // Rotate the deferred-drop texture ring. Advance the slot and
         // clear the one we've just moved into — it holds handles
         // stashed ~2 frames ago. Two full frames of deferral covers
@@ -31849,6 +31844,69 @@ impl KlippApp {
     /// Visibility lives in two places — `AppState` is what the frame
     /// reads, `LayoutState` is what survives — so it is set in one
     /// place rather than at each call site, where the pair would drift.
+    /// Run the enter/leave bookkeeping for a workspace switch, whoever
+    /// made it.
+    ///
+    /// Called every frame rather than from the switch sites: there are
+    /// three of those and they disagreed. The `C` shortcut borrowed the
+    /// browser and the toolbar tabs did not, so the same switch gave
+    /// two different layouts depending on how you asked for it. The
+    /// decision itself lives in `state::browser_borrow_for`, where it
+    /// can be tested without an app.
+    fn reconcile_workspace(&mut self) {
+        use crate::state::{borrow_released_by_hand, browser_borrow_for, BrowserBorrow, Workspace};
+        let to = self.state.active_workspace;
+        if to != self.last_workspace {
+            let from = std::mem::replace(&mut self.last_workspace, to);
+
+            // The colour panel belongs to its workspace, by any route.
+            // (Scopes deliberately do not: entering Colour used to
+            // force them on, which meant `C` always popped the full
+            // scope UI even when the grade tabs were all you wanted.)
+            self.state.show_color_panel = to == Workspace::Color;
+
+            match browser_borrow_for(from, to) {
+                BrowserBorrow::Take => {
+                    self.browser_before_workspace = Some(self.state.show_browser_panel);
+                    self.set_browser_visible_for_now(false);
+                }
+                BrowserBorrow::KeepTaken => self.set_browser_visible_for_now(false),
+                BrowserBorrow::Give => {
+                    if let Some(was) = self.browser_before_workspace.take() {
+                        self.set_browser_visible_for_now(was);
+                    }
+                }
+                BrowserBorrow::Leave => {}
+            }
+            return;
+        }
+
+        if borrow_released_by_hand(
+            self.browser_before_workspace.is_some(),
+            to,
+            self.state.show_browser_panel,
+        ) {
+            self.browser_before_workspace = None;
+        }
+    }
+
+    /// Show or hide the browser for this session only, without
+    /// recording it as what the user wants.
+    ///
+    /// A borrow is not a preference — it lasts exactly as long as the
+    /// workspace holding it. Writing it to the layout file turns
+    /// "hidden while grading" into "hidden": quit from Colour or
+    /// Export and the next launch opens in Edit with no browser and
+    /// nothing left that remembers there should be one. That is what
+    /// it did, and the saved layout on this machine was already in
+    /// that state.
+    ///
+    /// An explicit toggle still goes through [`Self::set_browser_visible`]
+    /// and is still remembered, because that one IS a preference.
+    fn set_browser_visible_for_now(&mut self, visible: bool) {
+        self.state.show_browser_panel = visible;
+    }
+
     fn set_browser_visible(&mut self, visible: bool) {
         self.state.show_browser_panel = visible;
         if self.layout.browser_visible != visible {
