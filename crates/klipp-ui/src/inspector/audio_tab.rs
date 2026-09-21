@@ -830,7 +830,7 @@ fn show_clip_audio(
                     .selected_text(fade_curve_label(fade_in_curve))
                     .width(combo_w - 10.0)
                     .show_ui(ui, |ui| {
-                        for variant in FADE_CURVE_VARIANTS {
+                        for variant in FADE_CURVES {
                             ui.selectable_value(&mut fade_in_curve, *variant, fade_curve_label(*variant));
                         }
                     });
@@ -871,7 +871,7 @@ fn show_clip_audio(
                     .selected_text(fade_curve_label(fade_out_curve))
                     .width(combo_w - 10.0)
                     .show_ui(ui, |ui| {
-                        for variant in FADE_CURVE_VARIANTS {
+                        for variant in FADE_CURVES {
                             ui.selectable_value(&mut fade_out_curve, *variant, fade_curve_label(*variant));
                         }
                     });
@@ -1266,8 +1266,9 @@ fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Col
     }
 }
 
-const FADE_CURVE_VARIANTS: &[FadeCurve] = &[
+pub(crate) const FADE_CURVES: &[FadeCurve] = &[
     FadeCurve::Linear, FadeCurve::Exponential, FadeCurve::Logarithmic, FadeCurve::SCurve,
+    FadeCurve::ConstantPower,
 ];
 
 const CHANNEL_CONFIG_VARIANTS: &[ChannelConfig] = &[
@@ -1284,12 +1285,15 @@ fn channel_config_label(config: ChannelConfig) -> &'static str {
     }
 }
 
-fn fade_curve_label(curve: FadeCurve) -> &'static str {
+pub(crate) fn fade_curve_label(curve: FadeCurve) -> &'static str {
     match curve {
         FadeCurve::Linear => "Linear",
         FadeCurve::Exponential => "Exponential",
         FadeCurve::Logarithmic => "Logarithmic",
         FadeCurve::SCurve => "S-Curve",
+        // Named for the job rather than the maths: an editor reaches
+        // for this when two sounds overlap, not when one ends.
+        FadeCurve::ConstantPower => "Constant Power (crossfade)",
     }
 }
 

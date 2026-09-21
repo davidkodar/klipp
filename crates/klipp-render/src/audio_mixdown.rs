@@ -327,15 +327,10 @@ fn levels_at(shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64
     (volume * gain, pan)
 }
 
-/// A curve over a `0..=1` ramp: `0` linear, `1` exponential, `2`
-/// logarithmic, `3` S-curve. The playback feeder's.
+/// A curve over a `0..=1` ramp, shared with the playback feeder
+/// through [`klipp_core::FadeCurve`] rather than transcribed here.
 fn fade_curve(t: f64, curve: u8) -> f64 {
-    match curve {
-        1 => t * t,
-        2 => 1.0 - (1.0 - t) * (1.0 - t),
-        3 => t * t * (3.0 - 2.0 * t),
-        _ => t,
-    }
+    klipp_core::FadeCurve::from_index(curve as u32).gain(t)
 }
 
 /// The two-millisecond ramp playback puts at a clip's start so a cut

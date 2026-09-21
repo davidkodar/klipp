@@ -6681,15 +6681,10 @@ impl TimelinePanel {
             let clip_dur_secs = clip.duration().to_secs_f64() as f32;
             let fade_clip_painter = painter.with_clip_rect(clip_rect);
 
-            // Curve evaluation: maps t in 0..1 through the selected curve shape
-            let eval_curve = |t: f32, curve: klipp_core::FadeCurve| -> f32 {
-                match curve {
-                    klipp_core::FadeCurve::Linear => t,
-                    klipp_core::FadeCurve::Exponential => t * t,
-                    klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
-                    klipp_core::FadeCurve::SCurve => 3.0 * t * t - 2.0 * t * t * t,
-                }
-            };
+            // The drawn handle has to be the curve that will be heard,
+            // so it asks the model rather than carrying its own copy.
+            let eval_curve =
+                |t: f32, curve: klipp_core::FadeCurve| -> f32 { curve.gain(t as f64) as f32 };
 
             let tt = theme();
             let acc = tt.accent;
@@ -6925,22 +6920,12 @@ impl TimelinePanel {
                                 let mut gain = 1.0_f32;
                                 if wf_fi_secs > 0.001 && col_time < wf_fi_secs {
                                     let frac = (col_time / wf_fi_secs).clamp(0.0, 1.0);
-                                    gain = match wf_fi_curve {
-                                        klipp_core::FadeCurve::Linear => frac,
-                                        klipp_core::FadeCurve::Exponential => frac * frac,
-                                        klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
-                                        klipp_core::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
-                                    };
+                                    gain = wf_fi_curve.gain(frac as f64) as f32;
                                 }
                                 if wf_fo_secs > 0.001 && wf_clip_dur > 0.001 && col_time > wf_clip_dur - wf_fo_secs {
                                     let remaining = wf_clip_dur - col_time;
                                     let frac = (remaining / wf_fo_secs).clamp(0.0, 1.0);
-                                    gain *= match wf_fo_curve {
-                                        klipp_core::FadeCurve::Linear => frac,
-                                        klipp_core::FadeCurve::Exponential => frac * frac,
-                                        klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
-                                        klipp_core::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
-                                    };
+                                    gain *= wf_fo_curve.gain(frac as f64) as f32;
                                 }
                                 gain
                             };

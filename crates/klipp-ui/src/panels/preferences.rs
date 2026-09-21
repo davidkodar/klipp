@@ -1589,18 +1589,20 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Default fade curve", theme, |ui| {
             egui::ComboBox::from_id_salt("fade_curve")
-                .selected_text(match prefs.audio.default_fade_curve {
-                    klipp_core::FadeCurve::Linear => "Linear",
-                    klipp_core::FadeCurve::Exponential => "Exponential",
-                    klipp_core::FadeCurve::Logarithmic => "Logarithmic",
-                    klipp_core::FadeCurve::SCurve => "S-Curve",
-                })
+                .selected_text(crate::inspector::audio_tab::fade_curve_label(
+                    prefs.audio.default_fade_curve,
+                ))
                 .width(100.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Linear, "Linear").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Exponential, "Exponential").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::Logarithmic, "Logarithmic").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio.default_fade_curve, klipp_core::FadeCurve::SCurve, "S-Curve").changed() { *dirty = true; }
+                    // One list, from the same source as the clip
+                    // inspector's, so a shape cannot appear in one
+                    // picker and not the other.
+                    for curve in crate::inspector::audio_tab::FADE_CURVES {
+                        let label = crate::inspector::audio_tab::fade_curve_label(*curve);
+                        if ui.selectable_value(&mut prefs.audio.default_fade_curve, *curve, label).changed() {
+                            *dirty = true;
+                        }
+                    }
                 });
         });
 

@@ -20,10 +20,13 @@ unsafe impl Send for SendAudioOutput {}
 
 fn fade_curve_to_u32(c: klipp_timeline::FadeCurve) -> u32 {
     match c {
+        // Kept exhaustive rather than delegating, so a new shape is a
+        // compile error here too and not a silent 0.
         klipp_timeline::FadeCurve::Linear => 0,
         klipp_timeline::FadeCurve::Exponential => 1,
         klipp_timeline::FadeCurve::Logarithmic => 2,
         klipp_timeline::FadeCurve::SCurve => 3,
+        klipp_timeline::FadeCurve::ConstantPower => 4,
     }
 }
 
