@@ -159,6 +159,11 @@ pub enum ControlCommand {
         /// analyser without its model is skipped.
         #[serde(default)]
         download_models: bool,
+        /// Hold the response until the requested analyses end.
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
     },
     /// Segments of every analysed item's transcript containing `query`,
     /// case-insensitively, with where they are in the file.
@@ -343,7 +348,14 @@ pub enum ControlCommand {
         force: bool,
     },
     /// Where every requested item stands.
-    AnalysisStatus,
+    AnalysisStatus {
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        media_id: Option<String>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// What is known about a media item, as text: the shot list, the
     /// loudness, the silences. Cut at `max_chars` (default 8000).
     MediaAnalysis {
@@ -472,7 +484,17 @@ pub enum ControlCommand {
         burn_captions: Option<bool>,
     },
     /// Every render job the app knows: status, progress, result.
-    ExportStatus,
+    ExportStatus {
+        /// Wait for these jobs to finish, fail or be cancelled.
+        #[serde(default)]
+        wait: bool,
+        /// Omit to capture all jobs known when the request arrives.
+        #[serde(default)]
+        job_id: Option<String>,
+        /// Maximum wait, default one hour. Timeout does not cancel work.
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Write the sequence's subtitle and text clips as an SRT file.
     ExportSubtitles { path: String },
     /// What is said in a media file between two times, with when: the

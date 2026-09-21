@@ -597,6 +597,8 @@ fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
 #[test]
 fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     let mut h = harness();
+    let no_jobs = h.call(json!({ "method": "export_status", "wait": true }));
+    assert_eq!(no_jobs["ok"], false);
     let reply = h.call(json!({ "method": "export", "path": "relative.mp4" }));
     assert_eq!(reply["ok"], json!(false));
     assert!(reply["error"].as_str().unwrap().contains("absolute"));
@@ -633,6 +635,38 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     let st = h.ok(json!({ "method": "export_status" }));
     assert_eq!(st["jobs"][0]["status"], json!("rendering"));
     assert_eq!(st["jobs"][0]["progress"], json!(0.5));
+    let timeout = h.ok(json!({ "method": "export_status", "wait": true, "job_id": "j1", "timeout_ms": 1 }));
+    assert_eq!(timeout["finished"], false);
+    assert_eq!(timeout["timed_out"], true);
+    let shared = h.shared.clone();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut jobs = shared.exports.lock().unwrap_or_else(|e| e.into_inner());
+        jobs[0].status = "complete".into();
+        jobs[0].progress = 1.0;
+        jobs[0].frames_done = 100;
+        // A later job must not extend a wait for the captured job.
+        let mut later = jobs[0].clone();
+        later.job_id = "j2".into();
+        later.status = "rendering".into();
+        jobs.push(later);
+    });
+    let done = h.ok(json!({ "method": "export_status", "wait": true, "timeout_ms": 2000 }));
+    worker.join().unwrap();
+    assert_eq!(done["finished"], true);
+    assert_eq!(done["succeeded"], true);
+    assert_eq!(done["timed_out"], false);
+    assert_eq!(done["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(done["jobs"][0]["frames_done"], 100);
+    for terminal in ["failed", "cancelled"] {
+        h.shared.exports.lock().unwrap_or_else(|e| e.into_inner())[0].status = terminal.into();
+        let failed = h.ok(json!({ "method": "export_status", "wait": true, "job_id": "j1" }));
+        assert_eq!(failed["finished"], true);
+        assert_eq!(failed["succeeded"], false);
+    }
+    let missing = h.call(json!({ "method": "export_status", "wait": true, "job_id": "missing" }));
+    assert_eq!(missing["ok"], false);
+
 }
 
 /// The text view carries what a model needs to plan and respects its
@@ -667,6 +701,12 @@ fn analysis_queries_answer_empty_without_analysed_media() {
     assert_eq!(v["hits"].as_array().map(|a| a.len()), Some(0));
     let v = h.ok(json!({ "method": "analysis_status" }));
     assert!(v["items"].is_array());
+    let empty = h.ok(json!({ "method": "analyze", "wait": true, "timeout_ms": 1000 }));
+    assert_eq!(empty["finished"], true);
+    assert_eq!(empty["succeeded"], true);
+    let missing = h.call(json!({ "method": "analysis_status", "wait": true, "media_id": "00000000-0000-0000-0000-000000000000" }));
+    assert_eq!(missing["ok"], false);
+
 }
 
 /// A plan is resolved against the timeline and applied as one envelope
