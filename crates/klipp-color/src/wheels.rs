@@ -196,6 +196,61 @@ pub fn rgb_to_wheel_offset(rgb: (f32, f32, f32)) -> (f32, f32, f32) {
 mod inverse_tests {
     use super::*;
 
+    /// The other direction, which is the one typing into a wheel's RGB
+    /// pills depends on: a triple the wheel can reach is reproduced
+    /// exactly through a puck position and a master.
+    ///
+    /// Without this, typing `+0.250` into R would land on some nearby
+    /// number instead — which is the whole reason a colourist types
+    /// rather than drags.
+    #[test]
+    fn a_reachable_triple_comes_back_as_itself() {
+        for rgb in [
+            (0.25, 0.0, 0.0),
+            (0.0, 0.12, 0.0),
+            (0.0, 0.0, -0.2),
+            (0.1, -0.05, 0.02),
+            (-0.2, 0.2, 0.0),
+            (0.05, 0.05, 0.05),
+        ] {
+            let (x, y, m) = rgb_to_wheel_offset(rgb);
+            let back = wheel_offset_to_rgb(x, y, m);
+            assert!(
+                (back.0 - rgb.0).abs() < 1e-4
+                    && (back.1 - rgb.1).abs() < 1e-4
+                    && (back.2 - rgb.2).abs() < 1e-4,
+                "typed {rgb:?} came back as {back:?}",
+            );
+        }
+    }
+
+    /// How far apart the channels can be pulled, which is what limits
+    /// what can be typed into a wheel's RGB pills.
+    ///
+    /// The rim reaches a spread of 0.5 between the highest and lowest
+    /// channel. Ask for more and the puck stops at the rim, so the
+    /// triple that comes back is the widest the wheel can actually
+    /// make — `(-0.3, 0.3, 0)` returns as `(-0.25, 0.25, 0)`.
+    ///
+    /// That is the honest outcome rather than a failure: the number
+    /// shown afterwards is what the grade is doing, and the puck sits
+    /// visibly on the rim saying so. A wheel is a bounded control and
+    /// typing into it does not make it unbounded.
+    #[test]
+    fn a_spread_past_the_rim_clamps_to_what_the_wheel_can_make() {
+        let (x, y, m) = rgb_to_wheel_offset((-0.3, 0.3, 0.0));
+        let dist = (x * x + y * y).sqrt();
+        assert!(dist <= 1.0 + 1e-6, "the puck left the wheel at {dist}");
+        assert!(dist > 0.99, "an over-wide spread should reach the rim, got {dist}");
+
+        let back = wheel_offset_to_rgb(x, y, m);
+        let spread = back.0.max(back.1).max(back.2) - back.0.min(back.1).min(back.2);
+        assert!(
+            (spread - 0.5).abs() < 1e-3,
+            "the rim should give a spread of 0.5, gave {spread} from {back:?}",
+        );
+    }
+
     #[test]
     fn a_wheel_position_survives_the_round_trip() {
         for (x, y, m) in [(0.3, 0.1, 0.05), (-0.4, 0.5, -0.1), (0.0, -0.7, 0.0), (0.2, 0.2, 0.3)] {
