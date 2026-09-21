@@ -813,3 +813,133 @@ mod matte_finesse_tests {
         assert_eq!(m[12], 1.0);
     }
 }
+
+/// `SHADER_GRAIN`: Wang-hash film grain, weighted by tonal region.
+///
+/// The grain is added to the linear picture, which is what the shader
+/// does and therefore what the control means. Note the consequence:
+/// `luma` here is linear, so mid-grey reads 0.18 and the `shadows`
+/// weight covers most of the picture. That is the shipped behaviour,
+/// not an accident of this transcription.
+///
+/// `size` quantises the pixel coordinates before they are hashed, so
+/// one hash covers a `size`-by-`size` block and the grain has
+/// particles rather than being per-pixel salt. The caller clamps it
+/// away from zero; at zero both sides would divide by it.
+#[allow(clippy::too_many_arguments)]
+pub fn film_grain(
+    px: &mut [f32],
+    width: u32,
+    height: u32,
+    amount: f32,
+    size: f32,
+    shadows: f32,
+    highlights: f32,
+    monochrome: bool,
+    frame_seed: u32,
+    luma: [f32; 3],
+) {
+    let _ = height;
+    px.par_chunks_exact_mut(4).enumerate().for_each(|(idx, p)| {
+        let idx = idx as u32;
+        let l = luma[0] * p[0] + luma[1] * p[1] + luma[2] * p[2];
+
+        let qx = (idx % width) as f32 / size;
+        let qy = (idx / width) as f32 / size;
+        let pixel_seed = (qx as u32)
+            .wrapping_mul(1973)
+            .wrapping_add((qy as u32).wrapping_mul(9277))
+            .wrapping_add(frame_seed.wrapping_mul(26699));
+
+        let grain_r = (wang_hash01(pixel_seed) - 0.5) * amount;
+        let (grain_g, grain_b) = if monochrome {
+            (grain_r, grain_r)
+        } else {
+            (
+                (wang_hash01(pixel_seed.wrapping_add(1)) - 0.5) * amount,
+                (wang_hash01(pixel_seed.wrapping_add(2)) - 0.5) * amount,
+            )
+        };
+
+        let weight = ((1.0 - l) * shadows + l * highlights).clamp(0.0, 1.5);
+        p[0] += grain_r * weight;
+        p[1] += grain_g * weight;
+        p[2] += grain_b * weight;
+    });
+}
+
+/// The shader's `wang_hash`, which returns the hash as a 0..1 float
+/// rather than the raw word. Wrapping arithmetic throughout, because
+/// WGSL's u32 wraps and Rust's would panic in debug.
+fn wang_hash01(seed: u32) -> f32 {
+    let mut x = seed;
+    x = (x ^ 61) ^ (x >> 16);
+    x = x.wrapping_mul(9);
+    x ^= x >> 4;
+    x = x.wrapping_mul(0x27d4_eb2d);
+    x ^= x >> 15;
+    x as f32 / 4_294_967_295.0
+}
+
+/// `SHADER_DENOISE`: a bilateral filter whose range term is the luma
+/// difference, in linear light.
+///
+/// Every tap reads the *input*, so this cannot run in place — the
+/// shader reads a separate input buffer and the twin returns a new
+/// one. Edges clamp rather than wrap, as the shader's `clamp` does.
+///
+/// Cost is the kernel squared per pixel, and the kernel is capped at
+/// 10 either side exactly as the shader caps it: 441 taps at the
+/// widest. It is the no-GPU path, so it is parallel over rows and
+/// otherwise unhurried.
+pub fn bilateral_denoise(
+    px: &[f32],
+    width: u32,
+    height: u32,
+    spatial_sigma: f32,
+    color_sigma: f32,
+    luma: [f32; 3],
+) -> Vec<f32> {
+    let (w, h) = (width as i32, height as i32);
+    let kernel = (spatial_sigma * 2.0).ceil().min(10.0) as i32;
+    let spatial_denom = 2.0 * spatial_sigma * spatial_sigma;
+    let color_denom = 2.0 * color_sigma * color_sigma;
+    let luma_at = |i: usize| luma[0] * px[i * 4] + luma[1] * px[i * 4 + 1] + luma[2] * px[i * 4 + 2];
+
+    let mut out = vec![0.0f32; px.len()];
+    out.par_chunks_exact_mut((width * 4) as usize)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let y = y as i32;
+            for x in 0..w {
+                let idx = (y * w + x) as usize;
+                let center_luma = luma_at(idx);
+                let mut sum = [0.0f32; 3];
+                let mut total = 0.0f32;
+                for dy in -kernel..=kernel {
+                    for dx in -kernel..=kernel {
+                        let sx = (x + dx).clamp(0, w - 1);
+                        let sy = (y + dy).clamp(0, h - 1);
+                        let n = (sy * w + sx) as usize;
+                        let spatial_dist = (dx * dx + dy * dy) as f32;
+                        let spatial_w = (-spatial_dist / spatial_denom).exp();
+                        let color_diff = center_luma - luma_at(n);
+                        let color_w = (-color_diff * color_diff / color_denom).exp();
+                        let weight = spatial_w * color_w;
+                        for (c, s) in sum.iter_mut().enumerate() {
+                            *s += px[n * 4 + c] * weight;
+                        }
+                        total += weight;
+                    }
+                }
+                let inv = 1.0 / total;
+                let o = (x * 4) as usize;
+                for c in 0..3 {
+                    row[o + c] = sum[c] * inv;
+                }
+                // Alpha passes through untouched, as the shader does.
+                row[o + 3] = px[idx * 4 + 3];
+            }
+        });
+    out
+}
