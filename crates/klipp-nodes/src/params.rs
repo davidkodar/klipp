@@ -22,6 +22,13 @@ pub struct NodeParams {
     // Contrast
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contrast: Option<f32>,
+    /// Where contrast pivots, as a linear working-space value.
+    ///
+    /// `None` is mid grey, 0.18, which is where it pivoted before this
+    /// was adjustable — so every grade written before it reads back
+    /// identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contrast_pivot: Option<f32>,
     // Clarity (midtone detail)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clarity: Option<f32>,
@@ -462,6 +469,7 @@ impl NodeParams {
         match param_name {
             "exposure" => self.exposure = n,
             "contrast" => self.contrast = n,
+            "contrast_pivot" => self.contrast_pivot = n,
             "clarity" => self.clarity = n,
             "saturation" => self.saturation = Some(value), // default is 1.0, not 0.0
             "vibrance" => self.vibrance = n,

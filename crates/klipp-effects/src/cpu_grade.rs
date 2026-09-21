@@ -9,7 +9,7 @@
 //! Each function takes what its GPU entry point takes and works on
 //! linear RGBA f32 in place.
 
-use klipp_grade_model::{cdl_channel, contrast_channel, grade_decode, grade_encode, log_wheel_weights, tone_weights};
+use klipp_grade_model::{cdl_channel, contrast_channel_at, grade_decode, grade_encode, log_wheel_weights, tone_weights};
 use rayon::prelude::*;
 // The WGSL twins spell this `3.14159265`, and that literal rounds to
 // exactly this f32 — 0x40490fdb, the same bits — so the twins agree
@@ -23,6 +23,13 @@ use std::f32::consts::PI;
 pub struct ColorGrade {
     pub exposure: f32,
     pub contrast: f32,
+    /// Where contrast pivots, already through [`encode_contrast_pivot`].
+    ///
+    /// Encoded rather than linear so neither this path nor the shader
+    /// pays a `powf` per sample, and so both are handed the identical
+    /// number rather than each deriving it — the parity tests compare
+    /// pixels, and a pivot computed twice is a way for them to drift.
+    pub contrast_pivot_encoded: f32,
     pub saturation: f32,
     pub white_balance: [[f32; 3]; 3],
     pub highlights: f32,
@@ -90,7 +97,7 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
             }
         }
         for v in &mut e {
-            *v = contrast_channel(*v, g.contrast);
+            *v = contrast_channel_at(*v, g.contrast, g.contrast_pivot_encoded);
         }
         (r, gr, b) = (grade_decode(e[0]), grade_decode(e[1]), grade_decode(e[2]));
         // 3. Back in linear light: saturation about the working space's

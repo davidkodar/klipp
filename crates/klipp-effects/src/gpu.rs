@@ -1664,6 +1664,8 @@ impl GpuEffectsPipeline {
         height: u32,
         exposure: f32,
         contrast: f32,
+        // Already grade-encoded: `klipp_grade_model::encode_contrast_pivot`.
+        contrast_pivot_encoded: f32,
         saturation: f32,
         white_balance: [[f32; 3]; 3],
         highlights: f32,
@@ -1718,7 +1720,7 @@ impl GpuEffectsPipeline {
             offset_b: offset.2,
             hue,
             global_mix,
-            _pad0: 0,
+            contrast_pivot_encoded,
             luma_yr: self.luma_coefs[0],
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
@@ -3984,6 +3986,8 @@ impl GpuEffectsPipeline {
         height: u32,
         exposure: f32,
         contrast: f32,
+        // Already grade-encoded: `klipp_grade_model::encode_contrast_pivot`.
+        contrast_pivot_encoded: f32,
         saturation: f32,
         white_balance: [[f32; 3]; 3],
         highlights: f32,
@@ -4009,7 +4013,7 @@ impl GpuEffectsPipeline {
             gamma_r: gamma.0, gamma_g: gamma.1, gamma_b: gamma.2,
             gain_r: gain.0, gain_g: gain.1, gain_b: gain.2,
             offset_r: offset.0, offset_g: offset.1, offset_b: offset.2,
-            hue, global_mix, _pad0: 0,
+            hue, global_mix, contrast_pivot_encoded,
             luma_yr: self.luma_coefs[0],
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
@@ -7630,7 +7634,14 @@ struct GpuColorGradeParams {
     offset_b: f32,
     hue: f32,
     global_mix: f32,
-    _pad0: u32,
+    /// Where contrast pivots, already grade-encoded.
+    ///
+    /// Sits in what was `_pad0`, so the uniform's size and every field
+    /// offset after it are unchanged. Encoded on this side rather than
+    /// in the shader: one `powf` per frame instead of one per sample,
+    /// and the CPU twin is handed the identical number rather than
+    /// deriving its own, which is a way parity drifts.
+    contrast_pivot_encoded: f32,
     /// Working-space luma coefficients used by the saturation /
     /// tone-controls / lift-gamma-gain stages of `SHADER_COLOR_GRADE`.
     /// `(0.2126, 0.7152, 0.0722)` for Rec709Linear,
@@ -12218,7 +12229,7 @@ struct Params {
     offset_b: f32,
     hue: f32,
     global_mix: f32,
-    _pad0: u32,
+    contrast_pivot_encoded: f32,
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
@@ -12253,8 +12264,8 @@ fn cdl_channel(e: f32, lift: f32, gamma: f32, gain: f32, offset: f32) -> f32 {
     let power = 1.0 / max(1.0 + gamma, 0.05);
     return select(t, pow(t, power), t > 0.0);
 }
-fn contrast_channel(e: f32, amount: f32) -> f32 {
-    return (e - MID_GREY_ENCODED) * (1.0 + amount) + MID_GREY_ENCODED;
+fn contrast_channel_at(e: f32, amount: f32, pivot: f32) -> f32 {
+    return (e - pivot) * (1.0 + amount) + pivot;
 }
 fn grade_smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
     let t = clamp((x - lo) / (hi - lo), 0.0, 1.0);
@@ -12317,9 +12328,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         eg = cdl_channel(eg, params.lift_g, params.gamma_g, params.gain_g, params.offset_g);
         eb = cdl_channel(eb, params.lift_b, params.gamma_b, params.gain_b, params.offset_b);
     }
-    er = contrast_channel(er, params.contrast);
-    eg = contrast_channel(eg, params.contrast);
-    eb = contrast_channel(eb, params.contrast);
+    er = contrast_channel_at(er, params.contrast, params.contrast_pivot_encoded);
+    eg = contrast_channel_at(eg, params.contrast, params.contrast_pivot_encoded);
+    eb = contrast_channel_at(eb, params.contrast, params.contrast_pivot_encoded);
     r = grade_decode(er);
     g = grade_decode(eg);
     b = grade_decode(eb);
