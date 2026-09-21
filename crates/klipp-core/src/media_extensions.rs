@@ -34,8 +34,21 @@ use std::path::Path;
 ///
 /// Order is intentional (most common first) but not load-bearing — consumers
 /// should treat the slice as an unordered set.
+///
+/// `mxf` is the professional container: Sony XDCAM and XAVC, Canon's cinema
+/// bodies, Panasonic P2, and Avid's DNxHD/DNxHR masters all arrive in it, as
+/// does most broadcast delivery. ffmpeg demuxes it and decodes what is inside,
+/// so it needs no separate path here — but note it is a *container*, and one
+/// that can legitimately hold essence Klipp has no decoder for. An MXF that
+/// wraps JPEG 2000 (a DCP or IMF reel) will be offered for import and then
+/// fail to decode, which is the same behaviour as any other container holding
+/// an unsupported codec.
+///
+/// Not `r3d`, `ari` or `braw`: those are camera RAW and need licensed vendor
+/// SDKs. See `RAW_EXTENSIONS` below for the stills story, and the project's
+/// recorded position on camera RAW as a non-goal.
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
+    "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts", "mxf",
 ];
 
 /// Audio file extensions Klipp can decode and play.
@@ -217,9 +230,30 @@ mod tests {
         // baseline was intentionally changed (update the test) or someone
         // accidentally removed an extension.
         let expected: &[&str] = &[
-            "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts",
+            "mp4", "mkv", "mov", "avi", "webm", "m4v", "mts", "ts", "mxf",
         ];
         assert_eq!(VIDEO_EXTENSIONS, expected);
+    }
+
+    #[test]
+    fn mxf_is_video_and_not_a_still() {
+        // The professional container. Every predicate has to agree about it,
+        // because the file browser gates on `is_media` and the decode path
+        // dispatches on `is_raw` — an MXF landing in the stills path would
+        // try the embedded-JPEG extractor and find nothing.
+        for spelling in ["mxf", "MXF", "Mxf"] {
+            assert!(is_video(spelling), "{spelling} should be video");
+            assert!(is_media(spelling), "{spelling} should be media");
+            assert!(!is_image(spelling), "{spelling} is not a still");
+            assert!(!is_raw(spelling), "{spelling} is not camera RAW");
+            assert!(!is_audio(spelling), "{spelling} is not audio-only");
+        }
+        // A Canon/Sony card path, as the sidecar reader already expects to see
+        // one (`klipp-media/src/sidecar.rs` tests exactly this filename).
+        let card = PathBuf::from("/cards/A001/CONTENTS/A001C001_240315_XYZ.MXF");
+        assert!(path_is_media(&card));
+        assert!(path_is_video(&card));
+        assert!(!path_is_raw(&card));
     }
 
     #[test]
