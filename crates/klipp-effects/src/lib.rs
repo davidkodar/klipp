@@ -624,7 +624,10 @@ pub enum BuiltinEffect {
     SpeedRamp {
         /// Playback speed multiplier (0.1=10% slow-mo, 1.0=normal, 4.0=4x fast)
         speed: f32,
-        /// Blend mode: 0=nearest (no blend), 1=linear (smooth), 2=optical flow (best quality)
+        /// Blend mode: 0=nearest (no blend), 1=linear (cross-fade between
+        /// neighbouring frames). There is no optical-flow mode — see the
+        /// issue on retiming; this comment used to claim a mode 2 that
+        /// nothing implements and the inspector never offered.
         blend_mode: u32,
         /// Ramp curve: 0=constant, 1=ease-in, 2=ease-out, 3=ease-in-out, 4=s-curve
         ramp_curve: u32,

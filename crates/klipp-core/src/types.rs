@@ -181,6 +181,11 @@ pub enum ChannelConfig {
 }
 
 /// Audio fade curve shape.
+///
+/// The first four shape a fade against silence, where there is nothing
+/// to sum with and the only question is how the level should travel.
+/// [`FadeCurve::ConstantPower`] answers a different question, and the
+/// two are not interchangeable — see its own note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FadeCurve {
     #[default]
@@ -188,6 +193,72 @@ pub enum FadeCurve {
     Exponential,
     Logarithmic,
     SCurve,
+    /// Equal-power: the curve for a *crossfade*, where two sounds
+    /// overlap.
+    ///
+    /// Uncorrelated audio sums by power, not by amplitude. Two linear
+    /// ramps crossing both sit at 0.5 gain halfway, so the combined
+    /// power is `0.5² + 0.5² = 0.5` — a 3 dB dip, and it lands exactly
+    /// where the transition is most audible. A listener hears the
+    /// sound duck and come back.
+    ///
+    /// `sin`/`cos` ramps sum to unity power throughout, so the
+    /// crossfade is inaudible. This is why it is the default audio
+    /// transition in Premiere and Avid.
+    ///
+    /// It is the wrong choice for a fade from or to silence: it starts
+    /// and ends steeply, which is audible when there is no second
+    /// sound to hide it. Hence a separate option rather than a new
+    /// default — and see the note in [`Self::gain`].
+    ConstantPower,
+}
+
+impl FadeCurve {
+    /// The gain at `t`, where `t` runs 0 at silence to 1 at full.
+    ///
+    /// One definition, so playback and export cannot drift. Both used
+    /// to carry their own copy of this `match` — `pcm_reader`'s
+    /// `apply_curve` and `audio_mixdown`'s `fade_curve` — and adding a
+    /// shape meant remembering both.
+    pub fn gain(self, t: f64) -> f64 {
+        match self {
+            FadeCurve::Linear => t,
+            // Slow start, fast end.
+            FadeCurve::Exponential => t * t,
+            // Fast start, slow end.
+            FadeCurve::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
+            // Smoothstep: slow, fast, slow.
+            FadeCurve::SCurve => t * t * (3.0 - 2.0 * t),
+            // sin(t·π/2). Its partner cos(t·π/2) is the same curve
+            // read backwards, which is what the fade-out side passes,
+            // so `in² + out² == 1` at every point of the overlap.
+            FadeCurve::ConstantPower => (t * std::f64::consts::FRAC_PI_2).sin(),
+        }
+    }
+
+    /// The wire form playback and export share. Appending only, since
+    /// saved projects carry the number.
+    pub fn to_index(self) -> u32 {
+        match self {
+            FadeCurve::Linear => 0,
+            FadeCurve::Exponential => 1,
+            FadeCurve::Logarithmic => 2,
+            FadeCurve::SCurve => 3,
+            FadeCurve::ConstantPower => 4,
+        }
+    }
+
+    /// The inverse, with anything unrecognised falling back to linear
+    /// rather than panicking on a project from a later version.
+    pub fn from_index(i: u32) -> Self {
+        match i {
+            1 => FadeCurve::Exponential,
+            2 => FadeCurve::Logarithmic,
+            3 => FadeCurve::SCurve,
+            4 => FadeCurve::ConstantPower,
+            _ => FadeCurve::Linear,
+        }
+    }
 }
 
 /// Content role of a clip — determines timeline color coding.
@@ -515,5 +586,126 @@ mod log_format_tests {
         for f in [LogFormat::SLog3, LogFormat::LogC4, LogFormat::VLog, LogFormat::AppleLog] {
             assert!(f.needs_camera_decode(), "{f:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod fade_curve_tests {
+    use super::FadeCurve;
+
+    const ALL: [FadeCurve; 5] = [
+        FadeCurve::Linear,
+        FadeCurve::Exponential,
+        FadeCurve::Logarithmic,
+        FadeCurve::SCurve,
+        FadeCurve::ConstantPower,
+    ];
+
+    /// Whatever the shape, a fade starts at silence and ends at full.
+    #[test]
+    fn every_curve_runs_from_nothing_to_everything() {
+        for c in ALL {
+            assert!(c.gain(0.0).abs() < 1e-12, "{c:?} does not start at 0");
+            assert!((c.gain(1.0) - 1.0).abs() < 1e-12, "{c:?} does not reach 1");
+        }
+    }
+
+    #[test]
+    fn every_curve_only_ever_rises() {
+        for c in ALL {
+            let mut last = -1.0;
+            for i in 0..=1000 {
+                let g = c.gain(i as f64 / 1000.0);
+                assert!(g >= last - 1e-12, "{c:?} dips at t={}", i as f64 / 1000.0);
+                assert!((0.0..=1.0).contains(&g), "{c:?} leaves 0..1 at t={}", i as f64 / 1000.0);
+                last = g;
+            }
+        }
+    }
+
+    /// The reason this curve exists.
+    ///
+    /// A crossfade runs one clip's fade-out against another's fade-in.
+    /// Uncorrelated audio sums by power, so what has to stay constant
+    /// is `in² + out²`, not `in + out`.
+    #[test]
+    fn constant_power_holds_the_power_constant_across_a_crossfade() {
+        for i in 0..=1000 {
+            let t = i as f64 / 1000.0;
+            let fading_in = FadeCurve::ConstantPower.gain(t);
+            // The other clip is at the same point of its fade-out, which
+            // is this curve read backwards.
+            let fading_out = FadeCurve::ConstantPower.gain(1.0 - t);
+            let power = fading_in * fading_in + fading_out * fading_out;
+            assert!(
+                (power - 1.0).abs() < 1e-9,
+                "power {power} at t={t}, should be 1",
+            );
+        }
+    }
+
+    /// And the reason the other curves are not it: the dip this
+    /// replaces, on the record as a number.
+    ///
+    /// Linear ramps cross at 0.5 each, summing to 0.5 power — a little
+    /// over 3 dB down, arriving exactly halfway through the transition
+    /// where it is most audible.
+    #[test]
+    fn a_linear_crossfade_dips_by_three_decibels_in_the_middle() {
+        let a = FadeCurve::Linear.gain(0.5);
+        let b = FadeCurve::Linear.gain(0.5);
+        let power = a * a + b * b;
+        assert!((power - 0.5).abs() < 1e-12, "expected 0.5, got {power}");
+        let db = 10.0 * power.log10();
+        assert!((db + 3.0103).abs() < 0.001, "expected -3.01 dB, got {db}");
+
+        // Constant power, at the same point, does not.
+        let c = FadeCurve::ConstantPower.gain(0.5);
+        let d = FadeCurve::ConstantPower.gain(0.5);
+        assert!(((c * c + d * d) - 1.0).abs() < 1e-9);
+    }
+
+    /// The other four are unchanged: they were transcribed in five
+    /// places and are now defined once, so this pins the shapes that
+    /// were there before against what the single definition returns.
+    #[test]
+    fn the_existing_shapes_are_what_they_were() {
+        for i in 0..=100 {
+            let t = i as f64 / 100.0;
+            assert!((FadeCurve::Linear.gain(t) - t).abs() < 1e-12);
+            assert!((FadeCurve::Exponential.gain(t) - t * t).abs() < 1e-12);
+            assert!(
+                (FadeCurve::Logarithmic.gain(t) - (1.0 - (1.0 - t) * (1.0 - t))).abs() < 1e-12
+            );
+            assert!((FadeCurve::SCurve.gain(t) - t * t * (3.0 - 2.0 * t)).abs() < 1e-12);
+            // The timeline drew the S-curve as `3t² - 2t³`, which is the
+            // same polynomial factored differently. Pinned so the two
+            // spellings cannot drift back apart.
+            assert!(
+                (FadeCurve::SCurve.gain(t) - (3.0 * t * t - 2.0 * t * t * t)).abs() < 1e-12
+            );
+        }
+    }
+
+    /// Saved projects carry the index, so the numbering is a format.
+    #[test]
+    fn the_wire_indices_round_trip_and_only_ever_append() {
+        assert_eq!(FadeCurve::Linear.to_index(), 0);
+        assert_eq!(FadeCurve::Exponential.to_index(), 1);
+        assert_eq!(FadeCurve::Logarithmic.to_index(), 2);
+        assert_eq!(FadeCurve::SCurve.to_index(), 3);
+        assert_eq!(FadeCurve::ConstantPower.to_index(), 4);
+        for c in ALL {
+            assert_eq!(FadeCurve::from_index(c.to_index()), c, "{c:?}");
+        }
+        // A project written by a later version must open, not panic.
+        assert_eq!(FadeCurve::from_index(99), FadeCurve::Linear);
+    }
+
+    /// Adding a shape must not move the default, which existing
+    /// projects rely on for every fade that omits the field.
+    #[test]
+    fn the_default_is_still_linear() {
+        assert_eq!(FadeCurve::default(), FadeCurve::Linear);
     }
 }

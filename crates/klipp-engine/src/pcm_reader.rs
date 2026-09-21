@@ -30,14 +30,11 @@ fn anti_click_fade_secs() -> f64 {
 }
 
 /// Apply a curve shape to a linear 0..1 value.
-/// 0 = Linear, 1 = Exponential, 2 = Logarithmic, 3 = S-Curve
+///
+/// The shapes live on [`klipp_core::FadeCurve`] so this and the export
+/// mixdown cannot disagree; both used to carry their own `match`.
 fn apply_curve(t: f64, curve: u8) -> f64 {
-    match curve {
-        1 => t * t,                           // Exponential: slow start, fast end
-        2 => 1.0 - (1.0 - t) * (1.0 - t),   // Logarithmic: fast start, slow end
-        3 => t * t * (3.0 - 2.0 * t),        // S-Curve (smoothstep): slow-fast-slow
-        _ => t,                               // Linear
-    }
+    klipp_core::FadeCurve::from_index(curve as u32).gain(t)
 }
 
 /// Compute fade envelope multiplier (0.0..1.0) for a given position in the source.

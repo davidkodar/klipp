@@ -193,6 +193,7 @@ impl AudioClipShape {
             FadeCurve::Exponential => 1,
             FadeCurve::Logarithmic => 2,
             FadeCurve::SCurve => 3,
+            FadeCurve::ConstantPower => 4,
         };
         Self {
             volume: clip.volume,
