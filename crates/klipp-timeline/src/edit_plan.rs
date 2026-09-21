@@ -134,10 +134,16 @@ impl Default for PlanPlacement {
 }
 
 impl PlanPlacement {
-    /// Whether this leaves any of the frame uncovered, which is when a
-    /// background matters.
+    /// Whether this is what a clip does anyway: the whole frame, square
+    /// on, centred and fully seen. Anything else leaves some of the frame
+    /// to see past, which is when a background matters.
     pub fn fills_frame(&self) -> bool {
-        self.width >= 1.0 && self.height >= 1.0 && self.rotation_deg == 0.0
+        self.width >= 1.0
+            && self.height >= 1.0
+            && self.rotation_deg == 0.0
+            && self.x == 0.5
+            && self.y == 0.5
+            && self.opacity.unwrap_or(1.0) >= 1.0
     }
 }
 
