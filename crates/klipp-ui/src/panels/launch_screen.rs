@@ -191,7 +191,10 @@ impl LaunchScreen {
         ui.painter().text(
             egui::pos2(logo_center.x, klipp_y + 22.0),
             egui::Align2::CENTER_CENTER,
-            "Version 0.9.1 \u{00B7} Linux",
+            // From the crate, not from a string written by hand: this
+            // read "0.9.1" while the crate was 0.1.0, which is the
+            // first thing a new user is told about the software.
+            format!("Version {} · Linux", env!("CARGO_PKG_VERSION")),
             egui::FontId::proportional(11.0),
             theme.text_dim,
         );
@@ -243,35 +246,16 @@ impl LaunchScreen {
             }
         }
 
-        // Import Media... (outlined)
-        let import_rect = egui::Rect::from_min_size(
-            egui::pos2(area.min.x + pad_x, buttons_y + 92.0),
-            egui::vec2(button_w, 36.0),
-        );
-        let import_resp = ui.allocate_rect(import_rect, egui::Sense::click());
-        let import_bg = if import_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-        ui.painter().rect_filled(import_rect, 4.0, import_bg);
-        ui.painter().rect_stroke(import_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
-        ui.painter().text(
-            import_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Import Media\u{2026}",
-            egui::FontId::proportional(13.0),
-            theme.text_primary,
-        );
-        if import_resp.clicked() {
-            // Use the canonical media extension list — previously this was a
-            // hand-curated subset that was missing tif/bmp/webp/m4v/mts/ts/m4a/aiff
-            // among others, so users couldn't pick those files via this dialog.
-            let all_media = klipp_core::media_extensions::all_media_extensions();
-            if let Some(p) = rfd::FileDialog::new()
-                .set_title("Import Media")
-                .add_filter("Media Files", &all_media)
-                .pick_file()
-            {
-                cmds.push(AppCommand::ImportMedia { path: p });
-            }
-        }
+        // No "Import Media" here.
+        //
+        // It dispatched `ImportMedia`, which loads the file into the
+        // untitled project's media pool — and the launch screen is
+        // shown precisely while there is no project open, which
+        // importing does not change. So the file went into a pool the
+        // user could not see, on a screen that did not move.
+        //
+        // Importing is a thing you do *to* a project. The two entry
+        // points above are the ones that produce one.
 
         // ── Recent Projects List ──
         let recent_y = buttons_y + 148.0;
@@ -356,31 +340,37 @@ impl LaunchScreen {
 
         // ── Footer ──
         let footer_y = area.max.y - 32.0;
-        let footer_items = ["Account", "Settings", "Help"];
-        let footer_total_w = footer_items.len() as f32 * 80.0;
-        let footer_start_x = area.center().x - footer_total_w / 2.0;
-
-        for (i, label) in footer_items.iter().enumerate() {
-            let x = footer_start_x + i as f32 * 80.0;
-            let icon = match *label {
-                "Account" => "\u{1F464} ",
-                "Settings" => "\u{2699} ",
-                "Help" => "\u{2139} ",
-                _ => "",
-            };
-            let footer_rect = egui::Rect::from_min_size(
-                egui::pos2(x, footer_y),
-                egui::vec2(78.0, 20.0),
-            );
-            let resp = ui.allocate_rect(footer_rect, egui::Sense::click());
-            ui.painter().text(
-                footer_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("{icon}{label}"),
-                egui::FontId::proportional(11.0),
-                if resp.hovered() { theme.text_primary } else { theme.text_dim },
-            );
+        // One item, and it does something.
+        //
+        // There were three — Account, Settings, Help — and all three
+        // allocated a click rect, highlighted on hover, and dropped the
+        // response. Three buttons that could not be pressed.
+        //
+        // "Account" also implied a service: Klipp is a local
+        // application with nothing to sign in to. "Settings" asked the
+        // user to configure an application they had not opened yet, and
+        // could not have worked anyway — the launch screen takes the
+        // whole frame and returns before any window is drawn, so a
+        // preferences window opened from here would never appear.
+        let footer_rect = egui::Rect::from_min_size(
+            egui::pos2(area.center().x - 39.0, footer_y),
+            egui::vec2(78.0, 20.0),
+        );
+        let resp = ui
+            .allocate_rect(footer_rect, egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            let _ = std::process::Command::new("xdg-open")
+                .arg("https://github.com/davidkodar/klipp")
+                .spawn();
         }
+        ui.painter().text(
+            footer_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{2139} Help",
+            egui::FontId::proportional(11.0),
+            if resp.hovered() { theme.text_primary } else { theme.text_dim },
+        );
     }
 
     fn draw_main_area(
@@ -730,13 +720,45 @@ impl LaunchScreen {
 
                 // Empty state
                 if filtered.is_empty() {
-                    ui.add_space(80.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("No matching projects")
+                    ui.add_space(24.0);
+                    // Left-aligned under the grid, not centred in
+                    // whatever width happens to be left over — centred,
+                    // it landed adrift in the middle-right of an empty
+                    // page, related to nothing on screen. Here it reads
+                    // as a caption to the New Project card above it.
+                    ui.horizontal(|ui| {
+                        ui.add_space(pad);
+                        ui.vertical(|ui| {
+                        // Two different emptinesses, and they were
+                        // being told apart by nobody: a new user with
+                        // no projects at all was told their *search*
+                        // had matched nothing, on the first screen they
+                        // ever saw, without having typed anything.
+                        if self.search_query.trim().is_empty() {
+                            ui.label(
+                                egui::RichText::new("No projects yet")
+                                    .color(theme.text_primary)
+                                    .size(15.0),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Start one with New Project, or open an existing .klipp file.",
+                                )
+                                .color(theme.text_dim)
+                                .size(12.0),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "No projects match \u{201C}{}\u{201D}",
+                                    self.search_query.trim()
+                                ))
                                 .color(theme.text_dim)
                                 .size(13.0),
-                        );
+                            );
+                        }
+                        });
                     });
                 }
             });
@@ -769,15 +791,17 @@ impl LaunchScreen {
                         ui.painter().rect_filled(rect, 4.0, theme.bg_hover);
                     }
 
-                    // Color bar
+                    // A colour chip keyed to the name, for recognition
+                    // down a long list. It claims nothing about the
+                    // project's contents — unlike the timeline strip
+                    // that used to be drawn over it, which was the same
+                    // hash pretending to be an edit.
                     let color = project_color(&rp.name);
                     let bar_rect = egui::Rect::from_min_size(
                         egui::pos2(rect.min.x + pad, rect.min.y + 10.0),
                         egui::vec2(36.0, 32.0),
                     );
                     ui.painter().rect_filled(bar_rect, 4.0, color);
-                    // Mini timeline strip
-                    draw_timeline_strip(ui, bar_rect, &rp.name, theme.role_dialogue);
 
                     // Reserve space for the right-aligned timestamp
                     // FIRST so the name + meta can be truncated to
@@ -899,13 +923,45 @@ impl LaunchScreen {
                 }
 
                 if filtered.is_empty() {
-                    ui.add_space(80.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("No matching projects")
+                    ui.add_space(24.0);
+                    // Left-aligned under the grid, not centred in
+                    // whatever width happens to be left over — centred,
+                    // it landed adrift in the middle-right of an empty
+                    // page, related to nothing on screen. Here it reads
+                    // as a caption to the New Project card above it.
+                    ui.horizontal(|ui| {
+                        ui.add_space(pad);
+                        ui.vertical(|ui| {
+                        // Two different emptinesses, and they were
+                        // being told apart by nobody: a new user with
+                        // no projects at all was told their *search*
+                        // had matched nothing, on the first screen they
+                        // ever saw, without having typed anything.
+                        if self.search_query.trim().is_empty() {
+                            ui.label(
+                                egui::RichText::new("No projects yet")
+                                    .color(theme.text_primary)
+                                    .size(15.0),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Start one with New Project, or open an existing .klipp file.",
+                                )
+                                .color(theme.text_dim)
+                                .size(12.0),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "No projects match \u{201C}{}\u{201D}",
+                                    self.search_query.trim()
+                                ))
                                 .color(theme.text_dim)
                                 .size(13.0),
-                        );
+                            );
+                        }
+                        });
                     });
                 }
             });
@@ -1057,43 +1113,54 @@ impl LaunchScreen {
         };
 
         if !has_thumb {
-            // Procedural gradient background
-            let color = project_color(&rp.name);
+            // A poster frame is taken from the first media file in the
+            // project's manifest, so no thumbnail means no media: the
+            // project is empty. Say that, rather than leaving a hole.
+            //
+            // It used to fill with `project_color` at full strength —
+            // a saturated block brighter than any real frame on the
+            // page, so the eye went first to the projects with the
+            // least in them.
             ui.painter().rect_filled(
                 thumb_rect,
                 egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 },
-                color,
+                theme.bg_raised,
             );
-            // Gradient overlay (darker at bottom)
-            let dark = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
-            let gradient_rect = egui::Rect::from_min_max(
-                egui::pos2(thumb_rect.min.x, thumb_rect.max.y - thumb_h * 0.5),
-                thumb_rect.max,
+
+            // "Empty project", not the Klipp logo and "Klipp project".
+            //
+            // Every card in this list is a Klipp project — saying so on
+            // each one is a caption that repeats the context it sits
+            // in, and with eight empty projects it was eight copies of
+            // the logo competing with the real thumbnails beside them.
+            //
+            // What distinguishes these cards is that they are empty,
+            // which is what the words now say. A bare panel would not
+            // do: with nothing in it at all it reads as a thumbnail
+            // that failed to load rather than a project with nothing
+            // in it yet.
+            ui.painter().text(
+                thumb_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Empty project",
+                egui::FontId::proportional(12.0),
+                theme.text_dim,
             );
-            ui.painter().rect_filled(gradient_rect, 0.0, dark);
         }
 
-        // Timeline strip at bottom of thumbnail
-        let strip_h = 10.0;
-        let strip_rect = egui::Rect::from_min_size(
-            egui::pos2(thumb_rect.min.x, thumb_rect.max.y - strip_h),
-            egui::vec2(thumb_rect.width(), strip_h),
-        );
-        // Dark backdrop for strip
-        ui.painter().rect_filled(
-            strip_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
-        );
-        draw_timeline_strip(ui, strip_rect, &rp.name, theme.role_dialogue);
-
-        // Playhead indicator on timeline strip
-        let playhead_x = strip_rect.min.x + strip_rect.width() * 0.35;
-        ui.painter().vline(
-            playhead_x,
-            strip_rect.y_range(),
-            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
-        );
+        // No timeline strip.
+        //
+        // There was one, and it was a hash of the project's *name*:
+        // the number of clips, their widths and their colours all came
+        // out of `name.bytes()`, with a white playhead drawn at a fixed
+        // 35% of the width. It described nothing. Two projects with the
+        // same name drew the same edit; renaming a project changed the
+        // edit it appeared to contain.
+        //
+        // On a card whose whole job is "is this the project I want",
+        // that is not decoration — it is invented data in the place a
+        // user looks for real data. The counts below are measured, and
+        // they say what the strip pretended to.
 
         // Missing media warning badge (top-right of thumbnail)
         if rp.missing_media == Some(true) {
@@ -1371,56 +1438,6 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         ((g + m) * 255.0) as u8,
         ((b + m) * 255.0) as u8,
     )
-}
-
-/// Draw a simulated timeline strip with colored bars inside a rect.
-fn draw_timeline_strip(ui: &mut egui::Ui, rect: egui::Rect, name: &str, audio: egui::Color32) {
-    let mut hash: u32 = 7;
-    for b in name.bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(b as u32);
-    }
-
-    let bar_h = (rect.height() * 0.35).max(2.0);
-    let num_bars = 3 + (hash % 4) as usize;
-    let total_w = rect.width() - 4.0;
-
-    // Video track bars (top half)
-    let mut x = rect.min.x + 2.0;
-    for i in 0..num_bars {
-        let frac = ((hash.wrapping_mul((i as u32 + 1) * 17)) % 100) as f32 / 100.0;
-        let w = (total_w * 0.15 + total_w * 0.25 * frac).min(total_w - (x - rect.min.x));
-        if w < 4.0 { break; }
-
-        let hue = ((hash.wrapping_mul((i as u32 + 3) * 41)) % 360) as f32;
-        let (r, g, b) = hsv_to_rgb(hue, 0.6, 0.7);
-        let bar_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 200);
-
-        let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(x, rect.min.y + 1.0),
-            egui::vec2(w - 1.0, bar_h),
-        );
-        ui.painter().rect_filled(bar_rect, 1.0, bar_color);
-        x += w + 1.0;
-        if x >= rect.max.x - 2.0 { break; }
-    }
-
-    // Audio track bars (bottom half)
-    let audio_y = rect.min.y + bar_h + 2.0;
-    x = rect.min.x + 2.0;
-    for i in 0..(num_bars.saturating_sub(1).max(2)) {
-        let frac = ((hash.wrapping_mul((i as u32 + 7) * 23)) % 100) as f32 / 100.0;
-        let w = (total_w * 0.2 + total_w * 0.3 * frac).min(total_w - (x - rect.min.x));
-        if w < 4.0 { break; }
-
-        let green = audio.gamma_multiply(0.7);
-        let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(x, audio_y),
-            egui::vec2(w - 1.0, bar_h),
-        );
-        ui.painter().rect_filled(bar_rect, 1.0, green);
-        x += w + 1.0;
-        if x >= rect.max.x - 2.0 { break; }
-    }
 }
 
 /// Draw a dashed rounded rectangle.
