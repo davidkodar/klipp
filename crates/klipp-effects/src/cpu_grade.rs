@@ -23,7 +23,8 @@ use std::f32::consts::PI;
 pub struct ColorGrade {
     pub exposure: f32,
     pub contrast: f32,
-    /// Where contrast pivots, already through [`encode_contrast_pivot`].
+    /// Where contrast pivots, already through
+    /// [`klipp_grade_model::encode_contrast_pivot`].
     ///
     /// Encoded rather than linear so neither this path nor the shader
     /// pays a `powf` per sample, and so both are handed the identical
