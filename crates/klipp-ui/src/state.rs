@@ -1207,6 +1207,8 @@ pub struct AppState {
     pub show_unsaved_dialog: bool,
     pub unsaved_dialog_action: UnsavedAction,
     pub pending_media_path: Option<PathBuf>,
+    /// Per-import opt-outs, consumed when the async load succeeds or fails.
+    pub pending_skip_analysis: std::collections::HashSet<klipp_core::MediaId>,
     /// Media imported with a timeline destination (e.g. from the Audio
     /// Library): once its async load lands in the pool, drop it there.
     pub pending_media_drop: std::collections::HashMap<klipp_core::MediaId, klipp_core::events::ClipDrop>,
@@ -3447,6 +3449,7 @@ impl Default for AppState {
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,
+            pending_skip_analysis: std::collections::HashSet::new(),
             pending_media_drop: std::collections::HashMap::new(),
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_textures: std::collections::HashMap::new(),

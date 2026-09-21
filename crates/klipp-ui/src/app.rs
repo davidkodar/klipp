@@ -1837,7 +1837,8 @@ impl KlippApp {
                     // What is in the footage, found in the background as it
                     // arrives: shots, loudness, silence. Stored by the file's
                     // cache key, so a file seen before costs nothing.
-                    if media_item.kind == klipp_media::MediaItemKind::File {
+                    let skip_analysis = self.state.pending_skip_analysis.remove(&media_id);
+                    if media_item.kind == klipp_media::MediaItemKind::File && !skip_analysis {
                         // With the brief's spellings, when there is one.
                         if let Some(b) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.brief.as_ref()) {
                             klipp_analysis::transcript::set_vocabulary(b.spellings());
@@ -1931,7 +1932,8 @@ impl KlippApp {
                         }
                     }
                 }
-                AppEvent::MediaLoadFailed { media_id: _, error } => {
+                AppEvent::MediaLoadFailed { media_id, error } => {
+                    self.state.pending_skip_analysis.remove(&media_id);
                     self.state.pending_media_path = None;
                     tracing::error!("Failed to load media: {error}");
                 }
@@ -11496,9 +11498,12 @@ impl KlippApp {
 
     fn handle_media_loading(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
-                AppCommand::ImportMedia { ref path } => {
+                AppCommand::ImportMedia { ref path } | AppCommand::ImportMediaWithAnalysis { ref path, .. } => {
                     // Import media: load file to get metadata, then add to pool
                     let media_id = klipp_core::MediaId::new();
+                    if matches!(cmd, AppCommand::ImportMediaWithAnalysis { analyze: false, .. }) {
+                        self.state.pending_skip_analysis.insert(media_id);
+                    }
                     self.state.pending_media_path = None; // Don't auto-append
                     let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
                         path: path.clone(),

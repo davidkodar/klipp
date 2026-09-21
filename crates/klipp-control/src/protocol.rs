@@ -53,7 +53,12 @@ pub enum ControlCommand {
     ListMedia,
     /// Import a file into the media pool. Asynchronous: the app probes
     /// the file on a worker, so poll `list_media` for the result.
-    ImportMedia { path: String },
+    ImportMedia {
+        path: String,
+        /// Queue automatic analysis when the file arrives (default true).
+        #[serde(default = "default_analyze")]
+        analyze: bool,
+    },
     /// Append a pool item to a track as a new clip. Never prompts: a clip
     /// at a different frame rate from the project is added without
     /// changing the project's rate (a remote client cannot answer the
@@ -712,6 +717,14 @@ pub enum ControlCommand {
         #[serde(default)]
         lines: Option<usize>,
     },
+    /// Move a queued item to the front and/or cancel other queued items.
+    /// Running work is not interrupted; prioritization respects decoder limits.
+    AnalysisQueue {
+        #[serde(default)]
+        media_id: Option<String>,
+        #[serde(default)]
+        cancel_pending: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,3 +771,5 @@ unsafe fn libc_getuid() -> u32 {
     }
     getuid()
 }
+
+fn default_analyze() -> bool { true }

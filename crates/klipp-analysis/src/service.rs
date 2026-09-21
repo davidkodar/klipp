@@ -26,6 +26,7 @@ pub enum State {
     Running,
     Done,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -250,4 +251,70 @@ pub fn run_now(item: &MediaItem, ctx: &AnalysisCtx) -> Result<crate::report::Med
         return Err(format!("{id}: {why}"));
     }
     Ok(crate::report::MediaAnalysis::load(&item.path))
+}
+
+/// Prioritize one queued item and optionally cancel every other pending
+/// item. Running workers finish normally; the decoder concurrency limits
+/// still apply. Invalid IDs are refused before the queue changes.
+pub fn manage_queue(priority: Option<MediaId>, cancel_pending: bool) -> Result<Vec<String>, String> {
+    let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+    let cancelled = edit_queue(&mut s, priority, cancel_pending)?;
+    pump(&mut s);
+    Ok(cancelled)
+}
+
+fn edit_queue(s: &mut Service, priority: Option<MediaId>, cancel_pending: bool) -> Result<Vec<String>, String> {
+    if let Some(id) = priority {
+        let st = s.statuses.get(&id).ok_or_else(|| format!("no analysis for {}; call analyze first", id.0))?;
+        if !matches!(st.state, State::Queued | State::Running) {
+            return Err(format!("analysis {} is already terminal; call analyze to request it again", id.0));
+        }
+    }
+    let mut cancelled = Vec::new();
+    if cancel_pending {
+        s.queue.retain(|item| {
+            if Some(item.id) == priority { return true; }
+            if let Some(st) = s.statuses.get_mut(&item.id) {
+                st.state = State::Cancelled;
+            }
+            s.force_transcript.remove(&item.id);
+            cancelled.push(item.id.0.to_string());
+            false
+        });
+    }
+    if let Some(pos) = s.queue.iter().position(|item| Some(item.id) == priority) {
+        let item = s.queue.remove(pos);
+        s.queue.insert(0, item);
+    }
+    Ok(cancelled)
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[test]
+    fn prioritize_and_cancel_preserve_running_work_and_reject_invalid_ids() {
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new() };
+        for i in 0..22 {
+            let item = MediaItem::new_synthetic_title(MediaId::new(), format!("take{i}"), klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
+            s.statuses.insert(item.id, Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None });
+            s.queue.push(item);
+        }
+        let running = s.queue.remove(0).id;
+        s.statuses.get_mut(&running).unwrap().state = State::Running;
+        let wanted = s.queue.last().unwrap().id;
+        assert!(edit_queue(&mut s, Some(MediaId::new()), true).is_err());
+        assert_eq!(s.queue.len(), 21);
+        assert!(edit_queue(&mut s, Some(wanted), false).unwrap().is_empty());
+        assert_eq!(s.queue[0].id, wanted);
+        let cancelled = edit_queue(&mut s, Some(wanted), true).unwrap();
+        assert_eq!(cancelled.len(), 20);
+        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.statuses[&running].state, State::Running);
+        assert_eq!(s.statuses[&wanted].state, State::Queued);
+        assert_eq!(s.statuses.values().filter(|s| s.state == State::Cancelled).count(), 20);
+        assert_eq!(edit_queue(&mut s, None, true).unwrap().len(), 1);
+        assert!(s.queue.is_empty());
+    }
 }
