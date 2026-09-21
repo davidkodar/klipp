@@ -350,6 +350,14 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Temporal Noise Reduction".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::TemporalDenoise { strength: 0.5, threshold: 0.02 }),
+                source_label: "Built-in",
+                description: "Cleans grain by averaging each pixel with the frames either side, leaving moving subjects alone. Runs on the source, before the grade.".into(),
+                grouping: "Repair".into(),
+            },
+            EffectEntry {
                 name: "Deflicker".into(),
                 category: EffectCategory::Distort,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Deflicker {

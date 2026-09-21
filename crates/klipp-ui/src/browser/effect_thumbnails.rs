@@ -597,6 +597,10 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             // RSC has no visual effect on a single still frame — return identity.
             klipp_effects::BuiltinEffect::RollingShutterCorrection { strength: 0.0, readout_ratio: 0.5 }
         }
+        klipp_effects::BuiltinEffect::TemporalDenoise { .. } => {
+            // Needs neighbouring frames; a still has none. Identity.
+            klipp_effects::BuiltinEffect::TemporalDenoise { strength: 0.0, threshold: 0.02 }
+        }
         klipp_effects::BuiltinEffect::Deflicker { .. } => {
             // Deflicker corrects across frames; a single still has no
             // flicker to show. Identity, as stabilization does.

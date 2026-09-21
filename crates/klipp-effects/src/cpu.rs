@@ -884,7 +884,12 @@ pub(crate) fn apply(
                 [shifted(red_shift, 0), g[1], shifted(blue_shift, 2), g[3]]
             })
         }
-        RollingShutterCorrection { .. } | VideoStabilization { .. } | SpeedRamp { .. } | Frei0r { .. } => p,
+        // TemporalDenoise ran at the head of the pipeline, before the
+        // grade; the compositor filters it out before the chain. This
+        // arm is what a caller assembling an effect list by hand hits,
+        // and passing through is right — the work is already done.
+        RollingShutterCorrection { .. } | VideoStabilization { .. } | SpeedRamp { .. } | Frei0r { .. }
+        | TemporalDenoise { .. } => p,
     }
 }
 
