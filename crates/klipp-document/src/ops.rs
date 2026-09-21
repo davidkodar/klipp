@@ -2408,6 +2408,12 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         "vignette" => E::Vignette { amount: -a * 0.8, size: 0.8, softness: 0.5, roundness: 0.7 },
         "grain" | "film_grain" => E::FilmGrain { amount: a * 0.5, size: 1.0, color: 0, shadows: 0.3, seed: 1 },
         "glow" => E::Glow { radius: 30.0, intensity: a },
+        // The three that treat a clip as a layer rather than as the
+        // frame: they only show once the picture is smaller than the
+        // frame, which is what `compose` is for.
+        "corners" | "rounded_corners" => E::RoundedCorners { radius: a * 0.25, feather: 0.002 },
+        "shadow" | "drop_shadow" => E::DropShadow { offset_x: 0.0, offset_y: a * 0.02, blur: a * 0.04, color: [0, 0, 0], opacity: 0.2 + a * 0.6 },
+        "outer_glow" => E::OuterGlow { radius: a * 0.06, intensity: a, color: [255, 255, 255] },
         "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
         "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
@@ -2432,7 +2438,7 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
-        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
+        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, corners, shadow, outer_glow, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
     };
     // The same kind of effect replaces the one that is there.
     let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
@@ -4502,6 +4508,14 @@ mod tests {
         assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
+
+        // The layer treatment reaches the same op by name.
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "shadow".into(), amount: Some(0.5) }]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        assert!(matches!(new_effects.last(), Some(E::DropShadow { color, .. }) if *color == [0, 0, 0]));
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "corners".into(), amount: Some(0.2) }]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        assert!(matches!(new_effects.last(), Some(E::RoundedCorners { .. })));
 
         // Stabilise appends VideoStabilization; replay and undo.
         let plan = resolve(&seq, &pool, &[Op::Stabilize { clip_id: ClipRef::Id(a), smoothing: 0.5 }]).unwrap();

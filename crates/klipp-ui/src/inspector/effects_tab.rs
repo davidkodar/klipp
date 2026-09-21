@@ -1118,6 +1118,9 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::ColorFade { .. } => Cow::Borrowed("Colour Fade"),
         klipp_effects::BuiltinEffect::Opacity { .. } => Cow::Borrowed("Opacity"),
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => Cow::Borrowed("Gaussian Blur"),
+        klipp_effects::BuiltinEffect::RoundedCorners { .. } => Cow::Borrowed("Rounded Corners"),
+        klipp_effects::BuiltinEffect::DropShadow { .. } => Cow::Borrowed("Drop Shadow"),
+        klipp_effects::BuiltinEffect::OuterGlow { .. } => Cow::Borrowed("Outer Glow"),
         klipp_effects::BuiltinEffect::Sharpen { .. } => Cow::Borrowed("Sharpen"),
         klipp_effects::BuiltinEffect::Crop { .. } => Cow::Borrowed("Crop"),
         klipp_effects::BuiltinEffect::Transform { .. } => Cow::Borrowed("Transform"),
@@ -1183,6 +1186,11 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         },
         BuiltinEffect::Opacity { .. } => BuiltinEffect::Opacity { value: 1.0 },
         BuiltinEffect::GaussianBlur { .. } => BuiltinEffect::GaussianBlur { radius: 0.0 },
+        BuiltinEffect::RoundedCorners { .. } => BuiltinEffect::RoundedCorners { radius: 0.0, feather: 0.0 },
+        BuiltinEffect::DropShadow { .. } => BuiltinEffect::DropShadow {
+            offset_x: 0.0, offset_y: 0.0, blur: 0.0, color: [0, 0, 0], opacity: 0.0,
+        },
+        BuiltinEffect::OuterGlow { .. } => BuiltinEffect::OuterGlow { radius: 0.0, intensity: 0.0, color: [255, 255, 255] },
         BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
         BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
@@ -1600,6 +1608,60 @@ fn show_builtin_effect_params(
             let ks = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
             let r = scrubby_param_row(ui, "Radius", radius, 0.0..=100.0, 0.0, 0.5, 1, " px", ks);
             track_scrubby!("radius", r, *radius);
+        }
+        klipp_effects::BuiltinEffect::RoundedCorners { radius, feather } => {
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *feather = eval_effect_kf(clip, effect_index, "feather", clip_time_secs, *feather);
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_f = Some(effect_keyframe_state(clip, effect_index, "feather", clip_time_secs));
+            let r = scrubby_param_row(ui, "Radius", radius, 0.0..=0.5, 0.0, 0.002, 3, "", ks_r);
+            track_scrubby!("radius", r, *radius);
+            let r = scrubby_param_row(ui, "Feather", feather, 0.0..=0.1, 0.0, 0.001, 3, "", ks_f);
+            track_scrubby!("feather", r, *feather);
+        }
+        klipp_effects::BuiltinEffect::DropShadow { offset_x, offset_y, blur, color, opacity } => {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colour").size(10.0));
+                let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *color = [c.r(), c.g(), c.b()];
+                    changed = true;
+                }
+            });
+            *offset_x = eval_effect_kf(clip, effect_index, "offset_x", clip_time_secs, *offset_x);
+            *offset_y = eval_effect_kf(clip, effect_index, "offset_y", clip_time_secs, *offset_y);
+            *blur = eval_effect_kf(clip, effect_index, "blur", clip_time_secs, *blur);
+            *opacity = eval_effect_kf(clip, effect_index, "opacity", clip_time_secs, *opacity);
+            let ks_x = Some(effect_keyframe_state(clip, effect_index, "offset_x", clip_time_secs));
+            let ks_y = Some(effect_keyframe_state(clip, effect_index, "offset_y", clip_time_secs));
+            let ks_b = Some(effect_keyframe_state(clip, effect_index, "blur", clip_time_secs));
+            let ks_o = Some(effect_keyframe_state(clip, effect_index, "opacity", clip_time_secs));
+            let r = scrubby_param_row(ui, "Right", offset_x, -0.2..=0.2, 0.0, 0.001, 3, "", ks_x);
+            track_scrubby!("offset_x", r, *offset_x);
+            let r = scrubby_param_row(ui, "Down", offset_y, -0.2..=0.2, 0.0, 0.001, 3, "", ks_y);
+            track_scrubby!("offset_y", r, *offset_y);
+            let r = scrubby_param_row(ui, "Blur", blur, 0.0..=0.2, 0.0, 0.001, 3, "", ks_b);
+            track_scrubby!("blur", r, *blur);
+            let r = scrubby_param_row(ui, "Opacity", opacity, 0.0..=1.0, 0.0, 0.005, 3, "", ks_o);
+            track_scrubby!("opacity", r, *opacity);
+        }
+        klipp_effects::BuiltinEffect::OuterGlow { radius, intensity, color } => {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colour").size(10.0));
+                let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
+                if ui.color_edit_button_srgba(&mut c).changed() {
+                    *color = [c.r(), c.g(), c.b()];
+                    changed = true;
+                }
+            });
+            *radius = eval_effect_kf(clip, effect_index, "radius", clip_time_secs, *radius);
+            *intensity = eval_effect_kf(clip, effect_index, "intensity", clip_time_secs, *intensity);
+            let ks_r = Some(effect_keyframe_state(clip, effect_index, "radius", clip_time_secs));
+            let ks_i = Some(effect_keyframe_state(clip, effect_index, "intensity", clip_time_secs));
+            let r = scrubby_param_row(ui, "Radius", radius, 0.0..=0.3, 0.0, 0.001, 3, "", ks_r);
+            track_scrubby!("radius", r, *radius);
+            let r = scrubby_param_row(ui, "Intensity", intensity, 0.0..=1.0, 0.0, 0.005, 3, "", ks_i);
+            track_scrubby!("intensity", r, *intensity);
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
             *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount);

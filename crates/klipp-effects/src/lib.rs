@@ -34,6 +34,7 @@
 
 pub mod blur;
 mod cpu;
+pub mod layer;
 pub mod cpu_grade;
 pub mod deflicker;
 mod cpu_transition;
@@ -386,6 +387,42 @@ pub enum BuiltinEffect {
         ghost_intensity: f32,
         /// Chromatic fringing on ghosts (0.0–1.0, default 0.4)
         chromatic_aberration: f32,
+    },
+    /// Rounded corners on the layer itself: the corners are taken out of
+    /// the picture's alpha, so a placed clip reads as a card rather than
+    /// a rectangle of video. `radius` and `feather` are fractions of the
+    /// frame's shorter side. Unlike a mask in the grade, this changes
+    /// what the compositor sees.
+    RoundedCorners {
+        /// Corner radius as a fraction of the shorter side (0.0-0.5).
+        radius: f32,
+        /// Softness of the corner edge, in the same units.
+        feather: f32,
+    },
+    /// A shadow cast by whatever is opaque in the layer, drawn under it
+    /// and past its edge, so it falls on what is behind rather than on
+    /// the layer. Offsets and blur are fractions of the frame width.
+    DropShadow {
+        /// Right, as a fraction of the frame width (negative is left).
+        offset_x: f32,
+        /// Down, as a fraction of the frame width (negative is up).
+        offset_y: f32,
+        /// Blur radius, as a fraction of the frame width.
+        blur: f32,
+        /// The shadow's colour, sRGB.
+        color: [u8; 3],
+        /// How dark it is, 0.0-1.0.
+        opacity: f32,
+    },
+    /// Light spilling out of the layer's edge onto what is behind it:
+    /// a drop shadow with no offset and a bright colour.
+    OuterGlow {
+        /// How far the light reaches, as a fraction of the frame width.
+        radius: f32,
+        /// How strong it is, 0.0-1.0.
+        intensity: f32,
+        /// The light's colour, sRGB.
+        color: [u8; 3],
     },
     /// Light Wrap: bleed background light onto foreground edges (compositing essential).
     LightWrap {
@@ -851,9 +888,25 @@ fn apply_chain(
 }
 
 /// Whether the GPU pipeline can run every effect in the chain: all but
-/// Frei0r plugins, which exist only on the CPU.
+/// Frei0r plugins, which exist only on the CPU, and the layer effects in
+/// [`crate::layer`], which have no shader yet.
 pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
-    !effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
+    !effects.iter().any(|e| {
+        matches!(
+            e,
+            BuiltinEffect::Frei0r { .. }
+                | BuiltinEffect::RoundedCorners { .. }
+                | BuiltinEffect::DropShadow { .. }
+                | BuiltinEffect::OuterGlow { .. }
+        )
+    })
+}
+
+/// Whether the effect draws outside the picture, in the margin a
+/// transform leaves around a placed layer. Those run after the
+/// transform that made the margin; see [`crate::layer`].
+pub fn draws_outside_the_picture(effect: &BuiltinEffect) -> bool {
+    matches!(effect, BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. })
 }
 
 /// Returns true when the effect is at its default / identity values
@@ -874,6 +927,11 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
             *progress >= 0.9999 || *duration_secs <= 0.0
         }
         BuiltinEffect::GaussianBlur { radius } => *radius < 0.5,
+        BuiltinEffect::RoundedCorners { radius, .. } => *radius <= 0.0,
+        BuiltinEffect::DropShadow { offset_x, offset_y, blur, opacity, .. } => {
+            *opacity <= 0.0 || (*offset_x == 0.0 && *offset_y == 0.0 && *blur <= 0.0)
+        }
+        BuiltinEffect::OuterGlow { radius, intensity, .. } => *intensity <= 0.0 || *radius <= 0.0,
         BuiltinEffect::Sharpen { amount } => amount.abs() < f32::EPSILON,
         BuiltinEffect::Crop { left, right, top, bottom, feather } => {
             *left == 0.0 && *right == 0.0 && *top == 0.0 && *bottom == 0.0 && *feather == 0.0

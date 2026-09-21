@@ -206,6 +206,22 @@ impl PresetManager {
         self.bi("gaussian_blur", "Privacy Blur", "Face/plate obscuring",
             klipp_effects::BuiltinEffect::GaussianBlur { radius: 50.0 });
 
+        // ── The layer treatment ────────────────────────────────
+        // These show only where the picture does not fill the frame:
+        // on a clip placed smaller than the frame, or a title.
+        self.bi("rounded_corners", "Card", "Soft corners, as a UI card",
+            klipp_effects::BuiltinEffect::RoundedCorners { radius: 0.02, feather: 0.002 });
+        self.bi("rounded_corners", "Pill", "Fully rounded ends",
+            klipp_effects::BuiltinEffect::RoundedCorners { radius: 0.5, feather: 0.002 });
+        self.bi("drop_shadow", "Lift", "A close shadow, as if just off the surface",
+            klipp_effects::BuiltinEffect::DropShadow { offset_x: 0.0, offset_y: 0.006, blur: 0.012, color: [0, 0, 0], opacity: 0.45 });
+        self.bi("drop_shadow", "Float", "A wide soft shadow, well above the background",
+            klipp_effects::BuiltinEffect::DropShadow { offset_x: 0.0, offset_y: 0.02, blur: 0.05, color: [0, 0, 0], opacity: 0.6 });
+        self.bi("outer_glow", "Edge Light", "A tight rim of light",
+            klipp_effects::BuiltinEffect::OuterGlow { radius: 0.012, intensity: 0.7, color: [255, 255, 255] });
+        self.bi("outer_glow", "Halo", "A wide glow onto the background",
+            klipp_effects::BuiltinEffect::OuterGlow { radius: 0.06, intensity: 0.8, color: [120, 150, 255] });
+
         // ── Sharpen ────────────────────────────────────────────
         self.bi("sharpen", "Subtle", "Light sharpening for web",
             klipp_effects::BuiltinEffect::Sharpen { amount: 0.3 });
@@ -475,6 +491,9 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::ColorFade { .. } => "color_fade",
         klipp_effects::BuiltinEffect::Opacity { .. } => "opacity",
         klipp_effects::BuiltinEffect::GaussianBlur { .. } => "gaussian_blur",
+        klipp_effects::BuiltinEffect::RoundedCorners { .. } => "rounded_corners",
+        klipp_effects::BuiltinEffect::DropShadow { .. } => "drop_shadow",
+        klipp_effects::BuiltinEffect::OuterGlow { .. } => "outer_glow",
         klipp_effects::BuiltinEffect::Sharpen { .. } => "sharpen",
         klipp_effects::BuiltinEffect::Crop { .. } => "crop",
         klipp_effects::BuiltinEffect::Transform { .. } => "transform",

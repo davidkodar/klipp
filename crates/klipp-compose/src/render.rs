@@ -2607,7 +2607,13 @@ pub fn clip_effects(
             }
         }
     } else if !identity {
-        fx.push(transform_effect(&[], xf));
+        // A shadow or a glow draws in the transparent margin the
+        // transform leaves around a placed layer, so it has to run after
+        // the transform that made the margin. Everything else — rounded
+        // corners included — runs before it, with the picture, so it
+        // scales with the layer.
+        let at = fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len());
+        fx.insert(at, transform_effect(&[], xf));
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
     (fx, opacity.clamp(0.0, 1.0))
