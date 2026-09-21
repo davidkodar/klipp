@@ -242,6 +242,17 @@ fn apply_log_override(cs: klipp_core::SourceColorspace) -> klipp_core::SourceCol
     DECODE_PATH.with(|p| log_override_for_path(p.borrow().as_deref(), cs))
 }
 
+/// The camera log format that applies to a file: what the media pool
+/// registered, or the `KLIPP_FORCE_LOG_FORMAT` override.
+///
+/// The viewer's answer to the question
+/// `klipp_media::frame_reader::SourceColour` takes as an argument.
+/// Export answers it from `MediaFile.log_format` instead, which is why
+/// the shared type is given the format rather than looking it up.
+pub fn log_format_for_path(path: &std::path::Path) -> Option<klipp_core::LogFormat> {
+    registered_log_format(path).or_else(env_forced_log_format)
+}
+
 /// [`apply_log_override`] for code that is not a decode thread and knows
 /// its file directly — thumbnails, filmstrips, skim frames. Proxy and skim
 /// files are registered under their own paths with their media's format,
@@ -318,65 +329,6 @@ unsafe fn scene_referred_linear_frame(
         hdr: Some(hdr),
         seek_epoch: 0,
     })
-}
-
-/// Scene-referred frame → sRGB RGBA8 for thumbnails, filmstrips and skim
-/// frames: the same conversion and tone map as the viewer's ungraded
-/// picture, in BT.709 display primaries. `None` for display-referred
-/// sources, which keep their plain swscale path.
-///
-/// SAFETY: `frame` must be a valid, allocated software AVFrame.
-pub(crate) unsafe fn scene_referred_display_rgba8(
-    frame: *const ffmpeg_next::ffi::AVFrame,
-    source_cs: klipp_core::SourceColorspace,
-    dst_w: u32,
-    dst_h: u32,
-) -> Option<Vec<u8>> {
-    let ids = klipp_core::color_ids::ids(source_cs);
-    let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
-    let yuv = klipp_media::yuv_samples::read_yuv_samples(frame)?;
-    let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, 0, ids);
-    let m = klipp_color::camera_log::primaries_to_working_matrix(
-        source_cs.primaries,
-        klipp_core::WorkingColorspace::Rec709Linear,
-    );
-    Some(klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, transfer, m))
-}
-
-/// A stream's colour tags from its codec parameters: the baseline the
-/// per-frame tags override. NVDEC downloads often drop per-frame tags, so
-/// this is what makes e.g. a full-range file decode as full range.
-///
-/// SAFETY: `codecpar` must be valid or null.
-pub(crate) unsafe fn stream_colour_baseline(
-    codecpar: *const ffmpeg_next::ffi::AVCodecParameters,
-) -> klipp_core::SourceColorspace {
-    if codecpar.is_null() {
-        return klipp_core::SourceColorspace::resolve(0, 0, 0, 0, 1920, 1080);
-    }
-    let p = &*codecpar;
-    klipp_core::SourceColorspace::resolve(
-        p.color_range as i32, p.color_space as i32, p.color_primaries as i32, p.color_trc as i32,
-        p.width.max(1) as u32, p.height.max(1) as u32,
-    )
-}
-
-/// A frame's colourspace for single-frame decodes (thumbnails, filmstrips,
-/// skim frames): its own tags over the stream baseline, then the file's
-/// camera log format — the same merge the decode threads use.
-///
-/// SAFETY: `frame` must be a valid AVFrame.
-pub(crate) unsafe fn single_frame_colourspace(
-    frame: *const ffmpeg_next::ffi::AVFrame,
-    baseline: klipp_core::SourceColorspace,
-    path: &std::path::Path,
-) -> klipp_core::SourceColorspace {
-    let f = &*frame;
-    let cs = klipp_core::SourceColorspace::resolve_with_baseline(
-        f.color_range as i32, f.colorspace as i32, f.color_primaries as i32, f.color_trc as i32,
-        baseline,
-    );
-    log_override_for_path(Some(path), cs)
 }
 
 /// Look up swscale's per-matrix coefficient table via

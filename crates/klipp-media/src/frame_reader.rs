@@ -86,6 +86,27 @@ impl SeekableFrameReader {
         })
     }
 
+    /// Open `path` converting scene-referred sources (PQ, HLG, camera
+    /// log) as the viewer shows them ungraded, and everything else
+    /// with swscale.
+    ///
+    /// This is what a caller wants unless it has colour rules of its
+    /// own: the alternative renders log flat and PQ washed out.
+    pub fn open_colour_managed(
+        path: &Path,
+        log_format: Option<klipp_core::LogFormat>,
+    ) -> Option<Self> {
+        Self::open_with(path, |format_ctx, stream_index| {
+            let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
+            Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
+                if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
+                    return Ok(rgba);
+                }
+                swscale_rgba(frame, w, h)
+            })
+        })
+    }
+
     /// Open `path` converting with plain swscale to RGBA.
     ///
     /// For callers with no colour rules of their own. A scene-referred
@@ -163,6 +184,123 @@ impl SeekableFrameReader {
         // The file ended before the time asked for.
         None
     }
+}
+
+/// A source's colour, for turning its frames into sRGB the way the
+/// viewer shows them ungraded.
+///
+/// The stream's tags are the baseline; a frame's own tags override
+/// them where present; the camera log format has the last word,
+/// because no file tag says "this is S-Log3".
+///
+/// The log format is passed in rather than looked up. The viewer keeps
+/// a process-global registry of it, populated from the media pool, and
+/// export knows it per clip as `MediaFile.log_format` — so a shared
+/// lookup would be right for one caller and wrong for the other. Given
+/// explicitly, the two agree by construction.
+#[derive(Clone, Debug)]
+pub struct SourceColour {
+    baseline: klipp_core::SourceColorspace,
+    log_format: Option<klipp_core::LogFormat>,
+}
+
+impl SourceColour {
+    /// Read the baseline from an open stream.
+    ///
+    /// # Safety
+    ///
+    /// `format_ctx` must have a stream at `stream_index`.
+    pub fn from_stream(
+        format_ctx: &ffmpeg_next::format::context::Input,
+        stream_index: usize,
+        log_format: Option<klipp_core::LogFormat>,
+    ) -> Self {
+        let baseline = format_ctx
+            .stream(stream_index)
+            .map(|st| unsafe { stream_colour_baseline((*st.as_ptr()).codecpar) })
+            .unwrap_or_else(|| unsafe { stream_colour_baseline(std::ptr::null()) });
+        Self { baseline, log_format }
+    }
+
+    pub fn with_baseline(
+        baseline: klipp_core::SourceColorspace,
+        log_format: Option<klipp_core::LogFormat>,
+    ) -> Self {
+        Self { baseline, log_format }
+    }
+
+    /// This frame's colourspace: its own tags over the baseline, then
+    /// the log format.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be a valid AVFrame.
+    pub unsafe fn colourspace_of(
+        &self,
+        frame: *const ffmpeg_next::ffi::AVFrame,
+    ) -> klipp_core::SourceColorspace {
+        let f = &*frame;
+        let cs = klipp_core::SourceColorspace::resolve_with_baseline(
+            f.color_range as i32,
+            f.colorspace as i32,
+            f.color_primaries as i32,
+            f.color_trc as i32,
+            self.baseline,
+        );
+        match self.log_format {
+            Some(fmt) => fmt.apply_to(cs),
+            None => cs,
+        }
+    }
+
+    /// sRGB RGBA8 for a scene-referred frame (PQ, HLG, camera log);
+    /// `None` for a display-referred one, which keeps swscale.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be a valid software AVFrame.
+    pub unsafe fn scene_referred_rgba8(
+        &self,
+        frame: *const ffmpeg_next::ffi::AVFrame,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Option<Vec<u8>> {
+        let cs = self.colourspace_of(frame);
+        let ids = klipp_core::color_ids::ids(cs);
+        let transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(ids[2])?;
+        let yuv = crate::yuv_samples::read_yuv_samples(frame)?;
+        let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, 0, ids);
+        let m = klipp_color::camera_log::primaries_to_working_matrix(
+            cs.primaries,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        );
+        Some(klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, transfer, m))
+    }
+}
+
+/// A stream's colour tags from its codec parameters: the baseline a
+/// frame's own tags override. NVDEC downloads often drop per-frame
+/// tags, so this is what makes e.g. a full-range file decode as full
+/// range.
+///
+/// # Safety
+///
+/// `codecpar` must be valid or null.
+pub unsafe fn stream_colour_baseline(
+    codecpar: *const ffmpeg_next::ffi::AVCodecParameters,
+) -> klipp_core::SourceColorspace {
+    if codecpar.is_null() {
+        return klipp_core::SourceColorspace::resolve(0, 0, 0, 0, 1920, 1080);
+    }
+    let p = &*codecpar;
+    klipp_core::SourceColorspace::resolve(
+        p.color_range as i32,
+        p.color_space as i32,
+        p.color_primaries as i32,
+        p.color_trc as i32,
+        p.width.max(1) as u32,
+        p.height.max(1) as u32,
+    )
 }
 
 /// Plain swscale to RGBA at the requested size.

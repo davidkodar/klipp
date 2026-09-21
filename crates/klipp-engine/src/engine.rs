@@ -9214,17 +9214,24 @@ unsafe fn hw_capable_decoder(
 /// viewer, thumbnails and filmstrips.
 #[derive(Clone)]
 struct ThumbColour {
-    path: std::path::PathBuf,
-    baseline: klipp_core::SourceColorspace,
+    inner: klipp_media::frame_reader::SourceColour,
 }
 
 impl ThumbColour {
+    /// The rules live in `klipp_media::frame_reader::SourceColour`, so
+    /// export converts a frame the same way rather than reaching for
+    /// plain swscale. What stays here is *which* log format applies:
+    /// the viewer answers that from its registry, export from the
+    /// media pool.
     fn new(path: &std::path::Path, format_ctx: &ffmpeg_next::format::context::Input, stream_index: usize) -> Self {
-        let baseline = format_ctx
-            .stream(stream_index)
-            .map(|st| unsafe { crate::video_decoder::stream_colour_baseline((*st.as_ptr()).codecpar) })
-            .unwrap_or_else(|| unsafe { crate::video_decoder::stream_colour_baseline(std::ptr::null()) });
-        Self { path: path.to_path_buf(), baseline }
+        let log_format = crate::video_decoder::log_format_for_path(path);
+        Self {
+            inner: klipp_media::frame_reader::SourceColour::from_stream(
+                format_ctx,
+                stream_index,
+                log_format,
+            ),
+        }
     }
 
     /// sRGB RGBA8 for a scene-referred software frame; `None` for a
@@ -9237,8 +9244,7 @@ impl ThumbColour {
         dst_w: u32,
         dst_h: u32,
     ) -> Option<Vec<u8>> {
-        let cs = crate::video_decoder::single_frame_colourspace(frame, self.baseline, &self.path);
-        crate::video_decoder::scene_referred_display_rgba8(frame, cs, dst_w, dst_h)
+        self.inner.scene_referred_rgba8(frame, dst_w, dst_h)
     }
 }
 
