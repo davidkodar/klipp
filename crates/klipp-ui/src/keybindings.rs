@@ -728,4 +728,67 @@ mod registry_coverage {
             "these are wired up now and should be removed from UNWIRED: {stale:?}"
         );
     }
+
+    /// Two actions on one key, on purpose and only on purpose.
+    ///
+    /// Ctrl+C and Ctrl+V each drive two actions — a clip or a grade's
+    /// nodes — and `app.rs` resolves them by panel context, matching on
+    /// the pair and letting the colour panel win when it holds a node
+    /// selection. That is deliberate and documented there.
+    ///
+    /// Nothing stopped a third pair appearing by accident. The other
+    /// menu tests check that an action a menu names *is* bound; none of
+    /// them notice two actions claiming the same combination, where the
+    /// symptom is one of them silently never firing.
+    #[test]
+    fn only_the_known_shared_defaults_collide() {
+        use std::collections::BTreeMap;
+
+        // Pairs that share a default and are disambiguated at dispatch.
+        const INTENTIONAL: &[(&str, &str)] = &[
+            ("copy_clip", "copy_color_nodes"),
+            ("paste_clip", "paste_color_nodes"),
+        ];
+
+        let kb = KeyBindings::defaults();
+        let mut owners: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        for (action, combos) in &kb.bindings {
+            for c in combos {
+                let key = format!(
+                    "{}{}{}{}",
+                    if c.ctrl { "Ctrl+" } else { "" },
+                    if c.shift { "Shift+" } else { "" },
+                    if c.alt { "Alt+" } else { "" },
+                    c.key,
+                );
+                owners.entry(key).or_default().push(action.as_str());
+            }
+        }
+
+        let mut unexpected = Vec::new();
+        for (combo, mut actions) in owners {
+            actions.sort_unstable();
+            actions.dedup();
+            if actions.len() < 2 {
+                continue;
+            }
+            let known = actions.len() == 2
+                && INTENTIONAL.iter().any(|(a, b)| {
+                    let mut pair = [*a, *b];
+                    pair.sort_unstable();
+                    pair[..] == actions[..]
+                });
+            if !known {
+                unexpected.push(format!("{combo} -> {actions:?}"));
+            }
+        }
+
+        assert!(
+            unexpected.is_empty(),
+            "these combinations are claimed by more than one action, so one of them \
+             will not fire. Either rebind, or disambiguate at dispatch the way Ctrl+C \
+             does and add the pair to INTENTIONAL:\n{}",
+            unexpected.join("\n"),
+        );
+    }
 }
