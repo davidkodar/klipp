@@ -127,6 +127,8 @@ impl GpuMaskDef {
 
 
 /// GPU effects pipeline — holds device, queue, compute pipelines, and reusable buffers.
+use crate::cpu_grade::HUESAT_LUT_LEN;
+
 pub struct GpuEffectsPipeline {
     // Arc-wrapped so the effects pipeline can share its device with
     // klipp-effects' NV12/P010 converters (and any future GPU-using
@@ -985,10 +987,21 @@ impl GpuEffectsPipeline {
         let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
         let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE);
 
-        // LUT buffer: 6 curves × 256 entries × 4 bytes = 6144 bytes
+        // LUT buffer, sized from the same constant the uploads are.
+        //
+        // A buffer left a curve short would not fail to compile: the
+        // binding is a runtime-sized `array<f32>`. It would fail at the
+        // upload instead — `queue.write_buffer` validates the write and
+        // an oversized one reaches the uncaptured-error handler — so
+        // the symptom is a logged validation error and a LUT that never
+        // arrives, not a silent out-of-bounds read.
+        //
+        // Also handed to the equalize pass, which uploads 1024 bytes
+        // over the start of it. Safe only because every `upload`
+        // flushes first; see the issue on the sharing.
         let huesat_lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("huesat_lut"),
-            size: 6 * 256 * 4,
+            size: HUESAT_LUT_LEN as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -3489,14 +3502,15 @@ impl GpuEffectsPipeline {
     }
 
     /// Apply hue/sat curves on the GPU using pre-computed LUTs.
-    /// `lut_data` must be 6×256 f32 values (6 curves, 256 entries each).
+    /// `lut_data` must be [`HUESAT_LUT_LEN`] f32 values — seven curves,
+    /// 256 entries each.
     pub fn apply_huesat_gpu(
         &mut self,
         linear_rgba: &[f32],
         width: u32,
         height: u32,
         mix: f32,
-        lut_data: &[f32; 1536], // 6 × 256
+        lut_data: &[f32; HUESAT_LUT_LEN],
         active: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
@@ -4624,7 +4638,7 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         mix: f32,
-        lut_data: &[f32; 1536],
+        lut_data: &[f32; HUESAT_LUT_LEN],
         active: u32,
     ) {
         if self.is_device_lost() {
@@ -6215,7 +6229,19 @@ impl GpuEffectsPipeline {
 
                     // Step 4: Upload CDF as storage buffer and dispatch GPU remap shader
                     let cdf_bytes = bytemuck::cast_slice(&cdf);
-                    // Reuse huesat_lut_buf (1024 bytes = 256 × 4 fits in 6144 byte huesat buf)
+                    // Reuse huesat_lut_buf: 1024 bytes (256 × 4) into a
+                    // buffer sized for the hue/sat LUT, which is larger.
+                    // Sized from HUESAT_LUT_LEN rather than a number
+                    // written here, so adding a curve cannot leave this
+                    // comment claiming a size the buffer no longer has.
+                    //
+                    // This overwrites the start of whatever LUT the
+                    // hue/sat pass last uploaded. Safe because `upload`
+                    // flushes first, so any pending huesat dispatch is
+                    // submitted before this write, and a queue write is
+                    // ordered after prior submissions. The safety is in
+                    // that discipline, not in anything stated here — see
+                    // the issue on the two passes sharing a buffer.
                     self.upload(&self.huesat_lut_buf, 0, cdf_bytes);
 
                     self.write_params(&EqualizeParams {
@@ -12381,13 +12407,14 @@ struct Params {
 ",
     shader_linear_helpers_wgsl!(),
     "
-// LUT layout: 6 curves × 256 entries = indices 0..1535
+// LUT layout: 7 curves × 256 entries = indices 0..1791
 // Curve 0: hue_vs_hue   (0..255)
 // Curve 1: hue_vs_sat   (256..511)
 // Curve 2: hue_vs_lum   (512..767)
 // Curve 3: lum_vs_sat   (768..1023)
 // Curve 4: sat_vs_sat   (1024..1279)
 // Curve 5: orange_vs_sat (1280..1535)
+// Curve 6: sat_vs_lum   (1536..1791)
 
 fn lut_lookup(curve: u32, t: f32) -> f32 {
     let base = curve * 256u;
@@ -12452,6 +12479,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let orange_dist = min(abs(hsl.h - 0.083), min(abs(hsl.h - 0.083 + 1.0), abs(hsl.h - 0.083 - 1.0)));
         let weight = clamp(1.0 - orange_dist * 8.0, 0.0, 1.0);
         s = s + (ovs - s) * weight;
+    }
+
+    // Curve 6: Sat vs Lum (0.5 = no change). Indexed by the incoming
+    // saturation, like every other s-indexed curve, so an earlier
+    // saturation curve does not move this one's input.
+    if (params.curves_on & 64u) != 0u {
+        let svl = lut_lookup(6u, hsl.s);
+        v = clamp(v + (svl - 0.5), 0.0, 1.0);
     }
 
     let rgb = picture_rgb(h, s, v, hsl.magnitude);

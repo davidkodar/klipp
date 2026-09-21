@@ -47,6 +47,20 @@ pub struct HueSatCurves {
     pub sat_vs_sat: Vec<[f32; 2]>,
     #[serde(default)]
     pub orange_vs_sat: Vec<[f32; 2]>,
+    /// Luminance as a function of saturation.
+    ///
+    /// The one direction the other six do not cover: `hue_vs_lum`
+    /// moves brightness by hue and `lum_vs_sat` moves saturation by
+    /// brightness, but nothing moved brightness by saturation. It is
+    /// how a neon sign or a saturated sky is stopped from reading too
+    /// bright, and how saturated speculars are held down in HDR.
+    ///
+    /// Resolve carries it among its six; this set spent that slot on
+    /// `orange_vs_sat`, which is a convenience rather than a
+    /// fundamental. Added rather than swapped, so nothing that used
+    /// the orange curve loses it.
+    #[serde(default)]
+    pub sat_vs_lum: Vec<[f32; 2]>,
 }
 
 /// HSL qualifier for secondary color correction.
@@ -628,6 +642,7 @@ impl HueSatCurves {
             && self.lum_vs_sat.is_empty()
             && self.sat_vs_sat.is_empty()
             && self.orange_vs_sat.is_empty()
+            && self.sat_vs_lum.is_empty()
     }
 }
 
