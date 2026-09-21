@@ -40,6 +40,7 @@ mod item;
 mod pool;
 mod thumbnail;
 pub mod waveform;
+pub mod frame_reader;
 pub mod yuv_samples;
 
 pub use audio_cache::AudioCacheEntry;
