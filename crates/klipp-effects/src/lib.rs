@@ -53,6 +53,7 @@ pub mod p010_gpu;
 pub mod rolling_shutter;
 pub mod scene_detect;
 pub mod stabilization;
+pub mod temporal_denoise;
 pub mod track_matte;
 pub mod transform;
 
