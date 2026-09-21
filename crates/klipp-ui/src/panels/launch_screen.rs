@@ -20,8 +20,12 @@ use std::path::PathBuf;
 /// columns of 287, and a half-width window four of 285: near enough
 /// the same card either way, and big enough that the metadata line
 /// stops truncating.
-const CARD_MIN_W: f32 = 280.0;
-const CARD_MAX_W: f32 = 380.0;
+/// What a card should be, near enough, at any window width.
+const CARD_TARGET_W: f32 = 300.0;
+/// The range it may be pushed to when the target does not divide the
+/// width evenly.
+const CARD_MIN_W: f32 = 240.0;
+const CARD_MAX_W: f32 = 340.0;
 /// A card is its thumbnail plus two lines of text under it. The
 /// thumbnail is 16:9 and takes 58% of the height (`draw_card`), so the
 /// card's own aspect follows from that rather than being squared off.
@@ -30,15 +34,22 @@ const CARD_GAP: f32 = 16.0;
 
 /// How wide each card is, and how many fit, for a given grid width.
 ///
-/// Columns are chosen from the *minimum* width, then the cards are
-/// stretched to fill the row — so the grid uses the width it has
-/// instead of leaving a ragged margin, and the thumbnails grow with
-/// the window.
+/// Columns are chosen to land the card nearest [`CARD_TARGET_W`],
+/// rounding rather than flooring, so the card stays about the same
+/// size at every window width and the grid simply holds more of them.
+///
+/// Flooring against a *minimum* is what the first version did, and it
+/// only sets a floor: a 1169 px grid took three columns and then
+/// stretched each card to 379x447 to fill the row — cards at nearly
+/// the maximum size, seven rows deep, which is what "the cards look
+/// stretched" was. The same code gave 287 px cards at 2715 px, so it
+/// looked correct wherever it was measured and wrong at the size the
+/// window actually spends its time.
+///
+/// Rounding to a target gives 280 at 1169 and 287 at 2715 — the same
+/// card either way.
 fn card_metrics(grid_width: f32) -> (usize, f32, f32) {
-    let usable = (grid_width - CARD_GAP).max(CARD_MIN_W);
-    let cols = ((usable + CARD_GAP) / (CARD_MIN_W + CARD_GAP))
-        .floor()
-        .max(1.0) as usize;
+    let cols = (grid_width / CARD_TARGET_W).round().max(1.0) as usize;
     let gaps = CARD_GAP * (cols.saturating_sub(1)) as f32;
     let w = ((grid_width - gaps) / cols as f32).clamp(CARD_MIN_W, CARD_MAX_W);
     (cols, w, w / CARD_ASPECT)
