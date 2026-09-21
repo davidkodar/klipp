@@ -2874,7 +2874,7 @@ fn handle(
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
             let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
-            let status = klipp_analysis::service::status(id).map(|s| s.state);
+            let status = klipp_analysis::service::status(id);
             match report.beatsheet {
                 Some(bs) => {
                     let mut text = format!("{}  {:.2} s\n{}", item.filename, item.duration.to_secs_f64(), bs.summary());
@@ -2892,7 +2892,7 @@ fn handle(
                     })).collect();
                     Ok(json!({
                         "text": text,
-                        "state": status,
+                        "state": status.as_ref().map(|s| &s.state),
                         "cut_points": bs.cut_points,
                         "title_windows": bs.title_windows,
                         "reveals": bs.reveals,
@@ -2904,10 +2904,24 @@ fn handle(
                         "next": if labels.is_some() { "Plan by name: each settled beat says what the screen showed. Cut to its reveal and hold until it reads; confirm with frame_at where it matters." } else { "Cut to a strong cut point and hold on a settled stretch until it reads; look at the frame there (frame_at/contact_sheet) to confirm what is shown and refine the exact cut. With the OCR models downloaded, analyze names every beat by its on-screen text." },
                     }))
                 }
-                None => Ok(json!({
-                    "text": format!("{}: no beat sheet yet. Run analyze first (it needs the shots and motion passes), then read it again.", item.filename),
-                    "state": status,
-                })),
+                None => {
+                    use klipp_analysis::service::State;
+                    let message = match status.as_ref() {
+                        Some(st @ klipp_analysis::service::Status { state: State::Running, .. }) => {
+                            format!("Analysis is running: {} ({} s on this pass; {} passes complete). Wait with analysis_status, this media_id and wait true, then read beat_sheet again.", st.current.unwrap_or("starting the next pass"), st.current_for_secs.unwrap_or(0), st.done.len())
+                        }
+                        Some(klipp_analysis::service::Status { state: State::Queued, .. }) => "Analysis is queued. Wait with analysis_status, this media_id and wait true; analysis_queue can prioritize it.".into(),
+                        Some(klipp_analysis::service::Status { state: State::Failed, .. }) => "Analysis failed; see analysis.failed for the pass errors. Retry analyze after fixing the reported cause.".into(),
+                        Some(klipp_analysis::service::Status { state: State::Cancelled, .. }) => "Analysis was cancelled. Call analyze with this media_id to request it again.".into(),
+                        Some(klipp_analysis::service::Status { state: State::Done, .. }) => "Analysis finished without a beat sheet. Check that the shots and motion passes are enabled and support this media.".into(),
+                        None => "Run analyze first (the beat sheet needs the shots and motion passes), then read it again.".into(),
+                    };
+                    Ok(json!({
+                        "text": format!("{}: no beat sheet yet. {message}", item.filename),
+                        "state": status.as_ref().map(|s| &s.state),
+                        "analysis": status,
+                    }))
+                },
             }
         }
 
