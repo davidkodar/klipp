@@ -1157,6 +1157,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::Letterbox { .. } => Cow::Borrowed("Letterbox"),
         klipp_effects::BuiltinEffect::ChromaticAberration { .. } => Cow::Borrowed("Chromatic Aberration"),
         klipp_effects::BuiltinEffect::RollingShutterCorrection { .. } => Cow::Borrowed("Rolling Shutter Correction"),
+        klipp_effects::BuiltinEffect::Deflicker { .. } => Cow::Borrowed("Deflicker"),
         klipp_effects::BuiltinEffect::VideoStabilization { .. } => Cow::Borrowed("Video Stabilization"),
         klipp_effects::BuiltinEffect::SpeedRamp { .. } => Cow::Borrowed("Speed Ramp"),
         klipp_effects::BuiltinEffect::Vibrance { .. } => Cow::Borrowed("Vibrance"),
@@ -1282,6 +1283,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::RollingShutterCorrection { .. } => BuiltinEffect::RollingShutterCorrection {
             strength: 0.5, readout_ratio: 0.5,
         },
+        BuiltinEffect::Deflicker { .. } => BuiltinEffect::Deflicker { strength: 0.8, window_secs: 1.0, gain: 1.0 },
         BuiltinEffect::VideoStabilization { .. } => BuiltinEffect::VideoStabilization {
             smoothing: 0.5, crop_ratio: 0.05, zoom: true,
         },
@@ -1317,6 +1319,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }
         | BuiltinEffect::Emboss { .. } | BuiltinEffect::Mirror { .. } | BuiltinEffect::LensDistortion { .. }
         | BuiltinEffect::Denoise { .. } | BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } | BuiltinEffect::SpeedRamp { .. }
+        | BuiltinEffect::Deflicker { .. }
         | BuiltinEffect::HSVAdjust { .. } | BuiltinEffect::NoiseGenerator { .. }
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. }
@@ -1896,6 +1899,68 @@ fn show_builtin_effect_params(
             track_scrubby!("strength", r_s, *strength);
             let r_r = scrubby_param_row(ui, "Readout Ratio", readout_ratio, 0.0..=1.0, 0.5, 0.005, 2, "", ks_r);
             track_scrubby!("readout_ratio", r_r, *readout_ratio);
+        }
+        klipp_effects::BuiltinEffect::Deflicker { strength, window_secs, .. } => {
+            let has_data = clip.deflicker_data.is_some();
+            let is_analyzing = state.deflicker_in_progress.contains(&clip_id);
+
+            if is_analyzing {
+                let progress = state.deflicker_progress.get(&clip_id).copied().unwrap_or(0.0);
+                ui.add(egui::ProgressBar::new(progress).text(format!("Measuring {:.0}%", progress * 100.0)));
+                if ui.small_button("Cancel").clicked() {
+                    cmds.push(AppCommand::CancelDeflicker { clip_id });
+                }
+            } else if has_data {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme.marker_success, "Analysis complete");
+                    if ui.small_button("Re-analyse").clicked() {
+                        cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
+                    }
+                });
+                // What it found, so "nothing happened" is answerable.
+                if let Some(gains) = clip.deflicker_gains.as_ref() {
+                    let worst = gains
+                        .gains
+                        .iter()
+                        .map(|g| (g - 1.0).abs())
+                        .fold(0.0f32, f32::max);
+                    let (colour, text) = if worst < 0.01 {
+                        (theme.text_dim, "No flicker found — the shot is already steady".to_string())
+                    } else {
+                        (
+                            theme.marker_success,
+                            format!("Flicker found: up to {:.1}% per frame", worst * 100.0),
+                        )
+                    };
+                    ui.colored_label(colour, egui::RichText::new(text).size(11.0));
+                }
+            } else {
+                ui.colored_label(theme.text_dim, egui::RichText::new("Not analysed — the clip's light has to be measured first").size(11.0));
+                if ui.button("Analyse").clicked() {
+                    cmds.push(AppCommand::AnalyzeDeflicker { clip_id });
+                }
+            }
+
+            let ks_s = Some(effect_keyframe_state(clip, effect_index, "strength", clip_time_secs));
+            let r_s = scrubby_param_row(ui, "Strength", strength, 0.0..=1.0, 0.8, 0.01, 2, "", ks_s);
+            track_scrubby!("strength", r_s, *strength);
+            let ks_w = Some(effect_keyframe_state(clip, effect_index, "window_secs", clip_time_secs));
+            let r_w = scrubby_param_row(ui, "Window", window_secs, 0.2..=4.0, 1.0, 0.05, 2, " s", ks_w);
+            let window_moved = r_w.changed;
+            track_scrubby!("window_secs", r_w, *window_secs);
+            if window_moved {
+                // The measurement stands; only the smoothing over it
+                // has to be redone.
+                cmds.push(AppCommand::RegainDeflicker { clip_id });
+                changed = true;
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Variation faster than the window is flicker and goes; slower is the shot's own brightness and stays.",
+                )
+                .size(10.0)
+                .color(theme.text_dim),
+            );
         }
         klipp_effects::BuiltinEffect::VideoStabilization { smoothing, crop_ratio, zoom } => {
             // Analysis status

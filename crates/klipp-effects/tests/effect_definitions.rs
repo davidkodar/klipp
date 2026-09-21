@@ -120,3 +120,42 @@ fn zoom_blur_grows_with_distance_from_the_centre() {
     let edge = (at(&out, 1, 1) - 0.5).abs();
     assert!(edge < 0.3, "the corner is not blurred: {}", at(&out, 1, 1));
 }
+
+/// Deflicker scales the *light*, because an exposure change is a scale
+/// on light. So a gain of 2.0 is one stop up, and mid grey lands where
+/// doubling the linear value puts it — not at twice the sRGB code.
+///
+/// `strength` sits between: half of the way from 1.0 to the gain.
+#[test]
+fn deflicker_scales_the_light_by_its_gain() {
+    // 18% grey is sRGB 118-ish; doubling 0.18 linear gives 0.36, which
+    // encodes to about 163. Twice the *code* would be 236, and that is
+    // the mistake this pins against.
+    let doubled = on([118, 118, 118], BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 2.0 });
+    assert!(
+        doubled[0] > 155 && doubled[0] < 172,
+        "a gain of 2 should put 18% grey near 163, got {doubled:?}",
+    );
+
+    // A gain of 1 is the identity whatever the strength.
+    near(
+        on([118, 40, 200], BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }),
+        [118, 40, 200],
+        "gain 1",
+    );
+    // And a strength of 0 is the identity whatever the gain.
+    near(
+        on([118, 40, 200], BuiltinEffect::Deflicker { strength: 0.0, window_secs: 1.0, gain: 2.0 }),
+        [118, 40, 200],
+        "strength 0",
+    );
+
+    // Half strength is half the way to the gain: 1 + (2 - 1) * 0.5.
+    let half = on([118, 118, 118], BuiltinEffect::Deflicker { strength: 0.5, window_secs: 1.0, gain: 2.0 });
+    let full_of_1_5 = on([118, 118, 118], BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.5 });
+    near(half, full_of_1_5, "half strength of gain 2 is gain 1.5");
+
+    // Darkening works the same way round.
+    let darker = on([118, 118, 118], BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 0.5 });
+    assert!(darker[0] < 100, "a gain of 0.5 should darken, got {darker:?}");
+}

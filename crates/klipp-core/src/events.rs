@@ -2587,6 +2587,12 @@ pub enum AppCommand {
     // Video stabilization
     AnalyzeStabilization { clip_id: ClipId },
     CancelStabilization { clip_id: ClipId },
+    /// Measure a clip's per-frame light, for the Deflicker effect.
+    AnalyzeDeflicker { clip_id: ClipId },
+    CancelDeflicker { clip_id: ClipId },
+    /// Rebuild the deflicker gains after the window slider moved. The
+    /// measurement is unchanged; only the smoothing over it is.
+    RegainDeflicker { clip_id: ClipId },
 
     // Scene (shot-boundary) detection
     DetectScenes { clip_id: ClipId },
@@ -3330,6 +3336,9 @@ pub enum AppEvent {
 
     // Video stabilization
     StabilizationProgress { clip_id: ClipId, progress: f32 },
+    DeflickerProgress { clip_id: ClipId, progress: f32 },
+    DeflickerComplete { clip_id: ClipId },
+    DeflickerFailed { clip_id: ClipId, error: String },
     StabilizationComplete { clip_id: ClipId },
     StabilizationFailed { clip_id: ClipId, error: String },
 

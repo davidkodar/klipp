@@ -35,6 +35,7 @@
 pub mod blur;
 mod cpu;
 pub mod cpu_grade;
+pub mod deflicker;
 mod cpu_transition;
 mod wgsl;
 pub use cpu_transition::render_transition_linear;
@@ -608,6 +609,30 @@ pub enum BuiltinEffect {
         strength: f32,
         /// Sensor readout ratio: fraction of frame duration for full sensor readout
         readout_ratio: f32,
+    },
+    /// Deflicker: undoes whole-frame brightness pumping — a shutter
+    /// beating against mains-frequency lighting.
+    ///
+    /// Requires pre-analysis (`AnalyzeDeflicker`), which measures each
+    /// frame's light once and keeps it. The per-frame gain is set on
+    /// the pipeline before the effect runs, as stabilization's
+    /// homography is; the strength here dials it in.
+    Deflicker {
+        /// How much of the measured correction to apply (0.0-1.0).
+        strength: f32,
+        /// Seconds of context that count as "the shot's own
+        /// brightness" rather than flicker. Variation faster than this
+        /// is removed, slower is kept.
+        window_secs: f32,
+        /// The gain for the frame being rendered. **The compositor
+        /// sets this**, as it sets `seed` on FilmGrain and OldFilm:
+        /// the correction is per frame and the rest of these are per
+        /// clip, so it cannot travel with them.
+        ///
+        /// 1.0 means no correction, which is what a clip that has not
+        /// been analysed gets, and what a saved project reloads with
+        /// until it is analysed again.
+        gain: f32,
     },
     /// Video Stabilization: smooths camera motion across a clip.
     /// Requires pre-analysis (AnalyzeStabilization command).

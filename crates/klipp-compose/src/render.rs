@@ -2409,6 +2409,18 @@ pub fn clip_effects(
                 *shadows = param("shadows", *shadows);
                 *seed = (t * fps).round().max(0.0) as u32;
             }
+            BuiltinEffect::Deflicker { strength, window_secs, gain } => {
+                *strength = param("strength", *strength);
+                *window_secs = param("window_secs", *window_secs);
+                // The measured gain for this frame, at full weight —
+                // the effect applies `strength` itself, and doing it
+                // here as well would square it.
+                *gain = clip
+                    .deflicker_gains
+                    .as_ref()
+                    .map(|g| klipp_effects::deflicker::gain_at(&g.gains, t, g.fps, 1.0))
+                    .unwrap_or(1.0);
+            }
             BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
                 *flicker = param("flicker", *flicker);
                 *scratches = param("scratches", *scratches);

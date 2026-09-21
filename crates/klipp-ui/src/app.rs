@@ -1981,6 +1981,9 @@ impl KlippApp {
                 | AppEvent::SkimTranscodeFailed { .. }
                 | AppEvent::BrowserSkimFrameReady { .. }
                 | AppEvent::MediaFileChanged { .. }
+                | AppEvent::DeflickerProgress { .. }
+                | AppEvent::DeflickerComplete { .. }
+                | AppEvent::DeflickerFailed { .. }
                 | AppEvent::StabilizationProgress { .. }
                 | AppEvent::StabilizationComplete { .. }
                 | AppEvent::StabilizationFailed { .. }
@@ -7460,6 +7463,8 @@ impl KlippApp {
                                     multicam_cuts: clip.multicam_cuts.clone(),
                                     audio_effects: clip.audio_effects.clone(),
                                     audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                                    deflicker_data: None,
+                                    deflicker_gains: None,
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
                                     track_points: Vec::new(),
@@ -7633,6 +7638,8 @@ impl KlippApp {
                             multicam_cuts: clip.multicam_cuts.clone(),
                             audio_effects: clip.audio_effects.clone(),
                             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                            deflicker_data: None,
+                            deflicker_gains: None,
                             stabilization_data: None,
                             smoothed_trajectory: None,
                             track_points: Vec::new(),
@@ -15319,6 +15326,8 @@ impl KlippApp {
                     multicam_cuts: Vec::new(),
                     audio_effects: Vec::new(),
                     audio_effect_keyframes: std::collections::HashMap::new(),
+                    deflicker_data: None,
+                    deflicker_gains: None,
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
@@ -15669,6 +15678,8 @@ impl KlippApp {
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
+            deflicker_data: None,
+            deflicker_gains: None,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -18495,6 +18506,114 @@ impl KlippApp {
 
     fn handle_stabilization_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+            AppCommand::CancelDeflicker { clip_id } => {
+                // The worker checks the set each frame and stops.
+                self.state.deflicker_in_progress.remove(clip_id);
+                self.state.deflicker_progress.remove(clip_id);
+                true
+            }
+            AppCommand::AnalyzeDeflicker { clip_id } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let found = seq
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id)
+                    .and_then(|c| {
+                        let item = self.state.media_pool.get(&c.media_id()?)?;
+                        let fps = item.fps.as_f64();
+                        let frames = (item.duration.to_secs_f64() * fps).round() as usize;
+                        // The window the effect is set to, so the gains
+                        // that come back match what the user sees.
+                        let window = c.builtin_effects.iter().find_map(|e| match e {
+                            klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
+                            _ => None,
+                        }).unwrap_or(1.0);
+                        Some((item.path.clone(), fps, frames, window))
+                    });
+                let Some((path, fps, frame_count, window)) = found else { return true };
+                if frame_count < 2 {
+                    self.state.toast.show("Deflicker needs a clip of at least two frames");
+                    return true;
+                }
+                let clip_id = *clip_id;
+                self.state.deflicker_in_progress.insert(clip_id);
+                self.state.deflicker_progress.insert(clip_id, 0.0);
+                let event_tx = self.proxy_event_tx.clone();
+                let sequence = self.sequence.clone();
+                std::thread::spawn(move || {
+                    // A 480-wide proxy: the measurement is a mean over
+                    // the frame, and it does not get more true at 4K.
+                    let mut decoder = match klipp_engine::SequentialFrameDecoder::open(&path, 480) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: format!("decoder open: {e}") });
+                            return;
+                        }
+                    };
+                    let mut luma = Vec::with_capacity(frame_count);
+                    let mut last_sent = 0.0f32;
+                    loop {
+                        match decoder.next_frame() {
+                            Ok(Some((rgba, w, h))) => {
+                                luma.push(klipp_effects::deflicker::frame_luma(&rgba, w, h));
+                                let p = (luma.len() as f32 / frame_count.max(1) as f32).min(1.0);
+                                // One event per percent, not per frame:
+                                // a 4-minute clip is 6000 frames and the
+                                // UI does not need 6000 redraws.
+                                if p - last_sent >= 0.01 {
+                                    last_sent = p;
+                                    let _ = event_tx.send(AppEvent::DeflickerProgress { clip_id, progress: p });
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: e });
+                                return;
+                            }
+                        }
+                    }
+                    if luma.len() < 2 {
+                        let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: "the clip decoded fewer than two frames".into() });
+                        return;
+                    }
+                    let data = klipp_effects::deflicker::DeflickerData { luma, fps };
+                    let gains = klipp_effects::deflicker::DeflickerGains::refresh(None, &data, window);
+                    if let Ok(mut seq) = sequence.write() {
+                        for track in seq.tracks.iter_mut() {
+                            for clip in track.clips.iter_mut() {
+                                if clip.id == clip_id {
+                                    clip.deflicker_data = Some(data.clone());
+                                    clip.deflicker_gains = Some(gains.clone());
+                                }
+                            }
+                        }
+                    }
+                    let _ = event_tx.send(AppEvent::DeflickerComplete { clip_id });
+                });
+                true
+            }
+            AppCommand::RegainDeflicker { clip_id } => {
+                // A mean over a window, per frame — microseconds, so
+                // it is safe on every slider tick, as the stabilization
+                // re-smooth is.
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    let window = clip.builtin_effects.iter().find_map(|e| match e {
+                        klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
+                        _ => None,
+                    }).unwrap_or(1.0);
+                    if let Some(data) = clip.deflicker_data.as_ref() {
+                        clip.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains::refresh(
+                            clip.deflicker_gains.clone(),
+                            data,
+                            window,
+                        ));
+                    }
+                }
+                self.state.dirty = true;
+                true
+            }
             AppCommand::AnalyzeStabilization { clip_id } => {
                 // Find clip -> get media_id -> get media path, fps, duration
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -22490,6 +22609,8 @@ impl KlippApp {
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                deflicker_data: None,
+                deflicker_gains: None,
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
@@ -22617,6 +22738,8 @@ impl KlippApp {
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+                deflicker_data: None,
+                deflicker_gains: None,
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
@@ -28798,6 +28921,37 @@ impl KlippApp {
                         }
                         tracing::info!("Media file modified externally: {:?}", path);
                     }
+                }
+                AppEvent::DeflickerProgress { clip_id, progress } => {
+                    self.state.deflicker_progress.insert(clip_id, progress);
+                }
+                AppEvent::DeflickerComplete { clip_id } => {
+                    self.state.deflicker_in_progress.remove(&clip_id);
+                    self.state.deflicker_progress.remove(&clip_id);
+                    // The worker wrote into the shared sequence; bring
+                    // the UI's copy alongside, as stabilization does.
+                    if let Ok(shared) = self.sequence.read() {
+                        for (ti, track) in shared.tracks.iter().enumerate() {
+                            for (ci, clip) in track.clips.iter().enumerate() {
+                                if clip.id != clip_id {
+                                    continue;
+                                }
+                                if let Some(lt) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
+                                    if let Some(lc) = lt.clips.get_mut(ci) {
+                                        lc.deflicker_data = clip.deflicker_data.clone();
+                                        lc.deflicker_gains = clip.deflicker_gains.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.state.toast.show("Deflicker analysis complete");
+                }
+                AppEvent::DeflickerFailed { clip_id, error } => {
+                    self.state.deflicker_in_progress.remove(&clip_id);
+                    self.state.deflicker_progress.remove(&clip_id);
+                    tracing::warn!("Deflicker analysis failed for {clip_id:?}: {error}");
+                    self.state.toast.show(format!("Deflicker analysis failed: {error}"));
                 }
                 AppEvent::StabilizationProgress { clip_id, progress } => {
                     self.state.stabilization_progress.insert(clip_id, progress);

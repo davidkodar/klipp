@@ -1569,6 +1569,9 @@ pub struct AppState {
     pub skim_last_audio_dispatch: std::time::Instant,
 
     // Video stabilization analysis state
+    /// Clips whose per-frame light is being measured for Deflicker.
+    pub deflicker_in_progress: std::collections::HashSet<klipp_core::ClipId>,
+    pub deflicker_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
 
@@ -3556,6 +3559,8 @@ impl Default for AppState {
             file_browser_auto_refresh: true,
             recent_files_snapshot: Vec::new(),
             skim_last_audio_dispatch: std::time::Instant::now(),
+            deflicker_in_progress: std::collections::HashSet::new(),
+            deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
             scene_detect_in_progress: std::collections::HashSet::new(),

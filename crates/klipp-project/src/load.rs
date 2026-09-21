@@ -509,6 +509,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
                     multicam_angle: c.multicam_angle.unwrap_or(0),
                     multicam_cuts: c.multicam_cuts.clone(),
+                    deflicker_data: None,
+                    deflicker_gains: None,
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: c.track_points.clone(),

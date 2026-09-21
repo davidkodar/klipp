@@ -104,6 +104,10 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("RadialBlur spin", RadialBlur { center_x: 0.5, center_y: 0.5, amount: 10.0, samples: 16, mode: 1 }),
         ("Levels", Levels { in_black: 0.1, in_white: 0.9, gamma: 1.3, out_black: 0.05, out_white: 0.95 }),
         ("Equalize", Equalize { strength: 1.0 }),
+        // The gain is what the compositor would have set for a frame
+        // measured 18% under the shot's smoothed level.
+        ("Deflicker", Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.18 }),
+        ("Deflicker half", Deflicker { strength: 0.5, window_secs: 1.0, gain: 0.82 }),
         ("Letterbox", Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 }),
         ("ChromaticAberration", ChromaticAberration { red_shift: 3.0, blue_shift: -3.0, center_x: 0.5, center_y: 0.5 }),
     ]
