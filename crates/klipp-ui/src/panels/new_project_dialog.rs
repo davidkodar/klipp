@@ -284,12 +284,21 @@ impl NewProjectDialog {
                         let name = self.project_name.trim();
                         let can_create = !name.is_empty();
 
-                        let create_btn = ui.add_enabled(
-                            can_create,
-                            egui::Button::new(
-                                egui::RichText::new("Create Project").size(13.0),
-                            ),
-                        );
+                        // Why it is disabled, said out loud.
+                        //
+                        // The name field shows "My Project" as a hint,
+                        // not a value, so the form looks filled in
+                        // while the button refuses to work and nothing
+                        // says why. The export dialog already answers
+                        // this the same way.
+                        let create_btn = ui
+                            .add_enabled(
+                                can_create,
+                                egui::Button::new(
+                                    egui::RichText::new("Create Project").size(13.0),
+                                ),
+                            )
+                            .on_disabled_hover_text("Give the project a name first");
                         if create_btn.clicked() && can_create {
                             let (width, height) = self.resolved_resolution();
                             let (fps_num, fps_den) = self.resolved_fps();
@@ -313,6 +322,19 @@ impl NewProjectDialog {
 
                         if ui.button("Cancel").clicked() {
                             close = true;
+                        }
+
+                        // And said in the open, because hover text has
+                        // to be found before it can help. Only while it
+                        // is disabled, so it never nags at a form that
+                        // is ready to submit.
+                        if !can_create {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Name the project to continue")
+                                    .size(11.0)
+                                    .color(theme.text_dim),
+                            );
                         }
                     });
                 });
