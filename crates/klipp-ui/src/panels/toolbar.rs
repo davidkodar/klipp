@@ -906,12 +906,13 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text(kb.display_for("toggle_ai_tools_panel"))).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
             ui.separator();
             // Modal dialogs — distinct from panels because they
-            // overlay the editor instead of docking. Plugin-management
-            // dialogs (AI Models, Audio Plugins) live under their own
-            // top-level "Plugins" menu so future LV2 / VST3 sections
-            // have a natural home; they used to live here under
-            // Window but the noun mismatch (modal dialog vs panel)
-            // got worse as more were added.
+            // overlay the editor instead of docking.
+            //
+            // The plugin and model managers (Audio Plugins, AI Models)
+            // live under Tools, not here: the noun mismatch between a
+            // modal dialog and a dockable panel got worse as more were
+            // added. This note used to send the reader to a top-level
+            // "Plugins" menu, which has never existed.
             if ui.add(egui::Button::new("Command Palette").shortcut_text(kb.display_for("command_palette"))).clicked() { state.show_command_palette = true; ui.close_menu(); }
         });
     }
