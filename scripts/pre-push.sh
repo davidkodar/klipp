@@ -67,6 +67,21 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
+# Cargo defaults to one job per core, which on a many-core machine is
+# enough concurrent rustc and LLVM to exhaust memory when several large
+# crates link at once. The OOM killer then takes rustc mid-write and
+# leaves a truncated object behind, which surfaces later as
+# `undefined hidden symbol: anon.*.llvm.*` in some crate nobody
+# touched — a failure that looks like anything except what it is.
+#
+# Half the cores, at least two. Respected if already set.
+if [ -z "$CARGO_BUILD_JOBS" ]; then
+    _cores=$(nproc 2>/dev/null || echo 4)
+    CARGO_BUILD_JOBS=$(( _cores / 2 ))
+    [ "$CARGO_BUILD_JOBS" -lt 2 ] && CARGO_BUILD_JOBS=2
+    export CARGO_BUILD_JOBS
+fi
+
 printf '\n  pre-push: sign-off, clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
 
@@ -98,6 +113,26 @@ if [ "$KLIPP_ALLOW_MAIN_PUSH" != "1" ]; then
     fi
 fi
 
+# The checks below run against the working tree, because that is what
+# cargo reads. So the working tree has to BE the commit being pushed,
+# or the gate certifies something that never leaves the machine.
+#
+# This is not hypothetical: a fix once sat uncommitted on disk while
+# the commit it belonged to went out green, and main landed with a
+# rustdoc failure that then refused everybody's next push.
+if [ "$KLIPP_ALLOW_DIRTY" != "1" ]; then
+    if ! git diff --quiet HEAD -- || ! git diff --cached --quiet; then
+        printf '\n  pre-push: the working tree is not the commit being pushed.\n\n' >&2
+        printf '            clippy, rustdoc and the tests all read what is on\n' >&2
+        printf '            disk, so passing them would say nothing about what\n' >&2
+        printf '            actually leaves. Changed:\n\n' >&2
+        git -c color.ui=never status --short -- . | sed 's/^/              /' >&2
+        printf '\n            Commit them, stash them, or KLIPP_ALLOW_DIRTY=1\n' >&2
+        printf '            git push if you know the difference does not matter.\n\n' >&2
+        exit 1
+    fi
+fi
+
 if ! "$ROOT/scripts/check-signoff.sh"; then
     printf '  pre-push: authorship check failed — push refused.\n\n' >&2
     exit 1
@@ -118,12 +153,27 @@ if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps; then
     exit 1
 fi
 
+# Built first and separately, so a compile error is reported as one
+# rather than as "tests FAILED" — which sends you reading test names
+# for a problem that is not in any of them.
+if ! cargo test --workspace --no-run; then
+    printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
+    printf '            Nothing ran. This is a compile or link error, not a\n' >&2
+    printf '            failing assertion.\n\n' >&2
+    printf '            `undefined hidden symbol: anon.*.llvm.*` in a crate you\n' >&2
+    printf '            did not touch is a truncated object from an earlier\n' >&2
+    printf '            interrupted build, not your change:\n\n' >&2
+    printf '              cargo clean -p <that crate>\n\n' >&2
+    exit 1
+fi
+
 if cargo test --workspace; then
     printf '\n  pre-push: tests pass.\n\n'
     exit 0
 fi
 
 printf '\n  pre-push: tests FAILED — push refused.\n' >&2
+printf '            They built, so these are assertions, not compile errors.\n' >&2
 printf '            If gpu_pipelines_build is among them, a shader stopped\n' >&2
 printf '            compiling and the rest of the GPU suite is skipping\n' >&2
 printf '            rather than failing. Fix that one first.\n\n' >&2
