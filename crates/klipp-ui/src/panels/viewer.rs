@@ -152,6 +152,91 @@ impl Drop for ViewerPanel {
     }
 }
 
+/// The master meter's size in the transport row. Wide and short: the
+/// row has horizontal slack and no vertical room at all.
+const MASTER_METER_W: f32 = 96.0;
+const MASTER_METER_H: f32 = 12.0;
+
+/// The quietest level the meter draws. Below this a signal is not
+/// worth a pixel, and the scale would spend half its width on it.
+const MASTER_METER_FLOOR_DB: f32 = -60.0;
+
+/// Where the bar stops being green. -18 dBFS is the usual dialogue
+/// target and -6 is where a mix is asking to be turned down.
+const MASTER_METER_WARN_DB: f32 = -6.0;
+
+/// A peak level as a fraction across the meter, 0 at the floor and 1
+/// at 0 dBFS.
+///
+/// Linear in decibels, not in amplitude. An amplitude scale spends
+/// three-quarters of its width on the top 12 dB and squashes
+/// everything a dialogue editor actually watches into the left end.
+pub fn master_meter_fraction(peak_linear: f32) -> f32 {
+    if peak_linear <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * peak_linear.log10();
+    ((db - MASTER_METER_FLOOR_DB) / -MASTER_METER_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// Whether a peak is at or over full scale, and so being clipped by
+/// whatever it is written to.
+pub fn master_meter_is_clipping(peak_linear: f32) -> bool {
+    peak_linear >= 1.0
+}
+
+/// A two-bar stereo peak meter: left above, right below.
+///
+/// Drawn rather than built from widgets because it is read, never
+/// clicked — a widget here would take focus and a tooltip slot for
+/// something nobody interacts with.
+fn draw_master_meter(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    peak_l: f32,
+    peak_r: f32,
+    theme: &KlippTheme,
+) {
+    let bar_h = ((rect.height() - 2.0) * 0.5).max(1.0);
+    painter.rect_filled(rect, 1.0, theme.bg_deep);
+    // An outline, because the trough alone is the same value as the
+    // panel behind it: with nothing playing the meter was invisible
+    // apart from its -6 mark, so there was no sign it existed until
+    // something made a sound. A meter you cannot find at rest is not a
+    // meter an editor learns to glance at.
+    painter.rect_stroke(rect, 1.0, egui::Stroke::new(1.0_f32, theme.border));
+
+    // The -6 dB mark, so "near the top" has somewhere to be near.
+    let warn_x = rect.left()
+        + rect.width() * ((MASTER_METER_WARN_DB - MASTER_METER_FLOOR_DB) / -MASTER_METER_FLOOR_DB);
+    painter.vline(
+        warn_x,
+        rect.y_range(),
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    for (i, peak) in [peak_l, peak_r].into_iter().enumerate() {
+        let top = rect.top() + 1.0 + i as f32 * (bar_h + 1.0) - if i == 0 { 1.0 } else { 0.0 };
+        let top = top.max(rect.top());
+        let w = rect.width() * master_meter_fraction(peak);
+        if w <= 0.0 {
+            continue;
+        }
+        let colour = if master_meter_is_clipping(peak) {
+            theme.marker_error
+        } else if 20.0 * peak.max(1e-6).log10() >= MASTER_METER_WARN_DB {
+            theme.marker_warning
+        } else {
+            theme.marker_success
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(w, bar_h)),
+            0.0,
+            colour,
+        );
+    }
+}
+
 impl ViewerPanel {
     pub fn show(
         &mut self,
@@ -2346,6 +2431,11 @@ impl ViewerPanel {
         let cam_slot = btn_w + gap;
         let scopes_slot = btn_w + gap;
         let layout_slot = btn_w + gap;
+        // The master meter. Wide enough to read a level off rather
+        // than only notice one: at 96 px the span from -60 to 0 dB is
+        // about 1.6 px per dB, so the difference between -6 and -3 is
+        // visible rather than implied.
+        let meter_slot = MASTER_METER_W + gap;
 
         let mut remaining = budget_right;
         let mut show_mute = false;
@@ -2366,6 +2456,15 @@ impl ViewerPanel {
         }
         if remaining >= slider_slot { remaining -= slider_slot; show_slider = true; }
         if remaining >= vol_pct_slot { remaining -= vol_pct_slot; show_vol_pct = true; }
+        // The Program viewer is the timeline's output, so it is the
+        // only one with a master to meter. Asked for after the volume
+        // controls it sits beside: a meter with no volume control next
+        // to it reads as decoration.
+        let mut show_meter = false;
+        if viewer_kind == ViewerMode::Program && show_slider && remaining >= meter_slot {
+            remaining -= meter_slot;
+            show_meter = true;
+        }
         if viewer_kind == ViewerMode::Program {
             if remaining >= xform_slot { remaining -= xform_slot; show_xform = true; }
             if remaining >= cam_slot { remaining -= cam_slot; show_camera = true; }
@@ -2439,6 +2538,29 @@ impl ViewerPanel {
                 cmds.push(AppCommand::SetMasterMute(!old));
             }
             cursor_right -= btn_w + gap;
+        }
+
+        // Master output meter, left of the mute button so the audio
+        // group reads as one: level, mute, volume, percentage.
+        //
+        // The output, not the selection. The inspector's AUDIO tab
+        // already meters whichever clip is selected, which is a
+        // different question from "is the programme clipping" — and
+        // the answer to that one has to be on screen while cutting,
+        // with nothing selected at all.
+        if show_meter {
+            let meter_rect = egui::Rect::from_min_size(
+                egui::pos2(cursor_right - MASTER_METER_W, cy - MASTER_METER_H * 0.5),
+                egui::vec2(MASTER_METER_W, MASTER_METER_H),
+            );
+            draw_master_meter(
+                ui.painter(),
+                meter_rect,
+                state.master_peak_left,
+                state.master_peak_right,
+                theme,
+            );
+            cursor_right -= MASTER_METER_W + gap;
         }
 
         // Match Frame — appears on both viewers in the same slot;
@@ -6285,5 +6407,76 @@ mod text_editor_tests {
         sim_insert(&mut text, &mut cursor, "B");
         assert_eq!(text, "Hello BWorld");
         assert_eq!(cursor, 7);
+    }
+}
+
+#[cfg(test)]
+mod master_meter_tests {
+    use super::{master_meter_fraction, master_meter_is_clipping};
+
+    fn from_db(db: f32) -> f32 {
+        10.0f32.powf(db / 20.0)
+    }
+
+    /// The ends of the scale are where they say they are.
+    #[test]
+    fn the_scale_runs_from_the_floor_to_full_scale() {
+        assert_eq!(master_meter_fraction(0.0), 0.0, "silence");
+        assert!(master_meter_fraction(from_db(-60.0)).abs() < 1e-4, "the floor");
+        assert!((master_meter_fraction(1.0) - 1.0).abs() < 1e-4, "0 dBFS");
+        // Over full scale pins at the end rather than running off it.
+        assert_eq!(master_meter_fraction(4.0), 1.0);
+        // A negative sample magnitude should not happen, and must not
+        // produce a negative width if it does.
+        assert_eq!(master_meter_fraction(-0.5), 0.0);
+    }
+
+    /// The point of the scale: it is linear in decibels, so the range a
+    /// dialogue editor lives in gets half the meter.
+    ///
+    /// On an amplitude-linear scale -30 dBFS sits at 3% of the width
+    /// and -18 at 12%, which puts every level worth watching in the
+    /// first eighth of the bar and spends the rest on the top 12 dB.
+    #[test]
+    fn the_scale_is_linear_in_decibels_not_amplitude() {
+        // Halfway along the bar is halfway down the range.
+        assert!((master_meter_fraction(from_db(-30.0)) - 0.5).abs() < 1e-3);
+        // The usual dialogue target, and the mark the bar changes at.
+        assert!((master_meter_fraction(from_db(-18.0)) - 0.7).abs() < 1e-3);
+        assert!((master_meter_fraction(from_db(-6.0)) - 0.9).abs() < 1e-3);
+
+        // And the mistake, on the record: amplitude would put -30 dB at
+        // 3% rather than 50%.
+        let amplitude_scale = from_db(-30.0);
+        assert!(amplitude_scale < 0.04, "sanity: {amplitude_scale}");
+        assert!(
+            master_meter_fraction(from_db(-30.0)) > amplitude_scale * 10.0,
+            "the dB scale must give the quiet end real width",
+        );
+    }
+
+    /// Louder is always further along; there is no level where the bar
+    /// goes backwards.
+    #[test]
+    fn the_bar_only_grows() {
+        let mut last = -1.0;
+        for i in 0..=1200 {
+            let db = -60.0 + i as f32 * 0.05;
+            let f = master_meter_fraction(from_db(db));
+            assert!(f >= last - 1e-6, "dips at {db} dB");
+            assert!((0.0..=1.0).contains(&f), "leaves the bar at {db} dB");
+            last = f;
+        }
+    }
+
+    /// Clipping is at or over full scale — not "close to it", which
+    /// would cry wolf on a correctly hot mix.
+    #[test]
+    fn clipping_is_full_scale_and_not_before() {
+        assert!(master_meter_is_clipping(1.0));
+        assert!(master_meter_is_clipping(1.5));
+        assert!(!master_meter_is_clipping(0.999));
+        assert!(!master_meter_is_clipping(from_db(-0.1)));
+        assert!(!master_meter_is_clipping(0.0));
     }
 }
