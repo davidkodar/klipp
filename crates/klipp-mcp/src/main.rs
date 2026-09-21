@@ -326,7 +326,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_analyze" => {
-            let mut v = json!({ "method": "analyze" });
+            let mut v = json!({ "method": "analyze", "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false), "timeout_ms": args.get("timeout_ms") });
             if let Some(id) = args.get("media_id").and_then(|v| v.as_str()) {
                 v["media_id"] = json!(id);
             }
@@ -430,7 +430,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
-        "klipp_analysis_status" => json!({ "method": "analysis_status" }),
+        "klipp_analysis_status" => json!({ "method": "analysis_status", "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false), "media_id": args.get("media_id"), "timeout_ms": args.get("timeout_ms") }),
         "klipp_media_analysis" => {
             let mut v = json!({ "method": "media_analysis", "media_id": arg_str(args, "media_id")? });
             if let Some(n) = args.get("max_chars").and_then(|v| v.as_u64()) {
@@ -599,7 +599,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(o) = args.get("opacity").and_then(|v| v.as_f64()) { v["opacity"] = json!(o); }
             v
         }
-        "klipp_export_status" => json!({ "method": "export_status" }),
+        "klipp_export_status" => json!({ "method": "export_status", "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false), "job_id": args.get("job_id"), "timeout_ms": args.get("timeout_ms") }),
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
@@ -997,7 +997,7 @@ fn tool_definitions() -> Vec<Value> {
               the transcript with word timestamps and the language when the speech model \
               is downloaded, the beat sheet of a screen recording, and its on-screen text \
               (OCR) when those models are downloaded. One media item by id, or every file in the pool when \
-              media_id is omitted. Returns at once; poll klipp_analysis_status, then read \
+              media_id is omitted. Pass wait true to wait for completion, then read \
               klipp_media_analysis. Items already analysed cost nothing. Runs on import \
               too, without downloading anything: pass download_models to fetch the \
               missing models once, with the user's knowledge — the speech model is \
@@ -1005,6 +1005,8 @@ fn tool_definitions() -> Vec<Value> {
               when its feature is on in preferences.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
+                 "wait": { "type": "boolean", "description": "Wait until all requested items end; inspect finished and succeeded" },
+                 "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; timeout does not cancel analysis" },
                  "download_models": { "type": "boolean", "description": "Fetch missing models first (the user should know a download happens)" },
              }),
              vec![]),
@@ -1144,8 +1146,8 @@ fn tool_definitions() -> Vec<Value> {
               up, the text and where on the frame.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
-        tool("klipp_analysis_status", "Where every requested analysis stands: queued, running, done, failed.",
-             json!({}), vec![]),
+        tool("klipp_analysis_status", "Where analysis stands. With wait true, holds the response until the selected items end or timeout. Reports finished, succeeded and timed_out; failed items carry errors.",
+             json!({ "wait": { "type": "boolean" }, "media_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; does not cancel work" } }), vec![]),
         tool("klipp_media_analysis",
              "What is known about a media item, as text: its shots with their ranges, \
               its loudness, range and true peak, and its silences. The timeline view \
@@ -1490,7 +1492,7 @@ fn tool_definitions() -> Vec<Value> {
              "Render the active sequence to a file with Klipp's default export settings; \
               the container comes from the extension (mp4, mov, mkv, webm). Refused when \
               a clip's media is offline or the path is one of the project's media files. \
-              Asynchronous: poll klipp_export_status until the job is complete, then the \
+              Asynchronous: call klipp_export_status with wait true to wait for completion; then the \
               file is done. The path must be absolute.",
              json!({
                  "path": { "type": "string", "description": "Absolute output path" },
@@ -1503,8 +1505,8 @@ fn tool_definitions() -> Vec<Value> {
              vec!["path"]),
         tool("klipp_export_status",
              "Every render job Klipp knows: status (queued, rendering, complete, failed, \
-              cancelled), progress 0 to 1, frames, stage, error, loudness result.",
-             json!({}), vec![]),
+              cancelled), progress 0 to 1, frames, stage, error, loudness result. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.",
+             json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
              "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
@@ -1743,4 +1745,26 @@ fn tool_definitions() -> Vec<Value> {
              }),
              vec![]),
     ]
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn wait_arguments_reach_control_and_old_calls_stay_nonblocking() {
+        for (tool, method, id_key) in [
+            ("klipp_analyze", "analyze", "media_id"),
+            ("klipp_analysis_status", "analysis_status", "media_id"),
+            ("klipp_export_status", "export_status", "job_id"),
+        ] {
+            let args = json!({ "wait": true, "timeout_ms": 123, id_key: "id" });
+            let command = tool_to_command(tool, &args).unwrap();
+            assert_eq!(command["method"], method);
+            assert_eq!(command["wait"], true);
+            assert_eq!(command["timeout_ms"], 123);
+            assert_eq!(command[id_key], "id");
+            assert_eq!(tool_to_command(tool, &json!({})).unwrap()["wait"], false);
+        }
+    }
 }

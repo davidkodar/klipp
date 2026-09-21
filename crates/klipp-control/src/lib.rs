@@ -1434,6 +1434,30 @@ fn build_json() -> serde_json::Value {
     })
 }
 
+/// A bounded server-side wait keeps clients out of poll loops. Each read
+/// releases shared locks before sleeping; the UI and other connections run.
+fn wait_until<T>(wait: bool, timeout_ms: Option<u64>, mut read: impl FnMut() -> Result<(T, bool), String>) -> Result<(T, bool), String> {
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(3_600_000).min(86_400_000));
+    let started = std::time::Instant::now();
+    loop {
+        let (value, finished) = read()?;
+        if finished || !wait || started.elapsed() >= timeout {
+            return Ok((value, finished));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50).min(timeout.saturating_sub(started.elapsed())));
+    }
+}
+
+fn analysis_reply(ids: &[klipp_core::MediaId], wait: bool, timeout_ms: Option<u64>) -> Result<serde_json::Value, String> {
+    let (items, finished) = wait_until(wait, timeout_ms, || {
+        let items: Vec<_> = ids.iter().map(|id| klipp_analysis::service::status(*id).ok_or_else(|| format!("analysis {} is no longer available", id.0))).collect::<Result<_, _>>()?;
+        let finished = items.iter().all(|s| matches!(s.state, klipp_analysis::service::State::Done | klipp_analysis::service::State::Failed));
+        Ok((items, finished))
+    })?;
+    let succeeded = finished && items.iter().all(|s| s.state == klipp_analysis::service::State::Done);
+    Ok(json!({ "items": items, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished }))
+}
+
 /// How long a write waits for the UI to apply it before answering
 /// "accepted" instead of "applied". The UI drains the inbox every frame
 /// and is woken for it; anything longer than this means it is busy
@@ -1627,7 +1651,7 @@ fn handle(
             Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
         }
 
-        ControlCommand::Analyze { media_id, download_models } => {
+        ControlCommand::Analyze { media_id, download_models, wait, timeout_ms } => {
             if in_batch {
                 return read_in_batch("analyze");
             }
@@ -1644,7 +1668,14 @@ fn handle(
                 }
                 None => pool.all().filter(|m| m.kind == klipp_media::MediaItemKind::File && !m.offline).collect(),
             };
+            let ids: Vec<_> = items.iter().map(|m| m.id).collect();
             let statuses: Vec<klipp_analysis::service::Status> = items.into_iter().map(klipp_analysis::service::request).collect();
+            drop(pool);
+            if wait {
+                let mut reply = analysis_reply(&ids, true, timeout_ms)?;
+                reply["models_downloaded"] = json!(downloaded);
+                return Ok(reply);
+            }
             let all_done = statuses.iter().all(|s| matches!(s.state, klipp_analysis::service::State::Done));
             let next = if all_done {
                 "Already analysed. Read a transcript (with words) to choose the selects, and find_shots with no people for B-roll."
@@ -2785,20 +2816,21 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::AnalysisStatus => {
+        ControlCommand::AnalysisStatus { wait, media_id, timeout_ms } => {
             if in_batch {
                 return read_in_batch("analysis_status");
             }
-            // Which models are there says what analysis can be had at all:
-            // with no speech model, a transcript is not late, it is not coming.
-            Ok(json!({
-                "items": klipp_analysis::service::all(),
-                "models": {
-                    "speech": klipp_analysis::transcript::installed_model().map(|(id, _)| id),
-                    "detection": klipp_analysis::framing::model_path().map(|(id, _)| id),
-                },
-                "note": "current is the analyser at work and current_for_secs how long it has been; a transcript takes about a third of the file's length",
-            }))
+            let ids = match media_id {
+                Some(id) => vec![klipp_core::MediaId(parse_uuid(&id, "media_id")?)],
+                None => klipp_analysis::service::all().iter().map(|s| parse_uuid(&s.media_id, "media_id").map(klipp_core::MediaId)).collect::<Result<_, _>>()?,
+            };
+            let mut reply = analysis_reply(&ids, wait, timeout_ms)?;
+            reply["models"] = json!({
+                "speech": klipp_analysis::transcript::installed_model().map(|(id, _)| id),
+                "detection": klipp_analysis::framing::model_path().map(|(id, _)| id),
+            });
+            reply["note"] = json!("current is the analyser at work and current_for_secs how long it has been; a transcript takes about a third of the file's length");
+            Ok(reply)
         }
 
         ControlCommand::MediaAnalysis { media_id, max_chars } => {
@@ -4229,18 +4261,31 @@ reference:   {}",
             let mut v = send(AppCommand::ExportSequence { settings })?;
             v["export"] = said;
             v["next"] = json!(format!(
-                "Rendering. Poll export_status until it is complete — it carries the frames a second and an ETA — then the file is on disk and its measured loudness is reported.{}",
+                "Rendering. Read export_status for the job_id, then call it with that job_id and wait true. A finished job may have failed or been cancelled: only succeeded true means the file is ready.{}",
                 if burnt { "" } else { " Captions are not burnt in: write export_subtitles for a sidecar SRT." }
             ));
             Ok(v)
         }
 
-        ControlCommand::ExportStatus => {
+        ControlCommand::ExportStatus { wait, job_id, timeout_ms } => {
             if in_batch {
                 return read_in_batch("export_status");
             }
-            let jobs = ctx.shared.exports.lock().map_err(|_| "export status lock poisoned")?;
-            Ok(json!({ "jobs": *jobs }))
+            let ids: Vec<String> = match job_id {
+                Some(id) => vec![id],
+                None => ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|j| j.job_id.clone()).collect(),
+            };
+            if wait && ids.is_empty() {
+                return Err("no export jobs are known yet; wait for export submission before waiting for completion".into());
+            }
+            let (jobs, finished) = wait_until(wait, timeout_ms, || {
+                let exports = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner());
+                let jobs: Vec<_> = ids.iter().map(|id| exports.iter().find(|j| &j.job_id == id).cloned().ok_or_else(|| format!("no export job {id}"))).collect::<Result<_, _>>()?;
+                let finished = jobs.iter().all(|j| matches!(j.status.as_str(), "complete" | "failed" | "cancelled"));
+                Ok((jobs, finished))
+            })?;
+            let succeeded = finished && jobs.iter().all(|j| j.status == "complete");
+            Ok(json!({ "jobs": jobs, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished }))
         }
 
         ControlCommand::ExportSubtitles { path } => {
