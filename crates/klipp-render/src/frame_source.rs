@@ -279,12 +279,15 @@ impl FrameSource for ExportFrameSource<'_> {
     /// every request.
     fn temporal_frames(&mut self, clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
         let ClipKind::Media { media_id } = &clip.kind else { return None };
-        let path = self.media.get(media_id)?.path.clone();
+        let file = self.media.get(media_id)?;
+        let (path, log_format) = (file.path.clone(), file.log_format);
         let source_in = clip.source_in.to_secs_f64();
-        // Half a frame: the tolerance the viewer's cache uses, so the
-        // two agree on which stored frame answers a given time.
+        // Colour-managed, with the log format export already knows per
+        // clip. Plain swscale here rendered log flat and PQ washed
+        // out, so a plugin reading neighbours saw a different picture
+        // from the one the viewer gave it.
         let reader = std::cell::RefCell::new(
-            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path)?,
+            klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(&path, log_format)?,
         );
         Some(Box::new(move |t: f64| {
             reader.borrow_mut().decode_at((source_in + t).max(0.0))
@@ -587,6 +590,36 @@ mod temporal_frames_tests {
             assert_eq!(ours, theirs, "pixels differ at t={t}");
         }
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Export's provider is colour-managed now, so the display-
+    /// referred fallback has to be exactly the old swscale path — a
+    /// colour-managed reader that quietly changed ordinary footage
+    /// would be a regression dressed as a fix.
+    ///
+    /// The scene-referred half (PQ, HLG, camera log) is not covered
+    /// here: it needs footage with those tags, and `testsrc` has none.
+    #[test]
+    fn colour_management_leaves_display_referred_footage_alone() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-cm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = test_clip_file(&dir) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+        let mut plain =
+            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("plain");
+        let mut managed =
+            klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(&path, None)
+                .expect("managed");
+        for t in [0.0f64, 0.5, 1.25] {
+            let a = plain.decode_at(t).expect("plain frame");
+            let b = managed.decode_at(t).expect("managed frame");
+            assert_eq!(a.1, b.1, "width differs at t={t}");
+            assert_eq!(a.2, b.2, "height differs at t={t}");
+            assert_eq!(a.0, b.0, "pixels differ at t={t}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
