@@ -372,7 +372,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
 fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>, over: ClipRef) -> Op {
     let style = if t.style.trim().is_empty() { "heading" } else { t.style.trim() };
     let look = crate::title_style::look(brief, style).unwrap_or_else(|| TypeStyle::builtin("heading").unwrap());
-    let card = look.full_frame.unwrap_or(false);
+    let card = t.full_frame.or(look.full_frame).unwrap_or(false);
     // A look the brief wrote is its own; a built-in one defers to the brand.
     let from_brief = brief.is_some_and(|b| b.type_styles.iter().any(|s| s.name.trim().eq_ignore_ascii_case(style)));
     // The words' colour: the title's, the look's, else the brand's (white on a card).
@@ -391,7 +391,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         style: None,
         secs,
         track: Some(TrackRef::Kind("text".into())),
-        x: Some(look.x.unwrap_or(0.5)), y: Some(look.y.unwrap_or(0.10)), size: look.size, color, font: look.font.clone(), bold: look.bold, align: look.align.clone(),
+        x: Some(t.x.or(look.x).unwrap_or(0.5)), y: Some(t.y.or(look.y).unwrap_or(0.10)), size: look.size, color, font: look.font.clone(), bold: look.bold, align: look.align.clone(),
         backing, backing_color, full_frame, outline: look.outline, outline_color: look.outline_color.clone(),
         glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()),
         animate: t.animate.clone().or(look.animate.clone()),
@@ -446,6 +446,23 @@ mod tests {
         plan.segments[0].section.clear();
         snap_to_bars(&mut plan, 3.4, 0.0, &pool);
         assert!((plan.segments[0].duration_secs() - 1.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_opening_card_can_overlay_the_shot_at_an_authored_position() {
+        let (seq, pool, screen, _) = fixture();
+        let mut plan = EditPlan { segments: vec![PlanSegment { title: Some(PlanTitle { text: "Opening".into(), style: "card".into(), full_frame: Some(false), x: Some(0.25), y: Some(0.75), glow: Some(0.5), gradient: Some(["#ff0000".into(), "#0000ff".into()]), animate: Some("slide_left".into()), animate_secs: Some(0.5), ..Default::default() }), ..seg(screen, 0.0, 3.0) }], ..Default::default() };
+        validate(&plan, &pool, None).unwrap();
+        let ops = to_ops(&plan, &seq, &pool, None);
+        assert!(ops.iter().any(|op| matches!(op, Op::Title { x: Some(x), y: Some(y), full_frame: None, glow: Some(g), gradient: Some(_), animate: Some(a), .. } if *x == 0.25 && *y == 0.75 && *g == 0.5 && a == "slide_left")));
+        let built = resolve(&seq, &pool, &ops).unwrap();
+        let title = built.steps.iter().find_map(|step| if let crate::history::EditCommand::AddTitleClip { clip, .. } = &step.edit { Some(clip) } else { None }).unwrap();
+        let klipp_timeline::ClipKind::Title(data) = &title.kind else { panic!("title clip") };
+        assert_eq!(data.objects.len(), 1, "an overlay must not have a full-frame solid object");
+        assert!(plan.text(None).contains("overlay"));
+        plan.segments[0].title.as_mut().unwrap().full_frame = None;
+        assert!(plan.text(None).contains("covers the shot"));
+        assert!(to_ops(&plan, &seq, &pool, None).iter().any(|op| matches!(op, Op::Title { full_frame: Some(_), .. })));
     }
 
     #[test]

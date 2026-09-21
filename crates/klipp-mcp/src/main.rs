@@ -1654,7 +1654,7 @@ fn tool_definitions() -> Vec<Value> {
               order: {media_id, source_in_secs, source_out_secs, feature? (a title from the \
               brief's features, as spelt there), note? (what it shows and why — write one), \
               with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
-              heading|callout|card, color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
+              heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
               bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
               typewriter, animate_secs?, stagger? char|word|line}, transition? \
               (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
