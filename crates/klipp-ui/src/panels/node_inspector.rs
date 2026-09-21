@@ -275,7 +275,14 @@ impl NodeInspectorPanel {
             }
             _ => {
                 let target_kinds: Vec<NodeKind> = match color_tab {
-                    ColorTab::Wheels => vec![NodeKind::ColorWheels, NodeKind::WheelSatBri],
+                    // Just the wheels. Each one now carries its own
+                    // saturation and brightness in its own cell, so the
+                    // standalone `Wheel Sat/Bri` section below them
+                    // would be the same eight sliders a second time.
+                    // The section itself is kept for graphs that really
+                    // do have a legacy `WheelSatBri` node and no
+                    // wheels, and for the wide layout's own path.
+                    ColorTab::Wheels => vec![NodeKind::ColorWheels],
                     ColorTab::Curves => vec![NodeKind::RGBCurves],
                     ColorTab::HueSat => vec![NodeKind::HueSatCurves],
                     ColorTab::Warper => vec![NodeKind::ColorWarper],
@@ -1655,10 +1662,36 @@ impl NodeInspectorPanel {
                 });
                 ui.add_space(4.0);
 
-                // Helper closure for each wheel
+                // Helper closure for each wheel, and — where the wheel
+                // has them — its own saturation and brightness beneath
+                // it, inside the same cell.
+                //
+                // They used to live in a separate `Wheel Sat/Bri`
+                // section below all four wheels, four labelled blocks
+                // of two sliders. They worked, but which slider went
+                // with which wheel was something you read rather than
+                // something you saw, and adjusting Lift's saturation
+                // meant scrolling past every wheel to find the word
+                // LIFT.
+                //
+                // Putting each wheel's pair in four columns of their
+                // own — what the issue proposed — was measured and
+                // rejected: at the default 300 px panel that is a 59 px
+                // disc, against 110 px now. Half the travel to place a
+                // puck with is not a grading control. The wheels keep
+                // their 2x2 grid and the sliders come to them instead,
+                // which is what the wide layout has always done.
+                //
+                // Log mode's Low/Mid/High have no per-wheel sat/bri
+                // fields, so they pass `None` and are unchanged.
+                // Two 14 px slider rows, their spacing, and clearance
+                // beneath so the next row of wheels does not collide
+                // with the B slider above it.
+                let satbri_h = 52.0;
                 let mut show_wheel = |ui: &mut egui::Ui, label: &str,
                     state: &mut ColorWheelState,
                     x: &mut Option<f32>, y: &mut Option<f32>, m: &mut Option<f32>,
+                    satbri: Option<(&mut Option<f32>, &mut Option<f32>)>,
                     prefix: &str|
                 {
                     let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
@@ -1676,6 +1709,78 @@ impl NodeInspectorPanel {
                     if resp.drag_ended {
                         cmds.push(AppCommand::EndNodeParamEdit { clip_id });
                     }
+
+                    let Some((sat, bri)) = satbri else { return };
+                    // Stacked under the wheel, in the wheel's own width.
+                    //
+                    // The cell inherits its layout from the
+                    // `horizontal_wrapped` row the wheels sit in, so
+                    // these have to open a vertical scope of their own
+                    // — without it they lay out *beside* the wheel,
+                    // overflow the cell, and push the next wheel onto
+                    // its own row.
+                    ui.vertical(|ui| {
+                        ui.set_max_width(wheel_d);
+                        ui.spacing_mut().item_spacing = egui::vec2(3.0, 2.0);
+                        // One letter each: the cell is only as wide as
+                        // the wheel, and the wheel's own title directly
+                        // above already says which one this is. S and B
+                        // are the wide layout's labels, so the two
+                        // layouts agree.
+                        // Every part of the row is given an exact width,
+                        // so letter + slider + value always add up to
+                        // the wheel's own width. Left to size itself the
+                        // value label pushed the row wider than the cell
+                        // and sat on the slider's right end.
+                        const LETTER_W: f32 = 10.0;
+                        const VALUE_W: f32 = 34.0;
+                        let slider_w = (wheel_d - LETTER_W - VALUE_W - 12.0).max(28.0);
+                        // `Slider` takes its length from `slider_width`,
+                        // not from the rect `add_sized` gives it — left
+                        // alone it draws the full available width and
+                        // pushes the value label out past the cell and
+                        // onto the next wheel's column.
+                        ui.spacing_mut().slider_width = slider_w;
+                        for (letter, field, suffix, hover) in [
+                            ("S", sat, "sat", "Saturation"),
+                            ("B", bri, "bri", "Brightness"),
+                        ] {
+                            let mut v = field.unwrap_or(0.0);
+                            let r = ui.horizontal(|ui| {
+                                ui.add_sized(
+                                    [LETTER_W, 14.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(letter).size(10.0).color(theme.text_dim),
+                                    ),
+                                )
+                                .on_hover_text(hover);
+                                let r = ui.add_sized(
+                                    [slider_w, 14.0],
+                                    egui::Slider::new(&mut v, -1.0..=1.0).show_value(false),
+                                );
+                                ui.add_sized(
+                                    [VALUE_W, 14.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("{v:+.2}"))
+                                            .size(10.0)
+                                            .color(theme.text_dim),
+                                    ),
+                                );
+                                r
+                            }).inner;
+                            if r.drag_started() {
+                                cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                            }
+                            if r.changed() {
+                                *field = Some(v);
+                                let param = format!("{prefix}_{suffix}");
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
+                            }
+                            if r.drag_stopped() {
+                                cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+                            }
+                        }
+                    });
                 };
 
                 if log_mode {
@@ -1685,29 +1790,71 @@ impl NodeInspectorPanel {
                         let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(center_pad);
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Low", &mut self.log_low_wheel,
-                                    &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low");
-                            });
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Mid", &mut self.log_mid_wheel,
-                                    &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid");
-                            });
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Low", &mut self.log_low_wheel,
+                                    &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, None, "log_low");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Mid", &mut self.log_mid_wheel,
+                                    &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, None, "log_mid");
+                            }
                         });
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(center_pad);
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "High", &mut self.log_high_wheel,
-                                    &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high");
-                            });
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "High", &mut self.log_high_wheel,
+                                    &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, None, "log_high");
+                            }
                         });
                     } else {
                         show_wheel(ui, "Low", &mut self.log_low_wheel,
-                            &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, "log_low");
+                            &mut params.log_low_x, &mut params.log_low_y, &mut params.log_low_master, None, "log_low");
                         show_wheel(ui, "Mid", &mut self.log_mid_wheel,
-                            &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, "log_mid");
+                            &mut params.log_mid_x, &mut params.log_mid_y, &mut params.log_mid_master, None, "log_mid");
                         show_wheel(ui, "High", &mut self.log_high_wheel,
-                            &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, "log_high");
+                            &mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master, None, "log_high");
                     }
                 } else {
                     // Linear wheels: Lift / Gamma / Gain / Offset (traditional)
@@ -1715,57 +1862,181 @@ impl NodeInspectorPanel {
                         // Wide layout: all 4 wheels in one horizontal row, left-aligned
                         let cell_w = wheel_d + 10.0;
                         ui.horizontal_wrapped(|ui| {
-                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Lift", &mut self.lift_wheel,
-                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
-                            });
-                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Gamma", &mut self.gamma_wheel,
-                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
-                            });
-                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Gain", &mut self.gain_wheel,
-                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
-                            });
-                            ui.allocate_ui(egui::vec2(cell_w, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Offset", &mut self.offset_wheel,
-                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
-                            });
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(cell_w, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Lift", &mut self.lift_wheel,
+                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master,
+                                    Some((&mut params.lift_sat, &mut params.lift_bri)), "lift");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(cell_w, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Gamma", &mut self.gamma_wheel,
+                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master,
+                                    Some((&mut params.gamma_sat, &mut params.gamma_bri)), "gamma");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(cell_w, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Gain", &mut self.gain_wheel,
+                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master,
+                                    Some((&mut params.gain_sat, &mut params.gain_bri)), "gain");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(cell_w, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Offset", &mut self.offset_wheel,
+                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master,
+                                    Some((&mut params.offset_sat, &mut params.offset_bri)), "offset");
+                            }
                         });
                     } else if two_col {
                         let pair_w = (wheel_d + 10.0) * 2.0;
                         let center_pad = ((avail_w - pair_w) / 2.0).max(0.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(center_pad);
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Lift", &mut self.lift_wheel,
-                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
-                            });
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Gamma", &mut self.gamma_wheel,
-                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
-                            });
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Lift", &mut self.lift_wheel,
+                                    &mut params.lift_x, &mut params.lift_y, &mut params.lift_master,
+                                    Some((&mut params.lift_sat, &mut params.lift_bri)), "lift");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Gamma", &mut self.gamma_wheel,
+                                    &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master,
+                                    Some((&mut params.gamma_sat, &mut params.gamma_bri)), "gamma");
+                            }
                         });
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(center_pad);
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Gain", &mut self.gain_wheel,
-                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
-                            });
-                            ui.allocate_ui(egui::vec2(wheel_d + 10.0, wheel_d + 50.0), |ui| {
-                                show_wheel(ui, "Offset", &mut self.offset_wheel,
-                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
-                            });
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Gain", &mut self.gain_wheel,
+                                    &mut params.gain_x, &mut params.gain_y, &mut params.gain_master,
+                                    Some((&mut params.gain_sat, &mut params.gain_bri)), "gain");
+                            }
+                            {
+                                // A cell of its own, laid out top-down and centred:
+                                // inherited from the wrapping row it would be a
+                                // horizontal Ui, and the wheel's sliders would land
+                                // beside the wheel instead of under it. Same shape
+                                // the wide layout builds its columns with.
+                                let cell = ui.allocate_exact_size(
+                                    egui::vec2(wheel_d + 10.0, wheel_d + 50.0 + satbri_h),
+                                    egui::Sense::hover(),
+                                ).0;
+                                let mut cell_ui = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(cell)
+                                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                                );
+                                show_wheel(&mut cell_ui, "Offset", &mut self.offset_wheel,
+                                    &mut params.offset_x, &mut params.offset_y, &mut params.offset_master,
+                                    Some((&mut params.offset_sat, &mut params.offset_bri)), "offset");
+                            }
                         });
                     } else {
                         show_wheel(ui, "Lift", &mut self.lift_wheel,
-                            &mut params.lift_x, &mut params.lift_y, &mut params.lift_master, "lift");
+                            &mut params.lift_x, &mut params.lift_y, &mut params.lift_master,
+                                    Some((&mut params.lift_sat, &mut params.lift_bri)), "lift");
                         show_wheel(ui, "Gamma", &mut self.gamma_wheel,
-                            &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master, "gamma");
+                            &mut params.gamma_x, &mut params.gamma_y, &mut params.gamma_master,
+                                    Some((&mut params.gamma_sat, &mut params.gamma_bri)), "gamma");
                         show_wheel(ui, "Gain", &mut self.gain_wheel,
-                            &mut params.gain_x, &mut params.gain_y, &mut params.gain_master, "gain");
+                            &mut params.gain_x, &mut params.gain_y, &mut params.gain_master,
+                                    Some((&mut params.gain_sat, &mut params.gain_bri)), "gain");
                         show_wheel(ui, "Offset", &mut self.offset_wheel,
-                            &mut params.offset_x, &mut params.offset_y, &mut params.offset_master, "offset");
+                            &mut params.offset_x, &mut params.offset_y, &mut params.offset_master,
+                                    Some((&mut params.offset_sat, &mut params.offset_bri)), "offset");
                     }
                 }
             }
