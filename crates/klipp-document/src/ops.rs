@@ -334,9 +334,11 @@ pub enum Op {
         smoothing: f32,
     },
     /// Reframe a picture: `scale` zooms in (1 is as shot, 1.5 is a
-    /// tighter crop), `x` and `y` pan the frame (0 centre, -1 to 1),
-    /// keeping the subject in frame when the delivery aspect is not the
-    /// footage's — a wide interview cut for a vertical feed. Read
+    /// tighter crop), `x` and `y` pan the frame (0 centre, -1 to 1) as a
+    /// share of how far the scale lets it go — at 1 the picture's edge
+    /// meets the frame's, so it never shows past it; a pan needs a scale
+    /// above 1. Keeps the subject in frame when the delivery aspect is
+    /// not the footage's — a wide interview cut for a vertical feed. Read
     /// `frame_stats` or the framing analysis to know where the subject is.
     Reframe {
         clip_id: ClipRef,
@@ -350,7 +352,7 @@ pub enum Op {
     /// Animate a picture's zoom over the clip: scale `from` at the start
     /// to `to` at the end — a slow push-in (`from` 1, `to` 1.15) or a
     /// pull-out (`from` 1.2, `to` 1). Optionally push toward `x`,`y`
-    /// (-1..1) for a Ken Burns move. 1 is as shot, up to 4. Renders as
+    /// (-1..1, measured as `reframe` measures them) for a Ken Burns move. 1 is as shot, up to 4. Renders as
     /// per-frame transform keyframes on the GPU; use it for energy on a
     /// static shot where a hard reframe would sit still.
     Zoom {
@@ -2494,9 +2496,15 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     if (scale - 1.0).abs() < 1e-4 && x.abs() < 1e-4 && y.abs() < 1e-4 {
         return Err(refuse(i, "nothing to reframe", "give a scale above 1, or an x or y to pan"));
     }
+    if (scale - 1.0).abs() < 1e-4 {
+        return Err(refuse(i, "a pan at scale 1 has nowhere to go", "give a scale above 1: the frame pans into what the scale pushes past its edge"));
+    }
     use klipp_effects::BuiltinEffect as E;
-    // Position is a fraction of the frame; a pan of 1 moves by half a frame.
-    let fx = E::Transform { position_x: x * 0.5, position_y: y * 0.5, scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    // `x` and `y` are how far the frame goes toward that edge, as a
+    // share of how far it can: at 1 the picture's edge meets the
+    // frame's. Moving the frame right moves the picture left.
+    let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let fx = E::Transform { position_x: -x * reach(scale, w), position_y: -y * reach(scale, h), scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
     let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
     // Transform goes first, so a crop or effect after it sees the reframed picture.
     effects.insert(0, fx);
@@ -2650,7 +2658,7 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     let mut new_state = old_state.clone();
     let (mut sk, mut px, mut py) = (Vec::new(), Vec::new(), Vec::new());
     for k in &sorted {
-        let (x, y) = pan_position(k.scale, k.x, k.y);
+        let (x, y) = pan_position(k.scale, k.x, k.y, seq.resolution.width as f32, seq.resolution.height as f32);
         klipp_core::keyframe::upsert_keyframe(&mut sk, k.secs, k.scale);
         klipp_core::keyframe::upsert_keyframe(&mut px, k.secs, x);
         klipp_core::keyframe::upsert_keyframe(&mut py, k.secs, y);
@@ -2672,12 +2680,22 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     Ok((what, edit, vec![clip.id]))
 }
 
-/// The transform position that puts frame point (`x`, `y`) at the
-/// centre at `scale`: a position of 1 is half a frame, and the picture
-/// stops where its edge would show.
-pub fn pan_position(scale: f32, x: f32, y: f32) -> (f32, f32) {
-    let reach = (scale - 1.0).max(0.0);
-    (((x - 0.5) * 2.0 * scale).clamp(-reach, reach), ((y - 0.5) * 2.0 * scale).clamp(-reach, reach))
+/// The transform position, in pixels of a `w` by `h` frame, that puts
+/// the frame point (`x`, `y`) in the middle at `scale` — held back where
+/// the picture's edge would show.
+///
+/// The transform puts a point `d` from the middle at `scale·d + p` on
+/// screen, so a subject at `d` is centred by `p = -scale·d`: a subject
+/// right of the middle moves the picture left.
+pub fn pan_position(scale: f32, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
+    let (rx, ry) = (reach(scale, w), reach(scale, h));
+    ((-(x - 0.5) * scale * w).clamp(-rx, rx), (-(y - 0.5) * scale * h).clamp(-ry, ry))
+}
+
+/// How far a picture at `scale` can move from the middle of a frame
+/// `dim` pixels across before its edge shows.
+fn reach(scale: f32, dim: f32) -> f32 {
+    (scale - 1.0).max(0.0) * dim * 0.5
 }
 
 /// A speed ramp: speed keyframes from `from` to `to` over `over` seconds
@@ -2833,6 +2851,9 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from
     if (from - to).abs() < 1e-4 && x.abs() < 1e-4 && y.abs() < 1e-4 {
         return Err(refuse(i, "nothing to zoom", "give a different from and to, or an x/y to push toward"));
     }
+    if from.max(to) < 1.0 + 1e-4 && (from - to).abs() < 1e-4 {
+        return Err(refuse(i, "a push at scale 1 has nowhere to go", "give a to above 1: the frame pushes into what the scale takes past its edge"));
+    }
     let dur = (clip.timeline_out.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.05);
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
@@ -2841,15 +2862,18 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from
     klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, 0.0, from);
     klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, dur, to);
     new_state.transform_scale_keyframes = scale_kfs;
-    // A pan toward (x, y): position of 1 moves by half the frame, as reframe.
+    // A push toward (x, y), as reframe measures it, at each end's own
+    // scale: the position grows with the room the zoom makes, so the
+    // picture's edge never shows on the way.
     if x.abs() > 1e-4 || y.abs() > 1e-4 {
+        let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
         let mut px = Vec::new();
-        klipp_core::keyframe::upsert_keyframe(&mut px, 0.0, 0.0);
-        klipp_core::keyframe::upsert_keyframe(&mut px, dur, x * 0.5);
+        klipp_core::keyframe::upsert_keyframe(&mut px, 0.0, -x * reach(from, w));
+        klipp_core::keyframe::upsert_keyframe(&mut px, dur, -x * reach(to, w));
         new_state.transform_pos_x_keyframes = px;
         let mut py = Vec::new();
-        klipp_core::keyframe::upsert_keyframe(&mut py, 0.0, 0.0);
-        klipp_core::keyframe::upsert_keyframe(&mut py, dur, y * 0.5);
+        klipp_core::keyframe::upsert_keyframe(&mut py, 0.0, -y * reach(from, h));
+        klipp_core::keyframe::upsert_keyframe(&mut py, dur, -y * reach(to, h));
         new_state.transform_pos_y_keyframes = py;
     }
     let push = if x.abs() > 1e-4 || y.abs() > 1e-4 { format!(", push to {x:.2},{y:.2}") } else { String::new() };
@@ -4090,6 +4114,45 @@ mod tests {
         assert_eq!(clear_zone((0.5, 0.5), (0.2, 0.1), &[]).unwrap().1, None);
     }
 
+
+    /// Where the transform puts a picture point on screen, as the renderer
+    /// does (`cpu.rs`: scale about the middle, then offset; the camera
+    /// test in `render_rules` pins that a positive offset moves right).
+    fn on_screen(scale: f32, (px, py): (f32, f32), (x, y): (f32, f32)) -> (f32, f32) {
+        let (w, h) = (1920.0f32, 1080.0f32);
+        (w / 2.0 + scale * (x * w - w / 2.0) + px, h / 2.0 + scale * (y * h - h / 2.0) + py)
+    }
+
+    #[test]
+    fn a_pan_puts_the_subject_in_the_middle_and_a_push_stops_at_the_edge() {
+        let (seq, pool, _, a, _) = fixture();
+
+        // A subject right of and above the middle, pushed in on at 2x,
+        // lands in the middle of the frame.
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 2.0, scale: 2.0, x: 0.6, y: 0.4 }];
+        let plan = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        let p = (new_state.transform_pos_x_keyframes[1].value, new_state.transform_pos_y_keyframes[1].value);
+        let (sx, sy) = on_screen(2.0, p, (0.6, 0.4));
+        assert!((sx - 960.0).abs() < 0.5 && (sy - 540.0).abs() < 0.5, "the subject is in the middle: {sx}, {sy}");
+
+        // A reframe pushed all the way right brings the picture's right
+        // edge to the frame's and no further.
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.5, x: 1.0, y: 0.0 }]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        let Some(klipp_effects::BuiltinEffect::Transform { position_x, position_y, .. }) = new_effects.first() else { panic!("a transform") };
+        let (right_edge, _) = on_screen(1.5, (*position_x, *position_y), (1.0, 0.5));
+        assert!((right_edge - 1920.0).abs() < 0.5, "the picture's edge meets the frame's: {right_edge}");
+
+        // And a zoom that pushes toward a point gets there by the end,
+        // starting from where it was.
+        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.5, x: -1.0, y: 0.0 }]).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        assert!(new_state.transform_pos_x_keyframes[0].value.abs() < 1e-3, "at 1x there is nowhere to be yet");
+        let end = (new_state.transform_pos_x_keyframes[1].value, new_state.transform_pos_y_keyframes[1].value);
+        let (left_edge, _) = on_screen(1.5, end, (0.0, 0.5));
+        assert!(left_edge.abs() < 0.5, "pushed left, the picture's left edge meets the frame's: {left_edge}");
+    }
     /// A pan keys scale and position from frame points, held at the
     /// picture's edge; a highlight's spot is four panels round the
     /// region on a faded title clip; a ramp's clip length follows the
@@ -4101,10 +4164,12 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
         assert_eq!(new_state.transform_scale_keyframes.iter().map(|k| k.value).collect::<Vec<_>>(), vec![1.0, 2.0]);
-        // Centring the right edge at 2x would shift a whole frame; held at the edge (scale - 1).
-        assert_eq!(new_state.transform_pos_x_keyframes[1].value, 1.0);
-        assert!((new_state.transform_pos_y_keyframes[1].value + 1.0).abs() < 1e-6);
-        assert_eq!(pan_position(1.5, 0.5, 0.5), (0.0, 0.0));
+        // Centring the right edge at 2x would move the picture a whole
+        // frame left; it is held where its edge meets the frame's, half a
+        // frame, 960 px. A subject above the middle moves the picture down.
+        assert!((new_state.transform_pos_x_keyframes[1].value + 960.0).abs() < 1e-3);
+        assert!((new_state.transform_pos_y_keyframes[1].value - 540.0).abs() < 1e-3);
+        assert_eq!(pan_position(1.5, 0.5, 0.5, 1920.0, 1080.0), (0.0, 0.0));
         let err = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys: vec![PanKey { secs: 9.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }] }]).unwrap_err();
         assert!(format!("{err:?}").contains("outside the clip"));
 
@@ -4681,8 +4746,13 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.5, x: 0.2, y: -0.1 }]).unwrap();
         assert!(plan.steps[0].what.contains("scale 1.50") && plan.steps[0].what.contains("pan 0.20, -0.10"), "{}", plan.steps[0].what);
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
-        let Some(E::Transform { scale_x, position_x, .. }) = new_effects.first() else { panic!("transform first") };
-        assert!((scale_x - 1.5).abs() < 1e-4 && (position_x - 0.1).abs() < 1e-4, "pan is half the frame: {position_x}");
+        let Some(E::Transform { scale_x, position_x, position_y, .. }) = new_effects.first() else { panic!("transform first") };
+        // At 1.5x the picture reaches a quarter of the 1920 frame past
+        // each side, 480 px. Panning the frame a fifth of that toward the
+        // right moves the picture 96 px left; a tenth up moves it 27 px down.
+        assert!((scale_x - 1.5).abs() < 1e-4, "{scale_x}");
+        assert!((position_x + 96.0).abs() < 1e-3, "{position_x}");
+        assert!((position_y - 27.0).abs() < 1e-3, "{position_y}");
 
         // Re-reframing replaces the earlier Transform, never stacks a second.
         let mut seqs = vec![seq.clone()];
@@ -4705,6 +4775,8 @@ mod tests {
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 9.0, x: 0.0, y: 0.0 }).why.contains("scale"));
         assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.0, y: 0.0 }).why.contains("nothing to reframe"));
+        // At scale 1 there is nothing past the frame to pan into.
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.5, y: 0.0 }).why.contains("nowhere to go"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
     }
 
