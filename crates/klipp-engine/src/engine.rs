@@ -9838,113 +9838,38 @@ pub fn generate_thumbnail_at_size_with_rotation(
 /// frame blend, an echo, optical flow — given a stale frame in place of
 /// the one it asked for produces a picture that is wrong and looks
 /// plausible, which is worse than a frame it knows it does not have.
+/// The viewer's seekable reader: frames of a clip's media at arbitrary
+/// times, for OFX plugins that read other times than the one being
+/// shown.
+///
+/// The seek-or-read-forward loop lives in
+/// [`klipp_media::frame_reader::SeekableFrameReader`], because export
+/// needs the same thing and had been opening the file once per
+/// request. What stays here is the colour: a frame's colourspace comes
+/// from its own tags over the stream baseline, then the file's camera
+/// log format, and a scene-referred source is converted as the viewer
+/// shows it ungraded rather than through plain swscale.
 struct CachedFrameDecoder {
-    format_ctx: ffmpeg_next::format::context::Input,
-    decoder: ffmpeg_next::decoder::Video,
-    stream_index: usize,
-    frame: ffmpeg_next::frame::Video,
-    /// Current decoder position in seconds
-    current_pts: f64,
-    /// Frame duration in seconds (1/fps)
-    frame_duration: f64,
-    /// Cached frames: (time, rgba, w, h)
-    cache: Vec<(f64, Vec<u8>, u32, u32)>,
-    colour: ThumbColour,
+    reader: klipp_media::frame_reader::SeekableFrameReader,
 }
 
 impl CachedFrameDecoder {
     fn open(path: &std::path::Path) -> Option<Self> {
-        let format_ctx = ffmpeg_next::format::input(path).ok()?;
-        let (decoder, stream_index) = open_sw_decoder(&format_ctx).ok()?;
-
-        // Get frame duration from stream
-        let frame_duration = format_ctx.streams().best(ffmpeg_next::media::Type::Video)
-            .map(|s| {
-                let r = s.avg_frame_rate();
-                if r.numerator() > 0 { r.denominator() as f64 / r.numerator() as f64 } else { 1.0 / 24.0 }
-            })
-            .unwrap_or(1.0 / 24.0);
-
-        let colour = ThumbColour::new(path, &format_ctx, stream_index);
-        Some(Self {
-            colour,
-            format_ctx,
-            decoder,
-            stream_index,
-            frame: ffmpeg_next::frame::Video::empty(),
-            current_pts: -1.0,
-            frame_duration,
-            cache: Vec::new(),
-        })
+        let owned = path.to_path_buf();
+        let reader = klipp_media::frame_reader::SeekableFrameReader::open_with(
+            path,
+            move |format_ctx, stream_index| {
+                let colour = ThumbColour::new(&owned, format_ctx, stream_index);
+                Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
+                    sw_frame_to_rgba(frame, w, h, &colour)
+                })
+            },
+        )?;
+        Some(Self { reader })
     }
 
     fn decode_at(&mut self, seek_secs: f64) -> Option<(Vec<u8>, u32, u32)> {
-        // Check cache first
-        for (t, rgba, w, h) in &self.cache {
-            if (*t - seek_secs).abs() < self.frame_duration * 0.5 {
-                return Some((rgba.clone(), *w, *h));
-            }
-        }
-
-        // Determine if we need to seek or can just read forward
-        // `||` rather than a chain of `if .. { true } else if ..`, which
-        // is the shape that hid a real bug in `handle_title_commands`: one
-        // arm of six returned `false` and the value was reported wrong.
-        // Written this way there is no per-arm boolean to get wrong, and
-        // the reason for each case still sits beside it. Anything else
-        // means the frame is close enough to read forward to.
-        let need_seek = self.current_pts < 0.0                                        // first access
-            || seek_secs < self.current_pts - self.frame_duration                     // seeking backwards
-            || seek_secs > self.current_pts + self.frame_duration * 30.0;             // jumping far forward (>30 frames)
-
-        if need_seek {
-            let ts = ((seek_secs - 0.5).max(0.0) * 1_000_000.0) as i64;
-            let _ = self.format_ctx.seek(ts, ..ts);
-            self.decoder.flush();
-            self.current_pts = seek_secs - 1.0; // approximate
-        }
-
-        // Read frames until we reach or pass the target time. Only the
-        // frame that reaches it is handed back: a frame before it is not
-        // the one asked for, and one that could not be converted is not a
-        // frame at all.
-        for (stream, packet) in self.format_ctx.packets() {
-            if stream.index() != self.stream_index {
-                continue;
-            }
-            if self.decoder.send_packet(&packet).is_err() {
-                while self.decoder.receive_frame(&mut self.frame).is_ok() {}
-                if self.decoder.send_packet(&packet).is_err() {
-                    tracing::warn!("CachedFrameDecoder: packet lost after drain+retry");
-                }
-            }
-            while self.decoder.receive_frame(&mut self.frame).is_ok() {
-                let pts = self.frame.pts().unwrap_or(0);
-                let time_base = stream.time_base();
-                let frame_secs = pts as f64 * time_base.numerator() as f64 / time_base.denominator() as f64;
-                self.current_pts = frame_secs;
-                if frame_secs < seek_secs - self.frame_duration * 0.5 {
-                    continue;
-                }
-                let (w, h) = (self.frame.width(), self.frame.height());
-                match sw_frame_to_rgba(&self.frame, w, h, &self.colour) {
-                    Ok(rgba) => {
-                        // Cache this frame (keep last 8 frames for Retime interpolation)
-                        if self.cache.len() >= 8 {
-                            self.cache.remove(0);
-                        }
-                        self.cache.push((frame_secs, rgba.clone(), w, h));
-                        return Some((rgba, w, h));
-                    }
-                    Err(e) => {
-                        tracing::warn!("CachedFrameDecoder: the frame at {frame_secs:.3}s could not be converted: {e}");
-                        return None;
-                    }
-                }
-            }
-        }
-        // The file ended before the time asked for.
-        None
+        self.reader.decode_at(seek_secs)
     }
 }
 

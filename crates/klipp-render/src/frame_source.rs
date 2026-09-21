@@ -271,41 +271,23 @@ impl FrameSource for ExportFrameSource<'_> {
     ///
     /// The main decoder cannot serve this: it is positioned on the
     /// frame being written and reads forward, so seeking it would
-    /// derail the export. This opens the file per miss instead, which
-    /// is the honest cost of the correct picture — see the issue on
-    /// giving export a seekable reader. The memo below means a plugin
-    /// asking for N-1, N, N+1 pays once per frame rather than three
-    /// times, because each frame's N+1 is the next frame's N.
+    /// derail the export. This holds a second, independent reader on
+    /// the same file, which decides per request whether to seek or read
+    /// forward — so a plugin walking N-1, N, N+1 alongside an export
+    /// that is itself walking forward never seeks at all. It replaced
+    /// a helper that opened, seeked, decoded and closed the file on
+    /// every request.
     fn temporal_frames(&mut self, clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
         let ClipKind::Media { media_id } = &clip.kind else { return None };
         let path = self.media.get(media_id)?.path.clone();
         let source_in = clip.source_in.to_secs_f64();
         // Half a frame: the tolerance the viewer's cache uses, so the
         // two agree on which stored frame answers a given time.
-        let tolerance = 0.5 / self.fps.max(1.0);
-        let memo: std::cell::RefCell<std::collections::VecDeque<(f64, Vec<u8>, u32, u32)>> =
-            std::cell::RefCell::new(std::collections::VecDeque::new());
+        let reader = std::cell::RefCell::new(
+            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path)?,
+        );
         Some(Box::new(move |t: f64| {
-            let secs = (source_in + t).max(0.0);
-            if let Some((_, rgba, w, h)) = memo
-                .borrow()
-                .iter()
-                .find(|(at, ..)| (at - secs).abs() < tolerance)
-            {
-                return Some((rgba.clone(), *w, *h));
-            }
-            // Full size: `decode_frame_at_size` scales by
-            // `(max_width / src_w).min(1.0)`, so anything at least as
-            // wide as the source leaves it alone.
-            let (rgba, w, h) = crate::clip_decoder::decode_frame_at_size(&path, secs, u32::MAX)?;
-            let mut memo = memo.borrow_mut();
-            memo.push_back((secs, rgba.clone(), w, h));
-            // Enough for a plugin reaching a couple of frames either
-            // way; a window, not a cache of the clip.
-            while memo.len() > 5 {
-                memo.pop_front();
-            }
-            Some((rgba, w, h))
+            reader.borrow_mut().decode_at((source_in + t).max(0.0))
         }))
     }
 }
@@ -576,6 +558,34 @@ mod temporal_frames_tests {
         // N-1, N, N+1 to one decode per frame.
         let (a_again, _, _) = frames(0.0).expect("frame at t=0 again");
         assert_eq!(a, a_again, "the same time gave two different pictures");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared reader has to give the same pixels as the helper it
+    /// replaced, or this swapped a slow path for a subtly different
+    /// one. Stride is the thing that goes wrong: ffmpeg pads each row
+    /// to its own linesize, and a copy that assumes otherwise skews the
+    /// picture rather than failing.
+    #[test]
+    fn the_shared_reader_matches_the_helper_it_replaced() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-eq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = test_clip_file(&dir) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+
+        let mut reader =
+            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("reader opens");
+        for t in [0.0f64, 0.5, 1.25, 2.0] {
+            let (theirs, tw, th) =
+                crate::clip_decoder::decode_frame_at_size(&path, t, u32::MAX).expect("old helper");
+            let (ours, ow, oh) = reader.decode_at(t).expect("shared reader");
+            assert_eq!((ow, oh), (tw, th), "size differs at t={t}");
+            assert_eq!(ours.len(), theirs.len(), "length differs at t={t}");
+            assert_eq!(ours, theirs, "pixels differ at t={t}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
