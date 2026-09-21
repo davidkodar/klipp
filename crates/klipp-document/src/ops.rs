@@ -631,6 +631,17 @@ pub enum Op {
         #[serde(default)]
         chromatic: Option<f32>,
     },
+    /// Compose a picture into the frame rather than letting it fill the
+    /// frame: `x`,`y` is where its centre sits and `width`,`height` how
+    /// much of the frame it covers, all fractions, with an optional turn
+    /// and fade. Two or more poses animate between them. `reframe` and
+    /// `zoom` crop into a picture that still fills the frame; this is the
+    /// one that puts a picture beside another, or shrinks it into a
+    /// corner over a background.
+    Compose {
+        clip_id: ClipRef,
+        poses: Vec<ComposePose>,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -686,6 +697,40 @@ fn default_follow_scale() -> f32 {
 
 fn default_follow_hold() -> f64 {
     1.2
+}
+
+/// One pose of a composed picture: at `secs` into the clip, its centre
+/// on the frame point `x`,`y` covering `width` by `height` of the frame,
+/// turned `rotation_deg` clockwise about that centre and `opacity` seen.
+/// All of it is fractions of the frame, so the same pose means the same
+/// thing whatever the delivery size. `x` and `y` reach past the frame so
+/// a picture can start off screen and move in.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ComposePose {
+    #[serde(default)]
+    pub secs: f64,
+    #[serde(default = "half")]
+    pub x: f32,
+    #[serde(default = "half")]
+    pub y: f32,
+    #[serde(default = "one")]
+    pub width: f32,
+    #[serde(default = "one")]
+    pub height: f32,
+    #[serde(default)]
+    pub rotation_deg: f32,
+    #[serde(default = "one")]
+    pub opacity: f32,
+}
+
+impl Default for ComposePose {
+    fn default() -> Self {
+        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0 }
+    }
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 /// One pose of a pan: at `secs` into the clip, `scale` centred on the
@@ -1691,6 +1736,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             };
             Ok((what, edit, touched))
         }
+        Op::Compose { clip_id, poses } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            compose(seq, pool, i, ti, clip, poses)
+        }
     }
 }
 
@@ -2420,6 +2469,84 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
 /// An animated crop through `keys`: at each, `scale` centred on the frame
 /// point; a scaled picture shifted so far that its edge would show is
 /// held at the edge.
+/// Place a picture in the frame at one pose, or animate it between
+/// several. Unlike `reframe`, the picture may be smaller than the frame
+/// and may sit anywhere in it, including past its edge; what shows
+/// behind is whatever is on a lower track.
+fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, poses: &[ComposePose]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "compose")?;
+    if poses.is_empty() {
+        return Err(refuse(i, "a compose needs a pose", "give at least one pose: where the picture sits and how much of the frame it covers"));
+    }
+    let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+    for p in poses {
+        if !p.secs.is_finite() || p.secs < 0.0 || p.secs > dur + 1e-6 {
+            return Err(refuse(i, format!("a pose at {:.2} s is outside the clip", p.secs), format!("poses are seconds into the clip, 0 to {dur:.2}")));
+        }
+        for (name, v) in [("x", p.x), ("y", p.y)] {
+            if !v.is_finite() || !(-1.0..=2.0).contains(&v) {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("{name} is a fraction of the frame, -1 to 2 so a picture can start off screen")));
+            }
+        }
+        for (name, v) in [("width", p.width), ("height", p.height)] {
+            if !v.is_finite() || !(0.01..=4.0).contains(&v) {
+                return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between 0.01 and 4, a fraction of the frame")));
+            }
+        }
+        // The engine scales a picture on one axis, the same on x and y,
+        // so an uneven rectangle would silently be squared off.
+        if (p.width - p.height).abs() > 1e-4 {
+            return Err(refuse(i, format!("width {:.2} and height {:.2} differ", p.width, p.height), "give the same width and height: a picture is scaled evenly, never stretched"));
+        }
+        if !p.rotation_deg.is_finite() || !(-360.0..=360.0).contains(&p.rotation_deg) {
+            return Err(refuse(i, format!("a turn of {} degrees", p.rotation_deg), "give rotation_deg between -360 and 360"));
+        }
+        if !p.opacity.is_finite() || !(0.0..=1.0).contains(&p.opacity) {
+            return Err(refuse(i, format!("an opacity of {}", p.opacity), "give opacity between 0 and 1"));
+        }
+    }
+    let mut sorted: Vec<ComposePose> = poses.to_vec();
+    sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
+    let mut new_state = old_state.clone();
+    // Position is pixels from the centre of the frame, which is where
+    // the anchor sits; the fractions are turned into them here so a plan
+    // written once holds at any delivery size.
+    let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let (mut px, mut py, mut sk, mut rk, mut ok) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for p in &sorted {
+        klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, (p.x - 0.5) * fw);
+        klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, (p.y - 0.5) * fh);
+        klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, p.width);
+        klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg);
+        klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
+    }
+    new_state.transform_pos_x_keyframes = px;
+    new_state.transform_pos_y_keyframes = py;
+    new_state.transform_scale_keyframes = sk;
+    new_state.transform_rotation_keyframes = rk;
+    new_state.opacity_keyframes = ok;
+    let poses_text: Vec<String> = sorted
+        .iter()
+        .map(|p| {
+            let turn = if p.rotation_deg.abs() > 1e-4 { format!(" turned {:.0} degrees", p.rotation_deg) } else { String::new() };
+            let fade = if p.opacity < 0.999 { format!(" at {:.0}%", p.opacity * 100.0) } else { String::new() };
+            format!("{:.2}s {:.2} of the frame at {:.2},{:.2}{turn}{fade}", p.secs, p.width, p.x, p.y)
+        })
+        .collect();
+    let what = format!("compose {}: {}", clip_name(seq, pool, clip), poses_text.join(" \u{2192} "));
+    let edit = EditCommand::EditKeyframes {
+        clip_id: clip.id,
+        linked_clip_id: None,
+        description: "Compose",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    };
+    Ok((what, edit, vec![clip.id]))
+}
+
 fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[PanKey], verb: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, verb)?;
     if keys.len() < 2 {
@@ -4308,6 +4435,61 @@ mod tests {
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
         assert!(matches!(&ops[0], Op::Transition { kind, secs, .. } if kind == "cross_dissolve" && (*secs - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_compose_places_a_picture_smaller_than_the_frame_and_animates_between_poses() {
+        let (seq, pool, _media, a, _) = fixture();
+
+        // One pose: a half-size picture left of centre and low in a
+        // 1920x1080 frame, turned, half seen. Position is pixels from the
+        // middle of the frame, which is where the anchor sits.
+        let pose = ComposePose { x: 0.25, y: 0.75, width: 0.5, height: 0.5, rotation_deg: 15.0, opacity: 0.5, ..Default::default() };
+        let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] }]).unwrap();
+        assert!(plan.steps[0].what.contains("0.50 of the frame at 0.25,0.75"), "{}", plan.steps[0].what);
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframe edit") };
+        assert_eq!(new_state.transform_pos_x_keyframes.len(), 1);
+        assert!((new_state.transform_pos_x_keyframes[0].value + 480.0).abs() < 1e-3);
+        assert!((new_state.transform_pos_y_keyframes[0].value - 270.0).abs() < 1e-3);
+        assert!((new_state.transform_scale_keyframes[0].value - 0.5).abs() < 1e-6);
+        assert!((new_state.transform_rotation_keyframes[0].value - 15.0).abs() < 1e-6);
+        assert!((new_state.opacity_keyframes[0].value - 0.5).abs() < 1e-6);
+
+        // Two poses animate between them, in time order whichever order
+        // they arrive in: this one slides in from off the right.
+        let landed = ComposePose { secs: 2.0, x: 0.5, width: 0.4, height: 0.4, ..Default::default() };
+        let offscreen = ComposePose { secs: 0.0, x: 1.5, width: 0.4, height: 0.4, ..Default::default() };
+        let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![landed, offscreen] }]).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframe edit") };
+        let times: Vec<f64> = new_state.transform_pos_x_keyframes.iter().map(|k| k.time_secs).collect();
+        assert_eq!(times, vec![0.0, 2.0]);
+        assert!((new_state.transform_pos_x_keyframes[0].value - 1920.0).abs() < 1e-3);
+        assert!(new_state.transform_pos_x_keyframes[1].value.abs() < 1e-3);
+
+        // Undo puts the clip's keyframes back as they were.
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes.len(), 2);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips[0].transform_pos_x_keyframes.is_empty());
+
+        // Refusals: no pose at all, a stretch the engine cannot make, a
+        // pose after the clip has ended, a fade outside 0 to 1.
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        let just = |pose: ComposePose| Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] };
+        assert!(bad(Op::Compose { clip_id: ClipRef::Id(a), poses: vec![] }).why.contains("needs a pose"));
+        assert!(bad(just(ComposePose { width: 0.5, height: 0.25, ..Default::default() })).why.contains("differ"));
+        assert!(bad(just(ComposePose { secs: 9.0, ..Default::default() })).why.contains("outside the clip"));
+        assert!(bad(just(ComposePose { opacity: 2.0, ..Default::default() })).why.contains("opacity"));
+
+        // As the tools send it: a pose gives what it changes, and what it
+        // leaves out is the frame as shot.
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"compose","clip_id":{"track":0,"secs":2.0},"poses":[{"width":0.5,"height":0.5}]}]"#).unwrap();
+        let Op::Compose { poses, .. } = &ops[0] else { panic!("a compose") };
+        assert_eq!(poses[0], ComposePose { width: 0.5, height: 0.5, ..Default::default() });
     }
 
     #[test]
