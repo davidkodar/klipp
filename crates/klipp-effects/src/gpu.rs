@@ -229,7 +229,20 @@ pub struct GpuEffectsPipeline {
     /// Corrector's mix over all its stages), and that picture's copy.
     grade_mix_pipeline: wgpu::ComputePipeline,
     apply_matte_pipeline: wgpu::ComputePipeline,
+    blend_mix_pipeline: wgpu::ComputePipeline,
+    layer_over_pipeline: wgpu::ComputePipeline,
     grade_mix_src: Option<wgpu::Buffer>,
+    /// Port-1 picture for a chain-resident Blend or Layer.
+    ///
+    /// Deliberately NOT `grade_mix_src`. That buffer is claimed by
+    /// the Corrector's own Keep/Mix stage pair and by the
+    /// qualifier-secondary machinery, both of which copy into it
+    /// mid-encoder. A composite's second input arrives by
+    /// `write_buffer`, which lands before the whole encoder rather
+    /// than in sequence with it, so sharing one buffer would let a
+    /// later in-encoder copy decide what an earlier dispatch read.
+    /// A separate buffer makes the two independent.
+    composite_src: Option<wgpu::Buffer>,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — standalone luminance-threshold key (matte
@@ -975,6 +988,8 @@ impl GpuEffectsPipeline {
         let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
         let grade_mix_pipeline = create_pipeline(&device, &huesat_pl, "grade_mix", SHADER_GRADE_MIX);
         let apply_matte_pipeline = create_pipeline(&device, &apply_matte_pl, "apply_matte", SHADER_APPLY_MATTE_CHAIN);
+        let blend_mix_pipeline = create_pipeline(&device, &huesat_pl, "blend_mix", SHADER_BLEND_MIX);
+        let layer_over_pipeline = create_pipeline(&device, &huesat_pl, "layer_over", SHADER_LAYER_OVER);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
@@ -1342,7 +1357,10 @@ impl GpuEffectsPipeline {
             mask_cutout_pipeline,
             grade_mix_pipeline,
             apply_matte_pipeline,
+            blend_mix_pipeline,
+            layer_over_pipeline,
             grade_mix_src: None,
+            composite_src: None,
             mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
@@ -4366,6 +4384,115 @@ impl GpuEffectsPipeline {
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, &self.grade_mix_pipeline, &bind_group, workgroups);
+    }
+
+    /// Put a two-input node's port-1 picture where the chain can reach
+    /// it, for [`Self::apply_blend_chain`] / [`Self::apply_over_chain`].
+    ///
+    /// `queue.write_buffer` rather than a recorded copy, because the
+    /// pixels are coming from the CPU: the other branch has already
+    /// been read back, or it is the source frame the caller handed in.
+    /// One upload beats what it replaces — a chain flush, a full-frame
+    /// lerp on the CPU and a fresh chain start.
+    ///
+    /// The ordering caveat that shapes the caller's gate: a queued
+    /// write is applied before the next submit, NOT in sequence with
+    /// the encoder's recorded commands. Two uploads into one chain
+    /// segment would therefore both land before either dispatch runs,
+    /// and the second would win for both. The executor allows one per
+    /// segment and sends any further composite down the CPU path.
+    pub fn upload_composite_src_linear(&mut self, px: &[f32], width: u32, height: u32) -> bool {
+        if self.is_device_lost() {
+            return false;
+        }
+        let size = (width as u64) * (height as u64) * 16;
+        if (px.len() * 4) as u64 != size {
+            return false;
+        }
+        if self.composite_src.as_ref().is_none_or(|b| b.size() < size) {
+            self.composite_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("composite_src"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let dst = self.composite_src.as_ref().unwrap();
+        self.queue.write_buffer(dst, 0, bytemuck::cast_slice(px));
+        true
+    }
+
+    /// Keep the chain's current picture as a composite's port-1
+    /// input, GPU to GPU.
+    ///
+    /// The counterpart to [`Self::upload_composite_src_linear`] for
+    /// the case where port 1 never left the GPU — a second graded
+    /// branch, or the source picture kept at chain start before the
+    /// grade overwrites it. Recorded into the chain encoder, so it is
+    /// ordered against the dispatches around it rather than jumping
+    /// ahead of them the way a queued write does.
+    pub fn keep_composite_src(&mut self, in_is_a: bool, width: u32, height: u32) {
+        if self.is_device_lost() {
+            return;
+        }
+        let size = (width as u64) * (height as u64) * 16;
+        if self.composite_src.as_ref().is_none_or(|b| b.size() < size) {
+            self.composite_src = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("composite_src"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() }
+            .expect(Self::CHAIN_BG_EXPECT);
+        let dst = self.composite_src.as_ref().unwrap();
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        enc.copy_buffer_to_buffer(src, 0, dst, 0, size);
+    }
+
+    /// Dispatch-only Blend: `a + (b - a) * mix`, `a` the chain's
+    /// picture and `b` the one [`Self::upload_composite_src_linear`]
+    /// uploaded. Alpha mixes with the rest.
+    pub fn apply_blend_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32) {
+        self.dispatch_composite(in_is_a, width, height, mix, /* over = */ false);
+    }
+
+    /// Dispatch-only Layer: the over operator, foreground from the
+    /// chain and background from the composite buffer.
+    pub fn apply_over_chain(&mut self, in_is_a: bool, width: u32, height: u32) {
+        self.dispatch_composite(in_is_a, width, height, 1.0, /* over = */ true);
+    }
+
+    fn dispatch_composite(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, over: bool) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuGradeMixParams { width, height, mix, _pad: 0 });
+        let (a, b) = (
+            self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT),
+            self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
+        );
+        let (input, output) = if in_is_a { (a, b) } else { (b, a) };
+        let other = self
+            .composite_src
+            .as_ref()
+            .expect("upload_composite_src_linear first");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_composite"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: other.as_entire_binding() },
+            ],
+        });
+        let pipeline = if over { &self.layer_over_pipeline } else { &self.blend_mix_pipeline };
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only qualifier: key the picture
@@ -15538,6 +15665,69 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         o.y + (p.y - o.y) * params.mix,
         o.z + (p.z - o.z) * params.mix,
         p.w,
+    ));
+}
+"
+);
+
+const SHADER_BLEND_MIX: &str = concat!(
+    "
+struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> other: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+// Blend: `a + (b - a) * mix`, where `a` is the chain's picture (port 0)
+// and `b` is the composite buffer (port 1).
+//
+// All four channels, alpha included — unlike SHADER_GRADE_MIX, which
+// keeps the current alpha because it is mixing a grade back against
+// the same picture. Two different pictures have two different mattes,
+// and the mix has to carry them both.
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let a = unpack(input[idx]);
+    let b = unpack(other[idx]);
+    output[idx] = pack(a + (b - a) * params.mix);
+}
+"
+);
+
+const SHADER_LAYER_OVER: &str = concat!(
+    "
+struct Params { width: u32, height: u32, mix: f32, _pad: u32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> other: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+// Layer: the over operator. Foreground is the chain's picture
+// (port 0), background is the composite buffer (port 1).
+//
+// Alpha composites as `fa + ba * (1 - fa)` rather than saturating at
+// 1, so stacking two half-transparent layers gives 0.75 and stays
+// available to whatever reads the matte downstream.
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let f = unpack(input[idx]);
+    let b = unpack(other[idx]);
+    let fa = clamp(f.w, 0.0, 1.0);
+    let ba = clamp(b.w, 0.0, 1.0);
+    let inv = 1.0 - fa;
+    output[idx] = pack(vec4<f32>(
+        f.x * fa + b.x * inv,
+        f.y * fa + b.y * inv,
+        f.z * fa + b.z * inv,
+        fa + ba * inv,
     ));
 }
 "
