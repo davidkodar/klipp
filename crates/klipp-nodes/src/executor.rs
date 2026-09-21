@@ -267,11 +267,30 @@ fn white_balance(temperature: f32, tint: f32, ws: klipp_core::WorkingColorspace)
     klipp_color::white_balance::white_balance_matrix(temperature, tint, ws).unwrap_or(NO_WHITE_BALANCE)
 }
 
+/// Mid grey, encoded.
+///
+/// Used only by stages that dispatch the grade shader with `contrast`
+/// set to zero — exposure alone, saturation alone, tone controls alone
+/// — where the pivot cannot affect the result, because contrast of zero
+/// leaves every sample where it is whatever it pivots about. The stages
+/// that do apply contrast (the Corrector and the dedicated Contrast
+/// node) read the pivot from their own params instead.
+fn default_pivot_encoded() -> f32 {
+    klipp_color::grade_model::encode_contrast_pivot(
+        klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT,
+    )
+}
+
+
 /// The unified grade doing nothing, in the working space `ws`.
 fn identity_grade(ws: klipp_core::WorkingColorspace) -> klipp_effects::cpu_grade::ColorGrade {
     let zero = (0.0, 0.0, 0.0);
     klipp_effects::cpu_grade::ColorGrade {
-        exposure: 0.0, contrast: 0.0, saturation: 1.0, white_balance: NO_WHITE_BALANCE,
+        exposure: 0.0, contrast: 0.0,
+        contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot(
+            klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT,
+        ),
+        saturation: 1.0, white_balance: NO_WHITE_BALANCE,
         highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
         lift: zero, gamma: zero, gain: zero, offset: zero, log_wheels: None,
         hue: 0.0, global_mix: 1.0, luma: klipp_color::linear::luma_coefs(ws),
@@ -347,7 +366,7 @@ impl GradeStage {
             }
             GradeStage::Grade(g) => gpu.apply_color_grade_chain(
                 in_is_a, width, height,
-                g.exposure, g.contrast, g.saturation, g.white_balance,
+                g.exposure, g.contrast, g.contrast_pivot_encoded, g.saturation, g.white_balance,
                 g.highlights, g.shadows, g.whites, g.blacks,
                 g.lift, g.gamma, g.gain, g.offset, g.log_wheels,
                 g.hue, g.global_mix,
@@ -2614,7 +2633,7 @@ impl GraphExecutor {
                 if exp == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    exp, 0.0, 1.0, NO_WHITE_BALANCE,
+                    exp, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                     0.0, 0.0, 0.0, 0.0,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
@@ -2625,6 +2644,14 @@ impl GraphExecutor {
                 let con = params.contrast.unwrap_or(0.0);
                 let clarity = params.clarity.unwrap_or(0.0);
                 if con == 0.0 && clarity == 0.0 { return None; }
+                // A dedicated Contrast node carries its own pivot, so
+                // these paths read it rather than take the default —
+                // otherwise a pivot set on a Contrast node would do
+                // nothing while the same pivot on a Corrector worked,
+                // and the CPU and GPU twins below would disagree.
+                let pivot = klipp_color::grade_model::encode_contrast_pivot(
+                    params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                );
                 // When BOTH contrast and clarity are active, issue two
                 // sub-dispatches back-to-back inside the same chain
                 // encoder. Each sub-dispatch flips the active buffer,
@@ -2643,7 +2670,7 @@ impl GraphExecutor {
                     // writes to !in_is_a.
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, con, 1.0, NO_WHITE_BALANCE,
+                        0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
@@ -2659,7 +2686,7 @@ impl GraphExecutor {
                 if con != 0.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, con, 1.0, NO_WHITE_BALANCE,
+                        0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
@@ -2680,7 +2707,7 @@ impl GraphExecutor {
                 if sat != 1.0 && vib != 0.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, 0.0, sat, NO_WHITE_BALANCE,
+                        0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
@@ -2692,7 +2719,7 @@ impl GraphExecutor {
                 if sat != 1.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
                         in_is_a, width, height,
-                        0.0, 0.0, sat, NO_WHITE_BALANCE,
+                        0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,
@@ -2711,7 +2738,7 @@ impl GraphExecutor {
                 if hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    0.0, 0.0, 1.0, NO_WHITE_BALANCE,
+                    0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                     hi, sh, wh, bl,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
@@ -2835,7 +2862,7 @@ impl GraphExecutor {
                 };
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
-                    s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
+                    s.exposure, 0.0, default_pivot_encoded(), s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                     0.0, 0.0, 0.0, 0.0,
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                     0.0, 1.0,
@@ -2883,6 +2910,9 @@ impl GraphExecutor {
         let grade = klipp_effects::cpu_grade::ColorGrade {
             exposure: params.exposure.unwrap_or(0.0),
             contrast: params.contrast.unwrap_or(0.0),
+            contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot(
+                params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+            ),
             saturation: params.saturation.unwrap_or(1.0),
             white_balance: white_balance(params.temperature.unwrap_or(0.0), params.tint.unwrap_or(0.0), ws),
             highlights: params.highlights.unwrap_or(0.0),
@@ -3111,7 +3141,7 @@ impl GraphExecutor {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
                             primary_input, width, height,
-                            exp, 0.0, 1.0, NO_WHITE_BALANCE,
+                            exp, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                             0.0, 0.0, 0.0, 0.0,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                             0.0, 1.0,
@@ -3128,18 +3158,26 @@ impl GraphExecutor {
             NodeKind::Contrast => {
                 let con = params.contrast.unwrap_or(0.0);
                 let clarity = params.clarity.unwrap_or(0.0);
+                // A dedicated Contrast node carries its own pivot, so
+                // these paths read it rather than take the default —
+                // otherwise a pivot set on a Contrast node would do
+                // nothing while the same pivot on a Corrector worked,
+                // and the CPU and GPU twins below would disagree.
+                let pivot = klipp_color::grade_model::encode_contrast_pivot(
+                    params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                );
                 if con != 0.0 || clarity != 0.0 {
                     let frame = if con != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
                                 primary_input, width, height,
-                                0.0, con, 1.0, NO_WHITE_BALANCE,
+                                0.0, con, pivot, 1.0, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                                 0.0, 1.0,
                             )
                         } else {
-                            let g = klipp_effects::cpu_grade::ColorGrade { contrast: con, ..identity_grade(self.working_colorspace) };
+                            let g = klipp_effects::cpu_grade::ColorGrade { contrast: con, contrast_pivot_encoded: pivot, ..identity_grade(self.working_colorspace) };
                             run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                         }
                     } else {
@@ -3167,7 +3205,7 @@ impl GraphExecutor {
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_color_grade(
                                 primary_input, width, height,
-                                0.0, 0.0, sat, NO_WHITE_BALANCE,
+                                0.0, 0.0, default_pivot_encoded(), sat, NO_WHITE_BALANCE,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                                 0.0, 1.0,
@@ -3202,7 +3240,7 @@ impl GraphExecutor {
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_color_grade(
                             primary_input, width, height,
-                            0.0, 0.0, 1.0, NO_WHITE_BALANCE,
+                            0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                             hi, sh, wh, bl,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                             0.0, 1.0,
@@ -3221,7 +3259,7 @@ impl GraphExecutor {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_grade(
                         primary_input, width, height,
-                        0.0, 0.0, 1.0, NO_WHITE_BALANCE,
+                        0.0, 0.0, default_pivot_encoded(), 1.0, NO_WHITE_BALANCE,
                         0.0, 0.0, 0.0, 0.0,
                         grade.lift, grade.gamma, grade.gain, grade.offset, grade.log_wheels,
                         0.0, 1.0,
@@ -3977,7 +4015,7 @@ impl GraphExecutor {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.apply_color_grade(
                         primary_input, width, height,
-                        s.exposure, 0.0, s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
+                        s.exposure, 0.0, default_pivot_encoded(), s.saturation, white_balance(s.temperature, s.tint, self.working_colorspace),
                         0.0, 0.0, 0.0, 0.0,
                         (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), None,
                         0.0, 1.0,

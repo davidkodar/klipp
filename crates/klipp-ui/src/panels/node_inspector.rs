@@ -1213,6 +1213,47 @@ impl NodeInspectorPanel {
                         node.params.contrast = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
                     }
+                    // Where the contrast hinges: below it a push
+                    // darkens, above it a push brightens, so the pivot
+                    // decides whether contrast is spent on the shadows
+                    // or the highlights. Mid grey, 0.18, is where it
+                    // always was and is the default.
+                    //
+                    // In linear working-space units rather than an
+                    // abstract 0..1, because 0.18 is the number a
+                    // colourist already carries for mid grey and the
+                    // rest of the codebase names it that.
+                    // Where the contrast hinges: below it a push
+                    // darkens, above it a push brightens, so the pivot
+                    // decides whether contrast is spent on the shadows
+                    // or the highlights. Mid grey, 0.18 linear, is where
+                    // it always was and is the default.
+                    //
+                    // Stored linear — anchored to the physical value, so
+                    // a project keeps meaning the same thing if the
+                    // grade encoding is ever retuned — but scrubbed in
+                    // that encoding, which is roughly perceptual. On a
+                    // linear scale 0.18 sits 8 %% along and the whole
+                    // useful range is crushed into the left end; in the
+                    // encoding it lands near the middle and equal travel
+                    // is an equal change, which is why Resolve's pivot
+                    // reads about 0.43 rather than 0.18.
+                    let mut shown = klipp_color::grade_model::grade_encode(
+                        node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                    );
+                    if inspector_row(
+                        ui, "Pivot", &mut shown,
+                        klipp_color::grade_model::grade_encode(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
+                            ..=klipp_color::grade_model::grade_encode(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                        "", theme, cmds, clip_id,
+                    ) {
+                        let linear = klipp_color::grade_model::grade_decode(shown).clamp(
+                            klipp_color::grade_model::MIN_CONTRAST_PIVOT,
+                            klipp_color::grade_model::MAX_CONTRAST_PIVOT,
+                        );
+                        node.params.contrast_pivot = Some(linear);
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
+                    }
                     let mut cval = node.params.clarity.unwrap_or(0.0);
                     if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, "", theme, cmds, clip_id) {
                         node.params.clarity = Some(cval);
@@ -1593,6 +1634,34 @@ impl NodeInspectorPanel {
                 if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
+                }
+                // Where the contrast hinges. Below it a push darkens,
+                // above it a push brightens, so moving the pivot is how
+                // you decide whether contrast is spent on the shadows
+                // or the highlights. Mid grey, 0.18, is where it always
+                // was, and is the default.
+                //
+                // In linear working-space units rather than a 0..1
+                // control, because 0.18 is the number a colourist
+                // already has in their head for mid grey and the whole
+                // codebase names it that.
+                // Same control as the Colour panel's: stored linear,
+                // scrubbed in the grade encoding. See the note there.
+                let mut shown = klipp_color::grade_model::grade_encode(
+                    params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                );
+                if grade_slider(
+                    ui, "Pivot", &mut shown,
+                    klipp_color::grade_model::grade_encode(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
+                        ..=klipp_color::grade_model::grade_encode(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                    "", cmds, clip_id, theme,
+                ) {
+                    let linear = klipp_color::grade_model::grade_decode(shown).clamp(
+                        klipp_color::grade_model::MIN_CONTRAST_PIVOT,
+                        klipp_color::grade_model::MAX_CONTRAST_PIVOT,
+                    );
+                    params.contrast_pivot = Some(linear);
+                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast_pivot".into(), value: linear });
                 }
                 let mut cval = params.clarity.unwrap_or(0.0);
                 if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id, theme) {

@@ -80,11 +80,45 @@ pub fn cdl_of(lift: [f32; 3], gamma: [f32; 3], gain: [f32; 3], offset: [f32; 3])
     (slope, off, power)
 }
 
-/// Contrast about mid grey in the grade encoding: `amount` 0 is neutral,
-/// +1 doubles the distance from mid grey.
+/// The linear pivot a contrast control may be set to.
+///
+/// Above zero because the encoding has no meaning at or below it, and
+/// capped at diffuse white. [`DEFAULT_CONTRAST_PIVOT`] is mid grey,
+/// where it has always been.
+pub const MIN_CONTRAST_PIVOT: f32 = 0.01;
+/// Diffuse white. A pivot above it sits outside anything but speculars,
+/// where contrast stops being a hinge and becomes a one-sided stretch.
+pub const MAX_CONTRAST_PIVOT: f32 = 1.0;
+pub const DEFAULT_CONTRAST_PIVOT: f32 = 0.18;
+
+/// The grade-encoded pivot for a linear one, clamped to the range the
+/// control allows.
+///
+/// Called once where a grade is built, never per pixel: both the CPU
+/// path and the GPU uniform carry the encoded value so neither pays for
+/// a `powf` per sample, and both are handed the same number.
+#[inline]
+pub fn encode_contrast_pivot(pivot_linear: f32) -> f32 {
+    grade_encode(pivot_linear.clamp(MIN_CONTRAST_PIVOT, MAX_CONTRAST_PIVOT))
+}
+
+/// Contrast about an arbitrary pivot in the grade encoding: `amount` 0
+/// is neutral, +1 doubles the distance from the pivot.
+///
+/// Where the pivot sits decides whether adding contrast crushes the
+/// shadows or blows the highlights, and on a log or HDR source the
+/// useful pivot is nowhere near mid grey.
+#[inline]
+pub fn contrast_channel_at(e: f32, amount: f32, pivot_encoded: f32) -> f32 {
+    (e - pivot_encoded) * (1.0 + amount) + pivot_encoded
+}
+
+/// Contrast about mid grey: [`contrast_channel_at`] at
+/// [`MID_GREY_ENCODED`], which is what every grade did before the pivot
+/// was adjustable.
 #[inline]
 pub fn contrast_channel(e: f32, amount: f32) -> f32 {
-    (e - MID_GREY_ENCODED) * (1.0 + amount) + MID_GREY_ENCODED
+    contrast_channel_at(e, amount, MID_GREY_ENCODED)
 }
 
 /// A ramp from 0 at `lo` to 1 at `hi`, smooth at both ends.
@@ -190,6 +224,68 @@ mod tests {
         }
         let (s, o, p) = cdl_of([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]);
         assert_eq!((s, o, p), ([1.0; 3], [0.0; 3], [1.0; 3]), "neutral wheels are the identity CDL");
+    }
+
+    /// The pivot is the one point contrast leaves alone. That is what
+    /// makes it the pivot, and it has to hold wherever it is put.
+    #[test]
+    fn contrast_leaves_its_own_pivot_where_it_is() {
+        for pivot_linear in [0.02, 0.09, DEFAULT_CONTRAST_PIVOT, 0.45, 0.9, 1.8] {
+            let p = encode_contrast_pivot(pivot_linear);
+            for amount in [-0.8, -0.2, 0.0, 0.35, 1.0, 3.0] {
+                assert!(
+                    close(contrast_channel_at(p, amount, p), p, 1e-6),
+                    "pivot {pivot_linear} moved at amount {amount}",
+                );
+            }
+        }
+    }
+
+    /// Where the pivot sits decides which end of the scale a contrast
+    /// push spends. A low pivot holds the shadows and opens the
+    /// highlights; a high one does the reverse. This is the whole
+    /// reason for the control.
+    #[test]
+    fn a_lower_pivot_lifts_what_a_higher_pivot_crushes() {
+        let low = encode_contrast_pivot(0.05);
+        let high = encode_contrast_pivot(0.60);
+        let shadow = grade_encode(0.02);
+        assert!(
+            contrast_channel_at(shadow, 0.5, low) > contrast_channel_at(shadow, 0.5, high),
+            "a low pivot should hold a shadow up relative to a high one",
+        );
+        let highlight = grade_encode(1.5);
+        assert!(
+            contrast_channel_at(highlight, 0.5, low) > contrast_channel_at(highlight, 0.5, high),
+            "a low pivot should push a highlight further than a high one",
+        );
+    }
+
+    /// Mid grey is still exactly where contrast pivoted before it was
+    /// adjustable, so no existing grade moves.
+    #[test]
+    fn the_default_pivot_is_the_old_fixed_one() {
+        assert!(close(encode_contrast_pivot(DEFAULT_CONTRAST_PIVOT), MID_GREY_ENCODED, 1e-6));
+        for e in [0.0, 0.2, MID_GREY_ENCODED, 0.8, 1.2] {
+            for amount in [-0.5, 0.0, 0.7] {
+                assert!(close(
+                    contrast_channel(e, amount),
+                    contrast_channel_at(e, amount, encode_contrast_pivot(DEFAULT_CONTRAST_PIVOT)),
+                    1e-6,
+                ));
+            }
+        }
+    }
+
+    /// A pivot outside the range is clamped rather than producing a
+    /// NaN encoding: `grade_encode` of a negative is a negative, and
+    /// contrast about a negative pivot inverts the picture.
+    #[test]
+    fn a_pivot_out_of_range_is_clamped_not_encoded() {
+        assert_eq!(encode_contrast_pivot(-5.0), grade_encode(MIN_CONTRAST_PIVOT));
+        assert_eq!(encode_contrast_pivot(0.0), grade_encode(MIN_CONTRAST_PIVOT));
+        assert_eq!(encode_contrast_pivot(99.0), grade_encode(MAX_CONTRAST_PIVOT));
+        assert!(encode_contrast_pivot(f32::NAN).is_finite() || encode_contrast_pivot(f32::NAN).is_nan());
     }
 
     /// Contrast leaves mid grey where it is and moves a stop up and a
