@@ -54,7 +54,6 @@ pub mod camera_log;
 pub mod chart;
 pub mod color_match;
 pub mod curves;
-pub mod denoise;
 pub mod difference_key;
 pub mod display;
 pub mod false_colour;

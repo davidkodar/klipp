@@ -2414,6 +2414,20 @@ impl GraphExecutor {
 
 }
 
+/// The grain `size` both the shader and its CPU twin quantise pixel
+/// coordinates by, floored away from zero — at zero each divides by it.
+fn grain_size(grain: &klipp_core::FilmGrainSettings) -> f32 {
+    grain.size.max(0.001)
+}
+
+/// The bilateral filter's spatial and colour sigmas, floored away from
+/// zero. Both sides divide by twice the square of each, so a zero
+/// radius made the spatial term 0/0 and turned every weight into a NaN
+/// — a black frame on the GPU, from a control the UI lets you reach.
+fn denoise_sigmas(luma: f32, chroma: f32, radius: u32) -> (f32, f32) {
+    ((radius as f32).max(0.001), ((luma + chroma) * 0.5).max(0.001))
+}
+
 /// Does this node's dispatch take `grade_mix_src` over for itself?
 ///
 /// A Corrector with a `global_mix` other than 1 keeps its own input
@@ -3017,9 +3031,10 @@ impl GraphExecutor {
             NodeKind::FilmGrain => {
                 let grain = params.grain.as_ref()?;
                 if !grain.enabled || grain.amount <= 0.001 { return None; }
+                let size = grain_size(grain);
                 self.gpu.as_mut().unwrap().apply_grain_chain(
                     in_is_a, width, height,
-                    grain.amount, grain.size,
+                    grain.amount, size,
                     grain.shadows, grain.highlights,
                     grain.monochrome,
                     frame_number as u32,
@@ -3057,8 +3072,7 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma <= 0.0 && chroma <= 0.0 { return None; }
-                let spatial_sigma = radius as f32;
-                let color_sigma = (luma + chroma) * 0.5;
+                let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, radius);
                 self.gpu.as_mut().unwrap().apply_denoise_chain(
                     in_is_a, width, height,
                     spatial_sigma, color_sigma,
@@ -4183,20 +4197,32 @@ impl GraphExecutor {
             NodeKind::FilmGrain => {
                 if let Some(grain) = &params.grain {
                     if grain.enabled && grain.amount > 0.001 {
+                        // Both paths quantise the pixel coordinates by
+                        // `size` to give the grain particles, so a zero
+                        // divides by it. Clamped once, before the fork,
+                        // so the two sides are handed the same number.
+                        let size = grain_size(grain);
+                        let coefs =
+                            klipp_color::linear::luma_coefs(self.working_colorspace);
                         if let Some(gpu) = &mut self.gpu {
                             gpu.apply_grain_gpu(
                                 primary_input, width, height,
-                                grain.amount, grain.size,
+                                grain.amount, size,
                                 grain.shadows, grain.highlights,
                                 grain.monochrome,
                                 frame_number as u32,
                             )
                         } else {
-                            // CPU fallback: apply_grain_cpu speaks u8.
-                            let primary_u8 = linear_rgba_to_u8(primary_input);
-                            let mut frame_u8 = primary_u8;
-                            apply_grain_cpu(&mut frame_u8, grain, frame_number);
-                            u8_rgba_to_linear(&frame_u8)
+                            let mut out = primary_input.to_vec();
+                            klipp_effects::cpu_grade::film_grain(
+                                &mut out, width, height,
+                                grain.amount, size,
+                                grain.shadows, grain.highlights,
+                                grain.monochrome,
+                                frame_number as u32,
+                                coefs,
+                            );
+                            out
                         }
                     } else {
                         primary_input.to_vec()
@@ -4254,21 +4280,22 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma > 0.0 || chroma > 0.0 {
+                    // Both sides divide by twice the square of each
+                    // sigma. A zero radius made the spatial term 0/0 and
+                    // every weight a NaN, so the floor goes here, before
+                    // the fork, rather than in either twin.
+                    let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, radius);
+                    let coefs = klipp_color::linear::luma_coefs(self.working_colorspace);
                     if let Some(gpu) = &mut self.gpu {
-                        let spatial_sigma = radius as f32;
-                        let color_sigma = (luma + chroma) * 0.5;
                         gpu.apply_denoise_gpu(
                             primary_input, width, height,
                             spatial_sigma, color_sigma,
                         )
                     } else {
-                        // CPU fallback: bilateral_denoise speaks u8.
-                        let primary_u8 = linear_rgba_to_u8(primary_input);
-                        let mut frame_u8 = primary_u8;
-                        klipp_color::denoise::bilateral_denoise(
-                            &mut frame_u8, width, height, luma, chroma, radius,
-                        );
-                        u8_rgba_to_linear(&frame_u8)
+                        klipp_effects::cpu_grade::bilateral_denoise(
+                            primary_input, width, height,
+                            spatial_sigma, color_sigma, coefs,
+                        )
                     }
                 } else {
                     primary_input.to_vec()
@@ -4523,41 +4550,6 @@ fn build_curve_luts(curves: &klipp_core::CurveSet) -> [f32; 1024] {
         lut[c * 256..(c + 1) * 256].copy_from_slice(&klipp_color::curves::build_curve_lut_f32(points));
     }
     lut
-}
-
-/// CPU film grain using Wang hash noise.
-fn apply_grain_cpu(rgba: &mut [u8], grain: &klipp_core::FilmGrainSettings, frame_number: u64) {
-    let amount = grain.amount;
-    let seed = frame_number as u32;
-    for (i, chunk) in rgba.chunks_exact_mut(4).enumerate() {
-        let hash = wang_hash(seed.wrapping_mul(65521).wrapping_add(i as u32));
-        let noise = ((hash & 0xFF) as f32 / 255.0 - 0.5) * amount * 128.0;
-        // Luminance for shadow/highlight weighting
-        let luma = (0.2126 * chunk[0] as f32 + 0.7152 * chunk[1] as f32 + 0.0722 * chunk[2] as f32) / 255.0;
-        let weight = grain.shadows * (1.0 - luma) + grain.highlights * luma;
-        let weighted_noise = noise * weight;
-
-        if grain.monochrome {
-            for c in &mut chunk[..3] {
-                *c = (*c as f32 + weighted_noise).clamp(0.0, 255.0) as u8;
-            }
-        } else {
-            for (j, c) in chunk[..3].iter_mut().enumerate() {
-                let h = wang_hash(hash.wrapping_add(j as u32));
-                let n = ((h & 0xFF) as f32 / 255.0 - 0.5) * amount * 128.0 * weight;
-                *c = (*c as f32 + n).clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
-}
-
-fn wang_hash(mut key: u32) -> u32 {
-    key = (key ^ 61) ^ (key >> 16);
-    key = key.wrapping_mul(9);
-    key ^= key >> 4;
-    key = key.wrapping_mul(0x27d4eb2d);
-    key ^= key >> 15;
-    key
 }
 
 /// Bake a node graph to a 3D LUT by running the executor on synthetic 1x1 frames
