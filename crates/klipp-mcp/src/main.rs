@@ -1125,13 +1125,12 @@ fn tool_definitions() -> Vec<Value> {
               the window up, record, analyze, cut.",
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
         tool("klipp_auto_sfx",
-             "Sound design from the cut, as one undo step with apply true (a dry run without): \
-              a whoosh on every cut of the top picture track (its loudest moment landing on the \
-              cut), a click on every reveal the beat sheet found inside the clips (none near a \
-              cut, at most one every second and a half), a riser ending on the last cut. Give \
-              the effects by media id — search_sfx for \"whoosh\", \"click\" and \"riser\" first \
-              and pass the ids you imported. They go on an SFX track, marked sfx, at -6/-8 dB; \
-              nothing is placed where that track already has a clip, so it can be run again.",
+             "Sound design from the cut, as one undo step with apply true (a preview without): \
+              a whoosh on cuts, a click on reveals, a riser into the last cut. Optional media \
+              ids choose your effects. With no ids, previews short built-in whooshes; apply \
+              synthesizes and imports the sound automatically. Conflicting placements are \
+              skipped so a dense montage does not abort the sound pass. Effects go on the \
+              SFX track, marked sfx, at -6/-8 dB. Existing clips are preserved.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \

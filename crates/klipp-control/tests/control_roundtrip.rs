@@ -27,6 +27,8 @@ struct Harness {
     envelopes: Arc<Mutex<Vec<(bool, usize)>>>,
     edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>>,
     shared: Arc<klipp_core::ControlShared>,
+    media_pool: Arc<RwLock<klipp_media::MediaPool>>,
+    sequence: Arc<RwLock<klipp_timeline::Sequence>>,
     _log: std::path::PathBuf,
     next_id: u64,
     /// Two clips, each with its own Corrector, and a node nested inside
@@ -91,8 +93,10 @@ fn harness() -> Harness {
     let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let shared = Arc::new(klipp_core::ControlShared::default());
+    let media_pool = Arc::new(RwLock::new(klipp_media::MediaPool::new()));
     {
         let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
+        let media_pool = media_pool.clone();
         std::thread::spawn(move || {
             for env in env_rx {
                 envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
@@ -103,6 +107,19 @@ fn harness() -> Harness {
                 };
                 if refused.is_none() {
                     for c in env.commands {
+                        if let klipp_core::AppCommand::ImportMediaWithAnalysis { path, analyze: false } = &c {
+                            let bytes = std::fs::read(path).expect("synthesized WAV exists before import");
+                            assert_eq!(&bytes[..4], b"RIFF");
+                            assert!(bytes[44..].iter().any(|b| *b != 0), "the synthesized audio is not silent");
+                            let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+                            item.video_codec.clear();
+                            item.resolution.width = 0;
+                            item.resolution.height = 0;
+                            item.duration = klipp_core::Timecode::from_frames(((bytes.len() - 44) / 2) as i64, 48000);
+                            item.has_audio = true;
+                            media_pool.write().unwrap_or_else(|e| e.into_inner()).add(item);
+                        }
+
                         // A save or an open reports back as the UI does: the
                         // path, no unsaved changes, the generation moved. A
                         // path with "broken" in it fails, to see that said.
@@ -144,13 +161,14 @@ fn harness() -> Harness {
     // reaching for the wrong one is an easy mistake to make and used to
     // be an impossible one to notice.
     let (sequence, ids) = sequence_with_two_clips();
+    let sequence = Arc::new(RwLock::new(sequence));
     let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
         commands: env_tx,
         shared: Arc::clone(&shared),
         wake_ui: Arc::new(|| {}),
-        sequence: Arc::new(RwLock::new(sequence)),
-        media_pool: Arc::new(RwLock::new(klipp_media::MediaPool::new())),
+        sequence: sequence.clone(),
+        media_pool: media_pool.clone(),
         frame_buffer: frame_buffer.clone(),
         perf_ring: klipp_engine::perf::shared(),
         log_path: log.clone(),
@@ -166,7 +184,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, _log: log, next_id: 0, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, _log: log, next_id: 0, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -1002,4 +1020,34 @@ fn style_cut_summary_reads_pace_and_beat_alignment() {
     let offbeat = BeatData { bpm: 120.0, confidence: 0.9, beat_times: (0..20).map(|i| i as f64 * 0.5 + 0.25).collect() };
     let v2 = klipp_control::style_cut_summary(&shots, &boundaries, 3.0, &offbeat);
     assert!(v2["cut_on_beat_ratio"].as_f64().unwrap() < 0.5, "few cuts on this grid: {v2}");
+}
+
+#[test]
+fn auto_sfx_previews_without_assets_and_applies_synthesized_audio() {
+    let mut h = harness();
+    let cache = std::env::temp_dir().join(format!("klipp-sfx-test-{}", klipp_core::MediaId::new().0));
+    let old_cache = std::env::var_os("XDG_CACHE_HOME");
+    std::env::set_var("XDG_CACHE_HOME", &cache);
+    {
+        let mut seq = h.sequence.write().unwrap_or_else(|e| e.into_inner());
+        seq.tracks.clear();
+        let mut video = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        for n in 0..8 {
+            let tc = |s| klipp_core::Timecode::from_secs_f64(s, 1000);
+            video.clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(n as f64 * 0.85), tc((n + 1) as f64 * 0.85), tc(0.0), tc(0.85)));
+        }
+        seq.tracks.push(video);
+    }
+    let preview = h.ok(json!({ "method": "auto_sfx" }));
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["placements"].as_array().unwrap().len(), 7);
+    assert!(h.media_pool.read().unwrap_or_else(|e| e.into_inner()).all().next().is_none());
+    assert!(!cache.exists(), "preview must not create audio");
+    let applied = h.ok(json!({ "method": "auto_sfx", "apply": true }));
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["synthesized_whoosh"], true);
+    assert_eq!(applied["placements"].as_array().unwrap().len(), 7);
+    assert_eq!(h.edits_seen.lock().unwrap_or_else(|e| e.into_inner()).len(), 22);
+    assert_eq!(h.media_pool.read().unwrap_or_else(|e| e.into_inner()).all().count(), 1);
+    if let Some(old) = old_cache { std::env::set_var("XDG_CACHE_HOME", old); } else { std::env::remove_var("XDG_CACHE_HOME"); }
 }
