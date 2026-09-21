@@ -224,10 +224,15 @@ pub fn export_edl(
 /// Generate CMX 3600 EDL from a sequence.
 pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
     let mut edl = String::with_capacity(4096);
-    let fps_rate = seq.fps.as_f64();
+    // Drop-frame exists at 29.97 and 59.94 and nowhere else. The header
+    // declares the mode and every timecode below is counted in it —
+    // these two facts have to agree, or a conform silently misplaces
+    // every event (it used to say DROP FRAME over non-drop numbers,
+    // which is 3.6 s an hour of drift at 29.97).
+    let drop = klipp_core::sync::is_drop_frame_rate(seq.fps);
 
     edl.push_str(&format!("TITLE: {}\n", seq.name));
-    edl.push_str(&format!("FCM: {}\n\n", if (fps_rate - 29.97).abs() < 0.01 { "DROP FRAME" } else { "NON-DROP FRAME" }));
+    edl.push_str(&format!("FCM: {}\n\n", if drop { "DROP FRAME" } else { "NON-DROP FRAME" }));
 
     let mut event_num = 1u32;
 
@@ -247,10 +252,10 @@ pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
                 })
                 .unwrap_or_else(|| "BL".into());
 
-            let src_in = tc_to_edl(clip.source_in.to_secs_f64(), fps_rate);
-            let src_out = tc_to_edl(clip.source_out.to_secs_f64(), fps_rate);
-            let rec_in = tc_to_edl(clip.timeline_in.to_secs_f64(), fps_rate);
-            let rec_out = tc_to_edl(clip.timeline_out.to_secs_f64(), fps_rate);
+            let src_in = tc_to_edl(clip.source_in.to_secs_f64(), seq.fps, drop);
+            let src_out = tc_to_edl(clip.source_out.to_secs_f64(), seq.fps, drop);
+            let rec_in = tc_to_edl(clip.timeline_in.to_secs_f64(), seq.fps, drop);
+            let rec_out = tc_to_edl(clip.timeline_out.to_secs_f64(), seq.fps, drop);
 
             edl.push_str(&format!(
                 "{:03}  {:8} {}     C        {} {} {} {}\n",
@@ -329,13 +334,17 @@ fn format_decimal(secs: f64) -> String {
     }
 }
 
-fn tc_to_edl(secs: f64, fps: f64) -> String {
-    let total_frames = (secs * fps).round() as u32;
-    let fps_int = fps.round() as u32;
-    let h = total_frames / (fps_int * 3600);
-    let m = (total_frames % (fps_int * 3600)) / (fps_int * 60);
-    let s = (total_frames % (fps_int * 60)) / fps_int;
-    let f = total_frames % fps_int;
+/// A timecode for an EDL event, counted in the mode the file's `FCM`
+/// line declares.
+///
+/// Colons throughout, including in drop-frame. CMX 3600 writes
+/// `hh:mm:ss:ff` and takes the mode from `FCM`, which is authoritative;
+/// a semicolon is how an application *displays* drop-frame, and a
+/// strict conform parser is not obliged to accept it in the field. The
+/// numbers carry the mode, not the punctuation.
+fn tc_to_edl(secs: f64, fps: klipp_core::Fps, drop: bool) -> String {
+    let frames = (secs * fps.as_f64()).round() as i64;
+    let (h, m, s, f) = klipp_core::sync::frames_to_timecode(frames, fps, drop);
     format!("{h:02}:{m:02}:{s:02}:{f:02}")
 }
 
@@ -811,6 +820,71 @@ mod tests {
         let edl = generate_edl(&seq, &pool);
 
         assert!(edl.contains("FCM: DROP FRAME"));
+    }
+
+    #[test]
+    fn edl_drop_frame_timecodes_agree_with_the_header() {
+        // The header used to say DROP FRAME over timecodes counted
+        // non-drop. A conform reads the header, applies drop-frame to
+        // numbers that were never in it, and places every event 3.6 s
+        // an hour early — silently, because nothing in the file is
+        // malformed.
+        let fps = Fps::ntsc_29970();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "hero.mov", 200_000, fps.rate()));
+
+        // `RationalTime::value` is in ticks of the rate numerator, so one
+        // video frame at 29.97 is 1001 ticks. Frame 107_892 is exactly
+        // 01:00:00;00 in drop-frame — the canonical hour, and the value
+        // the old arithmetic reported as 00:59:56:12.
+        let frame = |n: i64| RationalTime { value: n * 1001, rate: 30_000 };
+        seq.tracks[0].clips.push(make_media_clip(
+            mid,
+            frame(107_892),
+            frame(107_892 + 30),
+            frame(0),
+            frame(30),
+        ));
+
+        let edl = generate_edl(&seq, &pool);
+
+        assert!(edl.contains("FCM: DROP FRAME"), "{edl}");
+        assert!(
+            edl.contains("01:00:00:00"),
+            "the hour should be counted drop-frame, as the header says it is:\n{edl}"
+        );
+        assert!(
+            !edl.contains("00:59:56:12"),
+            "that is the non-drop count of the same frame — the defect:\n{edl}"
+        );
+    }
+
+    #[test]
+    fn edl_non_drop_rates_are_left_alone() {
+        // 25 has nothing to drop, so the count is plain and the header
+        // says so. Guards against the drop-frame path being applied to
+        // a rate it does not belong to.
+        let fps = Fps::new(25, 1);
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "pal.mov", 10_000, 25));
+        seq.tracks[0].clips.push(make_media_clip(
+            mid,
+            RationalTime { value: 25 * 60 * 10, rate: 25 }, // 10 minutes
+            RationalTime { value: 25 * 60 * 10 + 25, rate: 25 },
+            RationalTime { value: 0, rate: 25 },
+            RationalTime { value: 25, rate: 25 },
+        ));
+
+        let edl = generate_edl(&seq, &pool);
+
+        assert!(edl.contains("FCM: NON-DROP FRAME"), "{edl}");
+        assert!(edl.contains("00:10:00:00"), "{edl}");
     }
 
     #[test]
