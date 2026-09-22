@@ -366,6 +366,9 @@ pub enum Op {
         x: f32,
         #[serde(default)]
         y: f32,
+        /// Linear when left out: a Ken Burns drift keeps its speed.
+        #[serde(default)]
+        ease: klipp_core::keyframe::Ease,
     },
     /// An animated crop that follows the action: `keys` are poses in
     /// the clip's own seconds, each a `scale` (1 as shot, up to 4)
@@ -756,11 +759,14 @@ pub struct CameraKey {
     pub zoom: f32,
     #[serde(default)]
     pub roll_deg: f32,
+    /// How the move into this key eases; `in_out` when left out.
+    #[serde(default = "in_out")]
+    pub ease: klipp_core::keyframe::Ease,
 }
 
 impl Default for CameraKey {
     fn default() -> Self {
-        Self { secs: 0.0, x: 0.5, y: 0.5, zoom: 1.0, roll_deg: 0.0 }
+        Self { secs: 0.0, x: 0.5, y: 0.5, zoom: 1.0, roll_deg: 0.0, ease: klipp_core::keyframe::Ease::InOut }
     }
 }
 
@@ -786,11 +792,30 @@ pub struct ComposePose {
     pub rotation_deg: f32,
     #[serde(default = "one")]
     pub opacity: f32,
+    /// How the move into this pose eases; `in_out` when left out.
+    #[serde(default = "in_out")]
+    pub ease: klipp_core::keyframe::Ease,
 }
 
 impl Default for ComposePose {
     fn default() -> Self {
-        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0 }
+        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut }
+    }
+}
+
+fn in_out() -> klipp_core::keyframe::Ease {
+    klipp_core::keyframe::Ease::InOut
+}
+
+/// Ease each move into a key: `eases[k]` shapes the move from key `k - 1`
+/// into key `k`, on every track, all written at the same times. A track
+/// with a different count — two keys closer than a keyframe allows — is
+/// left linear rather than eased against the wrong neighbours.
+fn ease_tracks(tracks: &mut [&mut Vec<klipp_core::Keyframe>], eases: &[klipp_core::keyframe::Ease]) {
+    for t in tracks.iter_mut().filter(|t| t.len() == eases.len()) {
+        for (k, e) in eases.iter().enumerate().skip(1) {
+            klipp_core::keyframe::ease_into(t, k, *e);
+        }
     }
 }
 
@@ -809,6 +834,9 @@ pub struct PanKey {
     pub x: f32,
     #[serde(default = "half")]
     pub y: f32,
+    /// How the move into this pose eases; `in_out` when left out.
+    #[serde(default = "in_out")]
+    pub ease: klipp_core::keyframe::Ease,
 }
 
 fn half() -> f32 {
@@ -819,7 +847,7 @@ fn half() -> f32 {
 /// out unless the next is near.
 pub fn follow_keys(spots: &[(f64, f32, f32)], clip_secs: f64, scale: f32, hold: f64) -> Vec<PanKey> {
     const EASE: f64 = 0.35;
-    let rest = |t: f64| PanKey { secs: t, scale: 1.0, x: 0.5, y: 0.5 };
+    let rest = |t: f64| PanKey { secs: t, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut };
     let mut keys: Vec<PanKey> = Vec::new();
     let mut last_end: Option<f64> = None;
     for (n, (t, x, y)) in spots.iter().enumerate() {
@@ -848,8 +876,8 @@ pub fn follow_keys(spots: &[(f64, f32, f32)], clip_secs: f64, scale: f32, hold: 
             }
         }
         let end = (t + hold).min(clip_secs);
-        keys.push(PanKey { secs: *t, scale, x: *x, y: *y });
-        keys.push(PanKey { secs: end, scale, x: *x, y: *y });
+        keys.push(PanKey { secs: *t, scale, x: *x, y: *y, ease: klipp_core::keyframe::Ease::InOut });
+        keys.push(PanKey { secs: end, scale, x: *x, y: *y, ease: klipp_core::keyframe::Ease::InOut });
         last_end = Some(end);
         if n + 1 == spots.len() && end + EASE < clip_secs {
             keys.push(rest(end + EASE));
@@ -1397,9 +1425,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             reframe(seq, pool, i, ti, clip, *scale, *x, *y)
         }
-        Op::Zoom { clip_id, from, to, x, y } => {
+        Op::Zoom { clip_id, from, to, x, y, ease } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            zoom(seq, pool, i, ti, clip, *from, *to, *x, *y)
+            zoom(seq, pool, i, ti, clip, (*from, *to), (*x, *y), *ease)
         }
         Op::Pan { clip_id, keys } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -2665,6 +2693,8 @@ fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditC
         klipp_core::keyframe::upsert_keyframe(&mut new.zoom_keyframes, k.secs, k.zoom);
         klipp_core::keyframe::upsert_keyframe(&mut new.roll_keyframes, k.secs, k.roll_deg);
     }
+    let eases: Vec<_> = sorted.iter().map(|k| k.ease).collect();
+    ease_tracks(&mut [&mut new.x_keyframes, &mut new.y_keyframes, &mut new.zoom_keyframes, &mut new.roll_keyframes], &eases);
     let poses: Vec<String> = sorted.iter().map(|k| format!("{:.2}s {:.2}x at {:.2},{:.2}", k.secs, k.zoom, k.x, k.y)).collect();
     let held = if sorted.len() == 1 { ", held" } else { "" };
     let what = format!("camera over the sequence: {}{held}", poses.join(" \u{2192} "));
@@ -2723,6 +2753,8 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg);
         klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
     }
+    let eases: Vec<_> = sorted.iter().map(|p| p.ease).collect();
+    ease_tracks(&mut [&mut px, &mut py, &mut sk, &mut rk, &mut ok], &eases);
     new_state.transform_pos_x_keyframes = px;
     new_state.transform_pos_y_keyframes = py;
     new_state.transform_scale_keyframes = sk;
@@ -2777,6 +2809,8 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
         klipp_core::keyframe::upsert_keyframe(&mut px, k.secs, x);
         klipp_core::keyframe::upsert_keyframe(&mut py, k.secs, y);
     }
+    let eases: Vec<_> = sorted.iter().map(|k| k.ease).collect();
+    ease_tracks(&mut [&mut sk, &mut px, &mut py], &eases);
     new_state.transform_scale_keyframes = sk;
     new_state.transform_pos_x_keyframes = px;
     new_state.transform_pos_y_keyframes = py;
@@ -2950,7 +2984,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
 /// An animated zoom over the clip: transform keyframes for a push-in or
 /// pull-out, optionally moving toward a point. The renderer bakes a
 /// per-frame `Transform` from these, so it runs on the GPU.
-fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from: f32, to: f32, x: f32, y: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (from, to): (f32, f32), (x, y): (f32, f32), ease: klipp_core::keyframe::Ease) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "zoom")?;
     for (name, v) in [("from", from), ("to", to)] {
         if !v.is_finite() || !(1.0..=4.0).contains(&v) {
@@ -2975,6 +3009,7 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from
     let mut scale_kfs = Vec::new();
     klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, 0.0, from);
     klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, dur, to);
+    klipp_core::keyframe::ease_into(&mut scale_kfs, 1, ease);
     new_state.transform_scale_keyframes = scale_kfs;
     // A push toward (x, y), as reframe measures it, at each end's own
     // scale: the position grows with the room the zoom makes, so the
@@ -2984,10 +3019,12 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, from
         let mut px = Vec::new();
         klipp_core::keyframe::upsert_keyframe(&mut px, 0.0, -x * reach(from, w));
         klipp_core::keyframe::upsert_keyframe(&mut px, dur, -x * reach(to, w));
+        klipp_core::keyframe::ease_into(&mut px, 1, ease);
         new_state.transform_pos_x_keyframes = px;
         let mut py = Vec::new();
         klipp_core::keyframe::upsert_keyframe(&mut py, 0.0, -y * reach(from, h));
         klipp_core::keyframe::upsert_keyframe(&mut py, dur, -y * reach(to, h));
+        klipp_core::keyframe::ease_into(&mut py, 1, ease);
         new_state.transform_pos_y_keyframes = py;
     }
     let push = if x.abs() > 1e-4 || y.abs() > 1e-4 { format!(", push to {x:.2},{y:.2}") } else { String::new() };
@@ -4243,7 +4280,7 @@ mod tests {
 
         // A subject right of and above the middle, pushed in on at 2x,
         // lands in the middle of the frame.
-        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 2.0, scale: 2.0, x: 0.6, y: 0.4 }];
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 2.0, scale: 2.0, x: 0.6, y: 0.4, ease: klipp_core::keyframe::Ease::InOut }];
         let plan = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
         let p = (new_state.transform_pos_x_keyframes[1].value, new_state.transform_pos_y_keyframes[1].value);
@@ -4260,7 +4297,7 @@ mod tests {
 
         // And a zoom that pushes toward a point gets there by the end,
         // starting from where it was.
-        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.5, x: -1.0, y: 0.0 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.5, x: -1.0, y: 0.0, ease: Default::default() }]).unwrap();
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
         assert!(new_state.transform_pos_x_keyframes[0].value.abs() < 1e-3, "at 1x there is nowhere to be yet");
         let end = (new_state.transform_pos_x_keyframes[1].value, new_state.transform_pos_y_keyframes[1].value);
@@ -4274,7 +4311,7 @@ mod tests {
     #[test]
     fn pans_highlights_and_ramps_land_as_keyframes_and_shapes() {
         let (seq, pool, _, a, _) = fixture();
-        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 2.0, scale: 2.0, x: 1.0, y: 0.25 }];
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 2.0, scale: 2.0, x: 1.0, y: 0.25, ease: klipp_core::keyframe::Ease::InOut }];
         let plan = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
         assert_eq!(new_state.transform_scale_keyframes.iter().map(|k| k.value).collect::<Vec<_>>(), vec![1.0, 2.0]);
@@ -4284,7 +4321,7 @@ mod tests {
         assert!((new_state.transform_pos_x_keyframes[1].value + 960.0).abs() < 1e-3);
         assert!((new_state.transform_pos_y_keyframes[1].value - 540.0).abs() < 1e-3);
         assert_eq!(pan_position(1.5, 0.5, 0.5, 1920.0, 1080.0), (0.0, 0.0));
-        let err = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys: vec![PanKey { secs: 9.0, scale: 1.0, x: 0.5, y: 0.5 }, PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5 }] }]).unwrap_err();
+        let err = resolve(&seq, &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys: vec![PanKey { secs: 9.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }] }]).unwrap_err();
         assert!(format!("{err:?}").contains("outside the clip"));
 
         let plan = resolve(&seq, &pool, &[Op::Highlight { at: Anchor::Secs(1.0), secs: 2.0, x: 0.5, y: 0.5, w: 0.4, h: 0.2, kind: "spot".into(), color: None, stroke: None, track: None }]).unwrap();
@@ -4697,6 +4734,50 @@ mod tests {
     }
 
     #[test]
+    fn moves_ease_as_asked_and_as_each_op_would_want_when_not() {
+        use klipp_core::keyframe::{evaluate, Ease};
+        use klipp_core::Interpolation;
+        let (seq, pool, _media, a, _) = fixture();
+        let slide = |ease: Option<Ease>| {
+            let mut to = ComposePose { secs: 2.0, x: 0.25, width: 0.5, height: 0.5, ..Default::default() };
+            if let Some(e) = ease {
+                to.ease = e;
+            }
+            let from = ComposePose { secs: 0.0, x: 1.5, width: 0.5, height: 0.5, ..Default::default() };
+            let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![from, to] }]).unwrap();
+            let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
+            new_state.transform_pos_x_keyframes
+        };
+
+        // Left out, a card's move eases in and out.
+        let x = slide(None);
+        assert_eq!(x[0].interpolation, Interpolation::Bezier);
+        // Asked for, a fast arrival is most of the way there early.
+        let fast = slide(Some(Ease::ExpoOut));
+        let (start, end) = (fast[0].value, fast[1].value);
+        let early = (evaluate(&fast, 0.6, 0.0) - start) / (end - start);
+        assert!(early > 0.7, "expo_out covers most of the way in the first third: {early}");
+        // And linear is linear.
+        assert_eq!(slide(Some(Ease::Linear))[0].interpolation, Interpolation::Linear);
+
+        // A zoom stays linear unless asked: a Ken Burns drift keeps its speed.
+        let zoom = |ease| {
+            let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0, ease }]).unwrap();
+            let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
+            new_state.transform_scale_keyframes[0].interpolation
+        };
+        assert_eq!(zoom(Ease::Linear), Interpolation::Linear);
+        assert_eq!(zoom(Ease::InOut), Interpolation::Bezier);
+
+        // As the tools send it, by name, on a camera key.
+        let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"camera","keys":[{"secs":0.0},{"secs":3.0,"zoom":1.2,"ease":"back_out"}]}]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::SetSequenceCamera { new, .. } = &plan.steps[0].edit else { panic!("a camera") };
+        let peak = (1..60).map(|i| evaluate(&new.zoom_keyframes, i as f64 * 0.05, 1.0)).fold(0.0f32, f32::max);
+        assert!(peak > 1.2, "back_out pushes past and settles: {peak}");
+    }
+
+    #[test]
     fn a_crop_goes_first_in_the_chain_and_comes_off_again() {
         let (seq, pool, _media, a, _) = fixture();
         use klipp_effects::BuiltinEffect as E;
@@ -4922,15 +5003,15 @@ mod tests {
     #[test]
     fn zoom_writes_scale_keyframes() {
         let (seq, pool, _media, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.3, x: 0.0, y: 0.0, ease: Default::default() }]).unwrap();
         assert!(plan.steps[0].what.contains("1.00\u{2192}1.30"), "{}", plan.steps[0].what);
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes edit") };
         assert_eq!(new_state.transform_scale_keyframes.len(), 2, "start and end keyframes");
         assert!((new_state.transform_scale_keyframes[0].value - 1.0).abs() < 1e-4);
         assert!((new_state.transform_scale_keyframes[1].value - 1.3).abs() < 1e-4);
         // Out of range and no-op are refused.
-        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 9.0, x: 0.0, y: 0.0 }]).is_err());
-        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.0, x: 0.0, y: 0.0 }]).unwrap_err().why.contains("nothing to zoom"));
+        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 9.0, x: 0.0, y: 0.0, ease: Default::default() }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Zoom { clip_id: ClipRef::Id(a), from: 1.0, to: 1.0, x: 0.0, y: 0.0, ease: Default::default() }]).unwrap_err().why.contains("nothing to zoom"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"zoom","clip_id":{"track":0,"secs":1.0},"to":1.2}]"#).unwrap();
     }
 

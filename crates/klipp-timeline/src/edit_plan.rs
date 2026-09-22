@@ -96,6 +96,13 @@ pub struct PlanZoom {
     pub x: f32,
     #[serde(default)]
     pub y: f32,
+    /// How the push moves; linear when left out, a steady drift.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub ease: klipp_core::keyframe::Ease,
+}
+
+fn is_linear(e: &klipp_core::keyframe::Ease) -> bool {
+    *e == klipp_core::keyframe::Ease::Linear
 }
 
 fn one() -> f32 { 1.0 }

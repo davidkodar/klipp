@@ -104,6 +104,61 @@ pub fn set_keyframe_interpolation(
     }
 }
 
+/// How a move eases into a keyframe: the named curves motion design
+/// uses, written as the Bezier handles [`evaluate`] already solves — the
+/// same model as CSS `cubic-bezier`, handles as fractions of the
+/// segment's time and change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ease {
+    /// Constant speed: starts and stops dead. Right for a slow drift.
+    #[default]
+    Linear,
+    /// Starts slowly and arrives at speed.
+    In,
+    /// Leaves at speed and settles: an arrival.
+    Out,
+    /// Slow at both ends: the natural move from one rest to another.
+    InOut,
+    /// A fast arrival that settles long: how a card flies into place.
+    ExpoOut,
+    /// Arrives, overshoots a little and settles back.
+    BackOut,
+}
+
+impl Ease {
+    /// The curve's two handles, `(x1, y1, x2, y2)`, or `None` for a
+    /// straight line.
+    pub fn handles(self) -> Option<(f64, f32, f64, f32)> {
+        match self {
+            Ease::Linear => None,
+            Ease::In => Some((0.42, 0.0, 1.0, 1.0)),
+            Ease::Out => Some((0.0, 0.0, 0.58, 1.0)),
+            Ease::InOut => Some((0.42, 0.0, 0.58, 1.0)),
+            Ease::ExpoOut => Some((0.16, 1.0, 0.3, 1.0)),
+            Ease::BackOut => Some((0.34, 1.56, 0.64, 1.0)),
+        }
+    }
+}
+
+/// Ease the move from keyframe `i - 1` into keyframe `i`. The handles
+/// are scaled to that segment, so the same ease means the same shape of
+/// move whatever its length or distance.
+pub fn ease_into(kfs: &mut [Keyframe], i: usize, ease: Ease) {
+    if i == 0 || i >= kfs.len() {
+        return;
+    }
+    let Some((x1, y1, x2, y2)) = ease.handles() else {
+        kfs[i - 1].interpolation = Interpolation::Linear;
+        return;
+    };
+    let d = kfs[i].time_secs - kfs[i - 1].time_secs;
+    let v = kfs[i].value - kfs[i - 1].value;
+    kfs[i - 1].interpolation = Interpolation::Bezier;
+    kfs[i - 1].tangent_out = (x1 * d, y1 * v);
+    kfs[i].tangent_in = ((x2 - 1.0) * d, (y2 - 1.0) * v);
+}
+
 /// Evaluate a keyframe track at a given time (relative to clip source_in).
 /// Returns the interpolated value, or `default` if no keyframes exist.
 pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
@@ -579,3 +634,40 @@ mod tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod ease_tests {
+    use super::*;
+
+    fn track(ease: Ease) -> Vec<Keyframe> {
+        let mut k = Vec::new();
+        upsert_keyframe(&mut k, 0.0, 0.0);
+        upsert_keyframe(&mut k, 2.0, 100.0);
+        ease_into(&mut k, 1, ease);
+        k
+    }
+
+    #[test]
+    fn each_ease_has_the_shape_its_name_says() {
+        let mid = |e| evaluate(&track(e), 1.0, 0.0);
+        assert!((mid(Ease::Linear) - 50.0).abs() < 1e-3);
+        assert!(mid(Ease::In) < 40.0, "in is still slow halfway: {}", mid(Ease::In));
+        assert!(mid(Ease::Out) > 60.0, "out is nearly there halfway: {}", mid(Ease::Out));
+        assert!((mid(Ease::InOut) - 50.0).abs() < 1.0, "in_out is symmetric: {}", mid(Ease::InOut));
+        assert!(evaluate(&track(Ease::ExpoOut), 0.4, 0.0) > 70.0, "expo_out arrives fast");
+        let peak = (1..40).map(|i| evaluate(&track(Ease::BackOut), i as f64 * 0.05, 0.0)).fold(0.0f32, f32::max);
+        assert!(peak > 100.5, "back_out goes past and settles: {peak}");
+        // Every ease still starts and ends where the keyframes are.
+        for e in [Ease::In, Ease::Out, Ease::InOut, Ease::ExpoOut, Ease::BackOut] {
+            assert!((evaluate(&track(e), 0.0, 0.0)).abs() < 1e-3);
+            assert!((evaluate(&track(e), 2.0, 0.0) - 100.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn an_ease_reads_from_its_name() {
+        let e: Ease = serde_json::from_str("\"expo_out\"").unwrap();
+        assert_eq!(e, Ease::ExpoOut);
+    }
+}
