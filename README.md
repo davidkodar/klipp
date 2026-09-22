@@ -192,7 +192,9 @@ All of the on-device AI is **easy to turn off, one piece at a time**: **Preferen
 
 ### Online sound libraries
 
-Two things in Klipp reach the network, and only when you ask them to: the music and sound-effect search, which queries [Jamendo](https://www.jamendo.com/) and [Freesound](https://freesound.org/) for Creative-Commons audio. They need your own API keys, which live in `~/.config/klipp/keys.toml` (or the `KLIPP_JAMENDO_CLIENT_ID` / `KLIPP_FREESOUND_TOKEN` environment variables) and never in the source tree. Without keys the feature is simply absent; nothing else in Klipp calls out, and no AI model does.
+When you request a music or sound-effect search, Klipp queries [Jamendo](https://www.jamendo.com/) and [Freesound](https://freesound.org/) for Creative-Commons audio. They need your own API keys, which live in `~/.config/klipp/keys.toml` (or the `KLIPP_JAMENDO_CLIENT_ID` / `KLIPP_FREESOUND_TOKEN` environment variables) and never in the source tree. Without keys the feature is simply absent. AI inference runs locally; model weights download on demand as described above.
+
+Update checks are **off by default**. Choosing **Check for updates** in About or Preferences queries GitHub for published Klipp releases. You can explicitly enable daily background checks in **Preferences → General → Updates** and turn them off there again. Checks send no project information; GitHub receives the request and network address. With automatic checks disabled, launching Klipp or simply opening Preferences makes no update request.
 
 ## Architecture
 

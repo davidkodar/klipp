@@ -114,11 +114,15 @@ Installing a file does **not** automatically configure a repository.
 
 ## In the app
 
-- A background check starts after 30 seconds, at most once a day across restarts.
+- Automatic checks are **off by default**. After the user explicitly enables them
+  in Preferences → General → Updates, a background check starts after 30 seconds,
+  at most once a day across restarts.
   It queries the most recent 100 GitHub releases over HTTPS with a timeout and
   response-size limit. It sends no project information, and never downloads or
   installs software automatically. As with any request, GitHub sees the network
-  address. Disable checks in Preferences → General → Updates.
+  address. Disable checks in Preferences → General → Updates. The previous
+  default-on setting is reset to off because a saved default does not establish
+  consent; explicitly enabling the new setting is remembered.
 - A newer release produces a dismissible notice. Offline/private/rate-limit errors
   are quiet in the background and explained in the update window.
 - About → Check for updates and Preferences → General/About offer manual checks.
