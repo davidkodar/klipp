@@ -30097,7 +30097,7 @@ impl KlippApp {
                                     ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)");
                                     ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)");
                                     ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, "Copy Source");
+                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, ExportAudioCodec::Copy.label());
                                 });
                         });
                         ui.end_row();
@@ -30142,6 +30142,17 @@ impl KlippApp {
                             });
                         });
                         ui.end_row();
+
+                        // A loudness target with no audio stream measures, computes
+                        // a gain and then writes nothing (#156).
+                        if audio_supported
+                            && self.export_dialog.normalize_loudness
+                            && self.export_dialog.audio_codec == ExportAudioCodec::Copy
+                        {
+                            ui.label("");
+                            ui.colored_label(theme.marker_warning, "No audio is written, so there is nothing to normalize.");
+                            ui.end_row();
+                        }
 
                 });
         }); });
