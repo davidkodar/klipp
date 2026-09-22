@@ -416,7 +416,7 @@ fn main() -> Result<()> {
     // Load window icon from embedded PNG
     let icon_data = {
         let _t = LogTimer::new("decode app icon PNG");
-        let png_bytes = include_bytes!("../../../assets/icons/klipp_app_icons/hicolor/256x256/apps/klipp.png");
+        let png_bytes = include_bytes!("../../../assets/branding/klipp-refined/klipp-icon-256.png");
         let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
         let mut reader = decoder.read_info().expect("Failed to decode app icon PNG");
         // png 0.18: output_buffer_size returns Option<usize>. The

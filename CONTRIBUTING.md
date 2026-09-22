@@ -65,6 +65,13 @@ main  ──●──●──●──●──●──●──●──▶  
         v0.1.0-rc.1      v0.1.0   ← releases are tags, not branches
 ```
 
+The release version is declared once in the root `Cargo.toml`, under
+`[workspace.package].version`. Every Klipp crate inherits it, and the app
+displays the full value, including prerelease identifiers such as
+`0.20.0-rc.1` or `1.0.0-beta.1`. Update that declaration and regenerate
+`Cargo.lock` before tagging a release; the tag must match the version
+(with a `v` prefix). Rebuild to embed the new version in the executable.
+
 Releases are **tags**, because being released is a property of a
 commit, not of a branch. A release candidate is `v0.1.0-rc.1`; the
 release is `v0.1.0`. If a shipped version ever needs a fix while `main`

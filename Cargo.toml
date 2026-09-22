@@ -49,6 +49,9 @@ resolver = "2"
 # A permissive label would have been a false one unless we shipped our
 # own LGPL ffmpeg and gave up software H.264/H.265 export.
 [workspace.package]
+# The release version for every Klipp crate and application version display.
+# Preserve prerelease identifiers, e.g. 0.20.0-rc.1 or 1.0.0-beta.1.
+version = "0.1.0"
 license = "GPL-3.0-only"
 
 # ─── Shared dependency versions across all crates ───────────────────────────

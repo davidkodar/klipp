@@ -104,7 +104,7 @@ impl LaunchScreen {
 
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
         self.logo_texture.get_or_insert_with(|| {
-            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/hicolor/128x128/apps/klipp.png");
+            let png_bytes = include_bytes!("../../../../assets/branding/klipp-refined/klipp-icon-128.png");
             let image = crate::ui_util::decode_png_or_fallback(png_bytes);
             crate::app::alloc_texture_logged(ctx, "klipp_launch_logo", image, egui::TextureOptions::LINEAR)
         })
@@ -243,10 +243,8 @@ impl LaunchScreen {
         ui.painter().text(
             egui::pos2(logo_center.x, klipp_y + 22.0),
             egui::Align2::CENTER_CENTER,
-            // From the crate, not from a string written by hand: this
-            // read "0.9.1" while the crate was 0.1.0, which is the
-            // first thing a new user is told about the software.
-            format!("Version {} · Linux", env!("CARGO_PKG_VERSION")),
+            // Use the running app's package version, as About does.
+            format!("Version {} · Linux", klipp_core::build_info::get().version),
             egui::FontId::proportional(11.0),
             theme.text_dim,
         );

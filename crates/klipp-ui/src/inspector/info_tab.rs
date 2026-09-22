@@ -75,7 +75,7 @@ pub fn show_no_selection(
         info_row_custom(ui, theme, pad, row_h, w, "Klipp version", |ui, rx, cy| {
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "0.9.1", egui::FontId::proportional(13.0), theme.text_primary,
+                klipp_core::build_info::get().version, egui::FontId::proportional(13.0), theme.text_primary,
             );
         });
 
