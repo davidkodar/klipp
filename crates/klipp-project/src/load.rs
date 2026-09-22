@@ -597,6 +597,14 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
         brief: seq_json.brief.clone(),
         edit_plan: seq_json.edit_plan.clone(),
         camera: seq_json.camera.clone(),
+        // Said nothing: take the rate's default, which is drop-frame at
+        // 29.97 and 59.94. A project from before this field is not
+        // asserting non-drop, it simply predates the question, and
+        // reading it as a deliberate choice would leave every NTSC
+        // project drifting against the clock.
+        drop_frame: seq_json
+            .drop_frame
+            .unwrap_or_else(|| klipp_timeline::Sequence::default_drop_frame(sanitize_fps(seq_json.fps.num, seq_json.fps.den))),
     };
     // A file from before roles were saved carries none: give it the roles
     // a new sequence gets, which is what it had when it was made and what

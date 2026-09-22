@@ -476,6 +476,7 @@ mod tests {
     /// Build a minimal Sequence with the given fps/resolution and a single empty Video track.
     fn empty_sequence(fps: Fps) -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: "Test Sequence".into(),

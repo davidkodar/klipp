@@ -10092,7 +10092,7 @@ impl TimelinePanel {
                     Self::paint_trim_overlay(
                         painter, content_rect, track_rect, zoom, scroll,
                         snapped_boundary, delta_frames, dur_a,
-                        "Roll", fps,
+                        "Roll", state.timecode_display(),
                     );
                 }
             }
@@ -10286,7 +10286,7 @@ impl TimelinePanel {
                                 Self::paint_trim_overlay(
                                     painter, content_rect, track_rect, zoom, scroll,
                                     new_timeline_in, delta_frames, new_duration,
-                                    "In", fps,
+                                    "In", state.timecode_display(),
                                 );
                             } else {
                                 // Ripple: keep timeline_in fixed, shrink/grow timeline_out,
@@ -10339,7 +10339,7 @@ impl TimelinePanel {
                                 Self::paint_trim_overlay(
                                     painter, content_rect, track_rect, zoom, scroll,
                                     trim.original_timeline_in, delta_frames, new_duration,
-                                    "In", fps,
+                                    "In", state.timecode_display(),
                                 );
                             }
                         }
@@ -10396,7 +10396,7 @@ impl TimelinePanel {
                             Self::paint_trim_overlay(
                                 painter, content_rect, track_rect, zoom, scroll,
                                 new_timeline_out, delta_frames, new_duration,
-                                "Out", fps,
+                                "Out", state.timecode_display(),
                             );
                         }
                     }
@@ -14183,12 +14183,12 @@ impl TimelinePanel {
         delta: RationalTime,
         duration: RationalTime,
         label: &str,
-        _fps: klipp_core::Fps,
+        tc: klipp_core::TimecodeDisplay,
     ) {
         let edge_x = content_rect.left() + edge_time.to_secs_f64() as f32 * zoom - scroll;
 
         // Format the timecode
-        let tc_str = edge_time.to_timecode_string();
+        let tc_str = tc.position(edge_time);
 
         // Format delta as +/-frames
         let delta_frames = delta.value;
@@ -16908,6 +16908,7 @@ mod compound_filmstrip_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: name.to_string(),

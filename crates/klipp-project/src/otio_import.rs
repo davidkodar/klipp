@@ -775,6 +775,8 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
     let sequence = Sequence {
         // No interchange format carries a camera.
         camera: klipp_timeline::Camera::default(),
+        // An imported timeline takes its rate's convention.
+        drop_frame: Sequence::default_drop_frame(fps),
         id: SequenceId::new(),
         name: doc.name.unwrap_or(name),
         fps,

@@ -411,7 +411,7 @@ impl NewTimelinePanel {
             let snap_secs = time_utils::x_to_time(snap_x - ruler_rect.left(), pps, scroll_x);
             range_visuals::draw_snap_line(
                 parent_painter, snap_x, ruler_rect.top(), tracks_rect.bottom(),
-                snap_secs, state.fps.rate(), theme,
+                snap_secs, state.timecode_display(), theme,
             );
         }
         // allocate_clipped_ui sets clip_rect = tracks_rect, preventing the old

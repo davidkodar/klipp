@@ -9,7 +9,9 @@
 //! extracted so per-row subtitle editing (and any future per-row
 //! timecode field) can reuse it.
 
-use klipp_core::{Fps, RationalTime};
+use klipp_core::RationalTime;
+#[cfg(test)]
+use klipp_core::Fps;
 
 use crate::panels::transport::parse_timecode_input_pub;
 
@@ -27,7 +29,7 @@ pub fn timecode_edit(
     ui: &mut egui::Ui,
     id: egui::Id,
     current: RationalTime,
-    fps: Fps,
+    tc: klipp_core::TimecodeDisplay,
     editing: &mut Option<egui::Id>,
     edit_buf: &mut String,
 ) -> Option<RationalTime> {
@@ -53,7 +55,7 @@ pub fn timecode_edit(
             let confirmed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             *editing = None;
             if confirmed {
-                if let Some(parsed) = parse_timecode_input_pub(edit_buf, fps) {
+                if let Some(parsed) = parse_timecode_input_pub(edit_buf, tc) {
                     if parsed != current {
                         return Some(parsed);
                     }
@@ -63,7 +65,7 @@ pub fn timecode_edit(
         None
     } else {
         // Display mode
-        let tc_str = current.to_timecode_string();
+        let tc_str = tc.position(current);
         let resp = ui.add(
             egui::Label::new(
                 egui::RichText::new(&tc_str)
@@ -90,7 +92,7 @@ mod tests {
 
     #[test]
     fn parses_valid_hmsf_input() {
-        let parsed = parse_timecode_input_pub("00:00:02:12", fps_24());
+        let parsed = parse_timecode_input_pub("00:00:02:12", klipp_core::TimecodeDisplay::plain(fps_24()));
         assert!(parsed.is_some());
         let tc = parsed.unwrap();
         // 2 seconds + 12 frames at 24fps = 60 frames
@@ -100,13 +102,13 @@ mod tests {
 
     #[test]
     fn rejects_invalid_input() {
-        let parsed = parse_timecode_input_pub("not a timecode", fps_24());
+        let parsed = parse_timecode_input_pub("not a timecode", klipp_core::TimecodeDisplay::plain(fps_24()));
         assert!(parsed.is_none());
     }
 
     #[test]
     fn parses_plain_frame_number() {
-        let parsed = parse_timecode_input_pub("48", fps_24());
+        let parsed = parse_timecode_input_pub("48", klipp_core::TimecodeDisplay::plain(fps_24()));
         assert!(parsed.is_some());
         let tc = parsed.unwrap();
         assert_eq!(tc.value, 48);
@@ -114,7 +116,7 @@ mod tests {
 
     #[test]
     fn parses_decimal_seconds() {
-        let parsed = parse_timecode_input_pub("2.5", fps_24());
+        let parsed = parse_timecode_input_pub("2.5", klipp_core::TimecodeDisplay::plain(fps_24()));
         assert!(parsed.is_some());
         let tc = parsed.unwrap();
         // 2.5 seconds at 24fps = 60 frames

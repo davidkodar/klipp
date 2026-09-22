@@ -1,7 +1,7 @@
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
+use klipp_core::{AppCommand, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
 /// Re-route a timeline-targeted transport command to the source
@@ -249,7 +249,7 @@ impl TransportBar {
                 if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     let confirmed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if confirmed {
-                        if let Some(tc) = parse_timecode_input(&state.timecode_input, state.fps) {
+                        if let Some(tc) = parse_timecode_input(&state.timecode_input, state.timecode_display()) {
                             cmds.push(AppCommand::SeekTo(tc));
                         }
                     }
@@ -305,7 +305,7 @@ impl TransportBar {
                 if let Some(in_pt) = state.sequence().in_point {
                     ui.label(egui::RichText::new("In ").size(10.0).color(dim));
                     ui.label(egui::RichText::new(
-                        crate::timeline::range_visuals::format_handle_timecode(in_pt.to_secs_f64(), in_pt.rate),
+                        crate::timeline::range_visuals::format_handle_timecode(in_pt.to_secs_f64(), state.timecode_display()),
                     ).monospace().size(11.0).color(amber));
                 }
 
@@ -313,7 +313,7 @@ impl TransportBar {
 
                 if let Some(out_pt) = state.sequence().out_point {
                     ui.label(egui::RichText::new(
-                        crate::timeline::range_visuals::format_handle_timecode(out_pt.to_secs_f64(), out_pt.rate),
+                        crate::timeline::range_visuals::format_handle_timecode(out_pt.to_secs_f64(), state.timecode_display()),
                     ).monospace().size(11.0).color(amber));
                     ui.label(egui::RichText::new(" Out").size(10.0).color(dim));
                 }
@@ -561,16 +561,19 @@ impl TransportBar {
     }
 }
 
-pub fn parse_timecode_input_pub(input: &str, fps: Fps) -> Option<RationalTime> {
-    parse_timecode_input(input, fps)
+pub fn parse_timecode_input_pub(input: &str, tc: klipp_core::TimecodeDisplay) -> Option<RationalTime> {
+    parse_timecode_input(input, tc)
 }
 
-fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {
+fn parse_timecode_input(input: &str, tc: klipp_core::TimecodeDisplay) -> Option<RationalTime> {
     let input = input.trim();
-    // Try HH:MM:SS:FF format
-    if let Some(tc) = parse_hmsf(input, fps.rate()) {
-        return Some(tc);
+    // A timecode, counted the way this sequence counts — and a
+    // semicolon is honoured whatever the sequence is set to, so a
+    // timecode copied off a camera report can be pasted as written.
+    if let Some(t) = tc.parse(input) {
+        return Some(t);
     }
+    let fps = tc.fps;
     // Try plain frame number
     if let Ok(frames) = input.parse::<i64>() {
         return Some(RationalTime::from_frames(frames, fps.rate()));
@@ -580,19 +583,6 @@ fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {
         return Some(RationalTime::from_secs_f64(secs, fps.rate()));
     }
     None
-}
-
-fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
-    let parts: Vec<&str> = input.split(':').collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let hh: i64 = parts[0].parse().ok()?;
-    let mm: i64 = parts[1].parse().ok()?;
-    let ss: i64 = parts[2].parse().ok()?;
-    let ff: i64 = parts[3].parse().ok()?;
-    let total_frames = ((hh * 3600 + mm * 60 + ss) * rate as i64) + ff;
-    Some(RationalTime::from_frames(total_frames, rate))
 }
 
 fn draw_loop_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: egui::Color32) {

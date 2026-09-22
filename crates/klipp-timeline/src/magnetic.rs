@@ -2056,6 +2056,7 @@ mod tests {
             track.clips.push(media_clip(i, o));
         }
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: "Test".to_string(),
@@ -2087,6 +2088,7 @@ mod tests {
             connected.clips.push(media_clip(i, o));
         }
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: "Test".to_string(),

@@ -107,6 +107,15 @@ pub struct SequenceJson {
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]
     pub camera: klipp_timeline::Camera,
+    /// Whether positions are counted drop-frame; see
+    /// `Sequence::drop_frame`.
+    ///
+    /// `Option` so that absent and `false` stay distinguishable: a
+    /// project saved before this existed says nothing, and takes the
+    /// rate's default on load rather than being read as a deliberate
+    /// "non-drop". A sequence that has chosen writes the choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_frame: Option<bool>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

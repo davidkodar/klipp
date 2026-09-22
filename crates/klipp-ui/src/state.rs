@@ -3925,6 +3925,13 @@ impl AppState {
     pub fn sequence(&self) -> &Sequence {
         &self.sequences[self.active_sequence_idx]
     }
+    /// How the active sequence shows a position on its clock, and reads
+    /// one back. Use `.position()` for a place on the timeline and
+    /// `.duration()` for a length — drop-frame applies to the first and
+    /// not the second; see `TimecodeDisplay`.
+    pub fn timecode_display(&self) -> klipp_core::TimecodeDisplay {
+        self.sequence().timecode_display()
+    }
     pub fn sequence_mut(&mut self) -> &mut Sequence {
         &mut self.sequences[self.active_sequence_idx]
     }

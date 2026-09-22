@@ -73,6 +73,20 @@ pub struct Sequence {
     /// which is what every sequence made before this had.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
     pub camera: Camera,
+    /// Whether positions on this sequence are counted drop-frame.
+    ///
+    /// Only 29.97 and 59.94 have drop-frame at all — it skips frame
+    /// *numbers*, never frames, so the count keeps up with the wall
+    /// clock the NTSC rates otherwise fall behind by 3.6 s an hour.
+    ///
+    /// It is a choice rather than a property of the rate: 29.97
+    /// non-drop is a real delivery, and a sequence has to be able to say
+    /// so. A sequence made at an NTSC rate starts drop-frame because
+    /// that is the overwhelming convention, and a project saved before
+    /// this field existed takes the same default on load
+    /// ([`Sequence::default_drop_frame`]).
+    #[serde(default)]
+    pub drop_frame: bool,
 }
 
 /// A move over the whole sequence, rather than over one clip.
@@ -156,10 +170,29 @@ impl Camera {
 }
 
 impl Sequence {
+    /// Whether a sequence at `fps` counts drop-frame unless told
+    /// otherwise: yes at 29.97 and 59.94, no everywhere else.
+    ///
+    /// The NTSC rates run 1000/1001 of their nominal speed, so a
+    /// non-drop count falls behind the wall clock by about 3.6 s an
+    /// hour — over a feature that is more than seven seconds, and a
+    /// broadcast slot is exact. Drop-frame is the convention for those
+    /// rates for that reason, so it is where a sequence starts; a
+    /// delivery that wants 29.97 non-drop turns it off.
+    pub fn default_drop_frame(fps: Fps) -> bool {
+        klipp_core::sync::is_drop_frame_rate(fps)
+    }
+
+    /// How positions on this sequence are shown and read back.
+    pub fn timecode_display(&self) -> klipp_core::TimecodeDisplay {
+        klipp_core::TimecodeDisplay { fps: self.fps, drop: self.drop_frame }
+    }
+
     pub fn new_default() -> Self {
         Self {
             id: SequenceId::new(),
             camera: Camera::default(),
+            drop_frame: Self::default_drop_frame(Fps::film_24()),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
@@ -3123,6 +3156,7 @@ mod tests {
 
     fn make_swap_seq() -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: "test".to_string(),

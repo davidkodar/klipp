@@ -333,6 +333,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         id: seq.id,
         name: seq.name.clone(),
         camera: seq.camera.clone(),
+        drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,
         tracks,

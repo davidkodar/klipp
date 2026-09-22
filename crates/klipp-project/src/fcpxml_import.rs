@@ -568,6 +568,8 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
             let sequence = Sequence {
                 // No interchange format carries a camera.
                 camera: klipp_timeline::Camera::default(),
+                // An imported timeline takes its rate's convention.
+                drop_frame: Sequence::default_drop_frame(seq_fps),
                 id: SequenceId::new(),
                 name: project_name_from_tree(root),
                 fps: seq_fps,
@@ -639,6 +641,8 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
     let sequence = Sequence {
         // No interchange format carries a camera.
         camera: klipp_timeline::Camera::default(),
+        // An imported timeline takes its rate's convention.
+        drop_frame: Sequence::default_drop_frame(seq_fps),
         id: SequenceId::new(),
         name: project_name_from_tree(root),
         fps: seq_fps,

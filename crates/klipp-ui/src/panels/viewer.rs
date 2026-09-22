@@ -2219,17 +2219,26 @@ impl ViewerPanel {
         ui.painter().rect_filled(rect, 0.0, theme.bg_deep);
 
         // ── Left: Timecode ── (per-viewer: source clip time vs. timeline time)
-        let (tc_secs, tc_rate) = match viewer_kind {
-            ViewerMode::Program => (state.playhead_smooth_secs, state.fps.rate()),
+        let (tc_secs, tc_display) = match viewer_kind {
+            // The programme's clock is the sequence's, drop-frame and all.
+            ViewerMode::Program => (state.playhead_smooth_secs, state.timecode_display()),
             ViewerMode::Source => {
+                // A source is read on its *own* clock: the camera's rate
+                // decides, not the sequence it happens to be cut into.
+                // Klipp does not record whether a file's own timecode was
+                // drop-frame, so the rate's convention stands in.
                 let media = state
                     .source_media_id
                     .and_then(|mid| state.media_pool.get(&mid));
-                let rate = media.map(|m| m.fps.rate()).unwrap_or(state.fps.rate());
-                (state.source_playhead.to_secs_f64(), rate)
+                let fps = media.map(|m| m.fps).unwrap_or(state.fps);
+                let display = klipp_core::TimecodeDisplay {
+                    fps,
+                    drop: klipp_timeline::Sequence::default_drop_frame(fps),
+                };
+                (state.source_playhead.to_secs_f64(), display)
             }
         };
-        let tc_str = format_timecode_hmsf(tc_secs, tc_rate);
+        let tc_str = format_timecode_hmsf(tc_secs, tc_display);
         if state.editing_timecode {
             let tc_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.min.x + 8.0, cy - 12.0),
@@ -5478,14 +5487,10 @@ fn rotate_point(point: egui::Pos2, center: egui::Pos2, angle_rad: f32) -> egui::
     )
 }
 
-fn format_timecode_hmsf(smooth_secs: f64, rate: u32) -> String {
-    let s = smooth_secs.abs();
-    let sign = if smooth_secs < 0.0 { "-" } else { "" };
-    let hh = (s / 3600.0) as u32;
-    let mm = ((s % 3600.0) / 60.0) as u32;
-    let ss = (s % 60.0) as u32;
-    let ff = ((s % 1.0) * rate as f64) as u32;
-    format!("{sign}{hh:02}:{mm:02}:{ss:02}:{ff:02}")
+/// The playhead, as a position on the sequence's clock — so drop-frame
+/// where the sequence counts that way, and marked with a semicolon.
+fn format_timecode_hmsf(smooth_secs: f64, tc: klipp_core::TimecodeDisplay) -> String {
+    tc.position_secs(smooth_secs)
 }
 
 fn parse_timecode_input(input: &str, fps: Fps) -> Option<RationalTime> {

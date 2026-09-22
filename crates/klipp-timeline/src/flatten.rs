@@ -244,6 +244,7 @@ mod tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: name.to_string(),

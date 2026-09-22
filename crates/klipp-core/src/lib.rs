@@ -66,7 +66,7 @@ pub use keyframe::{Interpolation, Keyframe, TitlePositionAxis};
 pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, ControlShared, ExportStatus, ProjectStatus, DEFAULT_MASTERING_PEAK_NITS, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, HdrMonitor, MASTERING_PEAK_CHOICES, MASTERING_PEAK_RANGE, MarkerColor, MarkerKind, MediaLoadedPayload, OdtChoice, ParamChange, RateControl, SdrTransfer, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
 pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
-pub use time::{Fps, RationalTime, TimeRange, Timecode};
+pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
 pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
 pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use ofx_value::OfxValue;

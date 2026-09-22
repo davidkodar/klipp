@@ -4569,6 +4569,7 @@ impl KlippApp {
             // A new sequence starts without a camera; a nest that goes
             // back into its parent is moved by the parent's.
             camera: klipp_timeline::Camera::default(),
+            drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
             fps,
@@ -17996,6 +17997,7 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
                     fps,
@@ -18100,6 +18102,9 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    drop_frame: klipp_timeline::Sequence::default_drop_frame(
+                        klipp_core::Fps::new(*fps_num, *fps_den),
+                    ),
                     id: klipp_core::SequenceId::new(),
                     name: name.clone(),
                     fps: klipp_core::Fps::new(*fps_num, *fps_den),
@@ -21091,7 +21096,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetPlayheadFromTimecode { input } => {
-                if let Some(tc) = crate::panels::transport::parse_timecode_input_pub(input, self.state.fps) {
+                if let Some(tc) = crate::panels::transport::parse_timecode_input_pub(input, self.state.timecode_display()) {
                     self.state.awaiting_seek_frame = true;
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(tc));
                 }
@@ -36850,6 +36855,7 @@ mod compound_clip_cycle_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: name.to_string(),
