@@ -711,6 +711,8 @@ pub enum ExportAudioCodec {
     Opus,
     Pcm16,
     Pcm24,
+    /// No audio stream at all. The name is kept for saved presets; there is
+    /// nothing to copy from, since the audio is a mixdown made in-process.
     Copy,
 }
 
@@ -768,7 +770,7 @@ impl ExportAudioCodec {
             Self::Opus => "Opus",
             Self::Pcm16 => "PCM 16-bit (WAV)",
             Self::Pcm24 => "PCM 24-bit (WAV)",
-            Self::Copy => "Copy Source",
+            Self::Copy => "No audio",
         }
     }
 

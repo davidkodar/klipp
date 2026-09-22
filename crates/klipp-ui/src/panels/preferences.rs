@@ -694,21 +694,9 @@ impl PreferencesPanel {
         // ── QUALITY section ──
         Self::section_header(ui, "QUALITY", theme);
 
-        Self::setting_row(ui, "Playback quality", theme, |ui| {
-            use klipp_core::PlaybackQuality;
-            egui::ComboBox::from_id_salt("pb_quality")
-                .selected_text(match prefs.playback.playback_quality {
-                    PlaybackQuality::Full => "Full",
-                    PlaybackQuality::Half => "Half",
-                    PlaybackQuality::Quarter => "Quarter",
-                })
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Full, "Full").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Half, "Half").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.playback.playback_quality, PlaybackQuality::Quarter, "Quarter").changed() { *dirty = true; }
-                });
-        });
+        // Playback Quality (Full / Half / Quarter) is not offered: nothing
+        // reads it, and a reduced render needs clip positions scaled to the
+        // render size first (#152). The pref stays so saved files still load.
 
         Self::setting_row_with_subtitle(ui, "Background render", "Pre-render complex sections in background", theme, |ui| {
             let mut val = prefs.playback.background_render;
