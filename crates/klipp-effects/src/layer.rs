@@ -26,30 +26,49 @@
 
 use crate::cpu::{decode, each_pixel, gaussian};
 
-/// Take the corners off the picture. `radius` and `feather` are
-/// fractions of the frame's shorter side, so a card keeps its shape
-/// whatever the delivery size.
+/// Take the corners off the picture. The corners are those of what is
+/// left of it — the box round everything not already transparent — so a
+/// picture cropped to a window gets the window's corners rounded, not
+/// the frame's, which the crop has already cut away. `radius` and
+/// `feather` are fractions of that box's shorter side, so a card keeps
+/// its shape whatever its size.
 pub fn rounded_corners(p: Vec<f32>, w: u32, h: u32, radius: f32, feather: f32) -> Vec<f32> {
-    let short = w.min(h) as f32;
+    let Some((x0, y0, x1, y1)) = opaque_box(&p, w as usize, h as usize) else { return p };
+    let short = (x1 - x0).min(y1 - y0);
     let r = radius.clamp(0.0, 0.5) * short;
     if r <= 0.5 {
         return p;
     }
     // At least a pixel of softness, or the corners come out stepped.
     let f = (feather.max(0.0) * short).max(1.0);
-    let (wf, hf) = (w as f32, h as f32);
     each_pixel(&p, w, h, |x, y, src| {
         let mut o = src.at(x, y);
-        // How far the pixel is outside the rounded rectangle that
-        // covers the frame: the distance to the nearest corner circle's
-        // centre, less its radius. Negative inside.
+        // How far the pixel is outside the rounded rectangle on the box:
+        // the distance to the nearest corner circle's centre, less its
+        // radius. Negative inside.
         let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-        let dx = (r - px).max(px - (wf - r)).max(0.0);
-        let dy = (r - py).max(py - (hf - r)).max(0.0);
+        let dx = (x0 + r - px).max(px - (x1 - r)).max(0.0);
+        let dy = (y0 + r - py).max(py - (y1 - r)).max(0.0);
         let d = (dx * dx + dy * dy).sqrt() - r;
         o[3] *= (0.5 - d / f).clamp(0.0, 1.0);
         o
     })
+}
+
+/// The box round every pixel that is not transparent, as edges in
+/// pixels, or `None` when there is nothing there.
+fn opaque_box(p: &[f32], w: usize, h: usize) -> Option<(f32, f32, f32, f32)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+    for y in 0..h {
+        let row = &p[y * w * 4..(y + 1) * w * 4];
+        let Some(first) = (0..w).find(|&x| row[x * 4 + 3] > 0.001) else { continue };
+        let last = (0..w).rev().find(|&x| row[x * 4 + 3] > 0.001).unwrap_or(first);
+        x0 = x0.min(first);
+        x1 = x1.max(last + 1);
+        y0 = y0.min(y);
+        y1 = y + 1;
+    }
+    (x1 > x0).then_some((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
 }
 
 /// Lay the layer's silhouette under it, offset and blurred, in `color`.
@@ -189,6 +208,18 @@ mod tests {
 
         // The colour is left as it was; only the alpha is carved.
         assert!((card[((32 * w + 0) * 4) as usize] - 1.0).abs() < 1e-6);
+
+        // Cropped to a window, the window's corners are the ones rounded.
+        let mut cropped = vec![0.0f32; (w * h * 4) as usize];
+        for y in 16..48u32 {
+            for x in 8..56u32 {
+                let i = ((y * w + x) * 4) as usize;
+                cropped[i..i + 4].copy_from_slice(&[1.0; 4]);
+            }
+        }
+        let card = rounded_corners(cropped, w, h, 0.25, 0.0);
+        assert!(alpha(&card, w, 8, 16) < 0.01, "the window's corner is gone");
+        assert!(alpha(&card, w, 32, 16) > 0.99, "the middle of its top edge is not");
 
         // A radius of nothing changes nothing.
         let flat = vec![1.0f32; (w * h * 4) as usize];
