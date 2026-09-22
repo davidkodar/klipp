@@ -153,6 +153,8 @@ pub enum EditCommand {
     SetSequenceFormat { old: (Resolution, Fps), new: (Resolution, Fps) },
     /// The move over the whole sequence; see `klipp_timeline::Camera`.
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
+    /// How far back a clip sits for the camera; see `Clip::depth`.
+    SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,
@@ -643,6 +645,7 @@ impl EditCommand {
             EditCommand::SetClipRole { .. } => "Set Clip Role",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetSequenceCamera { .. } => "Camera",
+            EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",

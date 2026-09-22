@@ -314,6 +314,10 @@ pub struct ClipJson {
     /// without this field load as `Normal`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend_mode: Option<klipp_core::BlendMode>,
+    /// How far back the clip sits for the sequence camera. Absent means 1,
+    /// the composed plane, which every clip saved before there was depth is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f32>,
     /// Track-matte binding (this clip's alpha is masked by another clip's
     /// rendered RGBA). `None` = no matte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -941,6 +945,7 @@ mod tests {
             multicam_cuts: vec![],
             solo: None,
             blend_mode: None,
+            depth: None,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,
@@ -1007,6 +1012,7 @@ mod tests {
             multicam_cuts: vec![],
             solo: None,
             blend_mode: None,
+            depth: None,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,
@@ -1173,6 +1179,7 @@ mod tests {
             multicam_cuts: vec![],
             solo: None,
             blend_mode: None,
+            depth: None,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: None,

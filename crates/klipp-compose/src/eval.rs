@@ -91,6 +91,32 @@ pub fn camera_at(seq: &klipp_timeline::Sequence, playhead: klipp_core::Timecode)
     ))
 }
 
+/// The camera as a layer at `depth` sees it, or `None` for a layer on
+/// the glass (depth 0), which the camera does not move.
+///
+/// A pinhole: the layer sits `depth` times as far from the camera as the
+/// composed plane. The camera's sideways move shifts it by `1/depth` as
+/// much, so far layers drift less. The camera's zoom is a dolly — the
+/// camera moving in by `m = 1 - 1/zoom` of the plane's distance — and a
+/// layer at `depth` grows by `depth / (depth - m)`: a push-in grows near
+/// cards more than far ones, which is what makes a drift read as space
+/// rather than a flat picture sliding. At depth 1 it is the camera
+/// unchanged.
+pub fn camera_at_depth(camera: ResolvedCamera, depth: f32) -> Option<ResolvedCamera> {
+    if depth <= 0.0 || !depth.is_finite() {
+        return None;
+    }
+    if (depth - 1.0).abs() < 1e-6 {
+        return Some(camera);
+    }
+    let (look_x, look_y, zoom, roll) = camera;
+    let dolly = 1.0 - 1.0 / zoom;
+    // A layer the camera has reached or passed would blow up; hold it at
+    // twenty times its size instead.
+    let grow = depth / (depth - dolly).max(depth * 0.05);
+    Some((0.5 + (look_x - 0.5) / depth, 0.5 + (look_y - 0.5) / depth, grow, roll))
+}
+
 /// Put a layer's own transform behind the camera.
 ///
 /// The engine's transform maps a source pixel to the screen as
@@ -1058,6 +1084,31 @@ mod camera_tests {
         assert!((ro + 90.0).abs() < 1e-6, "the picture turns against the camera");
         // A card to the right of the middle swings to the top of frame.
         assert!(px.abs() < 1e-3 && (py + 100.0).abs() < 1e-3, "{px}, {py}");
+    }
+
+    #[test]
+    fn a_far_layer_drifts_and_grows_less_than_a_near_one() {
+        use super::camera_at_depth;
+        let cam = (0.6, 0.5, 1.5, -2.0);
+        assert_eq!(camera_at_depth(cam, 1.0), Some(cam), "the composed plane sees the camera as it is");
+        assert_eq!(camera_at_depth(cam, 0.0), None, "a layer on the glass is not moved");
+
+        let far = camera_at_depth(cam, 3.0).unwrap();
+        let near = camera_at_depth(cam, 0.8).unwrap();
+        // Looking right a tenth of the frame: a third as far for the far
+        // layer, further for the near one.
+        assert!((far.0 - (0.5 + 0.1 / 3.0)).abs() < 1e-6);
+        assert!(near.0 > 0.6);
+        // A 1.5x push is a dolly a third of the way in: the far layer grows
+        // by 3 / (3 - 1/3) = 1.125, the near one by more than 1.5.
+        assert!((far.2 - 1.125).abs() < 1e-5, "{}", far.2);
+        assert!(near.2 > 1.5, "{}", near.2);
+        // The roll is the camera's, the same for every layer.
+        assert_eq!((far.3, near.3), (-2.0, -2.0));
+
+        // A near layer the camera reaches is held, not blown up.
+        let passed = camera_at_depth((0.5, 0.5, 4.0, 0.0), 0.5).unwrap();
+        assert!(passed.2.is_finite() && passed.2 <= 20.0 + 1e-3);
     }
 
     #[test]

@@ -448,6 +448,7 @@ mod tests {
             enabled: true,
             solo: false,
             blend_mode: klipp_core::BlendMode::Normal,
+            depth: 1.0,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,

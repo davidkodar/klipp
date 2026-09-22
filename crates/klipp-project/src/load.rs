@@ -486,6 +486,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     enabled: c.enabled.unwrap_or(true),
                     solo: c.solo.unwrap_or(false),
                     blend_mode: c.blend_mode.unwrap_or(klipp_core::BlendMode::Normal),
+                    depth: c.depth.filter(|d| d.is_finite() && *d >= 0.0).unwrap_or(1.0),
                     matte_source: c.matte_source.as_ref().and_then(load_matte_binding),
                     matte_stencil: c.matte_stencil.as_ref().map(|s| klipp_timeline::StencilSettings {
                         channel: s.channel,

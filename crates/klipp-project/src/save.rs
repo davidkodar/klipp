@@ -311,6 +311,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         } else {
                             Some(c.blend_mode)
                         },
+                        depth: ((c.depth - 1.0).abs() > 1e-6).then_some(c.depth),
                         matte_source: c.matte_source.as_ref().map(|m| crate::format::MatteBindingJson {
                             source_clip_id: m.source_clip_id.0.to_string(),
                             channel: m.channel,

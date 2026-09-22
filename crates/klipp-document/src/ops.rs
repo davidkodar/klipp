@@ -687,6 +687,14 @@ pub enum Op {
         #[serde(default)]
         track: Option<TrackRef>,
     },
+    /// How far back a clip sits for the sequence camera: 1 is the composed
+    /// plane, 3 three times as far (it drifts a third as much and grows
+    /// less under a push), 0.5 nearer. 0 fixes it to the screen, so type
+    /// can hold still while the scene drifts behind it.
+    Depth {
+        clip_id: ClipRef,
+        depth: f32,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -1843,6 +1851,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             compose(seq, pool, i, ti, clip, poses)
         }
         Op::Camera { keys } => camera(seq, i, keys),
+        Op::Depth { clip_id, depth } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            if !depth.is_finite() || !(0.0..=20.0).contains(depth) {
+                return Err(refuse(i, format!("a depth of {depth}"), "give depth from 0 (on the screen) to 20; 1 is the composed plane"));
+            }
+            if (clip.depth - depth).abs() < 1e-6 {
+                return Err(refuse(i, format!("{} is already at depth {depth}", clip_name(seq, pool, clip)), "give another depth"));
+            }
+            let where_ = if *depth == 0.0 { "on the screen, out of the camera's reach".to_string() } else { format!("at depth {depth:.2}") };
+            Ok((format!("{} sits {where_}", clip_name(seq, pool, clip)), EditCommand::SetClipDepth { clip_id: clip.id, old: clip.depth, new: *depth }, vec![clip.id]))
+        }
         Op::Crop { clip_id, left, right, top, bottom } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             crop(seq, pool, i, ti, clip, [*left, *right, *top, *bottom])
@@ -4775,6 +4794,27 @@ mod tests {
         let EditCommand::SetSequenceCamera { new, .. } = &plan.steps[0].edit else { panic!("a camera") };
         let peak = (1..60).map(|i| evaluate(&new.zoom_keyframes, i as f64 * 0.05, 1.0)).fold(0.0f32, f32::max);
         assert!(peak > 1.2, "back_out pushes past and settles: {peak}");
+    }
+
+    #[test]
+    fn a_depth_is_set_undone_and_refused_when_it_changes_nothing() {
+        let (seq, pool, _media, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Depth { clip_id: ClipRef::Id(a), depth: 3.0 }]).unwrap();
+        assert!(plan.steps[0].what.contains("depth 3.00"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].depth, 3.0);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].depth, 1.0);
+
+        let bad = |d: f32| resolve(&seq, &pool, &[Op::Depth { clip_id: ClipRef::Id(a), depth: d }]).unwrap_err();
+        assert!(bad(1.0).why.contains("already"));
+        assert!(bad(-1.0).why.contains("depth"));
+        let plan = resolve(&seq, &pool, &[Op::Depth { clip_id: ClipRef::Id(a), depth: 0.0 }]).unwrap();
+        assert!(plan.steps[0].what.contains("on the screen"), "{}", plan.steps[0].what);
     }
 
     #[test]

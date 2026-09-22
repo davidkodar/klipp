@@ -74,6 +74,11 @@ impl DocumentView<'_> {
             EditCommand::SetSequenceCamera { old, .. } => {
                 self.sequences[self.active].camera = (**old).clone();
             }
+            EditCommand::SetClipDepth { clip_id, old, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.depth = *old;
+                }
+            }
             EditCommand::SetSequenceFormat { old, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.resolution = old.0;
@@ -651,6 +656,11 @@ impl DocumentView<'_> {
             }
             EditCommand::SetSequenceCamera { new, .. } => {
                 self.sequences[self.active].camera = (**new).clone();
+            }
+            EditCommand::SetClipDepth { clip_id, new, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    c.depth = *new;
+                }
             }
             EditCommand::SetSequenceFormat { new, .. } => {
                 let seq = &mut self.sequences[self.active];
