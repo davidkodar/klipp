@@ -779,6 +779,23 @@ impl CommandHistory {
         self.max_size = max;
     }
 
+    /// Let a continuing gesture — a value being dragged — update the edit
+    /// on top of the stack instead of stacking one edit per step. `f`
+    /// says whether it took the new value; when it did, redo is cleared
+    /// as a push would. Returns whether it merged; if not, push.
+    pub fn merge_into_last(&mut self, f: impl FnOnce(&mut EditCommand) -> bool) -> bool {
+        if self.batch.is_some() {
+            return false;
+        }
+        let Some(last) = self.undo_stack.back_mut() else { return false };
+        if !f(&mut last.command) {
+            return false;
+        }
+        self.redo_stack.clear();
+        self.bump_revision();
+        true
+    }
+
     pub fn push(&mut self, entry: HistoryEntry) {
         if let Some(batch) = self.batch.as_mut() {
             batch.push(entry.command);
@@ -2542,5 +2559,32 @@ mod batch_tests {
         h.begin_batch();
         h.end_batch();
         assert!(h.undo().is_none());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn a_dragged_value_is_one_undo_step_and_a_different_edit_is_its_own() {
+        let mut h = CommandHistory::new();
+        let clip_id = klipp_core::ClipId::new();
+        let depth = |old: f32, new: f32| HistoryEntry { command: EditCommand::SetClipDepth { clip_id, old, new } };
+        h.push(depth(1.0, 1.5));
+        // The drag goes on: the same edit takes the new value.
+        let took = h.merge_into_last(|last| match last {
+            EditCommand::SetClipDepth { new, .. } => {
+                *new = 3.0;
+                true
+            }
+            _ => false,
+        });
+        assert!(took);
+        assert_eq!(h.undo_stack.len(), 1);
+        assert!(matches!(h.undo_stack.back().unwrap().command, EditCommand::SetClipDepth { old, new, .. } if old == 1.0 && new == 3.0));
+        // Something else on top is not merged into.
+        h.push(HistoryEntry { command: EditCommand::SetSequenceCamera { old: Box::default(), new: Box::default() } });
+        assert!(!h.merge_into_last(|last| matches!(last, EditCommand::SetClipDepth { .. })));
     }
 }

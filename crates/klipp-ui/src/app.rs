@@ -7383,6 +7383,51 @@ impl KlippApp {
                     true
                 }
                 // Node graph, color grading, keyframes, LUT — handled by handle_color_commands
+                AppCommand::SetClipDepth { clip_id, depth } => {
+                    let depth = depth.clamp(0.0, 20.0);
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        let clip = &mut seq.tracks[ti].clips[ci];
+                        let old = clip.depth;
+                        if (old - depth).abs() > 1e-6 {
+                            clip.depth = depth;
+                            let cid = *clip_id;
+                            let history = self.state.active_history_mut();
+                            let merged = history.merge_into_last(|last| match last {
+                                crate::history::EditCommand::SetClipDepth { clip_id, new, .. } if *clip_id == cid => {
+                                    *new = depth;
+                                    true
+                                }
+                                _ => false,
+                            });
+                            if !merged {
+                                history.push(crate::history::HistoryEntry {
+                                    command: crate::history::EditCommand::SetClipDepth { clip_id: cid, old, new: depth },
+                                });
+                            }
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
+                    if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
+                        let old = seq.camera.clone();
+                        seq.camera.shutter_deg = shutter_deg.clamp(0.0, 360.0);
+                        seq.camera.shutter_samples = (*samples).clamp(2, 32);
+                        if seq.camera != old {
+                            let new = seq.camera.clone();
+                            let id = seq.id;
+                            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
+                            });
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
                 AppCommand::SetClipRole { clip_id, role } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -9359,6 +9404,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9399,6 +9446,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9458,6 +9507,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9488,6 +9539,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9524,6 +9577,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9552,6 +9607,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9603,6 +9660,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -9763,6 +9822,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes.clear(),
                                 klipp_core::VideoParam::Scale => clip.transform_scale_keyframes.clear(),
                                 klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes.clear(),
+                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes.clear(),
+                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes.clear(),
                                 klipp_core::VideoParam::MatteFeather => clip.matte_feather_keyframes.clear(),
                                 klipp_core::VideoParam::MatteChoke => clip.matte_choke_keyframes.clear(),
                             }
@@ -9781,6 +9842,8 @@ impl KlippApp {
                             klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                             klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                             klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                            klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                            klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                             klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                             klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                         };
@@ -9813,6 +9876,8 @@ impl KlippApp {
                                         klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                         klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                         klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                        klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                        klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                         klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                         klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                                     };
@@ -9853,6 +9918,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &mut clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &mut clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &mut clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &mut clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &mut clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
@@ -18301,6 +18368,7 @@ impl KlippApp {
                             seq.resolution.height,
                             seq.fps.num,
                             seq.fps.den,
+                            (seq.camera.shutter_deg, seq.camera.shutter_samples),
                         ),
                     );
                 }
@@ -23915,6 +23983,8 @@ impl KlippApp {
                                     klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                     klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                     klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
@@ -24599,6 +24669,8 @@ impl KlippApp {
                                     klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                     klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                     klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
@@ -24612,6 +24684,8 @@ impl KlippApp {
                                         klipp_core::VideoParam::PositionY => transform.1,
                                         klipp_core::VideoParam::Scale => transform.2,
                                         klipp_core::VideoParam::Rotation => transform.3,
+                                        klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
+                                        klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
                                         klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
                                         klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
                                     };
@@ -24668,6 +24742,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                             }
@@ -24714,6 +24790,8 @@ impl KlippApp {
                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                             }
@@ -31189,7 +31267,13 @@ impl KlippApp {
                 .get(dlg.sequence_idx)
                 .map(|s| (s.resolution.width, s.resolution.height, s.fps.num, s.fps.den))
                 .unwrap_or((0, 0, 0, 0));
-            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d);
+            let orig_shutter = self
+                .state
+                .sequences
+                .get(dlg.sequence_idx)
+                .map(|s| (s.camera.shutter_deg, s.camera.shutter_samples))
+                .unwrap_or((0.0, 8));
+            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d, orig_shutter);
             cmds.extend(dlg_cmds);
             if !still_open {
                 self.sequence_settings_dialog = None;

@@ -2745,7 +2745,8 @@ fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
         .unwrap_or((0.0, 0.0, 0.0));
     let rx = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, t, rx);
     let ry = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, t, ry);
-    let tilted = !clip.transform_tilt_x_keyframes.is_empty() || !clip.transform_tilt_y_keyframes.is_empty();
+    // Keyframed, or set still in the inspector: either way a tilt.
+    let tilted = rx != 0.0 || ry != 0.0 || !clip.transform_tilt_x_keyframes.is_empty() || !clip.transform_tilt_y_keyframes.is_empty();
     (rx, ry, if tilted && persp <= 0.0 { 1.0 } else { persp })
 }
 

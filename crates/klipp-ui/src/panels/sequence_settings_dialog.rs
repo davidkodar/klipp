@@ -20,10 +20,13 @@ pub struct SequenceSettingsDialog {
     /// Index into `FPS_PRESETS`. Same behaviour — defaults to last (Custom)
     /// when no preset matches.
     fps_idx: usize,
+    /// The sequence camera's shutter: degrees (0 off) and samples.
+    pub shutter_deg: f32,
+    pub shutter_samples: u8,
 }
 
 impl SequenceSettingsDialog {
-    pub fn open(sequence_idx: usize, width: u32, height: u32, fps_num: u32, fps_den: u32) -> Self {
+    pub fn open(sequence_idx: usize, width: u32, height: u32, fps_num: u32, fps_den: u32, (shutter_deg, shutter_samples): (f32, u8)) -> Self {
         let resolution_idx = RESOLUTION_PRESETS
             .iter()
             .position(|(_, w, h)| *w == width && *h == height)
@@ -32,7 +35,7 @@ impl SequenceSettingsDialog {
             .iter()
             .position(|(_, n, d)| *n == fps_num && *d == fps_den)
             .unwrap_or_else(|| FPS_PRESETS.len() - 1);
-        Self { sequence_idx, width, height, fps_num, fps_den, resolution_idx, fps_idx }
+        Self { sequence_idx, width, height, fps_num, fps_den, resolution_idx, fps_idx, shutter_deg, shutter_samples }
     }
 
     /// Show the modal. Returns `(still_open, commands)`. When the user clicks
@@ -45,6 +48,7 @@ impl SequenceSettingsDialog {
         original_height: u32,
         original_fps_num: u32,
         original_fps_den: u32,
+        original_shutter: (f32, u8),
     ) -> (bool, Vec<AppCommand>) {
         let mut open = true;
         let mut cmds = Vec::new();
@@ -139,6 +143,29 @@ impl SequenceSettingsDialog {
                         }
                     });
 
+                ui.add_space(12.0);
+
+                // ── Motion blur ──
+                ui.label(egui::RichText::new("Motion blur").strong());
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Shutter");
+                    ui.add(egui::DragValue::new(&mut self.shutter_deg).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}"))
+                        .on_hover_text("How long the shutter stays open, as a share of a frame. 180\u{00b0} is the film look; 0 is no motion blur.");
+                    ui.add_space(12.0);
+                    ui.label("Samples");
+                    ui.add_enabled(self.shutter_deg > 0.0, egui::DragValue::new(&mut self.shutter_samples).range(2..=32))
+                        .on_hover_text("Instants blended across the open shutter. More is smoother and slower to render.");
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for (label, deg) in [("Off", 0.0), ("90\u{00b0}", 90.0), ("180\u{00b0}", 180.0), ("360\u{00b0}", 360.0)] {
+                        if ui.selectable_label(self.shutter_deg == deg, label).clicked() {
+                            self.shutter_deg = deg;
+                        }
+                    }
+                });
+
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { open = false; }
@@ -158,6 +185,13 @@ impl SequenceSettingsDialog {
                     height: self.height,
                 });
             }
+            if (self.shutter_deg, self.shutter_samples) != original_shutter {
+                cmds.push(AppCommand::SetSequenceShutter {
+                    sequence_idx: self.sequence_idx,
+                    shutter_deg: self.shutter_deg,
+                    samples: self.shutter_samples,
+                });
+            }
             if self.fps_num != original_fps_num || self.fps_den != original_fps_den {
                 cmds.push(AppCommand::SetSequenceFps {
                     sequence_idx: self.sequence_idx,
@@ -168,5 +202,41 @@ impl SequenceSettingsDialog {
         }
 
         (open, cmds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_dialog_offers_the_shutter_and_says_nothing_when_it_is_left_alone() {
+        let ctx = egui::Context::default();
+        let mut dlg = SequenceSettingsDialog::open(0, 1920, 1080, 24, 1, (180.0, 8));
+        let mut text = String::new();
+        let mut cmds = Vec::new();
+        // Two passes: egui lays a window out before it paints it.
+        for _ in 0..2 {
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                let (_, c) = dlg.show(ctx, 1920, 1080, 24, 1, (180.0, 8));
+                cmds = c;
+            });
+            text.clear();
+            fn walk(shape: &egui::Shape, out: &mut String) {
+                match shape {
+                    egui::Shape::Text(t) => {
+                        out.push_str(t.galley.text());
+                        out.push('\n');
+                    }
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        }
+        for label in ["Motion blur", "Shutter", "Samples"] {
+            assert!(text.contains(label), "no {label} in:\n{text}");
+        }
+        assert!(cmds.is_empty(), "nothing is sent until Apply");
     }
 }

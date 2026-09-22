@@ -30,6 +30,12 @@ pub enum VideoParam {
     MatteFeather,
     /// Phase 4D — track-matte choke radius (px). Same routing as above.
     MatteChoke,
+    /// Tilt in perspective about the picture's horizontal axis, degrees
+    /// (`Clip::transform_tilt_x_keyframes`).
+    TiltX,
+    /// Tilt in perspective about its vertical axis, degrees
+    /// (`Clip::transform_tilt_y_keyframes`).
+    TiltY,
 }
 
 /// HDR transfer characteristic for export. Writes matching color-space tags
@@ -2457,6 +2463,12 @@ pub enum AppCommand {
 
     // Clip role
     SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+    /// How far back a clip sits for the sequence camera (`Clip::depth`).
+    /// Undoable; a drag of the value is one undo step.
+    SetClipDepth { clip_id: ClipId, depth: f32 },
+    /// The sequence camera's shutter: motion blur on everything that moves.
+    /// `shutter_deg` 0 is off. Undoable.
+    SetSequenceShutter { sequence_idx: usize, shutter_deg: f32, samples: u8 },
 
     // Clip speed
     SetClipSpeed { clip_id: ClipId, speed: f64 },
