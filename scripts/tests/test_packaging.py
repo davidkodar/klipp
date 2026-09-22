@@ -32,6 +32,12 @@ class ArchPackagingTests(unittest.TestCase):
         for name in ("klipp-app", "klipp-hdr-out", "klipp-mcp"):
             (release / name).write_text(f"fixture {name}\n")
         self.env = dict(os.environ, startdir=str(self.root / "packaging"), pkgdir=str(self.stage))
+        self.bin_dir = self.root / "fake-bin"
+        self.bin_dir.mkdir()
+        git = self.bin_dir / "git"
+        git.write_text('#!/bin/sh\ncase "$*" in\n"rev-list --count HEAD") echo 123;;\n"rev-parse --short HEAD") echo abcdef12;;\n*) exit 1;;\nesac\n')
+        git.chmod(0o755)
+        self.env["PATH"] = f"{self.bin_dir}:{os.environ['PATH']}"
 
     def run_function(self, name):
         return subprocess.run(
@@ -65,18 +71,27 @@ class ArchPackagingTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("klipp-icon-32.png", result.stderr)
 
+    def test_initial_version_matches_pkgver_without_rewriting_recipe(self):
+        recipe = self.root / "packaging/PKGBUILD"
+        before = recipe.read_bytes()
+        result = subprocess.run(
+            ["bash", "-ec", 'source "$startdir/PKGBUILD"; printf "%s\\n" "$pkgver"; pkgver'],
+            env=self.env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["r123.abcdef12", "r123.abcdef12"])
+        self.assertEqual(recipe.read_bytes(), before)
+
     def test_build_uses_the_directory_that_package_reads(self):
         scripts = self.root / "scripts"
         scripts.mkdir()
         sdk = scripts / "vulkan-sdk.sh"
         sdk.write_text('#!/bin/sh\ntouch "$startdir/sdk-ran"\n')
         sdk.chmod(0o755)
-        bin_dir = self.root / "fake-bin"
-        bin_dir.mkdir()
-        cargo = bin_dir / "cargo"
+        cargo = self.bin_dir / "cargo"
         cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$startdir/cargo-args"\n')
         cargo.chmod(0o755)
-        self.env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", CARGO_TARGET_DIR="/unrelated/build-output")
+        self.env["CARGO_TARGET_DIR"] = "/unrelated/build-output"
         result = self.run_function("build")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root / "packaging/sdk-ran").is_file())

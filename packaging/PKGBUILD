@@ -10,7 +10,6 @@
 # /usr/lib/klipp).
 
 pkgname=klipp-git
-pkgver=0
 pkgrel=1
 pkgdesc="GPU-accelerated non-linear video editor for Linux, with a linear-light colour pipeline and an AI assistant"
 arch=('x86_64')
@@ -65,6 +64,11 @@ pkgver() {
   # A monotonic version from git: r<commit-count>.<short-sha>.
   printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
+
+# This recipe builds an existing checkout rather than fetching VCS sources.
+# Resolve its version up front so makepkg does not rewrite the tracked recipe
+# and leave a dirty file that blocks the user's next git pull.
+pkgver=$(pkgver)
 
 build() {
   cd "$_root"
