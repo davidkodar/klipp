@@ -9,7 +9,8 @@ use crossbeam_channel::{Receiver, Sender};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// The embedded reference image for effect thumbnails (320x180 PNG).
+/// The embedded reference image effect thumbnails are rendered on,
+/// until the viewer has a frame of the user's own to use instead.
 static REFERENCE_PNG: &[u8] = include_bytes!("../../../../assets/effect_preview_reference.png");
 
 /// Decode the embedded reference PNG into an RGBA ReferenceFrame.
