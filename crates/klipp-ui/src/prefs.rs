@@ -116,8 +116,9 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralPrefs {
-    /// Check published releases at most once per day, off the UI thread.
-    #[serde(default = "default_true")]
+    /// Explicit opt-in to background release checks. The original setting
+    /// defaulted on, so its serialized value cannot establish user consent.
+    #[serde(default, rename = "automatic_update_checks_opt_in")]
     pub check_for_updates: bool,
     /// Preview releases are never offered unless explicitly enabled.
     #[serde(default)]
@@ -792,7 +793,7 @@ impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             auto_save_interval_secs: 300,
-            check_for_updates: true,
+            check_for_updates: false,
             preview_updates: false,
             last_update_check: 0,
             dismissed_update: None,

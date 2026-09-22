@@ -39,6 +39,26 @@ fn installation(exe: &Path, owner: Option<&str>) -> Installation {
     Installation::Source
 }
 
+fn probe_installation(exe: &Path, pacman: &Path, pacman_conf: &Path) -> (Installation, bool) {
+    // Unmanaged builds and other distributions must not launch Arch commands.
+    if exe != Path::new("/usr/lib/klipp/klipp") || !pacman.is_file() {
+        return (Installation::Source, false);
+    }
+    let owner = Command::new(pacman).args(["-Qqo"]).arg(exe).output().ok();
+    let owner = owner
+        .as_ref()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout));
+    let install = installation(exe, owner.as_deref());
+    let repository = install == Installation::ArchRelease
+        && pacman_conf.is_file()
+        && Command::new(pacman_conf)
+            .args(["--repo", "klipp", "Server"])
+            .output()
+            .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
+    (install, repository)
+}
+
 fn newest(releases: &[Release], current: &str, preview: bool) -> Result<Option<Version>, String> {
     let current =
         Version::parse(current).map_err(|_| "This build has an invalid release version.")?;
@@ -134,21 +154,11 @@ impl Updates {
         self.pending = Some(rx);
         std::thread::spawn(move || {
             let exe = std::env::current_exe().unwrap_or_default();
-            let owner = Command::new("/usr/bin/pacman")
-                .args(["-Qqo"])
-                .arg(&exe)
-                .output()
-                .ok();
-            let owner = owner
-                .as_ref()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout));
-            let install = installation(&exe, owner.as_deref());
-            let repository = install == Installation::ArchRelease
-                && Command::new("/usr/bin/pacman-conf")
-                    .args(["--repo", "klipp", "Server"])
-                    .output()
-                    .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
+            let (install, repository) = probe_installation(
+                &exe,
+                Path::new("/usr/bin/pacman"),
+                Path::new("/usr/bin/pacman-conf"),
+            );
             let release = fetch(klipp_core::build_info::get().version, preview);
             let _ = tx.send(Check {
                 release,
@@ -393,7 +403,10 @@ mod tests {
 
     #[test]
     fn notifications_respect_disabled_checks_and_dismissal() {
-        let mut prefs = GeneralPrefs::default();
+        let mut prefs = GeneralPrefs {
+            check_for_updates: true,
+            ..Default::default()
+        };
         let mut updates = available(Installation::Source);
         assert!(ui_text(&mut updates, &mut prefs).contains("0.20.0 available"));
         prefs.dismissed_update = Some("0.20.0".into());
@@ -413,5 +426,55 @@ mod tests {
         let text = ui_text(&mut updates, &mut prefs);
         assert!(!text.contains("Open system updater"));
         assert!(text.contains("makepkg -si"));
+    }
+    #[test]
+    fn no_background_work_without_opt_in_even_after_startup_delay() {
+        let mut prefs = GeneralPrefs::default();
+        let mut updates = Updates {
+            started: Instant::now() - Duration::from_secs(60),
+            ..Default::default()
+        };
+        ui_text(&mut updates, &mut prefs);
+        assert!(updates.pending.is_none());
+        assert!(updates.result.is_none());
+        assert_eq!(prefs.last_update_check, 0);
+    }
+
+    #[test]
+    fn preferences_require_fresh_consent_and_preserve_explicit_opt_in() {
+        let mut json = serde_json::to_value(GeneralPrefs::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("automatic_update_checks_opt_in");
+        let missing: GeneralPrefs = serde_json::from_value(json.clone()).unwrap();
+        assert!(!missing.check_for_updates);
+        // The first implementation saved true by default; do not treat that
+        // ambiguous legacy value as permission to start network requests.
+        json["check_for_updates"] = true.into();
+        let legacy: GeneralPrefs = serde_json::from_value(json.clone()).unwrap();
+        assert!(!legacy.check_for_updates);
+        json["automatic_update_checks_opt_in"] = true.into();
+        let opted_in: GeneralPrefs = serde_json::from_value(json).unwrap();
+        assert!(opted_in.check_for_updates);
+        let roundtrip: GeneralPrefs =
+            serde_json::from_value(serde_json::to_value(opted_in).unwrap()).unwrap();
+        assert!(roundtrip.check_for_updates);
+    }
+
+    #[test]
+    fn missing_arch_tools_and_unmanaged_paths_do_not_probe() {
+        let missing = Path::new("/klipp-test-missing/pacman");
+        assert_eq!(
+            probe_installation(Path::new("/usr/lib/klipp/klipp"), missing, missing),
+            (Installation::Source, false)
+        );
+        assert_eq!(
+            probe_installation(
+                Path::new("/tmp/klipp-app"),
+                Path::new("/usr/bin/pacman"),
+                Path::new("/usr/bin/pacman-conf")
+            ),
+            (Installation::Source, false)
+        );
     }
 }
