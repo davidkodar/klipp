@@ -1074,3 +1074,50 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
         assert!(rows.len() < 36, "leaning back, it is shorter than flat: {}", rows.len());
     }
 }
+
+/// With the shutter open, a card moving fast is smeared along its path:
+/// its leading and trailing edges fade over the distance it covers while
+/// the shutter is open, where without it they are a pixel sharp. A card
+/// that does not move stays sharp either way.
+#[test]
+fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
+    let (w, h) = (128u32, 72u32);
+    let shot = |shutter: f32, moving: bool| {
+        let mut card = media(0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, if moving { 48.0 } else { -48.0 });
+        let mut seq = sequence(vec![vec![card]]);
+        seq.camera.shutter_deg = shutter;
+        [false, true].map(|gpu| {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default())
+        })
+    };
+    // Pixels on the middle row that are neither background nor card.
+    let soft = |img: &[f32]| (0..w).filter(|&x| (0.05..0.95).contains(&img[((36 * w + x) * 4) as usize])).count();
+    // 96 px a second at 24 fps is 4 px a frame; a 360 degree shutter
+    // smears each edge across about that.
+    for (sharp, blurred) in shot(0.0, true).iter().zip(shot(360.0, true).iter()) {
+        assert!(soft(sharp) <= 2, "no shutter, sharp edges: {}", soft(sharp));
+        assert!(soft(blurred) >= 6, "shutter open, both edges smeared: {}", soft(blurred));
+    }
+    for still in shot(360.0, false) {
+        assert!(soft(&still) <= 2, "a card that does not move stays sharp: {}", soft(&still));
+    }
+
+    // A card that holds still but is carried by the camera is smeared too.
+    let mut card = media(0.0, 1.0);
+    klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+    let mut seq = sequence(vec![vec![card]]);
+    seq.camera.shutter_deg = 360.0;
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.1);
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 1.0, 0.9);
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let img = r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default());
+        assert!(soft(&img) >= 6, "carried by the camera, smeared: {}", soft(&img));
+    }
+}

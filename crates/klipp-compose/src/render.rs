@@ -417,6 +417,10 @@ pub struct Renderer {
     warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
     warm_rx: Option<std::sync::mpsc::Receiver<(klipp_timeline::TitleData, u32, u32, klipp_title::RestingRender)>>,
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
+    /// This frame's motion blur: for each clip that moves while the
+    /// sequence camera's shutter is open, its transform and clip time at
+    /// each sample across the shutter. Filled with the transforms.
+    shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
@@ -494,6 +498,7 @@ impl Renderer {
             warm_tx: None,
             warm_rx: None,
             glyph_cache: HashMap::new(),
+            shutter: HashMap::new(),
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
@@ -847,7 +852,7 @@ impl Renderer {
         if frame_blends(clip, time) {
             return Single::ForTheStack;
         }
-        if title_motion_blur(clip).is_some() {
+        if title_motion_blur(clip).is_some() || may_blur(seq, clip) {
             return Single::ForTheStack;
         }
         // Anything the grade panel asks for is read off the linear frame
@@ -1089,6 +1094,8 @@ impl Renderer {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() {
                 Some("title motion blur")
+            } else if may_blur(seq, c) {
+                Some("motion blur")
             } else {
                 None
             }
@@ -1156,6 +1163,7 @@ impl Renderer {
             }
         }
         behind_the_camera(seq, time, width, height, &mut transforms);
+        self.open_shutter(seq, time, fps, width, height, &transforms);
 
         self.executor.set_working_colorspace(self.working);
         let luma = klipp_color::linear::luma_coefs(self.working);
@@ -1613,6 +1621,7 @@ impl Renderer {
             }
         }
         behind_the_camera(seq, time, width, height, &mut transforms);
+        self.open_shutter(seq, time, fps, width, height, &transforms);
 
         // Clips whose rendered pixels another clip masks with.
         let mut matte_sources: HashSet<ClipId> = HashSet::new();
@@ -1875,9 +1884,10 @@ impl Renderer {
             None
         };
         let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
-        let pixels = match title_motion_blur(clip) {
-            Some(samples) => self.motion_blurred(clip, pixels, &fx, samples, time, fps, width, height),
-            None => self.effects(&fx, pixels, clip_time, width, height),
+        let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
+            (Some(samples), _) => self.motion_blurred(clip, pixels, &fx, samples, time, fps, width, height),
+            (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, width, height),
+            (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
     }
@@ -2259,6 +2269,77 @@ impl Renderer {
     /// A title with motion blur: the transform is sampled across the
     /// shutter and the samples averaged, in linear light. The transform is
     /// applied once — as these samples — and not again by the effects.
+    /// The sequence camera's shutter over one frame: for every clip that
+    /// moves while it is open, its full transform — own keyframes, the
+    /// camera from its depth — at each sample across the shutter. A clip
+    /// that does not move gets none and renders once.
+    fn open_shutter(&mut self, seq: &Sequence, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>) {
+        self.shutter.clear();
+        let cam = &seq.camera;
+        if cam.shutter_deg <= 0.0 {
+            return;
+        }
+        let n = cam.shutter_samples.clamp(2, 32) as usize;
+        // Open for shutter/360 of a frame, centred on the frame.
+        let open = (cam.shutter_deg as f64 / 360.0) / fps.max(1.0);
+        let clips: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
+        for id in transforms.keys() {
+            let Some(c) = clips.get(id).copied() else { continue };
+            // A linked clip would need its target resolved per sample,
+            // and a title with its own blur keeps it.
+            if c.transform_link.is_some() || title_motion_blur(c).is_some() {
+                continue;
+            }
+            let at = |o: f64| {
+                let t = (eval_clip_time(c, time) + o).max(0.0);
+                let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
+                let own = eval::evaluate_clip_own_transform(c, t, &ctx);
+                let xf = match eval::camera_at_secs(seq, time.to_secs_f64() + o).and_then(|k| eval::camera_at_depth(k, c.depth)) {
+                    Some(k) => eval::apply_camera(own, k, width, height),
+                    None => own,
+                };
+                (xf, t)
+            };
+            let samples: Vec<(ResolvedTransform, f64)> = (0..n).map(|i| at((i as f64 / (n - 1) as f64 - 0.5) * open)).collect();
+            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&c.transform_tilt_x_keyframes, t, 0.0), klipp_core::keyframe::evaluate(&c.transform_tilt_y_keyframes, t, 0.0));
+            let (first, last) = (samples[0], samples[n - 1]);
+            let moved = (first.0 .0 - last.0 .0).abs() > 0.05
+                || (first.0 .1 - last.0 .1).abs() > 0.05
+                || (first.0 .2 - last.0 .2).abs() > 1e-4
+                || (first.0 .4 - last.0 .4).abs() > 0.01
+                || tilt_at(first.1) != tilt_at(last.1);
+            if moved {
+                self.shutter.insert(*id, samples);
+            }
+        }
+    }
+
+    /// A clip smeared along its path while the shutter is open. What sits
+    /// before the transform in its chain — a crop, rounded corners — is
+    /// drawn once, the picture is placed at every sample and the samples
+    /// averaged, and what draws outside the picture — a shadow, a glow —
+    /// is cast once from the blurred result, so it blurs with it.
+    #[allow(clippy::too_many_arguments)]
+    fn shuttered(&mut self, clip: &Clip, pixels: Vec<f32>, fx: &[BuiltinEffect], samples: &[(ResolvedTransform, f64)], clip_time: f64, width: u32, height: u32) -> Vec<f32> {
+        let cut = fx
+            .iter()
+            .position(|e| matches!(e, BuiltinEffect::Transform { .. }))
+            .unwrap_or_else(|| fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len()));
+        let before = &fx[..cut];
+        let after: Vec<BuiltinEffect> = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
+        let base = self.effects(before, pixels, clip_time, width, height);
+        let mut acc = vec![0.0f32; base.len()];
+        for &(xf, t) in samples {
+            let placed = self.effects(&[transform_effect(xf, tilt(clip, fx, t))], base.clone(), t, width, height);
+            for (a, s) in acc.iter_mut().zip(&placed) {
+                *a += *s;
+            }
+        }
+        let inv = 1.0 / samples.len() as f32;
+        acc.iter_mut().for_each(|v| *v *= inv);
+        self.effects(&after, acc, clip_time, width, height)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn motion_blurred(
         &mut self,
@@ -2677,6 +2758,20 @@ fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32, f32)) -> 
         anchor_x: ax, anchor_y: ay, rotation_x: rx, rotation_y: ry, perspective: persp,
         focal_ref: None,
     }
+}
+
+/// Whether a clip could be blurred by the sequence camera's shutter this
+/// frame: the shutter is open and something that places it is animated.
+/// The fast paths step aside for such a clip; whether it really moved is
+/// settled with the samples.
+fn may_blur(seq: &Sequence, c: &Clip) -> bool {
+    let animated = |k: &[klipp_core::Keyframe]| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6);
+    let cam = &seq.camera;
+    seq.camera.shutter_deg > 0.0
+        && ((c.depth > 0.0 && [&cam.x_keyframes, &cam.y_keyframes, &cam.zoom_keyframes, &cam.roll_keyframes].iter().any(|k| animated(k)))
+            || [&c.transform_pos_x_keyframes, &c.transform_pos_y_keyframes, &c.transform_scale_keyframes, &c.transform_rotation_keyframes, &c.transform_tilt_x_keyframes, &c.transform_tilt_y_keyframes]
+                .iter()
+                .any(|k| animated(k)))
 }
 
 /// A title's motion blur, when on and not overridden by a transform link

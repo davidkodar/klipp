@@ -74,6 +74,12 @@ pub type ResolvedCamera = (f32, f32, f32, f32);
 /// The sequence's camera at `playhead`, or `None` when there is none.
 /// Reading it costs nothing on a sequence without one.
 pub fn camera_at(seq: &klipp_timeline::Sequence, playhead: klipp_core::Timecode) -> Option<ResolvedCamera> {
+    camera_at_secs(seq, playhead.to_secs_f64())
+}
+
+/// [`camera_at`] at any instant in seconds, not only on a frame: the
+/// motion blur samples between frames.
+pub fn camera_at_secs(seq: &klipp_timeline::Sequence, secs: f64) -> Option<ResolvedCamera> {
     let cam = &seq.camera;
     if cam.is_still() {
         return None;
@@ -81,7 +87,7 @@ pub fn camera_at(seq: &klipp_timeline::Sequence, playhead: klipp_core::Timecode)
     // A camera is keyframes over timeline time and nothing else: no
     // modifiers, because it belongs to no clip whose time they could be
     // driven by.
-    let t = playhead.to_secs_f64().max(0.0);
+    let t = secs.max(0.0);
     let at = |kfs: &[klipp_core::Keyframe], default: f32| klipp_core::keyframe::evaluate(kfs, t, default);
     Some((
         at(&cam.x_keyframes, 0.5),

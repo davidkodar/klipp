@@ -6776,6 +6776,9 @@ impl PlaybackEngine {
         track_ok
             && layer.clips.iter().all(|c| {
                 matches!(c.kind, klipp_timeline::ClipKind::Title(_))
+                    // Laid over as drawn, so only where the camera does
+                    // not move it.
+                    && (seq.camera.is_still() || c.depth == 0.0)
                     && c.node_graph.is_identity()
                     && c.effects.is_empty()
                     && c.builtin_effects.is_empty()
@@ -7063,6 +7066,11 @@ impl PlaybackEngine {
         };
         if seq.tracks.get(layer.track).is_none_or(|t| (t.opacity - 1.0).abs() > 1e-6) {
             blockers.push("track opacity below 1.0");
+        }
+        // A moving sequence camera places the clip as surely as its own
+        // keyframes do: the stack applies it, the plain present does not.
+        if !seq.camera.is_still() && clip.depth > 0.0 {
+            blockers.push("render keyframes on clip");
         }
         if clip.consumed_as_matte {
             blockers.push("clip is a matte source");

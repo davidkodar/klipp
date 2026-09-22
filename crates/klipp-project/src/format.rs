@@ -105,7 +105,7 @@ pub struct SequenceJson {
     pub edit_plan: Option<klipp_timeline::EditPlan>,
     /// The move over the whole sequence. Absent when there is no camera,
     /// which is every project saved before there could be one.
-    #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_still")]
+    #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]
     pub camera: klipp_timeline::Camera,
 }
 
