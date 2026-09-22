@@ -18,7 +18,7 @@ const FRAMES: u64 = 3;
 const BAND: u32 = W / 4;
 
 fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("klipp-hdr-export-{}", std::process::id()));
+    let d = klipp_testing::scratch::scratch_dir("klipp-hdr-export");
     std::fs::create_dir_all(&d).unwrap();
     d.join(name)
 }

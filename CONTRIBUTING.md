@@ -263,6 +263,15 @@ and `klipp-effects`' `gpu_pipelines_build` canary is not a no-op. That
 closes the largest hole a GPU-less runner would otherwise leave, though
 it does not make the parity tests meaningful.
 
+Generated-media tests use `target/test-scratch/` (under `CARGO_TARGET_DIR`
+when set), sweep finished runs, and honor an explicit `TMPDIR`. The hook
+also puts compiler scratch there by default and checks for at least 2 GiB
+of free headroom before building. This avoids filling a small `/tmp`
+tmpfs. If storage or quota errors occur, free space on the reported
+filesystem or set `TMPDIR` to a disk-backed directory; `df` cannot detect
+every per-user quota. Worktrees on tmpfs should point `CARGO_TARGET_DIR`
+at a disk-backed build directory too.
+
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
 is not for getting a red suite past the gate.

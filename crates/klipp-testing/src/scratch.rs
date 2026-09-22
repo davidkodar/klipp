@@ -19,11 +19,13 @@
 
 use std::path::{Path, PathBuf};
 
-/// This process's fixture directory under the system temp dir, created,
+/// This process's fixture directory under the test scratch root, created,
 /// with the directories of finished runs swept away first.
 ///
 /// `prefix` names the family — `"klipp-viewer-export"` gives
-/// `/tmp/klipp-viewer-export-<pid>`.
+/// `target/test-scratch/klipp-viewer-export-<pid>` by default.
+/// An explicit `TMPDIR` wins; otherwise `CARGO_TARGET_DIR` (or the
+/// workspace target directory) owns these large generated media files.
 ///
 /// The sweep is exact rather than a guess about age: a directory named
 /// after a process id that is no longer running is definitively finished
@@ -31,13 +33,32 @@ use std::path::{Path, PathBuf};
 /// leaving anything touched in the last hour alone, so a run starting
 /// alongside this one is never pulled out from under it.
 pub fn scratch_dir(prefix: &str) -> PathBuf {
-    let base = std::env::temp_dir();
+    let base = scratch_root();
     let me = std::process::id();
     sweep(&base, prefix, me);
     let dir = base.join(format!("{prefix}-{me}"));
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|e| panic!("cannot create fixture dir {}: {e}", dir.display()));
     dir
+}
+
+/// Parent for generated media. Do not default to the system's often-small
+/// RAM-backed `/tmp`: export fixtures can consume gigabytes.
+pub fn scratch_root() -> PathBuf {
+    choose_root(
+        std::env::var_os("TMPDIR").map(PathBuf::from),
+        std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
+    )
+}
+
+fn choose_root(tmpdir: Option<PathBuf>, target: Option<PathBuf>, workspace: &Path) -> PathBuf {
+    let root = tmpdir.filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| {
+        target.filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| workspace.join("target")).join("test-scratch")
+    });
+    // Cargo runs tests from the package directory, not the workspace
+    // where a relative target directory was selected.
+    if root.is_absolute() { root } else { workspace.join(root) }
 }
 
 /// [`scratch_dir`] and a file inside it.
@@ -82,6 +103,16 @@ fn finished(pid: u32, dir: &Path) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn generated_media_uses_target_unless_tmpdir_is_explicit() {
+        let workspace = Path::new("/workspace");
+        assert_eq!(choose_root(None, None, workspace), workspace.join("target/test-scratch"));
+        assert_eq!(choose_root(None, Some("/build".into()), workspace), Path::new("/build/test-scratch"));
+        assert_eq!(choose_root(None, Some("shared-build".into()), workspace), workspace.join("shared-build/test-scratch"));
+        assert_eq!(choose_root(Some("/scratch".into()), Some("/build".into()), workspace), Path::new("/scratch"));
+        assert_eq!(choose_root(Some("".into()), Some("".into()), workspace), workspace.join("target/test-scratch"));
+    }
+
     /// The directory is made, and named for this process.
     #[test]
     fn it_makes_a_directory_for_this_run() {
@@ -102,8 +133,8 @@ mod tests {
         let prefix = "klipp-scratch-sweeptest";
         // pid 1 is init, which is certainly running, and u32::MAX is
         // above every pid on Linux, so it certainly is not.
-        let dead = std::env::temp_dir().join(format!("{prefix}-{}", u32::MAX));
-        let alive = std::env::temp_dir().join(format!("{prefix}-1"));
+        let dead = scratch_root().join(format!("{prefix}-{}", u32::MAX));
+        let alive = scratch_root().join(format!("{prefix}-1"));
         std::fs::create_dir_all(&dead).unwrap();
         std::fs::create_dir_all(&alive).unwrap();
         std::fs::write(dead.join("leftover.bin"), b"x").unwrap();
@@ -121,7 +152,7 @@ mod tests {
     /// Directories of other families are none of its business.
     #[test]
     fn it_leaves_other_prefixes_alone() {
-        let other = std::env::temp_dir().join(format!("klipp-scratch-other-{}", u32::MAX));
+        let other = scratch_root().join(format!("klipp-scratch-other-{}", u32::MAX));
         std::fs::create_dir_all(&other).unwrap();
         let mine = scratch_dir("klipp-scratch-mine");
         assert!(other.exists(), "a different prefix was swept");
