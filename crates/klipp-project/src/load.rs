@@ -456,6 +456,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
                     transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
                     transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
+                    transform_tilt_x_keyframes: c.transform_tilt_x_keyframes.clone().unwrap_or_default(),
+                    transform_tilt_y_keyframes: c.transform_tilt_y_keyframes.clone().unwrap_or_default(),
                     matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
                     matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
                     clip_markers: c.clip_markers.as_ref().map(|markers| {

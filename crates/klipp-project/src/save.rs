@@ -279,6 +279,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
                         transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
                         transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
+                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty()).then(|| c.transform_tilt_x_keyframes.clone()),
+                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty()).then(|| c.transform_tilt_y_keyframes.clone()),
                         matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
                         matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
                         clip_markers: if c.clip_markers.is_empty() { None } else {

@@ -43,6 +43,8 @@ pub struct KeyframeSnapshot {
     pub transform_pos_y_keyframes: Vec<Keyframe>,
     pub transform_scale_keyframes: Vec<Keyframe>,
     pub transform_rotation_keyframes: Vec<Keyframe>,
+    pub transform_tilt_x_keyframes: Vec<Keyframe>,
+    pub transform_tilt_y_keyframes: Vec<Keyframe>,
     pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
     pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
     pub speed_keyframes: Vec<Keyframe>,
@@ -60,6 +62,8 @@ impl KeyframeSnapshot {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             effect_keyframes: HashMap::new(),
             audio_effect_keyframes: HashMap::new(),
             speed_keyframes: Vec::new(),
@@ -77,6 +81,8 @@ impl KeyframeSnapshot {
             transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
             transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
             transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+            transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes.clone(),
+            transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes.clone(),
             effect_keyframes: clip.effect_keyframes.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             speed_keyframes: clip.speed_keyframes.clone(),
@@ -93,6 +99,8 @@ impl KeyframeSnapshot {
         clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
         clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
         clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
+        clip.transform_tilt_x_keyframes = self.transform_tilt_x_keyframes.clone();
+        clip.transform_tilt_y_keyframes = self.transform_tilt_y_keyframes.clone();
         clip.effect_keyframes = self.effect_keyframes.clone();
         clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         clip.speed_keyframes = self.speed_keyframes.clone();

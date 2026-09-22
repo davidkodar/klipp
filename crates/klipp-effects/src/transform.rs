@@ -107,33 +107,9 @@ pub fn apply(
             let mut sx = rx * inv_sx;
             let mut sy = ry * inv_sy;
 
-            // 3D projection: apply inverse 3D rotations
+            // 3D tilt: the point on the tilted picture this pixel sees.
             if has_3d {
-                if focal > 0.0 {
-                    // Perspective projection: unproject from screen to 3D, then inverse rotate
-                    // Forward: p3d = Ry * Rx * [sx, sy, 0], then project: px = focal*x/z, py = focal*y/z
-                    // Inverse: we solve for source coords given output coords
-                    // Simplified: apply forward 3D rotation to get the source sampling point
-                    let z = 0.0f32;
-                    // Rotate around X (tilt)
-                    let y1 = sy * cos_rx - z * sin_rx;
-                    let z1 = sy * sin_rx + z * cos_rx;
-                    // Rotate around Y (pan)
-                    let x2 = sx * cos_ry + z1 * sin_ry;
-                    let z2 = -sx * sin_ry + z1 * cos_ry;
-                    // Perspective divide
-                    let w_factor = 1.0 + z2 / focal;
-                    if w_factor > 0.01 {
-                        sx = x2 / w_factor;
-                        sy = y1 / w_factor;
-                    }
-                } else {
-                    // Orthographic 3D rotation (no perspective)
-                    let y1 = sy * cos_rx;
-                    let x2 = sx * cos_ry;
-                    sx = x2;
-                    sy = y1;
-                }
+                (sx, sy) = unproject(sx, sy, (cos_rx, sin_rx), (cos_ry, sin_ry), focal).unwrap_or((f32::MIN, f32::MIN));
             }
 
             sx += ax;
@@ -194,6 +170,50 @@ pub fn apply(
 }
 
 /// Translation-only transform: shift the whole image by
+/// The point on a tilted picture that the screen point `(qx, qy)` sees,
+/// both relative to the anchor, or `None` when no point of it is there.
+///
+/// The picture lies in the plane z = 0 and is tilted about its x axis by
+/// `rx` (the top goes away for positive angles) and then its y axis by
+/// `ry` (the right edge goes away), so a point `(u, v)` of it lands at
+///
+///   X = u·cos ry + v·sin rx·sin ry
+///   Y = v·cos rx
+///   Z = u·sin ry − v·sin rx·cos ry        (Z grows away from the viewer)
+///
+/// and is seen through a pinhole `focal` pixels in front of the picture
+/// at `q = focal·(X, Y) / (focal + Z)`. Each screen point is a ray, and
+/// the ray meets the plane at the `(u, v)` solving the two linear
+/// equations `q·(focal + Z) = focal·(X, Y)`. With no perspective
+/// (`focal` 0) the view is orthographic: `q = (X, Y)`.
+///
+/// Rotating the screen point forward instead — what this did before —
+/// makes a turned picture wider rather than narrower.
+pub(crate) fn unproject(qx: f32, qy: f32, (cos_rx, sin_rx): (f32, f32), (cos_ry, sin_ry): (f32, f32), focal: f32) -> Option<(f32, f32)> {
+    let (a, b) = (sin_rx, sin_ry);
+    let (u, v) = if focal > 0.0 {
+        let a11 = qx * b - focal * cos_ry;
+        let a12 = -qx * a * cos_ry - focal * a * b;
+        let a21 = qy * b;
+        let a22 = -qy * a * cos_ry - focal * cos_rx;
+        let det = a11 * a22 - a12 * a21;
+        if det.abs() < 1e-9 {
+            return None;
+        }
+        let (b1, b2) = (-qx * focal, -qy * focal);
+        ((b1 * a22 - a12 * b2) / det, (a11 * b2 - b1 * a21) / det)
+    } else {
+        if cos_rx.abs() < 1e-6 || cos_ry.abs() < 1e-6 {
+            return None;
+        }
+        let v = qy / cos_rx;
+        ((qx - v * a * b) / cos_ry, v)
+    };
+    // A ray that meets the plane behind the camera sees nothing.
+    let z = u * b - v * a * cos_ry;
+    (focal <= 0.0 || focal + z > 0.0).then_some((u, v))
+}
+
 /// `(position_x, position_y)` with bilinear sub-pixel interpolation
 /// at fractional offsets, falling out to a row-copy when the offset
 /// is integer. Replaces the per-pixel inverse-mapping inner loop

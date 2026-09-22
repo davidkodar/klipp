@@ -6785,6 +6785,8 @@ impl PlaybackEngine {
                     && c.transform_pos_y_keyframes.is_empty()
                     && c.transform_scale_keyframes.is_empty()
                     && c.transform_rotation_keyframes.is_empty()
+                    && c.transform_tilt_x_keyframes.is_empty()
+                    && c.transform_tilt_y_keyframes.is_empty()
                     && matches!(c.blend_mode, klipp_core::BlendMode::Normal)
                     && c.matte_source.is_none()
                     && c.matte_stencil.is_none()
@@ -7082,6 +7084,8 @@ impl PlaybackEngine {
             || !clip.transform_pos_y_keyframes.is_empty()
             || !clip.transform_scale_keyframes.is_empty()
             || !clip.transform_rotation_keyframes.is_empty()
+            || !clip.transform_tilt_x_keyframes.is_empty()
+            || !clip.transform_tilt_y_keyframes.is_empty()
         {
             blockers.push("render keyframes on clip");
         }
