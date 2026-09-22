@@ -2468,7 +2468,9 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         // frame, which is what `compose` is for.
         "corners" | "rounded_corners" => E::RoundedCorners { radius: a * 0.25, feather: 0.002 },
         "shadow" | "drop_shadow" => E::DropShadow { offset_x: 0.0, offset_y: a * 0.02, blur: a * 0.04, color: [0, 0, 0], opacity: 0.2 + a * 0.6 },
-        "outer_glow" => E::OuterGlow { radius: a * 0.06, intensity: a, color: [255, 255, 255] },
+        // A cool light rather than white: white over a dark ground reads
+        // as grey haze, not as glow.
+        "outer_glow" => E::OuterGlow { radius: a * 0.06, intensity: a, color: [140, 150, 255] },
         "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
         "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },

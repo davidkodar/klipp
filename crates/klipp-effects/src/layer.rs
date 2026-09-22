@@ -74,33 +74,73 @@ fn opaque_box(p: &[f32], w: usize, h: usize) -> Option<(f32, f32, f32, f32)> {
 /// Lay the layer's silhouette under it, offset and blurred, in `color`.
 /// Offsets and blur are fractions of the frame width.
 pub fn drop_shadow(p: Vec<f32>, w: u32, h: u32, offset_x: f32, offset_y: f32, blur: f32, color: [u8; 3], opacity: f32) -> Vec<f32> {
-    spill(p, w, h, offset_x, offset_y, blur, color, opacity)
+    spills(p, w, h, &[Spill { offset_x, offset_y, blur, color, opacity }])
 }
 
 /// The same, centred: light spilling out of the layer's edge onto what
 /// is behind it. `radius` is a fraction of the frame width.
 pub fn outer_glow(p: Vec<f32>, w: u32, h: u32, radius: f32, intensity: f32, color: [u8; 3]) -> Vec<f32> {
-    spill(p, w, h, 0.0, 0.0, radius, color, intensity)
+    spills(p, w, h, &[Spill { offset_x: 0.0, offset_y: 0.0, blur: radius, color, opacity: intensity }])
 }
 
-/// The layer over a blurred, offset, coloured copy of its own alpha.
-fn spill(p: Vec<f32>, w: u32, h: u32, offset_x: f32, offset_y: f32, blur: f32, color: [u8; 3], opacity: f32) -> Vec<f32> {
-    let o = opacity.clamp(0.0, 1.0);
-    if o <= 0.001 {
+/// One blurred, offset, coloured copy of a layer's silhouette.
+#[derive(Debug, Clone, Copy)]
+pub struct Spill {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur: f32,
+    pub color: [u8; 3],
+    pub opacity: f32,
+}
+
+impl Spill {
+    /// The spill an effect lays, if it is one.
+    pub fn of(effect: &crate::BuiltinEffect) -> Option<Self> {
+        match *effect {
+            crate::BuiltinEffect::DropShadow { offset_x, offset_y, blur, color, opacity } => Some(Self { offset_x, offset_y, blur, color, opacity }),
+            crate::BuiltinEffect::OuterGlow { radius, intensity, color } => Some(Self { offset_x: 0.0, offset_y: 0.0, blur: radius, color, opacity: intensity }),
+            _ => None,
+        }
+    }
+}
+
+/// The layer over every spill in `run`, each cast from the layer's own
+/// silhouette. Applied one after another, a glow would be cast from the
+/// layer *and its shadow* — a wide grey plateau with the shadow lost in
+/// it — so a run of them is laid together. The first sits nearest the
+/// layer.
+pub fn spills(p: Vec<f32>, w: u32, h: u32, run: &[Spill]) -> Vec<f32> {
+    let casts: Vec<Vec<f32>> = run.iter().filter_map(|s| cast(&p, w, h, s)).collect();
+    if casts.is_empty() {
         return p;
+    }
+    // Stack the casts, the first on top, then the layer over them all.
+    let mut under = casts.last().cloned().unwrap_or_default();
+    for c in casts.iter().rev().skip(1) {
+        under = over(c, under);
+    }
+    over(&p, under)
+}
+
+/// A spill's cast: the silhouette moved and blurred, in its colour, with
+/// its opacity in the alpha. `None` when it would not show.
+fn cast(p: &[f32], w: u32, h: u32, s: &Spill) -> Option<Vec<f32>> {
+    let o = s.opacity.clamp(0.0, 1.0);
+    if o <= 0.001 {
+        return None;
     }
     let wf = w as f32;
-    let (ox, oy) = ((offset_x * wf).round() as i32, (offset_y * wf).round() as i32);
-    let sigma = blur.max(0.0) * wf;
+    let (ox, oy) = ((s.offset_x * wf).round() as i32, (s.offset_y * wf).round() as i32);
+    let sigma = s.blur.max(0.0) * wf;
     if ox == 0 && oy == 0 && sigma < 0.5 {
         // Nothing would show: the copy sits exactly under the layer.
-        return p;
+        return None;
     }
-    let col = [decode(color[0] as f32 / 255.0), decode(color[1] as f32 / 255.0), decode(color[2] as f32 / 255.0)];
+    let col = [decode(s.color[0] as f32 / 255.0), decode(s.color[1] as f32 / 255.0), decode(s.color[2] as f32 / 255.0)];
     // The colour goes everywhere and only the alpha is drawn, so the
     // blur cannot drag the colour toward black at the silhouette's edge.
-    let mut cast = vec![0.0f32; p.len()];
-    for px in cast.chunks_exact_mut(4) {
+    let mut out = vec![0.0f32; p.len()];
+    for px in out.chunks_exact_mut(4) {
         px[..3].copy_from_slice(&col);
     }
     let (wi, hi) = (w as i32, h as i32);
@@ -112,28 +152,26 @@ fn spill(p: Vec<f32>, w: u32, h: u32, offset_x: f32, offset_y: f32, blur: f32, c
             }
             // Off the frame is empty, not the edge repeated: a shadow
             // must not smear in from the border.
-            cast[(y as usize * w as usize + x as usize) * 4 + 3] = p[(sy as usize * w as usize + sx as usize) * 4 + 3];
+            out[(y as usize * w as usize + x as usize) * 4 + 3] = p[(sy as usize * w as usize + sx as usize) * 4 + 3] * o;
         }
     }
-    let cast = if sigma >= 0.5 { gaussian(&cast, w, h, sigma, true) } else { cast };
-    // The layer over its own shadow, straight-alpha src-over.
-    let mut out = p;
-    for (dst, src) in out.chunks_exact_mut(4).zip(cast.chunks_exact(4)) {
-        let sa = src[3] * o;
-        if sa <= 0.0005 {
-            continue;
-        }
-        let da = dst[3];
-        let oa = da + sa * (1.0 - da);
+    Some(if sigma >= 0.5 { gaussian(&out, w, h, sigma, true) } else { out })
+}
+
+/// `top` over `bottom`, straight-alpha src-over, into `bottom`.
+fn over(top: &[f32], mut bottom: Vec<f32>) -> Vec<f32> {
+    for (dst, src) in bottom.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
+        let (sa, da) = (src[3], dst[3]);
+        let oa = sa + da * (1.0 - sa);
         if oa <= 0.0 {
             continue;
         }
         for c in 0..3 {
-            dst[c] = (dst[c] * da + src[c] * sa * (1.0 - da)) / oa;
+            dst[c] = (src[c] * sa + dst[c] * da * (1.0 - sa)) / oa;
         }
         dst[3] = oa;
     }
-    out
+    bottom
 }
 
 #[cfg(test)]
@@ -192,6 +230,21 @@ mod tests {
         let cast = drop_shadow(placed(w, h, 16), w, h, 0.0, 6.0 / 64.0, 1.0 / 64.0, [0, 0, 0], 1.0);
         assert!(alpha(&cast, w, 32, 13) < 0.01);
         assert!(alpha(&cast, w, 32, 50) > 0.5);
+    }
+
+    #[test]
+    fn a_glow_and_a_shadow_are_both_cast_from_the_layer_not_from_each_other() {
+        let (w, h) = (64u32, 64u32);
+        let glow = Spill { offset_x: 0.0, offset_y: 0.0, blur: 3.0 / 64.0, color: [255, 255, 255], opacity: 0.5 };
+        let shadow = Spill { offset_x: 0.0, offset_y: 8.0 / 64.0, blur: 1.0 / 64.0, color: [0, 0, 0], opacity: 1.0 };
+        let alone = spills(placed(w, h, 16), w, h, &[glow]);
+        let both = spills(placed(w, h, 16), w, h, &[shadow, glow]);
+        // Above the card, where the shadow does not reach, the glow is
+        // what it was without it: not cast from the shadow as well.
+        assert!((alpha(&alone, w, 32, 12) - alpha(&both, w, 32, 12)).abs() < 1e-4);
+        // Below it the shadow shows, dark, over the glow.
+        let i = ((54 * w + 32) * 4) as usize;
+        assert!(both[i + 3] > 0.5 && both[i] < 0.2, "the shadow is there and dark: {:?}", &both[i..i + 4]);
     }
 
     #[test]

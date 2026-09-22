@@ -875,14 +875,24 @@ fn apply_chain(
     luma: [f32; 3],
 ) -> Vec<f32> {
     let mut frame = linear_rgba;
-    for effect in effects {
-        frame = match effect {
+    let mut i = 0;
+    while i < effects.len() {
+        // Shadows and glows next to each other are cast together, each
+        // from the layer's own silhouette; see `layer::spills`.
+        let run: Vec<layer::Spill> = effects[i..].iter().map_while(layer::Spill::of).collect();
+        if !run.is_empty() {
+            frame = layer::spills(frame, width, height, &run);
+            i += run.len();
+            continue;
+        }
+        frame = match &effects[i] {
             BuiltinEffect::Frei0r { type_id, params } => {
                 let u8s = linear_f32_rgba_to_srgb_u8(&frame);
                 srgb_u8_to_linear_f32_rgba(&frei0r_effect::apply(type_id, params, u8s, width, height, clip_time_secs))
             }
             e => cpu::apply(e, frame, width, height, luma),
         };
+        i += 1;
     }
     frame
 }
