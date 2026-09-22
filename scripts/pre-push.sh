@@ -82,55 +82,6 @@ if [ -z "$CARGO_BUILD_JOBS" ]; then
     export CARGO_BUILD_JOBS
 fi
 
-# The tests write real encoded files through the temp directory, and
-# on a stock systemd machine that is /tmp: a tmpfs sized at half of RAM
-# and shared with everything else running. The export parity suite
-# writes ProRes and 10-bit files, several per run, which is enough to
-# fill what is left of a 16 GB one.
-#
-# What comes back when it does is `Disk quota exceeded` from a test
-# that has nothing to do with quotas, on a machine with a terabyte
-# free — and the gate then reports "tests FAILED" and points at the
-# shaders, which is the wrong place entirely. That cost a detour once
-# already, and the next person would pay it again.
-#
-# So the tests get a scratch directory on the same disk as the build:
-# guaranteed disk-backed, sized like the repo, and removed by
-# `cargo clean` with everything else. `std::env::temp_dir()` reads
-# TMPDIR, so every test picks this up without knowing about it.
-#
-# KLIPP_TEST_TMPDIR=/somewhere puts it elsewhere.
-if [ -n "$KLIPP_TEST_TMPDIR" ]; then
-    _tmp="$KLIPP_TEST_TMPDIR"
-else
-    _tmp="$ROOT/target/test-tmp"
-fi
-mkdir -p "$_tmp" 2>/dev/null || {
-    printf '\n  pre-push: could not make a scratch directory at %s;\n' "$_tmp" >&2
-    printf '            the tests will use the system temp directory instead.\n\n' >&2
-}
-if [ -d "$_tmp" ]; then
-    TMPDIR="$_tmp"
-    export TMPDIR
-    # Say so when it is tight, before the tests spend 75 s arriving at
-    # a confusing failure. A warning, not a refusal: this is a
-    # heuristic and the number needed varies with what changed.
-    _free_kb=$(df -Pk "$_tmp" 2>/dev/null | awk 'NR==2 {print $4}')
-    case "$_free_kb" in
-        ''|*[!0-9]*) ;;
-        *)
-            if [ "$_free_kb" -lt 4194304 ]; then
-                printf '\n  pre-push: the test scratch directory has %s MB free.\n' \
-                    "$(( _free_kb / 1024 ))" >&2
-                printf '            %s\n' "$_tmp" >&2
-                printf '            The export tests write real encodes through it and\n' >&2
-                printf '            want a few GB. If the suite fails with a disk or\n' >&2
-                printf '            quota error, that is why — not your change.\n\n' >&2
-            fi
-            ;;
-    esac
-fi
-
 # A running Klipp competes with the GPU tests for the device.
 #
 # Several tests build their own wgpu device and render with it. With
@@ -206,6 +157,35 @@ if ! "$ROOT/scripts/check-signoff.sh"; then
     exit 1
 fi
 
+# Match klipp_testing::scratch, and keep compiler/linker temporary files
+# off a small system tmpfs too. A deliberate TMPDIR always wins.
+TMPDIR=${TMPDIR:-${CARGO_TARGET_DIR:-$ROOT/target}/test-scratch}
+if ! mkdir -p "$TMPDIR"; then
+    printf '\n  pre-push: cannot create scratch directory %s — push refused.\n' "$TMPDIR" >&2
+    exit 1
+fi
+# Relative CARGO_TARGET_DIR/TMPDIR paths are relative to this workspace;
+# child tools may change directory, so pass them an absolute location.
+TMPDIR=$(cd "$TMPDIR" && pwd)
+export TMPDIR
+printf '  pre-push: scratch directory: %s\n' "$TMPDIR"
+
+scratch_space() {
+    df -Pk "$TMPDIR" >&2 || true
+}
+# This is headroom for generated media, not a guarantee: quotas and
+# simultaneous builds can exhaust storage even when df reports room.
+_available=$(df -Pk "$TMPDIR" 2>/dev/null | awk 'NR == 2 {print $4}')
+case "$_available" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$_available" -lt 2097152 ]; then
+        printf '\n  pre-push: scratch has less than 2 GiB free — push refused.\n' >&2
+        scratch_space
+        printf '            Free space there or set TMPDIR to a disk-backed directory.\n\n' >&2
+        exit 1
+    fi ;;
+esac
+
 if ! cargo clippy --workspace --all-targets -- -D warnings; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
     printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
@@ -241,7 +221,11 @@ if cargo test --workspace; then
 fi
 
 printf '\n  pre-push: tests FAILED — push refused.\n' >&2
-printf '            They built, so these are assertions, not compile errors.\n' >&2
+printf '            The test run failed; inspect the error above for its cause.\n' >&2
+printf '            Disk quota exceeded / No space left on device indicate storage,\n' >&2
+printf '            not an assertion failure. Scratch directory: %s\n' "$TMPDIR" >&2
+scratch_space
+printf '            Free space or choose a disk-backed TMPDIR and rerun.\n' >&2
 if command -v pgrep >/dev/null 2>&1 && pgrep -x klipp-app >/dev/null 2>&1; then
     printf '\n            Klipp is running, and the GPU tests contend with\n' >&2
     printf '            it. Close it and push again before reading further:\n' >&2
