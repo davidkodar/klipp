@@ -1,63 +1,147 @@
-# Packaging
+# Install on Arch / Omarchy
 
-An Arch / Omarchy `makepkg` recipe that builds Klipp from source and
-installs it as a pacman package.
+This is the supported source-install route for an up-to-date **x86_64 Arch or
+Omarchy** system. It builds a local `klipp-git` pacman package. There is no
+pre-built release to download yet. Other distributions are not validated by
+this recipe.
+
+## Before starting
+
+- A working Vulkan GPU driver is required for the editor. NVIDIA, AMD and Intel
+  use their respective distribution drivers; installing `vulkan-icd-loader`
+  alone does not install a GPU driver. Existing Omarchy installations normally
+  already have one. `vulkaninfo --summary` (from `vulkan-tools`) can check it.
+- While the repository is private, accept a repository invitation and
+  authenticate Git with your GitHub account first. A clone that says
+  "Repository not found" can mean missing access. Do not put tokens in commands
+  or clone URLs. An authenticated SSH clone works too.
+- Use your normal user account. `makepkg` must not run as root; it asks for sudo
+  to install packages. Arch's [makepkg guide](https://wiki.archlinux.org/title/Makepkg)
+  requires `base-devel` before building.
+- Keep room for source, compiler output and model downloads. The first release
+  build can take substantially longer than an incremental build. Models are
+  optional downloads and some are hundreds of megabytes each.
+
+## Install
 
 ```bash
+sudo pacman -Syu --needed base-devel git
+git clone https://github.com/davidkodar/klipp.git
+cd klipp/packaging
+makepkg -si
+```
+
+Review the dependency prompts. The recipe installs the Rust/C/C++ build tools,
+Vulkan headers and shader compiler, audio/video libraries, and ONNX Runtime.
+If pacman asks for an `onnxruntime` provider, choose **onnxruntime-cpu** for the
+standard setup; CUDA is not required. An existing compatible provider can stay.
+If you use rustup instead of the distribution Rust compiler, install its stable
+toolchain first with `rustup toolchain install stable`.
+
+The recipe runs `scripts/vulkan-sdk.sh` for you and builds the editor, HDR helper
+and MCP server. You do not need to regenerate the logo artwork or install its
+SVG rendering tool. The package uses this checkout's `target/` directory even
+if your shell or Cargo configuration normally sends builds elsewhere.
+
+Open **Klipp** from the app menu, or run:
+
+```bash
+klipp
+```
+
+## First-run check
+
+1. Create a new project in a writable directory.
+2. Import a short video with audio and put it on the timeline.
+3. Play it, scrub, and check that both picture and sound work.
+4. Save, close, and reopen the project.
+5. Export a short section and play the exported file.
+
+The [Quick Start](../docs/src/getting-started/quick-start.md) covers editing.
+AI models download when requested and are verified against the bundled
+manifest. Initial model downloads need network access; basic editing does not
+require downloading models. The model manager reports runtime availability.
+
+For an agent, point its MCP configuration at the installed `klipp-mcp` command
+while Klipp is running. No MCP client is needed for normal editing.
+
+## Optional capabilities
+
+- **ONNX AI on NVIDIA:** `onnxruntime-cuda` supplies the CUDA provider and depends
+  on the required CUDA/cuDNN runtime packages. It replaces the CPU provider.
+  Installing cuDNN alone does not turn a CPU-only ONNX Runtime into a CUDA one.
+  Default builds keep Candle models on CPU; CUDA compilation for those is a
+  separate developer option.
+- **Narration:** requires the `piper` executable (Piper TTS) in addition to its
+  downloaded voice. See [issue #113](https://github.com/davidkodar/klipp/issues/113)
+  for the managed-runtime work still pending.
+- **Screen recording:** requires `gpu-screen-recorder` or `wf-recorder`.
+- **Extra effects:** frei0r and LV2 plugins are optional; see `optdepends` in
+  [PKGBUILD](PKGBUILD).
+
+## Update or remove
+
+From the same checkout:
+
+```bash
+cd /path/to/klipp  # your original checkout
+git pull --ff-only
 cd packaging
 makepkg -si
 ```
 
-`makepkg` reads [`PKGBUILD`](PKGBUILD), pulls the build tools, runs the
-release build against the checkout this directory sits in (no second
-clone), and installs the package. Uninstall with `pacman -R klipp-git`.
+Close Klipp after saving your project and relaunch after installation to use
+the new build. Since this is a VCS package, pacman shows a revision-count/hash
+package version; About shows the application's declared release version and
+build commit. These identify different things.
 
-## What it installs
+To uninstall:
+
+```bash
+sudo pacman -R klipp-git
+```
+
+Pacman does not remove your projects, user settings, or downloaded model cache.
+
+## Troubleshooting
+
+- **Missing headers, shader compiler or linker:** let `makepkg -s` resolve the
+  declared dependencies. Do not skip dependency checks for a normal install.
+- **Rustup has no stable compiler:** run `rustup toolchain install stable`.
+- **Build is killed or memory runs out:** retry with fewer compiler jobs:
+  `CARGO_BUILD_JOBS=2 makepkg -si`. Ensure compiler scratch and the checkout have
+  sufficient disk space.
+- **Window does not open / Vulkan errors:** run `klipp` from a terminal and
+  check the GPU driver with `vulkaninfo --summary`.
+- **Vision models report missing runtime:** check `pacman -Q onnxruntime-cpu`
+  or `pacman -Q onnxruntime-cuda`. Remove an obsolete `ORT_DYLIB_PATH` override
+  from the launch environment if it points at a missing library.
+
+## Package contents
 
 | Path | What |
 |---|---|
-| `/usr/lib/klipp/klipp` | the editor (the `klipp-app` binary) |
-| `/usr/lib/klipp/klipp-hdr-out` | the HDR reference presenter the editor spawns |
-| `/usr/lib/klipp/klipp-mcp` | the Model Context Protocol server |
-| `/usr/lib/klipp/assets/luts/` | the bundled 3D-LUT library |
-| `/usr/bin/klipp`, `/usr/bin/klipp-mcp` | symlinks onto PATH |
-| `/usr/share/applications/klipp.desktop` | the launcher entry |
-| `/usr/share/icons/hicolor/*/apps/klipp.png` | the app icon |
+| `/usr/lib/klipp/klipp` | Editor |
+| `/usr/lib/klipp/klipp-hdr-out` | HDR reference presenter |
+| `/usr/lib/klipp/klipp-mcp` | MCP server |
+| `/usr/lib/klipp/assets/luts/` | Bundled LUT library and credits |
+| `/usr/bin/klipp`, `/usr/bin/klipp-mcp` | Command symlinks |
+| `/usr/share/applications/klipp.desktop` | Launcher entry |
+| `/usr/share/icons/hicolor/*/apps/klipp.png` | Refined app icons |
 
-The binaries and `assets/luts` are kept in one directory on purpose:
-Klipp finds the LUT library next to its executable, and the editor finds
-`klipp-hdr-out` the same way. The `/usr/bin` entries are symlinks, which
-Linux resolves through `/proc/self/exe`, so the lookup still lands in
-`/usr/lib/klipp`.
+Linux resolves the command symlinks to the actual executable, so the editor
+finds the HDR helper and LUTs beside it. Fonts and other compiled-in assets
+travel with the binaries. AI weights are downloaded into the user's cache,
+not included in the package. Third-party asset credits are in the top-level
+[README](../README.md).
 
-## Out-of-the-box guarantees
+## Packaging regression check
 
-- **No CUDA / NVIDIA required.** The default build runs the vision models
-  on CPU and Whisper on Vulkan, and decode / encode fall back to
-  software. `cudnn` is an *optional* accelerator (see `optdepends`).
-- **Whisper works on any GPU** through Vulkan; its shaders are compiled
-  into the binary at build time, so no runtime shader toolchain is
-  needed.
-- **The MCP tools are available immediately** — point an MCP client at
-  the `klipp-mcp` command while Klipp is running.
-- **The AI model weights are not bundled** (licensing): they download on
-  first use, verified by SHA-256 against the manifest baked into the
-  binary, into `~/.cache/klipp/models/`.
-- **Vision-model runtime.** The ONNX models (BiRefNet, RF-DETR) load a
-  system `libonnxruntime.so` at runtime, so the package **depends** on
-  `onnxruntime` — they run on CPU out of the box. MobileSAM (pure-Rust
-  Candle) and Whisper (Vulkan) need nothing extra. For NVIDIA GPU
-  acceleration of the ONNX models, install a CUDA `onnxruntime` and point
-  `ORT_DYLIB_PATH` at it; the app detects the GPU vendor and shows the
-  runtime status in its AI panel. (Building from source without this
-  package, you install `onnxruntime` yourself — see the top-level README.)
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_packaging.py' -v
+```
 
-## Dependencies and credits
-
-`depends` are the system packages Klipp links or runs against; `makepkg`
-and pacman resolve them. They are the user's own system packages under
-their own licences — Klipp does not redistribute them. `optdepends` add
-optional acceleration (`cudnn`) or extra plugins for the frei0r and LV2
-hosts (`frei0r-plugins`, `lsp-plugins-lv2`, `calf`). The third-party
-assets Klipp *does* bundle — LUTs, fonts and icons — are credited in the
-top-level [`README.md`](../README.md).
+This runs the actual `package()` function against a clean fixture checkout and
+an empty staging directory. It checks the installed commands, helper, LUTs,
+desktop entry and icon bytes, without installing anything on the host. It also
+checks that the build selects the same output directory that packaging reads.

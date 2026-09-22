@@ -24,3 +24,6 @@ PHASE_*_PLAN.md
 .partial
 # Laid out by scripts/vulkan-sdk.sh: headers fetched or linked, not ours to keep.
 vendor/vulkan-sdk/
+
+# Python regression-test bytecode.
+__pycache__/

@@ -72,7 +72,10 @@ build() {
   ./scripts/vulkan-sdk.sh
   # klipp-app is the editor, klipp-hdr-out the HDR reference presenter it
   # spawns, klipp-mcp the Model Context Protocol server for the agent.
-  cargo build --release --locked -p klipp-app -p klipp-hdr-out -p klipp-mcp
+  # Package from this checkout even if the user's Cargo config redirects
+  # build output elsewhere. package() must consume this build's binaries.
+  cargo build --release --locked --target-dir "$_root/target" \
+    -p klipp-app -p klipp-hdr-out -p klipp-mcp
 }
 
 package() {
@@ -82,6 +85,7 @@ package() {
   install -Dm755 target/release/klipp-app "${pkgdir}/usr/lib/klipp/klipp"
   install -Dm755 target/release/klipp-hdr-out "${pkgdir}/usr/lib/klipp/klipp-hdr-out"
   install -Dm755 target/release/klipp-mcp "${pkgdir}/usr/lib/klipp/klipp-mcp"
+  install -dm755 "${pkgdir}/usr/lib/klipp/assets"
   cp -r assets/luts "${pkgdir}/usr/lib/klipp/assets/luts"
 
   # The commands on PATH: the editor, and the MCP server an agent points at.
@@ -91,9 +95,9 @@ package() {
 
   # Desktop entry and icons for the Omarchy app menu.
   install -Dm644 assets/klipp.desktop "${pkgdir}/usr/share/applications/klipp.desktop"
-  for size in 16 22 24 32 36 48 64 72 96 128 192 256 384 512; do
-    icon="assets/icons/klipp_app_icons/hicolor/${size}x${size}/apps/klipp.png"
-    [ -f "$icon" ] && install -Dm644 "$icon" \
+  for size in 16 22 24 32 48 64 128 256 512 1024; do
+    icon="assets/branding/klipp-refined/klipp-icon-${size}.png"
+    install -Dm644 "$icon" \
       "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/klipp.png"
   done
 }
