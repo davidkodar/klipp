@@ -20731,6 +20731,37 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ExportOtio { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, path) {
+                    Ok(warnings) if warnings.is_empty() => {
+                        self.state.toast.show(format!("OTIO exported to {}", path.display()));
+                    }
+                    Ok(warnings) => {
+                        // OTIO cannot carry a title, a grade or an effect.
+                        // The editor is told how much was left behind, and
+                        // the detail goes beside the file — the same shape
+                        // the importer uses for what it drops, so neither
+                        // side of an interchange is a surprise.
+                        let note = path.with_extension("export_warnings.txt");
+                        let body = warnings.join("\n");
+                        let n = warnings.len();
+                        match std::fs::write(&note, &body) {
+                            Ok(()) => self.state.toast.show(format!(
+                                "OTIO exported to {} — {n} thing(s) the format cannot carry, listed in {}",
+                                path.display(),
+                                note.file_name().unwrap_or_default().to_string_lossy(),
+                            )),
+                            Err(e) => self.state.toast.show(format!(
+                                "OTIO exported to {} — {n} thing(s) dropped (could not write the list: {e})",
+                                path.display(),
+                            )),
+                        }
+                    }
+                    Err(e) => self.state.toast.show(format!("OTIO export failed: {e}")),
+                }
+                true
+            }
             _ => false,
         }
     }

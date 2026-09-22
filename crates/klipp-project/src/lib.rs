@@ -45,6 +45,7 @@ pub mod grade_stills;
 mod load;
 pub mod mlt_export;
 pub mod mlt_import;
+pub mod otio_export;
 pub mod otio_import;
 pub mod path_util;
 mod save;
