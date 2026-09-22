@@ -136,6 +136,7 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             if b.generator.trim().is_empty() {
                 return Err(format!("segment {n}: a background needs a generator by name"));
             }
+            crate::generators::background_data(b, brief.map(|b| b.brand_colors.as_slice()).unwrap_or(&[])).map_err(|e| format!("segment {n}: {e}"))?;
             for c in &b.colors {
                 if !is_hex_colour(c) {
                     return Err(format!("segment {n}: \"{c}\" is not a colour; use #rrggbb"));
@@ -363,6 +364,20 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             }
         }
     }
+    // Backgrounds go last, below every existing track. Anchor both
+    // edges to the placed picture so source/frame rounding cannot leave
+    // a one-frame hole. Reuse the bottom Background track across segments.
+    let video_below = video + usize::from(any_title && !has_text);
+    for (i, segment) in plan.segments.iter().enumerate() {
+        if let Some(background) = &segment.background {
+            // Build paths validate first. Keep an invalid stored plan
+            // readable rather than panicking in the read-only plan view.
+            if let Ok(data) = crate::generators::background_data(background, brief.map(|b| b.brand_colors.as_slice()).unwrap_or(&[])) {
+                let picture = ClipRef::At { track: video_below, secs: mids[i] };
+                ops.push(Op::Generator { data, at: Anchor::ClipStart(picture.clone()), secs: None, end: Some(Anchor::ClipEnd(picture)), track: None });
+            }
+        }
+    }
     ops
 }
 
@@ -463,6 +478,28 @@ mod tests {
         plan.segments[0].title.as_mut().unwrap().full_frame = None;
         assert!(plan.text(None).contains("covers the shot"));
         assert!(to_ops(&plan, &seq, &pool, None).iter().any(|op| matches!(op, Op::Title { full_frame: Some(_), .. })));
+    }
+
+    #[test]
+    fn backgrounds_follow_picture_edges_and_stay_below_titles_and_picture() {
+        let (seq, pool, screen, _) = fixture();
+        let plan = EditPlan { segments: (0..2).map(|i| PlanSegment {
+            background: Some(PlanBackground { generator: "gradient".into(), colors: vec!["#101820".into(), "#304050".into()] }),
+            placement: Some(PlanPlacement { width: 0.7, height: 0.7, ..Default::default() }),
+            title: Some(PlanTitle { text: "Overlay".into(), ..Default::default() }),
+            ..seg(screen, i as f64 * 2.0 + 0.03, i as f64 * 2.0 + 0.88)
+        }).collect(), ..Default::default() };
+        validate(&plan, &pool, None).unwrap();
+        let built = resolve(&seq, &pool, &to_ops(&plan, &seq, &pool, None)).unwrap();
+        let pictures: Vec<_> = built.steps.iter().filter(|s| matches!(s.op, Op::Place { .. })).map(|s| &s.after[0]).collect();
+        let backgrounds: Vec<_> = built.steps.iter().filter(|s| matches!(s.op, Op::Generator { .. })).map(|s| &s.after[0]).collect();
+        assert_eq!(backgrounds.len(), 2);
+        assert_eq!(backgrounds[0].track, backgrounds[1].track);
+        for (picture, background) in pictures.iter().zip(&backgrounds) {
+            assert!(background.track > picture.track);
+            assert_eq!(background.timeline_in_secs, picture.timeline_in_secs);
+            assert_eq!(background.timeline_out_secs, picture.timeline_out_secs);
+        }
     }
 
     #[test]

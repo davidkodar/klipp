@@ -46,7 +46,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
-    "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
+    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
     "klipp_open_project",
 ];
 
@@ -214,6 +214,10 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "method": "seek",
             "secs": args.get("secs").and_then(|v| v.as_f64())
                 .ok_or("missing required argument: secs")?,
+        }),
+        "klipp_generator" => json!({
+            "method": if args.get("apply").and_then(Value::as_bool).unwrap_or(false) { "apply" } else { "plan" },
+            "ops": [{ "op": "generator", "data": args.get("data").ok_or("missing required argument: data")?, "at": { "secs": args.get("at_secs").and_then(Value::as_f64).ok_or("missing required argument: at_secs")? }, "secs": args.get("secs").and_then(Value::as_f64).ok_or("missing required argument: secs")?, "track": args.get("track") }],
         }),
         "klipp_list_clips" => json!({ "method": "list_clips" }),
         "klipp_list_media" => json!({ "method": "list_media" }),
@@ -764,7 +768,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
-    if name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
+    if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
         }
@@ -866,6 +870,9 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_list_media",
              "The media pool: media ids, paths, duration, fps, resolution, codec.",
              json!({}), vec![]),
+        tool("klipp_generator",
+             "Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.",
+             json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
              "Import a file into the media pool. Asynchronous — the app probes the \
               file on a worker thread, so call klipp_list_media afterwards to see it.",
@@ -1256,11 +1263,27 @@ fn tool_definitions() -> Vec<Value> {
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
-              mirror, lens_distortion, edge_detect, denoise, vhs, old_film; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
+              shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
+              effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
+              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
               clips after keep their place, close the gap or overlap yourself. \
+              generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
+              with exactly one duration secs or end anchor. Omit track for a Background video track below all \
+              existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\
+              compose {clip_id, poses: [{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]} — place a \
+              picture inside the frame; one pose holds, more animate. secs is relative to the clip; x,y are \
+              its centre as frame fractions (-1..2, default 0.5); width and height must be equal (0.01..4, \
+              default 1); rotation_deg is -360..360 (default 0), opacity 0..1 (default 1). Example: \
+              {op: compose, clip_id: ID, poses: [{x: 0.7, y: 0.7, width: 0.4, height: 0.4}]}.\n\
+              camera {keys: [{secs?, x?, y?, zoom?, roll_deg?}]} — move the whole sequence, including all its \
+              layers. secs is TIMELINE time within the piece (default 0); x,y are the camera's look point \
+              (-1..2, default 0.5), zoom 0.1..8 (default 1), roll_deg -360..360 (default 0). One key holds; \
+              keys: [] clears the camera. Example over a three-second piece: \
+              {op: camera, keys: [{secs: 0}, {secs: 3, zoom: 1.1, x: 0.55}]}.\n\
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
@@ -1390,11 +1413,27 @@ fn tool_definitions() -> Vec<Value> {
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
-              mirror, lens_distortion, edge_detect, denoise, vhs, old_film; amount 0-1. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
+              mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
+              shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
+              effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
+              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
               clips after keep their place, close the gap or overlap yourself. \
+              generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
+              with exactly one duration secs or end anchor. Omit track for a Background video track below all \
+              existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\
+              compose {clip_id, poses: [{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]} — place a \
+              picture inside the frame; one pose holds, more animate. secs is relative to the clip; x,y are \
+              its centre as frame fractions (-1..2, default 0.5); width and height must be equal (0.01..4, \
+              default 1); rotation_deg is -360..360 (default 0), opacity 0..1 (default 1). Example: \
+              {op: compose, clip_id: ID, poses: [{x: 0.7, y: 0.7, width: 0.4, height: 0.4}]}.\n\
+              camera {keys: [{secs?, x?, y?, zoom?, roll_deg?}]} — move the whole sequence, including all its \
+              layers. secs is TIMELINE time within the piece (default 0); x,y are the camera's look point \
+              (-1..2, default 0.5), zoom 0.1..8 (default 1), roll_deg -360..360 (default 0). One key holds; \
+              keys: [] clears the camera. Example over a three-second piece: \
+              {op: camera, keys: [{secs: 0}, {secs: 3, zoom: 1.1, x: 0.55}]}.\n\
               reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
               (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
               or set a slow push; it sits before other effects.\n\
@@ -1653,7 +1692,7 @@ fn tool_definitions() -> Vec<Value> {
               {segments: [...], music?: {media_id, duck_db?}, notes?}. Each segment, in cut \
               order: {media_id, source_in_secs, source_out_secs, feature? (a title from the \
               brief's features, as spelt there), note? (what it shows and why — write one), \
-              with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
+              placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
               heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
               bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
               typewriter, animate_secs?, stagger? char|word|line}, transition? \
@@ -1784,5 +1823,32 @@ mod wait_tests {
             assert_eq!(command[id_key], "id");
             assert_eq!(tool_to_command(tool, &json!({})).unwrap()["wait"], false);
         }
+    }
+}
+
+#[cfg(test)]
+mod generator_tests {
+    use super::*;
+
+    #[test]
+    fn generators_preview_by_default_and_forward_native_parameters() {
+        let data = json!({"Gradient": {"top": [16, 32, 48, 255], "bottom": [64, 80, 96, 255], "angle_deg": 45}});
+        let mut args = json!({"data": data, "at_secs": 1.0, "secs": 2.0});
+        let preview = tool_to_command("klipp_generator", &args).unwrap();
+        assert_eq!(preview["method"], "plan");
+        assert_eq!(preview["ops"][0]["data"], data);
+        assert_eq!(preview["ops"][0]["at"]["secs"], 1.0);
+        assert_eq!(preview["ops"][0]["secs"], 2.0);
+        assert!(preview["ops"][0]["track"].is_null());
+        args["apply"] = json!(true);
+        args["track"] = json!(2);
+        let apply = tool_to_command("klipp_generator", &args).unwrap();
+        assert_eq!(apply["method"], "apply");
+        assert_eq!(apply["ops"][0]["track"], 2);
+        args["data"] = json!("Countdown");
+        assert_eq!(tool_to_command("klipp_generator", &args).unwrap()["ops"][0]["data"], "Countdown");
+        assert!(tool_to_command("klipp_generator", &json!({})).is_err());
+        let text = content_for("klipp_generator", &json!({"text": "place generator", "next": "check"})).unwrap();
+        assert!(text[0]["text"].as_str().unwrap().contains("place generator"));
     }
 }

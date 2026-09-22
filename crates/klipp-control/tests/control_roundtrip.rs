@@ -1051,3 +1051,28 @@ fn auto_sfx_previews_without_assets_and_applies_synthesized_audio() {
     assert_eq!(h.media_pool.read().unwrap_or_else(|e| e.into_inner()).all().count(), 1);
     if let Some(old) = old_cache { std::env::set_var("XDG_CACHE_HOME", old); } else { std::env::remove_var("XDG_CACHE_HOME"); }
 }
+
+#[test]
+fn native_generators_preview_without_edits_and_apply_as_one_undo_batch() {
+    let mut h = harness();
+    let data = json!({"LivingGradient": {"a": [22, 34, 78, 255], "b": [64, 24, 82, 255], "angle_deg": 20, "drift_deg_per_sec": 4, "glow": 0.35}});
+    let ops = json!([{"op": "generator", "data": data, "at": {"secs": 0.0}, "secs": 1.7}]);
+    let preview = h.ok(json!({"method": "plan", "ops": ops, "detail": true}));
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["steps_resolved"], 1);
+    assert!(h.edits_seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    let apply = h.ok(json!({"method": "apply", "ops": ops}));
+    assert_eq!(apply["applied"], true);
+    assert_eq!(h.envelopes.lock().unwrap_or_else(|e| e.into_inner()).last(), Some(&(true, 1)));
+    let edits = h.edits_seen.lock().unwrap_or_else(|e| e.into_inner());
+    match &edits[0] {
+        klipp_document::history::EditCommand::Batch(edits) => match &edits[1] {
+            klipp_document::history::EditCommand::LegacyAppendClip { clip, .. } => {
+                let klipp_timeline::ClipKind::Generator(native) = &clip.kind else { panic!("expected generator") };
+                assert_eq!(*native, serde_json::from_value::<klipp_core::GeneratorData>(data).unwrap());
+            }
+            other => panic!("expected generator append, got {other:?}"),
+        },
+        other => panic!("expected bottom-track creation and generator, got {other:?}"),
+    }
+}
