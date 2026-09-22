@@ -250,7 +250,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                 // No movement asked for: a reframe, held.
                 ops.push(Op::Reframe { clip_id: clip(i), scale: z.from, x: z.x, y: z.y });
             } else {
-                ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y });
+                ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y, ease: z.ease });
             }
         }
         // A placement that fills the frame is what a clip does anyway, so
@@ -267,6 +267,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                     height: p.height,
                     rotation_deg: p.rotation_deg,
                     opacity: p.opacity.unwrap_or(1.0),
+                    ..Default::default()
                 }],
             });
         }
@@ -599,7 +600,7 @@ mod tests {
         let plan = EditPlan {
             segments: vec![
                 PlanSegment { title: Some(PlanTitle { text: "Klipp".into(), secs: Some(2.0), style: "card".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 0.0, 3.0) },
-                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new(), color: None, fill: None, ..Default::default() }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0 }), ..seg(screen, 10.0, 16.0) },
+                PlanSegment { feature: "Search".into(), with_audio: true, title: Some(PlanTitle { text: "Search".into(), secs: None, style: String::new(), color: None, fill: None, ..Default::default() }), zoom: Some(PlanZoom { from: 1.0, to: 1.15, x: 0.0, y: 0.0, ease: Default::default() }), ..seg(screen, 10.0, 16.0) },
                 PlanSegment { transition: Some("cross_dissolve".into()), title: Some(PlanTitle { text: "Try it".into(), secs: Some(9.0), style: "callout".into(), color: None, fill: None, ..Default::default() }), ..seg(screen, 30.0, 34.0) },
             ],
             music: Some(PlanMusic { media_id: bed, duck_db: None, source_in_secs: Some(0.5), volume_db: Some(-6.0), fade_in_secs: None, fade_out_secs: Some(1.5) }),
