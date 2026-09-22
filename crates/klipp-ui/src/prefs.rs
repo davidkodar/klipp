@@ -116,6 +116,16 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralPrefs {
+    /// Check published releases at most once per day, off the UI thread.
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    /// Preview releases are never offered unless explicitly enabled.
+    #[serde(default)]
+    pub preview_updates: bool,
+    #[serde(default)]
+    pub last_update_check: u64,
+    #[serde(default)]
+    pub dismissed_update: Option<String>,
     /// Auto-save interval in seconds. 0 = disabled. Default 300 (5 min).
     pub auto_save_interval_secs: u32,
     /// Also auto-save every N editing operations. 0 = disabled. Default 25.
@@ -782,6 +792,10 @@ impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             auto_save_interval_secs: 300,
+            check_for_updates: true,
+            preview_updates: false,
+            last_update_check: 0,
+            dismissed_update: None,
             auto_save_op_threshold: default_auto_save_ops(),
             default_project_dir: None,
             recent_projects: Vec::new(),

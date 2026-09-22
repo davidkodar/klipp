@@ -21,6 +21,7 @@ class ArchPackagingTests(unittest.TestCase):
         (self.root / "packaging").mkdir(parents=True)
         self.stage.mkdir()
         shutil.copy(REPO / "packaging/PKGBUILD", self.root / "packaging/PKGBUILD")
+        shutil.copy(REPO / "packaging/klipp-update", self.root / "packaging/klipp-update")
         assets = self.root / "assets"
         (assets / "luts/film").mkdir(parents=True)
         (assets / "luts/film/sample.cube").write_text("LUT_3D_SIZE 2\n")
@@ -64,6 +65,30 @@ class ArchPackagingTests(unittest.TestCase):
                 (icons / f"{size}x{size}/apps/klipp.png").read_bytes(),
                 (REPO / f"assets/branding/klipp-refined/klipp-icon-{size}.png").read_bytes(),
             )
+
+    def test_release_package_uses_semver_and_installs_update_helper(self):
+        self.env["KLIPP_RELEASE_VERSION"] = "0.20.0-rc.1"
+        result = self.run_function('printf "%s %s\\n" "$pkgname" "$pkgver"; package')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "klipp 0.20.0rc.1")
+        self.assertTrue(os.access(self.stage / "usr/bin/klipp-update", os.X_OK))
+        self.assertEqual(subprocess.check_output(["vercmp", "0.20.0rc.1", "0.20.0"], text=True).strip(), "-1")
+
+    def test_release_overrides_machine_specific_rust_and_native_flags(self):
+        self.env["KLIPP_RELEASE_VERSION"] = "0.20.0"
+        self.env["CARGO_ENCODED_RUSTFLAGS"] = "-Ctarget-cpu=native"
+        self.env["GGML_NATIVE"] = "ON"
+        self.test_build_uses_the_directory_that_package_reads()
+        cargo = self.bin_dir / "cargo"
+        cargo.write_text('#!/bin/sh\nenv > "$startdir/build-env"\n')
+        result = self.run_function("build")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = (self.root / "packaging/build-env").read_text()
+        self.assertIn("target-cpu=x86-64", env)
+        self.assertNotIn("target-cpu=native", env)
+        self.assertIn("GGML_NATIVE=OFF", env)
+        self.assertIn("GGML_AVX2=OFF", env)
+        self.assertIn("CFLAGS=-O2 -march=x86-64 -mtune=generic", env)
 
     def test_missing_required_icon_fails_packaging(self):
         (self.root / "assets/branding/klipp-refined/klipp-icon-32.png").unlink()

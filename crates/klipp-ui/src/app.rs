@@ -367,6 +367,7 @@ pub struct KlippApp {
     media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     state: AppState,
     toolbar: ToolbarPanel,
+    updates: crate::updates::Updates,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,
@@ -721,6 +722,7 @@ impl KlippApp {
                 s
             },
             toolbar: ToolbarPanel { logo_texture: None },
+            updates: Default::default(),
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
@@ -26324,6 +26326,11 @@ impl eframe::App for KlippApp {
         // the panel changes it implies land in the same frame the new
         // workspace does rather than a frame behind it.
         self.reconcile_workspace();
+        if std::mem::take(&mut self.preferences_panel.show_updates) {
+            self.state.show_preferences = false;
+            self.updates.open();
+        }
+        self.updates.show(ctx, &mut self.prefs.general, &mut self.prefs_dirty);
 
         // Rotate the deferred-drop texture ring. Advance the slot and
         // clear the one we've just moved into — it holds handles
@@ -27578,6 +27585,10 @@ impl eframe::App for KlippApp {
                         ui.label(format!("Version {}", build.label()));
                         if let Some(at) = build.built_at {
                             ui.label(format!("Built {}", klipp_core::build_info::format_utc(at)));
+                        }
+                        if ui.button("Check for updates…").clicked() {
+                            self.state.show_about_dialog = false;
+                            self.updates.open();
                         }
                         ui.label("Free, open-source NLE for Linux");
                         ui.add_space(8.0);

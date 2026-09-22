@@ -116,3 +116,5 @@ pub fn auto_set_ort_dylib_path() {
 /// function unconditionally without an explicit feature gate.
 #[cfg(not(feature = "ai-ort"))]
 pub fn auto_set_ort_dylib_path() {}
+
+mod updates;

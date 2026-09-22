@@ -444,6 +444,10 @@ and they are waiting *silently*, so this is the list.
 
 ## Releasing
 
+Follow [the package release guide](packaging/RELEASING.md) to build portable
+Arch packages from the exact version tag, test them, sign them and stage the
+package repository. A local build is not a published release.
+
 For the maintainer, and written down so it is the same every time.
 
 1. `main` is green and the working tree is clean.

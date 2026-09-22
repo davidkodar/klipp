@@ -5,6 +5,13 @@ Omarchy** system. It builds a local `klipp-git` pacman package. There is no
 pre-built release to download yet. Other distributions are not validated by
 this recipe.
 
+## Downloadable releases
+
+Release packaging and in-app update checks are described in [RELEASING.md](RELEASING.md).
+A public download and signed package repository still need to be published.
+Until then, use the source installation below. Installing a standalone package
+does not automatically configure future system updates.
+
 ## Before starting
 
 - A working Vulkan GPU driver is required for the editor. NVIDIA, AMD and Intel

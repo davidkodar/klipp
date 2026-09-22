@@ -267,6 +267,11 @@ See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full pict
 
 ## Bundled Assets & Third-Party Credits
 
+### Update checking
+
+- **ureq** — HTTPS client, licensed under MIT or Apache-2.0.
+- **semver** — semantic release-version comparisons, licensed under MIT or Apache-2.0.
+
 ### LUTs (Colour Look-Up Tables)
 
 Klipp ships ~300 film-emulation and cinematic LUTs for colour grading:
