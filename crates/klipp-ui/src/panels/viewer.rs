@@ -369,6 +369,21 @@ impl ViewerPanel {
             egui::vec2(rect.width(), PLAYBAR_H),
         );
         self.draw_playbar(ui, state, theme, playbar_rect, viewer_kind, &mut cmds);
+        // Viewer focus belongs to the transport strip, separate from the
+        // scrub track and its playback-position indicator.
+        let focus_color = if state.viewer_mode == viewer_kind {
+            theme.accent
+        } else {
+            theme.border
+        };
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(playbar_rect.left(), playbar_rect.bottom() - 2.0),
+                playbar_rect.right_bottom(),
+            ),
+            0.0,
+            focus_color,
+        );
         cmds
     }
 
@@ -2100,27 +2115,21 @@ impl ViewerPanel {
             );
         }
 
-        // Focus indicator: thin frame around the progress-bar track when
-        // this viewer matches the current viewer_mode. Subtle, lives in
-        // chrome that's already there, and doesn't intrude on the viewer
-        // image itself.
-        let is_focused = state.viewer_mode == viewer_kind;
-        if is_focused {
-            ui.painter().rect_stroke(
-                track_rect.expand(2.0),
-                1.0,
-                egui::Stroke::new(1.0_f32, theme.text_secondary),
-            );
+        // Empty viewers retain the track and focus affordance, but have
+        // no playback position to mark. Loaded stills count as content.
+        let has_content = match viewer_kind {
+            ViewerMode::Source => state.source_media_id
+                .and_then(|mid| state.media_pool.get(&mid))
+                .is_some(),
+            ViewerMode::Program => dur_secs > 0.0,
+        };
+        if has_content {
+            let head_x = track_rect.min.x + fill_w;
+            let head_center = egui::pos2(head_x, rect.center().y);
+            let ph = theme.playhead;
+            ui.painter().circle_filled(head_center, 7.0, egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 60));
+            ui.painter().circle_filled(head_center, 5.0, ph);
         }
-
-        // Playhead head (11x11 circle) — drawn at the centre of the wider
-        // lane so its full diameter has clear vertical room above and below
-        // the visible track strip.
-        let head_x = track_rect.min.x + fill_w;
-        let head_center = egui::pos2(head_x, rect.center().y);
-        let ph = theme.playhead;
-        ui.painter().circle_filled(head_center, 7.0, egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 60));
-        ui.painter().circle_filled(head_center, 5.0, ph);
 
         // Scrub interaction — clicks/drags both focus the viewer and
         // (if there's a clip to seek in) emit a per-viewer seek. The
@@ -2139,7 +2148,7 @@ impl ViewerPanel {
             .map(|p| rect.contains(p))
             .unwrap_or(false);
         if (resp.dragged() || resp.clicked()) && pointer_in_rect {
-            if !is_focused {
+            if state.viewer_mode != viewer_kind {
                 cmds.push(AppCommand::SetViewerMode(viewer_kind));
             }
             if dur_secs > 0.0 {
@@ -2301,7 +2310,11 @@ impl ViewerPanel {
         }
 
         // ── Single viewer: which one this is, and the way to the other ──
-        if !state.viewers_side_by_side() && !state.single_viewer_is_program() {
+        let show_viewer_switcher = !state.viewers_side_by_side() && !state.single_viewer_is_program();
+        // Keep the timecode and core transport clear in narrow layouts.
+        // The bottom focus edge remains visible when the label cannot fit.
+        let show_viewer_label = !show_viewer_switcher && rect.width() >= 560.0;
+        if show_viewer_switcher {
             let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
             let labels = ["Source", "Program"];
             let h = crate::theme::control::COMPACT;
@@ -2313,6 +2326,19 @@ impl ViewerPanel {
                     cmds.push(AppCommand::SetViewerMode(if i == 0 { ViewerMode::Source } else { ViewerMode::Program }));
                 }
             }
+        }
+        if show_viewer_label {
+            let label = match viewer_kind {
+                ViewerMode::Source => "Source",
+                ViewerMode::Program => "Program",
+            };
+            ui.painter().text(
+                egui::pos2(rect.min.x + 126.0, cy),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(crate::theme::type_scale::CAPTION),
+                if state.viewer_mode == viewer_kind { theme.text_primary } else { theme.text_dim },
+            );
         }
 
         // ── Center: Transport buttons ──
@@ -2333,7 +2359,7 @@ impl ViewerPanel {
         let btn_spacing = 4.0;
         // Everything left of the centre group: the timecode's 110 px
         // slot at +8, or the viewer switcher at +126 when it is shown.
-        let left_reserved = if !state.viewers_side_by_side() && !state.single_viewer_is_program() {
+        let left_reserved = if show_viewer_switcher || show_viewer_label {
             196.0
         } else {
             126.0
