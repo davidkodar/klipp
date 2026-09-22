@@ -641,7 +641,9 @@ pub enum Op {
     /// Compose a picture into the frame rather than letting it fill the
     /// frame: `x`,`y` is where its centre sits and `width`,`height` how
     /// much of the frame it covers, all fractions, with an optional turn
-    /// and fade. Two or more poses animate between them. `reframe` and
+    /// and fade. After a `crop`, `x`,`y` is where the middle of what the
+    /// crop leaves sits, and `width` is still the scale of the whole
+    /// picture, so the window keeps its share of it. Two or more poses animate between them. `reframe` and
     /// `zoom` crop into a picture that still fills the frame; this is the
     /// one that puts a picture beside another, or shrinks it into a
     /// corner over a background.
@@ -2728,6 +2730,32 @@ fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditC
     Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) }, Vec::new()))
 }
 
+/// Where the middle of what a crop leaves sits, in pixels from the middle
+/// of a `w` by `h` frame, with the picture fitted to the frame as it is
+/// drawn — so a window cropped out of a desktop recording is placed by
+/// the window, not by the desktop around it. `(0, 0)` with no crop.
+fn cropped_centre(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
+    let Some((left, right, top, bottom)) = clip.builtin_effects.iter().find_map(|e| match e {
+        klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, .. } => Some((*left, *right, *top, *bottom)),
+        _ => None,
+    }) else {
+        return (0.0, 0.0);
+    };
+    // The picture fitted inside the frame, never stretched.
+    let (pw, ph) = match &clip.kind {
+        ClipKind::Media { media_id } => pool
+            .get(media_id)
+            .filter(|m| m.resolution.width > 0 && m.resolution.height > 0)
+            .map(|m| {
+                let fit = (w / m.resolution.width as f32).min(h / m.resolution.height as f32);
+                (m.resolution.width as f32 * fit, m.resolution.height as f32 * fit)
+            })
+            .unwrap_or((w, h)),
+        _ => (w, h),
+    };
+    (pw * ((left + 1.0 - right) / 2.0 - 0.5), ph * ((top + 1.0 - bottom) / 2.0 - 0.5))
+}
+
 /// Place a picture in the frame at one pose, or animate it between
 /// several. Unlike `reframe`, the picture may be smaller than the frame
 /// and may sit anywhere in it, including past its edge; what shows
@@ -2778,10 +2806,15 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     // the anchor sits; the fractions are turned into them here so a plan
     // written once holds at any delivery size.
     let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let (ox, oy) = cropped_centre(clip, pool, fw, fh);
     let (mut px, mut py, mut sk, mut rk, mut ok) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for p in &sorted {
-        klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, (p.x - 0.5) * fw);
-        klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, (p.y - 0.5) * fh);
+        // What is placed is the visible picture: its centre, turned and
+        // scaled with the rest about the frame's middle, lands on x, y.
+        let (sin, cos) = p.rotation_deg.to_radians().sin_cos();
+        let (cx, cy) = (p.width * (ox * cos - oy * sin), p.width * (ox * sin + oy * cos));
+        klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, (p.x - 0.5) * fw - cx);
+        klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, (p.y - 0.5) * fh - cy);
         klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, p.width);
         klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg);
         klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
@@ -4864,6 +4897,29 @@ mod tests {
 
         let bad = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![ComposePose { tilt_x_deg: 90.0, ..half }] }]).unwrap_err();
         assert!(bad.why.contains("tilt"), "{}", bad.why);
+    }
+
+    #[test]
+    fn a_cropped_picture_is_placed_by_what_the_crop_leaves() {
+        let (seq, pool, _media, a, _) = fixture();
+        // Keep the right half of the picture.
+        let cropped = resolve(&seq, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.5, right: 0.0, top: 0.0, bottom: 0.0 }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&cropped.steps[0].edit);
+        let place = |pose: ComposePose| {
+            let plan = resolve(&seqs[0], &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] }]).unwrap();
+            let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
+            (new_state.transform_pos_x_keyframes[0].value, new_state.transform_pos_y_keyframes[0].value)
+        };
+        // What is left sits 480 px right of the middle; at half size, 240.
+        // Placed in the middle, the picture moves 240 px left to put it there.
+        let (x, y) = place(ComposePose { width: 0.5, height: 0.5, ..Default::default() });
+        assert!((x + 240.0).abs() < 1e-3 && y.abs() < 1e-3, "{x}, {y}");
+        // Turned a quarter, the offset turns with it: down, not right.
+        let (x, y) = place(ComposePose { width: 0.5, height: 0.5, rotation_deg: 90.0, ..Default::default() });
+        assert!(x.abs() < 1e-2 && (y + 240.0).abs() < 1e-2, "{x}, {y}");
     }
 
     #[test]
