@@ -3073,6 +3073,13 @@ pub enum AppCommand {
 
     /// Import a file with explicit control over automatic analysis.
     ImportMediaWithAnalysis { path: PathBuf, analyze: bool },
+
+    /// Write the active sequence as an OpenTimelineIO `.otio` file.
+    ///
+    /// Appended here rather than beside `ExportFcpxml` and `ExportEdl`
+    /// because parallel lanes share this enum and appends merge where
+    /// insertions in the middle conflict.
+    ExportOtio { path: PathBuf },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
