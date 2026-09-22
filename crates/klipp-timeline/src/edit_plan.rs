@@ -295,6 +295,15 @@ impl EditPlan {
             if let Some(t) = &s.title {
                 let style = if t.style.trim().is_empty() { "heading" } else { t.style.trim() };
                 let mut extras = Vec::new();
+                match t.full_frame {
+                    Some(true) => extras.push("full-frame: covers the shot".into()),
+                    Some(false) => extras.push("overlay: keeps the shot visible".into()),
+                    None if style.eq_ignore_ascii_case("card") => extras.push("full-frame by default: covers the shot; full_frame false makes it an overlay".into()),
+                    None => {}
+                }
+                if let Some(x) = t.x { extras.push(format!("x {x:.2}")); }
+                if let Some(y) = t.y { extras.push(format!("y {y:.2}")); }
+
                 if let Some(a) = &t.animate {
                     extras.push(match &t.stagger {
                         Some(st) => format!("{a} by {st}"),
