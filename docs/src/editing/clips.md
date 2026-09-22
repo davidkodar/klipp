@@ -7,10 +7,10 @@ Clips are the building blocks of your timeline. Each clip references a segment o
 ### Append
 Drag a clip from the media browser to the end of a track, or select it and press **Append** — placed after the last clip on the primary track.
 
-### Insert Edit (W)
+### Insert Edit (,)
 Places the clip at the playhead and pushes all subsequent clips forward. Preserves the relative timing of everything after the insertion point.
 
-### Overwrite Edit (D)
+### Overwrite Edit (.)
 Places the clip at the playhead, replacing whatever was there. Clips that overlap are trimmed or replaced. No rippling.
 
 ### Drag and Drop

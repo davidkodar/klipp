@@ -8,13 +8,16 @@ Quick reference for where Klipp stores its data on disk.
 
 | File | Purpose |
 |---|---|
-| `preferences.json` | All user preferences from **Edit → Preferences** |
-| `keybindings.json` | Custom keyboard shortcut overrides |
-| `themes/*.toml` | User-added theme files |
+| `preferences.json` | Everything in **Preferences** |
+| `keybindings.json` | The keyboard layout and your own shortcut changes |
+| `layout.json`, `workspaces.json` | Panel layout and saved workspaces |
+| `keys.toml` | Your Jamendo / Freesound API keys for the music and SFX search |
+| `ai_tools.toml` | AI-tool settings and which models have run |
 | `models.toml` | Optional override for the bundled AI model manifest |
-| `title-presets/*.json` | User-saved title presets |
-| `export-presets/*.json` | User-saved export presets |
-| `luts/*.cube` | User LUTs (auto-discovered) |
+| `themes/*.toml` | User-added themes |
+| `presets/color/*` | Saved grades |
+| `effect_presets/`, `hyperzoom_presets/` | Saved effect and hyperzoom presets |
+| `title_templates/*.klipptitle` | Titles you saved from the timeline |
 
 `preferences.json` survives Klipp updates. If you delete it, Klipp regenerates it with default values on next launch.
 
@@ -22,17 +25,23 @@ Quick reference for where Klipp stores its data on disk.
 
 `~/.cache/klipp/`
 
-| Directory / File | Purpose | Default cap |
-|---|---|---|
-| `frames/` | Frame cache for playback | 10 GB |
-| `thumbnails/` | Browser thumbnails | 2 GB |
-| `ai_masks/` | AI Tools mask outputs (PNG, atomic-written) | 2 GB (LRU-evicted) |
-| `models/` | Downloaded AI model weights | uncapped |
-| `font_registry.json` | Cached system font index | small (< 1 MB) |
+| Directory / File | Purpose |
+|---|---|
+| `filmstrips/` | Timeline filmstrips |
+| `thumbnails/` | Browser thumbnails |
+| `audio/`, `audio-cache/` | Decoded PCM and waveform peaks |
+| `analysis/` | Analyser results, one JSON per analyser and schema version |
+| `ai_masks/` | AI Tools mask outputs |
+| `proxies/` | Proxy renders |
+| `recordings/` | Screen recordings made from inside Klipp |
+| `*_registry.json` | What the font and plugin scans found (LV2, LADSPA, CLAP, frei0r) |
+
+Model weights are not here: they live in `~/.local/share/klipp/models/`,
+uncapped, because they are large and the AI Models dialog is where they
+are removed. Letting a cache sweep delete one silently would be
+surprising.
 
 The frame and thumbnail caches survive Klipp updates and project changes — clearing them just forces re-decode on next play.
-
-`models/` is intentionally uncapped — model weights are large (40 MB to 224 MB each) and the AI Models dialog provides explicit uninstall. Letting cache eviction silently delete a model would be surprising.
 
 ## Logs
 
@@ -48,11 +57,13 @@ RUST_LOG=klipp_engine=debug,info cargo r
 
 Inside each `.klipp` directory — see [Project Format](./project-format.md) for the full layout. The TL;DR:
 
-- `project.json` — top-level state
-- `media.json` — media pool
-- `thumbnails/`, `filmstrips/`, `audio_cache/` — lazy caches
-- `analysis/` — stabilisation + scene detect output
-- `grade_stills/` — comparison stills
+- `project.json` — the whole project, plus rotated `.bak` copies
+- `media/manifest.json` — the media pool
+- `media/stills.json` and `media/stills/` — the compare stills
+- `looks/` — looks saved from this project
+
+Caches are not in the project; they are in `~/.cache/klipp/`, keyed by
+the media file.
 
 ## System Library Probes
 
@@ -91,7 +102,7 @@ If any of these are already set when Klipp launches, the existing value is respe
 
 | Symptom | Look at |
 |---|---|
-| AI inference on CPU | `~/.cache/klipp/models/<model>/.telemetry.json`; AI Models dialog footer; `klipp-debug.log` for `klipp_ml_ort` lines |
+| AI inference on CPU | The AI Models dialog's footer; `klipp-debug.log` for `klipp_ml_ort` lines |
 | Slow startup | `~/.cache/klipp/font_registry.json` — if missing, font scan re-runs (~16 s) |
 | Crash on save | Check `pid`-stamped `*.tmp` files in `.klipp/` — orphaned scratch files from a failed atomic write |
 | GPU effects not active | `klipp-debug.log` for `wgpu` adapter selection lines |

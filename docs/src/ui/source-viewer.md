@@ -9,7 +9,7 @@ It is shown beside the program viewer while **View → Dual Viewers** is on; wit
 1. Double-click a clip in the media browser. The clip loads into the source viewer.
 2. Scrub or play the source viewer to find the section you want.
 3. Press **I** in the source viewer to mark an in point, **O** for an out point.
-4. Switch focus to the timeline, park the playhead where you want the section to land, then press **W** (insert) or **D** (overwrite).
+4. Switch focus to the timeline, park the playhead where you want the section to land, then press **,** (insert) or **.** (overwrite).
 5. Klipp adds the marked section of the source clip to the timeline at the playhead.
 
 The source viewer stays loaded with that clip until you double-click a different one. Marks and playhead are independent of the timeline.

@@ -2,7 +2,7 @@
 
 Klipp provides a complete colour grading toolset for adjusting the look and exposure of your footage. Access colour controls from the inspector's effects chain or switch to the Color Grading workspace for a dedicated layout.
 
-The pipeline runs in linear light with **ACEScg** as the default working colour space — see [Working Colorspaces](./working-colorspaces.md).
+The pipeline runs in linear light, in **Rec.709 linear** unless the project says otherwise — see [Working Colorspaces](./working-colorspaces.md).
 
 ## Color Wheels
 

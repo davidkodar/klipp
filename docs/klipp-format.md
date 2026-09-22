@@ -14,21 +14,24 @@ directory the user names with the `.klipp` suffix.
 
 ```
 MyShortFilm.klipp/
-├── project.json          ← top-level project state (sequences, tracks, clips, grades)
-├── media.json            ← media pool manifest (MediaItems, bins)
-├── thumbnails/           ← per-MediaId thumbnail caches (lazy)
-├── filmstrips/           ← per-MediaId filmstrip strips (lazy)
-├── audio_cache/          ← per-MediaId decoded f32 PCM (lazy)
-├── proxies/              ← per-MediaId proxy renders (optional)
-├── grade_stills/         ← compare-still PNGs + index
-│   ├── stills.json       ← metadata for each still
-│   └── *.png             ← per-still RGBA8 PNGs
-└── render_cache/         ← grade-cache LZ4 frames (optional, transient)
+├── project.json          ← the whole project: sequences, tracks, clips, grades
+├── project.json.bak.1    ← the last few saves, rotated (`.bak.1` is newest)
+├── media/
+│   ├── manifest.json     ← the media pool: items and bins, paths relative to the project
+│   ├── stills.json       ← index of the compare stills
+│   └── stills/           ← the stills themselves, RGBA8 PNGs at preview resolution
+└── looks/                ← looks saved from this project
 ```
 
-`project.json` and `media.json` are the only files that are
-**required** to exist for a `.klipp` directory to load. Everything
-else is regenerated lazily from the source media.
+`project.json` and `media/manifest.json` are the two files a `.klipp`
+directory needs to load.
+
+Nothing else lives here. Thumbnails, filmstrips, decoded audio,
+analysis results and recordings are keyed by the media file rather
+than by the project, so they sit in `~/.cache/klipp/` where two
+projects cutting the same footage share one copy; models are in
+`~/.local/share/klipp/models/`. Deleting either costs rebuild time and
+nothing else.
 
 ## Atomic writes
 
@@ -231,7 +234,7 @@ Old projects used an untagged form (bare JSON values). The custom
 `Deserialize` impl in `format.rs:348` falls back to that legacy
 shape so old projects still load.
 
-## `media.json` — media pool manifest
+## `media/manifest.json` — media pool manifest
 
 ```jsonc
 {
@@ -282,7 +285,7 @@ shape so old projects still load.
 }
 ```
 
-## `grade_stills/stills.json` — compare-stills index
+## `media/stills.json` — compare-stills index
 
 A small JSON file pointing at the per-still PNGs:
 

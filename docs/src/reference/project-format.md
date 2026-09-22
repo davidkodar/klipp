@@ -6,29 +6,43 @@ Klipp stores projects as `.klipp` *directories*, not single files. The directory
 
 ```
 MyProject.klipp/
-├── project.json          ← top-level project state (sequences, clips, grades)
-├── media.json            ← media pool manifest (MediaItems, bins)
-├── thumbnails/           ← per-MediaId thumbnail caches (lazy)
-├── filmstrips/           ← per-MediaId filmstrip strips (lazy)
-├── audio_cache/          ← per-MediaId decoded f32 PCM (lazy)
-├── proxies/              ← per-MediaId proxy renders (optional)
-├── grade_stills/         ← compare-still PNGs + index
-├── analysis/
-│   ├── stabilization/    ← per-clip motion data
-│   └── scenedetect/      ← per-clip scene boundaries
-└── render_cache/         ← grade-cache LZ4 frames (optional, transient)
+├── project.json          ← the whole project: sequences, tracks, clips, grades
+├── project.json.bak.1    ← the last few saves, rotated
+├── media/
+│   ├── manifest.json     ← the media pool: items, bins, paths relative to here
+│   ├── stills.json       ← index of the compare stills
+│   └── stills/           ← the compare stills themselves, as PNGs
+└── looks/                ← looks saved from this project
 ```
 
-`project.json` and `media.json` are the only files **required** to exist for a project to load. Everything else is regenerated lazily from the source media.
+`project.json` and `media/manifest.json` are the two files a project
+needs to load.
+
+## What is *not* in the project
+
+Everything that can be rebuilt from the source media lives in
+`~/.cache/klipp/`, keyed by the media file rather than by the project,
+so two projects using the same footage share one copy and deleting the
+cache costs only time:
+
+| `~/.cache/klipp/` | What |
+|---|---|
+| `filmstrips/` | timeline filmstrips |
+| `audio/`, `audio-cache/` | decoded PCM and waveform peaks |
+| `analysis/` | the analysers' results, one JSON per analyser and schema version |
+| `recordings/` | screen recordings made from inside Klipp |
+| `*_registry.json` | what the plugin and font scans found |
+
+Models are separate again, in `~/.local/share/klipp/models/`.
 
 ## Why a Directory?
 
 - **Plain-JSON state** is version-controllable and diffable
-- **Lazy caches stay separate** so the human-editable state doesn't get mingled with binary blobs
-- **Proxies and analysis live alongside the project** so they survive a project move
-- **A Klipp project is portable** — copy the `.klipp` directory and you have everything
+- **The human-editable state stays free of binary blobs**
+- **A Klipp project is portable** — copy the `.klipp` directory and you
+  have the edit; the caches rebuild themselves from the media
 
-The `.klipp` extension exists so file managers can show a custom icon and double-click can open Klipp; under the hood it's just a directory.
+The `.klipp` extension exists so file managers can show a custom icon; under the hood it's just a directory.
 
 ## Atomic Writes
 
@@ -38,7 +52,7 @@ A power-cut mid-save leaves the previous valid `project.json` in place; the half
 
 ## Versioning
 
-Format version is currently `"1"`. Each save records:
+Format version is currently `"1.0.0"`. Each save records:
 
 - `version` — schema version
 - `klipp_version_min` — lowest Klipp build that can read this file
@@ -46,7 +60,7 @@ Format version is currently `"1"`. Each save records:
 - `saved_at` / `created_at` — ISO 8601 timestamps
 - `platform` — e.g. `linux-x86_64`
 
-`load()` refuses projects whose `klipp_version_min` exceeds the running build — prevents silent forward-compatibility breakage when a newer Klipp introduces a schema field.
+`klipp_version_min` records the lowest build that was expected to read the file. It is written on save; nothing refuses a load on it today, so a project written by a newer Klipp opens and any field this build does not know is dropped.
 
 ## Forward Compatibility
 
@@ -95,11 +109,11 @@ Every optional field uses `#[serde(default)]` for forward / backward compatibili
 
 ## Source Colourspace Persistence
 
-When Klipp auto-detects log encoding from camera metadata, the detected `colour_space` and `log_format` are persisted in `media.json` per `MediaItem`. This means:
+When Klipp auto-detects log encoding from camera metadata, the detected `colour_space` and `log_format` are persisted in `media/manifest.json` per `MediaItem`. This means:
 
 - Reopening a project does not re-probe — detection is one-time at import
 - A user override stored against a clip survives saves
-- If you move a project to a machine where the source files are missing, the colourspace metadata is still in `media.json` and the relink dialog shows the right metadata
+- If you move a project to a machine where the source files are missing, the colourspace metadata is still in `media/manifest.json` and the relink dialog shows the right metadata
 
 ## Media References
 

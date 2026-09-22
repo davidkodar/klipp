@@ -12,7 +12,7 @@ To add a transition between two clips:
 
 1. Position two clips adjacent to each other on the same track
 2. Select the edit point (the boundary between the clips)
-3. Apply a transition from the effects browser, or use **Ctrl+T** for the default cross dissolve
+3. Drag a transition from the Transitions tab of the browser onto the edit point
 
 Both clips must have sufficient *handle media* — extra frames beyond the visible trim points — to create the transition overlap.
 
@@ -46,13 +46,13 @@ Select a transition on the timeline and press **Del** to remove it. Clips return
 
 ## Per-Type Catalogue
 
-Beyond cross dissolve, the effects browser ships:
+Sixty-seven transitions ship, in the Transitions tab of the browser.
+The ones reached for most:
 
 - Dip to colour (configurable colour, default black)
 - Slide
 - Wipe (linear, radial, clock)
 - Push
-- Whip pan
 - Cross zoom
 
 All are GPU-rendered through the same compute shaders that drive the effects pipeline — no CPU fallback needed at typical preview resolutions.
