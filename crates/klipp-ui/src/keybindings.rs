@@ -547,6 +547,16 @@ impl KeyBindings {
     pub fn action_label(action: &str) -> &str {
         match action {
             "save_project" => "Save Project",
+            "new_project" => "New Project",
+            "close_project" => "Close Project",
+            "quit" => "Quit",
+            "command_palette" => "Command Palette",
+            "toggle_browser_panel" => "Toggle Browser Panel",
+            "toggle_inspector_panel" => "Toggle Inspector Panel",
+            "toggle_audio_mixer" => "Toggle Audio Mixer",
+            "toggle_subtitle_editor" => "Toggle Subtitle Editor",
+            "match_frame_program_to_source" => "Match Frame",
+            "match_frame_source_to_program" => "Reverse Match Frame",
             "save_project_as" => "Save Project As",
             "open_project" => "Open Project",
             "import_media" => "Import Media",
@@ -1013,6 +1023,20 @@ mod registry_coverage {
 #[cfg(test)]
 mod preset_tests {
     use super::{KeyBindings, KeyCombo, KeymapFile, KeymapPreset};
+
+    /// Every bound action needs a readable name: the keyboard page and
+    /// the layout note print `action_label`, and without one the raw id
+    /// (`command_palette`) is what the user reads.
+    #[test]
+    fn every_action_has_a_label() {
+        let kb = KeyBindings::defaults();
+        let raw: Vec<&String> = kb
+            .bindings
+            .keys()
+            .filter(|a| KeyBindings::action_label(a) == a.as_str())
+            .collect();
+        assert!(raw.is_empty(), "actions with no label, shown by their id: {raw:?}");
+    }
 
     #[test]
     fn combos_parse_back_from_their_display_form() {
