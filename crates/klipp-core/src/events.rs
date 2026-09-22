@@ -2411,6 +2411,15 @@ pub enum AppCommand {
         new_time_secs: f64,
         new_value: f32,
     },
+    /// Adjust one or both Bezier handles of a title layer keyframe.
+    SetTitleObjectEffectKeyframeTangent {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
     SetTitleObjectEffectKeyframeInterpolation {
         clip_id: ClipId,
         object_id: u32,
@@ -2442,6 +2451,15 @@ pub enum AppCommand {
         index: usize,
         new_time_secs: f64,
         new_value: f32,
+    },
+    /// Adjust one or both Bezier handles of a title layer keyframe.
+    SetTitleObjectPositionKeyframeTangent {
+        clip_id: ClipId,
+        object_id: u32,
+        axis: crate::keyframe::TitlePositionAxis,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
     },
     SetTitleObjectPositionKeyframeInterpolation {
         clip_id: ClipId,

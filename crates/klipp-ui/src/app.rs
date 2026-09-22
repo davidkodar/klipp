@@ -16912,6 +16912,25 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleObjectPositionKeyframeTangent {
+                clip_id, object_id, axis, keyframe_index, tangent_in, tangent_out,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let param = crate::panels::title_curve::TitleCurveParam::Position(*axis);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out);
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Set Position Keyframe Tangent", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -17847,6 +17866,25 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Set Effect Keyframe Interpolation", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectEffectKeyframeTangent {
+                clip_id, object_id, param_key, keyframe_index, tangent_in, tangent_out,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let param = crate::panels::title_curve::TitleCurveParam::Effect(param_key.clone());
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            param.set_tangent(td, *object_id, *keyframe_index, *tangent_in, *tangent_out);
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Set Effect Keyframe Tangent", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -23968,6 +24006,7 @@ impl KlippApp {
                     let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == sk.clip_id);
                     if let Some(clip) = clip {
                         let kf_time = match &sk.param_kind {
+                            crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).get(sk.keyframe_index).map(|kf| kf.time_secs),
                             crate::state::KeyframeParamKind::Audio(param) => {
                                 let kfs = match param {
                                     klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -23998,6 +24037,7 @@ impl KlippApp {
                         };
                         if let Some(time_secs) = kf_time {
                             match &sk.param_kind {
+                                crate::state::KeyframeParamKind::Title { object_id, param } => cmds.push(param.remove(sk.clip_id, *object_id, time_secs)),
                                 crate::state::KeyframeParamKind::Audio(param) => {
                                     cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
                                 }
@@ -34407,10 +34447,12 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
         | C::MoveTitleObjectPositionKeyframe { clip_id, .. }
         | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleObjectPositionKeyframeTangent { clip_id, .. }
         | C::AddTitleObjectEffectKeyframe { clip_id, .. }
         | C::RemoveTitleObjectEffectKeyframe { clip_id, .. }
         | C::MoveTitleObjectEffectKeyframe { clip_id, .. }
         | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleObjectEffectKeyframeTangent { clip_id, .. }
         | C::SetTitleTexturePreset { clip_id, .. }
         | C::SetTitleTextureParams { clip_id, .. }
         | C::SetTitleOutlineStackEnabled { clip_id, .. }
