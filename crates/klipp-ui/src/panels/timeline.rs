@@ -8377,6 +8377,13 @@ impl TimelinePanel {
                     cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: Some(clip_id) });
                     ui.close_menu();
                 }
+                let is_title_clip = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .any(|c| c.id == clip_id && matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
+                if is_title_clip && ui.button("Save as Title Template\u{2026}").clicked() {
+                    cmds.push(AppCommand::SaveTitleTemplate { clip_id });
+                    ui.close_menu();
+                }
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())

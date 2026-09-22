@@ -4165,11 +4165,22 @@ fn show_title_editor(
         }
     }
 
-    ui.label(
-        egui::RichText::new("LAYERS")
-            .size(10.0)
-            .color(theme.text_dim),
-    );
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("LAYERS")
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("Save as Template\u{2026}")
+                .on_hover_text("Keep this title in the Titles browser, under User")
+                .clicked()
+            {
+                cmds.push(AppCommand::SaveTitleTemplate { clip_id });
+            }
+        });
+    });
     ui.add_space(4.0);
     show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
     ui.separator();

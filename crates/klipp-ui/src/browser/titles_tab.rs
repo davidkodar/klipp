@@ -3,6 +3,7 @@ use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
+use crate::title_templates::{TemplateDialog, UserTitleTemplate};
 use klipp_core::AppCommand;
 use klipp_timeline::{
     FontStyle, ScrollDirection, TextAlignment, TitleAnimationType, TitleBackground, TitleData,
@@ -45,6 +46,52 @@ pub(crate) struct TitleTemplate {
     #[allow(dead_code)]
     pub preview_text: &'static str,
     pub create_data: fn() -> TitleData,
+}
+
+/// A card in the browser: a built-in template or one the user saved.
+#[derive(Clone, Copy)]
+pub(crate) enum Entry<'a> {
+    Builtin(&'static TitleTemplate),
+    User(&'a UserTitleTemplate),
+}
+
+impl<'a> Entry<'a> {
+    fn name(&self) -> &'a str {
+        match self {
+            Entry::Builtin(t) => t.name,
+            Entry::User(t) => &t.name,
+        }
+    }
+
+    fn category(&self) -> &'a str {
+        match self {
+            Entry::Builtin(t) => t.category,
+            Entry::User(t) => &t.category,
+        }
+    }
+
+    fn data(&self) -> TitleData {
+        match self {
+            Entry::Builtin(t) => (t.create_data)(),
+            Entry::User(t) => t.data.clone(),
+        }
+    }
+
+    /// Identity for selection, hover and the preview cache. A user
+    /// template may share a built-in's name, and may be saved over.
+    fn key(&self) -> String {
+        match self {
+            Entry::Builtin(t) => t.name.to_string(),
+            Entry::User(t) => format!("user:{}:{}", t.revision, t.name),
+        }
+    }
+
+    fn source_label(&self) -> &'static str {
+        match self {
+            Entry::Builtin(_) => "Built-in",
+            Entry::User(_) => "User",
+        }
+    }
 }
 
 
@@ -475,7 +522,7 @@ const TITLES: &[TitleTemplate] = &[
 ];
 
 /// Ordered list of categories for display.
-const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credits", "Social", "Utility"];
+pub(crate) const CATEGORIES: &[&str] = &["Lower Thirds", "Openers", "Captions", "Credits", "Social", "Utility"];
 
 const TITLES_SIDEBAR_W: f32 = 180.0;
 
@@ -497,6 +544,13 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
+    // A snapshot, since the cards below take `state` mutably.
+    let user_templates: Vec<UserTitleTemplate> = state.title_templates.templates().cloned().collect();
+    let entries: Vec<Entry> = TITLES
+        .iter()
+        .map(Entry::Builtin)
+        .chain(user_templates.iter().map(Entry::User))
+        .collect();
     // A frame of the project's own footage under every card.
     let footage: Option<egui::TextureHandle> = state
         .media_pool
@@ -531,7 +585,7 @@ pub fn show(
 
                 // Counts (registry-wide, ignore the active filter so
                 // sidebar numbers don't dance as the user types).
-                let installed_total = TITLES.len();
+                let installed_total = entries.len();
                 // No favorites/recent persistence yet — show 0/0 stubs
                 // matching the audio FX sidebar shape.
                 titles_general_row(
@@ -583,7 +637,7 @@ pub fn show(
                     None,
                 );
                 for cat in CATEGORIES {
-                    let count = TITLES.iter().filter(|t| t.category == *cat).count();
+                    let count = entries.iter().filter(|t| t.category() == *cat).count();
                     let is_active = *active_category == Some(*cat);
                     titles_sidebar_row(
                         ui,
@@ -651,18 +705,16 @@ pub fn show(
         ui.add_space(6.0);
 
         // ── Filter row: All / Built-in / User + Animated only + view toggle ──
-        let scoped_total = TITLES
+        let scoped: Vec<&Entry> = entries
             .iter()
             .filter(|t| match active_category {
-                Some(cat) => t.category == *cat,
+                Some(cat) => t.category() == *cat,
                 None => true,
             })
-            .count();
-        // Built-in vs User: every entry is "Built-in" today (no user-
-        // importable templates yet); User stays at zero so the filter
-        // chip honestly reports.
-        let builtin_count = scoped_total;
-        let user_count: usize = 0;
+            .collect();
+        let scoped_total = scoped.len();
+        let user_count = scoped.iter().filter(|t| matches!(t, Entry::User(_))).count();
+        let builtin_count = scoped_total - user_count;
 
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
@@ -706,42 +758,39 @@ pub fn show(
 
         // ── Filter the registry ──
         let search_lower = search_query.to_lowercase();
-        let mut filtered: Vec<&TitleTemplate> = TITLES
-            .iter()
-            .filter(|t| match active_category {
-                Some(cat) => t.category == *cat,
-                None => true,
-            })
-            .filter(|_| match *source_filter {
-                TitlesSourceFilter::All | TitlesSourceFilter::Builtin => true,
-                TitlesSourceFilter::User => false, // no user templates yet
+        let mut filtered: Vec<&Entry> = scoped
+            .into_iter()
+            .filter(|t| match *source_filter {
+                TitlesSourceFilter::All => true,
+                TitlesSourceFilter::Builtin => matches!(t, Entry::Builtin(_)),
+                TitlesSourceFilter::User => matches!(t, Entry::User(_)),
             })
             .filter(|t| !*animated_only || template_is_animated(t))
             .filter(|t| {
                 if search_lower.is_empty() {
                     return true;
                 }
-                t.name.to_lowercase().contains(&search_lower)
-                    || t.category.to_lowercase().contains(&search_lower)
+                t.name().to_lowercase().contains(&search_lower)
+                    || t.category().to_lowercase().contains(&search_lower)
             })
             .collect();
         match *sort_mode {
             EffectSort::NameAsc => {
-                filtered.sort_by_key(|a| a.name.to_lowercase());
+                filtered.sort_by_key(|a| a.name().to_lowercase());
             }
             EffectSort::NameDesc => {
-                filtered.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase()));
+                filtered.sort_by_key(|a| std::cmp::Reverse(a.name().to_lowercase()));
             }
             EffectSort::Category => {
                 filtered.sort_by(|a, b| {
-                    a.category
+                    a.category()
                         .to_lowercase()
-                        .cmp(&b.category.to_lowercase())
-                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                        .cmp(&b.category().to_lowercase())
+                        .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
                 });
             }
             EffectSort::Source => {
-                filtered.sort_by_key(|a| a.name.to_lowercase());
+                filtered.sort_by_key(|a| (matches!(a, Entry::User(_)), a.name().to_lowercase()));
             }
         }
 
@@ -758,6 +807,8 @@ pub fn show(
                     ui.vertical_centered(|ui| {
                         let msg = if !search_query.is_empty() {
                             format!("No titles match \"{}\"", search_query)
+                        } else if *source_filter == TitlesSourceFilter::User {
+                            "No saved templates yet. Right-click a title clip and choose Save as Title Template.".to_string()
                         } else {
                             "No titles in this category".to_string()
                         };
@@ -784,20 +835,20 @@ pub fn show(
                         .show(ui, |ui| {
                             for (i, title) in filtered.iter().enumerate() {
                                 let is_selected =
-                                    selected.as_deref() == Some(title.name);
+                                    selected.as_deref() == Some(title.key().as_str());
                                 let display_text = effective_preview_text(preview_text, title);
                                 // Hover plays the motion; at rest the card
                                 // shows the settled pose.
-                                let elapsed = read_anim_elapsed(ui, title.name);
+                                let elapsed = read_anim_elapsed(ui, &title.key());
                                 let time = if elapsed > 0.0 { TitlePreviews::hover_time(elapsed) } else { REST_TIME };
                                 if elapsed > 0.0 {
                                     request_ahead(previews, title, &display_text, time);
                                 }
-                                let key = TitlePreviews::key(title.name, &display_text, time);
+                                let key = TitlePreviews::key(&title.key(), &display_text, time);
                                 let tex = previews
                                     .get_or_request(&key, time, || preview_data(title, &display_text))
                                     .cloned()
-                                    .or_else(|| previews.nearest_for(title.name, &display_text, time).cloned());
+                                    .or_else(|| previews.nearest_for(&title.key(), &display_text, time).cloned());
                                 let resp = title_card(
                                     ui,
                                     theme,
@@ -810,7 +861,7 @@ pub fn show(
                                     is_selected,
                                 );
                                 let active = resp.hovered() || is_selected;
-                                update_anim_state(ui, title.name, active);
+                                update_anim_state(ui, &title.key(), active);
                                 if active {
                                     ui.ctx().request_repaint();
                                 }
@@ -825,18 +876,18 @@ pub fn show(
                 } else {
                     for title in &filtered {
                         let is_selected =
-                            selected.as_deref() == Some(title.name);
+                            selected.as_deref() == Some(title.key().as_str());
                         let row_text = effective_preview_text(preview_text, title);
-                        let row_elapsed = read_anim_elapsed(ui, title.name);
+                        let row_elapsed = read_anim_elapsed(ui, &title.key());
                         let time = if row_elapsed > 0.0 { TitlePreviews::hover_time(row_elapsed) } else { REST_TIME };
                         if row_elapsed > 0.0 {
                             request_ahead(previews, title, &row_text, time);
                         }
-                        let key = TitlePreviews::key(title.name, &row_text, time);
+                        let key = TitlePreviews::key(&title.key(), &row_text, time);
                         let tex = previews
                             .get_or_request(&key, time, || preview_data(title, &row_text))
                             .cloned()
-                            .or_else(|| previews.nearest_for(title.name, &row_text, time).cloned());
+                            .or_else(|| previews.nearest_for(&title.key(), &row_text, time).cloned());
                         let resp = title_list_row(
                             ui,
                             theme,
@@ -847,7 +898,7 @@ pub fn show(
                             is_selected,
                         );
                         let active = resp.hovered() || is_selected;
-                        update_anim_state(ui, title.name, active);
+                        update_anim_state(ui, &title.key(), active);
                         if active {
                             ui.ctx().request_repaint();
                         }
@@ -866,10 +917,13 @@ pub fn show(
 /// template's hand-picked preview_text.
 fn effective_preview_text<'a>(
     user_text: &'a str,
-    title: &'a TitleTemplate,
+    title: &Entry<'a>,
 ) -> std::borrow::Cow<'a, str> {
     if user_text.trim().is_empty() {
-        std::borrow::Cow::Borrowed(title.preview_text)
+        match title {
+            Entry::Builtin(t) => std::borrow::Cow::Borrowed(t.preview_text),
+            Entry::User(t) => std::borrow::Cow::Owned(t.preview_text()),
+        }
     } else {
         std::borrow::Cow::Borrowed(user_text)
     }
@@ -880,15 +934,27 @@ fn effective_preview_text<'a>(
 fn handle_title_interaction(
     state: &mut AppState,
     cmds: &mut Vec<AppCommand>,
-    title: &TitleTemplate,
+    title: &Entry,
     resp: &egui::Response,
     selected: &mut Option<String>,
 ) {
     if resp.clicked() {
-        *selected = Some(title.name.to_string());
+        *selected = Some(title.key());
+    }
+    if let Entry::User(t) = title {
+        resp.context_menu(|ui| {
+            if ui.button("Rename\u{2026}").clicked() {
+                state.title_template_dialog = Some(TemplateDialog::Rename { from: t.name.clone(), name: t.name.clone() });
+                ui.close_menu();
+            }
+            if ui.button("Delete\u{2026}").clicked() {
+                state.title_template_dialog = Some(TemplateDialog::Delete { name: t.name.clone() });
+                ui.close_menu();
+            }
+        });
     }
     if resp.double_clicked() {
-        let title_data = (title.create_data)();
+        let title_data = title.data();
         state.pending_title_data = Some(title_data);
         let ph = state.playhead;
         let track_index = state.sequences[state.active_sequence_idx]
@@ -928,12 +994,12 @@ fn handle_title_interaction(
         });
         state
             .toast
-            .show(format!("\"{}\" title added to timeline", title.name));
+            .show(format!("\"{}\" title added to timeline", title.name()));
     }
     if resp.drag_started() {
-        let data = (title.create_data)();
+        let data = title.data();
         state.drag_drop.begin(DragPayload::Title {
-            template_name: title.name.to_string(),
+            template_name: title.name().to_string(),
             title_data: data,
         });
     }
@@ -943,7 +1009,7 @@ fn handle_title_interaction(
 fn title_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
-    title: &TitleTemplate,
+    title: &Entry,
     width: f32,
     height: f32,
     preview_bg: TitlesPreviewBg,
@@ -957,11 +1023,12 @@ fn title_card(
     );
     let hovered = resp.hovered();
     let caption = format!(
-        "{} \u{00B7} Built-in{}",
-        title.category,
+        "{} \u{00B7} {}{}",
+        title.category(),
+        title.source_label(),
         if template_is_animated(title) { " \u{00B7} Animated" } else { "" },
     );
-    crate::browser::library_card::library_card(ui, rect, title.name, &caption, is_selected, hovered, theme, |p, area| {
+    crate::browser::library_card::library_card(ui, rect, title.name(), &caption, is_selected, hovered, theme, |p, area| {
         let top = egui::Rounding { nw: crate::theme::radius::PANEL, ne: crate::theme::radius::PANEL, sw: 0.0, se: 0.0 };
         paint_preview_backdrop(p, area, top, preview_bg, footage);
         if let Some(t) = preview {
@@ -1007,20 +1074,20 @@ fn paint_preview_backdrop(
 
 /// Queue the next moments of a hovered card so its motion plays
 /// without waiting on renders.
-fn request_ahead(previews: &mut TitlePreviews, title: &TitleTemplate, text: &str, time: f32) {
+fn request_ahead(previews: &mut TitlePreviews, title: &Entry, text: &str, time: f32) {
     use crate::browser::title_previews::{FRAME_STEP, LOOP_SECS};
     for k in 1..=6 {
         let ahead = (time + k as f32 * FRAME_STEP) % LOOP_SECS;
         let ahead = TitlePreviews::hover_time(ahead);
-        let key = TitlePreviews::key(title.name, text, ahead);
+        let key = TitlePreviews::key(&title.key(), text, ahead);
         previews.request(&key, ahead, || preview_data(title, text));
     }
 }
 
 /// The title a card renders: the template with the user's preview text
 /// in its primary layer, when one is typed.
-fn preview_data(title: &TitleTemplate, text: &str) -> TitleData {
-    let mut td = (title.create_data)();
+fn preview_data(title: &Entry, text: &str) -> TitleData {
+    let mut td = title.data();
     if !text.trim().is_empty() && td.style_runs().is_empty() {
         if let Some(tb) = td.primary_text_mut() {
             tb.text = text.to_string();
@@ -1030,12 +1097,15 @@ fn preview_data(title: &TitleTemplate, text: &str) -> TitleData {
 }
 
 /// Whether any layer of the template moves.
-fn template_is_animated(title: &TitleTemplate) -> bool {
-    let td = (title.create_data)();
-    td.objects.iter().any(|o| match &o.content {
+fn template_is_animated(title: &Entry) -> bool {
+    let animated = |td: &TitleData| td.objects.iter().any(|o| match &o.content {
         TitleObjectContent::TextBox(tb) => tb.motion.is_active() || !tb.loops.is_empty(),
         _ => false,
-    })
+    });
+    match title {
+        Entry::Builtin(t) => animated(&(t.create_data)()),
+        Entry::User(t) => animated(&t.data),
+    }
 }
 
 // ──────────────────────────── Animation tracking ────────────────────────────
@@ -1084,7 +1154,7 @@ fn update_anim_state(ui: &egui::Ui, title_name: &str, active: bool) {
 fn title_list_row(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
-    title: &TitleTemplate,
+    title: &Entry,
     preview_bg: TitlesPreviewBg,
     footage: Option<&egui::TextureHandle>,
     preview: Option<&egui::TextureHandle>,
@@ -1127,11 +1197,11 @@ fn title_list_row(
     ui.painter().text(
         egui::pos2(text_x, text_y - 7.0),
         egui::Align2::LEFT_CENTER,
-        title.name,
+        title.name(),
         egui::FontId::proportional(12.0),
         theme.text_primary,
     );
-    let mut meta = title.category.to_string();
+    let mut meta = format!("{}  \u{00B7} {}", title.category(), title.source_label());
     if template_is_animated(title) {
         meta.push_str("  \u{00B7} Animated");
     }

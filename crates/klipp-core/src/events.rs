@@ -1843,6 +1843,9 @@ pub enum AppCommand {
     /// clip is selected, the inspector opens on its text, the playhead
     /// parks where the title is at rest.
     AddTitleAtPlayhead { over_clip: Option<ClipId> },
+    /// Open the dialog that saves a title clip as a user template in
+    /// the Titles browser.
+    SaveTitleTemplate { clip_id: ClipId },
     /// Add an image layer (a logo, a still) to a title. The layer's
     /// box takes the picture's aspect at a third of the frame width.
     AddTitleImageObject { clip_id: ClipId, path: String },

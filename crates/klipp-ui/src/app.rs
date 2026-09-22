@@ -15365,6 +15365,19 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SaveTitleTemplate { clip_id } => {
+                let data = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .and_then(|c| match &c.kind {
+                        klipp_timeline::ClipKind::Title(td) => Some(td.clone()),
+                        _ => None,
+                    });
+                if let Some(td) = data {
+                    self.state.title_template_dialog = Some(crate::title_templates::TemplateDialog::save(td));
+                }
+                true
+            }
             AppCommand::AddTitleAtPlayhead { over_clip } => {
                 let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                 // Where and how long: the playhead and five seconds,
@@ -30823,6 +30836,8 @@ impl KlippApp {
         }
     }
     fn show_modal_dialogs(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        crate::title_templates::show_dialog(ctx, &mut self.state);
+
         // 4a0. Paste Attributes dialog
         if self.state.show_paste_attributes_dialog {
             let mut open = true;

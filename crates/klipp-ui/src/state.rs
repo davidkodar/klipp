@@ -2002,6 +2002,10 @@ pub struct AppState {
     pub effect_filter_hide_unsupported: bool,
     /// Effect presets (built-in + user-created)
     pub preset_manager: crate::effect_presets::PresetManager,
+    /// The user's saved title templates (`~/.config/klipp/title_templates`).
+    pub title_templates: crate::title_templates::TitleTemplateStore,
+    /// The open save / rename / delete title-template dialog.
+    pub title_template_dialog: Option<crate::title_templates::TemplateDialog>,
     pub effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer,
 
     // Render queue
@@ -3707,6 +3711,8 @@ impl Default for AppState {
             effect_filter_gpu: false,
             effect_filter_hide_unsupported: false,
             preset_manager: crate::effect_presets::PresetManager::new(),
+            title_templates: crate::title_templates::TitleTemplateStore::load_default(),
+            title_template_dialog: None,
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
             render_queue: klipp_export::RenderQueue::new(),
             show_render_queue: false,
