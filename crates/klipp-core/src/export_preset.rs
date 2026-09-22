@@ -65,7 +65,8 @@ impl ProxyResolution {
     }
 }
 
-/// Returns the 10 built-in presets with deterministic UUIDs.
+/// The built-in presets, with deterministic UUIDs so a project that
+/// names one keeps it across versions.
 pub fn builtin_presets() -> Vec<ExportPreset> {
     vec![
         ExportPreset {
@@ -187,7 +188,12 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 fps: None,
                 crf: 0,
                 preset: EncoderPreset::default(),
-                audio_codec: ExportAudioCodec::Copy,
+                // PCM, not `Copy`: that one skips the audio stream
+                // entirely (there is nothing to copy from an in-process
+                // mixdown), so this preset used to write a silent
+                // master — see #156. A mastering deliverable wants
+                // uncompressed audio anyway.
+                audio_codec: ExportAudioCodec::Pcm24,
                 audio_bitrate_kbps: None,
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
@@ -205,7 +211,9 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 fps: None,
                 crf: 0,
                 preset: EncoderPreset::default(),
-                audio_codec: ExportAudioCodec::Copy,
+                // As with ProRes above: `Copy` wrote no audio at all
+                // (#156), which made the Avid interchange master silent.
+                audio_codec: ExportAudioCodec::Pcm24,
                 audio_bitrate_kbps: None,
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
@@ -271,6 +279,65 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         // via the export dialog when they want larger or slower.
         // Audio settings are nominally present but ignored by the GIF
         // encoder path — the dialog also greys them out.
+        // ── Deliveries that state a loudness ──
+        //
+        // The export dialogue has offered loudness targets by name for
+        // a while, and the two-pass normaliser behind them is finished
+        // and correct. What was missing was a preset that pairs one
+        // with a format, so delivering to a spec is a choice from a
+        // list rather than remembering to tick a box and pick a number
+        // every time.
+        //
+        // Only the specs whose true-peak limit the renderer can
+        // actually hold are here. `PEAK_CEILING_LINEAR` in
+        // `klipp-render` is fixed at -1 dBTP, which is right for EBU
+        // R128 and for the -14 streaming convention and wrong for
+        // ATSC A/85 and Netflix, which want -2. Shipping an A/85
+        // preset would put the spec's name on a file that cannot meet
+        // its peak requirement — see #122, which has to land before
+        // one belongs here.
+        ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000d".into(),
+            name: "Broadcast master (EBU R128)".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mov,
+                video_codec: ExportVideoCodec::ProRes422,
+                resolution: None,
+                fps: None,
+                crf: 0,
+                preset: EncoderPreset::default(),
+                audio_codec: ExportAudioCodec::Pcm24,
+                audio_bitrate_kbps: None,
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
+                // -23 LUFS integrated, true peak at or under -1 dBTP.
+                // The number a European broadcaster's automated QC
+                // measures, and the one it rejects a file over.
+                target_lufs: Some(-23.0),
+            },
+        },
+        ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000e".into(),
+            name: "Web 1080p (-14 LUFS)".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H264,
+                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                fps: None,
+                crf: 18,
+                preset: EncoderPreset::Medium,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: Some(192),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
+                // What the streaming platforms normalise to anyway.
+                // Delivering at it means they leave the mix alone
+                // rather than turning it down on the way in.
+                target_lufs: Some(-14.0),
+            },
+        },
         ExportPreset {
             id: "00000000-0000-4000-a000-00000000000c".into(),
             name: "Animated GIF (480p, 15fps)".into(),
@@ -311,6 +378,58 @@ mod tests {
         assert_eq!(res.height, 480);
         let fps = gif.settings.fps.expect("GIF preset must pin fps");
         assert_eq!(fps.num, 15);
+    }
+
+    #[test]
+    fn no_built_in_preset_writes_a_silent_file() {
+        // `ExportAudioCodec::Copy` does not copy: the encoder skips the
+        // audio stream entirely, because an in-process mixdown has
+        // nothing to copy from. The ProRes and DNxHD mastering presets
+        // both selected it, so the two exports a professional reaches
+        // for when the file is a deliverable came out silent (#156).
+        for p in builtin_presets() {
+            if p.settings.format == ExportFormat::Gif {
+                continue; // no sound in a GIF, and none expected
+            }
+            assert_ne!(
+                p.settings.audio_codec,
+                ExportAudioCodec::Copy,
+                "preset \"{}\" would export no audio at all",
+                p.name,
+            );
+        }
+    }
+
+    #[test]
+    fn the_delivery_presets_state_a_loudness_the_renderer_can_hold() {
+        // A preset that names a standard has to be able to meet it.
+        // The renderer's true-peak ceiling is fixed at -1 dBTP, which
+        // suits EBU R128 and the -14 streaming convention; ATSC A/85
+        // and Netflix want -2, so no preset may claim them until #122
+        // makes the ceiling a setting.
+        let presets = builtin_presets();
+        let with_target: Vec<_> = presets.iter().filter(|p| p.settings.target_lufs.is_some()).collect();
+        assert!(!with_target.is_empty(), "there should be delivery presets");
+
+        for p in &with_target {
+            let lufs = p.settings.target_lufs.unwrap();
+            assert!(
+                (lufs - -23.0).abs() < 0.01 || (lufs - -14.0).abs() < 0.01,
+                "preset \"{}\" targets {lufs} LUFS; only the specs whose peak limit is \
+                 -1 dBTP belong here until #122 lands",
+                p.name,
+            );
+            assert_ne!(
+                p.settings.audio_codec,
+                ExportAudioCodec::Copy,
+                "preset \"{}\" asks for a loudness and writes no audio",
+                p.name,
+            );
+        }
+
+        let r128 = presets.iter().find(|p| p.name.contains("R128")).expect("an R128 preset");
+        assert_eq!(r128.settings.target_lufs, Some(-23.0));
+        assert_eq!(r128.settings.audio_codec, ExportAudioCodec::Pcm24, "a master wants PCM");
     }
 
     #[test]
