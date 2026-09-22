@@ -1,7 +1,12 @@
 //! Keyboard shortcut remapping system.
 //!
 //! Stores a mapping from action names to key combinations. Persisted to
-//! `~/.config/klipp/keybindings.json`. Missing entries fall back to defaults.
+//! `~/.config/klipp/keybindings.json`.
+//!
+//! The map is built in layers: Klipp's own defaults, then a
+//! [`KeymapPreset`] (the layout of another NLE, for an editor whose hands
+//! already know one), then the user's own changes. The file stores only
+//! the preset's name and the changes, so switching preset keeps them.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -54,18 +59,157 @@ impl KeyCombo {
 
         // Try to parse as egui::Key
         if let Some(egui_key) = parse_egui_key(&self.key) {
-            input.key_pressed(egui_key)
+            input.key_pressed(egui_key) || self.shifted_punctuation_pressed(egui_key, input)
         } else {
-            // Text-based keys (punctuation: ,  .  ;  '  etc.)
+            // Text-based keys (punctuation: ,  .  ;  '  etc.). Ctrl and
+            // Alt suppress the text event, so a modified one is read as
+            // a key press instead.
             input.events.iter().any(|e| matches!(e, egui::Event::Text(s) if *s == self.key))
+                || ((self.ctrl || self.alt)
+                    && egui::Key::from_name(&self.key).is_some_and(|k| {
+                        input.key_pressed(k) || self.shifted_punctuation_pressed(k, input)
+                    }))
         }
+    }
+
+    /// Shift changes what a punctuation key reports (`[` arrives as `{`
+    /// on a US layout), so Shift+punctuation is matched on the physical
+    /// key. Letters and digits never take this path: on a non-US layout
+    /// their physical position is a different letter.
+    fn shifted_punctuation_pressed(&self, key: egui::Key, input: &egui::InputState) -> bool {
+        use egui::Key as K;
+        self.shift
+            && matches!(
+                key,
+                K::OpenBracket | K::CloseBracket | K::Semicolon | K::Quote | K::Comma
+                    | K::Period | K::Slash | K::Backslash | K::Backtick | K::Minus | K::Equals
+            )
+            && input.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { physical_key: Some(k), pressed: true, .. } if *k == key)
+            })
+    }
+
+    /// Parse the display form back: `"Ctrl+Shift+Z"`, `"Alt+["`, `"F10"`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut combo = Self::new("");
+        let mut rest = s;
+        loop {
+            if let Some(r) = rest.strip_prefix("Ctrl+") { combo.ctrl = true; rest = r; }
+            else if let Some(r) = rest.strip_prefix("Shift+") { combo.shift = true; rest = r; }
+            else if let Some(r) = rest.strip_prefix("Alt+") { combo.alt = true; rest = r; }
+            else { break; }
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        combo.key = rest.to_string();
+        Some(combo)
     }
 }
 
-/// Map action names → key combos.  Stored sorted for stable serialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A named starting layout: Klipp's own, or the defaults of the NLE an
+/// editor is arriving from. Only actions Klipp has are mapped; a key a
+/// preset claims is taken off whichever Klipp action held it, so no
+/// press runs two things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapPreset {
+    #[default]
+    Klipp,
+    Premiere,
+    Avid,
+    Resolve,
+    FinalCut,
+}
+
+impl KeymapPreset {
+    pub const ALL: [KeymapPreset; 5] = [
+        KeymapPreset::Klipp,
+        KeymapPreset::Premiere,
+        KeymapPreset::Avid,
+        KeymapPreset::Resolve,
+        KeymapPreset::FinalCut,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KeymapPreset::Klipp => "Klipp",
+            KeymapPreset::Premiere => "Premiere Pro",
+            KeymapPreset::Avid => "Avid Media Composer",
+            KeymapPreset::Resolve => "DaVinci Resolve",
+            KeymapPreset::FinalCut => "Final Cut Pro",
+        }
+    }
+
+    /// The actions this preset binds differently from Klipp.
+    fn table(self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self {
+            KeymapPreset::Klipp => &[],
+            KeymapPreset::Premiere => crate::keymap_presets::PREMIERE,
+            KeymapPreset::Avid => crate::keymap_presets::AVID,
+            KeymapPreset::Resolve => crate::keymap_presets::RESOLVE,
+            KeymapPreset::FinalCut => crate::keymap_presets::FINAL_CUT,
+        }
+    }
+
+    /// How many actions the preset gives a key.
+    pub fn mapped_count(self) -> usize {
+        self.table().iter().filter(|(_, combos)| !combos.is_empty()).count()
+    }
+
+    /// Klipp actions that have a key of their own but none under this
+    /// preset, because it gave their keys to something else.
+    pub fn displaced(self) -> Vec<String> {
+        let klipp = KeyBindings::klipp_defaults();
+        self.bindings()
+            .into_iter()
+            .filter(|(action, combos)| combos.is_empty() && klipp.get(action).is_some_and(|k| !k.is_empty()))
+            .map(|(action, _)| action)
+            .collect()
+    }
+
+    /// The full map: Klipp's defaults with this preset's keys laid over
+    /// them. A key the preset claims is removed from any other action,
+    /// which is left with its remaining keys, or unbound.
+    pub fn bindings(self) -> BTreeMap<String, Vec<KeyCombo>> {
+        let mut map = KeyBindings::klipp_defaults();
+        let table: Vec<(&str, Vec<KeyCombo>)> = self
+            .table()
+            .iter()
+            .map(|(a, combos)| (*a, combos.iter().filter_map(|c| KeyCombo::parse(c)).collect()))
+            .collect();
+        let claimed: Vec<&KeyCombo> = table.iter().flat_map(|(_, c)| c).collect();
+        for (action, combos) in map.iter_mut() {
+            if !table.iter().any(|(a, _)| a == action) {
+                combos.retain(|c| !claimed.contains(&c));
+            }
+        }
+        for (action, combos) in table {
+            map.insert(action.to_string(), combos);
+        }
+        map
+    }
+}
+
+/// Map action names → key combos, as in effect: preset plus the user's
+/// changes.
+#[derive(Debug, Clone)]
 pub struct KeyBindings {
+    /// The layout the map starts from.
+    pub preset: KeymapPreset,
     pub bindings: BTreeMap<String, Vec<KeyCombo>>,
+}
+
+/// What `keybindings.json` holds: the preset, and only the actions the
+/// user changed from it. A file from before presets has no `preset` and
+/// the whole map under `bindings`; it loads as Klipp plus whatever in it
+/// differs from Klipp's defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct KeymapFile {
+    #[serde(default)]
+    preset: KeymapPreset,
+    #[serde(default)]
+    bindings: BTreeMap<String, Vec<KeyCombo>>,
 }
 
 impl Default for KeyBindings {
@@ -90,8 +234,50 @@ impl KeyBindings {
             .unwrap_or_default()
     }
 
-    /// All default bindings.
+    /// Klipp's own layout, with no changes.
     pub fn defaults() -> Self {
+        Self::from_preset(KeymapPreset::Klipp)
+    }
+
+    /// A preset's layout, with no changes.
+    pub fn from_preset(preset: KeymapPreset) -> Self {
+        Self { preset, bindings: preset.bindings() }
+    }
+
+    /// The actions whose keys differ from the preset's.
+    pub fn overrides(&self) -> BTreeMap<String, Vec<KeyCombo>> {
+        let base = self.preset.bindings();
+        self.bindings
+            .iter()
+            .filter(|(action, combos)| base.get(*action) != Some(*combos))
+            .map(|(a, c)| (a.clone(), c.clone()))
+            .collect()
+    }
+
+    /// Switch to another preset, keeping the user's changes on top.
+    pub fn set_preset(&mut self, preset: KeymapPreset) {
+        let overrides = self.overrides();
+        *self = Self::from_preset(preset);
+        self.bindings.extend(overrides);
+    }
+
+    /// Drop the user's changes, keeping the preset.
+    pub fn reset_to_preset(&mut self) {
+        *self = Self::from_preset(self.preset);
+    }
+
+    fn to_file(&self) -> KeymapFile {
+        KeymapFile { preset: self.preset, bindings: self.overrides() }
+    }
+
+    fn from_file(file: KeymapFile) -> Self {
+        let mut kb = Self::from_preset(file.preset);
+        kb.bindings.extend(file.bindings);
+        kb
+    }
+
+    /// Klipp's default map.
+    fn klipp_defaults() -> BTreeMap<String, Vec<KeyCombo>> {
         let mut b = BTreeMap::new();
 
         let bind = |b: &mut BTreeMap<String, Vec<KeyCombo>>, name: &str, combos: Vec<KeyCombo>| {
@@ -202,7 +388,7 @@ impl KeyBindings {
         bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F11")]);
         bind(&mut b, "toggle_before_after", vec![KeyCombo::alt("B")]);
         bind(&mut b, "toggle_color_panel", vec![KeyCombo::new("C")]);
-        bind(&mut b, "toggle_scopes", vec![KeyCombo::new("Alt+V")]);
+        bind(&mut b, "toggle_scopes", vec![KeyCombo::alt("V")]);
         bind(&mut b, "toggle_zebra", vec![KeyCombo::alt("Z")]);
         bind(&mut b, "toggle_false_color", vec![KeyCombo::alt("F")]);
         bind(&mut b, "toggle_perf_overlay", vec![KeyCombo::new("P")]);
@@ -289,7 +475,7 @@ impl KeyBindings {
         bind(&mut b, "connect_clip", vec![KeyCombo::new("G")]);
         bind(&mut b, "disconnect_clip", vec![KeyCombo::shift("G")]);
 
-        Self { bindings: b }
+        b
     }
 
     /// Config file path: ~/.config/klipp/keybindings.json
@@ -297,20 +483,17 @@ impl KeyBindings {
         dirs::config_dir().map(|d| d.join("klipp").join("keybindings.json"))
     }
 
-    /// Load from disk. Missing entries fall back to defaults.
+    /// Load from disk. Actions the file does not mention take the
+    /// preset's keys.
     pub fn load() -> Self {
         let defaults = Self::defaults();
         let Some(path) = Self::config_path() else { return defaults; };
 
         match std::fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<KeyBindings>(&contents) {
-                Ok(mut loaded) => {
-                    // Merge: add any default keys not present in the loaded file
-                    for (action, combos) in &defaults.bindings {
-                        loaded.bindings.entry(action.clone()).or_insert_with(|| combos.clone());
-                    }
+            Ok(contents) => match serde_json::from_str::<KeymapFile>(&contents) {
+                Ok(file) => {
                     tracing::info!("Key bindings loaded from {}", path.display());
-                    loaded
+                    Self::from_file(file)
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse keybindings ({}), using defaults", e);
@@ -330,7 +513,7 @@ impl KeyBindings {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {e}"))?;
         }
-        let json = serde_json::to_string_pretty(self)
+        let json = serde_json::to_string_pretty(&self.to_file())
             .map_err(|e| format!("Failed to serialize keybindings: {e}"))?;
         std::fs::write(&path, json)
             .map_err(|e| format!("Failed to write keybindings: {e}"))?;
@@ -574,6 +757,40 @@ pub fn key_event_to_combo(input: &egui::InputState) -> Option<KeyCombo> {
         }
     }
 
+    // Shift changes what punctuation reports (`[` arrives as `{`), so
+    // Shift+punctuation is read from the physical key.
+    if input.modifiers.shift {
+        for name in [",", ".", ";", "'", "/", "\\", "`", "[", "]", "=", "-"] {
+            let Some(key) = egui::Key::from_name(name) else { continue };
+            let pressed = input.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { physical_key: Some(k), pressed: true, .. } if *k == key)
+            });
+            if pressed {
+                return Some(KeyCombo {
+                    ctrl: input.modifiers.ctrl,
+                    shift: true,
+                    alt: input.modifiers.alt,
+                    key: name.into(),
+                });
+            }
+        }
+    }
+
+    // Ctrl and Alt suppress text events, so modified punctuation is
+    // read as a key press.
+    if input.modifiers.ctrl || input.modifiers.alt {
+        for name in [",", ".", ";", "'", "/", "\\", "`"] {
+            if egui::Key::from_name(name).is_some_and(|k| input.key_pressed(k)) {
+                return Some(KeyCombo {
+                    ctrl: input.modifiers.ctrl,
+                    shift: input.modifiers.shift,
+                    alt: input.modifiers.alt,
+                    key: name.into(),
+                });
+            }
+        }
+    }
+
     // Check text events for punctuation
     for event in &input.events {
         if let egui::Event::Text(s) = event {
@@ -790,5 +1007,146 @@ mod registry_coverage {
              does and add the pair to INTENTIONAL:\n{}",
             unexpected.join("\n"),
         );
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::{KeyBindings, KeyCombo, KeymapFile, KeymapPreset};
+
+    #[test]
+    fn combos_parse_back_from_their_display_form() {
+        for s in ["Z", "Ctrl+Shift+Z", "Alt+[", "Shift+Delete", "Ctrl+\\", "F10", ","] {
+            assert_eq!(KeyCombo::parse(s).unwrap().display(), s);
+        }
+        assert!(KeyCombo::parse("Ctrl+").is_none());
+    }
+
+    #[test]
+    fn every_preset_names_real_actions_and_readable_keys() {
+        let klipp = KeyBindings::defaults();
+        for preset in KeymapPreset::ALL {
+            let mut seen = std::collections::BTreeSet::new();
+            for (action, combos) in preset.table() {
+                assert!(klipp.bindings.contains_key(*action), "{preset:?}: no Klipp action {action}");
+                assert!(seen.insert(*action), "{preset:?}: {action} listed twice");
+                for c in *combos {
+                    let combo = KeyCombo::parse(c).unwrap_or_else(|| panic!("{preset:?}: bad combo {c}"));
+                    assert!(
+                        super::parse_egui_key(&combo.key).is_some()
+                            || egui::Key::from_name(&combo.key).is_some(),
+                        "{preset:?}: {action} = {c} names a key Klipp cannot read"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A preset may take a key from a Klipp action, but must never leave
+    /// one press running two actions.
+    #[test]
+    fn no_preset_makes_one_press_run_two_actions() {
+        use std::collections::BTreeMap;
+        let allowed = ["Ctrl+C", "Ctrl+V"];
+        for preset in KeymapPreset::ALL {
+            let mut by_combo: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (action, combos) in preset.bindings() {
+                for c in combos {
+                    by_combo.entry(c.display()).or_default().push(action.clone());
+                }
+            }
+            let clashes: Vec<String> = by_combo
+                .iter()
+                .filter(|(c, acts)| acts.len() > 1 && !allowed.contains(&c.as_str()))
+                .map(|(c, acts)| format!("{c} -> {}", acts.join(", ")))
+                .collect();
+            assert!(clashes.is_empty(), "{preset:?}: {clashes:#?}");
+        }
+    }
+
+    #[test]
+    fn switching_preset_keeps_the_users_changes() {
+        let mut kb = KeyBindings::defaults();
+        kb.bindings.insert("add_marker".into(), vec![KeyCombo::new("F7")]);
+        kb.set_preset(KeymapPreset::Premiere);
+        assert_eq!(kb.preset, KeymapPreset::Premiere);
+        assert_eq!(kb.bindings["add_marker"], vec![KeyCombo::new("F7")]);
+        assert_eq!(kb.overrides().len(), 1);
+        kb.reset_to_preset();
+        assert!(kb.overrides().is_empty());
+        assert_eq!(kb.bindings, KeymapPreset::Premiere.bindings());
+    }
+
+    #[test]
+    fn the_file_holds_the_preset_and_only_the_changes() {
+        let mut kb = KeyBindings::from_preset(KeymapPreset::Resolve);
+        kb.bindings.insert("add_marker".into(), vec![KeyCombo::new("F7")]);
+        let json = serde_json::to_string(&kb.to_file()).unwrap();
+        let file: KeymapFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(file.preset, KeymapPreset::Resolve);
+        assert_eq!(file.bindings.len(), 1);
+        assert_eq!(KeyBindings::from_file(file).bindings, kb.bindings);
+    }
+
+    /// Files written before presets hold the whole map and no preset.
+    /// They load as Klipp, and only real changes count as changes, so a
+    /// later switch of preset is not pinned to Klipp's old keys.
+    #[test]
+    fn a_file_from_before_presets_loads_as_klipp_with_its_changes() {
+        let mut full = KeyBindings::defaults().bindings;
+        full.insert("add_marker".into(), vec![KeyCombo::new("F7")]);
+        let json = serde_json::json!({ "bindings": full }).to_string();
+        let kb = KeyBindings::from_file(serde_json::from_str(&json).unwrap());
+        assert_eq!(kb.preset, KeymapPreset::Klipp);
+        assert_eq!(kb.overrides().keys().collect::<Vec<_>>(), ["add_marker"]);
+    }
+}
+
+#[cfg(test)]
+mod displaced_report {
+    use super::KeymapPreset;
+
+    /// Prints what each preset leaves unbound, for review:
+    /// `cargo test -p klipp-ui --lib displaced_report -- --nocapture`.
+    #[test]
+    fn klipp_keeps_every_key_of_its_own() {
+        for p in KeymapPreset::ALL {
+            println!("{:?} ({} mapped): {:?}", p, p.mapped_count(), p.displaced());
+        }
+        assert!(KeymapPreset::Klipp.displaced().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod shifted_punctuation {
+    use super::{key_event_to_combo, KeyCombo};
+
+    /// One frame with Ctrl+Shift+\ held, as a US keyboard reports it:
+    /// the logical key is `|`, the physical key is `\`.
+    fn input() -> egui::InputState {
+        let ctx = egui::Context::default();
+        let modifiers = egui::Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+        let raw = egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::Pipe,
+                physical_key: Some(egui::Key::Backslash),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |_| {});
+        ctx.input(|i| i.clone())
+    }
+
+    #[test]
+    fn a_shifted_punctuation_combo_fires_and_can_be_captured() {
+        let i = input();
+        let combo = KeyCombo::parse("Ctrl+Shift+\\").unwrap();
+        assert!(combo.is_pressed(&i));
+        assert_eq!(key_event_to_combo(&i), Some(combo));
+        assert!(!KeyCombo::parse("Ctrl+\\").unwrap().is_pressed(&i), "Shift must still count");
     }
 }

@@ -61,6 +61,7 @@ pub mod hyperzoom_presets;
 pub mod icons;
 pub mod inspector;
 pub mod keybindings;
+mod keymap_presets;
 pub mod layout_state;
 pub(crate) mod layout;
 pub mod media_watcher;
