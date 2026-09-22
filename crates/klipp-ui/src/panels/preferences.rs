@@ -27,6 +27,7 @@ enum PrefsTab {
 }
 
 pub struct PreferencesPanel {
+    pub(crate) show_updates: bool,
     active_tab: PrefsTab,
     /// Action currently being remapped (waiting for key press). (action_name, combo_index)
     remapping: Option<(String, usize)>,
@@ -50,6 +51,7 @@ impl Default for PreferencesPanel {
     fn default() -> Self {
         Self {
             active_tab: PrefsTab::General,
+            show_updates: false,
             remapping: None,
             kb_search: String::new(),
             search_query: String::new(),
@@ -367,7 +369,7 @@ impl PreferencesPanel {
     /// Searchable keywords for each preferences tab.
     fn tab_search_keywords(tab: PrefsTab) -> &'static [&'static str] {
         match tab {
-            PrefsTab::General => &["general", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
+            PrefsTab::General => &["general", "updates", "preview", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
             // Both spellings on purpose: these are what a user types
             // into the preferences search, and half the world spells it
             // the other way. The labels are British; the search is not
@@ -573,6 +575,18 @@ impl PreferencesPanel {
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("General").strong().size(16.0).color(theme.text_primary));
+        });
+
+        Self::section_header(ui, "UPDATES", theme);
+        Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
+            if ui.checkbox(&mut prefs.general.check_for_updates, "").changed() { *dirty = true; }
+        });
+        Self::setting_row(ui, "Include preview releases", theme, |ui| {
+            if ui.checkbox(&mut prefs.general.preview_updates, "").changed() { *dirty = true; }
+        });
+        Self::setting_row(ui, "Installed version", theme, |ui| {
+            ui.label(klipp_core::build_info::get().version);
+            if ui.button("Check for updates…").clicked() { self.show_updates = true; }
         });
 
         // ── STARTUP section ──
@@ -4131,6 +4145,7 @@ impl PreferencesPanel {
     }
 
     fn show_about(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
+        if ui.button("Check for updates…").clicked() { self.show_updates = true; }
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Run as the desktop user. Pacman handles dependency resolution, signatures,
+# its transaction lock and the final confirmation in a visible terminal.
+set -euo pipefail
+if [[ ${1:-} == --terminal ]]; then
+    echo 'Klipp update: save your project and finish any exports before continuing.'
+    echo 'This performs a full Arch system update, including Klipp.'
+    read -r -p 'Continue? [y/N] ' answer
+    [[ $answer == y || $answer == Y ]] || exit 0
+    status=0
+    sudo pacman -Syu klipp || status=$?
+    if (( status == 0 )); then
+        echo 'Update completed. Close and reopen Klipp to use the installed version.'
+    else
+        echo "Update failed or was cancelled (exit $status). See the pacman output above."
+    fi
+    read -r -p 'Press Enter to close this window.' _ || true
+    exit "$status"
+fi
+if [[ $(pacman -Qqo /usr/lib/klipp/klipp) != klipp ]]; then
+    echo 'This installation is not managed by the Klipp release package.' >&2
+    exit 1
+fi
+pacman-conf --repo klipp Server >/dev/null
+exec xdg-terminal-exec /usr/bin/klipp-update --terminal
