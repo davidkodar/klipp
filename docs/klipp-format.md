@@ -1,7 +1,5 @@
 # `.klipp` on-disk project format
 
-Closes CODE_AUDIT **DOC-KLIPP-FORMAT**.
-
 This document describes the layout and shape of a Klipp project as it
 lives on disk. The authoritative serde structs are in
 `crates/klipp-project/src/format.rs`; this document is the
@@ -37,7 +35,7 @@ else is regenerated lazily from the source media.
 All `.json` files (and the `stills.json` index) are written via
 `klipp_project::path_util::atomic_write` — temp + rename, with the
 temp filename including `pid` + `nanos` so concurrent saves don't
-clobber each other's scratch files. See CODE_AUDIT SEC-4 / SEC-5.
+clobber each other's scratch files.
 
 A power-cut mid-save leaves the previous valid `project.json` in
 place; the half-written temp file is orphaned (next save overwrites
@@ -197,7 +195,7 @@ fields are forward-compatible.
 The `kind` field is matched against the `TRANSITION_SPECS` registry
 in `klipp-core::transition_registry`. A missing variant on load
 falls back to `CrossDissolve` and emits a `tracing::error!` rather
-than crashing — see CODE_AUDIT PANIC-REGISTRY.
+than crashing.
 
 ### `MarkerJson`
 
@@ -302,8 +300,7 @@ A small JSON file pointing at the per-still PNGs:
 
 The PNGs themselves are RGBA8 at the project's preview resolution.
 `load_grade_stills` caps the number of entries at `MAX_STILLS` so a
-malformed `stills.json` can't DoS the project loader — see
-CODE_AUDIT SEC-7.
+malformed `stills.json` can't DoS the project loader.
 
 ## Versioning & forward-compatibility
 

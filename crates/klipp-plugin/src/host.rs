@@ -187,7 +187,7 @@ impl Drop for OfxPlugin {
         // initialise_plugin, so the matching kOfxActionUnload runs
         // here. Plugins use Unload to release persistent resources
         // (CUDA contexts, license checks, GL caches); skipping it
-        // leaks across host tear-down. Closes CODE_AUDIT FFI-2.
+        // leaks across host tear-down.
         //
         // raw is only null if construction failed before the field
         // was set; in normal flow it's either a Box::into_raw'd
@@ -211,7 +211,7 @@ impl Drop for OfxPlugin {
             // Box so it deallocates rather than leaking. Real plugins
             // (Some(_lib)) own their raw pointer through the dylib's
             // static storage — Drop on the Arc<Library> below
-            // releases everything. Closes CODE_AUDIT FFI-1.
+            // releases everything.
             if self._lib.is_none() {
                 let _ = unsafe { Box::from_raw(self.raw as *mut ffi::OfxPluginRaw) };
             }

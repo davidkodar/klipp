@@ -31,9 +31,8 @@
 //! ## Public surface
 //!
 //! [`mobile_sam::MobileSam`] is the only impl today. SAM v1 ViT-B
-//! lives in its own module behind the same trait once weights
-//! distribution is sorted out (see F-97 release-CI notes in
-//! CODE_AUDIT.html).
+//! would live in its own module behind the same trait; what stands in
+//! the way is distributing its weights, not the code here.
 
 pub mod mobile_sam;
 

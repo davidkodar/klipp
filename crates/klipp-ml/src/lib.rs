@@ -1,9 +1,12 @@
 //! Local-only ML model handling for Klipp.
 //!
-//! This crate is the foundation for the SAM2 object-mask feature
-//! (tracker entry F-97). Scope today: model manifest + secure
-//! download + checksum verification + XDG cache management. Inference
-//! itself (wonnx integration) builds on top, separately.
+//! Two jobs. It manages the models themselves — the manifest, the
+//! download, the SHA-256 check and the XDG cache — and it defines the
+//! traits inference backends implement ([`mask_generator`]) together
+//! with the [`registry`] that hands a caller a generator by id. The
+//! backends live in their own crates (`klipp-ml-ort`,
+//! `klipp-ml-candle`), so nothing here depends on an inference
+//! runtime.
 //!
 //! # Trust model
 //!
@@ -14,9 +17,7 @@
 //! checksums + HTTPS + manual review of new dependencies — and is the
 //! same trust posture users already accept for Rust crates.
 //!
-//! See `assets/models.toml` at the workspace root for the schema; see
-//! the F-97 entry in CODE_AUDIT.html for the full design rationale
-//! (trust chain, residual risks, why Option 2 over Option 3).
+//! See `assets/models.toml` at the workspace root for the schema.
 //!
 //! # No-unsafe stance
 //!

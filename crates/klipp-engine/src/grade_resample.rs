@@ -5,7 +5,7 @@
 //! costs ~5–50 ms per frame and pushes update_playback over budget,
 //! visible to the user as "drops to 10 the moment I touch hue".
 //!
-//! These helpers let `post_process_rgba_inner` run at half resolution
+//! These helpers let the render path run at half resolution
 //! during a drag, then upsample back so the rest of the pipeline
 //! (composite, display transform, viewer write) keeps its original
 //! resolution contract. 4× compute reduction in the grade chain for

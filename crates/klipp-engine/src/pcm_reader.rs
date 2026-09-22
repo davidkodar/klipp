@@ -333,7 +333,7 @@ fn pcm_feed_thread(
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
 ) {
-    // CODE_AUDIT C-4: flush denormals on this DSP thread — same reason
+    // Flush denormals on this DSP thread — same reason
     // as in audio_decoder. A silent PCM region with biquads engaged
     // would otherwise accumulate denormal state and stall the FPU.
     klipp_audio::flush_denormals_to_zero();

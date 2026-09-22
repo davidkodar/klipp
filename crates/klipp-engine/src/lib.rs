@@ -41,11 +41,22 @@
 //!
 //! # Colour pipeline
 //!
-//! Currently 8-bit sRGB throughout. Every effect and grade operates on
-//! gamma-encoded bytes, which is physically wrong for exposure /
-//! saturation / LGG above ~+1 stop. A future linear-light pipeline
-//! (f16 or f32 intermediate, display transform at the viewer) is the
-//! canonical fix; this crate is the substrate for it.
+//! Linear light throughout. The decoder emits [`types::LinearFrame`] —
+//! f32 RGBA in the working space the grade runs in, where 0.18 is mid
+//! grey and values above 1.0 keep their highlight headroom — and every
+//! effect, grade and composite works on those floats.
+//!
+//! Eight-bit bytes survive at the two ends only. The hardware decoder's
+//! conversion shader leaves the frame as sRGB u8 in a `wgpu::Buffer`
+//! ([`frame::GpuFrame`]), which [`types::realise_linear_from_gpu`]
+//! expands when something asks for CPU pixels; and the viewer's
+//! [`texture::FrameBuffer`] holds what the display transform produced.
+//!
+//! That transform — `klipp_color::display`, dispatched per working
+//! space by `PlaybackEngine::display_encode` — is the one place
+//! out-of-range linear values are resolved. On the GPU path it encodes
+//! straight into the `Rgba8Unorm` texture the UI samples, with no
+//! readback.
 
 #[cfg(target_os = "linux")]
 pub mod alsa_quiet;

@@ -20,9 +20,8 @@
 //! ```
 //!
 //! [`apply_rrt`] takes ACES2065-1 (AP0, scene-referred linear) input
-//! and produces OCES (AP0, post-tonemap linear). Each ODT
-//! ([`apply_odt_rec709_100_nits_dim`], plus future PQ / DCI-P3
-//! variants) consumes that OCES signal and produces a display-
+//! and produces OCES (AP0, post-tonemap linear). Each ODT — see
+//! the four below — consumes that OCES signal and produces a display-
 //! encoded RGB buffer ready for the target's transfer function.
 //! Working-space callers convert AP1 → AP0 via
 //! [`crate::primaries::ap1_to_ap0`] before calling [`apply_rrt`].

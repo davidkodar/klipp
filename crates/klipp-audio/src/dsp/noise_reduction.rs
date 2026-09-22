@@ -45,7 +45,7 @@ struct BandState {
 /// ripple from the bandpass overlap. The Rust struct name and
 /// `type_id` remain `NoiseReduction` / `"noise_reduction"` so existing
 /// .klipp projects keep loading; the user-facing `name()` advertises
-/// the honest behaviour ("Multi-band Gate"). See CODE_AUDIT C-3.
+/// the honest behaviour ("Multi-band Gate").
 /// Replacing this with STFT spectral subtraction is a future job.
 pub struct NoiseReduction {
     sample_rate: f32,

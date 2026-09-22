@@ -606,7 +606,7 @@ pub static IMAGE_EFFECT_SUITE_V1: OfxImageEffectSuiteV1 = OfxImageEffectSuiteV1 
 #[cfg(test)]
 mod img_mem_handle_tests {
     // ═══════════════════════════════════════════════════════════════
-    // CRIT-6 regression — closes CODE_AUDIT CRIT-6.
+    // CRIT-6 regression.
     //
     // The original tracker entry called out a real handle-collision
     // bug: image_memory_alloc_fn keyed its IMG_MEM_STORE HashMap on

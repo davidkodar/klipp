@@ -12,7 +12,7 @@ Klipp is a native Linux NLE built around three ideas:
 
 - **A real editor.** A magnetic timeline with video, audio, title and subtitle tracks; real-time playback that stays on the GPU from decode to display; import of OTIO, FCPXML and MLT projects; and a `.klipp` project format of its own.
 - **A colourist's pipeline, measured.** Grading happens in scene-linear light with an ACEScg working space and camera-log decoders (Sony, Canon, Panasonic, ARRI, Apple, RED). Node-graph grading covers primaries, HSL secondaries, curves, colour wheels and a colour warper; there are ~300 bundled 3D LUTs, GPU scopes, false colour, and real HDR (PQ / HLG) grading and export. On top of that, every colour judgement Klipp makes is a **number against a published target** — CIELAB readings, skin held to a band derived from photographed faces, and a synthesised ColorChecker sent through the render path to prove the pipeline itself isn't moving colour.
-- **An AI-first surface.** A control socket and a Model Context Protocol server expose a running Klipp as **82 tools**, so an agent can do the whole job: read the footage, propose a paper edit a person approves, assemble it, grade it to the numbers, design the sound, caption it, quality-check it and export — every step one undo. Every model runs on the machine.
+- **An AI-first surface.** A control socket and a Model Context Protocol server expose a running Klipp as **84 tools**, so an agent can do the whole job: read the footage, propose a paper edit a person approves, assemble it, grade it to the numbers, design the sound, caption it, quality-check it and export — every step one undo. Every model runs on the machine.
 
 ## What it can do today
 

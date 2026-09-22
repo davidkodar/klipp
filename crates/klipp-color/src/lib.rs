@@ -43,10 +43,13 @@
 //!
 //! # Scopes
 //!
-//! [`scopes`] computes waveform / vectorscope / parade / histogram on
-//! CPU for small previews; `klipp_effects::gpu_scopes` does the
-//! full-resolution GPU pass. Both use BT.709 coefficients on sRGB code
-//! values, matching Resolve's non-linear scope convention.
+//! The scopes themselves are drawn on the GPU by
+//! `klipp_effects::gpu_scopes`, at the frame's native size.
+//! [`scopes`] holds what they measure *in*: [`scopes::ScopeBasis`]
+//! carries the working space's own luminance row and Y'CbCr
+//! construction, so a BT.2020 or ACEScg project is not read with
+//! Rec.709's coefficients, plus the vectorscope's target boxes and the
+//! histograms.
 
 pub mod measure;
 pub mod aces;

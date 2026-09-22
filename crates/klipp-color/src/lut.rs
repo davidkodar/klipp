@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn identity_lut_size2_is_passthrough() {
-        // CODE_AUDIT C-9: size=2 is the smallest identity LUT and is
+        // Size 2 is the smallest identity LUT and is
         // what executor.rs uses as the load-failure fallback. Pin that
         // it really is passthrough (vs the previous all-zero-data
         // fallback that silently rendered black).

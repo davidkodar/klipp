@@ -63,7 +63,7 @@ impl NewInspectorPanel {
 
         // Resolve selected clip (timeline) or selected media (bin).
         // `selected_clip_loc()` is the cached form of the previous
-        // tracks-iter walk — closes CODE_AUDIT U-11 (steady state
+        // tracks-iter walk — closes (steady state
         // is one Track::find_clip rather than tracks × clips).
         let clip_info = state.selected_clip_loc();
         let media = clip_info

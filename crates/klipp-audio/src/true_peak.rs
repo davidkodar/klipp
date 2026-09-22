@@ -13,7 +13,7 @@
 //! filter recovers that headroom. Phase 0 is the identity tap (so
 //! the output set always includes the original sample value).
 //!
-//! ## Substitute-filter caveat (CODE_AUDIT C-6)
+//! ## Substitute-filter caveat
 //!
 //! The 48 coefficients we use are **NOT byte-exact** to the reference
 //! table in BS.1770-4 Annex 2 Table 1. We use a runtime-computed
@@ -229,7 +229,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Bounded-tolerance reference tests — closes CODE_AUDIT C-6.
+    // Bounded-tolerance reference tests.
     //
     // The four qualitative tests above prove the filter "does
     // something reasonable". These tests pin the actual numeric

@@ -9563,15 +9563,14 @@ pub(crate) fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: i32) -> (Vec<u8>
 /// (AV1, B-frame HEVC, VP9) and a final EOF flush for very short files where
 /// the decoder buffers everything before yielding output.
 ///
-/// Per the project's CLAUDE.md decode notes:
+/// The two rules this follows, both the hard way:
 ///   - ALWAYS drain receive_frame BEFORE feeding new send_packet (avoids
 ///     EAGAIN packet loss)
 ///   - Some decoders only release frames after `send_eof()` — flush at end
 ///
-/// Returns true if a frame was decoded into `out_frame`. The previous version
-/// of this loop interleaved send/receive per iteration which caused several
-/// codecs to fail with "No frame decoded" — see the codec coverage notes in
-/// the file-browser hover-skim audit.
+/// Returns true if a frame was decoded into `out_frame`. An earlier version
+/// of this loop interleaved send and receive per iteration, and several
+/// codecs failed with "No frame decoded" as a result.
 fn decode_one_frame(
     format_ctx: &mut ffmpeg_next::format::context::Input,
     decoder: &mut ffmpeg_next::decoder::Video,

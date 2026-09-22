@@ -1,8 +1,7 @@
 //! Standalone difference-key matte producer — generates a matte by
 //! comparing each live-frame pixel against a clean-plate reference
 //! image. Pixels that differ from the plate by more than `tolerance`
-//! enter the matte; pixels matching the plate are excluded. Closes
-//! FEATURES.html GAP-COLOR-021 / queue item QW-2.
+//! enter the matte; pixels matching the plate are excluded.
 //!
 //! Both the live frame and the clean plate are passed as f32
 //! linear-light RGBA (the executor's natural form). The plate is

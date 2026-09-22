@@ -4,11 +4,11 @@
 //! [`crate::ops::resolve`] like any other, so what the dry run says is
 //! what gets built, and the build is one undo step.
 //!
-//! The ops come out in three passes so that no step moves the track
+//! The ops come out in a fixed order so that no step moves the track
 //! indices a later step names: the picture (place, zoom), then the
-//! joins, then the music, then the titles — a title's text track goes
-//! on top and would shift every index after it, so it is made first
-//! and named by kind.
+//! joins, then the music, then the sound effects, then the titles. A
+//! text track made on top would shift every index after it, so the
+//! titles go last and are named by kind rather than by index.
 
 use crate::ops::{Anchor, ClipRef, ComposePose, Op, TrackRef};
 use klipp_media::MediaPool;

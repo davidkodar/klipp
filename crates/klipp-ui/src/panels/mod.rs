@@ -11,7 +11,7 @@ pub mod preset_manager;
 // `panels::inspector` was a legacy single-file module that exposed
 // `show_color_and_luts`. It has been migrated into
 // `crate::inspector::color_and_luts` to live alongside the rest of
-// the inspector. See CODE_AUDIT R-DEL-INSPECTOR.
+// the inspector.
 pub mod looks;
 pub mod node_graph;
 pub mod node_graph_v2;

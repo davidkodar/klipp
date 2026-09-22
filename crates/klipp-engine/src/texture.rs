@@ -371,11 +371,10 @@ impl FrameBuffer {
     }
 
     /// Borrowed view of the currently-displayed frame as a `FrameRef`.
-    /// Always returns `Cpu` today; phase 3 of the GPU-residency plan
-    /// will return `Gpu` when NVDEC produces GPU-resident frames
-    /// directly. Callers that don't need raw `data` access should
-    /// prefer this accessor — it's the seam the rest of the plan
-    /// migrates to.
+    /// Always `Cpu`: this buffer holds the display transform's output,
+    /// which is CPU-side by construction. GPU-resident playback does
+    /// not pass through here — it renders into the `gpu_output` texture
+    /// the UI samples (see [`FrameBuffer::ensure_gpu_output`]).
     pub fn frame_ref(&self) -> crate::frame::FrameRef<'_> {
         crate::frame::FrameRef::Cpu(crate::frame::CpuFrameRef {
             data: &self.data,
