@@ -357,8 +357,13 @@ fn render_usage_tab(
                 if clip.media_id() != Some(media.id) {
                     continue;
                 }
-                let in_tc = clip.timeline_in.to_timecode_string();
-                let out_tc = clip.timeline_out.to_timecode_string();
+                // This tab walks every sequence, not just the active
+                // one, so a position is shown on the clock of the
+                // sequence it is in — a clip cut into a 29.97 drop-frame
+                // timeline and a 25 sequence reads differently in each.
+                let tc = seq.timecode_display();
+                let in_tc = tc.position(clip.timeline_in);
+                let out_tc = tc.position(clip.timeline_out);
                 rows.push((
                     seq.name.clone(),
                     if track.name.is_empty() {

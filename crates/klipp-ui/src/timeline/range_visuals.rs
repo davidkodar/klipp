@@ -88,7 +88,7 @@ pub fn draw_range(
             draw_handle(parent_painter, ix, true, ruler_rect.top(), tracks_bottom, theme);
             draw_lollipop(parent_painter, ix, true, ruler_rect.top(), theme);
             if let Some(t) = in_pt {
-                let tc_str = format_handle_timecode(t.to_secs_f64(), t.rate);
+                let tc_str = format_handle_timecode(t.to_secs_f64(), state.timecode_display());
                 draw_handle_timecode(parent_painter, ix, true, ruler_rect.top(), &tc_str, theme);
             }
         }
@@ -96,7 +96,7 @@ pub fn draw_range(
             draw_handle(parent_painter, ox, false, ruler_rect.top(), tracks_bottom, theme);
             draw_lollipop(parent_painter, ox, false, ruler_rect.top(), theme);
             if let Some(t) = out_pt {
-                let tc_str = format_handle_timecode(t.to_secs_f64(), t.rate);
+                let tc_str = format_handle_timecode(t.to_secs_f64(), state.timecode_display());
                 draw_handle_timecode(parent_painter, ox, false, ruler_rect.top(), &tc_str, theme);
             }
         }
@@ -439,7 +439,7 @@ pub fn draw_snap_line(
     top: f32,
     bottom: f32,
     secs: f64,
-    rate: u32,
+    tc: klipp_core::TimecodeDisplay,
     theme: &KlippTheme,
 ) {
     let snap_color = theme.accent;
@@ -455,7 +455,7 @@ pub fn draw_snap_line(
         egui::Stroke::new(6.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 50)),
     );
     // Timecode pill label
-    let label = format_handle_timecode(secs, rate);
+    let label = format_handle_timecode(secs, tc);
     let label_pos = egui::pos2(x + 4.0, top + 3.0);
     let galley = painter.layout_no_wrap(
         label.clone(),
@@ -478,21 +478,19 @@ pub fn draw_snap_line(
 
 // ── Time formatting ──
 
-/// Format a timecode for handle labels: HH:MM:SS:FF
-pub fn format_handle_timecode(secs: f64, rate: u32) -> String {
-    let total_frames = (secs * rate as f64).round() as i64;
-    let r = rate.max(1) as i64;
-    let sign = if total_frames < 0 { "-" } else { "" };
-    let f = total_frames.unsigned_abs() as i64;
-    let ff = f % r;
-    let total_secs = f / r;
-    let ss = total_secs % 60;
-    let mm = (total_secs / 60) % 60;
-    let hh = total_secs / 3600;
-    if hh > 0 {
-        format!("{sign}{hh}:{mm:02}:{ss:02}:{ff:02}")
-    } else {
-        format!("{sign}{mm:02}:{ss:02}:{ff:02}")
+/// A position for a handle label, counted the way the sequence counts —
+/// drop-frame included — and kept compact by dropping a zero hour.
+pub fn format_handle_timecode(secs: f64, tc: klipp_core::TimecodeDisplay) -> String {
+    let full = tc.position_secs(secs);
+    // "00:01:23;04" reads as "01:23;04" in the space a handle has. The
+    // sign, when there is one, stays in front.
+    let (sign, rest) = match full.strip_prefix('-') {
+        Some(r) => ("-", r),
+        None => ("", full.as_str()),
+    };
+    match rest.strip_prefix("00:") {
+        Some(short) => format!("{sign}{short}"),
+        None => full,
     }
 }
 

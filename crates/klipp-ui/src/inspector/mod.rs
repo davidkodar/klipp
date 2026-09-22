@@ -114,7 +114,7 @@ impl NewInspectorPanel {
             let track_name = state.sequence().tracks.get(track_idx)
                 .map(|t| if t.name.is_empty() { format!("Track {}", track_idx + 1) } else { t.name.clone() })
                 .unwrap_or_default();
-            let tc = clip.timeline_in.to_timecode_string();
+            let tc = state.timecode_display().position(clip.timeline_in);
 
             let banner_h = 24.0;
             let banner_rect = egui::Rect::from_min_size(

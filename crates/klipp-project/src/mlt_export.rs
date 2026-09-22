@@ -322,6 +322,7 @@ mod tests {
 
     fn empty_sequence(fps: Fps) -> Sequence {
         Sequence {
+            drop_frame: false,
             camera: Default::default(),
             id: SequenceId::new(),
             name: "Test Sequence".into(),

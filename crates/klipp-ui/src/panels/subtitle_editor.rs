@@ -439,6 +439,8 @@ fn render_row(
     state: &mut AppState,
     cmds: &mut Vec<AppCommand>,
 ) {
+    // A subtitle's in and out are positions on the sequence's clock.
+    let tc = state.timecode_display();
     ui.horizontal(|ui| {
         // Row number
         ui.add_sized(
@@ -462,7 +464,7 @@ fn render_row(
             let editing_timecode = &mut state.subtitle_editor.editing_timecode;
             let timecode_buf = &mut state.subtitle_editor.timecode_buf;
             if let Some(new_time) = timecode_edit(
-                ui, start_id, row.timeline_in, fps, editing_timecode, timecode_buf,
+                ui, start_id, row.timeline_in, tc, editing_timecode, timecode_buf,
             ) {
                 // Clamp: start must be < end, and >= 0
                 let min = Timecode::from_frames(0, fps.rate());
@@ -489,7 +491,7 @@ fn render_row(
             let editing_timecode = &mut state.subtitle_editor.editing_timecode;
             let timecode_buf = &mut state.subtitle_editor.timecode_buf;
             if let Some(new_time) = timecode_edit(
-                ui, end_id, row.timeline_out, fps, editing_timecode, timecode_buf,
+                ui, end_id, row.timeline_out, tc, editing_timecode, timecode_buf,
             ) {
                 let min_val = row.timeline_in.value.saturating_add(1);
                 let min = Timecode {

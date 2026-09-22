@@ -191,6 +191,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         brief: seq.brief.clone(),
         edit_plan: seq.edit_plan.clone(),
         camera: seq.camera.clone(),
+        drop_frame: Some(seq.drop_frame),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {
