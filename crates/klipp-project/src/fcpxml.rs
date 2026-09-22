@@ -254,6 +254,19 @@ pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
         for clip in &track.clips {
             if clip.kind.is_gap() || !clip.enabled { continue; }
 
+            // A transition whose *incoming* side is this clip. CMX 3600
+            // puts the transition on the incoming event — the outgoing
+            // clip stays a cut and the one arriving carries the code and
+            // the length — so the lookup is by `clip_b_id`.
+            let incoming = track.transitions.iter().find(|t| t.clip_b_id == clip.id);
+            let (code, effect_name) = match incoming {
+                Some(t) => {
+                    let frames = (t.duration.to_secs_f64() * seq.fps.as_f64()).round().max(1.0) as i64;
+                    (edl_transition_code(t.kind, frames), Some(t.kind))
+                }
+                None => ("C        ".to_string(), None),
+            };
+
             let item = clip.media_id().and_then(|mid| media_pool.get(&mid));
             let reel = reels.name_for(item);
 
@@ -263,9 +276,21 @@ pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
             let rec_out = tc_to_edl(clip.timeline_out.to_secs_f64(), seq.fps, drop);
 
             edl.push_str(&format!(
-                "{:03}  {:8} {:<2}    C        {} {} {} {}\n",
-                event_num, reel.name, channel, src_in, src_out, rec_in, rec_out
+                "{:03}  {:8} {:<2}    {}{} {} {} {}\n",
+                event_num, reel.name, channel, code, src_in, src_out, rec_in, rec_out
             ));
+            // The kind by name, because the code cannot carry it: a
+            // blur dissolve and a film dissolve are both D, and a wipe
+            // Klipp has no SMPTE number for is a D that says what it
+            // really was. `* EFFECT NAME` is what Resolve and Avid
+            // write, so a finishing app recreating the transition has
+            // the name it needs.
+            if let Some(kind) = effect_name {
+                edl.push_str(&format!(
+                    "* EFFECT NAME: {}\n",
+                    klipp_core::transition_registry::spec_for_kind(kind).display_name.to_uppercase()
+                ));
+            }
             if reel.disambiguated {
                 // Two sources reduced to the same eight characters. The
                 // conform needs them apart, so one was renamed — say so,
@@ -342,6 +367,37 @@ fn format_decimal(secs: f64) -> String {
         format!("{}", secs as i64)
     } else {
         format!("{:.3}", secs)
+    }
+}
+
+/// The CMX 3600 transition field for `kind`, padded to its column.
+///
+/// The format has three codes that matter: `C` for a cut, `D` for a
+/// dissolve with a length in frames, and `W` plus a SMPTE pattern
+/// number for a wipe. Klipp has sixty-odd transitions and CMX has
+/// numbers for a handful, so the mapping is deliberately small:
+///
+/// * anything that is a dissolve by nature becomes `D`;
+/// * the four cardinal wipes take the two SMPTE numbers everything
+///   agrees on — 001 horizontal, 002 vertical;
+/// * everything else becomes `D` of the right length.
+///
+/// That last line is the honest compromise. A page turn is not a
+/// dissolve, but a conform needs *something* of the right duration at
+/// the right place, and the alternative — writing a cut — loses the
+/// transition entirely and moves nothing to tell anyone. The real kind
+/// goes out beside it as `* EFFECT NAME`, which is where a finishing
+/// app looks anyway.
+fn edl_transition_code(kind: klipp_core::TransitionKind, frames: i64) -> String {
+    use klipp_core::TransitionKind as K;
+    let pattern = match kind {
+        K::WipeLeft | K::WipeRight | K::SplitWipeHorizontal | K::VenetianBlindHorizontal => Some("001"),
+        K::WipeUp | K::WipeDown | K::SplitWipeVertical | K::VenetianBlindVertical => Some("002"),
+        _ => None,
+    };
+    match pattern {
+        Some(p) => format!("W{p} {frames:>3} "),
+        None => format!("D    {frames:>3} "),
     }
 }
 
@@ -1153,6 +1209,105 @@ mod tests {
         assert_eq!(sanitise_reel("日本語のクリップ"), "AX", "nothing usable left");
         assert_eq!(sanitise_reel(""), "AX");
         assert_eq!(sanitise_reel("a-b-c"), "ABC");
+    }
+
+    /// Two clips butted together with a transition between them.
+    fn two_clips_with(kind: klipp_core::TransitionKind, secs: f64) -> (Sequence, MediaPool) {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "A001C001.mov", 480, 24));
+
+        let a = make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+        );
+        let b = make_media_clip(
+            mid,
+            RationalTime { value: 48, rate: 24 },
+            RationalTime { value: 96, rate: 24 },
+            RationalTime { value: 96, rate: 24 },
+            RationalTime { value: 144, rate: 24 },
+        );
+        let (a_id, b_id) = (a.id, b.id);
+        seq.tracks[0].clips.push(a);
+        seq.tracks[0].clips.push(b);
+        seq.tracks[0].transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind,
+            duration: RationalTime::from_secs_f64(secs, 24),
+            clip_a_id: a_id,
+            clip_b_id: b_id,
+            user_params: Default::default(),
+            alignment: Default::default(),
+        });
+        (seq, pool)
+    }
+
+    #[test]
+    fn a_dissolve_is_a_d_event_on_the_incoming_clip() {
+        // Every transition used to be written as a cut, so a conform
+        // got the right clips with the wrong boundaries and nothing
+        // saying so. CMX puts the code on the arriving event.
+        let (seq, pool) = two_clips_with(klipp_core::TransitionKind::CrossDissolve, 1.0);
+        let edl = generate_edl(&seq, &pool);
+
+        let events: Vec<&str> = edl
+            .lines()
+            .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        assert_eq!(events.len(), 2, "{edl}");
+        assert!(events[0].contains(" C  "), "the outgoing clip stays a cut:\n{edl}");
+        // One second at 24 is 24 frames.
+        assert!(events[1].contains("D     24 "), "the incoming carries D and its length:\n{edl}");
+        assert!(edl.contains("* EFFECT NAME: CROSS DISSOLVE"), "{edl}");
+    }
+
+    #[test]
+    fn a_cardinal_wipe_takes_its_smpte_number() {
+        let (seq, pool) = two_clips_with(klipp_core::TransitionKind::WipeLeft, 0.5);
+        let edl = generate_edl(&seq, &pool);
+        assert!(edl.contains("W001  12 "), "horizontal wipe, 12 frames:\n{edl}");
+
+        let (seq, pool) = two_clips_with(klipp_core::TransitionKind::WipeUp, 0.5);
+        let edl = generate_edl(&seq, &pool);
+        assert!(edl.contains("W002  12 "), "vertical wipe:\n{edl}");
+    }
+
+    #[test]
+    fn a_transition_cmx_has_no_number_for_still_goes_out_with_its_name() {
+        // A page turn is not a dissolve. Writing a cut would lose it
+        // entirely and say nothing; a D of the right length keeps the
+        // duration and the boundary, and the name goes beside it so a
+        // finishing app can recreate the real thing.
+        let (seq, pool) = two_clips_with(klipp_core::TransitionKind::PageTurn, 1.0);
+        let edl = generate_edl(&seq, &pool);
+        assert!(edl.contains("D     24 "), "{edl}");
+        assert!(edl.contains("* EFFECT NAME: "), "the real kind is recorded:\n{edl}");
+        assert!(!edl.contains("* EFFECT NAME: CROSS DISSOLVE"), "and it is not called a dissolve:\n{edl}");
+    }
+
+    #[test]
+    fn a_cut_is_still_a_cut_and_says_nothing_extra() {
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "A001C001.mov", 480, 24));
+        seq.tracks[0].clips.push(make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 48, rate: 24 },
+        ));
+        let edl = generate_edl(&seq, &pool);
+        assert!(!edl.contains("* EFFECT NAME"), "nothing to say about a cut:\n{edl}");
+        assert!(edl.contains("  C  "), "{edl}");
     }
 
     #[test]
