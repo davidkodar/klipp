@@ -652,6 +652,23 @@ pub enum Op {
     Camera {
         keys: Vec<CameraKey>,
     },
+    /// Cut the picture down to part of itself: `left`, `right`, `top`
+    /// and `bottom` are how much comes off each side, as fractions of
+    /// the picture. What is cut away is transparent, so a screen
+    /// recording cropped to its window and then composed is a card of
+    /// that window, and `corners` rounds the window's corners. All four
+    /// at 0 takes a crop off again.
+    Crop {
+        clip_id: ClipRef,
+        #[serde(default)]
+        left: f32,
+        #[serde(default)]
+        right: f32,
+        #[serde(default)]
+        top: f32,
+        #[serde(default)]
+        bottom: f32,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -1774,6 +1791,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             compose(seq, pool, i, ti, clip, poses)
         }
         Op::Camera { keys } => camera(seq, i, keys),
+        Op::Crop { clip_id, left, right, top, bottom } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            crop(seq, pool, i, ti, clip, [*left, *right, *top, *bottom])
+        }
     }
 }
 
@@ -2515,6 +2536,35 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
 /// An animated crop through `keys`: at each, `scale` centred on the frame
 /// point; a scaled picture shifted so far that its edge would show is
 /// held at the edge.
+/// Cut a picture down to part of itself, or take the crop off.
+fn crop(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, sides: [f32; 4]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    require_picture(seq, pool, i, ti, clip, "crop")?;
+    let [left, right, top, bottom] = sides;
+    for (name, v) in [("left", left), ("right", right), ("top", top), ("bottom", bottom)] {
+        if !v.is_finite() || !(0.0..1.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} from 0 up to 1, the share of the picture that comes off that side")));
+        }
+    }
+    if left + right >= 0.99 || top + bottom >= 0.99 {
+        return Err(refuse(i, "the crop leaves nothing", "take less off opposite sides than the whole picture"));
+    }
+    use klipp_effects::BuiltinEffect as E;
+    let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Crop { .. })).cloned().collect();
+    let off = sides.iter().all(|v| *v <= 0.0);
+    let what = if off {
+        if effects.len() == clip.builtin_effects.len() {
+            return Err(refuse(i, "there is no crop to take off", "give a side to crop"));
+        }
+        format!("take the crop off {}", clip_name(seq, pool, clip))
+    } else {
+        // First in the chain, so what follows — corners, a shadow — sees
+        // the picture as cropped.
+        effects.insert(0, E::Crop { left, right, top, bottom, feather: 0.0 });
+        format!("crop {}: {left:.3} left, {right:.3} right, {top:.3} top, {bottom:.3} bottom", clip_name(seq, pool, clip))
+    };
+    Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
+}
+
 /// Move a camera over the whole sequence, or take it away.
 fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let old = seq.camera.clone();
@@ -4580,6 +4630,31 @@ mod tests {
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
         assert!(matches!(&ops[0], Op::Transition { kind, secs, .. } if kind == "cross_dissolve" && (*secs - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_crop_goes_first_in_the_chain_and_comes_off_again() {
+        let (seq, pool, _media, a, _) = fixture();
+        use klipp_effects::BuiltinEffect as E;
+        // A window in a desktop recording: 320 px in from the left of 3840.
+        let op = Op::Crop { clip_id: ClipRef::Id(a), left: 320.0 / 3840.0, right: 320.0 / 3840.0, top: 106.0 / 2160.0, bottom: 54.0 / 2160.0 };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
+        assert!(matches!(new_effects.first(), Some(E::Crop { left, .. }) if (*left - 0.0833).abs() < 1e-3));
+
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let cropped = view.sequences[0].clone();
+        let off = resolve(&cropped, &pool, &[Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }]).unwrap();
+        let EditCommand::SetBuiltinEffects { new_effects, .. } = &off.steps[0].edit else { panic!("effects edit") };
+        assert!(new_effects.is_empty(), "four zeros take it off");
+
+        let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.6, right: 0.5, top: 0.0, bottom: 0.0 }).why.contains("leaves nothing"));
+        assert!(bad(Op::Crop { clip_id: ClipRef::Id(a), left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 }).why.contains("no crop"));
     }
 
     #[test]
