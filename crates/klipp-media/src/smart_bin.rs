@@ -103,6 +103,15 @@ fn rule_number(field: Field, v: &str) -> Option<f64> {
             },
         },
         Field::Rating => Some(v.chars().filter(|c| *c == '\u{2605}').count() as f64).filter(|n| *n > 0.0).or_else(|| v.parse().ok()),
+        // Written the way a column shows them and the way an editor
+        // says them: "35mm", "f/2.8", "ISO 800" all mean their number.
+        Field::FocalLength => v.to_lowercase().replace("mm", " ").trim().parse().ok(),
+        Field::Aperture => {
+            let t = v.to_lowercase();
+            let t = t.trim().trim_start_matches("f/").trim_start_matches('f').trim();
+            t.parse().ok()
+        }
+        Field::Iso => v.to_lowercase().replace("iso", " ").trim().parse().ok(),
         _ => v.parse().ok(),
     }
 }
@@ -128,6 +137,81 @@ mod tests {
 
     fn rule(field: Field, op: RuleOp, value: &str) -> SmartRule {
         SmartRule { field, op, value: value.into() }
+    }
+
+    /// A clip with the camera metadata a real card carries.
+    fn shot(focal: f32, iso: u32, aperture: f32) -> MediaItem {
+        let mut m = item("1", 0, &[]);
+        m.shot.focal_length_mm = Some(focal);
+        m.shot.iso = Some(iso);
+        m.shot.aperture = Some(aperture);
+        m.shot.shutter = Some("1/48".into());
+        m.shot.gamma = Some("S-Log3".into());
+        m.shot.colour_gamut = Some("S-Gamut3.Cine".into());
+        m
+    }
+
+    #[test]
+    fn everything_shot_wider_than_35mm() {
+        // The canonical reason to read this metadata at all, and the
+        // example the issue was written around. As a string compare
+        // "9" sorts above "35", which is what made it useless.
+        let wide = shot(24.0, 800, 2.8);
+        let long = shot(85.0, 800, 2.8);
+        let nifty = shot(9.0, 800, 2.8);
+
+        assert!(rule(Field::FocalLength, RuleOp::AtMost, "35").matches(&wide));
+        assert!(!rule(Field::FocalLength, RuleOp::AtMost, "35").matches(&long));
+        assert!(
+            rule(Field::FocalLength, RuleOp::AtMost, "35").matches(&nifty),
+            "9 mm is wider than 35 mm — as a number, not as text"
+        );
+        assert!(rule(Field::FocalLength, RuleOp::AtLeast, "50").matches(&long));
+    }
+
+    #[test]
+    fn a_rule_takes_the_spelling_an_editor_would_type() {
+        let m = shot(35.0, 800, 2.8);
+        for written in ["35", "35mm", "35 mm", "35MM"] {
+            assert!(rule(Field::FocalLength, RuleOp::Is, written).matches(&m), "{written}");
+        }
+        for written in ["2.8", "f/2.8", "F/2.8", "f2.8"] {
+            assert!(rule(Field::Aperture, RuleOp::Is, written).matches(&m), "{written}");
+        }
+        for written in ["800", "ISO 800", "iso800"] {
+            assert!(rule(Field::Iso, RuleOp::Is, written).matches(&m), "{written}");
+        }
+        // And the comparisons that make those useful.
+        assert!(rule(Field::Aperture, RuleOp::AtMost, "f/4").matches(&m), "2.8 is wider than f/4");
+        assert!(rule(Field::Iso, RuleOp::AtLeast, "ISO 400").matches(&m));
+    }
+
+    #[test]
+    fn the_text_ones_are_still_matched_as_text() {
+        // Shutter stays text because "1/48" and "172.8°" are both real,
+        // and gamma is how a colourist finds what needs a transform.
+        let m = shot(35.0, 800, 2.8);
+        assert!(rule(Field::Gamma, RuleOp::Contains, "log").matches(&m));
+        assert!(rule(Field::ColourGamut, RuleOp::Contains, "S-Gamut").matches(&m));
+        assert!(rule(Field::Shutter, RuleOp::Is, "1/48").matches(&m));
+        // Nothing recorded is not a match for something.
+        let bare = item("1", 0, &[]);
+        assert!(rule(Field::Gamma, RuleOp::IsEmpty, "").matches(&bare));
+        assert!(!rule(Field::FocalLength, RuleOp::IsSet, "").matches(&bare));
+    }
+
+    #[test]
+    fn a_column_shows_the_unit() {
+        use crate::FieldValue;
+        let m = shot(35.0, 800, 2.8);
+        assert_eq!(Field::FocalLength.text(&m), "35 mm");
+        assert_eq!(Field::Aperture.text(&m), "f/2.8");
+        assert_eq!(Field::Iso.text(&m), "800");
+        // A fractional lens keeps its decimal; a whole stop loses it.
+        assert_eq!(Field::FocalLength.text(&shot(10.5, 100, 2.0)), "10.5 mm");
+        assert_eq!(Field::Aperture.text(&shot(10.5, 100, 2.0)), "f/2");
+        // Nothing recorded shows nothing, rather than a zero.
+        assert_eq!(Field::FocalLength.text(&item("1", 0, &[])), "");
     }
 
     #[test]
