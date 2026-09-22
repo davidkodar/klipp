@@ -71,6 +71,18 @@ impl FieldValue for Field {
                 if model.is_empty() { make.to_string() } else if make.is_empty() || model.contains(make) { model.to_string() } else { format!("{make} {model}") }
             }
             Field::Lens => item.shot.lens.clone().unwrap_or_default(),
+            // Shown with the unit, because "35" and "f/2.8" and "800"
+            // are indistinguishable in a column otherwise.
+            Field::FocalLength => item.shot.focal_length_mm.map(focal_text).unwrap_or_default(),
+            Field::Iso => item.shot.iso.map(|v| v.to_string()).unwrap_or_default(),
+            Field::Aperture => item.shot.aperture.map(aperture_text).unwrap_or_default(),
+            // As the camera wrote it: "1/48" and "172.8°" are both
+            // normal ways to say the same exposure, and picking one
+            // would be inventing a fact the file does not carry.
+            Field::Shutter => item.shot.shutter.clone().unwrap_or_default(),
+            Field::WhiteBalance => item.shot.white_balance.clone().unwrap_or_default(),
+            Field::Gamma => item.shot.gamma.clone().unwrap_or_default(),
+            Field::ColourGamut => item.shot.colour_gamut.clone().unwrap_or_default(),
             Field::Timecode => item.shot.start_timecode.clone().unwrap_or_default(),
             Field::Reel => item.reel().unwrap_or("").to_string(),
             Field::ShootDate => item.media_created_at.or(item.file_modified_at).map(date_text).unwrap_or_default(),
@@ -108,6 +120,12 @@ impl FieldValue for Field {
             Field::Favourite => Some(if item.has_marker(klipp_core::MediaMarkerKind::Favourite) { 1.0 } else { 0.0 }),
             Field::Rejected => Some(if item.has_marker(klipp_core::MediaMarkerKind::Reject) { 1.0 } else { 0.0 }),
             Field::Markers => Some(item.markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Note).count() as f64),
+            // The three the camera recorded as quantities. Compared as
+            // numbers, so "wider than 35" does not put 9 above 35 the
+            // way a string compare would.
+            Field::FocalLength => item.shot.focal_length_mm.map(f64::from),
+            Field::Iso => item.shot.iso.map(f64::from),
+            Field::Aperture => item.shot.aperture.map(f64::from),
             Field::Take | Field::Scene | Field::Shot => self.text(item).trim().parse::<f64>().ok(),
             _ => None,
         }
@@ -126,6 +144,24 @@ pub fn duration_text(secs: f64) -> String {
     let whole = secs.round().max(0.0) as u64;
     let (h, m, s) = (whole / 3600, (whole % 3600) / 60, whole % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// "35 mm", and "10.5 mm" when the lens is not a whole number.
+pub fn focal_text(mm: f32) -> String {
+    if (mm - mm.round()).abs() < 0.05 {
+        format!("{} mm", mm.round() as i64)
+    } else {
+        format!("{mm:.1} mm")
+    }
+}
+
+/// "f/2.8", and "f/2" where the stop is whole.
+pub fn aperture_text(f: f32) -> String {
+    if (f - f.round()).abs() < 0.05 {
+        format!("f/{}", f.round() as i64)
+    } else {
+        format!("f/{f:.1}")
+    }
 }
 
 /// "63.9 MB", "1.2 GB".
