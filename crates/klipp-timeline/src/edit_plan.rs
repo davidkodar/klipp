@@ -149,7 +149,8 @@ impl PlanPlacement {
 
 /// What goes behind a segment whose picture does not fill the frame:
 /// a generator by name ("gradient", "living_gradient", "grain",
-/// "solid"), with its colours when it takes any.
+/// "solid", "circle", "countdown", "placeholder", "color_bars"), with its
+/// colours when it takes any. Built as a generator clip below picture and titles.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlanBackground {
     pub generator: String,

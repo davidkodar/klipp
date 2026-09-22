@@ -669,6 +669,19 @@ pub enum Op {
         #[serde(default)]
         bottom: f32,
     },
+    /// Place a native generator. Omit track to use/create a bottom
+    /// Background video track. Give exactly one of secs or end; end can
+    /// be a clip_end anchor so a background matches its picture exactly.
+    Generator {
+        data: klipp_core::GeneratorData,
+        at: Anchor,
+        #[serde(default)]
+        secs: Option<f64>,
+        #[serde(default)]
+        end: Option<Anchor>,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -1795,6 +1808,44 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             crop(seq, pool, i, ti, clip, [*left, *right, *top, *bottom])
         }
+        Op::Generator { data, at, secs: hold, end, track } => {
+            crate::generators::validate(data).map_err(|why| refuse(i, why, "use valid generator parameters"))?;
+            let start = resolve_anchor(seq, fps, at, i)?;
+            let finish = match (hold, end) {
+                (Some(d), None) if d.is_finite() && *d > 0.0 && *d <= 86_400.0 => {
+                    let duration = snap(*d, fps).rescale_to(start.rate);
+                    let value = start.value.checked_add(duration.value).ok_or_else(|| refuse(i, "generator time overflows", "use a shorter range"))?;
+                    Timecode { value, rate: start.rate }
+                }
+                (None, Some(anchor)) => resolve_anchor(seq, fps, anchor, i)?,
+                _ => return Err(refuse(i, "a generator needs exactly one of secs or end", "give secs above zero and at most one day, or an end anchor")),
+            };
+            if finish <= start {
+                return Err(refuse(i, "a generator must last at least one frame", "put its end after its start"));
+            }
+            let ti = match track {
+                Some(t) => resolve_track(seq, t, i)?,
+                None => seq.tracks.last().filter(|t| t.kind == TrackKind::Video && t.visible && !t.locked && t.name == "Background").map(|_| seq.tracks.len() - 1).unwrap_or(seq.tracks.len()),
+            };
+            let created = ti == seq.tracks.len();
+            if !created {
+                if seq.tracks[ti].kind != TrackKind::Video || seq.tracks[ti].locked {
+                    return Err(refuse(i, "a generator needs an unlocked video track", "choose a video track or omit track for a background track"));
+                }
+                if overlapping(seq, ti, start, finish, None).is_some() {
+                    return Err(refuse(i, "the generator would overlap a clip", "use an empty range or a different video track"));
+                }
+            }
+            let mut clip = Clip::gap(start, finish);
+            clip.kind = ClipKind::Generator(data.clone());
+            let id = clip.id;
+            let append = EditCommand::LegacyAppendClip { clip, track_index: ti };
+            let edit = if created {
+                EditCommand::Batch(vec![EditCommand::AddTrack { index: ti, track: klipp_timeline::Track::new("Background", TrackKind::Video) }, append])
+            } else { append };
+            Ok((format!("place generator on video track {ti} at {:.2}-{:.2} s{}", secs(start), secs(finish), if created { "; create Background below the existing tracks" } else { "" }), edit, vec![id]))
+        }
+
     }
 }
 
@@ -5371,5 +5422,42 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::AddTrack { kind: "video".into(), name: None }]).unwrap();
         assert!(plan.steps[0].what.contains("as track 0") && plan.steps[0].what.contains("moves down"), "{}", plan.steps[0].what);
         let _ = media;
+    }
+}
+
+#[cfg(test)]
+mod generator_tests {
+    use super::*;
+
+    #[test]
+    fn a_generator_uses_native_parameters_and_undo_removes_its_new_track() {
+        let seq = Sequence::new_default();
+        let mut pool = MediaPool::new();
+        let data = klipp_core::GeneratorData::Gradient { top: [16, 32, 48, 255], bottom: [64, 80, 96, 255], angle_deg: 45.0, four_point: None };
+        let op = Op::Generator { data: data.clone(), at: Anchor::Secs(1.0), secs: Some(2.0), end: None, track: None };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let before = serde_json::to_value(&seq).unwrap();
+        let count = seq.tracks.len();
+        let mut fps = seq.fps;
+        let mut sequences = vec![seq];
+        let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let clip = &view.sequences[0].tracks[count].clips[0];
+        assert_eq!(clip.kind, ClipKind::Generator(data));
+        assert!((secs(clip.timeline_in) - 1.0).abs() < 1e-6);
+        assert!((secs(clip.timeline_out) - 3.0).abs() < 1e-6);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), before);
+    }
+
+    #[test]
+    fn invalid_generator_ranges_and_overlaps_are_refused() {
+        let seq = Sequence::new_default();
+        let pool = MediaPool::new();
+        let op = Op::Generator { data: klipp_core::GeneratorData::Countdown, at: Anchor::Secs(0.0), secs: Some(2.0), end: None, track: Some(TrackRef::Kind("video".into())) };
+        assert!(resolve(&seq, &pool, &[op.clone(), op.clone()]).is_err());
+        let mut bad = op;
+        if let Op::Generator { secs, .. } = &mut bad { *secs = Some(-1.0); }
+        assert!(resolve(&seq, &pool, &[bad]).is_err());
     }
 }
