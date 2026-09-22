@@ -116,7 +116,7 @@ pub use image_effect::FrameProviderFn;
 #[cfg(test)]
 mod check_non_null_tests {
     // ═══════════════════════════════════════════════════════════════
-    // CRIT-4 regression — closes CODE_AUDIT CRIT-4.
+    // CRIT-4 regression.
     //
     // The original tracker entry called out ~70 OFX callbacks where
     // `*out = value` ran without a null-check, so a buggy plugin

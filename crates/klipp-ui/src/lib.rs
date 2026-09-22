@@ -14,13 +14,13 @@
 //!   selection, viewer, thumbnails, skim, colour workspace, …).
 //! * [`history`] — undo/redo stack on top of `EditCommand`. Drag
 //!   coalescing via `begin_drag` / `end_drag`.
-//! * [`panels`] — timeline, viewer, transport, toolbar, inspector,
-//!   browser, launch screen, modal dialogs.
-//! * [`inspector`] — the new per-clip inspector (video / audio /
-//!   effects / info tabs). The older top-level `panels::inspector` is
-//!   now just the static colour-and-luts helper used from here.
+//! * [`panels`] — timeline, viewer, transport, toolbar, launch
+//!   screen, preferences and the modal dialogs.
+//! * [`inspector`] — the per-clip inspector (video / audio / effects /
+//!   title / info tabs).
 //! * [`browser`] — media browser with thumbnails, filmstrips, skim
-//!   preview, bin tree, tags, sort.
+//!   preview, bin tree, tags, sort, and the effect, title, transition,
+//!   generator and audio libraries.
 //! * [`timeline`] — the timeline subsystem inside a panel:
 //!   ruler, tracks, clips, filmstrips, drags, context menus.
 //! * [`widgets`] — reusable egui primitives (scopes, jog wheel,

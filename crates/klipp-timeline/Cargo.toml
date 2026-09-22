@@ -15,7 +15,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 # serde_json is used only by the marker round-trip tests in
-# src/marker.rs — see CODE_AUDIT DEP-UDEPS-TIMELINE-JSON.
+# src/marker.rs.
 serde_json = { workspace = true }
 
 [lints]

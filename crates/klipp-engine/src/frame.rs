@@ -49,10 +49,10 @@ pub struct CpuFrameRef<'a> {
 /// back. `Send + Sync` via the Arc-wrapped wgpu handles, so a decode
 /// thread can build one and push it to the engine.
 ///
-/// Phase 4 introduces a second in-place consumer (the grade chain)
-/// that reads the buffer without ever calling `into_cpu()`. Today the
-/// only consumer is the grade-CPU seam in post_process_rgba which
-/// flattens via `Frame::into_cpu()`.
+/// Consumers that need CPU pixels flatten the buffer with
+/// `Frame::into_cpu()`, or expand it to linear floats with
+/// [`crate::types::realise_linear_from_gpu`]. The GPU render path
+/// reads it in place and never does either.
 #[non_exhaustive]
 pub struct GpuFrame {
     /// Device the buffer was allocated on. All readbacks must use

@@ -384,7 +384,7 @@ impl AudioOutput {
                         "klipp-cpal-output",
                         &OUTPUT_CALLBACK_PANIC_LOGGED,
                         || {
-                            // CODE_AUDIT C-4: flush denormals once per
+                            // Flush denormals once per
                             // cpal-thread first call. The callback runs
                             // on a dedicated thread (see LAST_GEN below),
                             // so this thread_local once is sufficient.

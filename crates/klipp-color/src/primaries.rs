@@ -2,9 +2,9 @@
 //!
 //! This module is the canonical home for the matrix maths that move
 //! linear-light RGB between working-space bases (BT.709, ACEScg AP1,
-//! BT.2020 to come). It does **not** house any tone-mapping or display
-//! transforms — those live in [`crate::display`] and (for the ACES RRT)
-//! the `klipp_color::aces` module that lands with Phase E Session 4.
+//! BT.2020). It does **not** house any tone-mapping or display
+//! transforms — those live in [`crate::display`] and, for the ACES RRT
+//! and the output transforms, in [`crate::aces`].
 //!
 //! # Reference values
 //!

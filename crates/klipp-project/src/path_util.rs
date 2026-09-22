@@ -241,7 +241,7 @@ mod tests {
     use std::fs;
 
     // ═══════════════════════════════════════════════════════════════
-    // atomic_write regression — closes CODE_AUDIT SEC-4 and SEC-5.
+    // atomic_write regression.
     //
     // SEC-4: workspace.json (and other project files) used to use
     // `fs::write`, which truncates the destination before writing.
@@ -400,7 +400,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // sanitize_fps / sanitize_resolution — closes CODE_AUDIT SEC-2.
+    // sanitize_fps / sanitize_resolution.
     //
     // A malformed project.json (or hand-edited file) carrying
     // fps.den == 0 used to flow through Fps::new(num, 0) on the

@@ -1,8 +1,8 @@
 //! Composite scenarios: whole frames through `klipp_compose::Renderer`,
-//! the CPU stack against the GPU stack, on the shapes the plan
-//! (`docs/gpu-compositor-plan.md`) names: a UHD clip with a credits
-//! roll, plus a grade, two video layers with a blend mode, a matte, an
-//! adjustment layer with a LUT, five layers at 1080p.
+//! the CPU stack against the GPU stack, on the shapes that cost the
+//! most: a UHD clip with a credits roll, plus a grade, two video
+//! layers with a blend mode, a matte, an adjustment layer with a LUT,
+//! five layers at 1080p.
 
 use std::collections::HashMap;
 use std::sync::Arc;

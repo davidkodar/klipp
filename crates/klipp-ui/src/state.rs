@@ -1191,7 +1191,7 @@ pub struct AppState {
     /// nothing else needs to invalidate it. Cell so the helper can
     /// take `&self` and still update the cache.
     ///
-    /// Closes CODE_AUDIT U-11. Inspector and viewer paths previously
+    /// Inspector and viewer paths previously
     /// did `tracks.iter().find_map(|t| t.find_clip(cid))` per render
     /// — O(tracks × clips) per frame. With this cache, the steady
     /// state is O(1) (single-track find_clip), with the full walk
@@ -2401,7 +2401,7 @@ pub struct AppState {
     /// `defer_drop_texture`; the inspector only ever reads it.
     /// Creating + dropping a `TextureHandle` mid-frame from inside
     /// the inspector trips wgpu's "Texture has been destroyed"
-    /// validation (see feedback_defer_drop_texture memory note).
+    /// validation.
     pub letter_picker_texture: Option<egui::TextureHandle>,
     /// Cache key for `letter_picker_texture` —
     /// `(title_clip_id, layout_hash, frame_w, frame_h)`. The App

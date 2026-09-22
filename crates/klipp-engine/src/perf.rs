@@ -1,6 +1,6 @@
 //! Per-frame performance telemetry.
 //!
-//! The engine's `post_process_rgba` already instruments five timing
+//! The render path already instruments five timing
 //! spans (seq_read / grade / ofx / builtin / lut) plus a total. Until
 //! now those numbers only surfaced to the tracing log when a single
 //! frame blew past 2 ms. That's fine for "did anything catastrophic
@@ -11,7 +11,7 @@
 //! `PerfRing` fixes that by capturing every processed frame's
 //! breakdown into a fixed-size ring buffer, indexed by wall time.
 //! The UI thread reads it to paint the performance overlay;
-//! `snapshot_json` serialises the whole ring for offline diagnosis
+//! `samples_to_json` serialises the ring for offline diagnosis
 //! (send it to Claude, attach it to a bug report, graph it yourself).
 //!
 //! One ring per engine, shared via `Arc<Mutex<PerfRing>>`. Capacity
@@ -57,7 +57,7 @@ pub struct PerfSample {
     pub builtin_ms: f32,
     /// LUT stage: final 3D LUT application.
     pub lut_ms: f32,
-    /// Total `post_process_rgba` time. Should be close to the sum
+    /// Total render time for the frame. Should be close to the sum
     /// of the stages above, but may differ by a fraction of a ms
     /// due to unaccounted bookkeeping.
     pub total_ms: f32,
@@ -88,8 +88,8 @@ pub struct PerfSample {
 }
 
 /// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
-/// the outer `post_process_rgba` measures that aren't visible from
-/// inside `post_process_rgba_inner`.
+/// measured around the render call, which the stages inside it
+/// cannot see.
 pub struct WrapStages {
     pub bridge_u8_ms: f32,
     pub reencode_ms: f32,

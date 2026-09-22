@@ -852,7 +852,7 @@ impl Preferences {
     /// Parse a preferences JSON string with the full migration pipeline,
     /// falling back to `Preferences::default()` on any error path. Extracted
     /// from `load()` so the malformed-input behaviour can be tested without
-    /// going through the on-disk config path. See CODE_AUDIT PANIC-PREFS.
+    /// going through the on-disk config path.
     pub fn from_json_str(contents: &str) -> Self {
         // Two-pass parse: first into a generic JSON Value so we can run the
         // legacy field migrations, then into the typed Preferences struct.
@@ -2853,7 +2853,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // PANIC-PREFS regression — closes CODE_AUDIT PANIC-PREFS.
+    // PANIC-PREFS regression.
     //
     // The original tracker entry pointed at three migration sites
     // that used `value.get(...).unwrap()`, which would crash startup

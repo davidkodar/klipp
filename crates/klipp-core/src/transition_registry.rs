@@ -955,7 +955,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // PANIC-REGISTRY regression — closes CODE_AUDIT PANIC-REGISTRY.
+    // PANIC-REGISTRY regression.
     //
     // The original tracker entry pointed at line 665, where a
     // missing TRANSITION_SPECS row for a TransitionKind variant

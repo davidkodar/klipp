@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 /// to RGBA before reaching this struct (see `klipp-engine::video_decoder` and
 /// the GPU NV12 converter in `klipp-effects::nv12_gpu`).
 ///
-/// # Linear-light migration (CRIT-7)
-///
-/// This is the legacy u8 sRGB representation. A parallel [`LinearFrame`]
-/// type carries the same payload as `Vec<f32>` linear-light RGBA and will
-/// eventually replace this one. During the multi-phase migration both types
-/// coexist and [`DecodedFrame::to_linear`] / [`LinearFrame::to_srgb_u8`]
-/// shuttle between them at stage boundaries.
+/// The pipeline works in linear light: the decoder emits
+/// [`LinearFrame`] and every stage after it takes floats. This type is
+/// the u8 sRGB representation kept for the edges that genuinely hold
+/// bytes — readback from the conversion shader, and anything handing
+/// pixels to a surface that wants sRGB.
+/// [`DecodedFrame::to_linear`] and [`LinearFrame::to_srgb_u8`] convert
+/// between the two.
 pub struct DecodedFrame {
     pub pts: RationalTime,
     pub width: u32,
@@ -53,9 +53,9 @@ impl DecodedFrame {
 
     /// Decode this sRGB u8 frame to a linear-light f32 frame.
     ///
-    /// Part of the CRIT-7 migration: until the decoder itself emits
-    /// [`LinearFrame`] directly (Phase 3), callers that want linear
-    /// data go through here. The conversion is lossless within f32
+    /// The decoder emits [`LinearFrame`] itself, so this is for frames
+    /// that arrive as bytes from somewhere else. The conversion is
+    /// lossless within f32
     /// precision — `to_linear().to_srgb_u8()` round-trips to the same
     /// bytes modulo the quantisation noise introduced by the sRGB u8
     /// encoding.
@@ -95,11 +95,9 @@ impl DecodedFrame {
 /// values may legitimately exceed 1.0 (highlight headroom — the whole
 /// point of the linear-light pipeline). Alpha stays linear, per sRGB.
 ///
-/// Phase 2 of the CRIT-7 migration introduces this type alongside
-/// `DecodedFrame` without flipping any call sites. Phase 3 points the
-/// decoder at it; later phases route effects, compositing, and the
-/// viewer through it; Phase 10 renames it to `DecodedFrame` and
-/// retires the u8 variant entirely.
+/// This is what the decoder produces and what effects, compositing and
+/// the viewer's display transform consume; [`FrameQueue`] holds these.
+/// [`DecodedFrame`] is the u8 counterpart for the byte-shaped edges.
 pub struct LinearFrame {
     pub pts: RationalTime,
     pub width: u32,
@@ -195,7 +193,7 @@ impl LinearFrame {
 
     /// Realise CPU `data` from `gpu_source` if it isn't already.
     ///
-    /// Phase 4d.1 lets the decoder return GPU-resident frames with
+    /// The decoder may return GPU-resident frames with
     /// `data` empty — the underlying RGBA8 sits in `gpu_source`'s
     /// `wgpu::Buffer` and never gets read back unless something asks.
     /// Engine consumers that still need the linear-f32 CPU buffer
@@ -631,11 +629,10 @@ mod linear_frame_tests {
 
 /// A bounded queue of decoded frames.
 ///
-/// Internally stores [`LinearFrame`] (linear-light f32). Consumers
-/// that are still on the u8 sRGB path call [`FrameQueue::pop_u8`],
-/// which pops and converts in a single call — the consumer needn't
-/// know about the migration. Consumers that already take linear
-/// (Phase 10b+) use [`FrameQueue::pop`] directly.
+/// Stores [`LinearFrame`] (linear-light f32), which is what the
+/// decoder produces and what consumers take: pop with
+/// [`FrameQueue::pop`]. [`FrameQueue::pop_u8`] is the sRGB-byte
+/// counterpart, for a consumer that wants bytes.
 pub struct FrameQueue {
     frames: VecDeque<LinearFrame>,
     capacity: usize,
@@ -650,24 +647,21 @@ impl FrameQueue {
     }
 
     /// Push a linear-light frame onto the queue. This is the
-    /// canonical path; the decoder produces linear natively as of
-    /// Phase 3.
+    /// canonical path; the decoder produces linear natively.
     pub fn push(&mut self, frame: LinearFrame) {
         if self.frames.len() < self.capacity {
             self.frames.push_back(frame);
         }
     }
 
-    /// Pop the next linear frame. Use this on consumer paths that
-    /// already operate in linear light (Phase 10b+).
+    /// Pop the next linear frame — the normal path.
     pub fn pop(&mut self) -> Option<LinearFrame> {
         self.frames.pop_front()
     }
 
-    /// Back-compat pop for consumers still on the u8 sRGB path.
-    /// Pops the next frame and converts it via
-    /// [`LinearFrame::to_srgb_u8`] before handing it back. Goes
-    /// away in Phase 10b when every consumer takes linear.
+    /// Pop the next frame as sRGB bytes, converting it via
+    /// [`LinearFrame::to_srgb_u8`]. For a consumer that wants bytes;
+    /// nothing in the engine does today.
     pub fn pop_u8(&mut self) -> Option<DecodedFrame> {
         self.frames.pop_front().map(|f| f.to_srgb_u8())
     }

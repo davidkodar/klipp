@@ -439,7 +439,7 @@ impl MagneticEditor {
         // at the deleted clip (or its just-removed linked partner).
         // The explicit pair-removal above handles symmetric A↔B
         // links, but a stray clip C with C.linked_clip_id == A.id
-        // would otherwise be left dangling. Closes CODE_AUDIT T-3.
+        // would otherwise be left dangling.
         let mut purged_ids = vec![removed_clip.id];
         if let Some((ref lc, _)) = removed_linked_clip {
             purged_ids.push(lc.id);
@@ -2253,7 +2253,7 @@ mod tests {
         // anchored to A, with D.linked_clip_id pointing at A. After
         // ripple_delete(A), D's linked_clip_id was previously left
         // dangling (T-3): A is gone but D still claims to be linked
-        // to it. Closes CODE_AUDIT T-3.
+        // to it.
         let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
         let a_id = seq.tracks[0].clips[0].id;
 
@@ -2281,7 +2281,7 @@ mod tests {
         // ripple_delete(A) removes both A and B (existing behaviour).
         // A third clip C with C.linked_clip_id = B was previously
         // also left dangling because the cleanup only ran on A's id.
-        // Closes CODE_AUDIT T-3 — partner-id sweep.
+        // Closes — partner-id sweep.
         let mut seq = make_sequence(&[(0, 24), (24, 48)]);
         let a_id = seq.tracks[0].clips[0].id;
 
@@ -2318,7 +2318,7 @@ mod tests {
         // Direct unit test on Sequence::purge_dangling_linked_clip_ids:
         // unrelated linked_clip_id values must round-trip unchanged
         // (a future "let me simplify the contains check" must not
-        // wipe links to surviving clips). Closes CODE_AUDIT T-3.
+        // wipe links to surviving clips).
         let mut seq = make_sequence(&[(0, 24), (24, 48)]);
         let survivor_id = seq.tracks[0].clips[1].id;
         let removed_id = seq.tracks[0].clips[0].id;

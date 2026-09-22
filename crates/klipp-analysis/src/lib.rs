@@ -1,5 +1,7 @@
-//! What is in the footage, as facts a client can read: shot boundaries,
-//! loudness and silence, later the words and the framing.
+//! What is in the footage, as facts a client can read: shot
+//! boundaries, loudness and silence, the words, the framing, motion,
+//! tempo, and the screen text and beat sheet a screen recording
+//! needs.
 //!
 //! Every analyser implements [`Analyser`]: an id, a schema version, what
 //! it wants to run on, and a run that returns plain data. Results are

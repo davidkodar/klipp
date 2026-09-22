@@ -17,10 +17,9 @@
 //! A user on an offline machine can `wget` (or sneakernet) the model
 //! file on a different host, verify the SHA-256 against what Klipp
 //! displays in the consent dialog, and drop the file at
-//! `<models_root>/{id}.bin`. On next "Use AI Mask" click,
+//! `<models_root>/{id}.bin`. Next time the model is asked for,
 //! [`ModelCache::is_cached`] returns [`CachedStatus::Verified`] and
-//! Klipp skips the network entirely. This is the most paranoid-user-
-//! friendly path; documented prominently in the consent dialog.
+//! Klipp skips the network entirely.
 
 use std::path::{Path, PathBuf};
 

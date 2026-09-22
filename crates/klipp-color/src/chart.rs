@@ -21,7 +21,7 @@
 //! re-derived from a photograph: the whole point is an external
 //! reference. (The photographed chart in the test material is for the
 //! opposite job — teaching the skin band what a *camera* does to those
-//! patches. Both are in `../Klipp-notes/colour-measurement-plan.md`.)
+//! patches.)
 
 use crate::measure::{delta_e2000, srgb8_to_lab, Lab};
 use serde::{Deserialize, Serialize};

@@ -1492,7 +1492,7 @@ mod bin_undo_tests {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Drag-coalesce defensive-path tests — regression-pin CODE_AUDIT U-3
+// Drag-coalesce defensive-path tests
 // and U-4. The two production fixes this guards are:
 //
 //   * combine_old_new — wildcard arm logs + falls back to old command

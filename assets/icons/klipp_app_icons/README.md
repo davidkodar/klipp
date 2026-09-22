@@ -77,7 +77,7 @@ binary is installed elsewhere, edit the `Exec=` line in:
 
 Example for a custom location:
 ```
-Exec=/home/david/Documents/claude/applications/Klipp/target/release/klipp %F
+Exec=/path/to/klipp/target/release/klipp-app %F
 ```
 
 The `%F` passes any files dropped onto the icon or opened with "Open With Klipp".
