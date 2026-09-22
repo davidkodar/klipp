@@ -68,7 +68,11 @@ def build(args):
     if len(packages) != 1:
         raise ValueError("Expected exactly one .pkg.tar.zst release package (use the default PKGEXT).")
     artifacts = packages + [source]
-    (destination / "SHA256SUMS").write_text("".join(f"{hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()}  {p.name}\n" for p in artifacts))
+    checksums = []
+    for artifact in artifacts:
+        with artifact.open("rb") as stream:
+            checksums.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {artifact.name}\n")
+    (destination / "SHA256SUMS").write_text("".join(checksums))
     (destination / "release.json").write_text(json.dumps({"version": version, "tag": args.tag, "commit": sha,
         "cpu": "x86-64", "platform": "Arch Linux x86_64", "prerelease": "-" in version}, indent=2) + "\n")
     print(f"Built {args.tag} at {sha}. Test the package before signing or publishing: {destination}")

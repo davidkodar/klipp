@@ -350,4 +350,68 @@ mod tests {
             Installation::Source
         );
     }
+    fn ui_text(updates: &mut Updates, prefs: &mut GeneralPrefs) -> String {
+        fn append(shape: &egui::epaint::Shape, text: &mut String) {
+            match shape {
+                egui::epaint::Shape::Text(t) => {
+                    text.push_str(&t.galley.job.text);
+                    text.push('\n');
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    for s in shapes {
+                        append(s, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        for _ in 0..3 {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                updates.show(ctx, prefs, &mut false)
+            });
+            text.clear();
+            for shape in output.shapes {
+                append(&shape.shape, &mut text);
+            }
+        }
+        text
+    }
+
+    fn available(installation: Installation) -> Updates {
+        Updates {
+            result: Some(Check {
+                release: Ok(Some(Version::parse("0.20.0").unwrap())),
+                installation,
+                repository: true,
+                preview: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn notifications_respect_disabled_checks_and_dismissal() {
+        let mut prefs = GeneralPrefs::default();
+        let mut updates = available(Installation::Source);
+        assert!(ui_text(&mut updates, &mut prefs).contains("0.20.0 available"));
+        prefs.dismissed_update = Some("0.20.0".into());
+        assert!(!ui_text(&mut updates, &mut prefs).contains("available"));
+        prefs.dismissed_update = None;
+        prefs.check_for_updates = false;
+        assert!(!ui_text(&mut updates, &mut prefs).contains("available"));
+    }
+
+    #[test]
+    fn package_action_is_not_shown_to_source_users() {
+        let mut prefs = GeneralPrefs::default();
+        let mut updates = available(Installation::ArchRelease);
+        updates.open = true;
+        assert!(ui_text(&mut updates, &mut prefs).contains("Open system updater"));
+        updates.result.as_mut().unwrap().installation = Installation::ArchSource;
+        let text = ui_text(&mut updates, &mut prefs);
+        assert!(!text.contains("Open system updater"));
+        assert!(text.contains("makepkg -si"));
+    }
 }
