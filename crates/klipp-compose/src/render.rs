@@ -2280,9 +2280,8 @@ impl Renderer {
         if cam.shutter_deg <= 0.0 {
             return;
         }
-        let n = cam.shutter_samples.clamp(2, 32) as usize;
-        // Open for shutter/360 of a frame, centred on the frame.
-        let open = (cam.shutter_deg as f64 / 360.0) / fps.max(1.0);
+        let offsets = shutter_offsets(cam.shutter_deg, fps, cam.shutter_samples.clamp(2, 32));
+        let n = offsets.len();
         let clips: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
         for id in transforms.keys() {
             let Some(c) = clips.get(id).copied() else { continue };
@@ -2301,7 +2300,7 @@ impl Renderer {
                 };
                 (xf, t)
             };
-            let samples: Vec<(ResolvedTransform, f64)> = (0..n).map(|i| at((i as f64 / (n - 1) as f64 - 0.5) * open)).collect();
+            let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| at(o)).collect();
             let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&c.transform_tilt_x_keyframes, t, 0.0), klipp_core::keyframe::evaluate(&c.transform_tilt_y_keyframes, t, 0.0));
             let (first, last) = (samples[0], samples[n - 1]);
             let moved = (first.0 .0 - last.0 .0).abs() > 0.05
@@ -2356,11 +2355,10 @@ impl Renderer {
         let clip_time = eval_clip_time(clip, time);
         let others: Vec<BuiltinEffect> =
             fx.iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
-        let n = mb.samples.max(2) as usize;
-        let half_shutter = (mb.evaluated_shutter_angle(clip_time) as f64 / 360.0) / fps.max(1.0);
+        let offsets = shutter_offsets(mb.evaluated_shutter_angle(clip_time), fps, mb.samples);
+        let n = offsets.len();
         let mut acc = vec![0.0f32; pixels.len()];
-        for si in 0..n {
-            let offset = (si as f64 / (n - 1) as f64 - 0.5) * 2.0 * half_shutter;
+        for offset in offsets {
             let t = clip_time + offset;
             let ctx = klipp_core::EvalContext { clip_time_secs: t.max(0.0), ..eval::eval_context(clip, time, fps) };
             let (px, py, sx, sy, ro, ax, ay) = eval::evaluate_clip_own_transform(clip, t.max(0.0), &ctx);
@@ -2759,6 +2757,17 @@ fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32, f32)) -> 
         anchor_x: ax, anchor_y: ay, rotation_x: rx, rotation_y: ry, perspective: persp,
         focal_ref: None,
     }
+}
+
+/// When a shutter of `angle` degrees samples a frame, in seconds from
+/// the frame: `samples` instants spread evenly across the time it is
+/// open — `angle / 360` of a frame at `fps` — centred on the frame. A
+/// title's blur and every other layer's use the same, so the two smear
+/// alike at the same setting.
+fn shutter_offsets(angle: f32, fps: f64, samples: u8) -> Vec<f64> {
+    let n = samples.max(2) as usize;
+    let open = (angle.max(0.0) as f64 / 360.0) / fps.max(1.0);
+    (0..n).map(|i| (i as f64 / (n - 1) as f64 - 0.5) * open).collect()
 }
 
 /// Whether a clip could be blurred by the sequence camera's shutter this
@@ -3308,5 +3317,23 @@ mod temporal_denoise_placement_tests {
 
         let none = clip_with(vec![BuiltinEffect::Sharpen { amount: 0.5 }]);
         assert_eq!(temporal_denoise_of(&none), None);
+    }
+}
+
+#[cfg(test)]
+mod shutter_tests {
+    use super::shutter_offsets;
+
+    #[test]
+    fn a_shutter_samples_the_time_it_is_open_and_no_more() {
+        // 180 degrees at 24 fps is open for half a frame, 1/48 s, centred.
+        let o = shutter_offsets(180.0, 24.0, 5);
+        assert_eq!(o.len(), 5);
+        assert!((o[4] - o[0] - 1.0 / 48.0).abs() < 1e-12, "spans {} s", o[4] - o[0]);
+        assert!((o[0] + o[4]).abs() < 1e-12 && o[2].abs() < 1e-12, "centred on the frame");
+        // A full 360 degrees is a whole frame; closed is no spread at all.
+        let full = shutter_offsets(360.0, 24.0, 8);
+        assert!((full[7] - full[0] - 1.0 / 24.0).abs() < 1e-12);
+        assert!(shutter_offsets(0.0, 24.0, 8).iter().all(|t| *t == 0.0));
     }
 }
