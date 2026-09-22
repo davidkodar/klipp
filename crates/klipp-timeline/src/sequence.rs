@@ -71,7 +71,7 @@ pub struct Sequence {
     pub edit_plan: Option<crate::EditPlan>,
     /// A move over the whole sequence; see [`Camera`]. Empty means none,
     /// which is what every sequence made before this had.
-    #[serde(default, skip_serializing_if = "Camera::is_still")]
+    #[serde(default, skip_serializing_if = "Camera::is_default")]
     pub camera: Camera,
 }
 
@@ -89,7 +89,7 @@ pub struct Sequence {
 /// clockwise in degrees, so the scene turns the other way.
 ///
 /// Every list empty is no camera at all, which costs nothing to resolve.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Camera {
     /// Where it looks, across: 0.5 is the middle of the scene.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -103,11 +103,50 @@ pub struct Camera {
     /// Its roll, clockwise in degrees.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roll_keyframes: Vec<klipp_core::Keyframe>,
+    /// How long the shutter is open, as a share of the frame in degrees:
+    /// 180 is half a frame, the film look; 0, the default, is no motion
+    /// blur. Every layer that moves while it is open is smeared along
+    /// its path — the card's own move and the camera's alike.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shutter_deg: f32,
+    /// How many instants across the open shutter are blended. More is
+    /// smoother and slower.
+    #[serde(default = "default_shutter_samples", skip_serializing_if = "is_default_shutter_samples")]
+    pub shutter_samples: u8,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+fn default_shutter_samples() -> u8 {
+    8
+}
+
+fn is_default_shutter_samples(n: &u8) -> bool {
+    *n == default_shutter_samples()
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self {
+            x_keyframes: Vec::new(),
+            y_keyframes: Vec::new(),
+            zoom_keyframes: Vec::new(),
+            roll_keyframes: Vec::new(),
+            shutter_deg: 0.0,
+            shutter_samples: default_shutter_samples(),
+        }
+    }
 }
 
 impl Camera {
-    /// Whether there is no camera: nothing to resolve, and nothing to
-    /// write into a project file.
+    /// Whether there is nothing to save: no move and no shutter.
+    pub fn is_default(&self) -> bool {
+        self.is_still() && self.shutter_deg == 0.0 && self.shutter_samples == default_shutter_samples()
+    }
+
+    /// Whether the camera does not move: nothing to resolve.
     pub fn is_still(&self) -> bool {
         self.x_keyframes.is_empty()
             && self.y_keyframes.is_empty()

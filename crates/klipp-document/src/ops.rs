@@ -697,6 +697,15 @@ pub enum Op {
         clip_id: ClipRef,
         depth: f32,
     },
+    /// Motion blur on everything that moves: `shutter_deg` is how long
+    /// the shutter stays open as a share of a frame (180 is the film
+    /// look, 360 a full frame, 0 off), `samples` how many instants across
+    /// it are blended (8 when left out; more is smoother and slower).
+    MotionBlur {
+        shutter_deg: f32,
+        #[serde(default)]
+        samples: Option<u8>,
+    },
 }
 
 /// What a `style` op changes, gathered.
@@ -1861,6 +1870,22 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             compose(seq, pool, i, ti, clip, poses)
         }
         Op::Camera { keys } => camera(seq, i, keys),
+        Op::MotionBlur { shutter_deg, samples } => {
+            if !shutter_deg.is_finite() || !(0.0..=360.0).contains(shutter_deg) {
+                return Err(refuse(i, format!("a shutter of {shutter_deg} degrees"), "give shutter_deg from 0 (off) to 360 (a whole frame); 180 is the film look"));
+            }
+            let samples = samples.unwrap_or(seq.camera.shutter_samples);
+            if !(2..=32).contains(&samples) {
+                return Err(refuse(i, format!("{samples} samples"), "give samples from 2 to 32"));
+            }
+            let old = seq.camera.clone();
+            if old.shutter_deg == *shutter_deg && old.shutter_samples == samples {
+                return Err(refuse(i, "the shutter is already set so", "give another shutter_deg or samples"));
+            }
+            let new = klipp_timeline::Camera { shutter_deg: *shutter_deg, shutter_samples: samples, ..old.clone() };
+            let what = if *shutter_deg == 0.0 { "motion blur off".to_string() } else { format!("motion blur: a {shutter_deg:.0} degree shutter, {samples} samples") };
+            Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) }, Vec::new()))
+        }
         Op::Depth { clip_id, depth } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             if !depth.is_finite() || !(0.0..=20.0).contains(depth) {
@@ -2694,7 +2719,9 @@ fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditC
             return Err(refuse(i, "there is no camera to take away", "give keys to move a camera over the sequence"));
         }
         let what = "the camera is taken off the sequence".to_string();
-        return Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::default() }, Vec::new()));
+        // The move goes; the shutter is a setting of its own and stays.
+        let new = klipp_timeline::Camera { shutter_deg: old.shutter_deg, shutter_samples: old.shutter_samples, ..Default::default() };
+        return Ok((what, EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) }, Vec::new()));
     }
     let end = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0f64, f64::max);
     for k in keys {
@@ -2715,7 +2742,7 @@ fn camera(seq: &Sequence, i: usize, keys: &[CameraKey]) -> Result<(String, EditC
     }
     let mut sorted: Vec<CameraKey> = keys.to_vec();
     sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-    let mut new = klipp_timeline::Camera::default();
+    let mut new = klipp_timeline::Camera { shutter_deg: old.shutter_deg, shutter_samples: old.shutter_samples, ..Default::default() };
     for k in &sorted {
         klipp_core::keyframe::upsert_keyframe(&mut new.x_keyframes, k.secs, k.x);
         klipp_core::keyframe::upsert_keyframe(&mut new.y_keyframes, k.secs, k.y);
@@ -4920,6 +4947,28 @@ mod tests {
         // Turned a quarter, the offset turns with it: down, not right.
         let (x, y) = place(ComposePose { width: 0.5, height: 0.5, rotation_deg: 90.0, ..Default::default() });
         assert!(x.abs() < 1e-2 && (y + 240.0).abs() < 1e-2, "{x}, {y}");
+    }
+
+    #[test]
+    fn motion_blur_is_a_shutter_on_the_camera_that_outlives_its_moves() {
+        let (seq, pool, _media, _a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::MotionBlur { shutter_deg: 180.0, samples: None }]).unwrap();
+        assert!(plan.steps[0].what.contains("180 degree shutter, 8 samples"), "{}", plan.steps[0].what);
+        let EditCommand::SetSequenceCamera { new, .. } = &plan.steps[0].edit else { panic!("a camera edit") };
+        assert_eq!((new.shutter_deg, new.shutter_samples), (180.0, 8));
+        assert!(new.is_still() && !new.is_default(), "no move, but something to save");
+
+        // Setting a move, or taking it off, leaves the shutter where it was.
+        let mut shuttered = seq.clone();
+        shuttered.camera = (**new).clone();
+        let moved = resolve(&shuttered, &pool, &[Op::Camera { keys: vec![CameraKey::default(), CameraKey { secs: 2.0, zoom: 1.2, ..Default::default() }] }]).unwrap();
+        let EditCommand::SetSequenceCamera { new: with_move, .. } = &moved.steps[0].edit else { panic!("a camera edit") };
+        assert_eq!(with_move.shutter_deg, 180.0);
+
+        let bad = |deg: f32, n: Option<u8>| resolve(&seq, &pool, &[Op::MotionBlur { shutter_deg: deg, samples: n }]).unwrap_err();
+        assert!(bad(400.0, None).why.contains("shutter"));
+        assert!(bad(180.0, Some(1)).why.contains("samples"));
+        assert!(bad(0.0, None).why.contains("already"), "off when already off");
     }
 
     #[test]
