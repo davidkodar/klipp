@@ -295,6 +295,18 @@ The ColorChecker patch values the render-path self-check uses are the **BabelCol
 
 See the AI Models table above; each model retains its upstream attribution and licence.
 
+### The effects browser's preview picture
+
+The frame the effect cards render on, until the viewer has one of your
+own, is [Bachalpsee, Lake, Mountains](https://pixabay.com/photos/bachalpsee-7572681/)
+by **Himmelstraeume**, under the [Pixabay Content
+License](https://pixabay.com/service/license-summary/) — free for
+commercial use, no attribution required. Credited here anyway, so
+nobody has to work out where it came from. Note for packagers: the
+Pixabay licence is permissive but not a free-culture licence, so this
+one file is not redistributable under the GPL's terms the way the rest
+of the tree is.
+
 ## Acknowledgements
 
 Klipp stands on a lot of open-source work. Beyond the crates in the tech stack, it links or builds against, and is grateful to, [FFmpeg](https://ffmpeg.org/) (decode / encode / analysis), the [Vulkan](https://www.vulkan.org/) loader and [wgpu](https://wgpu.rs/) (all GPU work), [whisper.cpp / ggml](https://github.com/ggerganov/whisper.cpp) (speech, via [whisper-rs](https://crates.io/crates/whisper-rs)), [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (on-screen text), [Piper](https://github.com/rhasspy/piper) (the scratch voice), [libfacedetection / YuNet](https://github.com/ShiqiYu/libfacedetection) (faces), [egui](https://github.com/emilk/egui) (UI), [cpal](https://crates.io/crates/cpal) and the [LV2](https://lv2plug.in/) ecosystem via [lilv](https://gitlab.com/lv2/lilv) (audio), [frei0r](https://frei0r.dyne.org/) (video plugins), and [Jamendo](https://www.jamendo.com/) and [Freesound](https://freesound.org/) (the music and sound-effect libraries). Each is used under its own licence. Contributions of missing or incorrect attribution are welcome — open an issue.
