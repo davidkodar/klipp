@@ -69,7 +69,7 @@ OFX 1.5 and frei0r hosts.
 
 🚧 **Pre-release, single-developer, moving fast.**
 
-Large parts of the editor are built and usable, but Klipp makes no stability commitment: there is no release schedule, no pre-built binaries, and no support. Building from source, you should still expect rough edges, breaking changes, and areas that are further along than others (reliability hardening, soak-testing, and broad AMD/Intel GPU validation are ongoing). If you need a Linux NLE to rely on today, use Kdenlive, DaVinci Resolve, or Olive.
+Large parts of the editor are built and usable, but Klipp makes no stability commitment: there is no release schedule, no pre-built binaries, and no support. Building from source, you should still expect rough edges, breaking changes, and areas that are further along than others (reliability hardening, soak-testing, and broad AMD/Intel GPU validation are ongoing).
 
 Klipp is developed and tested day-to-day on [Omarchy](https://omarchy.org/) 4.0.4 (DHH's Arch- and Hyprland-based Linux). Any recent Arch or Arch-derived system should behave the same; other distributions are untested. Klipp follows the Omarchy theme if you ask it to, in Preferences → Appearance.
 
