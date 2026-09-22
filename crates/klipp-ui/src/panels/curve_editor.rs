@@ -1,3 +1,4 @@
+use super::title_curve::{self, TitleCurveParam};
 use crate::state::{AppState, KeyframeParamKind, SelectedKeyframe, KeyframeContextMenu};
 use crate::theme::KlippTheme;
 use egui::{pos2, vec2, Color32, Rect, Stroke};
@@ -7,6 +8,7 @@ use klipp_timeline::TrackKind;
 /// Which parameter the curve editor displays.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CurveParam {
+    Title { object_id: u32, param: TitleCurveParam },
     Audio(AudioParam),
     Video(VideoParam),
     /// Playback speed envelope.
@@ -23,6 +25,7 @@ pub enum CurveParam {
 impl CurveParam {
     pub fn label(&self) -> String {
         match self {
+            CurveParam::Title { param, .. } => param.label(),
             CurveParam::Audio(AudioParam::Volume) => "Volume".into(),
             CurveParam::Audio(AudioParam::Pan) => "Pan".into(),
             CurveParam::Audio(AudioParam::Gain) => "Gain".into(),
@@ -59,6 +62,7 @@ impl CurveParam {
     /// (min, max, default) for this parameter.
     fn range(&self) -> (f32, f32, f32) {
         match self {
+            CurveParam::Title { param, .. } => param.range(),
             CurveParam::Audio(AudioParam::Volume) => (0.0, 2.0, 1.0),
             CurveParam::Audio(AudioParam::Pan) => (-1.0, 1.0, 0.0),
             CurveParam::Audio(AudioParam::Gain) => (0.0, 4.0, 1.0),
@@ -104,6 +108,7 @@ pub struct CurveEditorPanel {
     scroll: egui::Vec2,
     /// Currently active parameter
     param: CurveParam,
+    selected_clip: Option<klipp_core::ClipId>,
     /// Active keyframe drag
     drag: Option<CurveDrag>,
     /// Auto-fit on first display
@@ -117,6 +122,7 @@ impl Default for CurveEditorPanel {
             zoom_y: 1.0,
             scroll: egui::Vec2::ZERO,
             param: CurveParam::Video(VideoParam::Opacity),
+            selected_clip: None,
             drag: None,
             needs_fit: true,
         }
@@ -135,6 +141,14 @@ impl CurveEditorPanel {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        if self.selected_clip != state.selected_clip {
+            self.selected_clip = state.selected_clip;
+            self.drag = None;
+            self.needs_fit = true;
+            state.selected_keyframe = None;
+            state.keyframe_context_menu = None;
+        }
+
 
         let full_rect = ui.available_rect_before_wrap();
         if full_rect.width() < 40.0 || full_rect.height() < 40.0 {
@@ -204,7 +218,14 @@ impl CurveEditorPanel {
                 ui.add_space(4.0);
 
                 // Parameter selector
+                let previous_param = self.param.clone();
                 self.param_selector(ui, theme, state);
+                if self.param != previous_param {
+                    state.selected_keyframe = None;
+                    state.keyframe_context_menu = None;
+                    self.drag = None;
+                    self.needs_fit = true;
+                }
 
                 ui.add_space(8.0);
                 ui.separator();
@@ -283,6 +304,7 @@ impl CurveEditorPanel {
                     let t = t.clamp(0.0, clip_duration);
                     let v = v.clamp(v_min, v_max);
                     match &self.param {
+                        CurveParam::Title { object_id, param } => cmds.push(param.add(clip_id, *object_id, t, v)),
                         CurveParam::Audio(p) => {
                             cmds.push(AppCommand::AddAudioKeyframe {
                                 clip_id,
@@ -410,6 +432,7 @@ impl CurveEditorPanel {
         for track in &seq.tracks {
             if let Some(clip) = track.find_clip(clip_id) {
                 return match &self.param {
+                    CurveParam::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
                     CurveParam::Audio(AudioParam::Volume) => clip.volume_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Pan) => clip.pan_keyframes.clone(),
                     CurveParam::Audio(AudioParam::Gain) => clip.gain_keyframes.clone(),
@@ -430,6 +453,36 @@ impl CurveEditorPanel {
     }
 
     fn param_selector(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
+        if let Some(clip) = state.selected_clip.and_then(|cid| state.sequence().all_clips().find(|c| c.id == cid)) {
+            if let klipp_timeline::ClipKind::Title(title) = &clip.kind {
+                let mut object_id = match &self.param {
+                    CurveParam::Title { object_id, .. } if title.object(klipp_timeline::TitleObjectId(*object_id)).is_some() => Some(*object_id),
+                    _ => None,
+                };
+                let name = object_id.and_then(|id| title.object(klipp_timeline::TitleObjectId(id))).map(|o| o.name.as_str()).unwrap_or("Whole title");
+                egui::ComboBox::from_id_salt("curve_title_layer").selected_text(name).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut object_id, None, "Whole title");
+                    for object in &title.objects {
+                        ui.selectable_value(&mut object_id, Some(object.id.0), &object.name);
+                    }
+                });
+                if let Some(object) = object_id.and_then(|id| title.object(klipp_timeline::TitleObjectId(id))) {
+                    let object_id = object.id.0;
+                    let params: Vec<_> = title_curve::parameters(object).into_iter().map(|param| CurveParam::Title { object_id, param }).collect();
+                    if !params.contains(&self.param) {
+                        self.param = params[0].clone();
+                        self.drag = None;
+                        self.needs_fit = true;
+                    }
+                    let previous = self.param.clone();
+                    egui::ComboBox::from_id_salt("curve_title_param").selected_text(self.param.label()).show_ui(ui, |ui| {
+                        for param in params { let label = param.label(); ui.selectable_value(&mut self.param, param, label); }
+                    });
+                    if self.param != previous { self.drag = None; self.needs_fit = true; }
+                    return;
+                }
+            }
+        }
         let track_kind = state.selected_clip.and_then(|cid| {
             state.sequences[state.active_sequence_idx].tracks.iter()
                 .find(|t| t.clips.iter().any(|c| c.id == cid))
@@ -470,6 +523,11 @@ impl CurveEditorPanel {
             }
         }
 
+        if !params.contains(&self.param) {
+            self.param = params[0].clone();
+            self.drag = None;
+            self.needs_fit = true;
+        }
         for p in &params {
             let active = self.param == *p;
             let text = egui::RichText::new(p.label()).size(10.0);
@@ -966,6 +1024,7 @@ impl CurveEditorPanel {
         }
 
         // Process drag
+        let mut moved_title_index = None;
         if response.dragged_by(egui::PointerButton::Primary) {
             if let Some(ref drag) = self.drag {
                 if let Some(pos) = pointer_pos {
@@ -996,6 +1055,10 @@ impl CurveEditorPanel {
                                             new_time_secs: new_t,
                                             new_value: new_v,
                                         });
+                                    }
+                                    CurveParam::Title { object_id, param } => {
+                                        cmds.push(param.move_keyframe(clip_id, *object_id, kf_idx, new_t, new_v));
+                                        moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
                                     }
                                     CurveParam::Speed
                                     | CurveParam::Effect(_)
@@ -1034,6 +1097,7 @@ impl CurveEditorPanel {
                                             tangent_out,
                                         });
                                     }
+                                    CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out)),
                                     CurveParam::Speed
                                     | CurveParam::Effect(_)
                                     | CurveParam::AudioEffect(_) => {
@@ -1047,6 +1111,10 @@ impl CurveEditorPanel {
             }
         }
 
+        if let Some(index) = moved_title_index {
+            if let Some(drag) = &mut self.drag { drag.keyframe_index = index; }
+            state.selected_keyframe = Some(SelectedKeyframe { clip_id, param_kind: self.param_to_kind(), keyframe_index: index });
+        }
         if response.drag_stopped() {
             self.drag = None;
         }
@@ -1056,6 +1124,7 @@ impl CurveEditorPanel {
 
     fn param_to_kind(&self) -> KeyframeParamKind {
         match &self.param {
+            CurveParam::Title { object_id, param } => KeyframeParamKind::Title { object_id: *object_id, param: param.clone() },
             CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
             CurveParam::Video(p) => KeyframeParamKind::Video(*p),
             CurveParam::AudioEffect(key) => {
@@ -1077,6 +1146,7 @@ impl CurveEditorPanel {
 
     fn param_matches_kind(&self, kind: &KeyframeParamKind) -> bool {
         match (&self.param, kind) {
+            (CurveParam::Title { object_id: a, param: p }, KeyframeParamKind::Title { object_id: b, param: q }) => a == b && p == q,
             (CurveParam::Audio(a), KeyframeParamKind::Audio(b)) => a == b,
             (CurveParam::Video(a), KeyframeParamKind::Video(b)) => a == b,
             (CurveParam::AudioEffect(key), KeyframeParamKind::AudioEffect { effect_index, param_name }) => {
@@ -1128,6 +1198,20 @@ fn format_value(v: f32, range: f32) -> String {
 #[cfg(test)]
 mod curve_param_tests {
     use super::*;
+
+    #[test]
+    fn title_selection_keeps_layer_and_channel_identity() {
+        let mut panel = CurveEditorPanel::new();
+        panel.param = CurveParam::Title { object_id: 7, param: TitleCurveParam::Effect("glow.1.radius".into()) };
+        let selected = panel.param_to_kind();
+        assert!(panel.param_matches_kind(&selected));
+        assert!(!panel.param_matches_kind(&KeyframeParamKind::Title { object_id: 8, param: TitleCurveParam::Effect("glow.1.radius".into()) }));
+        assert!(!panel.param_matches_kind(&KeyframeParamKind::Title { object_id: 7, param: TitleCurveParam::Effect("glow.0.radius".into()) }));
+        assert!(!panel.param_matches_kind(&KeyframeParamKind::Video(VideoParam::Opacity)));
+        assert_eq!(panel.param.label(), "Glow 2 · radius");
+        panel.param = CurveParam::Title { object_id: 7, param: TitleCurveParam::Position(klipp_core::TitlePositionAxis::X) };
+        assert_eq!(panel.param.range(), (-1.0, 2.0, 0.5));
+    }
 
     #[test]
     fn audio_effect_label_humanizes_reserved_keys() {

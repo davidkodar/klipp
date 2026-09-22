@@ -376,6 +376,7 @@ pub struct KeyframeClipboard {
 /// Which kind of parameter a keyframe context menu or selection refers to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyframeParamKind {
+    Title { object_id: u32, param: crate::panels::title_curve::TitleCurveParam },
     Audio(AudioParam),
     Video(VideoParam),
     /// Audio EFFECT param keyframe — identified by effect index +
