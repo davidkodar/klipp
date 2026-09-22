@@ -29,7 +29,8 @@ struct Harness {
     shared: Arc<klipp_core::ControlShared>,
     media_pool: Arc<RwLock<klipp_media::MediaPool>>,
     sequence: Arc<RwLock<klipp_timeline::Sequence>>,
-    _log: std::path::PathBuf,
+    log: std::path::PathBuf,
+    socket: std::path::PathBuf,
     next_id: u64,
     /// Two clips, each with its own Corrector, and a node nested inside
     /// a Compound on the first — what the id checks are checked against.
@@ -42,6 +43,13 @@ struct Ids {
     clip_b: String,
     corrector_b: String,
     nested_in_a: String,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.log);
+    }
 }
 
 impl Harness {
@@ -77,7 +85,11 @@ fn harness() -> Harness {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let sock = std::env::temp_dir().join(format!("klipp-control-test-{stamp}.sock"));
+    // Linux Unix sockets have a 108-byte pathname limit. The gate's
+    // disk-backed TMPDIR can exceed it before the filename is appended.
+    // Only this socket inode lives in /tmp; logs and media still use TMPDIR.
+    let sock = std::path::Path::new("/tmp")
+        .join(format!("klipp-ctl-{}-{stamp}.sock", std::process::id()));
     let log = std::env::temp_dir().join(format!("klipp-control-test-{stamp}.log"));
     std::fs::write(&log, "line one\nline two\nline three\n").expect("write log");
 
@@ -184,7 +196,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, _log: log, next_id: 0, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ids };
             }
             Err(e) => {
                 last_err = Some(e);
