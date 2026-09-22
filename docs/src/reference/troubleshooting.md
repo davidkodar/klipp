@@ -149,10 +149,15 @@ sudo apt install nvidia-cuda-toolkit  # Ubuntu / Debian
 
 ## Reporting Bugs
 
-Klipp does not yet have a public issue tracker. When the project opens for issues, log filings should include:
+Bugs go to the issue tracker on GitHub — **Help → Report a Bug** opens
+it, and there is a form for a bug and one for a feature request. What
+a report needs:
 
-- Klipp version (visible in **Help → About**)
-- Linux distribution and kernel version (`uname -r`)
-- GPU model and driver version
-- Relevant section of `klipp-debug.log`
-- Reproduction steps
+- What you did, what happened, and what you expected
+- Your distribution and kernel (`uname -r`)
+- GPU model and driver version (`vulkaninfo --summary | head -30`)
+- The build you are on, from **Help → About**
+- The relevant part of `klipp-debug.log`
+
+A security problem does not go here — `SECURITY.md` says where to send
+it privately.

@@ -51,8 +51,8 @@ The list below describes which subsystems currently produce output. None of thes
 
 ### Export
 - H.264 / H.265 / ProRes / DNxHD into MP4 / MKV / MOV
-- FCPXML and CMX 3600 EDL interchange
-- Per-clip ODT override at export time
+- Interchange out: FCPXML, CMX 3600 EDL, OTIO and MLT / Kdenlive; in: OTIO, FCPXML and MLT / Kdenlive
+- Burnt-in or sidecar captions, and a delivery check over picture and sound
 
 ## What's Missing
 
@@ -62,8 +62,6 @@ A non-exhaustive list of fundamentals that are either stubbed, unfinished, or no
 - AMD ROCm and Intel OpenVINO for AI inference
 - Pre-built binaries / installers
 - Documentation accuracy under continued churn (this doc may drift)
-- Plugin host (no OFX, no LV2 yet)
-- Auto-captions / speech-to-text
 - Many polish items across audio, effects, and the timeline
 
 ## Author and Licence

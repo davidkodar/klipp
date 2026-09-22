@@ -74,8 +74,8 @@ Select a camera clip and a separate recording, right-click, **Sync Video and Aud
 From the browser, add media to the timeline by:
 
 - **Double-click** — Load into the source viewer for marking up
-- **W** — Insert at playhead (with browser clip selected)
-- **D** — Overwrite at playhead
+- **,** — Insert at playhead (with a browser clip selected)
+- **.** — Overwrite at playhead
 - **Drag and drop** — Drag directly onto a timeline track
 
 ## Effects Browser

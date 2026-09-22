@@ -1,6 +1,6 @@
 # Working Colorspaces
 
-Klipp's colour pipeline runs in linear light, with **ACEScg** as the default working colour space. This page explains what that means, what you can choose between, and how the chain composes from source decode to final delivery.
+Klipp's colour pipeline runs in linear light. A project works in **Rec.709 linear** unless you change it, and **ACEScg** is a choice away. This page explains what that means, what you can choose between, and how the chain composes from source decode to final delivery.
 
 ## What "Working Colourspace" Means
 
@@ -39,14 +39,19 @@ Stages 1–3 are *decode*. Stage 4 is *grading*. Stage 5 is *delivery*.
 
 | Working space | Use when |
 |---|---|
-| **ACEScg** (default) | VFX work, maximum colour fidelity, stacking many effects |
-| **Rec.709 (linear)** | Conservative grade for HD broadcast / web |
-| **Rec.2020 (linear)** | HDR and UHD wide-gamut grades |
-| **sRGB (encoded)** | Compatibility mode for legacy projects; effects do not behave linearly |
+| **Rec.709 (linear)** (default) | HD and web delivery; the safe choice, and what a project gets if you never touch this |
+| **ACEScg** | VFX work, wide-gamut sources, stacking many effects, an ACES delivery |
+| **Rec.2020 (linear)** | HDR and UHD wide-gamut grades without the ACES tone curve |
 
-Set the working space in **Project → Settings → Colour**. Changing the working space mid-project re-evaluates all clips through the new chain — your grades stay numerically consistent because they're parameter changes, not pixel changes.
+Set the working space in **Project Info → Colour**.
 
-## Why ACEScg Specifically
+Switching it re-bases the whole grade chain. The dropdown alone is a
+naked switch: the numbers stay, so the picture changes. The button
+beside it wraps every clip's chain in primaries-conversion nodes
+instead, which keeps the look across the switch — use that unless you
+mean to re-grade.
+
+## Why ACEScg When You Want It
 
 ACEScg has three useful properties:
 
@@ -67,7 +72,7 @@ At export, an ODT converts from the working space to the delivery space. ODT is 
 | Rec.2020 | HDR streaming, Blu-ray UHD |
 | P3-D65 | Cinema, Apple displays |
 
-Pick the ODT in the export dialog. Per-clip ODT overrides are also possible for split-delivery workflows.
+Pick the ODT in the export dialog. It applies to the whole export; there is no per-clip override.
 
 ## Per-Clip Source Override
 

@@ -1,66 +1,48 @@
 # Scene Detection
 
-Klipp's scene detector (in the `klipp-scenedetect` crate) identifies cuts and dissolves in long-form footage and produces a list of scene boundaries you can apply as edits.
+A long recording is often several shots welded into one file — a
+multi-camera event, a tape transfer, a screen capture. Scene detection
+finds where the picture changes and marks those points on the clip, so
+you can cut the file into its shots without scrubbing for them.
 
-Useful for:
+## Using it
 
-- Splitting raw recordings of multi-cam events
-- Pre-editing screen recordings that have natural cut points
-- Importing legacy footage where the source file has many scenes welded together
-- Quick assembly cuts on archival material
+1. Right-click a clip on the timeline.
+2. Choose **Detect Scenes…**. The menu item is replaced by a progress
+   readout while it runs, with a **Cancel** beside it.
+3. Each cut it finds becomes a clip marker, in the colour set in
+   Preferences.
+4. Right-click the clip again and choose **Split at Scene Markers (N
+   cuts)** to blade it at every marker. That is one undo step, so one
+   Ctrl+Z puts the clip back together.
 
-## Workflow
+The analysis runs in the background: the timeline stays live, and
+several clips can be detecting at once.
 
-1. Select a clip on the timeline (or in the browser)
-2. **Clip → Detect Scenes** (or *Detect Scenes on Selected Clip* in the command palette)
-3. Klipp analyses the clip; a progress dialog shows percent complete
-4. When complete, a results panel lists detected scenes — one row per scene with thumbnail, in / out timecodes, and a confidence score
-5. Pick which scenes to apply as edits, then click **Apply** to split the clip at every selected boundary
+## How it decides
 
-## Detection Methods
+Klipp builds a 64-bin luminance histogram for each frame and compares
+it with the previous frame's, using Rec.601 weights and an L1
+distance. A cut is declared where the distance crosses a threshold
+scaled by the sensitivity setting. It runs on the CPU, over frames
+decoded for the purpose.
 
-Two algorithms run in parallel and their results are combined:
+This finds hard cuts well. A dissolve, a fade or a whip pan is a
+gradual change rather than a jump, so expect those to be missed or to
+land a few frames late.
 
-- **Content detector** — colour histogram delta between adjacent frames. Good at hard cuts; misses dissolves.
-- **Threshold detector** — luminance threshold crossings. Catches fade-to-black and fade-from-black.
+## Settings
 
-Each detected boundary is tagged with which detector(s) flagged it and a confidence score.
+**Preferences → Editing**:
 
-## Tuning
-
-The results panel exposes:
-
-| Control | Default | Effect |
+| Setting | Default | What it does |
 |---|---|---|
-| **Sensitivity** | 0.6 | Lower → fewer false positives, may miss soft cuts. Higher → catches more but introduces noise. |
-| **Min scene length** | 1.0 s | Skip detections shorter than this — suppresses jitter on rapid cuts |
-| **Show below confidence** | off | When on, shows all detections, even low-confidence ones, for manual review |
+| Sensitivity | 0.4 | Lower finds more cuts, including false ones; higher only finds obvious ones |
+| Minimum gap | 0.5 s | How close two cuts may be, which stops a flickering shot producing a run of markers |
+| Marker colour | Yellow | The colour the scene markers take |
 
-## Apply as Edits
+## Related
 
-When you click **Apply**:
-
-- The original clip is split at each selected boundary
-- Resulting sub-clips inherit the source clip's effects, colour grade, and audio
-- Track selection is preserved — the clip stays on its original track
-
-To re-merge sub-clips: select adjacent ones and **Clip → Merge** from the command palette.
-
-## Performance
-
-Detection runs on the GPU via the same `SequentialFrameDecoder` used by stabilisation. On an RTX 4080:
-
-- 4K HEVC, 60 minutes: ~3 minutes
-- 1080p H.264, 60 minutes: ~50 seconds
-
-CPU fallback is roughly 10× slower but functional.
-
-## Cache
-
-Scene-detection results are cached under `analysis/scenedetect/<clip_id>.json` in the project. Re-running with the same clip + parameters reads from the cache; changing parameters triggers re-analysis.
-
-## Limitations
-
-- Cross-dissolves are detected as a region of low confidence rather than a single cut — pick the midpoint manually if precision matters
-- Static scenes with rapid camera motion can produce false positives; raise the **Min scene length** to suppress
-- Animated content with hard colour palette swaps can confuse the detector — animation often shows large per-frame deltas without an actual cut
+- [Markers](./markers.md) — what else clip markers are used for
+- The assistant's `find_shots` reads the same boundaries as data, along
+  with what is in each shot.

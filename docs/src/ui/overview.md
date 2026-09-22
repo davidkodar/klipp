@@ -54,7 +54,7 @@ Toggle individual panels from the **Window** menu:
 ## Navigation
 
 - Click any panel to give it focus.
-- The **Command Palette** (**Ctrl+Shift+P**) provides fuzzy-search access to every command.
+- The **Command Palette** (**Ctrl+K**) searches every command by name.
 - The status bar at the bottom of the timeline shows clip count, selected clip info, filmstrip statistics, and zoom level.
 
 ## Themes

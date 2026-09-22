@@ -39,8 +39,8 @@ In the media browser:
 
 Select a clip in the media browser, then:
 
-- Press **W** to insert at the playhead position (ripples subsequent clips down)
-- Press **D** to overwrite at the playhead position
+- Press **,** to insert at the playhead (ripples the clips after it down)
+- Press **.** to overwrite at the playhead
 - Drag the clip directly onto a timeline track
 
 Klipp's timeline is *magnetic* by default — gaps automatically close when you delete or move clips. See [Magnetic Timeline](../editing/magnetic-timeline.md) for the full set of behaviours.
@@ -70,8 +70,8 @@ Trim by dragging clip edges. Drop a clip on top of another and Klipp asks whethe
 
 - **I** — mark in point at playhead
 - **O** — mark out point at playhead
-- **Alt+I** / **Alt+O** — clear in / out
-- **Shift+I** / **Shift+O** — go to in / out
+- **Shift+I** / **Shift+O** — clear in / out
+- **Alt+X** — clear both
 
 ## 8. Adjust Clip Properties
 
@@ -105,7 +105,7 @@ Open the **Color** workspace from **Window → Workspaces → Color**, or click 
 - **HSL** — Hue/saturation/luminance qualifiers
 - **Scopes** — Waveform, vectorscope, histogram, parade
 
-Klipp's pipeline is linear-light by default with **ACEScg** as the working colour space. Source clips with camera-log encoding (Sony SLog3, Canon Log, etc.) are auto-detected and decoded through their inverse log curve. See [Working Colorspaces](../color/working-colorspaces.md) for details.
+Klipp's pipeline is linear-light throughout, working in **Rec.709 linear** unless you choose ACEScg or Rec.2020 in Project Info. Source clips with camera-log encoding (Sony SLog3, Canon Log, etc.) are auto-detected and decoded through their inverse log curve. See [Working Colorspaces](../color/working-colorspaces.md) for details.
 
 ## 11. Export
 
@@ -121,7 +121,7 @@ Click **Export**. Klipp renders in the background; you can keep editing.
 
 ## Tips
 
-- The **Command Palette** (**Ctrl+Shift+P**) is the fastest way to find any command. Just start typing.
+- The **Command Palette** (**Ctrl+K**) is the fastest way to find any command. Just start typing.
 - **Performance overlay** (**P**) shows decode backend, GPU effects status, frame drops, and CPU/memory.
 - **Auto-save** runs every 60 seconds while the project is dirty.
 - Project files are plain JSON inside the `.klipp` directory — version-controllable.

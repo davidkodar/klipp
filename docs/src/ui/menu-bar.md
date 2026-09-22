@@ -61,8 +61,8 @@ Complete reference for all menus and items in Klipp.
 |------|----------|-------------|
 | Set In Point | I | Mark in point at playhead |
 | Set Out Point | O | Mark out point at playhead |
-| Clear In Point | Alt+I | Remove the in point |
-| Clear Out Point | Alt+O | Remove the out point |
+| Clear In Point | Shift+I | Remove the in point |
+| Clear Out Point | Shift+O | Remove the out point |
 | Add Marker | M | Place a marker at the playhead |
 | Next Marker | Shift+M | Jump to the next marker |
 | Previous Marker | Alt+M | Jump to the previous marker |
@@ -93,7 +93,7 @@ Complete reference for all menus and items in Klipp.
 | Toggle Timeline | — | Show/hide the timeline |
 | AI Tools Panel | Alt+A | Open the AI tools panel |
 | AI Models | — | Open the AI Models dialog |
-| Command Palette | Ctrl+Shift+P | Open the command palette |
+| Command Palette | Ctrl+K | Open the command palette |
 
 ## Help
 

@@ -8,8 +8,8 @@ Toggle magnetic behaviour from **Timeline → Toggle Magnetic** if you want clas
 
 | Operation | Shortcut | Behaviour |
 |---|---|---|
-| **Insert** | **W** | Place clip at playhead; ripple subsequent clips forward |
-| **Overwrite** | **D** | Place clip at playhead; replace whatever overlaps |
+| **Insert** | **,** | Place clip at playhead; ripple subsequent clips forward |
+| **Overwrite** | **.** | Place clip at playhead; replace whatever overlaps |
 | **Append** | — | Place clip at end of primary track |
 | **Backtimed insert** | — | Place clip ending at playhead; ripple |
 | **Backtimed overwrite** | — | Place clip ending at playhead; overwrite |

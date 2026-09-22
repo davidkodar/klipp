@@ -1,6 +1,6 @@
 # Command Palette
 
-The command palette is a fuzzy-search overlay for every command Klipp exposes. Open it with **Ctrl+Shift+P** and start typing — matches narrow as you type, ranked by recency and exact-prefix matches.
+The command palette is a search overlay over every command Klipp exposes. Open it with **Ctrl+K** and start typing: the list narrows to the entries whose name, category or shortcut contains what you typed, in the order they are registered.
 
 It is the fastest way to:
 
@@ -34,7 +34,7 @@ Examples of palette entries:
 
 | Key | Action |
 |---|---|
-| **Ctrl+Shift+P** | Open / close palette |
+| **Ctrl+K** | Open / close palette |
 | **↑ / ↓** | Move selection |
 | **Enter** | Run selected command |
 | **Esc** | Close without running |
