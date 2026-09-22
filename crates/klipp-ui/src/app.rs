@@ -16320,6 +16320,7 @@ impl KlippApp {
                                         kind: klipp_timeline::ShapeKind::Rectangle {
                                             corner_radius: 0.0,
                                         },
+                                        fit: None,
                                         fill: Some([60, 60, 70, 220]),
                                         stroke: None,
                                     },
@@ -16630,6 +16631,37 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Shape Stroke", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShapeFit { clip_id, object_id, target_id, padding_x, padding_y } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+                            let fit = target_id.and_then(|id| {
+                                td.object(klipp_timeline::TitleObjectId(id))
+                                    .filter(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))
+                                    .map(|_| klipp_timeline::ShapeFit {
+                                        target: klipp_timeline::TitleObjectId(id),
+                                        padding: klipp_timeline::TitlePosition {
+                                            x: if padding_x.is_finite() { padding_x.max(0.0) } else { 0.0 },
+                                            y: if padding_y.is_finite() { padding_y.max(0.0) } else { 0.0 },
+                                        },
+                                    })
+                            });
+                            if let Some(o) = td.object_mut(klipp_timeline::TitleObjectId(*object_id)) {
+                                if let klipp_timeline::TitleObjectContent::Shape(shape) = &mut o.content {
+                                    shape.fit = fit;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Fit Shape to Text", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);

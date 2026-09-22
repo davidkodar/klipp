@@ -1906,6 +1906,8 @@ pub enum AppCommand {
     SetTitleShapeFill { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]> },
     SetTitleShapeStroke { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]>, width: f32 },
     SetTitleShapeCornerRadius { clip_id: ClipId, object_id: u32, radius: f32 },
+    /// Fit a backing shape to a text layer, with padding in 1080p pixels.
+    SetTitleShapeFit { clip_id: ClipId, object_id: u32, target_id: Option<u32>, padding_x: f32, padding_y: f32 },
 
     /// Inline text edit: replace the text of a specific TextBox
     /// object (identified by id) with a new value. Used by the

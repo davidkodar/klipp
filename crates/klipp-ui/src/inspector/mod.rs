@@ -3186,10 +3186,36 @@ fn show_title_shape_editor(
     clip_id: klipp_core::ClipId,
     object_id: klipp_timeline::TitleObjectId,
     shape: &klipp_timeline::Shape,
+    title: &klipp_timeline::TitleData,
     cmds: &mut Vec<AppCommand>,
 ) {
     ui.label(egui::RichText::new("Shape").strong().size(12.0));
     ui.add_space(6.0);
+
+    let mut target = shape.fit.map(|fit| fit.target.0);
+    let old_target = target;
+    let selected = target.and_then(|id| title.object(klipp_timeline::TitleObjectId(id)))
+        .map(|o| o.name.clone()).unwrap_or_else(|| "Fixed size".into());
+    egui::ComboBox::from_id_salt(("shape_fit", object_id.0))
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut target, None, "Fixed size");
+            for object in &title.objects {
+                if matches!(object.content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+                    ui.selectable_value(&mut target, Some(object.id.0), format!("Fit to {}", object.name));
+                }
+            }
+        });
+    let padding = shape.fit.map(|f| f.padding).unwrap_or(klipp_timeline::TitlePosition { x: 20.0, y: 12.0 });
+    let (mut px, mut py) = (padding.x, padding.y);
+    let mut changed = target != old_target;
+    if target.is_some() {
+        changed |= ui.add(egui::Slider::new(&mut px, 0.0..=200.0).text("Horizontal padding").suffix(" px @ 1080p")).changed();
+        changed |= ui.add(egui::Slider::new(&mut py, 0.0..=200.0).text("Vertical padding").suffix(" px @ 1080p")).changed();
+    }
+    if changed {
+        cmds.push(AppCommand::SetTitleShapeFit { clip_id, object_id: object_id.0, target_id: target, padding_x: px, padding_y: py });
+    }
 
     // Fill (None / Color).
     let mut fill_enabled = shape.fill.is_some();
@@ -4156,7 +4182,7 @@ fn show_title_editor(
     let kind_ref = target_oid.and_then(|oid| td.object(oid)).map(|o| &o.content);
     if let Some(klipp_timeline::TitleObjectContent::Shape(shape)) = kind_ref {
         if let Some(oid) = target_oid {
-            show_title_shape_editor(ui, theme, clip_id, oid, shape, cmds);
+            show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds);
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
         }
@@ -4170,6 +4196,23 @@ fn show_title_editor(
         }
         return;
     }
+    if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
+        let t = &object.transform;
+        let mut w = t.size.x * 100.0;
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Text box width");
+            changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=100.0).suffix("% W")).changed();
+        });
+        if changed {
+            cmds.push(AppCommand::SetTitleObjectTransform {
+                clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                size_x: w / 100.0, size_y: t.size.y, rotation: t.rotation,
+                anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
+            });
+        }
+    }
+
     let tb_target: Option<&klipp_timeline::TextBox> = match kind_ref {
         Some(klipp_timeline::TitleObjectContent::TextBox(tb)) => Some(tb),
         _ => td.primary_text(),

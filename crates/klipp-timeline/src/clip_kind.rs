@@ -803,6 +803,17 @@ pub struct Shape {
     pub kind: ShapeKind,
     pub fill: Option<[u8; 4]>,
     pub stroke: Option<ShapeStroke>,
+    /// Fit to the laid-out bounds of a text layer. Missing or hidden
+    /// targets suppress the backing rather than painting a stale box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<ShapeFit>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ShapeFit {
+    pub target: TitleObjectId,
+    /// Horizontal / vertical padding in pixels at 1080p.
+    pub padding: TitlePosition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
