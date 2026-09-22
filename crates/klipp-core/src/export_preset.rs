@@ -34,6 +34,10 @@ pub struct ExportPresetSettings {
     /// Target integrated loudness in LUFS for EBU R128 normalization. None = disabled.
     #[serde(default)]
     pub target_lufs: Option<f32>,
+    /// The true-peak ceiling in dBTP; None is -1. See
+    /// `ExportSettings::true_peak_dbtp`.
+    #[serde(default)]
+    pub true_peak_dbtp: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +89,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -103,6 +108,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -121,6 +127,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -139,6 +146,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -157,6 +165,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -175,6 +184,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -198,6 +208,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -218,6 +229,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -236,6 +248,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -254,6 +267,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -272,6 +286,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
         // Animated GIF — two-pass palette workflow. 480p / 15fps is
@@ -288,14 +303,11 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         // list rather than remembering to tick a box and pick a number
         // every time.
         //
-        // Only the specs whose true-peak limit the renderer can
-        // actually hold are here. `PEAK_CEILING_LINEAR` in
-        // `klipp-render` is fixed at -1 dBTP, which is right for EBU
-        // R128 and for the -14 streaming convention and wrong for
-        // ATSC A/85 and Netflix, which want -2. Shipping an A/85
-        // preset would put the spec's name on a file that cannot meet
-        // its peak requirement — see #122, which has to land before
-        // one belongs here.
+        // A preset that names a spec has to hold its true-peak limit
+        // as well as its loudness. The renderer's ceiling is -1 dBTP
+        // unless `true_peak_dbtp` says otherwise, which is right for EBU
+        // R128 and the -14 streaming convention. ATSC A/85 and Netflix
+        // want -2, so a preset for either must set it (#122).
         ExportPreset {
             id: "00000000-0000-4000-a000-00000000000d".into(),
             name: "Broadcast master (EBU R128)".into(),
@@ -315,6 +327,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 // The number a European broadcaster's automated QC
                 // measures, and the one it rejects a file over.
                 target_lufs: Some(-23.0),
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -336,6 +349,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 // Delivering at it means they leave the mix alone
                 // rather than turning it down on the way in.
                 target_lufs: Some(-14.0),
+                true_peak_dbtp: None,
             },
         },
         ExportPreset {
@@ -354,6 +368,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
                 target_lufs: None,
+                true_peak_dbtp: None,
             },
         },
     ]
@@ -402,21 +417,21 @@ mod tests {
 
     #[test]
     fn the_delivery_presets_state_a_loudness_the_renderer_can_hold() {
-        // A preset that names a standard has to be able to meet it.
-        // The renderer's true-peak ceiling is fixed at -1 dBTP, which
-        // suits EBU R128 and the -14 streaming convention; ATSC A/85
-        // and Netflix want -2, so no preset may claim them until #122
-        // makes the ceiling a setting.
+        // A preset that names a standard has to be able to meet it:
+        // its loudness, and the true-peak ceiling that standard asks.
         let presets = builtin_presets();
         let with_target: Vec<_> = presets.iter().filter(|p| p.settings.target_lufs.is_some()).collect();
         assert!(!with_target.is_empty(), "there should be delivery presets");
 
         for p in &with_target {
             let lufs = p.settings.target_lufs.unwrap();
+            let ceiling = p.settings.true_peak_dbtp.unwrap_or(-1.0);
+            // ATSC A/85 (-24 LKFS) and Netflix want -2 dBTP; the others
+            // the renderer's -1 already meets.
+            let wants = if (lufs - -24.0).abs() < 0.01 || p.name.contains("Netflix") { -2.0 } else { -1.0 };
             assert!(
-                (lufs - -23.0).abs() < 0.01 || (lufs - -14.0).abs() < 0.01,
-                "preset \"{}\" targets {lufs} LUFS; only the specs whose peak limit is \
-                 -1 dBTP belong here until #122 lands",
+                ceiling <= wants + 1e-6,
+                "preset \"{}\" targets {lufs} LUFS under a {ceiling} dBTP ceiling; its spec asks {wants}",
                 p.name,
             );
             assert_ne!(

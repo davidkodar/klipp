@@ -325,6 +325,7 @@ mod tests {
             video_bitrate_kbps: None,
             rate_control: RateControl::Crf,
             target_lufs: None,
+            true_peak_dbtp: None,
         }
     }
 

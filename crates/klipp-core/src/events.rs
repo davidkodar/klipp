@@ -307,6 +307,11 @@ pub struct ExportSettings {
     /// Target integrated loudness in LUFS for EBU R128 normalization.
     /// None = no normalization (pass audio through unchanged).
     pub target_lufs: Option<f32>,
+    /// The true-peak ceiling a normalised delivery is held under, in
+    /// dBTP. None is -1, what EBU R128 and the -14 streaming convention
+    /// ask; ATSC A/85 and Netflix ask -2. Only read with `target_lufs`.
+    #[serde(default)]
+    pub true_peak_dbtp: Option<f32>,
     /// How a track's pan position becomes left and right gains.
     ///
     /// Here alongside `target_lufs` because it is the same kind of
@@ -384,6 +389,7 @@ impl Default for ExportSettings {
             burn_in_subtitles: true,
             embed_subtitles: false,
             target_lufs: None,
+            true_peak_dbtp: None,
             embed_chapters: false,
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
