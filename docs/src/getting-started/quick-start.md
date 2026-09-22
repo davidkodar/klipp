@@ -5,8 +5,8 @@ This guide walks you through creating your first project in Klipp, from launch t
 ## 1. Launch Klipp
 
 ```bash
-cargo r          # debug
-cargo rr         # release
+klipp            # installed Arch/Omarchy package
+# For developers in the source checkout: cargo r or cargo rr
 ```
 
 Klipp opens with a launch screen. From there you can create a new project or open a recent one.

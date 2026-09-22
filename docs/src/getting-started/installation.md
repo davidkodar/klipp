@@ -2,6 +2,16 @@
 
 Klipp is built from source using the Rust toolchain. Pre-built binaries are not yet available.
 
+## Arch / Omarchy: recommended route
+
+Use the [Arch/Omarchy package guide](../../../packaging/README.md). It covers
+repository access, `base-devel`, driver checks, dependency installation,
+first-run verification, updates, and removal. Run `makepkg -si` as a normal user
+from `packaging/`; it performs Vulkan SDK setup automatically.
+
+The instructions below are for developers building directly with Cargo.
+Ubuntu/Debian and Fedora commands are not covered by the Arch package checks.
+
 ## Prerequisites
 
 Install the Rust toolchain via [rustup](https://rustup.rs/):
@@ -10,22 +20,23 @@ Install the Rust toolchain via [rustup](https://rustup.rs/):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Klipp builds on stable Rust — `rust-toolchain.toml` pins the channel, so rustup fetches the right one. Anything recent works; the code uses standard-library items from 1.80.
+Use the stable Rust toolchain selected by `rust-toolchain.toml`. If using
+rustup, run `rustup toolchain install stable` before building.
 
 ## System Dependencies
 
 ### CachyOS / Arch Linux
 
 ```bash
-sudo pacman -S rust ffmpeg clang lld cmake pkg-config \
-    vulkan-icd-loader vulkan-headers shaderc lilv
+sudo pacman -Syu --needed base-devel git clang lld cmake pkgconf \
+    ffmpeg vulkan-icd-loader vulkan-headers shaderc lilv onnxruntime-cpu
 ```
 
 For NVIDIA GPU acceleration of AI inference (recommended):
 
 ```bash
-# Runtime libraries (for ort CUDA Execution Provider — no nvcc needed)
-sudo pacman -S cudnn
+# Optional ONNX CUDA provider (replaces onnxruntime-cpu and pulls runtime libraries)
+sudo pacman -S onnxruntime-cuda
 
 # Optional: full CUDA Toolkit (only if building with --features ai-candle-cuda)
 sudo pacman -S cuda
@@ -63,17 +74,15 @@ Clone the repository and build:
 ```bash
 git clone https://github.com/davidkodar/klipp.git
 cd klipp
-./scripts/vulkan-sdk.sh   # once: lays out the Vulkan SDK directory the
-                          # speech model's build expects
-cargo r                   # debug build, run
+./scripts/vulkan-sdk.sh   # requires Vulkan headers/loader and glslc
+cargo r          # debug build, run
 ```
 
-`scripts/vulkan-sdk.sh` is not optional on a first build:
-`.cargo/config.toml` points `VULKAN_SDK` at `vendor/vulkan-sdk`, and
-whisper.cpp's Vulkan backend compiles its shaders against it. `cmake`
-and a C++ compiler are needed for the same reason.
+`scripts/vulkan-sdk.sh` prepares the local SDK directory used by the Whisper
+Vulkan build. It requires the headers, loader and shader compiler listed above.
 
-The first build downloads dependencies and compiles ~400 crates — expect 5–10 minutes. Incremental rebuilds are 1–10 seconds. AI features (BiRefNet, MobileSAM, RF-DETR-Seg) ship enabled by default and run on CPU out of the box.
+The first build downloads dependencies and compiles the workspace; time and disk
+usage depend on the machine and build profile. Incremental builds reuse that work. AI features (BiRefNet, MobileSAM, RF-DETR-Seg) ship enabled by default and run on CPU out of the box.
 
 ## Cargo Aliases
 
@@ -121,7 +130,8 @@ There is a common point of confusion worth clearing up:
 
 ## Vulkan Drivers
 
-Vulkan is required for GPU-accelerated effects. Klipp falls back to CPU processing if Vulkan is unavailable.
+The editor requires a working Vulkan GPU driver. CPU fallbacks in individual
+subsystems do not make the interactive editor a GPU-free application.
 
 - **NVIDIA**: Install `nvidia-utils` (Arch) or `nvidia-driver-XXX` (Debian/Ubuntu).
 - **AMD**: Install `vulkan-radeon` (RADV, recommended) or `amdvlk`.
@@ -141,7 +151,9 @@ Then verify each subsystem:
 - **GPU effects** — The same overlay shows whether Vulkan compute is active.
 - **AI runtime** — Open the AI Tools panel with **Alt+A**, then click "Manage AI models" in the panel footer. The dialog footer shows the resolved ONNX runtime and detected GPU vendor (e.g. `NVIDIA CUDA`, `CPU only`, or `GPU detected — runtime libs missing`).
 
-If the AI dialog reports "GPU detected — runtime libs missing", install your distribution's `cudnn` package and relaunch Klipp.
+On Arch, ONNX vision models need `onnxruntime-cpu` or `onnxruntime-cuda`.
+The CUDA variant supplies GPU support and pulls its runtime dependencies;
+cuDNN alone cannot add CUDA support to a CPU-only runtime. Relaunch after changing it.
 
 ## Troubleshooting
 

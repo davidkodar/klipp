@@ -79,15 +79,32 @@ Progress is fast right now, most of all on the assistant: the control socket, th
 
 ### Try it on Omarchy / Arch
 
-There's a `makepkg` recipe under [`packaging/`](packaging/) that builds Klipp from source and installs it as a normal pacman package, with a launcher entry that shows up in the Omarchy app menu:
+The supported starting point is an up-to-date x86_64 Arch/Omarchy system
+with a working Vulkan GPU driver. While the repository is private, your GitHub
+account must have access and Git must be authenticated before cloning.
 
 ```bash
-git clone https://github.com/davidkodar/klipp
+sudo pacman -Syu --needed base-devel git
+git clone https://github.com/davidkodar/klipp.git
 cd klipp/packaging
-makepkg -si          # builds from source, then installs klipp-git via pacman
+makepkg -si
+klipp
 ```
 
-`makepkg` pulls the build tools it needs, runs the release build (this takes a while the first time), and installs the `klipp` and `klipp-mcp` commands plus the desktop entry and icons. Everything built-in works out of the box — GPU playback, the bundled effects, LUTs and fonts, and the MCP tools; the AI models (speech, vision, OCR and voice) download themselves on first use, verified against the bundled manifest. Remove it later with `pacman -R klipp-git`. The [Building](#building) section below covers the plain `cargo` workflow for development.
+Run `makepkg` as your normal user; it asks for sudo only to install dependencies
+and the resulting package. If prompted for an `onnxruntime` provider, choose
+`onnxruntime-cpu` for the standard setup; NVIDIA/CUDA is optional. If you already
+use rustup, ensure `rustup toolchain install stable` has completed.
+
+This builds from source, so allow time and disk space for the first release
+build. It installs `klipp`, `klipp-mcp`, the HDR helper, bundled LUTs, and a
+launcher entry with the app icon. AI model weights download on demand and
+require an internet connection on first use. Narration and screen recording
+need optional external tools; they are not prerequisites for editing.
+
+See [the Arch/Omarchy installation guide](packaging/README.md) for driver
+checks, first-run verification, updates, removal, and troubleshooting. The
+[Building](#building) section below is the developer workflow.
 
 ## Building
 
@@ -95,7 +112,8 @@ makepkg -si          # builds from source, then installs klipp-git via pacman
 
 ```bash
 # Omarchy / Arch / CachyOS (the primary target)
-sudo pacman -S rust ffmpeg clang lld cmake pkg-config vulkan-icd-loader vulkan-headers shaderc lilv
+sudo pacman -S --needed base-devel git rust ffmpeg clang lld cmake pkgconf \
+    vulkan-icd-loader vulkan-headers shaderc lilv onnxruntime-cpu
 
 # Ubuntu / Debian
 sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
@@ -114,7 +132,7 @@ For NVIDIA GPU acceleration of the ONNX / Candle AI models (recommended, not req
 
 ```bash
 # Arch / CachyOS
-sudo pacman -S cudnn
+sudo pacman -S onnxruntime-cuda  # replaces the CPU provider; pulls CUDA/cuDNN
 
 # Ubuntu / Debian
 sudo apt install libcudnn9-cuda-12
