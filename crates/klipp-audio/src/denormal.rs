@@ -17,7 +17,7 @@
 //! every DSP thread is enough. Cost on subsequent samples is zero — the
 //! flush happens transparently in the FPU.
 //!
-//! Closes CODE_AUDIT C-4. Call sites (audio threads only — UI / engine
+//! Call sites (audio threads only — UI / engine
 //! main threads don't run DSP and don't need the flag):
 //!   * `klipp-engine/src/audio_decoder.rs::audio_decode_thread`
 //!   * `klipp-engine/src/pcm_reader.rs::pcm_feed_thread`

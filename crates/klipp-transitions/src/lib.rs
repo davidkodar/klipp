@@ -1,7 +1,13 @@
-//! CPU pixel-math for transition rendering.
+//! Transition easing, and the original 8-bit CPU pixel math.
 //!
-//! Shared by klipp-engine (playback) and klipp-render (export).
-//! Pure RGBA byte-buffer operations — no GPU, no FFmpeg, no audio.
+//! [`apply_easing`] is what the render path uses: `klipp-compose` calls
+//! it for every transition, on the GPU path and the CPU one alike.
+//!
+//! The byte-buffer renderers here are the earlier CPU fallback. The one
+//! that runs today is `klipp_effects::render_transition_linear`, which
+//! works in linear light and is generated from the same shader body the
+//! GPU runs, so the two agree. Nothing in the render path calls
+//! [`render_transition_with_params`] any more.
 
 use klipp_timeline::TransitionKind;
 use rayon::prelude::*;

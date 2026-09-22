@@ -34,15 +34,16 @@
 //!
 //! # How it travels
 //!
-//! One memory-mapped file with a header and two frame slots. The writer
+//! One memory-mapped file with a header and three frame slots. The writer
 //! fills the slot the reader is not looking at and then publishes it by
 //! bumping a sequence number; the reader takes the newest published slot.
 //! No locks, and a reader that misses a frame sees the one after it rather
 //! than a torn mixture of two — which for a monitor feed is the right
 //! trade, since a stale frame is worse than a dropped one.
 //!
-//! Uncompressed on purpose: a 4K frame is 33 MB of f32 and a memcpy into
-//! shared memory costs about 4 ms, where compressing it would cost more
+//! Uncompressed on purpose: a 4K frame is 133 MB of f32 (four
+//! channels at four bytes) and a memcpy into shared memory is cheap,
+//! where compressing it would cost more
 //! than the frame is worth and add a failure mode to a monitoring path.
 
 use std::path::{Path, PathBuf};

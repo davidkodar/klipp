@@ -1,103 +1,203 @@
 # Keyboard Shortcuts
 
-Complete reference of default keyboard shortcuts. All shortcuts can be remapped in **Edit → Preferences → Keyboard**.
+Klipp's own defaults, as the code ships them. Every one can be changed
+in **Preferences → Keyboard**, which lists these same actions in these
+same groups.
+
+## Starting from another editor's keys
+
+The **Layout** picker at the top of that page swaps the whole map for
+another NLE's defaults — Premiere Pro, Avid Media Composer, DaVinci
+Resolve or Final Cut Pro — for the actions Klipp shares with it.
+Anything Klipp has and that editor does not keeps the Klipp key, and a
+key the layout needs is taken off whichever Klipp action held it, so a
+press never runs two things. Changes you make yourself sit on top of
+the layout and survive switching between layouts.
+
+The tables below are the **Klipp** layout.
 
 ## File
 
 | Action | Shortcut |
-|--------|----------|
-| New Project | Ctrl+N |
-| Open Project | Ctrl+O |
-| Save | Ctrl+S |
-| Save As | Ctrl+Shift+S |
-| Import Media | Ctrl+I |
-| Export | Ctrl+E |
-| Quit | Ctrl+Q |
+|---|---|
+| New Project | `Ctrl+N` |
+| Open Project | `Ctrl+O` |
+| Save Project | `Ctrl+S` |
+| Save Project As | `Ctrl+Shift+S` |
+| Close Project | `Ctrl+W` |
+| Import Media | `Ctrl+I` |
+| Export | `Ctrl+E` |
+| Preferences | `Ctrl+,` |
+| Quit | `Ctrl+Q` |
 
 ## Edit
 
 | Action | Shortcut |
-|--------|----------|
-| Undo | Ctrl+Z |
-| Redo | Ctrl+Shift+Z |
-| Cut | Ctrl+X |
-| Copy | Ctrl+C |
-| Paste | Ctrl+V |
-| Duplicate | Ctrl+D |
-| Delete (ripple) | Del |
-| Delete (lift) | Shift+Del |
-| Select All | Ctrl+A |
-| Preferences | Ctrl+, |
+|---|---|
+| Undo | `Ctrl+Z` |
+| Redo | `Ctrl+Y` or `Ctrl+Shift+Z` |
+| Cut Clip | `Ctrl+X` |
+| Copy Clip | `Ctrl+C` |
+| Paste Clip | `Ctrl+V` |
+| Copy Attributes | `Ctrl+Shift+C` |
+| Paste Attributes | `Ctrl+Shift+V` |
+| Duplicate Clip | `Ctrl+D` |
+| Select All | `Ctrl+A` |
+| Deselect All | `Ctrl+Shift+A` |
+| Delete Clip | `Del` or `Backspace` |
+| Lift Clip (Leave Gap) | `Shift+Delete` or `Shift+Backspace` |
+| Split at Playhead | `Ctrl+B` |
+| Group Clips | `Ctrl+G` |
+| Ungroup Clips | `Ctrl+Shift+G` |
 
 ## Tools
 
 | Action | Shortcut |
-|--------|----------|
-| Select Tool | V |
-| Blade Tool | B |
-| Range Tool | R |
+|---|---|
+| Select Tool | `V` |
+| Blade Tool | `B` |
+| Range Tool | `R` |
+| Trim Tool | `T` |
 
 ## Timeline
 
 | Action | Shortcut |
-|--------|----------|
-| Insert Edit | W |
-| Overwrite Edit | D |
-| Split at Playhead | Ctrl+B |
-| Toggle Snapping | N |
-| Zoom In | Ctrl+= |
-| Zoom Out | Ctrl+- |
-| Zoom to Fit | Shift+Z |
+|---|---|
+| Insert Edit | `,` or `F10` |
+| Overwrite Edit | `.` |
+| Lift Edit | `;` |
+| Extract Edit | `'` |
+| Toggle Insert/Overwrite | `Shift+W` |
+| Ripple Trim Head | `Alt+[` |
+| Ripple Trim Tail | `Alt+]` |
+| Trim Out to Playhead | `Q` |
+| Trim In to Playhead | `W` |
+| Freeze Frame | `Alt+H` |
 
-## Mark
+## Navigation
 
 | Action | Shortcut |
-|--------|----------|
-| Set In Point | I |
-| Set Out Point | O |
-| Clear In Point | Alt+I |
-| Clear Out Point | Alt+O |
-| Add Marker | M |
-| Next Marker | Shift+M |
-| Previous Marker | Alt+M |
+|---|---|
+| Next Edit Point | `Down` |
+| Previous Edit Point | `Up` |
+| Set In Point | `I` |
+| Set Out Point | `O` |
+| Clear In Point | `Shift+I` |
+| Clear Out Point | `Shift+O` |
+| Clear In/Out Points | `Alt+X` |
+| Set Range to Clip | `X` |
+| Match Frame | `F` |
+| Reverse Match Frame | `Shift+F` |
 
 ## Transport
 
 | Action | Shortcut |
-|--------|----------|
-| Play / Pause | Space |
-| Shuttle Reverse | J |
-| Shuttle Stop | K |
-| Shuttle Forward | L |
-| Step Backward | ← |
-| Step Forward | → |
-| Step Backward × 10 | Shift+← |
-| Step Forward × 10 | Shift+→ |
-| Go to Start | Home |
-| Go to End | End |
-| Slow Forward | K+L (held) |
-| Slow Reverse | K+J (held) |
+|---|---|
+| Play / Pause | `Space` |
+| Step Forward | `Right` |
+| Step Backward | `Left` |
+| Go to Start | `Home` |
+| Go to End | `End` |
+| Shuttle Reverse (J) | `J` |
+| Shuttle Pause (K) | `K` |
+| Shuttle Forward (L) | `L` |
+| Toggle Loop Playback | `Ctrl+L` |
 
-## Clips
+## Viewer
 
 | Action | Shortcut |
-|--------|----------|
-| Enable / Disable Clip | E |
-| Solo Clip | S |
-| Add Default Transition | Ctrl+T |
+|---|---|
+| Toggle Fullscreen | `F11` |
+| Toggle Before/After | `Alt+B` |
+| Toggle Colour Panel | `C` |
+| Toggle Scopes | `Alt+V` |
+| Toggle Zebra Overlay | `Alt+Z` |
+| Toggle False Colour | `Alt+F` |
+| Toggle Perf Overlay | `P` |
+| Toggle Perf Recording | `Ctrl+Shift+P` |
+| Toggle Matte Preview | `Alt+M` |
+| Toggle Safe Areas | `Alt+S` |
+| Toggle Grid & Crosshair | `Alt+G` |
+| Extract Frame to File | `Ctrl+Alt+S` |
+| Extract Frame to Bin | `Ctrl+Alt+B` |
 
-## Panels & View
+## Window
 
 | Action | Shortcut |
-|--------|----------|
-| Toggle Color Panel | C |
-| AI Tools Panel | Alt+A |
-| Performance Overlay | P |
-| Fullscreen Viewer | F11 |
-| Command Palette | Ctrl+Shift+P |
+|---|---|
+| Command Palette | `Ctrl+K` |
+| Toggle Browser Panel | `Ctrl+Shift+B` |
+| Toggle Inspector Panel | `Ctrl+Shift+I` |
+| Toggle Audio Mixer | `Ctrl+Shift+M` |
+| Toggle Subtitle Editor | `Ctrl+Shift+T` |
+| Toggle Project Notes | `Ctrl+Shift+N` |
+| Focus Panel Search | `Ctrl+F` |
 
-## Customisation
+## Display
 
-All shortcuts can be remapped in **Edit → Preferences → Keyboard**. The preferences panel shows the current binding for each action and highlights conflicts when two actions share the same shortcut. Use **Reset to Defaults** to restore the original bindings.
+| Action | Shortcut |
+|---|---|
+| Toggle Snap | `N` |
+| Toggle Skimming | `S` |
+| Toggle Audio Skim | `Shift+S` |
+| Fit to Window | `Z` |
+| Zoom to Selection | `Shift+Z` |
+| Zoom In | `=` |
+| Zoom Out | `-` |
 
-Bindings are stored in `~/.config/klipp/keybindings.json` and survive Klipp updates.
+## Markers
+
+| Action | Shortcut |
+|---|---|
+| Add Marker | `M` |
+| Add Clip Marker | `Shift+M` |
+| Toggle Keyframe | `Alt+K` |
+| Toggle Keyframe Editor | `Shift+K` |
+| Previous Keyframe | `Alt+ArrowLeft` |
+| Next Keyframe | `Alt+ArrowRight` |
+
+## Multicam
+
+| Action | Shortcut |
+|---|---|
+| Multicam Angle 1 | `1` |
+| Multicam Angle 2 | `2` |
+| Multicam Angle 3 | `3` |
+| Multicam Angle 4 | `4` |
+| Multicam Angle 5 | `5` |
+| Multicam Angle 6 | `6` |
+| Multicam Angle 7 | `7` |
+| Multicam Angle 8 | `8` |
+| Multicam Angle 9 | `9` |
+| Create Multicam Clip | `Alt+C` |
+
+## Colour
+
+| Action | Shortcut |
+|---|---|
+| Previous Colour Node | `[` |
+| Next Colour Node | `]` |
+| Toggle Node Bypass | `Alt+D` |
+| Reset Current Node | `Ctrl+Shift+R` |
+| Cycle Scope Mode | `Shift+V` |
+| Copy Colour Nodes | `Ctrl+C` |
+| Paste Colour Nodes | `Ctrl+V` |
+
+## AI Tools
+
+| Action | Shortcut |
+|---|---|
+| AI: Remove Background | `Shift+B` |
+| AI: Isolate Object | `Shift+J` |
+| AI: Detect Objects | `Shift+D` |
+| AI: Run Inference | `Ctrl+Enter` |
+| AI: Cancel Inference | `Ctrl+.` |
+| Toggle AI Tools Panel | `Alt+A` |
+
+## Other
+
+| Action | Shortcut |
+|---|---|
+| Create Title Clip | `Ctrl+T` |
+| Connect to Primary | `G` |
+| Disconnect from Primary | `Shift+G` |

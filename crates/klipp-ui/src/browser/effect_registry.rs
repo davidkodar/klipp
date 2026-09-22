@@ -677,7 +677,7 @@ impl EffectRegistry {
                 grouping: "Utility".into(),
             },
             EffectEntry {
-                // CODE_AUDIT C-3: this effect is a multi-band gate, not
+                // this effect is a multi-band gate, not
                 // spectral-subtraction NR. The internal type_id stays
                 // "noise_reduction" so saved .klipp projects keep
                 // loading; the user-facing name advertises the honest
@@ -771,9 +771,9 @@ impl EffectRegistry {
     pub fn merge_frei0r_plugins(&mut self, plugins: &[klipp_frei0r::Frei0rPluginInfo]) {
         for plugin in plugins {
             if !matches!(plugin.plugin_type, klipp_frei0r::PluginType::Filter) {
-                // SOURCE / MIXER2 / MIXER3 — out of v1 scope, skipped
-                // silently. Filed as FREI0R-NEXT-SOURCES /
-                // FREI0R-NEXT-MIXERS in CODE_AUDIT.html.
+                // SOURCE / MIXER2 / MIXER3 — a generator and the
+                // two- and three-input blends. The browser lists
+                // filters only, so these are skipped silently.
                 continue;
             }
             let grouping = if plugin.author.is_empty() {

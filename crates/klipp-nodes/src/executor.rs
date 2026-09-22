@@ -3007,7 +3007,7 @@ impl GraphExecutor {
                         // rendered the clip black. Identity passthrough
                         // keeps the image visible and the warn log
                         // points at the broken path so the user can
-                        // relink. See CODE_AUDIT C-9.
+                        // relink.
                         match klipp_color::load_lut(path) {
                             Ok(lut) => Arc::new(lut),
                             Err(e) => {
@@ -4144,10 +4144,10 @@ impl GraphExecutor {
                         .entry(path.clone())
                         .or_insert_with(|| {
                             // Identity-LUT passthrough on load failure —
-                            // matches the chain Lut3D site above. See
-                            // CODE_AUDIT C-9: the previous fallback was
-                            // an all-zero size-2 LUT, which rendered the
-                            // clip black silently with no log.
+                            // matches the chain Lut3D site above. The
+                            // previous fallback was an all-zero size-2
+                            // LUT, which rendered the clip black
+                            // silently with no log.
                             match klipp_color::load_lut(path) {
                                 Ok(lut) => Arc::new(lut),
                                 Err(e) => {

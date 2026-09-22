@@ -1,7 +1,5 @@
 # `.klipp` on-disk project format
 
-Closes CODE_AUDIT **DOC-KLIPP-FORMAT**.
-
 This document describes the layout and shape of a Klipp project as it
 lives on disk. The authoritative serde structs are in
 `crates/klipp-project/src/format.rs`; this document is the
@@ -16,28 +14,31 @@ directory the user names with the `.klipp` suffix.
 
 ```
 MyShortFilm.klipp/
-├── project.json          ← top-level project state (sequences, tracks, clips, grades)
-├── media.json            ← media pool manifest (MediaItems, bins)
-├── thumbnails/           ← per-MediaId thumbnail caches (lazy)
-├── filmstrips/           ← per-MediaId filmstrip strips (lazy)
-├── audio_cache/          ← per-MediaId decoded f32 PCM (lazy)
-├── proxies/              ← per-MediaId proxy renders (optional)
-├── grade_stills/         ← compare-still PNGs + index
-│   ├── stills.json       ← metadata for each still
-│   └── *.png             ← per-still RGBA8 PNGs
-└── render_cache/         ← grade-cache LZ4 frames (optional, transient)
+├── project.json          ← the whole project: sequences, tracks, clips, grades
+├── project.json.bak.1    ← the last few saves, rotated (`.bak.1` is newest)
+├── media/
+│   ├── manifest.json     ← the media pool: items and bins, paths relative to the project
+│   ├── stills.json       ← index of the compare stills
+│   └── stills/           ← the stills themselves, RGBA8 PNGs at preview resolution
+└── looks/                ← looks saved from this project
 ```
 
-`project.json` and `media.json` are the only files that are
-**required** to exist for a `.klipp` directory to load. Everything
-else is regenerated lazily from the source media.
+`project.json` and `media/manifest.json` are the two files a `.klipp`
+directory needs to load.
+
+Nothing else lives here. Thumbnails, filmstrips, decoded audio,
+analysis results and recordings are keyed by the media file rather
+than by the project, so they sit in `~/.cache/klipp/` where two
+projects cutting the same footage share one copy; models are in
+`~/.local/share/klipp/models/`. Deleting either costs rebuild time and
+nothing else.
 
 ## Atomic writes
 
 All `.json` files (and the `stills.json` index) are written via
 `klipp_project::path_util::atomic_write` — temp + rename, with the
 temp filename including `pid` + `nanos` so concurrent saves don't
-clobber each other's scratch files. See CODE_AUDIT SEC-4 / SEC-5.
+clobber each other's scratch files.
 
 A power-cut mid-save leaves the previous valid `project.json` in
 place; the half-written temp file is orphaned (next save overwrites
@@ -197,7 +198,7 @@ fields are forward-compatible.
 The `kind` field is matched against the `TRANSITION_SPECS` registry
 in `klipp-core::transition_registry`. A missing variant on load
 falls back to `CrossDissolve` and emits a `tracing::error!` rather
-than crashing — see CODE_AUDIT PANIC-REGISTRY.
+than crashing.
 
 ### `MarkerJson`
 
@@ -233,7 +234,7 @@ Old projects used an untagged form (bare JSON values). The custom
 `Deserialize` impl in `format.rs:348` falls back to that legacy
 shape so old projects still load.
 
-## `media.json` — media pool manifest
+## `media/manifest.json` — media pool manifest
 
 ```jsonc
 {
@@ -284,7 +285,7 @@ shape so old projects still load.
 }
 ```
 
-## `grade_stills/stills.json` — compare-stills index
+## `media/stills.json` — compare-stills index
 
 A small JSON file pointing at the per-still PNGs:
 
@@ -302,8 +303,7 @@ A small JSON file pointing at the per-still PNGs:
 
 The PNGs themselves are RGBA8 at the project's preview resolution.
 `load_grade_stills` caps the number of entries at `MAX_STILLS` so a
-malformed `stills.json` can't DoS the project loader — see
-CODE_AUDIT SEC-7.
+malformed `stills.json` can't DoS the project loader.
 
 ## Versioning & forward-compatibility
 

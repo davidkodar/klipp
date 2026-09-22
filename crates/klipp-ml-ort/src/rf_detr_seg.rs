@@ -36,13 +36,13 @@
 //! Resize to model input (typically 432×432 or 640×640 depending on
 //! variant), normalise via ImageNet mean/std, layout NCHW f32.
 //!
-//! ## Today's status (foundation commit)
+//! ## Running it
 //!
-//! No `ort` integration yet. `RfDetrSeg::generate` returns
-//! `MaskError::BackendInit` with two distinguishable messages
-//! (no-weights vs ort-not-wired) so the model is registry-visible
-//! but inference fails actionably until the real ort session lands
-//! in the next commit.
+//! With the crate's `ort` feature on, `generate` runs a real ONNX
+//! Runtime session, built on first use and held for later calls.
+//! Without it the pre- and post-process still compile and `generate`
+//! returns `MaskError::BackendInit`, distinguishing "no weights" from
+//! "no backend" so the failure says which it is.
 
 use std::path::PathBuf;
 

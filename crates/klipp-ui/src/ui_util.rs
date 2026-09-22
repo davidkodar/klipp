@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     // ═══════════════════════════════════════════════════════════════
-    // PANIC-VIEWER regression — closes CODE_AUDIT PANIC-VIEWER.
+    // PANIC-VIEWER regression.
     //
     // The original tracker entry pointed at three sites
     // (viewer.rs:276-289, toolbar.rs:193, launch_screen.rs:70) that

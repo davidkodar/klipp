@@ -17,8 +17,9 @@
 //! backend crates, they replace the stub via the same registry
 //! interface — no UI rewrites.
 //!
-//! The stub is `#[cfg(any(test, feature = "stub"))]`-gated so it
-//! doesn't bloat release builds; tests + dev builds opt in.
+//! The stub is always compiled — it is a few hundred bytes of code
+//! with no dependencies — and is what the registry hands back when no
+//! real backend is built in.
 
 use crate::mask_generator::{
     BBox, DevicePreference, MaskBuffer, MaskCandidate, MaskCapabilities, MaskError,

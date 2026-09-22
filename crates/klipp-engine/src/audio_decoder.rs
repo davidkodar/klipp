@@ -210,7 +210,7 @@ fn audio_decode_thread(
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     clip_source_in_secs: f64,
 ) {
-    // CODE_AUDIT C-4: flush denormals on this DSP thread so a silent
+    // Flush denormals on this DSP thread so a silent
     // input (between clips, post-fade-out) can't drop the biquad/EQ
     // state into denormal range and stall the FPU ~50–100×.
     klipp_audio::flush_denormals_to_zero();

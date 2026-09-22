@@ -66,8 +66,8 @@ Audio tracks and linked audio display waveforms showing amplitude over time. Wav
 
 ## Zoom and Navigation
 
-- **Ctrl+=** / **Ctrl+-** — Zoom in/out
-- **Shift+Z** — Zoom to fit the entire timeline
+- **=** / **-** — Zoom in/out
+- **Z** — Zoom to fit the whole timeline; **Shift+Z** zooms to the selection
 - **Scroll wheel** — Horizontal scroll (or zoom with Ctrl held)
 - **Home** / **End** — Jump to timeline start/end
 

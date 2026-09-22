@@ -768,7 +768,7 @@ fn normalize_params_roundtrip() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Honest-naming regression — closes CODE_AUDIT C-3 and C-5.
+// Honest-naming regression.
 //
 // Two effects had user-facing names that didn't match what the code
 // actually does:

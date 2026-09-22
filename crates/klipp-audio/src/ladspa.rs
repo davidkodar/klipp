@@ -93,7 +93,7 @@ pub type LadspaDescriptorFunction =
 // forever. The host must bound the walk so it can't hang.
 //
 // Used by both the discovery walk (`scan_path`) and the find-by-label
-// walk in `LadspaEffect::new` — see CODE_AUDIT C-7.
+// walk in `LadspaEffect::new`.
 pub(crate) const LADSPA_DESCRIPTOR_CAP: usize = 4096;
 
 /// Outcome of a bounded descriptor walk that's looking for a specific label.
@@ -152,7 +152,7 @@ where
 //   * Otherwise: round half-up to u32 (some plugins report fractional
 //     samples for look-ahead windows).
 //
-// CODE_AUDIT C-8 — extracted as a free function so the policy is
+// Extracted as a free function so the policy is
 // pinned by unit tests without needing to construct a real LadspaEffect
 // (which requires a .so + libloading + audio thread).
 pub(crate) fn read_latency_samples(slot: Option<usize>, control_out_sinks: &[f32]) -> u32 {
@@ -663,7 +663,7 @@ impl LadspaEffect {
         // Find descriptor with matching label. Bounded by
         // LADSPA_DESCRIPTOR_CAP — a buggy plugin that returns non-null
         // for every index would otherwise loop ~4 billion times before
-        // the host realised the label wasn't there. See CODE_AUDIT C-7.
+        // the host realised the label wasn't there.
         let mut descriptor_ptr: *const LadspaDescriptor = std::ptr::null();
         let lookup = find_descriptor_index_by_label(
             LADSPA_DESCRIPTOR_CAP,
@@ -1153,7 +1153,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // find_descriptor_index_by_label — closes CODE_AUDIT C-7.
+    // find_descriptor_index_by_label.
     //
     // The find-by-label walk in LadspaEffect::new previously did
     //   for i in 0..u32::MAX as usize { … }
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // read_latency_samples — closes CODE_AUDIT C-8.
+    // read_latency_samples.
     //
     // The 2026-04-20 array entry claimed the latency port-name scan
     // shipped, and today's audit confirmed the production code (port

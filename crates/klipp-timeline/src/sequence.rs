@@ -352,7 +352,7 @@ impl Sequence {
     /// permanently (track removal, ripple_delete) so other clips on
     /// surviving tracks don't keep dangling references.
     ///
-    /// Closes CODE_AUDIT T-3. The asymmetric-link case (third-party
+    /// The asymmetric-link case (third-party
     /// clip C points at deleted clip A while A's own linked_clip_id
     /// points at unrelated clip B) used to leak dangling refs from
     /// ripple_delete. Centralising the sweep here means every clip

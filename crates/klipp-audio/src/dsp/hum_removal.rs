@@ -1,5 +1,5 @@
 //! Mains-hum removal — cascaded narrow-Q notch filters at fundamental
-//! + harmonics. Closes FEATURES.html GAP-AUDIO-026 / queue item QW-1.
+//! + harmonics.
 //!
 //! Defaults match Resolve / iZotope RX: 50 Hz fundamental, 3 harmonics
 //! (50/100/150 Hz for Europe/Asia, or 60/120/180 Hz when the palette

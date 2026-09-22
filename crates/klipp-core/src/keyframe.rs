@@ -570,7 +570,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // NaN-safe sort regression — closes CODE_AUDIT U-13.
+    // NaN-safe sort regression.
     //
     // ~20+ sites in klipp-ui/src/app.rs sort keyframes, multicam_cuts,
     // and PCM regions with the closure

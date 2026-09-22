@@ -16,14 +16,15 @@
 //! Post-process: single-channel logits → sigmoid → alpha mask,
 //! resampled back to the source frame resolution.
 //!
-//! ## Today's status (foundation commit)
+//! ## Running it
 //!
-//! No `ort` dependency yet — `generate` returns
-//! `MaskError::BackendInit("ort backend not yet wired")` so the model
-//! is visible in the registry but inference fails with an actionable
-//! message. The full pre-process + ORT session + post-process body
-//! lands when `ort = "=2.0.0-rc.12"` joins the dep tree (next
-//! session).
+//! With the crate's `ort` feature on, `generate` runs a real ONNX
+//! Runtime session, built on first use and held for later calls; the
+//! `cuda` feature asks ort for the CUDA execution provider, otherwise
+//! it runs on CPU. Without the feature the pre- and post-process are
+//! still compiled — they are plain CPU code — and `generate` returns
+//! `MaskError::BackendInit`, so the model stays visible in the
+//! registry and fails with something a user can act on.
 
 use std::path::PathBuf;
 

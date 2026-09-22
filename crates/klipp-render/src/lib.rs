@@ -36,8 +36,10 @@
 //! * Every failure produces a [`RenderError`] and aborts the job —
 //!   partial / drifted output files are never preferred over a loud
 //!   failure.
-//! * Export is **not** currently atomic: output is written directly to
-//!   the target path (a future fix writes to `.tmp` + rename).
+//! * Export publishes atomically: the encode goes to
+//!   `<output>.partial` and is renamed into place only once it has
+//!   finished, so a cancelled or crashed job never leaves a
+//!   half-written file at the target path.
 //! * Subtitle burn-in and soft-embed are independent flags — with both
 //!   on, subtitles render twice. The snapshot path logs a warning in
 //!   that case.

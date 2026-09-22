@@ -1,8 +1,8 @@
 //! A/V master clock: single authority for playback time.
 //!
 //! Both the video decoder loop and the audio callback slave to
-//! [`MasterClock`]'s `now_pts_us()`. Neither thread drives time forward
-//! — that's exclusively done by wall-clock interpolation from
+//! [`MasterClock`]'s `current_pts_us()`. Neither thread drives time
+//! forward — that's exclusively done by wall-clock interpolation from
 //! `anchor_wall` using the configured `speed`. Audio advancing or
 //! video arriving never changes the clock.
 //!
@@ -13,7 +13,7 @@
 //! * `speed` — playback-rate multiplier (stored as f64 bits in a
 //!   `u64` because `AtomicF64` isn't stable). 1.0 = realtime, 2.0 = 2×.
 //! * `running` — false while paused. Interpolation stops; PTS
-//!   returned from `now_pts_us()` freezes at the anchor value.
+//!   returned from `current_pts_us()` freezes at the anchor value.
 //! * `generation` — bumped on every seek. Decoders and the mix
 //!   thread stamp every produced frame/sample with the generation
 //!   at decode time; mismatches at playback time identify stale
@@ -38,7 +38,7 @@
 //! 3. **Seek decoders** — video and audio `avformat_seek_file` +
 //!    decoder.flush(). Generation bump happens next so any
 //!    post-flush frame they emit is stamped with the new gen.
-//! 4. **Set anchor + bump generation** — `set_anchor_pts_us()`
+//! 4. **Set anchor + bump generation** — `seek()`
 //!    atomically writes the new PTS and increments generation.
 //! 5. **Flush audio ring buffer AGAIN** — covers the case where
 //!    the audio callback drained samples between step 2 and 4.

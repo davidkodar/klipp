@@ -8,12 +8,11 @@
 //!   `max(track_latencies)`. Each track receives a delay line sized
 //!   `max - own_track_latency` so all tracks reach the bus aligned.
 //!
-//! See `PLUGIN-NEXT-PDC` in `CODE_AUDIT.html` for the architectural
-//! audit; this module is the minimum-viable foundation. The
-//! mix-thread wiring (decoder → mixer per-track latency advertisement)
-//! and the A/V offset (`MasterClock::pdc_offset_us` + video frame
-//! shift) are deferred to `PDC-NEXT-MIX-THREAD-WIRING` and
-//! `PDC-NEXT-AV-OFFSET` follow-ups.
+//! The mix thread does the wiring: it sizes each track's delay line
+//! from the latencies the effect chains advertise, and feeds the
+//! resulting offset to the master clock
+//! (`MasterClock::set_pdc_offset_us`) so picture shifts with the
+//! sound rather than drifting away from it.
 
 /// Stereo per-track delay line backed by a power-of-two ring buffer.
 /// Operates in-place on interleaved-stereo `&mut [f32]` blocks so it

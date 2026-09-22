@@ -14,10 +14,11 @@
 //! # Alpha mask processor
 //!
 //! [`AlphaMaskProcessor`] is the trait the title renderer calls for
-//! GPU-accelerated alpha-mask operations (e.g. feather, dilate, erode
-//! for glows and shadows). The concrete impl lives in `klipp-engine`
-//! to avoid a circular dep — pass one in via
-//! [`TitleRenderer::render_with_gpu`].
+//! GPU-accelerated alpha-mask work — `blur` and `dilate`, which is
+//! what glows and shadows need. The implementation lives in
+//! `klipp-compose` (`GpuAlphaMaskAdapter`) to avoid a circular dep —
+//! pass one in via [`TitleRenderer::render_with_gpu`]. Without one the
+//! renderer falls back to its own CPU blur and dilate.
 //!
 //! # Fallback font
 //!

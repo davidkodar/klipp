@@ -6,10 +6,10 @@
 //! intentionally broad — it's the one backend that handles every
 //! model klipp-ml-candle does NOT have native support for:
 //!
-//! * `BiRefNet_lite` — Remove Background (this crate's first model)
-//! * `U2Net_p` — fast Remove Background tier
-//! * `RF-DETR-Seg` — Detect Objects (Apache-2.0 alternative to YOLO)
-//! * `SAM2 video` — temporal mask propagation (Phase 4, deferred)
+//! * `BiRefNet_lite` — Remove Background
+//! * `RF-DETR-Seg` — Detect Objects, and the framing analyser
+//! * `YuNet` — face detection for the colour measurements
+//! * `PP-OCR` — on-screen text in screen recordings
 //!
 //! ## Build matrix
 //!

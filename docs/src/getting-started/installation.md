@@ -45,10 +45,10 @@ sudo pacman -S cuda
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-    libswscale-dev libswresample-dev libavdevice-dev \
-    libclang-dev lld pkg-config libvulkan-dev \
-    libasound2-dev libpipewire-0.3-dev
+sudo apt install rustup ffmpeg libavcodec-dev libavformat-dev libavutil-dev \
+    libavfilter-dev libswscale-dev libswresample-dev libavdevice-dev \
+    libclang-dev lld cmake pkg-config libvulkan-dev glslc \
+    libasound2-dev libpipewire-0.3-dev liblilv-dev
 
 # Runtime CUDA libraries for AI inference
 sudo apt install libcudnn9-cuda-12
@@ -60,8 +60,8 @@ sudo apt install nvidia-cuda-toolkit
 ### Fedora
 
 ```bash
-sudo dnf install ffmpeg-free-devel clang-devel lld pkg-config vulkan-loader-devel \
-    vulkan-headers alsa-lib-devel pipewire-devel
+sudo dnf install ffmpeg-free-devel clang-devel lld cmake pkg-config \
+    vulkan-loader-devel vulkan-headers glslc alsa-lib-devel pipewire-devel lilv-devel
 
 # Runtime CUDA libraries
 sudo dnf install libcudnn9
@@ -78,6 +78,9 @@ cd klipp
 cargo r          # debug build, run
 ```
 
+`scripts/vulkan-sdk.sh` prepares the local SDK directory used by the Whisper
+Vulkan build. It requires the headers, loader and shader compiler listed above.
+
 The first build downloads dependencies and compiles the workspace; time and disk
 usage depend on the machine and build profile. Incremental builds reuse that work. AI features (BiRefNet, MobileSAM, RF-DETR-Seg) ship enabled by default and run on CPU out of the box.
 
@@ -87,19 +90,28 @@ Klipp's `.cargo/config.toml` provides shortcuts:
 
 | Alias | Description |
 |---|---|
-| `cargo r` | Debug build with full AI on CPU |
-| `cargo rr` | Release build (optimised) with full AI on CPU |
-| `cargo r-ort-cuda` | Adds NVIDIA CUDA acceleration for BiRefNet + RF-DETR-Seg (no nvcc required) |
-| `cargo rr-ort-cuda` | Same, release mode |
-| `cargo r-cuda` | Full GPU AI including MobileSAM (requires CUDA Toolkit at build time) |
-| `cargo b-cuda` | Build only, full GPU |
-| `cargo c` | Run clippy on the workspace |
+| `cargo r` | Debug build and run |
+| `cargo rr` | Release build and run |
+| `cargo b` | Build only |
+| `cargo c` | Clippy over the workspace |
+| `cargo r-cuda` / `cargo rr-cuda` | Adds MobileSAM on the GPU; needs the CUDA Toolkit (nvcc) at build time |
+| `cargo b-cuda` | Build only, full GPU AI |
 
-For zero AI in the binary (smaller compile, no ML dependencies):
+The default build already includes `ai-ort`, `ai-ort-cuda` and
+`ai-candle`, so a plain `cargo r` can use NVIDIA's execution provider
+for BiRefNet and RF-DETR-Seg when the runtime libraries are installed,
+and falls back to CPU when they are not. The `-cuda` aliases exist for
+the one model that needs a build-time toolchain.
+
+To build without the ONNX and Candle backends:
 
 ```bash
 cargo run -p klipp-app --no-default-features
 ```
+
+That drops subject masking and detection. It is not an ML-free build:
+the analysers in `klipp-analysis` — speech transcription, framing and
+on-screen text — are on by default and come in regardless.
 
 ## CUDA: Build-Time vs Runtime
 
