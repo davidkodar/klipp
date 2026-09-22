@@ -65,7 +65,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
 
 #[test]
 fn export_job_empty_sequence() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("empty_export.mp4");
 
@@ -117,7 +117,7 @@ fn export_job_empty_sequence() {
 
 #[test]
 fn export_job_cancellation_immediate() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("cancel_immediate.mp4");
 
@@ -160,7 +160,7 @@ fn export_job_cancellation_immediate() {
 
 #[test]
 fn export_job_cancellation_midway() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("cancel_midway.mp4");
 
@@ -230,7 +230,7 @@ fn export_job_cancellation_midway() {
 
 #[test]
 fn export_job_progress_advances() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("progress_test.mp4");
 
@@ -286,7 +286,7 @@ fn export_job_progress_advances() {
 #[ignore = "requires TEST_MEDIA_FILE env var"]
 fn export_real_media_h264() {
     let media_path = test_media_path().expect("set TEST_MEDIA_FILE");
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("real_export_h264.mp4");
 
@@ -372,7 +372,7 @@ fn export_real_media_h264() {
 #[ignore = "requires TEST_MEDIA_FILE env var"]
 fn export_real_media_with_color_grade() {
     let media_path = test_media_path().expect("set TEST_MEDIA_FILE");
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("real_export_graded.mp4");
 
@@ -421,7 +421,7 @@ fn export_real_media_with_color_grade() {
 
 #[test]
 fn export_with_title_and_gap() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("title_and_gap.mp4");
 
@@ -471,7 +471,7 @@ fn export_with_title_and_gap() {
 fn export_with_keyframed_opacity() {
     // Verify that keyframed opacity is evaluated during export (not stuck at default).
     // Uses a title clip with opacity keyframes: 1.0 at t=0, 0.0 at t=1.
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("keyframed_opacity.mp4");
 
@@ -546,7 +546,7 @@ fn export_with_keyframed_opacity() {
 
 #[test]
 fn export_mp4_with_embedded_subtitle_stream() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("embedded_subs.mp4");
 
@@ -623,7 +623,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
 
 #[test]
 fn export_without_embed_has_no_subtitle_stream() {
-    let dir = std::env::temp_dir().join("klipp_integration_test");
+    let dir = klipp_testing::scratch::scratch_dir("klipp-integration-test");
     let _ = std::fs::create_dir_all(&dir);
     let output_path = dir.join("no_subs.mp4");
 

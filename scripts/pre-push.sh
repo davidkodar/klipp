@@ -157,6 +157,35 @@ if ! "$ROOT/scripts/check-signoff.sh"; then
     exit 1
 fi
 
+# Match klipp_testing::scratch, and keep compiler/linker temporary files
+# off a small system tmpfs too. A deliberate TMPDIR always wins.
+TMPDIR=${TMPDIR:-${CARGO_TARGET_DIR:-$ROOT/target}/test-scratch}
+if ! mkdir -p "$TMPDIR"; then
+    printf '\n  pre-push: cannot create scratch directory %s — push refused.\n' "$TMPDIR" >&2
+    exit 1
+fi
+# Relative CARGO_TARGET_DIR/TMPDIR paths are relative to this workspace;
+# child tools may change directory, so pass them an absolute location.
+TMPDIR=$(cd "$TMPDIR" && pwd)
+export TMPDIR
+printf '  pre-push: scratch directory: %s\n' "$TMPDIR"
+
+scratch_space() {
+    df -Pk "$TMPDIR" >&2 || true
+}
+# This is headroom for generated media, not a guarantee: quotas and
+# simultaneous builds can exhaust storage even when df reports room.
+_available=$(df -Pk "$TMPDIR" 2>/dev/null | awk 'NR == 2 {print $4}')
+case "$_available" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$_available" -lt 2097152 ]; then
+        printf '\n  pre-push: scratch has less than 2 GiB free — push refused.\n' >&2
+        scratch_space
+        printf '            Free space there or set TMPDIR to a disk-backed directory.\n\n' >&2
+        exit 1
+    fi ;;
+esac
+
 if ! cargo clippy --workspace --all-targets -- -D warnings; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
     printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
@@ -192,7 +221,11 @@ if cargo test --workspace; then
 fi
 
 printf '\n  pre-push: tests FAILED — push refused.\n' >&2
-printf '            They built, so these are assertions, not compile errors.\n' >&2
+printf '            The test run failed; inspect the error above for its cause.\n' >&2
+printf '            Disk quota exceeded / No space left on device indicate storage,\n' >&2
+printf '            not an assertion failure. Scratch directory: %s\n' "$TMPDIR" >&2
+scratch_space
+printf '            Free space or choose a disk-backed TMPDIR and rerun.\n' >&2
 if command -v pgrep >/dev/null 2>&1 && pgrep -x klipp-app >/dev/null 2>&1; then
     printf '\n            Klipp is running, and the GPU tests contend with\n' >&2
     printf '            it. Close it and push again before reading further:\n' >&2
