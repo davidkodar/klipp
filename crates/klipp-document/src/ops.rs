@@ -80,6 +80,8 @@ pub enum Edge {
 pub enum Op {
     /// A media item onto a track at an anchor, the whole file unless
     /// `source_in` and `source_out` (seconds in the file) say otherwise.
+    /// For still images these name the hold range: the import duration
+    /// is a default, not a source limit.
     /// Refused where it would overlap a clip already on the track —
     /// unless `insert`, which makes room: every unlocked track is
     /// rippled later by the clip's length from the anchor, and a clip
@@ -1557,7 +1559,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let media_dur = secs(item.duration);
             let s_in = source_in.unwrap_or(0.0);
             let s_out = source_out.unwrap_or(media_dur);
-            if !(0.0..media_dur).contains(&s_in) || s_out <= s_in || s_out > media_dur + 1e-6 {
+            if !s_in.is_finite() || !s_out.is_finite() || s_in < 0.0 || s_out <= s_in
+                || (!item.is_still && (s_in >= media_dur || s_out > media_dur + 1e-6)) {
                 return Err(refuse(i, format!("source {s_in:.2}-{s_out:.2} s is not inside {} ({media_dur:.2} s)", item.filename), "give source_in and source_out within the file, in order"));
             }
             // An empty sequence takes the first picture's size and rate,
@@ -1570,13 +1573,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 None
             };
             let fps = autoset.map(|(_, (_, f))| f).unwrap_or(fps);
+            // Stills have no file end, but their authored time must
+            // still fit the integer frame clock (including NTSC ticks).
+            let max_frames = i64::MAX / i64::from(fps.den.max(1));
+            if s_out * fps.as_f64() >= max_frames as f64 {
+                return Err(refuse(i, "the source range exceeds the frame clock", "use a representable source range"));
+            }
             let src_in = snap(s_in, fps);
             let src_out = snap(s_out, fps);
             if src_out <= src_in {
                 return Err(refuse(i, "the source range is shorter than a frame", "make it at least one frame"));
             }
             let tl_in = resolve_anchor(seq, fps, at, i)?;
-            let tl_out = tl_in + (src_out - src_in);
+            let duration = (src_out - src_in).rescale_to(tl_in.rate);
+            let value = tl_in.value.checked_add(duration.value).ok_or_else(|| refuse(i, "the placement exceeds the frame clock", "use an earlier start or shorter duration"))?;
+            let tl_out = Timecode { value, rate: tl_in.rate };
             let mut clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
@@ -2039,7 +2050,7 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
-    let media_dur = clip.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
+    let media_dur = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| !m.is_still).map(|m| m.duration);
     let (new_tl_in, new_tl_out, new_src_in, new_src_out) = match edge {
         Edge::In => {
             if target >= clip.timeline_out - one_frame(fps) {
@@ -2048,8 +2059,8 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
             let delta = target - clip.timeline_in;
             let src_in = clip.source_in + delta;
             if media_dur.is_none() {
-                // A title or a generator has no file behind it and
-                // so no head to run out of: it starts when it is
+                // A title, generator or still has no source head
+                // to run out of: it starts when it is
                 // told to and is as long as its place on the track.
                 let len = clip.timeline_out - target;
                 let tl_in = if ripple { clip.timeline_in } else { target };
@@ -5459,5 +5470,31 @@ mod generator_tests {
         let mut bad = op;
         if let Op::Generator { secs, .. } = &mut bad { *secs = Some(-1.0); }
         assert!(resolve(&seq, &pool, &[bad]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod still_placement_tests {
+    use super::*;
+
+    #[test]
+    fn a_five_second_still_can_be_placed_and_trimmed_beyond_its_default() {
+        let seq = Sequence::new_default();
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/plate.png".into(), None);
+        item.is_still = true;
+        item.duration = snap(5.0, seq.fps);
+        let media = pool.add(item);
+        let place = |from, to| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(from), source_out: to, insert: false, with_audio: false };
+        let plan = resolve(&seq, &pool, &[place(0.0, Some(20.0)), Op::Trim { clip_id: ClipRef::At { track: 0, secs: 3.0 }, edge: Edge::Out, to: Anchor::Secs(32.0), ripple: false, linked: false }]).unwrap();
+        assert_eq!(plan.steps[0].after[0].timeline_out_secs, 22.0);
+        assert_eq!(plan.steps[1].after[0].timeline_out_secs, 32.0);
+        assert_eq!(resolve(&seq, &pool, &[place(0.0, None)]).unwrap().steps[0].after[0].timeline_out_secs, 7.0);
+        assert!(resolve(&seq, &pool, &[place(10.0, Some(30.0))]).is_ok());
+        for (from, to) in [(-1.0, 20.0), (0.0, f64::NAN), (0.0, f64::INFINITY), (0.0, 1e300), (20.0, 10.0)] {
+            assert!(resolve(&seq, &pool, &[place(from, Some(to))]).is_err());
+        }
+        pool.get_mut(&media).unwrap().is_still = false;
+        assert!(resolve(&seq, &pool, &[place(0.0, Some(20.0))]).is_err(), "moving footage still has a source end");
     }
 }
