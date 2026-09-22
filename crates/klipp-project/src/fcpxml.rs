@@ -235,22 +235,27 @@ pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
     edl.push_str(&format!("FCM: {}\n\n", if drop { "DROP FRAME" } else { "NON-DROP FRAME" }));
 
     let mut event_num = 1u32;
+    let mut reels = ReelNamer::default();
+    let mut audio_channel = 0u32;
 
     for track in &seq.tracks {
         if !matches!(track.kind, TrackKind::Video | TrackKind::Audio) { continue; }
-        let reel_type = if track.kind == TrackKind::Video { "V" } else { "A" };
+        // CMX 3600 names the audio channel an event belongs to, so a
+        // multi-track conform can be put back together. Audio tracks are
+        // numbered in the order they appear; past A4 the format has no
+        // agreed spelling, so those fall back to a bare "A".
+        let channel = if track.kind == TrackKind::Video {
+            "V".to_string()
+        } else {
+            audio_channel += 1;
+            if audio_channel <= 4 { format!("A{audio_channel}") } else { "A".to_string() }
+        };
 
         for clip in &track.clips {
             if clip.kind.is_gap() || !clip.enabled { continue; }
 
-            let reel_name = clip.media_id()
-                .and_then(|mid| media_pool.get(&mid))
-                .map(|m| {
-                    let name = m.path.file_stem().unwrap_or_default().to_string_lossy();
-                    // EDL reel names are max 8 chars
-                    if name.len() > 8 { name[..8].to_string() } else { name.to_string() }
-                })
-                .unwrap_or_else(|| "BL".into());
+            let item = clip.media_id().and_then(|mid| media_pool.get(&mid));
+            let reel = reels.name_for(item);
 
             let src_in = tc_to_edl(clip.source_in.to_secs_f64(), seq.fps, drop);
             let src_out = tc_to_edl(clip.source_out.to_secs_f64(), seq.fps, drop);
@@ -258,9 +263,15 @@ pub fn generate_edl(seq: &Sequence, media_pool: &MediaPool) -> String {
             let rec_out = tc_to_edl(clip.timeline_out.to_secs_f64(), seq.fps, drop);
 
             edl.push_str(&format!(
-                "{:03}  {:8} {}     C        {} {} {} {}\n",
-                event_num, reel_name, reel_type, src_in, src_out, rec_in, rec_out
+                "{:03}  {:8} {:<2}    C        {} {} {} {}\n",
+                event_num, reel.name, channel, src_in, src_out, rec_in, rec_out
             ));
+            if reel.disambiguated {
+                // Two sources reduced to the same eight characters. The
+                // conform needs them apart, so one was renamed — say so,
+                // because the reel no longer matches what is on the card.
+                edl.push_str(&format!("* REEL {} RENAMED FROM {}\n", reel.name, reel.wanted));
+            }
 
             // Optional: clip name comment
             if let Some(mid) = clip.media_id() {
@@ -332,6 +343,100 @@ fn format_decimal(secs: f64) -> String {
     } else {
         format!("{:.3}", secs)
     }
+}
+
+/// The reel an event was given, and whether it is the one that was asked for.
+struct Reel {
+    name: String,
+    /// What the source actually calls itself, before truncation and
+    /// collision handling.
+    wanted: String,
+    disambiguated: bool,
+}
+
+/// Hands out CMX 3600 reel names, keeping them unique across the EDL.
+///
+/// The reel is the EDL's primary key: it is how a conform finds the
+/// tape or card an event came from, so two different sources must never
+/// share one. Eight characters is the format's limit, which is exactly
+/// why collisions happen — `A001C001_240315` and `A001C001_240316` are
+/// the same card on different days and reduce to the same eight.
+#[derive(Default)]
+struct ReelNamer {
+    /// Reel name → the media it belongs to.
+    taken: std::collections::HashMap<String, klipp_core::MediaId>,
+    /// Media → the reel already given to it, so a source cut in twenty
+    /// times is one reel and not twenty.
+    given: std::collections::HashMap<klipp_core::MediaId, Reel>,
+}
+
+impl ReelNamer {
+    fn name_for(&mut self, item: Option<&klipp_media::MediaItem>) -> Reel {
+        // No media behind the event: BL is the format's own name for
+        // black, and is what a gap or a generator conforms to.
+        let Some(item) = item else {
+            return Reel { name: "BL".into(), wanted: "BL".into(), disambiguated: false };
+        };
+        if let Some(prev) = self.given.get(&item.id) {
+            return Reel { name: prev.name.clone(), wanted: prev.wanted.clone(), disambiguated: false };
+        }
+
+        // The editor's logged reel first, then the one the file carried
+        // — Sony and Canon XML sidecars and the file's own metadata both
+        // land in `ShotMetadata::reel_name`. The filename is the last
+        // resort, because it is a guess about what the card was called.
+        let wanted = item
+            .reel()
+            .map(str::to_string)
+            .filter(|r| !r.trim().is_empty())
+            .unwrap_or_else(|| item.path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+
+        let base = sanitise_reel(&wanted);
+        let mut name = base.clone();
+        let mut disambiguated = false;
+        // Taken by a *different* source: shorten and number, so the two
+        // stay distinguishable. Nine tries at seven characters, then two
+        // digits; a shoot with a hundred colliding reels has a naming
+        // problem the EDL cannot fix.
+        if self.taken.get(&name).is_some_and(|owner| *owner != item.id) {
+            for n in 2..100u32 {
+                let suffix = n.to_string();
+                let keep = 8usize.saturating_sub(suffix.len());
+                let candidate: String = base.chars().take(keep).chain(suffix.chars()).collect();
+                if !self.taken.contains_key(&candidate) {
+                    name = candidate;
+                    disambiguated = true;
+                    break;
+                }
+            }
+        }
+
+        self.taken.insert(name.clone(), item.id);
+        let reel = Reel { name: name.clone(), wanted: wanted.clone(), disambiguated };
+        self.given.insert(item.id, Reel { name, wanted, disambiguated });
+        reel
+    }
+}
+
+/// A reel name as CMX 3600 wants it: up to eight characters, uppercase,
+/// alphanumeric.
+///
+/// Truncation is by characters, never bytes. `&name[..8]` on a filename
+/// like `Café_shoot_01` splits a multi-byte character and panics, which
+/// is what this used to do.
+///
+/// Anything that is not a letter or a digit comes out, because the
+/// format is column-based and a space in the reel field shifts every
+/// column after it. A name with nothing left becomes AX, the
+/// conventional reel for a source that cannot name itself.
+fn sanitise_reel(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect::<String>()
+        .to_uppercase();
+    if cleaned.is_empty() { "AX".into() } else { cleaned }
 }
 
 /// A timecode for an EDL event, counted in the mode the file's `FCM`
@@ -806,7 +911,12 @@ mod tests {
         assert!(edl.starts_with("TITLE: Test Sequence\n"));
         // Event line: CMX 3600 format
         // event_num(3) reel_name(8) V/A(whitespace)C(whitespace) src_in src_out rec_in rec_out
-        assert!(edl.contains("001  scene01  V     C        00:00:00:00 00:00:03:00 00:00:01:00 00:00:04:00\n"));
+        // The reel is uppercased — CMX reels are conventionally upper,
+        // and reel matching on conform is case-insensitive either way.
+        // Columns are unchanged: the channel field is two wide now that
+        // audio says A1/A2, and "V " plus four spaces is the same six
+        // characters "V" plus five used to be.
+        assert!(edl.contains("001  SCENE01  V     C        00:00:00:00 00:00:03:00 00:00:01:00 00:00:04:00\n"), "{edl}");
         // Clip name comment
         assert!(edl.contains("* FROM CLIP NAME: scene01.mov"));
     }
@@ -919,14 +1029,153 @@ mod tests {
 
         let edl = generate_edl(&seq, &pool);
 
-        // Reel name should be truncated to 8 chars: "very_lon"
-        assert!(edl.contains("very_lon"));
+        // Eight characters, uppercase, alphanumeric: the underscores go
+        // because the format is column-based and punctuation in the reel
+        // field is not portable, so "very_long_clip_name" reduces to
+        // "VERYLONG" rather than "VERY_LON".
+        assert!(edl.contains("VERYLONG"), "{edl}");
         // Full name should NOT appear in the event line (only in FROM CLIP NAME comment)
         let event_line = edl.lines()
             .find(|l| l.starts_with("001"))
             .expect("should have event line");
         assert!(!event_line.contains("very_long_clip_name"));
-        assert!(event_line.contains("very_lon"));
+        assert!(event_line.contains("VERYLONG"));
+    }
+
+    #[test]
+    fn edl_reel_comes_from_the_metadata_not_the_filename() {
+        // The reel is how a conform finds the card an event came from.
+        // Klipp reads it at import — from the file and from Sony/Canon
+        // XML sidecars — and the exporter used to write the first eight
+        // characters of the filename instead, which is a guess.
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        let mut item = make_media_item(mid, "clip_0001_transcoded.mov", 24, 24);
+        item.shot.reel_name = Some("A001C002".into());
+        pool.add(item);
+
+        seq.tracks[0].clips.push(make_media_clip(
+            mid,
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+            RationalTime { value: 0, rate: 24 },
+            RationalTime { value: 24, rate: 24 },
+        ));
+
+        let edl = generate_edl(&seq, &pool);
+        let event_line = edl.lines().find(|l| l.starts_with("001")).expect("event line");
+        assert!(event_line.contains("A001C002"), "the card's own reel:\n{edl}");
+        assert!(!event_line.contains("CLIP0001"), "not the filename:\n{edl}");
+    }
+
+    #[test]
+    fn edl_two_sources_never_share_a_reel() {
+        // Eight characters is the format's limit and exactly why this
+        // happens: the same card on two days reduces to the same reel,
+        // and a conform would then pull the wrong shot. C0001.MP4 on
+        // every card of a multi-camera shoot is the common case.
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let a = MediaId::new();
+        let b = MediaId::new();
+        pool.add(make_media_item(a, "A001C001_240315.mov", 24, 24));
+        pool.add(make_media_item(b, "A001C001_240316.mov", 24, 24));
+        for (i, mid) in [a, b].into_iter().enumerate() {
+            let at = i as i64 * 24;
+            seq.tracks[0].clips.push(make_media_clip(
+                mid,
+                RationalTime { value: at, rate: 24 },
+                RationalTime { value: at + 24, rate: 24 },
+                RationalTime { value: 0, rate: 24 },
+                RationalTime { value: 24, rate: 24 },
+            ));
+        }
+
+        let edl = generate_edl(&seq, &pool);
+        let reels: Vec<&str> = edl
+            .lines()
+            .filter(|l| l.len() > 12 && l.starts_with(|c: char| c.is_ascii_digit()))
+            .map(|l| l[5..13].trim())
+            .collect();
+        assert_eq!(reels.len(), 2, "{edl}");
+        assert_ne!(reels[0], reels[1], "two sources took the same reel:\n{edl}");
+        assert!(edl.contains("* REEL"), "the rename should be recorded:\n{edl}");
+    }
+
+    #[test]
+    fn edl_one_source_cut_many_times_keeps_one_reel() {
+        // The flip side of the rule above: a reel identifies the source,
+        // not the event, so twenty cuts of one card are twenty events on
+        // one reel.
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "A001C001.mov", 240, 24));
+        for i in 0..3i64 {
+            seq.tracks[0].clips.push(make_media_clip(
+                mid,
+                RationalTime { value: i * 24, rate: 24 },
+                RationalTime { value: i * 24 + 24, rate: 24 },
+                RationalTime { value: 0, rate: 24 },
+                RationalTime { value: 24, rate: 24 },
+            ));
+        }
+
+        let edl = generate_edl(&seq, &pool);
+        // Event lines only — the reel also appears in each
+        // "* FROM CLIP NAME" comment, which is the filename, not the reel.
+        let reels: Vec<&str> = edl
+            .lines()
+            .filter(|l| l.len() > 12 && l.starts_with(|c: char| c.is_ascii_digit()))
+            .map(|l| l[5..13].trim())
+            .collect();
+        assert_eq!(reels, ["A001C001", "A001C001", "A001C001"], "{edl}");
+        assert!(!edl.contains("* REEL"), "nothing was renamed:\n{edl}");
+    }
+
+    #[test]
+    fn edl_reel_from_a_non_ascii_filename_does_not_panic() {
+        // `&name[..8]` split a multi-byte character and panicked. The
+        // stem here is 13 characters and 14 bytes, so byte 8 lands
+        // inside the 'é'.
+        assert_eq!(sanitise_reel("Café_shoot_01"), "CAFSHOOT");
+        assert_eq!(sanitise_reel("日本語のクリップ"), "AX", "nothing usable left");
+        assert_eq!(sanitise_reel(""), "AX");
+        assert_eq!(sanitise_reel("a-b-c"), "ABC");
+    }
+
+    #[test]
+    fn edl_audio_tracks_are_numbered() {
+        // A multi-track conform needs to know which channel an event
+        // belongs to; every audio event used to say a bare "A".
+        let fps = Fps::film_24();
+        let mut seq = empty_sequence(fps);
+        seq.tracks.push(Track::new("Audio 1", TrackKind::Audio));
+        seq.tracks.push(Track::new("Audio 2", TrackKind::Audio));
+        let mut pool = MediaPool::new();
+
+        let mid = MediaId::new();
+        pool.add(make_media_item(mid, "sound.wav", 24, 24));
+        for ti in [1usize, 2] {
+            seq.tracks[ti].clips.push(make_media_clip(
+                mid,
+                RationalTime { value: 0, rate: 24 },
+                RationalTime { value: 24, rate: 24 },
+                RationalTime { value: 0, rate: 24 },
+                RationalTime { value: 24, rate: 24 },
+            ));
+        }
+
+        let edl = generate_edl(&seq, &pool);
+        assert!(edl.contains(" A1    C "), "first audio track is A1:\n{edl}");
+        assert!(edl.contains(" A2    C "), "second is A2:\n{edl}");
     }
 
     #[test]
