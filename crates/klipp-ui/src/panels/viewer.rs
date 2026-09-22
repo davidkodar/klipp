@@ -90,8 +90,17 @@ struct ViewerFrameState {
     current_media_info: Option<(u32, u32, bool)>,
 }
 
+/// Resting fitted rectangles; changing playhead position only translates
+/// these, so drawing editor handles does not rasterize text every frame.
+struct TitleFitGeometry {
+    title: klipp_timeline::TitleData,
+    dimensions: (u32, u32),
+    transforms: Vec<(klipp_timeline::TitleObjectId, Option<klipp_timeline::ObjectTransform>)>,
+}
+
 #[derive(Default)]
 pub struct ViewerPanel {
+    title_fit_geometry: std::cell::RefCell<Option<TitleFitGeometry>>,
     /// Set when the window could not be started. The output is still on
     /// and still publishing — only the convenience of opening a viewer for
     /// it failed — so the button says so rather than claiming success.
@@ -3658,15 +3667,15 @@ impl ViewerPanel {
             None => return,
         };
         // Only operate on Title clips.
-        let title_data = state.sequence().tracks.iter()
-            .flat_map(|t| t.clips.iter())
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.title_data())
-            .cloned();
-        let td = match title_data {
-            Some(td) => td,
-            None => return,
-        };
+        let Some(clip) = state.sequence().tracks.iter()
+            .flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
+        let Some(title) = clip.title_data() else { return };
+        let time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+        let resolution = state.sequence().resolution;
+        let td = editor_title_geometry(
+            title, (resolution.width, resolution.height), time,
+            &mut self.title_fit_geometry.borrow_mut(),
+        );
 
         // Object-editor colours are deliberately fixed (not theme-
         // The theme's accent, as every selection in Klipp is drawn.
@@ -3715,7 +3724,7 @@ impl ViewerPanel {
             };
             painter.rect_stroke(bb, 0.0, stroke);
 
-            if !is_selected {
+            if !is_selected || is_fitted_shape(obj) {
                 continue;
             }
 
@@ -3782,7 +3791,7 @@ impl ViewerPanel {
 
         // ── Drag: ongoing? ──
         if let Some(drag) = state.title_object_drag.clone() {
-            if drag.clip_id != clip_id {
+            if drag.clip_id != clip_id || td.object(drag.object_id).is_some_and(is_fitted_shape) {
                 state.title_object_drag = None;
             } else if resp.dragged() {
                 if let Some(p) = pointer {
@@ -3957,6 +3966,7 @@ impl ViewerPanel {
                             clip_id,
                             object_id: Some(obj.id.0),
                         });
+                        if is_fitted_shape(obj) { return; }
                         let initial_font_size = match &obj.content {
                             klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
                             _ => 0.0,
@@ -5247,6 +5257,44 @@ fn draw_viewer_layout_icon(painter: &egui::Painter, btn: egui::Rect, dual_now: b
     }
 }
 
+fn is_fitted_shape(obj: &klipp_timeline::TitleObject) -> bool {
+    matches!(&obj.content, klipp_timeline::TitleObjectContent::Shape(shape) if shape.fit.is_some())
+}
+
+fn editor_title_geometry(
+    title: &klipp_timeline::TitleData,
+    dimensions: (u32, u32),
+    time: f64,
+    cache: &mut Option<TitleFitGeometry>,
+) -> klipp_timeline::TitleData {
+    if !title.objects.iter().any(is_fitted_shape) { return title.clone(); }
+    if cache.as_ref().is_none_or(|c| c.title != *title || c.dimensions != dimensions) {
+        let mut renderer = klipp_title::TitleRenderer::new();
+        let transforms = title.objects.iter().filter_map(|obj| {
+            let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content else { return None };
+            let fit = shape.fit?;
+            Some((obj.id, renderer.resolved_shape_fit(title, fit, dimensions.0, dimensions.1, None)))
+        }).collect();
+        *cache = Some(TitleFitGeometry { title: title.clone(), dimensions, transforms });
+    }
+    let mut resolved = title.clone();
+    if let Some(cache) = cache {
+        for (id, transform) in &cache.transforms {
+            let Some(obj) = resolved.object_mut(*id) else { continue };
+            let Some(transform) = transform else { obj.visible = false; continue };
+            obj.transform = transform.clone();
+            if let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content {
+                if let Some(target) = shape.fit.and_then(|fit| title.object(fit.target)) {
+                    let center = target.transform.evaluated_center(time);
+                    obj.transform.center.x += center.x - target.transform.center.x;
+                    obj.transform.center.y += center.y - target.transform.center.y;
+                }
+            }
+        }
+    }
+    resolved
+}
+
 fn object_screen_bb(
     obj: &klipp_timeline::TitleObject,
     image_rect: egui::Rect,
@@ -5275,6 +5323,7 @@ fn hit_test_handles(
     image_rect: egui::Rect,
     p: egui::Pos2,
 ) -> Option<crate::state::TitleObjectHandle> {
+    if is_fitted_shape(obj) { return None; }
     use crate::state::TitleObjectHandle as H;
     let bb = object_screen_bb(obj, image_rect);
     let hit_radius = 10.0_f32;
@@ -6478,5 +6527,62 @@ mod master_meter_tests {
         assert!(!master_meter_is_clipping(0.999));
         assert!(!master_meter_is_clipping(from_db(-0.1)));
         assert!(!master_meter_is_clipping(0.0));
+    }
+}
+
+#[cfg(test)]
+mod fitted_backing_editor_tests {
+    use super::*;
+    use klipp_timeline::{default_text_transform, Shape, ShapeFit, ShapeKind, TextBox, TitleData, TitleObjectContent, TitlePosition};
+
+    #[test]
+    fn fitted_backing_selection_matches_render_and_cannot_start_transform_drag() {
+        let mut title = TitleData::single_text(TextBox { text: "Name".into(), ..Default::default() });
+        let target = title.objects[0].id;
+        let fit = ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } };
+        let backing = title.add_object(TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: Some([0, 0, 0, 255]), stroke: None,
+        }), default_text_transform());
+        let mut cache = None;
+        let resolved = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);
+        let object = resolved.object(backing).unwrap();
+        let expected = klipp_title::TitleRenderer::new().resolved_shape_fit(&title, fit, 960, 540, None).unwrap();
+        assert_eq!(object.transform, expected);
+        let frame = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(960.0, 540.0));
+        let bb = object_screen_bb(object, frame);
+        assert!((bb.width() - expected.size.x * 960.0).abs() < 0.001);
+        assert!(bb.width() < frame.width());
+        assert!(hit_test_handles(object, frame, bb.min).is_none());
+        assert!(hit_test_handles(object, frame, bb.center()).is_none());
+
+        // Changing words invalidates the geometry cache, as does deleting
+        // the target: a suppressed backing must not leave a selectable box.
+        title.primary_text_mut().unwrap().text = "A much longer name".into();
+        let longer = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);
+        assert!(longer.object(backing).unwrap().transform.size.x > expected.size.x);
+        title.objects.retain(|o| o.id != target);
+        let missing = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);
+        assert!(!missing.object(backing).unwrap().visible);
+    }
+
+    #[test]
+    fn fitted_backing_position_animation_reuses_resting_geometry() {
+        let mut title = TitleData::single_text(TextBox { text: "Name".into(), ..Default::default() });
+        let target = title.objects[0].id;
+        title.objects[0].transform.center_x_keyframes = vec![
+            klipp_core::Keyframe { time_secs: 0.0, value: 0.3, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+            klipp_core::Keyframe { time_secs: 1.0, value: 0.7, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+        ];
+        let fit = ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } };
+        let backing = title.add_object(TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: None, stroke: None,
+        }), default_text_transform());
+        let mut cache = None;
+        let first = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);
+        let allocation = cache.as_ref().unwrap().transforms.as_ptr();
+        let last = editor_title_geometry(&title, (960, 540), 1.0, &mut cache);
+        assert_eq!(allocation, cache.as_ref().unwrap().transforms.as_ptr());
+        let delta = last.object(backing).unwrap().transform.center.x - first.object(backing).unwrap().transform.center.x;
+        assert!((delta - 0.4).abs() < 0.001);
     }
 }

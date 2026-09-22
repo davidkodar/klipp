@@ -1388,6 +1388,11 @@ fn show_title_position_block(
         .filter(|(c, _)| *c == clip_id)
         .map(|(_, oid)| oid);
     let target_obj = target_oid.and_then(|oid| td.object(oid));
+    if target_obj.is_some_and(|o| matches!(&o.content, klipp_timeline::TitleObjectContent::Shape(shape) if shape.fit.is_some())) {
+        ui.label("Position and size follow the text layer. Adjust its position or the backing padding.");
+        return;
+    }
+
     // Pos comes from keyframe-evaluated center when keyframes exist —
     // otherwise the static fallback. Same call the renderer uses, so
     // the inspector value tracks the rendered value at the playhead.

@@ -2074,22 +2074,8 @@ impl TitleRenderer {
                 }
                 TitleObjectContent::Shape(shape) => {
                     if let Some(fit) = shape.fit {
-                        let Some(target) = title.object(fit.target).filter(|o| o.visible) else { continue };
-                        let TitleObjectContent::TextBox(tb) = &target.content else { continue };
-                        if tb.text.trim().is_empty() { continue; }
-                        let mut single = TitleData::single_text(tb.clone());
-                        single.objects[0].transform = target.transform.clone();
-                        if let Some(t) = time_secs {
-                            single.objects[0].transform.center = target.transform.evaluated_center(t as f64);
-                        }
-                        let layout = self.render_layout_at_time(&single, width, height, time_secs);
-                        if layout.glyph_count == 0 { continue; }
-                        let px = fit.padding.x.max(0.0) * height as f32 / 1080.0;
-                        let py = fit.padding.y.max(0.0) * height as f32 / 1080.0;
-                        effective_transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width as f32;
-                        effective_transform.center.y = (layout.text_top + layout.text_bottom) * 0.5 / height as f32;
-                        effective_transform.size.x = (layout.text_right - layout.text_left + 2.0 * px) / width as f32;
-                        effective_transform.size.y = (layout.text_bottom - layout.text_top + 2.0 * py) / height as f32;
+                        let Some(fitted) = self.resolved_shape_fit(title, fit, width, height, time_secs) else { continue };
+                        effective_transform = fitted;
                     }
                     if (obj.opacity - 1.0).abs() < 0.001 {
                         paint_shape_layer(&mut buf, shape, &effective_transform, width, height);
@@ -2117,6 +2103,39 @@ impl TitleRenderer {
             }
         }
         buf
+    }
+
+    /// Resolve a backing's normalized rectangle using the same text bounds
+    /// as rendering. Missing, hidden or empty text has no selectable backing.
+    /// Callers may cache resting geometry and translate it with the target's
+    /// evaluated center when only its position keyframes change.
+    pub fn resolved_shape_fit(
+        &mut self,
+        title: &TitleData,
+        fit: klipp_timeline::ShapeFit,
+        width: u32,
+        height: u32,
+        time_secs: Option<f32>,
+    ) -> Option<ObjectTransform> {
+        if width == 0 || height == 0 { return None; }
+        let target = title.object(fit.target).filter(|o| o.visible)?;
+        let TitleObjectContent::TextBox(tb) = &target.content else { return None };
+        if tb.text.trim().is_empty() { return None; }
+        let mut single = TitleData::single_text(tb.clone());
+        single.objects[0].transform = target.transform.clone();
+        if let Some(t) = time_secs {
+            single.objects[0].transform.center = target.transform.evaluated_center(t as f64);
+        }
+        let layout = self.render_layout_at_time(&single, width, height, time_secs);
+        if layout.glyph_count == 0 { return None; }
+        let px = fit.padding.x.max(0.0) * height as f32 / 1080.0;
+        let py = fit.padding.y.max(0.0) * height as f32 / 1080.0;
+        let mut transform = klipp_timeline::default_text_transform();
+        transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width as f32;
+        transform.center.y = (layout.text_top + layout.text_bottom) * 0.5 / height as f32;
+        transform.size.x = (layout.text_right - layout.text_left + 2.0 * px) / width as f32;
+        transform.size.y = (layout.text_bottom - layout.text_top + 2.0 * py) / height as f32;
+        Some(transform)
     }
 
     /// The decoded pixels of an image layer, read once per path.
