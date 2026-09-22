@@ -1222,7 +1222,7 @@ fn tool_definitions() -> Vec<Value> {
               place {media_id, track, at, source_in?, source_out?, insert?, with_audio?} — a \
               media item onto a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" \
               for the first of that kind) at an anchor; source_in/out in seconds of the file, \
-              the whole file by default; its sound comes along linked on the first audio track \
+              the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track \
               (made if none) unless with_audio is false (B-roll over a voice); an empty sequence \
               takes the first picture's size and rate; with insert, every unlocked track is \
               rippled later to make room and a clip straddling the anchor is split.\n\
@@ -1372,7 +1372,7 @@ fn tool_definitions() -> Vec<Value> {
               place {media_id, track, at, source_in?, source_out?, insert?, with_audio?} — a \
               media item onto a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" \
               for the first of that kind) at an anchor; source_in/out in seconds of the file, \
-              the whole file by default; its sound comes along linked on the first audio track \
+              the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track \
               (made if none) unless with_audio is false (B-roll over a voice); an empty sequence \
               takes the first picture's size and rate; with insert, every unlocked track is \
               rippled later to make room and a clip straddling the anchor is split.\n\
@@ -1690,7 +1690,7 @@ fn tool_definitions() -> Vec<Value> {
              "Propose the paper edit, as one undo step: the cut said before a clip is placed, so \
               the user can read, change and approve it while changing it is cheap. `plan` is \
               {segments: [...], music?: {media_id, duck_db?}, notes?}. Each segment, in cut \
-              order: {media_id, source_in_secs, source_out_secs, feature? (a title from the \
+              order: {media_id, source_in_secs, source_out_secs (stills may hold past their import duration), feature? (a title from the \
               brief's features, as spelt there), note? (what it shows and why — write one), \
               placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
               heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \

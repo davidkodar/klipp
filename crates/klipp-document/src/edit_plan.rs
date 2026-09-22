@@ -52,7 +52,7 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
         if !s.source_in_secs.is_finite() || !s.source_out_secs.is_finite() || s.source_in_secs < 0.0 || s.source_out_secs <= s.source_in_secs {
             return Err(format!("segment {n}: source {:.2}-{:.2} s is not a stretch of {}; give in and out in order", s.source_in_secs, s.source_out_secs, item.filename));
         }
-        if s.source_out_secs > dur + 1e-6 {
+        if !item.is_still && s.source_out_secs > dur + 1e-6 {
             return Err(format!("segment {n}: source {:.2}-{:.2} s runs past the end of {} ({dur:.2} s)", s.source_in_secs, s.source_out_secs, item.filename));
         }
         if !s.feature.trim().is_empty() {
@@ -185,7 +185,7 @@ pub fn snap_to_bars(plan: &mut EditPlan, bar_secs: f64, first_beat_secs: f64, po
         let dur = s.duration_secs();
         let unit = if is_montage(s) { bar_secs / 4.0 } else if dur < bar_secs { bar_secs / 2.0 } else { bar_secs };
         let mut want = ((dur / unit).round().max(1.0)) * unit;
-        if let Some(file) = pool.get(&s.media_id).map(|it| it.duration.to_secs_f64()) {
+        if let Some(file) = pool.get(&s.media_id).filter(|it| !it.is_still).map(|it| it.duration.to_secs_f64()) {
             while s.source_in_secs + want > file + 1e-6 && want > unit + 1e-9 {
                 want -= unit;
             }
@@ -478,6 +478,21 @@ mod tests {
         plan.segments[0].title.as_mut().unwrap().full_frame = None;
         assert!(plan.text(None).contains("covers the shot"));
         assert!(to_ops(&plan, &seq, &pool, None).iter().any(|op| matches!(op, Op::Title { full_frame: Some(_), .. })));
+    }
+
+    #[test]
+    fn a_still_plan_can_hold_and_snap_beyond_the_import_default() {
+        let (seq, mut pool, screen, _) = fixture();
+        pool.get_mut(&screen).unwrap().duration = tc(5.0);
+        pool.get_mut(&screen).unwrap().is_still = true;
+        let mut plan = EditPlan { segments: vec![seg(screen, 0.0, 21.0)], ..Default::default() };
+        validate(&plan, &pool, None).unwrap();
+        snap_to_bars(&mut plan, 4.0, 0.0, &pool);
+        assert_eq!(plan.duration_secs(), 20.0);
+        let built = resolve(&seq, &pool, &to_ops(&plan, &seq, &pool, None)).unwrap();
+        assert_eq!(built.steps[0].after[0].timeline_out_secs, 20.0);
+        pool.get_mut(&screen).unwrap().is_still = false;
+        assert!(validate(&plan, &pool, None).is_err());
     }
 
     #[test]
