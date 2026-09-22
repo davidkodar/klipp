@@ -3036,7 +3036,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
             // A ring is a capsule: corners rounded to half the shorter side.
             let radius = if kind.eq_ignore_ascii_case("ring") { (w.min(h) * 1080.0 * 0.5).max(1.0) } else { 12.0 };
             td.add_object(
-                TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fill: None, stroke: Some(ShapeStroke { color, width: stroke }) }),
+                TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: None, stroke: Some(ShapeStroke { color, width: stroke }) }),
                 boxed(x, y, w, h),
             );
         }
@@ -3046,7 +3046,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
             let (x0, x1, y0, y1) = ((x - w / 2.0).clamp(0.0, 1.0), (x + w / 2.0).clamp(0.0, 1.0), (y - h / 2.0).clamp(0.0, 1.0), (y + h / 2.0).clamp(0.0, 1.0));
             let panel = |cx: f32, cy: f32, bw: f32, bh: f32, td: &mut TitleData| {
                 if bw > 0.001 && bh > 0.001 {
-                    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some(dim), stroke: None }), boxed(cx, cy, bw, bh));
+                    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: None, fill: Some(dim), stroke: None }), boxed(cx, cy, bw, bh));
                 }
             };
             panel(0.5, y0 / 2.0, 1.0, y0, &mut td);

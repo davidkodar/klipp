@@ -571,8 +571,8 @@ impl TitleRenderer {
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
-            max_width: Some(width as f32 * 0.9), // 5% margin each side
-            max_height: Some(height as f32 * 0.9),
+            max_width: Some(text_box_extent(title, width, height).0),
+            max_height: Some(text_box_extent(title, width, height).1),
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
@@ -667,9 +667,9 @@ impl TitleRenderer {
         let mut columns_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
         if columns_active {
             let column_gap = font_px * 1.5;
-            let total_w = width as f32 * 0.9;
-            let col_w = (total_w - column_gap * (columns_n - 1) as f32)
-                / columns_n as f32;
+            let total_w = text_box_extent(title, width, height).0;
+            let col_w = ((total_w - column_gap * (columns_n - 1) as f32)
+                / columns_n as f32).max(1.0);
             // Split resolved_text into N chunks on word boundaries.
             // We aim for equal character counts; the splitter walks
             // forward to the next whitespace after each chunk's
@@ -731,7 +731,7 @@ impl TitleRenderer {
                 body_text,
                 cap_size,
                 font_px,
-                width as f32 * 0.9,
+                text_box_extent(title, width, height).0,
             );
             segment_info.push((0, 0));
             // We synthesise byte-offsets later from drop_cap_wrap_glyphs.
@@ -2028,7 +2028,7 @@ impl TitleRenderer {
             // static `center` for this frame. Empty keyframe vecs
             // short-circuit to the static value via `evaluated_center`,
             // so titles without animation pay nothing extra here.
-            let effective_transform = match time_secs {
+            let mut effective_transform = match time_secs {
                 Some(t) => {
                     let mut t_xform = obj.transform.clone();
                     t_xform.center = obj.transform.evaluated_center(t as f64);
@@ -2073,6 +2073,10 @@ impl TitleRenderer {
                     }
                 }
                 TitleObjectContent::Shape(shape) => {
+                    if let Some(fit) = shape.fit {
+                        let Some(fitted) = self.resolved_shape_fit(title, fit, width, height, time_secs) else { continue };
+                        effective_transform = fitted;
+                    }
                     if (obj.opacity - 1.0).abs() < 0.001 {
                         paint_shape_layer(&mut buf, shape, &effective_transform, width, height);
                     } else {
@@ -2099,6 +2103,39 @@ impl TitleRenderer {
             }
         }
         buf
+    }
+
+    /// Resolve a backing's normalized rectangle using the same text bounds
+    /// as rendering. Missing, hidden or empty text has no selectable backing.
+    /// Callers may cache resting geometry and translate it with the target's
+    /// evaluated center when only its position keyframes change.
+    pub fn resolved_shape_fit(
+        &mut self,
+        title: &TitleData,
+        fit: klipp_timeline::ShapeFit,
+        width: u32,
+        height: u32,
+        time_secs: Option<f32>,
+    ) -> Option<ObjectTransform> {
+        if width == 0 || height == 0 { return None; }
+        let target = title.object(fit.target).filter(|o| o.visible)?;
+        let TitleObjectContent::TextBox(tb) = &target.content else { return None };
+        if tb.text.trim().is_empty() { return None; }
+        let mut single = TitleData::single_text(tb.clone());
+        single.objects[0].transform = target.transform.clone();
+        if let Some(t) = time_secs {
+            single.objects[0].transform.center = target.transform.evaluated_center(t as f64);
+        }
+        let layout = self.render_layout_at_time(&single, width, height, time_secs);
+        if layout.glyph_count == 0 { return None; }
+        let px = fit.padding.x.max(0.0) * height as f32 / 1080.0;
+        let py = fit.padding.y.max(0.0) * height as f32 / 1080.0;
+        let mut transform = klipp_timeline::default_text_transform();
+        transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width as f32;
+        transform.center.y = (layout.text_top + layout.text_bottom) * 0.5 / height as f32;
+        transform.size.x = (layout.text_right - layout.text_left + 2.0 * px) / width as f32;
+        transform.size.y = (layout.text_bottom - layout.text_top + 2.0 * py) / height as f32;
+        Some(transform)
     }
 
     /// The decoded pixels of an image layer, read once per path.
@@ -2299,8 +2336,8 @@ impl TitleRenderer {
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
-            max_width: Some(width as f32 * 0.9),
-            max_height: Some(height as f32 * 0.9),
+            max_width: Some(text_box_extent(title, width, height).0),
+            max_height: Some(text_box_extent(title, width, height).1),
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
@@ -3639,6 +3676,19 @@ fn paint_image_layer(
     }
 }
 
+/// Full-frame text keeps the historical five-percent margin. Explicit
+/// boxes use their authored dimensions for wrapping and cursor layout.
+fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
+    let size = title.objects.iter().find_map(|o| {
+        matches!(o.content, TitleObjectContent::TextBox(_)).then_some(o.transform.size)
+    }).unwrap_or(klipp_timeline::TitlePosition { x: 1.0, y: 1.0 });
+    let extent = |v: f32, pixels: u32| {
+        let fraction = if !v.is_finite() || v == 1.0 { 0.9 } else { v.max(0.0) };
+        (fraction * pixels as f32).max(1.0)
+    };
+    (extent(size.x, width), extent(size.y, height))
+}
+
 fn paint_shape_layer(
     buf: &mut [u8],
     shape: &Shape,
@@ -4593,6 +4643,10 @@ pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
     pos.x.to_bits().hash(&mut h);
     pos.y.to_bits().hash(&mut h);
 
+    let (box_w, box_h) = text_box_extent(td, frame_w, frame_h);
+    box_w.to_bits().hash(&mut h);
+    box_h.to_bits().hash(&mut h);
+
     frame_w.hash(&mut h);
     frame_h.hash(&mut h);
 
@@ -4727,6 +4781,7 @@ mod tests {
         let _shape_id = td.add_object(
             TitleObjectContent::Shape(klipp_timeline::Shape {
                 kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 },
+                fit: None,
                 fill: Some([255, 0, 0, 255]),
                 stroke: None,
             }),

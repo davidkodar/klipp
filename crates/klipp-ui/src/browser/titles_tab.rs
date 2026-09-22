@@ -125,7 +125,7 @@ fn at(x: f32, y: f32, anchor_x: f32) -> ObjectTransform {
 
 fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> (TitleObjectContent, ObjectTransform) {
     (
-        TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fill: Some(fill), stroke: None }),
+        TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: Some(fill), stroke: None }),
         ObjectTransform { center: TitlePosition { x, y }, size: TitlePosition { x: w, y: h }, ..default_text_transform() },
     )
 }
@@ -185,7 +185,7 @@ fn lt_clean_line() -> TitleData {
 }
 
 fn lt_broadcast() -> TitleData {
-    layers(vec![
+    let mut td = layers(vec![
         rect(0.25, 0.815, 0.38, 0.07, [26, 84, 196, 255], 0.0),
         rect(0.25, 0.874, 0.38, 0.048, [244, 244, 246, 255], 0.0),
         text_at(
@@ -198,7 +198,18 @@ fn lt_broadcast() -> TitleData {
                 TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8).delay(0.1), fade_out(0.25))),
             0.075, 0.874, 0.0,
         ),
-    ])
+    ]);
+    // The two backing strips grow independently with their text.
+    for (shape_index, text_index) in [(0, 2), (1, 3)] {
+        let target = td.objects[text_index].id;
+        if let TitleObjectContent::Shape(shape) = &mut td.objects[shape_index].content {
+            shape.fit = Some(klipp_timeline::ShapeFit {
+                target, padding: TitlePosition { x: 28.0, y: 12.0 },
+            });
+        }
+        td.objects[text_index].transform.size.x = 0.85;
+    }
+    td
 }
 
 fn lt_documentary() -> TitleData {
