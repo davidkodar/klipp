@@ -9103,21 +9103,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var sx = rx * params.inv_sx;
     var sy = ry * params.inv_sy;
 
-    // 3D rotation + perspective
+    // 3D tilt: the point on the tilted picture this pixel sees — the
+    // ray through the pinhole meeting the picture's plane. Mirrors
+    // `transform::unproject` on the CPU; see there for the maths.
     if params.cos_rx != 1.0 || params.cos_ry != 1.0 {
-        let y1 = sy * params.cos_rx;
-        let z1 = sy * params.sin_rx;
-        let x2 = sx * params.cos_ry + z1 * params.sin_ry;
-        let z2 = -sx * params.sin_ry + z1 * params.cos_ry;
-        if params.focal > 0.0 {
-            let w_f = 1.0 + z2 / params.focal;
-            if w_f > 0.01 {
-                sx = x2 / w_f;
-                sy = y1 / w_f;
+        let a = params.sin_rx;
+        let b = params.sin_ry;
+        let f = params.focal;
+        var u = 0.0;
+        var v = 0.0;
+        var seen = true;
+        if f > 0.0 {
+            let a11 = sx * b - f * params.cos_ry;
+            let a12 = -sx * a * params.cos_ry - f * a * b;
+            let a21 = sy * b;
+            let a22 = -sy * a * params.cos_ry - f * params.cos_rx;
+            let det = a11 * a22 - a12 * a21;
+            if abs(det) < 1e-9 {
+                seen = false;
+            } else {
+                let b1 = -sx * f;
+                let b2 = -sy * f;
+                u = (b1 * a22 - a12 * b2) / det;
+                v = (a11 * b2 - b1 * a21) / det;
+                seen = f + (u * b - v * a * params.cos_ry) > 0.0;
             }
+        } else if abs(params.cos_rx) < 1e-6 || abs(params.cos_ry) < 1e-6 {
+            seen = false;
         } else {
-            sx = x2;
-            sy = y1;
+            v = sy / params.cos_rx;
+            u = (sx - v * a * b) / params.cos_ry;
+        }
+        if seen {
+            sx = u;
+            sy = v;
+        } else {
+            sx = -1.0e9;
+            sy = -1.0e9;
         }
     }
 

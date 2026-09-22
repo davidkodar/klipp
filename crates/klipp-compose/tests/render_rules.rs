@@ -1019,3 +1019,58 @@ fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
         assert!(blue > 15.5 && blue < 19.0, "the far layer moved about 2.7 px: {blue}");
     }
 }
+
+/// A flat white frame at any size asked for.
+struct White;
+impl FrameSource for White {
+    fn frame(&mut self, _clip: &Clip, _secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new([1.0, 1.0, 1.0, 1.0].repeat((width * height) as usize))), width, height, pts: None })
+    }
+}
+
+/// A card tilted about its vertical axis is drawn in perspective: the
+/// edge swung away is shorter than the edge swung near. Positive tilt
+/// swings the right edge away. Tilted about its horizontal axis, the top
+/// leans away and is narrower than the bottom.
+#[test]
+fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
+    let (w, h) = (128u32, 72u32);
+    let render_card = |tx: f32, ty: f32| {
+        let mut card = media(0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.5);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_tilt_x_keyframes, 0.0, tx);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_tilt_y_keyframes, 0.0, ty);
+        let seq = sequence(vec![vec![card]]);
+        [false, true].map(|gpu| {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default())
+        })
+    };
+    let lit = |img: &[f32], x: u32, y: u32| img[((y * w + x) * 4) as usize] > 0.5;
+    let column = |img: &[f32], x: u32| (0..h).filter(|&y| lit(img, x, y)).count();
+    let row = |img: &[f32], y: u32| (0..w).filter(|&x| lit(img, x, y)).count();
+    let lit_cols = |img: &[f32]| (0..w).filter(|&x| column(img, x) > 0).collect::<Vec<_>>();
+    let lit_rows = |img: &[f32]| (0..h).filter(|&y| row(img, y) > 0).collect::<Vec<_>>();
+
+    for img in render_card(0.0, 40.0) {
+        let cols = lit_cols(&img);
+        let (l, r) = (cols[1], cols[cols.len() - 2]);
+        eprintln!("tilt_y 40: left edge {} px tall, right edge {} px tall, {} wide", column(&img, l), column(&img, r), cols.len());
+        assert!(column(&img, r) < column(&img, l), "the right edge swung away is shorter");
+        // Flat, the card is 64 x 36. The picture is tilted at full size,
+        // seen through a pinhole a frame's width away, then scaled: turned
+        // 40 degrees it foreshortens to about 55 wide, its near edge 53
+        // tall and its far one 27. Rotating the screen point forward, as
+        // before, drew it 94 wide.
+        assert!((cols.len() as i32 - 55).abs() <= 3, "narrower than flat, not wider: {}", cols.len());
+        assert!((column(&img, l) as i32 - 53).abs() <= 3 && (column(&img, r) as i32 - 27).abs() <= 3);
+    }
+    for img in render_card(40.0, 0.0) {
+        let rows = lit_rows(&img);
+        let (t, b) = (rows[1], rows[rows.len() - 2]);
+        eprintln!("tilt_x 40: top {} px wide, bottom {} px wide, {} tall", row(&img, t), row(&img, b), rows.len());
+        assert!(row(&img, t) < row(&img, b), "the top leaning away is narrower");
+        assert!(rows.len() < 36, "leaning back, it is shorter than flat: {}", rows.len());
+    }
+}

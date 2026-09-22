@@ -2282,7 +2282,7 @@ impl Renderer {
             let t = clip_time + offset;
             let ctx = klipp_core::EvalContext { clip_time_secs: t.max(0.0), ..eval::eval_context(clip, time, fps) };
             let (px, py, sx, sy, ro, ax, ay) = eval::evaluate_clip_own_transform(clip, t.max(0.0), &ctx);
-            let xf = transform_effect(fx, (px, py, sx, sy, ro, ax, ay));
+            let xf = transform_effect((px, py, sx, sy, ro, ax, ay), tilt(clip, fx, t.max(0.0)));
             let sample = self.effects(&[xf], pixels.clone(), t.max(0.0), width, height);
             for (a, s) in acc.iter_mut().zip(&sample) {
                 *a += *s;
@@ -2630,11 +2630,12 @@ pub fn clip_effects(
 
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
     let has_transform = fx.iter().any(|e| matches!(e, BuiltinEffect::Transform { .. }));
-    let identity = xf == (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5);
+    let three_d = tilt(clip, &fx, t);
+    let identity = xf == (0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5) && three_d.0 == 0.0 && three_d.1 == 0.0;
     if has_transform {
         for e in fx.iter_mut() {
             if matches!(e, BuiltinEffect::Transform { .. }) {
-                *e = transform_effect(std::slice::from_ref(e), xf);
+                *e = transform_effect(xf, three_d);
             }
         }
     } else if !identity {
@@ -2644,15 +2645,17 @@ pub fn clip_effects(
         // corners included — runs before it, with the picture, so it
         // scales with the layer.
         let at = fx.iter().position(klipp_effects::draws_outside_the_picture).unwrap_or(fx.len());
-        fx.insert(at, transform_effect(&[], xf));
+        fx.insert(at, transform_effect(xf, three_d));
     }
     fx.retain(|e| !klipp_effects::is_identity_effect(e));
     (fx, opacity.clamp(0.0, 1.0))
 }
 
-/// A `Transform` effect with the resolved values, keeping any 3D rotation
-/// and perspective from the clip's own `Transform`.
-fn transform_effect(fx: &[BuiltinEffect], xf: ResolvedTransform) -> BuiltinEffect {
+/// A clip's 3D tilt and perspective at clip time `t`: the tilt tracks,
+/// over whatever its own `Transform` effect says. A tilt with no
+/// perspective given is seen in moderate perspective (1), since flat it
+/// would only squash the picture rather than lean it.
+fn tilt(clip: &Clip, fx: &[BuiltinEffect], t: f64) -> (f32, f32, f32) {
     let (rx, ry, persp) = fx
         .iter()
         .find_map(|e| match e {
@@ -2660,6 +2663,14 @@ fn transform_effect(fx: &[BuiltinEffect], xf: ResolvedTransform) -> BuiltinEffec
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 0.0));
+    let rx = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, t, rx);
+    let ry = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, t, ry);
+    let tilted = !clip.transform_tilt_x_keyframes.is_empty() || !clip.transform_tilt_y_keyframes.is_empty();
+    (rx, ry, if tilted && persp <= 0.0 { 1.0 } else { persp })
+}
+
+/// A `Transform` effect with the resolved values and the clip's tilt.
+fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32, f32)) -> BuiltinEffect {
     let (px, py, sx, sy, ro, ax, ay) = xf;
     BuiltinEffect::Transform {
         position_x: px, position_y: py, scale_x: sx, scale_y: sy, rotation: ro,

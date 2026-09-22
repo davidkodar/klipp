@@ -436,6 +436,8 @@ mod tests {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: Default::default(),
             role: Default::default(),

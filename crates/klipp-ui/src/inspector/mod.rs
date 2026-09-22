@@ -282,7 +282,7 @@ impl NewInspectorPanel {
                             volume_keyframes: Vec::new(), pan_keyframes: Vec::new(), gain_keyframes: Vec::new(),
                             opacity_keyframes: Vec::new(),
                             transform_pos_x_keyframes: Vec::new(), transform_pos_y_keyframes: Vec::new(),
-                            transform_scale_keyframes: Vec::new(), transform_rotation_keyframes: Vec::new(),
+                            transform_scale_keyframes: Vec::new(), transform_rotation_keyframes: Vec::new(), transform_tilt_x_keyframes: Vec::new(), transform_tilt_y_keyframes: Vec::new(),
                             matte_feather_keyframes: Vec::new(), matte_choke_keyframes: Vec::new(),
                             clip_markers: Vec::new(),
                             effect_keyframes: std::collections::HashMap::new(),

@@ -772,6 +772,8 @@ impl Track {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
@@ -956,6 +958,8 @@ impl Track {
         let (pos_y_a, pos_y_b) = split_kfs(&clip.transform_pos_y_keyframes);
         let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
         let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
+        let (tilt_x_a, tilt_x_b) = split_kfs(&clip.transform_tilt_x_keyframes);
+        let (tilt_y_a, tilt_y_b) = split_kfs(&clip.transform_tilt_y_keyframes);
         let (mfeath_a, mfeath_b) = split_kfs(&clip.matte_feather_keyframes);
         let (mchoke_a, mchoke_b) = split_kfs(&clip.matte_choke_keyframes);
 
@@ -1029,6 +1033,8 @@ impl Track {
             transform_pos_y_keyframes: pos_y_a,
             transform_scale_keyframes: scale_a,
             transform_rotation_keyframes: rot_a,
+            transform_tilt_x_keyframes: tilt_x_a,
+            transform_tilt_y_keyframes: tilt_y_a,
             matte_feather_keyframes: mfeath_a,
             matte_choke_keyframes: mchoke_a,
             clip_markers: markers_a,
@@ -1090,6 +1096,8 @@ impl Track {
             transform_pos_y_keyframes: pos_y_b,
             transform_scale_keyframes: scale_b,
             transform_rotation_keyframes: rot_b,
+            transform_tilt_x_keyframes: tilt_x_b,
+            transform_tilt_y_keyframes: tilt_y_b,
             matte_feather_keyframes: mfeath_b,
             matte_choke_keyframes: mchoke_b,
             clip_markers: markers_b,
@@ -1518,6 +1526,15 @@ pub struct Clip {
     pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+    /// Tilt about the picture's horizontal axis, in degrees, in
+    /// perspective: the card leans back or forward like a screen on a
+    /// desk. Empty for a flat picture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transform_tilt_x_keyframes: Vec<klipp_core::Keyframe>,
+    /// Tilt about the picture's vertical axis, in degrees, in
+    /// perspective: the card swings like a door.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transform_tilt_y_keyframes: Vec<klipp_core::Keyframe>,
     /// Phase 4D — track-matte feather radius keyframes (px). Empty
     /// for the common case (constant feather); evaluated against
     /// `matte_source.feather_px` as the fallback.
@@ -1861,6 +1878,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
@@ -1932,6 +1951,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
@@ -2002,6 +2023,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            transform_tilt_x_keyframes: Vec::new(),
+            transform_tilt_y_keyframes: Vec::new(),
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),

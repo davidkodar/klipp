@@ -803,11 +803,19 @@ pub struct ComposePose {
     /// How the move into this pose eases; `in_out` when left out.
     #[serde(default = "in_out")]
     pub ease: klipp_core::keyframe::Ease,
+    /// Tilt in perspective about the picture's horizontal axis, degrees:
+    /// positive leans the top away, like a screen on a desk.
+    #[serde(default)]
+    pub tilt_x_deg: f32,
+    /// Tilt in perspective about its vertical axis, degrees: positive
+    /// swings the right edge away, like a door.
+    #[serde(default)]
+    pub tilt_y_deg: f32,
 }
 
 impl Default for ComposePose {
     fn default() -> Self {
-        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut }
+        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: 0.0, tilt_y_deg: 0.0 }
     }
 }
 
@@ -2755,6 +2763,12 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         if !p.opacity.is_finite() || !(0.0..=1.0).contains(&p.opacity) {
             return Err(refuse(i, format!("an opacity of {}", p.opacity), "give opacity between 0 and 1"));
         }
+        for (name, v) in [("tilt_x_deg", p.tilt_x_deg), ("tilt_y_deg", p.tilt_y_deg)] {
+            // At 90 degrees the card is edge-on and gone.
+            if !v.is_finite() || !(-80.0..=80.0).contains(&v) {
+                return Err(refuse(i, format!("a tilt of {v} degrees"), format!("give {name} between -80 and 80")));
+            }
+        }
     }
     let mut sorted: Vec<ComposePose> = poses.to_vec();
     sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
@@ -2774,6 +2788,18 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     }
     let eases: Vec<_> = sorted.iter().map(|p| p.ease).collect();
     ease_tracks(&mut [&mut px, &mut py, &mut sk, &mut rk, &mut ok], &eases);
+    // Tilt only when a pose asks for it: a flat card keeps no tilt
+    // tracks, and so is not drawn in perspective at all.
+    let (mut tx, mut ty) = (Vec::new(), Vec::new());
+    if sorted.iter().any(|p| p.tilt_x_deg != 0.0 || p.tilt_y_deg != 0.0) {
+        for p in &sorted {
+            klipp_core::keyframe::upsert_keyframe(&mut tx, p.secs, p.tilt_x_deg);
+            klipp_core::keyframe::upsert_keyframe(&mut ty, p.secs, p.tilt_y_deg);
+        }
+        ease_tracks(&mut [&mut tx, &mut ty], &eases);
+    }
+    new_state.transform_tilt_x_keyframes = tx;
+    new_state.transform_tilt_y_keyframes = ty;
     new_state.transform_pos_x_keyframes = px;
     new_state.transform_pos_y_keyframes = py;
     new_state.transform_scale_keyframes = sk;
@@ -2784,7 +2810,8 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         .map(|p| {
             let turn = if p.rotation_deg.abs() > 1e-4 { format!(" turned {:.0} degrees", p.rotation_deg) } else { String::new() };
             let fade = if p.opacity < 0.999 { format!(" at {:.0}%", p.opacity * 100.0) } else { String::new() };
-            format!("{:.2}s {:.2} of the frame at {:.2},{:.2}{turn}{fade}", p.secs, p.width, p.x, p.y)
+            let lean = if p.tilt_x_deg != 0.0 || p.tilt_y_deg != 0.0 { format!(" tilted {:.0},{:.0}", p.tilt_x_deg, p.tilt_y_deg) } else { String::new() };
+            format!("{:.2}s {:.2} of the frame at {:.2},{:.2}{turn}{lean}{fade}", p.secs, p.width, p.x, p.y)
         })
         .collect();
     let what = format!("compose {}: {}", clip_name(seq, pool, clip), poses_text.join(" \u{2192} "));
@@ -4815,6 +4842,28 @@ mod tests {
         assert!(bad(-1.0).why.contains("depth"));
         let plan = resolve(&seq, &pool, &[Op::Depth { clip_id: ClipRef::Id(a), depth: 0.0 }]).unwrap();
         assert!(plan.steps[0].what.contains("on the screen"), "{}", plan.steps[0].what);
+    }
+
+    #[test]
+    fn a_card_swings_into_place_in_perspective_and_a_flat_one_keeps_no_tilt() {
+        let (seq, pool, _media, a, _) = fixture();
+        let card = |from: ComposePose, to: ComposePose| {
+            let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![from, to] }]).unwrap();
+            let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
+            (plan.steps[0].what.clone(), new_state)
+        };
+        let half = ComposePose { width: 0.5, height: 0.5, ..Default::default() };
+        let (what, state) = card(ComposePose { tilt_y_deg: 55.0, ..half }, ComposePose { secs: 1.5, ..half });
+        assert!(what.contains("tilted 0,55"), "{what}");
+        let ys: Vec<f32> = state.transform_tilt_y_keyframes.iter().map(|k| k.value).collect();
+        assert_eq!(ys, vec![55.0, 0.0], "it swings from 55 degrees to square");
+        assert_eq!(state.transform_tilt_y_keyframes[0].interpolation, klipp_core::Interpolation::Bezier, "eased like the rest of the move");
+
+        let (_, flat) = card(half, ComposePose { secs: 1.5, x: 0.3, ..half });
+        assert!(flat.transform_tilt_x_keyframes.is_empty() && flat.transform_tilt_y_keyframes.is_empty(), "a flat card is not drawn in perspective");
+
+        let bad = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![ComposePose { tilt_x_deg: 90.0, ..half }] }]).unwrap_err();
+        assert!(bad.why.contains("tilt"), "{}", bad.why);
     }
 
     #[test]

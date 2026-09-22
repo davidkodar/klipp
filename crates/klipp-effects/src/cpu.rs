@@ -275,20 +275,7 @@ pub(crate) fn apply(
                 let ry = -dx * sin_r + dy * cos_r;
                 let (mut sx, mut sy) = (rx * inv_sx, ry * inv_sy);
                 if cos_rx != 1.0 || cos_ry != 1.0 {
-                    let y1 = sy * cos_rx;
-                    let z1 = sy * sin_rx;
-                    let x2 = sx * cos_ry + z1 * sin_ry;
-                    let z2 = -sx * sin_ry + z1 * cos_ry;
-                    if focal > 0.0 {
-                        let wf = 1.0 + z2 / focal;
-                        if wf > 0.01 {
-                            sx = x2 / wf;
-                            sy = y1 / wf;
-                        }
-                    } else {
-                        sx = x2;
-                        sy = y1;
-                    }
+                    (sx, sy) = crate::transform::unproject(sx, sy, (cos_rx, sin_rx), (cos_ry, sin_ry), focal).unwrap_or((f32::MIN, f32::MIN));
                 }
                 sx += ax;
                 sy += ay;
