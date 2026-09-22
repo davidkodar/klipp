@@ -1066,6 +1066,23 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
         assert!((cols.len() as i32 - 55).abs() <= 3, "narrower than flat, not wider: {}", cols.len());
         assert!((column(&img, l) as i32 - 53).abs() <= 3 && (column(&img, r) as i32 - 27).abs() <= 3);
     }
+    // A tilt set still, on the clip's own Transform with no perspective
+    // given, is drawn in perspective too, not squashed flat.
+    let mut card = media(0.0, 1.0);
+    card.builtin_effects = vec![BuiltinEffect::Transform {
+        position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+        rotation_x: 0.0, rotation_y: 40.0, perspective: 0.0, focal_ref: None,
+    }];
+    let seq = sequence(vec![vec![card]]);
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let img = r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default());
+        let cols = lit_cols(&img);
+        let (l, r) = (cols[1], cols[cols.len() - 2]);
+        assert!(column(&img, r) + 10 < column(&img, l), "a still tilt leans in perspective: {} vs {}", column(&img, l), column(&img, r));
+    }
+
     for img in render_card(40.0, 0.0) {
         let rows = lit_rows(&img);
         let (t, b) = (rows[1], rows[rows.len() - 2]);

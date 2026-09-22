@@ -21,6 +21,9 @@ pub fn get_transform(clip: &Clip) -> TransformParams {
                 rotation,
                 anchor_x,
                 anchor_y,
+                rotation_x,
+                rotation_y,
+                perspective,
                 ..
             } => Some(TransformParams {
                 position_x: *position_x,
@@ -29,7 +32,11 @@ pub fn get_transform(clip: &Clip) -> TransformParams {
                 scale_y: *scale_y,
                 rotation: *rotation,
                 anchor_x: *anchor_x,
-                anchor_y: *anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0 }),
+                anchor_y: *anchor_y,
+                rotation_x: *rotation_x,
+                rotation_y: *rotation_y,
+                perspective: *perspective,
+            }),
             _ => None,
         })
         .unwrap_or_default()
@@ -93,7 +100,11 @@ impl TransformParams {
             scale_y: self.scale_y,
             rotation: self.rotation,
             anchor_x: self.anchor_x,
-            anchor_y: self.anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            anchor_y: self.anchor_y,
+            // Written back as read: editing position must not flatten a tilt.
+            rotation_x: self.rotation_x,
+            rotation_y: self.rotation_y,
+            perspective: self.perspective,
             focal_ref: None }
     }
 }
@@ -249,6 +260,13 @@ fn show_clip_video(
     let pos_y_ks = keyframe_state(&clip.transform_pos_y_keyframes, clip_time_secs);
     let scale_ks = keyframe_state(&clip.transform_scale_keyframes, clip_time_secs);
     let rot_ks = keyframe_state(&clip.transform_rotation_keyframes, clip_time_secs);
+    let mut tilt_x = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, clip_time_secs, transform.rotation_x);
+    let mut tilt_y = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, clip_time_secs, transform.rotation_y);
+    let tilt_x_ks = keyframe_state(&clip.transform_tilt_x_keyframes, clip_time_secs);
+    let tilt_y_ks = keyframe_state(&clip.transform_tilt_y_keyframes, clip_time_secs);
+    // A tilt is drawn in moderate perspective when none is set (see the
+    // renderer's `tilt`), so that is what the row shows.
+    let mut persp = if transform.perspective > 0.0 { transform.perspective } else { 1.0 };
 
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
@@ -263,11 +281,17 @@ fn show_clip_video(
         r_py: ScrubbyParamResponse,
         r_sc: ScrubbyParamResponse,
         r_ro: ScrubbyParamResponse,
+        r_tx: ScrubbyParamResponse,
+        r_ty: ScrubbyParamResponse,
+        r_pe: ScrubbyParamResponse,
         r_op: ScrubbyParamResponse,
         pos_x: f32,
         pos_y: f32,
         scale_val: f32,
         rotation: f32,
+        tilt_x: f32,
+        tilt_y: f32,
+        persp: f32,
         opacity: f32,
         reset_clicked: bool,
     }
@@ -293,6 +317,9 @@ fn show_clip_video(
         let mut r_py_out: Option<ScrubbyParamResponse> = None;
         let mut r_sc_out: Option<ScrubbyParamResponse> = None;
         let mut r_ro_out: Option<ScrubbyParamResponse> = None;
+        let mut r_tx_out: Option<ScrubbyParamResponse> = None;
+        let mut r_ty_out: Option<ScrubbyParamResponse> = None;
+        let mut r_pe_out: Option<ScrubbyParamResponse> = None;
         let mut r_op_out: Option<ScrubbyParamResponse> = None;
 
         // Allocate the section card with a custom header that includes the reset button
@@ -319,6 +346,8 @@ fn show_clip_video(
             && ((transform.scale_x - 1.0).abs() < f32::EPSILON)
             && ((transform.scale_y - 1.0).abs() < f32::EPSILON)
             && (transform.rotation.abs() < f32::EPSILON)
+            && transform.rotation_x.abs() < f32::EPSILON
+            && transform.rotation_y.abs() < f32::EPSILON
             && ((opacity_preview - 1.0).abs() < f32::EPSILON);
         if !is_default {
             let reset_rect = egui::Rect::from_center_size(
@@ -362,6 +391,13 @@ fn show_clip_video(
                 r_py_out = Some(scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
                 r_sc_out = Some(scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
                 r_ro_out = Some(scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
+                // Tilt out of the picture's plane: the top leans away for
+                // positive X, the right edge swings away for positive Y.
+                r_tx_out = Some(scrubby_param_row(ui, "Tilt X", &mut tilt_x, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_x_ks)));
+                r_ty_out = Some(scrubby_param_row(ui, "Tilt Y", &mut tilt_y, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_y_ks)));
+                if tilt_x != 0.0 || tilt_y != 0.0 || !clip.transform_tilt_x_keyframes.is_empty() || !clip.transform_tilt_y_keyframes.is_empty() {
+                    r_pe_out = Some(scrubby_param_row(ui, "Perspective", &mut persp, 0.1..=3.0, 1.0, 0.01, 2, "", None));
+                }
 
                 // Source rotation (auto-detected from media metadata, user-overridable)
                 if clip.source_rotation != 0 || clip.media_id().is_some() {
@@ -386,6 +422,15 @@ fn show_clip_video(
                                 }
                             });
                     });
+                }
+
+                // How far back it sits for the sequence camera: 1 is the
+                // composed plane, further back drifts less, 0 holds the clip
+                // on the screen.
+                let mut depth = clip.depth;
+                let r = scrubby_param_row(ui, "Depth", &mut depth, 0.0..=20.0, 1.0, 0.01, 2, "", None);
+                if r.changed {
+                    cmds.push(AppCommand::SetClipDepth { clip_id, depth });
                 }
 
                 // Separator before opacity
@@ -416,17 +461,26 @@ fn show_clip_video(
             r_py: r_py_out.unwrap_or_else(noop_response),
             r_sc: r_sc_out.unwrap_or_else(noop_response),
             r_ro: r_ro_out.unwrap_or_else(noop_response),
+            r_tx: r_tx_out.unwrap_or_else(noop_response),
+            r_ty: r_ty_out.unwrap_or_else(noop_response),
+            r_pe: r_pe_out.unwrap_or_else(noop_response),
             r_op: r_op_out.unwrap_or_else(noop_response),
             pos_x,
             pos_y,
             scale_val,
             rotation,
+            tilt_x,
+            tilt_y,
+            persp,
             opacity,
             reset_clicked,
         }
     };
 
-    let TransformResults { r_px, r_py, r_sc, r_ro, r_op, pos_x, pos_y, scale_val, rotation, opacity, reset_clicked } = results;
+    let TransformResults { r_px, r_py, r_sc, r_ro, r_tx, r_ty, r_pe, r_op, pos_x, pos_y, scale_val, rotation, tilt_x, tilt_y, persp, opacity, reset_clicked } = results;
+    let tilt_started = r_tx.drag_started || r_ty.drag_started || r_pe.drag_started;
+    let tilt_changed = r_tx.changed || r_ty.changed || r_pe.changed;
+    let tilt_stopped = r_tx.drag_stopped || r_ty.drag_stopped || r_pe.drag_stopped;
 
     // Reset button handling
     if reset_clicked {
@@ -435,7 +489,7 @@ fn show_clip_video(
     }
 
     // Undo coalescing for transform drags
-    if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started {
+    if r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started || tilt_started {
         if let Some(idx) = find_transform_index(clip) {
             cmds.push(AppCommand::BeginEffectDrag {
                 key: transform_drag_key.clone(),
@@ -448,17 +502,28 @@ fn show_clip_video(
         else if r_py.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionY)); }
         else if r_sc.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Scale)); }
         else if r_ro.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Rotation)); }
+        else if r_tx.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::TiltX)); }
+        else if r_ty.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::TiltY)); }
     }
 
     // Emit command for any changed transform value
-    if r_px.changed || r_py.changed || r_sc.changed || r_ro.changed {
+    if r_px.changed || r_py.changed || r_sc.changed || r_ro.changed || tilt_changed {
         let mut t = transform;
         t.position_x = pos_x;
         t.position_y = pos_y;
         t.scale_x = scale_val;
         t.scale_y = scale_val; // uniform scale
         t.rotation = rotation;
+        t.rotation_x = tilt_x;
+        t.rotation_y = tilt_y;
+        t.perspective = persp;
         emit_transform(cmds, clip, clip_id, t);
+        if r_tx.changed && !clip.transform_tilt_x_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::TiltX, time_secs: clip_time_secs, value: tilt_x });
+        }
+        if r_ty.changed && !clip.transform_tilt_y_keyframes.is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::TiltY, time_secs: clip_time_secs, value: tilt_y });
+        }
 
         if r_px.changed && !clip.transform_pos_x_keyframes.is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs, value: pos_x });
@@ -474,7 +539,7 @@ fn show_clip_video(
         }
     }
 
-    if r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped {
+    if r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped || tilt_stopped {
         if let Some(idx) = find_transform_index(clip) {
             let mut t = transform;
             t.position_x = pos_x;
@@ -482,6 +547,9 @@ fn show_clip_video(
             t.scale_x = scale_val;
             t.scale_y = scale_val;
             t.rotation = rotation;
+            t.rotation_x = tilt_x;
+            t.rotation_y = tilt_y;
+            t.perspective = persp;
             cmds.push(AppCommand::EndEffectDrag {
                 key: transform_drag_key,
                 clip_id,
@@ -634,6 +702,11 @@ fn show_clip_video(
             cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(clip_timeline_in_secs + t, clip_rate)));
         }
     }
+
+    // ── Keyframe toggle/nav for Tilt X and Tilt Y ──
+    let seek = (clip_timeline_in_secs, clip_rate);
+    keyframe_controls(cmds, &r_tx, &clip.transform_tilt_x_keyframes, &tilt_x_ks, VideoParam::TiltX, tilt_x, clip_id, clip_time_secs, seek);
+    keyframe_controls(cmds, &r_ty, &clip.transform_tilt_y_keyframes, &tilt_y_ks, VideoParam::TiltY, tilt_y, clip_id, clip_time_secs, seek);
 
     // ── Opacity keyframe/drag handling ──
     if r_op.drag_started {
@@ -3628,6 +3701,49 @@ fn show_role_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &
 
 /// Emit an UpdateBuiltinEffect or AddBuiltinEffect for a Transform.
 /// If a Transform effect already exists, update it; otherwise add it.
+/// A video row's keyframe button, interpolation menu, ease presets and
+/// previous/next navigation, as each transform row above spells out.
+#[allow(clippy::too_many_arguments)]
+fn keyframe_controls(
+    cmds: &mut Vec<AppCommand>,
+    r: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    kfs: &[klipp_core::Keyframe],
+    ks: &KeyframeState,
+    param: VideoParam,
+    value: f32,
+    clip_id: klipp_core::ClipId,
+    clip_time_secs: f64,
+    (timeline_in_secs, rate): (f64, u32),
+) {
+    let kf_tolerance = 0.02;
+    let here = kfs.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance);
+    if let (Some(interp), Some(ki)) = (r.keyframe_set_interpolation, here) {
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: interp });
+    }
+    if let (Some(preset), Some(ki)) = (r.keyframe_ease_preset, here) {
+        cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
+        for idx in [ki.saturating_sub(1), ki] {
+            if idx >= kfs.len() {
+                continue;
+            }
+            let (t_in, t_out) = preset.compute_tangents(kfs, idx);
+            cmds.push(AppCommand::SetVideoKeyframeTangent { clip_id, param, keyframe_index: idx, tangent_in: t_in, tangent_out: t_out });
+        }
+    }
+    if r.keyframe_toggled {
+        if here.is_some() {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: clip_time_secs });
+        } else {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+        }
+        cmds.push(AppCommand::SetVideoRubberBandParam(param));
+    }
+    let target = if r.keyframe_nav_prev { ks.prev_keyframe_time } else if r.keyframe_nav_next { ks.next_keyframe_time } else { None };
+    if let Some(t) = target {
+        cmds.push(AppCommand::SeekTo(Timecode::from_secs_f64(timeline_in_secs + t, rate)));
+    }
+}
+
 fn emit_transform(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core::ClipId, params: TransformParams) {
     if let Some(index) = find_transform_index(clip) {
         cmds.push(AppCommand::UpdateBuiltinEffect {
@@ -4155,5 +4271,92 @@ fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tilt_tests {
+    use super::*;
+
+    fn clip_with(effect: BuiltinEffect) -> Clip {
+        let mut c = Clip::gap(Timecode::from_secs_f64(0.0, 24), Timecode::from_secs_f64(2.0, 24));
+        c.builtin_effects = vec![effect];
+        c
+    }
+
+    #[test]
+    fn editing_the_transform_keeps_a_still_tilt() {
+        let t = TransformParams { rotation_y: 25.0, perspective: 1.5, ..Default::default() };
+        let clip = clip_with(t.to_builtin_effect());
+        // Read back, moved, written again: the tilt is still there.
+        let mut read = get_transform(&clip);
+        assert_eq!((read.rotation_y, read.perspective), (25.0, 1.5));
+        read.position_x = 40.0;
+        let BuiltinEffect::Transform { rotation_y, perspective, position_x, .. } = read.to_builtin_effect() else { panic!("a transform") };
+        assert_eq!((rotation_y, perspective, position_x), (25.0, 1.5, 40.0));
+    }
+
+    /// Every piece of text the inspector's video tab draws for `clip`.
+    fn drawn_text(clip: &Clip) -> String {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let theme = KlippTheme::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut cmds = Vec::new();
+                show_clip_video(ui, &theme, &state, clip, &mut cmds, 0.5, true);
+            });
+        });
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push_str(t.galley.text());
+                    out.push('\n');
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        text
+    }
+
+    #[test]
+    fn the_inspector_shows_tilt_and_depth_and_perspective_once_tilted() {
+        let flat = drawn_text(&clip_with(TransformParams::default().to_builtin_effect()));
+        for row in ["Rotation", "Tilt X", "Tilt Y", "Depth"] {
+            assert!(flat.contains(row), "no {row} row in:\n{flat}");
+        }
+        assert!(!flat.contains("Perspective"), "a flat card has no perspective to set");
+        let tilted = drawn_text(&clip_with(TransformParams { rotation_x: 15.0, ..Default::default() }.to_builtin_effect()));
+        assert!(tilted.contains("Perspective"), "a tilted card offers its perspective:\n{tilted}");
+    }
+
+    #[test]
+    fn the_tilt_rows_keyframe_button_keys_the_tilt_track() {
+        let clip_id = klipp_core::ClipId::new();
+        let mut r = crate::widgets::scrubby_param::ScrubbyParamResponse {
+            changed: false, drag_started: false, drag_stopped: false, lost_focus: false, reset_clicked: false,
+            keyframe_toggled: true, keyframe_nav_prev: false, keyframe_nav_next: false,
+            keyframe_set_interpolation: None, keyframe_ease_preset: None,
+        };
+        let ks = keyframe_state(&[], 1.0);
+        let mut cmds = Vec::new();
+        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24));
+        assert!(matches!(cmds[0], AppCommand::AddVideoKeyframe { param: VideoParam::TiltY, value, .. } if value == 30.0));
+        assert!(matches!(cmds[1], AppCommand::SetVideoRubberBandParam(VideoParam::TiltY)));
+
+        // With a key already there, the button takes it off.
+        let key = klipp_core::Keyframe { time_secs: 1.0, value: 30.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        cmds.clear();
+        keyframe_controls(&mut cmds, &r, std::slice::from_ref(&key), &keyframe_state(std::slice::from_ref(&key), 1.0), VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24));
+        assert!(matches!(cmds[0], AppCommand::RemoveVideoKeyframe { param: VideoParam::TiltY, .. }));
+
+        // Nothing clicked, nothing sent.
+        r.keyframe_toggled = false;
+        cmds.clear();
+        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltX, 0.0, clip_id, 1.0, (0.0, 24));
+        assert!(cmds.is_empty());
     }
 }

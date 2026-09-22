@@ -2028,6 +2028,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
@@ -2114,6 +2116,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
@@ -2180,6 +2184,8 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                             klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                             klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                            klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                             klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                             klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
@@ -2243,6 +2249,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes.clone(),
                                                 klipp_core::VideoParam::Scale => clip.transform_scale_keyframes.clone(),
                                                 klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes.clone(),
+                                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes.clone(),
+                                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes.clone(),
                                                 klipp_core::VideoParam::MatteFeather => clip.matte_feather_keyframes.clone(),
                                                 klipp_core::VideoParam::MatteChoke => clip.matte_choke_keyframes.clone(),
                                             },
@@ -2378,6 +2386,8 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                             klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                             klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                            klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                             klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                             klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
@@ -2492,6 +2502,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                                klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                                 klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                                 klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
@@ -2516,6 +2528,8 @@ impl TimelinePanel {
                                                     klipp_core::VideoParam::PositionY => 0.0,
                                                     klipp_core::VideoParam::Scale => 1.0,
                                                     klipp_core::VideoParam::Rotation => 0.0,
+                                                    klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
+                                                    klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
                                                     klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
                                                     klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
                                                 },
@@ -2554,6 +2568,7 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => base_val + 0.05,
                                             klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
                                             klipp_core::VideoParam::Rotation => base_val + 15.0,
+                                            klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => (base_val + 10.0).min(80.0),
                                             klipp_core::VideoParam::MatteFeather => (base_val + 5.0).min(50.0),
                                             klipp_core::VideoParam::MatteChoke => (base_val + 2.0).min(50.0),
                                         },
@@ -11470,12 +11485,15 @@ impl TimelinePanel {
                     _ => None,
                 })
                 .unwrap_or((0.0, 0.0, 1.0, 0.0));
+            let still_tilt = crate::inspector::video_tab::get_transform(clip);
             let (sval, kfs) = match vrb_param {
                 klipp_core::VideoParam::Opacity => (opacity_static, clip.opacity_keyframes.clone()),
                 klipp_core::VideoParam::PositionX => (transform.0, clip.transform_pos_x_keyframes.clone()),
                 klipp_core::VideoParam::PositionY => (transform.1, clip.transform_pos_y_keyframes.clone()),
                 klipp_core::VideoParam::Scale => (transform.2, clip.transform_scale_keyframes.clone()),
                 klipp_core::VideoParam::Rotation => (transform.3, clip.transform_rotation_keyframes.clone()),
+                klipp_core::VideoParam::TiltX => (still_tilt.rotation_x, clip.transform_tilt_x_keyframes.clone()),
+                klipp_core::VideoParam::TiltY => (still_tilt.rotation_y, clip.transform_tilt_y_keyframes.clone()),
                 klipp_core::VideoParam::MatteFeather => (
                     clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
                     clip.matte_feather_keyframes.clone(),
@@ -11562,6 +11580,14 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
                         egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
                     ),
+                    // Tilt is rotation out of the picture's plane: a warmer
+                    // sibling of rotation's violet.
+                    klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => (
+                        egui::Color32::from_rgba_unmultiplied(230, 140, 210, 220),
+                        egui::Color32::from_rgba_unmultiplied(210, 120, 190, 140),
+                        egui::Color32::from_rgba_unmultiplied(245, 160, 225, 250),
+                        egui::Color32::from_rgba_unmultiplied(230, 140, 210, 200),
+                    ),
                     // Matte feather/choke share a teal palette matching
                     // the COMPOSITING-section "M" badge so the user sees
                     // a consistent visual identity.
@@ -11585,6 +11611,8 @@ impl TimelinePanel {
                     klipp_core::VideoParam::PositionY => "PosY",
                     klipp_core::VideoParam::Scale => "Scl",
                     klipp_core::VideoParam::Rotation => "Rot",
+                    klipp_core::VideoParam::TiltX => "TltX",
+                    klipp_core::VideoParam::TiltY => "TltY",
                     klipp_core::VideoParam::MatteFeather => "MFth",
                     klipp_core::VideoParam::MatteChoke => "MChk",
                 };
@@ -11600,6 +11628,7 @@ impl TimelinePanel {
                         klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
                         klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
                         klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
+                        klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => egui::Color32::from_rgba_unmultiplied(230, 140, 210, 100),
                         // Matte feather/choke share a teal tint matching the
                         // "M" badge on consumer clips, so the rubber band
                         // and the matte indicator agree visually.
@@ -11629,8 +11658,13 @@ impl TimelinePanel {
                                     // exception not the norm). Cycling
                                     // back to Opacity keeps the gesture
                                     // intuitive.
+                                    // Tilt, like the matte, is reached from the
+                                    // inspector's keyframe button rather than
+                                    // the cycle most clips never need it in.
                                     klipp_core::VideoParam::MatteFeather
-                                    | klipp_core::VideoParam::MatteChoke => klipp_core::VideoParam::Opacity,
+                                    | klipp_core::VideoParam::MatteChoke
+                                    | klipp_core::VideoParam::TiltX
+                                    | klipp_core::VideoParam::TiltY => klipp_core::VideoParam::Opacity,
                                 };
                             }
                         }
@@ -11743,6 +11777,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
+                                    klipp_core::VideoParam::TiltX => format!("TX:{:.1}\u{00B0}", kf.value),
+                                    klipp_core::VideoParam::TiltY => format!("TY:{:.1}\u{00B0}", kf.value),
                                     klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", kf.value),
                                     klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", kf.value),
                                 };
@@ -14880,6 +14916,8 @@ impl TimelinePanel {
                                 klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
                                 klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
                                 klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
+                                klipp_core::VideoParam::TiltX => (crate::inspector::video_tab::get_transform(clip).rotation_x, &clip.transform_tilt_x_keyframes),
+                                klipp_core::VideoParam::TiltY => (crate::inspector::video_tab::get_transform(clip).rotation_y, &clip.transform_tilt_y_keyframes),
                                 klipp_core::VideoParam::MatteFeather => (
                                     clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
                                     &clip.matte_feather_keyframes,
@@ -15122,6 +15160,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                     klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                     klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
+                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
@@ -15152,7 +15192,13 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => t.1,
                                             klipp_core::VideoParam::Scale => t.2,
                                             klipp_core::VideoParam::Rotation => t.3,
-                                            _ => unreachable!(),
+                                            klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
+                                            klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
+                                            // Every parameter is named: this was an
+                                            // unreachable!() that a matte keyframe could reach.
+                                            klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                                            klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                                            klipp_core::VideoParam::Opacity => 1.0,
                                         }
                                     }
                                 };
@@ -15185,6 +15231,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
+                                    klipp_core::VideoParam::TiltX => format!("TX:{:.1}°", new_value),
+                                    klipp_core::VideoParam::TiltY => format!("TY:{:.1}°", new_value),
                                     klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", new_value),
                                     klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", new_value),
                                 };
