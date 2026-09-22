@@ -391,7 +391,7 @@ pub enum BuiltinEffect {
     /// Rounded corners on the layer itself: the corners are taken out of
     /// the picture's alpha, so a placed clip reads as a card rather than
     /// a rectangle of video. `radius` and `feather` are fractions of the
-    /// frame's shorter side. Unlike a mask in the grade, this changes
+    /// visible picture's shorter side. Unlike a mask in the grade, this changes
     /// what the compositor sees.
     RoundedCorners {
         /// Corner radius as a fraction of the shorter side (0.0-0.5).
@@ -898,18 +898,9 @@ fn apply_chain(
 }
 
 /// Whether the GPU pipeline can run every effect in the chain: all but
-/// Frei0r plugins, which exist only on the CPU, and the layer effects in
-/// [`crate::layer`], which have no shader yet.
+/// Frei0r plugins, which exist only on the CPU.
 pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
-    !effects.iter().any(|e| {
-        matches!(
-            e,
-            BuiltinEffect::Frei0r { .. }
-                | BuiltinEffect::RoundedCorners { .. }
-                | BuiltinEffect::DropShadow { .. }
-                | BuiltinEffect::OuterGlow { .. }
-        )
-    })
+    !effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
 }
 
 /// Whether the effect draws outside the picture, in the margin a

@@ -20,9 +20,8 @@
 //!   are two effects over one routine rather than one effect with a
 //!   colour.
 //!
-//! All of it is straight-alpha linear RGBA, and all of it is CPU-only:
-//! `chain_supports_gpu` sends a chain carrying one of these down the
-//! CPU path whole, as it does for Frei0r.
+//! All of it is straight-alpha linear RGBA. The GPU counterparts live
+//! in `gpu::layer` and keep the same silhouette and spill ordering.
 
 use crate::cpu::{decode, each_pixel, gaussian};
 
