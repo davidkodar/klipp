@@ -1,6 +1,6 @@
 [package]
 name = "klipp-ml-ort"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license.workspace = true
 description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, future SAM2 video"
