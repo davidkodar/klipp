@@ -81,6 +81,25 @@ fn rounded_and_grouped_spills_match_cpu_on_gpu() {
             glow.clone(),
         ],
         vec![shadow.clone(), E::Opacity { value: 0.5 }, glow.clone()],
+        // Three active casts traverse both scratch-buffer directions;
+        // an invisible cast in the middle must not break the run or
+        // change which original silhouette the later casts sample.
+        vec![
+            shadow.clone(),
+            E::OuterGlow {
+                radius: 0.1,
+                intensity: 0.0,
+                color: [255, 255, 255],
+            },
+            glow.clone(),
+            E::DropShadow {
+                offset_x: 6.0 / w as f32,
+                offset_y: -4.0 / w as f32,
+                blur: 2.0 / w as f32,
+                color: [80, 140, 220],
+                opacity: 0.6,
+            },
+        ],
     ] {
         compare(&mut gpu, &p, w, h, &effects);
     }
