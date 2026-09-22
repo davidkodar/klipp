@@ -3897,6 +3897,52 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
+        // ── Layout: start from another NLE's keys ──
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Layout").size(12.0).color(theme.text_primary));
+            ui.add_space(8.0);
+            let mut preset = key_bindings.preset;
+            egui::ComboBox::from_id_salt("keymap_preset")
+                .selected_text(preset.label())
+                .show_ui(ui, |ui| {
+                    for p in crate::keybindings::KeymapPreset::ALL {
+                        ui.selectable_value(&mut preset, p, p.label());
+                    }
+                });
+            if preset != key_bindings.preset {
+                key_bindings.set_preset(preset);
+                let _ = key_bindings.save();
+            }
+        });
+        {
+            let changed = key_bindings.overrides().len();
+            let mut note = if key_bindings.preset == crate::keybindings::KeymapPreset::Klipp {
+                "Klipp's own keys.".to_string()
+            } else {
+                format!(
+                    "{}'s defaults for the {} actions Klipp shares with it. Everything else keeps Klipp's key, \
+                     and a Klipp key that {} uses for something else is taken off.",
+                    key_bindings.preset.label(),
+                    key_bindings.preset.mapped_count(),
+                    key_bindings.preset.label(),
+                )
+            };
+            let displaced = key_bindings.preset.displaced();
+            if !displaced.is_empty() {
+                let names: Vec<&str> = displaced.iter().map(|a| KeyBindings::action_label(a)).collect();
+                note.push_str(&format!(" Left without a key: {}.", names.join(", ")));
+            }
+            if changed > 0 {
+                note.push_str(&format!(" Your {changed} change(s) stay on top when you switch."));
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.add(egui::Label::new(egui::RichText::new(note).size(10.0).color(theme.text_dim)).wrap());
+            });
+        }
+        ui.add_space(6.0);
+
         // ── SHORTCUTS section header with Reset all button ──
         {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
@@ -3917,9 +3963,9 @@ impl PreferencesPanel {
             let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to defaults", egui::FontId::proportional(10.0), theme.text_primary);
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to layout", egui::FontId::proportional(10.0), theme.text_primary);
             if btn_resp.clicked() {
-                *key_bindings = KeyBindings::defaults();
+                key_bindings.reset_to_preset();
                 let _ = key_bindings.save();
             }
         }
