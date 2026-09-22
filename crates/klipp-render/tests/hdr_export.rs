@@ -65,7 +65,7 @@ fn export_ws(
         output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H265,
         resolution: None, fps: None, crf: 1, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
-        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, embed_chapters: false,
+        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
         bit_depth: 10, hdr_mode: HdrMode::Pq, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
         mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };

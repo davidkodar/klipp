@@ -483,6 +483,10 @@ pub enum ControlCommand {
         /// Integrated loudness target in LUFS; none leaves the mix as it is.
         #[serde(default)]
         target_lufs: Option<f32>,
+        /// The true-peak ceiling in dBTP for a normalised delivery: -1 when
+        /// left out, which EBU R128 and streaming ask; -2 for ATSC A/85.
+        #[serde(default)]
+        true_peak_dbtp: Option<f32>,
         /// Whether captions and titles are burnt into the picture. Left
         /// out, they are, which is what the app's own export does.
         #[serde(default)]

@@ -25420,6 +25420,12 @@ fn selected_clips_frame_range(
     Some((start, end))
 }
 
+/// The true-peak ceiling the chosen loudness spec asks for: -2 dBTP for
+/// ATSC A/85, and the renderer's -1 for the rest.
+fn dialog_true_peak(dialog: &ExportDialogState) -> Option<f32> {
+    (dialog.normalize_loudness && dialog.loudness_preset == 3).then_some(-2.0)
+}
+
 fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
     if !dialog.normalize_loudness { return None; }
     let lufs = match dialog.loudness_preset {
@@ -25464,6 +25470,7 @@ fn build_export_settings(
         burn_in_subtitles: dialog.burn_in_subtitles,
         embed_subtitles: dialog.embed_subtitles,
         target_lufs: dialog_target_lufs(dialog),
+        true_peak_dbtp: dialog_true_peak(dialog),
         embed_chapters: dialog.embed_chapters,
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
@@ -30584,6 +30591,7 @@ impl KlippApp {
                                     video_bitrate_kbps: if self.export_dialog.rate_control != klipp_core::RateControl::Crf { Some(self.export_dialog.video_bitrate_kbps) } else { None },
                                     rate_control: self.export_dialog.rate_control,
                                     target_lufs: dialog_target_lufs(&self.export_dialog),
+                                    true_peak_dbtp: dialog_true_peak(&self.export_dialog),
                                 },
                             };
                             self.prefs.export.custom_presets.push(preset);
@@ -36485,6 +36493,7 @@ mod render_script_tests {
             burn_in_subtitles: true,
             embed_subtitles: false,
             target_lufs: None,
+            true_peak_dbtp: None,
             embed_chapters: false,
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
@@ -39103,5 +39112,24 @@ mod export_summary_tests {
     fn sizes_read_as_sizes() {
         assert_eq!(humanise_bytes(148_000_000.0), "148 MB");
         assert_eq!(humanise_bytes(1_100_000_000.0), "1.1 GB");
+    }
+}
+
+#[cfg(test)]
+mod true_peak_tests {
+    use super::*;
+
+    #[test]
+    fn the_atsc_entry_asks_for_minus_two_and_the_others_leave_the_default() {
+        let mut d = ExportDialogState { normalize_loudness: true, loudness_preset: 3, ..Default::default() };
+        assert_eq!((dialog_target_lufs(&d), dialog_true_peak(&d)), (Some(-24.0), Some(-2.0)));
+        for other in [0, 1, 2, 4] {
+            d.loudness_preset = other;
+            assert_eq!(dialog_true_peak(&d), None, "entry {other}");
+        }
+        // No normalisation, no ceiling.
+        d.loudness_preset = 3;
+        d.normalize_loudness = false;
+        assert_eq!(dialog_true_peak(&d), None);
     }
 }

@@ -2682,7 +2682,7 @@ fn handle(
                 return Err("the timeline is empty; nothing to review".into());
             }
             let _ = std::fs::remove_file(&draft);
-            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), target_lufs: None, burn_captions: None }, &mut None)?;
+            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), target_lufs: None, true_peak_dbtp: None, burn_captions: None }, &mut None)?;
             // The draft, waited for: a review is the picture as rendered.
             let started = std::time::Instant::now();
             let job = loop {
@@ -4250,7 +4250,7 @@ reference:   {}",
             send_envelope(ctx, cmds, true)
         }
 
-        ControlCommand::Export { path, width, height, fps, crf, target_lufs, burn_captions } => {
+        ControlCommand::Export { path, width, height, fps, crf, target_lufs, true_peak_dbtp, burn_captions } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -4300,6 +4300,12 @@ reference:   {}",
             if target_lufs.is_some() {
                 settings.target_lufs = target_lufs;
             }
+            if let Some(ceiling) = true_peak_dbtp {
+                if !ceiling.is_finite() || !(-10.0..=0.0).contains(&ceiling) {
+                    return Err(format!("a true-peak ceiling of {ceiling} dBTP: give one from -10 to 0, -2 for ATSC A/85"));
+                }
+                settings.true_peak_dbtp = Some(ceiling);
+            }
             if let Some(burn) = burn_captions {
                 settings.burn_in_subtitles = burn;
             }
@@ -4308,6 +4314,7 @@ reference:   {}",
             let said = json!({
                 "captions_and_titles_burnt_in": settings.burn_in_subtitles,
                 "target_lufs": settings.target_lufs,
+                "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 "size": settings.resolution.map(|r| format!("{}x{}", r.width, r.height)),
             });
             let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);

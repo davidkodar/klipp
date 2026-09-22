@@ -111,6 +111,7 @@ fn main() {
         burn_in_subtitles: false,
         embed_subtitles: false,
         target_lufs: None,
+        true_peak_dbtp: None,
         // Linear is the default; the app passes the user's preference.
         pan_law: Default::default(),
         embed_chapters: false,
