@@ -82,6 +82,55 @@ if [ -z "$CARGO_BUILD_JOBS" ]; then
     export CARGO_BUILD_JOBS
 fi
 
+# The tests write real encoded files through the temp directory, and
+# on a stock systemd machine that is /tmp: a tmpfs sized at half of RAM
+# and shared with everything else running. The export parity suite
+# writes ProRes and 10-bit files, several per run, which is enough to
+# fill what is left of a 16 GB one.
+#
+# What comes back when it does is `Disk quota exceeded` from a test
+# that has nothing to do with quotas, on a machine with a terabyte
+# free — and the gate then reports "tests FAILED" and points at the
+# shaders, which is the wrong place entirely. That cost a detour once
+# already, and the next person would pay it again.
+#
+# So the tests get a scratch directory on the same disk as the build:
+# guaranteed disk-backed, sized like the repo, and removed by
+# `cargo clean` with everything else. `std::env::temp_dir()` reads
+# TMPDIR, so every test picks this up without knowing about it.
+#
+# KLIPP_TEST_TMPDIR=/somewhere puts it elsewhere.
+if [ -n "$KLIPP_TEST_TMPDIR" ]; then
+    _tmp="$KLIPP_TEST_TMPDIR"
+else
+    _tmp="$ROOT/target/test-tmp"
+fi
+mkdir -p "$_tmp" 2>/dev/null || {
+    printf '\n  pre-push: could not make a scratch directory at %s;\n' "$_tmp" >&2
+    printf '            the tests will use the system temp directory instead.\n\n' >&2
+}
+if [ -d "$_tmp" ]; then
+    TMPDIR="$_tmp"
+    export TMPDIR
+    # Say so when it is tight, before the tests spend 75 s arriving at
+    # a confusing failure. A warning, not a refusal: this is a
+    # heuristic and the number needed varies with what changed.
+    _free_kb=$(df -Pk "$_tmp" 2>/dev/null | awk 'NR==2 {print $4}')
+    case "$_free_kb" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$_free_kb" -lt 4194304 ]; then
+                printf '\n  pre-push: the test scratch directory has %s MB free.\n' \
+                    "$(( _free_kb / 1024 ))" >&2
+                printf '            %s\n' "$_tmp" >&2
+                printf '            The export tests write real encodes through it and\n' >&2
+                printf '            want a few GB. If the suite fails with a disk or\n' >&2
+                printf '            quota error, that is why — not your change.\n\n' >&2
+            fi
+            ;;
+    esac
+fi
+
 # A running Klipp competes with the GPU tests for the device.
 #
 # Several tests build their own wgpu device and render with it. With
