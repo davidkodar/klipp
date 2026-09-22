@@ -140,6 +140,7 @@ pub struct GpuEffectsPipeline {
     // Compute pipelines — effects (2-buffer: input, output, params)
     opacity_pipeline: wgpu::ComputePipeline,
     color_fade_pipeline: wgpu::ComputePipeline,
+    layer_gpu: layer::LayerGpu,
     blur_h_pipeline: wgpu::ComputePipeline,
     blur_v_pipeline: wgpu::ComputePipeline,
     sharpen_pipeline: wgpu::ComputePipeline,
@@ -1266,7 +1267,8 @@ impl GpuEffectsPipeline {
             &device, &pipeline_layout, "hdr_nit_map", SHADER_HDR_NIT_MAP,
         );
 
-        let pipeline_count = 63;
+        let layer_gpu = layer::LayerGpu::new(&device, &pipeline_layout, &transition_pl);
+        let pipeline_count = 68;
         info!(
             "GPU effects: compiled {} pipelines in {:.0}ms",
             pipeline_count,
@@ -1313,6 +1315,7 @@ impl GpuEffectsPipeline {
         info!("GPU effects pipeline initialized");
 
         Some(Self {
+            layer_gpu,
             device,
             queue,
             opacity_pipeline,
@@ -5742,6 +5745,9 @@ impl GpuEffectsPipeline {
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
+        if effects.iter().any(|e| matches!(e, BuiltinEffect::RoundedCorners { .. } | BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. })) {
+            self.layer_gpu.ensure_buffers(&self.device, byte_size);
+        }
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
@@ -5749,7 +5755,8 @@ impl GpuEffectsPipeline {
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        for effect in effects {
+        let mut effects = effects.iter().peekable();
+        while let Some(effect) = effects.next() {
             let (input, output) = if current_in_a {
                 (buf_a, buf_b)
             } else {
@@ -6613,14 +6620,19 @@ impl GpuEffectsPipeline {
                     // arm means dispatcher policy was bypassed — passthrough
                     // rather than producing visually-broken output.
                 }
-                BuiltinEffect::RoundedCorners { .. }
-                | BuiltinEffect::DropShadow { .. }
-                | BuiltinEffect::OuterGlow { .. } => {
-                    // The layer effects have no shader yet, and
-                    // chain_supports_gpu keeps a chain carrying one of
-                    // them off this path entirely. Same policy as Frei0r
-                    // above: passthrough rather than a layer that
-                    // silently loses its corners and its shadow.
+                BuiltinEffect::RoundedCorners { radius, feather } => {
+                    self.layer_corners(input, output, width, height, *radius, *feather);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {
+                    let mut run = vec![crate::layer::Spill::of(effect).unwrap()];
+                    while let Some(spill) = effects.peek().and_then(|e| crate::layer::Spill::of(e)) {
+                        run.push(spill);
+                        effects.next();
+                    }
+                    if self.layer_spills(input, output, width, height, &run) {
+                        current_in_a = !current_in_a;
+                    }
                 }
             }
         }
@@ -8825,6 +8837,8 @@ fn hue_rotate_hsl(c: vec3<f32>, degrees: f32) -> vec3<f32> {
 // opacity 0.5 means "half the photons" (matching DaVinci / Nuke);
 // the sRGB u8 version multiplied gamma-encoded bytes, which
 // produced visibly darker-than-half output.
+mod layer;
+
 const SHADER_OPACITY: &str = concat!(
     "
 struct Params {
@@ -15979,6 +15993,11 @@ mod bridge_u8_tests {
 /// add new ones as they are written.
 pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
     vec![
+        ("LAYER_ROWS", layer::ROWS),
+        ("LAYER_BOUNDS", layer::BOUNDS),
+        ("LAYER_CAST", layer::CAST),
+        ("LAYER_CORNERS", layer::CORNERS),
+        ("LAYER_OVER", layer::OVER),
         ("SHADER_OPACITY", SHADER_OPACITY),
         ("SHADER_COLOR_FADE", SHADER_COLOR_FADE),
         ("SHADER_BLUR_H", SHADER_BLUR_H),
