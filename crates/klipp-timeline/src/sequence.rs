@@ -786,6 +786,7 @@ impl Track {
             enabled: true,
             solo: false,
             blend_mode: klipp_core::BlendMode::Normal,
+            depth: 1.0,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
@@ -1040,6 +1041,7 @@ impl Track {
             enabled: clip.enabled,
             solo: clip.solo,
             blend_mode: clip.blend_mode,
+            depth: clip.depth,
             matte_source: clip.matte_source.clone(),
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
@@ -1100,6 +1102,7 @@ impl Track {
             enabled: clip.enabled,
             solo: clip.solo,
             blend_mode: clip.blend_mode,
+            depth: clip.depth,
             matte_source: clip.matte_source.clone(),
             matte_stencil: clip.matte_stencil.clone(),
             consumed_as_matte: clip.consumed_as_matte,
@@ -1438,6 +1441,14 @@ impl Default for StencilSettings {
     }
 }
 
+fn default_depth() -> f32 {
+    1.0
+}
+
+fn is_default_depth(d: &f32) -> bool {
+    (*d - 1.0).abs() < 1e-6
+}
+
 fn default_blend_mode() -> klipp_core::BlendMode { klipp_core::BlendMode::Normal }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1551,6 +1562,13 @@ pub struct Clip {
     /// all 13 modes already, just hard-coded to Normal at the call sites.
     #[serde(default = "default_blend_mode")]
     pub blend_mode: klipp_core::BlendMode,
+    /// How far back the clip sits behind the composed plane, for the
+    /// sequence camera: 1 is the plane itself, 3 is three times as far
+    /// and drifts a third as much, 0.5 is nearer and moves twice as much.
+    /// 0 fixes the clip to the screen, out of the camera's reach — type
+    /// that should hold still while the scene drifts.
+    #[serde(default = "default_depth", skip_serializing_if = "is_default_depth")]
+    pub depth: f32,
     /// Track-matte binding: another clip's rendered RGBA drives this clip's
     /// alpha mask. `None` = no matte (default). Render path multiplies this
     /// clip's source alpha by the resolved mask before blending.
@@ -1855,6 +1873,7 @@ impl Clip {
             enabled: true,
             solo: false,
             blend_mode: klipp_core::BlendMode::Normal,
+            depth: 1.0,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
@@ -1925,6 +1944,7 @@ impl Clip {
             enabled: true,
             solo: false,
             blend_mode: klipp_core::BlendMode::Normal,
+            depth: 1.0,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,
@@ -1994,6 +2014,7 @@ impl Clip {
             enabled: true,
             solo: false,
             blend_mode: klipp_core::BlendMode::Normal,
+            depth: 1.0,
             matte_source: None,
             matte_stencil: None,
             consumed_as_matte: false,

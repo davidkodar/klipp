@@ -872,7 +872,7 @@ impl Renderer {
             clip, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
             seq.resolution.width, seq.resolution.height,
         );
-        let resolved = match eval::camera_at(seq, time) {
+        let resolved = match eval::camera_at(seq, time).and_then(|cam| eval::camera_at_depth(cam, clip.depth)) {
             Some(cam) => eval::apply_camera(resolved, cam, width, height),
             None => resolved,
         };
@@ -2491,8 +2491,12 @@ pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
 /// during the walk would be applied again through the link.
 fn behind_the_camera(seq: &Sequence, time: Timecode, width: u32, height: u32, transforms: &mut HashMap<ClipId, ResolvedTransform>) {
     let Some(cam) = eval::camera_at(seq, time) else { return };
-    for t in transforms.values_mut() {
-        *t = eval::apply_camera(*t, cam, width, height);
+    // Each layer sees the camera from its own depth: parallax.
+    let depth: HashMap<ClipId, f32> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c.depth)).collect();
+    for (id, t) in transforms.iter_mut() {
+        if let Some(seen) = eval::camera_at_depth(cam, depth.get(id).copied().unwrap_or(1.0)) {
+            *t = eval::apply_camera(*t, seen, width, height);
+        }
     }
 }
 

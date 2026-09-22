@@ -982,3 +982,40 @@ fn a_camera_over_the_sequence_moves_every_layer_at_once() {
         assert!(px(&img, 24, 9)[1] < 0.5, "green has gone off the right: {:?}", px(&img, 24, 9));
     }
 }
+
+/// Depth reaches the render: under the same camera move, a layer on the
+/// glass (depth 0) holds still while a layer on the composed plane moves,
+/// and a layer three times as far moves a third as much.
+#[test]
+fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
+    let place = |c: &mut Clip, x: f32, depth: f32| {
+        klipp_core::keyframe::upsert_keyframe(&mut c.transform_scale_keyframes, 0.0, 0.25);
+        klipp_core::keyframe::upsert_keyframe(&mut c.transform_pos_x_keyframes, 0.0, x);
+        c.depth = depth;
+    };
+    let (mut plane, mut glass, mut far) = (media(0.0, 1.0), media(0.0, 1.0), media(0.0, 1.0));
+    place(&mut plane, -8.0, 1.0);
+    place(&mut glass, 8.0, 0.0);
+    place(&mut far, 0.0, 3.0);
+    // Below the other two, so neither covers it.
+    klipp_core::keyframe::upsert_keyframe(&mut far.transform_pos_y_keyframes, 0.0, 5.0);
+    let mut seq = sequence(vec![vec![plane.clone()], vec![glass.clone()], vec![far.clone()]]);
+    // Looking a quarter of the frame left: the plane moves 8 px right.
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.25);
+    let mut src = Flat::default()
+        .linear(&plane, [1.0, 0.0, 0.0])
+        .linear(&glass, [0.0, 1.0, 0.0])
+        .linear(&far, [0.0, 0.0, 1.0]);
+    let centre = |img: &[f32], ch: usize| {
+        let row = if ch == 2 { 14 } else { 9 };
+        let xs: Vec<u32> = (0..W).filter(|&x| px(img, x, row)[ch] > 0.5).collect();
+        xs.iter().sum::<u32>() as f32 / xs.len().max(1) as f32
+    };
+    for img in render(&seq, 0.5, &mut src) {
+        let (red, green, blue) = (centre(&img, 0), centre(&img, 1), centre(&img, 2));
+        assert!((red - 15.5).abs() < 1.0, "the plane moved to the middle: {red}");
+        assert!((green - 23.5).abs() < 1.0, "the glass held still: {green}");
+        // The far layer sat in the middle; it moves a third of 8 px.
+        assert!(blue > 15.5 && blue < 19.0, "the far layer moved about 2.7 px: {blue}");
+    }
+}
