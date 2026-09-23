@@ -1092,6 +1092,67 @@ fn a_tilted_card_is_drawn_in_perspective_the_way_its_tilt_says() {
     }
 }
 
+/// A clip carried by a link smears like one that moves itself.
+///
+/// Issue #195: a child following an animated parent had no keyframes of
+/// its own, so nothing asked what carried it and it never reached the
+/// blur path; and even reaching it, the shutter had no transform to
+/// sample, because the child's position at an instant is whatever its
+/// target was at that instant. A card-and-label move came out with the
+/// card smeared and the label sharp.
+///
+/// The comparison the issue proposes: the same motion, once followed
+/// and once written on the clip, must smear the same way.
+#[test]
+fn a_linked_clip_is_smeared_by_what_carries_it() {
+    let (w, h) = (128u32, 72u32);
+    // The mover is a speck at the centre of the frame — it cannot be
+    // moved out of the way, because the card inherits its position and
+    // would go with it — so the row measured is one the card covers and
+    // the speck does not.
+    let shot = |linked: bool| {
+        let mut parent = media(0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_scale_keyframes, 0.0, 0.01);
+        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_pos_x_keyframes, 0.0, -48.0);
+        klipp_core::keyframe::upsert_keyframe(&mut parent.transform_pos_x_keyframes, 1.0, 48.0);
+
+        let mut card = media(0.0, 1.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+        if linked {
+            card.transform_link = Some(klipp_timeline::TransformLink {
+                target: klipp_timeline::TransformLinkTarget::Clip(parent.id),
+                mode: klipp_timeline::LinkMode::default(),
+                inherit_scale: false,
+                inherit_position: true,
+                inherit_rotation: false,
+                inherit_anchor: false,
+            });
+        } else {
+            // The same path, written on the clip itself.
+            klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
+            klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 48.0);
+        }
+        let mut seq = sequence(vec![vec![card], vec![parent]]);
+        seq.camera.shutter_deg = 360.0;
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(false);
+        r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default())
+    };
+    let soft = |img: &[f32]| (0..w).filter(|&x| (0.05..0.95).contains(&img[((28 * w + x) * 4) as usize])).count();
+    let (followed, written) = (shot(true), shot(false));
+    assert!(
+        soft(&followed) >= 6,
+        "a card carried by an animated parent should smear, got {} soft pixels",
+        soft(&followed),
+    );
+    assert!(
+        (soft(&followed) as i64 - soft(&written) as i64).abs() <= 2,
+        "followed and written motion should smear alike: {} against {}",
+        soft(&followed),
+        soft(&written),
+    );
+}
+
 /// With the shutter open, a card moving fast is smeared along its path:
 /// its leading and trailing edges fade over the distance it covers while
 /// the shutter is open, where without it they are a pixel sharp. A card

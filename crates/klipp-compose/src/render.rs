@@ -2288,22 +2288,45 @@ impl Renderer {
         let clips: HashMap<ClipId, &Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.id, c)).collect();
         for id in transforms.keys() {
             let Some(c) = clips.get(id).copied() else { continue };
-            // A linked clip would need its target resolved per sample,
-            // and a title with its own blur keeps it.
-            if c.transform_link.is_some() || title_motion_blur(c).is_some() {
+            // A title carrying its own blur keeps it; sampling the
+            // sequence shutter over it as well would blur it twice.
+            if title_motion_blur(c).is_some() {
                 continue;
             }
-            let at = |o: f64| {
+            // A clip that follows another has no transform of its own to
+            // sample — its position at an instant is whatever its target
+            // was at that instant. So it is resolved the same way the
+            // frame resolves it, once per sample, each with a cache of
+            // its own: the resolver keys by clip id for one moment, and
+            // reusing one across the shutter would hand every sample the
+            // first sample's answer.
+            let linked = c.transform_link.is_some();
+            let mut samples: Vec<(ResolvedTransform, f64)> = Vec::with_capacity(n);
+            for &o in &offsets {
                 let t = (eval_clip_time(c, time) + o).max(0.0);
-                let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
-                let own = eval::evaluate_clip_own_transform(c, t, &ctx);
+                let own = if linked {
+                    // Carried at a far finer rate than the sequence's.
+                    // A Timecode rounds to whole frames and a shutter's
+                    // offsets are fractions of one, so at the sequence
+                    // rate every sample lands on one of two frames and
+                    // the clip smears about half as far as it should.
+                    let fine = time.rate.saturating_mul(1000);
+                    let at_sample = Timecode::from_secs_f64(time.to_secs_f64() + o, fine);
+                    let mut cache = HashMap::new();
+                    eval::resolve_clip_transform(
+                        c, seq, at_sample, fps, &mut cache,
+                        &mut self.glyph_cache, &mut self.titles, width, height,
+                    )
+                } else {
+                    let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
+                    eval::evaluate_clip_own_transform(c, t, &ctx)
+                };
                 let xf = match eval::camera_at_secs(seq, time.to_secs_f64() + o).and_then(|k| eval::camera_at_depth(k, c.depth)) {
                     Some(k) => eval::apply_camera(own, k, width, height),
                     None => own,
                 };
-                (xf, t)
-            };
-            let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| at(o)).collect();
+                samples.push((xf, t));
+            }
             let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&c.transform_tilt_x_keyframes, t, 0.0), klipp_core::keyframe::evaluate(&c.transform_tilt_y_keyframes, t, 0.0));
             let (first, last) = (samples[0], samples[n - 1]);
             let moved = (first.0 .0 - last.0 .0).abs() > 0.05
@@ -2779,17 +2802,66 @@ fn shutter_offsets(angle: f32, fps: f64, samples: u8) -> Vec<f64> {
 /// The fast paths step aside for such a clip; whether it really moved is
 /// settled with the samples.
 fn may_blur(seq: &Sequence, c: &Clip) -> bool {
-    let animated = |k: &[klipp_core::Keyframe]| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6);
-    let cam = &seq.camera;
-    seq.camera.shutter_deg > 0.0
-        && ((c.depth > 0.0 && [&cam.x_keyframes, &cam.y_keyframes, &cam.zoom_keyframes, &cam.roll_keyframes].iter().any(|k| animated(k)))
-            || [&c.transform_pos_x_keyframes, &c.transform_pos_y_keyframes, &c.transform_scale_keyframes, &c.transform_rotation_keyframes, &c.transform_tilt_x_keyframes, &c.transform_tilt_y_keyframes]
-                .iter()
-                .any(|k| animated(k)))
+    seq.camera.shutter_deg > 0.0 && (camera_moves_it(seq, c) || moves_itself(c) || follows_something_moving(seq, c, 0))
 }
 
-/// A title's motion blur, when on and not overridden by a transform link
-/// (a linked target would need resolving per sample).
+fn animated_keys(k: &[klipp_core::Keyframe]) -> bool {
+    k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6)
+}
+
+fn camera_moves_it(seq: &Sequence, c: &Clip) -> bool {
+    let cam = &seq.camera;
+    c.depth > 0.0
+        && [&cam.x_keyframes, &cam.y_keyframes, &cam.zoom_keyframes, &cam.roll_keyframes]
+            .iter()
+            .any(|k| animated_keys(k))
+}
+
+fn moves_itself(c: &Clip) -> bool {
+    [
+        &c.transform_pos_x_keyframes,
+        &c.transform_pos_y_keyframes,
+        &c.transform_scale_keyframes,
+        &c.transform_rotation_keyframes,
+        &c.transform_tilt_x_keyframes,
+        &c.transform_tilt_y_keyframes,
+    ]
+    .iter()
+    .any(|k| animated_keys(k))
+}
+
+/// Whether a clip is carried by something that moves.
+///
+/// A linked clip usually has no keyframes of its own — being carried is
+/// the whole point of linking one — so asking only what it animates
+/// answers "nothing" and it never reaches the blur path at all. What
+/// moves it is its target, so that is what gets asked, up the chain.
+/// A tracker target counts as moving: a tracker that held still would
+/// not be one.
+fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
+    // The same cap the transform resolver uses, against a corrupt file.
+    if depth >= 64 {
+        return false;
+    }
+    let Some(link) = &c.transform_link else { return false };
+    let target_id = match &link.target {
+        klipp_timeline::TransformLinkTarget::Clip(id) => *id,
+        klipp_timeline::TransformLinkTarget::Tracker { .. } => return true,
+    };
+    let Some(target) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|t| t.id == target_id) else {
+        return false;
+    };
+    camera_moves_it(seq, target) || moves_itself(target) || follows_something_moving(seq, target, depth + 1)
+}
+
+/// A title's motion blur, when on and not overridden by a transform
+/// link.
+///
+/// A linked title still blurs — the sequence shutter samples it now,
+/// with its target resolved at each one — but not by its own setting,
+/// which samples the title's own animation and would need the link
+/// resolved inside that path too. See #196, which is about what the
+/// title's own blur samples.
 fn title_motion_blur(clip: &Clip) -> Option<klipp_timeline::MotionBlur> {
     let td = clip.title_data()?;
     if clip.transform_link.is_some() {
