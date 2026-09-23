@@ -232,6 +232,22 @@ impl TransportBar {
                 resp.on_hover_text("Loop playback (Ctrl+L)");
             }
 
+            // Fullscreen viewer. The shortcut is F11, which a Mac
+            // keyboard need not have, so the viewer carries the button
+            // too rather than making fullscreen keyboard-only.
+            {
+                let full = state.fullscreen_viewer;
+                let tint = if full { theme.accent } else { icon_tint };
+                let icon = if full { Icon::FrameCorners } else { Icon::ArrowsOut };
+                if ui
+                    .add(egui::Button::image(icon.image(16.0).tint(tint)).min_size(egui::vec2(32.0, 32.0)))
+                    .on_hover_text(if full { "Leave fullscreen (Esc)" } else { "Fullscreen viewer" })
+                    .clicked()
+                {
+                    cmds.push(AppCommand::ToggleFullscreen);
+                }
+            }
+
             // Timecode display — clickable for input
             ui.add_space(24.0);
 

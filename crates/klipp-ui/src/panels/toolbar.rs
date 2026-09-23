@@ -699,6 +699,15 @@ impl ToolbarPanel {
                 }
             });
             ui.separator();
+            // Fullscreen is on F11, which a Mac keyboard does not
+            // always have, so it needs somewhere to be clicked.
+            let full_check = if state.fullscreen_viewer { "\u{2714} " } else { "  " };
+            if ui.add(egui::Button::new(format!("{full_check}Fullscreen Viewer"))
+                .shortcut_text(kb.display_for("toggle_fullscreen"))).clicked() {
+                cmds.push(AppCommand::ToggleFullscreen);
+                ui.close_menu();
+            }
+            ui.separator();
             let zebra_check = if state.viewer_overlays.zebras { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{zebra_check}Zebras")).shortcut_text(kb.display_for("toggle_zebra"))).clicked() {
                 state.viewer_overlays.zebras = !state.viewer_overlays.zebras;
