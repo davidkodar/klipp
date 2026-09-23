@@ -879,9 +879,83 @@ fn a_default_title_shows_on_a_portrait_uhd_stack() {
     assert!(bright > 5000, "bright pixels: {bright}");
 }
 
+/// A title that does not move, whose letters do, still smears.
+///
+/// Issue #196: motion blur placed one rasterisation of the title at
+/// each shutter offset, so a clip that sits still produced the same
+/// picture every time and averaged to itself. A word rising into place
+/// came out as sharp letters at one position — the sharpness motion
+/// blur exists to remove. The letters are what move here; the clip
+/// never does.
+#[test]
+fn a_stationary_title_whose_letters_rise_is_smeared_by_them() {
+    // The title renderer scales type by height/1080, so the frame has
+    // to be big enough and the size large enough for real glyphs.
+    let (w, h) = (480u32, 270u32);
+    // The animation is the same in both; only the shutter differs, so
+    // what the comparison isolates is whether it was sampled.
+    let shot = |shutter_angle: f32| {
+        let mut tb = klipp_timeline::TextBox {
+            text: "RISE".into(),
+            font_size: 420.0,
+            // Dark on the white source, so a glyph's coverage reads as
+            // a value between the two.
+            color: [0, 0, 0, 255],
+            ..Default::default()
+        };
+        tb.motion_blur = Some(klipp_timeline::MotionBlur {
+            enabled: true,
+            shutter_angle,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 8,
+        });
+        {
+            // Each letter arrives over a tenth of a second, one after
+            // the next: at 0.25 s some are in place and some are still
+            // travelling, which is the moment worth sampling.
+            tb.motion.enter = Some(klipp_core::title_motion::Motion {
+                kind: klipp_core::title_motion::MotionKind::Rise,
+                duration_secs: 0.1,
+                delay_secs: 0.0,
+                easing: Default::default(),
+                stagger: klipp_core::title_motion::StaggerUnit::Char,
+                stagger_secs: 0.08,
+                distance: 1.0,
+            });
+        }
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: w, height: h };
+        let mut text = Track::new("Text 1", TrackKind::Text);
+        text.clips = vec![clip(ClipKind::Title(klipp_timeline::TitleData::single_text(tb)), 0.0, 5.0)];
+        let mut video = Track::new("V1", TrackKind::Video);
+        video.clips = vec![media(0.0, 5.0)];
+        seq.tracks = vec![text, video];
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(false);
+        r.render(&seq, tc(0.25), w, h, &mut White, RenderOptions::default())
+    };
+    // Partly-covered pixels: a sharp glyph edge makes few, a smeared
+    // one makes many.
+    let soft = |img: &[f32]| {
+        img.chunks_exact(4).filter(|p| (0.05..0.95).contains(&p[0])).count()
+    };
+    let (closed, open) = (shot(0.0), shot(360.0));
+    assert!(
+        soft(&closed) > 0,
+        "the title should be on screen at all: no partly-covered pixels with the shutter closed",
+    );
+    assert!(
+        soft(&open) * 2 > soft(&closed) * 3,
+        "a letter travelling while the shutter is open should smear: {} partly-covered pixels against {} with it closed (measured 5317 against 2737)",
+        soft(&open),
+        soft(&closed),
+    );
+}
+
 /// The viewer's fast path lays a title sprite over the presented bytes
 /// in display space. Where the text is solid or absent that is the full
 /// composite to the bit; only an anti-aliased edge may differ a little.
+
 #[test]
 fn a_title_laid_over_display_bytes_matches_the_full_composite() {
     let mut seq = Sequence::new_default();
