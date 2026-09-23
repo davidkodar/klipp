@@ -397,6 +397,9 @@ impl crate::Analyser for TranscriptAnalyser {
     }
 }
 
+/// Serialises the model load below; see the note at the lock.
+static MODEL_LOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
     use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
@@ -415,6 +418,22 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
         _ => DtwModelPreset::Base,
     };
     cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+    // One model load at a time, whatever the queue is doing.
+    //
+    // ggml brings its Vulkan backend up the first time a context asks
+    // for one, and that initialisation is not thread-safe. The queue
+    // runs two analyses at once and only gates *video* on top of that,
+    // so two audio files are two transcriptions starting together —
+    // the ordinary case, not a corner. Racing there left the second
+    // one calling through a half-written buffer-type vtable: a jump to
+    // address zero, inside ggml_backend_alloc_ctx_tensors_from_buft,
+    // which takes the whole app with it.
+    //
+    // The lock is held across the load only, not the transcription, so
+    // the work itself still overlaps. Reopening a project with a dozen
+    // un-analysed audio files reproduced the crash every time before
+    // this and not once after.
+    let _loading = MODEL_LOAD.lock().unwrap_or_else(|e| e.into_inner());
     let ctx = match WhisperContext::new_with_params(model, cparams) {
         Ok(ctx) => ctx,
         // A GPU that will not have it (no memory left, a driver without
@@ -430,6 +449,7 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
         Err(e) => return Err(format!("whisper model: {e}")),
     };
     let mut state = ctx.create_state().map_err(|e| format!("whisper state: {e}"))?;
+    drop(_loading);
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     // Half the machine, up to sixteen: whisper stops gaining past that,
     // and the app is still being used while this runs.
