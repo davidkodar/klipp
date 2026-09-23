@@ -365,7 +365,7 @@ impl NewInspectorPanel {
                     } else if let Some(bm) = bin_media {
                         info_tab::show_bin_media(ui, state, theme, bm, &mut self.tag_input, &mut cmds);
                     } else {
-                        info_tab::show_no_selection(ui, state, theme);
+                        info_tab::show_no_selection(ui, state, theme, &mut cmds);
                     }
                 }
             }

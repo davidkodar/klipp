@@ -832,6 +832,42 @@ pub enum ClipDrop {
     EndOfTimeline,
 }
 
+
+/// Which of the sequence camera's values a key belongs to.
+///
+/// The camera keeps one keyframe list per value rather than one list of
+/// poses, so a key is named by the list it goes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CameraParam {
+    /// Where it looks, across: 0.5 is the middle of the scene.
+    X,
+    /// Where it looks, down.
+    Y,
+    /// How far in, 1 being the scene as composed.
+    Zoom,
+    /// Its roll, clockwise in degrees.
+    Roll,
+}
+
+impl CameraParam {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::X => "X",
+            Self::Y => "Y",
+            Self::Zoom => "Zoom",
+            Self::Roll => "Roll",
+        }
+    }
+
+    /// What the value is when nothing has been keyed.
+    pub fn resting(&self) -> f32 {
+        match self {
+            Self::X | Self::Y => 0.5,
+            Self::Zoom => 1.0,
+            Self::Roll => 0.0,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     // Transport
@@ -2507,6 +2543,14 @@ pub enum AppCommand {
     /// The sequence camera's shutter: motion blur on everything that moves.
     /// `shutter_deg` 0 is off. Undoable.
     SetSequenceShutter { sequence_idx: usize, shutter_deg: f32, samples: u8 },
+
+    /// One of the sequence camera's moving values, keyed at a moment.
+    /// Where it looks, how far in, and its roll — the move itself,
+    /// which until now could only be set through the `camera` op over
+    /// the control socket. Undoable, as one camera snapshot.
+    SetSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64, value: f32 },
+    /// The key at that moment, taken away again. Undoable.
+    RemoveSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64 },
 
     // Clip speed
     SetClipSpeed { clip_id: ClipId, speed: f64 },

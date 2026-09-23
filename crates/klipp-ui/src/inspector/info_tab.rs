@@ -8,10 +8,13 @@ pub fn show_no_selection(
     ui: &mut egui::Ui,
     state: &AppState,
     theme: &KlippTheme,
+    cmds: &mut Vec<klipp_core::AppCommand>,
 ) {
     let pad = 14.0;
     let row_h = 30.0;
     let seq = state.sequence();
+
+    camera_section(ui, state, theme, cmds);
 
     // ── PROJECT ──
     section_card(ui, "PROJECT", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
@@ -1466,4 +1469,78 @@ fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
             None
         }
     }
+}
+
+/// The sequence camera's move, keyed at the playhead.
+///
+/// The camera had a shutter in Sequence Settings and nothing for the
+/// move itself: where it looks, how far in, its roll. Those were
+/// reachable only through the `camera` op over the control socket,
+/// which is no use to someone editing.
+///
+/// Keys are taken at `state.playhead`, the frame-quantised one, not at
+/// `playhead_smooth_secs`. The smooth value is the raw pointer position
+/// during a scrub and is never resynced, so keying from it writes keys
+/// a few milliseconds off the frame the user is looking at — reachable
+/// by nothing afterwards.
+fn camera_section(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+    cmds: &mut Vec<klipp_core::AppCommand>,
+) {
+    use klipp_core::CameraParam;
+    let seq = state.sequence();
+    let idx = state.active_sequence_idx;
+    let at = state.playhead.to_secs_f64();
+    section_card(ui, "CAMERA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
+        for param in [CameraParam::X, CameraParam::Y, CameraParam::Zoom, CameraParam::Roll] {
+            let keys = match param {
+                CameraParam::X => &seq.camera.x_keyframes,
+                CameraParam::Y => &seq.camera.y_keyframes,
+                CameraParam::Zoom => &seq.camera.zoom_keyframes,
+                CameraParam::Roll => &seq.camera.roll_keyframes,
+            };
+            let resting = param.resting();
+            let mut value = klipp_core::keyframe::evaluate(keys, at, resting);
+            // "Is there a key here" is asked of the function that would
+            // remove it, rather than by repeating its tolerance. That
+            // number is being changed by the keyframe-precision work,
+            // and a second copy here would be a second thing to find —
+            // this way the diamond cannot light for a key the click
+            // would then fail to remove, whatever the tolerance becomes.
+            let keyed = {
+                let mut probe = keys.clone();
+                klipp_core::keyframe::remove_keyframe_at(&mut probe, at);
+                probe.len() < keys.len()
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(param.label()).color(theme.text_secondary));
+                let speed = match param {
+                    CameraParam::Roll => 0.25,
+                    CameraParam::Zoom => 0.01,
+                    _ => 0.002,
+                };
+                if ui.add(egui::DragValue::new(&mut value).speed(speed)).changed() {
+                    cmds.push(klipp_core::AppCommand::SetSequenceCameraKey {
+                        sequence_idx: idx, param, time_secs: at, value,
+                    });
+                }
+                let mark = if keyed { "\u{25C6}" } else { "\u{25C7}" };
+                let tint = if keyed { theme.accent } else { theme.text_dim };
+                if ui.add(egui::Button::new(egui::RichText::new(mark).color(tint)).frame(false))
+                    .on_hover_text(if keyed { "Remove this key" } else { "Key at the playhead" })
+                    .clicked()
+                {
+                    cmds.push(if keyed {
+                        klipp_core::AppCommand::RemoveSequenceCameraKey { sequence_idx: idx, param, time_secs: at }
+                    } else {
+                        klipp_core::AppCommand::SetSequenceCameraKey {
+                            sequence_idx: idx, param, time_secs: at, value,
+                        }
+                    });
+                }
+            });
+        }
+    });
 }
