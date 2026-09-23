@@ -15,12 +15,12 @@ fn continuous_change_is_not_a_slow_cut_recipe() {
 
 #[test]
 fn cut_changes_do_not_count_as_within_shot_motion_and_holds_are_reported() {
-    let motion = Motion { duration_secs: 6.0, per_second: vec![0.1, 20.0, 20.0, 0.1, 0.1, 0.1], mean: 6.7, p95: 20.0 };
+    let motion = Motion { duration_secs: 6.0, per_second: vec![0.1, 0.1, 20.0, 0.1, 0.1, 0.1], mean: 6.7, p95: 20.0 };
     let shots = Shots::from_boundaries(6.0, vec![2.0]);
     let sheet = beatsheet::build(6.0, Some(&shots), &[(3.0, 6.0)]);
     let evidence = style_pacing_evidence(&shots.boundaries, Some(&motion), Some(&sheet));
     assert_eq!(evidence["within_shot_motion_class"], "static");
-    assert_eq!(evidence["within_shot_sample_seconds"], 4);
+    assert_eq!(evidence["within_shot_sample_seconds"], 5);
     assert_eq!(evidence["hold_evidence"], "detected");
     assert!(!evidence["detected_holds"].as_array().unwrap().is_empty());
     let cuts = style_cut_summary(&[(0.0, 2.0), (2.0, 6.0)], &[2.0], 6.0,
@@ -39,10 +39,13 @@ fn absent_analysis_is_not_low_motion_or_a_hold() {
 }
 
 #[test]
-fn synthetic_reveals_with_few_cuts_do_not_prescribe_long_holds() {
-    // Original procedural typography: a travelling entrance, then two
-    // reveals within one continuous scene. No reference-media dependency.
-    let source = "color=c=black:s=320x180:r=30:d=6,drawtext=text='REVEAL':x='w-t*60':y=35:fontsize=28:fontcolor=white,drawtext=text='BUILD':x=20:y=95:fontsize=28:fontcolor=white:enable='gte(t,2)',drawtext=text='LAUNCH':x=170:y=135:fontsize=24:fontcolor=orange:enable='gte(t,4)'";
+fn synthetic_motion_with_few_cuts_do_not_prescribe_long_holds() {
+    if !std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success()) {
+        eprintln!("skipping synthetic motion fixture: ffmpeg unavailable");
+        return;
+    }
+    // A continuously moving test pattern needs neither fonts nor drawtext.
+    let source = "testsrc2=size=160x90:rate=30:duration=6";
     let read = |filter: &str| {
         let output = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-nostdin", "-f", "lavfi", "-i", source,
@@ -56,9 +59,54 @@ fn synthetic_reveals_with_few_cuts_do_not_prescribe_long_holds() {
     assert!(boundaries.len() <= 1, "continuous scene: {boundaries:?}");
     assert!(motion.mean > 0.0);
     let evidence = style_pacing_evidence(&boundaries, Some(&motion), None);
-    let guidance = evidence["guidance"].as_str().unwrap();
+    let shots = Shots::from_boundaries(6.0, boundaries);
+    let beats = BeatData { bpm: 0.0, confidence: 0.0, beat_times: vec![] };
+    let cuts = style_cut_summary(&shots.shots.iter().map(|s| (s.start_secs, s.end_secs)).collect::<Vec<_>>(), &shots.boundaries, 6.0, &beats);
+    let response = klipp_control::style_profile_response("synthetic", "fixture", cuts, &beats, serde_json::Value::Null, None, evidence.clone());
+    let guidance = response["guidance"].as_str().unwrap();
+    for field in ["text", "guidance", "next"] {
+        let text = response[field].as_str().unwrap();
+        assert!(!text.contains("aim for shots"), "{field}: {text}");
+        assert!(!text.contains("Cut slow"), "{field}: {text}");
+        assert!(!text.contains("target shot length"), "{field}: {text}");
+    }
     assert!(guidance.contains("not target hold lengths or animation timings"));
     assert!(!guidance.contains("aim for shots"));
     assert!(!guidance.contains("Cut slow"));
     assert!(evidence["within_shot_sample_seconds"].as_u64().unwrap() >= 4);
+}
+
+#[test]
+fn whole_second_cuts_exclude_only_their_own_bin() {
+    let motion = Motion { per_second: vec![9.0; 10], ..Default::default() };
+    let evidence = style_pacing_evidence(&[2.0, 4.0, 6.0, 8.0], Some(&motion), None);
+    assert_eq!(evidence["within_shot_sample_seconds"], 6);
+    assert_eq!(evidence["motion_evidence"], "measured");
+}
+
+#[test]
+fn fast_cuts_are_distinct_from_missing_analysis() {
+    let motion = Motion { per_second: vec![9.0; 2], ..Default::default() };
+    let evidence = style_pacing_evidence(&[0.5, 1.5], Some(&motion), None);
+    assert_eq!(evidence["motion_evidence"], "excluded_by_cuts");
+    assert!(evidence["within_shot_mean_ydif"].is_null());
+    assert_ne!(evidence, style_pacing_evidence(&[], None, None));
+    assert!(evidence["guidance"].as_str().unwrap().contains("every valid one-second sample contains a cut"));
+}
+
+#[test]
+fn complete_response_keeps_cut_statistics_descriptive() {
+    let beats = BeatData { bpm: 120.0, confidence: 0.9, beat_times: vec![] };
+    for motion in [None, Some(Motion { per_second: vec![3.0; 12], ..Default::default() })] {
+        let cuts = style_cut_summary(&[(0.0, 12.0)], &[], 12.0, &beats);
+        let pacing = style_pacing_evidence(&[], motion.as_ref(), None);
+        let response = klipp_control::style_profile_response("fixture", "id", cuts, &beats, serde_json::Value::Null, None, pacing);
+        for field in ["text", "guidance", "next"] {
+            let text = response[field].as_str().unwrap();
+            for forbidden in ["aim for shots", "Cut slow", "target shot length"] {
+                assert!(!text.contains(forbidden), "{field}: {text}");
+            }
+        }
+        assert!(response["guidance"].as_str().unwrap().contains("not target hold lengths"));
+    }
 }

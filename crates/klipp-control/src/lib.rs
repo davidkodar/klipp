@@ -751,17 +751,25 @@ pub fn style_pacing_evidence(
     // Ignore the one-second bins touching cuts: their luma difference can
     // come from the edit itself rather than motion within a shot.
     let samples: Vec<f32> = motion.into_iter().flat_map(|m| m.per_second.iter().enumerate())
-        .filter(|(i, v)| v.is_finite() && **v >= 0.0 && !boundaries.iter().any(|b| *b >= *i as f64 && *b <= (*i + 1) as f64))
+        .filter(|(i, v)| v.is_finite() && **v >= 0.0 && !boundaries.iter().any(|b| *b >= *i as f64 && *b < (*i + 1) as f64))
         .map(|(_, v)| *v).collect();
     let within_mean = (!samples.is_empty()).then(|| samples.iter().sum::<f32>() / samples.len() as f32);
     let holds = sheet.filter(|s| s.has_freeze).map(|s| s.segments.iter()
         .filter(|s| s.kind == "idle")
         .map(|s| serde_json::json!({"start_secs": s.start_secs, "end_secs": s.end_secs}))
         .collect::<Vec<_>>());
+    let motion_class = within_mean.map(klipp_analysis::motion::class_for);
+    let motion_evidence = match motion {
+        None => "unavailable",
+        Some(m) if !m.per_second.iter().any(|v| v.is_finite() && *v >= 0.0) => "no_valid_samples",
+        Some(_) if samples.is_empty() => "excluded_by_cuts",
+        Some(_) => "measured",
+    };
     let mut guidance = String::from("Detected-shot durations describe cut cadence only; they are not target hold lengths or animation timings. ");
-    match within_mean {
-        Some(v) if v >= 1.5 => guidance.push_str("Measured change continues inside detected shots. Inspect entrances, reveals, transformations and exits before choosing edit timings. "),
-        Some(_) => guidance.push_str("Measured within-shot change is low, but small animated elements can be missed by a whole-frame average. Inspect the reference before choosing holds. "),
+    match motion_class {
+        Some("static") => guidance.push_str("Measured within-shot change is low, but small animated elements can be missed by a whole-frame average. Inspect the reference before choosing holds. "),
+        Some(_) => guidance.push_str("Measured change continues inside detected shots. Inspect entrances, reveals, transformations and exits before choosing edit timings. "),
+        None if motion_evidence == "excluded_by_cuts" => guidance.push_str("Motion was analysed, but every valid one-second sample contains a cut; within-shot motion cannot be isolated at this sampling rate. "),
         None => guidance.push_str("Within-shot motion evidence is unavailable; cut statistics alone cannot establish the reference's visual pace. "),
     }
     if holds.as_ref().is_some_and(|h| !h.is_empty()) {
@@ -771,10 +779,61 @@ pub fn style_pacing_evidence(
     serde_json::json!({
         "within_shot_mean_ydif": within_mean,
         "within_shot_sample_seconds": samples.len(),
-        "within_shot_motion_class": within_mean.map(klipp_analysis::motion::class_for),
+        "within_shot_motion_class": motion_class,
+        "motion_evidence": motion_evidence,
         "detected_holds": holds,
         "hold_evidence": match sheet { None => "unavailable", Some(s) if s.has_freeze => "detected", Some(_) => "no_settled_intervals_detected" },
         "guidance": guidance,
+    })
+}
+
+/// Assemble the complete StyleProfile response after media analysis and scope
+/// measurements. Keeping the returned text, guidance and next step together
+/// lets regressions exercise the same response the control handler sends.
+pub fn style_profile_response(
+    filename: &str,
+    media_id: &str,
+    cuts: serde_json::Value,
+    beats: &klipp_analysis::beats::BeatData,
+    look: serde_json::Value,
+    motion: Option<serde_json::Value>,
+    pacing: serde_json::Value,
+) -> serde_json::Value {
+    // Guidance: turn the numbers into how to build the same feel.
+    let pace = cuts["pace"].as_str().unwrap_or("medium");
+    let mean_shot = cuts["mean_shot_secs"].as_f64().unwrap_or(0.0);
+    let mut guide = pacing["guidance"].as_str().unwrap_or_default().to_string();
+    if beats.confidence > 0.3 {
+        let onb = cuts["cut_on_beat_ratio"].as_f64().unwrap_or(0.0);
+        if onb > 0.4 {
+            guide.push_str(&format!("It cuts on the beat ({:.0}% of cuts) at {:.0} BPM — place your cuts on beat times (klipp_beats on your music). ", onb * 100.0, beats.bpm));
+        } else {
+            guide.push_str(&format!("The music runs at {:.0} BPM; compare cuts and internal animation accents against the beat. ", beats.bpm));
+        }
+    }
+    if let Some(l) = look.as_object() {
+        guide.push_str(&format!("Grade toward the look ({}): blacks ~{} IRE, whites ~{} IRE, saturation ~{}%. Use match_grade against a frame of the reference, or look for a LUT. ", l.get("summary").and_then(|v| v.as_str()).unwrap_or(""), l.get("black_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("white_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("saturation_pct").and_then(|v| v.as_f64()).unwrap_or(0.0)));
+    }
+    guide.push_str("Match the energy with your own or licensed music, not the reference's track.");
+
+    let text = format!(
+        "Style of {filename}:\ndetected cuts — {} shots, mean {:.1} s, {:.0} per minute ({pace} cut cadence){}\nlook — {}\nmotion — {}\n\n{guide}",
+        cuts["shot_count"].as_i64().unwrap_or(0),
+        mean_shot,
+        cuts["cuts_per_min"].as_f64().unwrap_or(0.0),
+        if beats.confidence > 0.3 { format!("; {:.0} BPM", beats.bpm) } else { String::new() },
+        look.get("summary").and_then(|v| v.as_str()).unwrap_or("not measured"),
+        motion.as_ref().and_then(|m| m.get("class")).and_then(|v| v.as_str()).unwrap_or("unknown"),
+    );
+    json!({
+        "text": text, "media_id": media_id, "filename": filename,
+        "cuts": cuts,
+        "tempo": { "bpm": beats.bpm, "confidence": beats.confidence },
+        "look": look,
+        "motion": motion,
+        "guidance": guide,
+        "pacing_evidence": pacing,
+        "next": "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music.",
     })
 }
 
@@ -3796,44 +3855,8 @@ reference:   {}",
                 json!(null)
             };
             let motion = report.motion.as_ref().map(|m| json!({ "class": klipp_analysis::motion::class_for(m.mean), "mean": m.mean }));
-
-            // Guidance: turn the numbers into how to build the same feel.
-            let pace = cuts["pace"].as_str().unwrap_or("medium");
-            let mean_shot = cuts["mean_shot_secs"].as_f64().unwrap_or(0.0);
             let pacing = style_pacing_evidence(&shots.boundaries, report.motion.as_ref(), report.beatsheet.as_ref());
-            let mut guide = pacing["guidance"].as_str().unwrap_or_default().to_string();
-            if beats.confidence > 0.3 {
-                let onb = cuts["cut_on_beat_ratio"].as_f64().unwrap_or(0.0);
-                if onb > 0.4 {
-                    guide.push_str(&format!("It cuts on the beat ({:.0}% of cuts) at {:.0} BPM — place your cuts on beat times (klipp_beats on your music). ", onb * 100.0, beats.bpm));
-                } else {
-                    guide.push_str(&format!("The music runs at {:.0} BPM; compare cuts and internal animation accents against the beat. ", beats.bpm));
-                }
-            }
-            if let Some(l) = look.as_object() {
-                guide.push_str(&format!("Grade toward the look ({}): blacks ~{} IRE, whites ~{} IRE, saturation ~{}%. Use match_grade against a frame of the reference, or look for a LUT. ", l.get("summary").and_then(|v| v.as_str()).unwrap_or(""), l.get("black_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("white_ire").and_then(|v| v.as_f64()).unwrap_or(0.0), l.get("saturation_pct").and_then(|v| v.as_f64()).unwrap_or(0.0)));
-            }
-            guide.push_str("Match the energy with your own or licensed music, not the reference's track.");
-
-            let text = format!(
-                "Style of {filename}:\ndetected cuts — {} shots, mean {:.1} s, {:.0} per minute ({pace} cut cadence){}\nlook — {}\nmotion — {}\n\n{guide}",
-                cuts["shot_count"].as_i64().unwrap_or(0),
-                mean_shot,
-                cuts["cuts_per_min"].as_f64().unwrap_or(0.0),
-                if beats.confidence > 0.3 { format!("; {:.0} BPM", beats.bpm) } else { String::new() },
-                look.get("summary").and_then(|v| v.as_str()).unwrap_or("not measured"),
-                motion.as_ref().and_then(|m| m.get("class")).and_then(|v| v.as_str()).unwrap_or("unknown"),
-            );
-            Ok(json!({
-                "text": text, "media_id": media_id, "filename": filename,
-                "cuts": cuts,
-                "tempo": { "bpm": beats.bpm, "confidence": beats.confidence },
-                "look": look,
-                "motion": motion,
-                "guidance": guide,
-                "pacing_evidence": pacing,
-                "next": "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music.",
-            }))
+            Ok(style_profile_response(&filename, &media_id, cuts, &beats, look, motion, pacing))
         }
 
         ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {
