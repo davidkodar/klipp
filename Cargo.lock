@@ -2775,6 +2775,7 @@ dependencies = [
 name = "klipp-core"
 version = "0.1.0"
 dependencies = [
+ "half",
  "image",
  "klipp-effects",
  "serde",
