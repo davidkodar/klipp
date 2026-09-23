@@ -24754,7 +24754,7 @@ impl KlippApp {
                         let clip_end_secs = clip.timeline_out.to_secs_f64();
                         if playhead_secs >= clip_start_secs && playhead_secs <= clip_end_secs {
                             let clip_time_secs = playhead_secs - clip_start_secs;
-                            let tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+                            let tolerance = 0.5 / seq.fps.as_f64();
                             if track_kind == klipp_timeline::TrackKind::Audio {
                                 match self.state.rubber_band_param.clone() {
                                     crate::state::RubberBandParam::ClipParam(param) => {
@@ -24763,7 +24763,7 @@ impl KlippApp {
                                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                             klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                         };
-                                        let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                         if let Some(kf) = existing {
                                             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
                                         } else {
@@ -24780,7 +24780,7 @@ impl KlippApp {
                                         let key = format!("{effect_index}:{param_name}");
                                         let empty: Vec<klipp_core::Keyframe> = Vec::new();
                                         let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
-                                        let existing = kfs_ref.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        let existing = crate::inspector::keyframe_selection::nearest(kfs_ref, clip_time_secs, tolerance).map(|i| &kfs_ref[i]);
                                         if let Some(kf) = existing {
                                             cmds.push(AppCommand::RemoveAudioEffectKeyframe {
                                                 clip_id, effect_index, param_name: param_name.clone(), time_secs: kf.time_secs,
@@ -24819,7 +24819,7 @@ impl KlippApp {
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
-                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                 if let Some(kf) = existing {
                                     cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kf.time_secs });
                                 } else {
@@ -24895,7 +24895,7 @@ impl KlippApp {
                         };
                         // Find previous keyframe (strictly before current time with tolerance)
                         let prev = keyframes.iter().rev()
-                            .find(|kf| kf.time_secs < clip_time_secs - 0.001);
+                            .find(|kf| kf.time_secs < clip_time_secs - 0.5 / seq.fps.as_f64());
                         if let Some(kf) = prev {
                             let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
                             let rate = self.state.playhead.rate;
@@ -24943,7 +24943,7 @@ impl KlippApp {
                         };
                         // Find next keyframe (strictly after current time with tolerance)
                         let next = keyframes.iter()
-                            .find(|kf| kf.time_secs > clip_time_secs + 0.001);
+                            .find(|kf| kf.time_secs > clip_time_secs + 0.5 / seq.fps.as_f64());
                         if let Some(kf) = next {
                             let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
                             let rate = self.state.playhead.rate;

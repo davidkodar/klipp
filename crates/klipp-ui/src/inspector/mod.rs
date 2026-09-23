@@ -1,3 +1,4 @@
+pub(crate) mod keyframe_selection;
 mod vector_path;
 pub mod letter_picker;
 pub mod tracker_picker;
@@ -207,7 +208,7 @@ impl NewInspectorPanel {
             match active_tab {
                 InspectorTab::Video => {
                     if let Some((_, clip)) = clip_info {
-                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
                         video_tab::show(ui, theme, state, None, bin_media, &mut cmds);
@@ -224,7 +225,7 @@ impl NewInspectorPanel {
                         let source_channels = clip.media_id()
                             .and_then(|mid| state.media_pool.get(&mid))
                             .and_then(|item| item.audio_channels);
-                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
                             .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
                             .map(|(i, t)| audio_tab::TrackInfo {
@@ -321,7 +322,7 @@ impl NewInspectorPanel {
                 }
                 InspectorTab::Effects => {
                     if let Some((_, clip)) = clip_info {
-                        let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+                        let clip_time_secs = keyframe_selection::clip_time(state, clip);
                         effects_tab::show(ui, theme, state, clip, &mut cmds, &mut self.show_add_builtin, &mut self.show_add_ofx, clip_time_secs);
                     } else {
                         effects_tab::show_empty(ui, theme, &mut cmds);
@@ -370,6 +371,9 @@ impl NewInspectorPanel {
             }
         });
 
+        for cmd in &mut cmds {
+            keyframe_selection::resolve_command(state.sequence(), cmd);
+        }
         cmds
     }
 }
@@ -446,33 +450,13 @@ fn title_group_is_open(
 }
 
 /// Build a `KeyframeState` describing how `clip_time_secs` relates to
-/// the keyframe vec. Mirrors `inspector::video_tab::keyframe_state` —
-/// duplicated here to avoid making the video_tab helper public, since
-/// the title path has its own playhead semantics that may diverge
-/// later (per-clip vs per-object keyframe targets).
+/// the keyframe vec using the same frame window as video and audio.
 fn title_object_keyframe_state(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
+    keyframe_tolerance: f64,
 ) -> crate::widgets::scrubby_param::KeyframeState {
-    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
-    crate::widgets::scrubby_param::KeyframeState {
-        has_keyframe_at_playhead: keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
-        has_any_keyframes: !keyframes.is_empty(),
-        prev_keyframe_time: keyframes
-            .iter()
-            .rfind(|k| k.time_secs < clip_time_secs - kf_tolerance)
-            .map(|k| k.time_secs),
-        next_keyframe_time: keyframes
-            .iter()
-            .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
-            .map(|k| k.time_secs),
-        current_interpolation: keyframes
-            .iter()
-            .find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance)
-            .map(|k| k.interpolation),
-    }
+    crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, keyframe_tolerance)
 }
 
 /// Translate a `ScrubbyParamResponse` for one position axis into the
@@ -495,6 +479,7 @@ fn handle_position_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let Some(oid) = target_oid else {
         return;
@@ -506,9 +491,7 @@ fn handle_position_axis_response(
     };
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectPositionKeyframe {
                 clip_id,
@@ -552,10 +535,7 @@ fn handle_position_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectPositionKeyframeInterpolation {
                 clip_id,
@@ -587,6 +567,7 @@ fn handle_glow_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let Some(oid) = target_oid else {
         // No specific layer selected — fall back to the static
@@ -608,9 +589,7 @@ fn handle_glow_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -656,10 +635,7 @@ fn handle_glow_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -685,6 +661,7 @@ fn handle_shadow_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     // Map the param key + new value back to the (offset_x, offset_y,
     // blur) triple SetTitleShadow expects when no keyframes exist.
@@ -709,9 +686,7 @@ fn handle_shadow_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -750,10 +725,7 @@ fn handle_shadow_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -781,6 +753,7 @@ fn handle_inner_shadow_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let to_static_triple = |new: f32| -> (f32, f32, f32) {
         match param_key {
@@ -803,9 +776,7 @@ fn handle_inner_shadow_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -844,10 +815,7 @@ fn handle_inner_shadow_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -875,6 +843,7 @@ fn handle_outline_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let param_key = klipp_core::title_effect_keys::outline_width_key(outline_index);
     let push_static_fallback = |cmds: &mut Vec<AppCommand>, new_width: f32| {
@@ -903,9 +872,7 @@ fn handle_outline_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -940,10 +907,7 @@ fn handle_outline_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -972,6 +936,7 @@ fn handle_shadow_layer_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let param_key = match field {
         "offset_x" => klipp_core::title_effect_keys::shadow_offset_x_key(layer_index),
@@ -1000,7 +965,7 @@ fn handle_shadow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some() {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1024,8 +989,7 @@ fn handle_shadow_layer_axis_response(
         }
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1050,6 +1014,7 @@ fn handle_inner_shadow_layer_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let param_key = match field {
         "offset_x" => klipp_core::title_effect_keys::inner_shadow_offset_x_key(layer_index),
@@ -1078,7 +1043,7 @@ fn handle_inner_shadow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some() {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1102,8 +1067,7 @@ fn handle_inner_shadow_layer_axis_response(
         }
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1126,6 +1090,7 @@ fn handle_glow_layer_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let param_key = match field {
         "radius" => klipp_core::title_effect_keys::glow_radius_key(layer_index),
@@ -1152,7 +1117,7 @@ fn handle_glow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some() {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1176,8 +1141,7 @@ fn handle_glow_layer_axis_response(
         }
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1200,6 +1164,7 @@ fn handle_motion_blur_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let param_key = klipp_core::title_effect_keys::MOTION_BLUR_SHUTTER_ANGLE;
     let Some(oid) = target_oid else {
@@ -1214,9 +1179,7 @@ fn handle_motion_blur_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -1254,10 +1217,7 @@ fn handle_motion_blur_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -1286,6 +1246,7 @@ fn handle_extrusion_axis_response(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
     resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    keyframe_tolerance: f64,
 ) {
     let to_static_triple = |new: f32| -> (f32, f32, f32) {
         match param_key {
@@ -1310,9 +1271,7 @@ fn handle_extrusion_axis_response(
     let object_id = oid.0;
 
     if resp.keyframe_toggled {
-        if keyframes
-            .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some()
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -1353,10 +1312,7 @@ fn handle_extrusion_axis_response(
     }
 
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some((idx, _)) = keyframes
-            .iter()
-            .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
+        if let Some(idx) = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -1383,6 +1339,7 @@ fn show_title_position_block(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
 ) {
+    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
     use crate::state::TitlePositionPreset;
     use crate::widgets::inspector_group::quick_preset_button;
 
@@ -1438,10 +1395,12 @@ fn show_title_position_block(
     handle_position_axis_response(
         cmds, clip_id, target_oid, klipp_core::TitlePositionAxis::X,
         x, pos.y, kfs_x, clip_time_secs, &resp_x,
+        keyframe_tolerance,
     );
     handle_position_axis_response(
         cmds, clip_id, target_oid, klipp_core::TitlePositionAxis::Y,
         pos.x, y, kfs_y, clip_time_secs, &resp_y,
+        keyframe_tolerance,
     );
     // Static-fallback path: no per-layer object selected (legacy
     // behaviour) — fall back to the clip-level SetTitlePosition.
@@ -2052,6 +2011,7 @@ fn show_title_effects_group(
     cmds: &mut Vec<AppCommand>,
     target_oid: Option<klipp_timeline::TitleObjectId>,
     clip_time_secs: f64,
+    keyframe_tolerance: f64,
 ) {
     use crate::widgets::inspector_group::{inspector_subgroup_card, GroupStatus};
 
@@ -2147,11 +2107,13 @@ fn show_title_effects_group(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::GLOW_RADIUS,
                 radius, &cur, kfs_radius, clip_time_secs, &resp_radius,
+                keyframe_tolerance,
             );
             handle_glow_axis_response(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::GLOW_INTENSITY,
                 intensity, &cur, kfs_intensity, clip_time_secs, &resp_intensity,
+                keyframe_tolerance,
             );
         });
         if enabled != glow_enabled {
@@ -2200,20 +2162,22 @@ fn show_title_effects_group(
                     let mut radius = display_radius;
                     let r_radius = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "radius",
                         radius, &g, kfs_r, clip_time_secs, &r_radius,
+                        keyframe_tolerance,
                     );
                     let mut intensity = display_intensity;
                     let r_intensity = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "intensity",
                         intensity, &g, kfs_i, clip_time_secs, &r_intensity,
+                        keyframe_tolerance,
                     );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = glows.clone();
@@ -2296,6 +2260,7 @@ fn show_title_effects_group(
                 cmds, clip_id, target_oid,
                 0,
                 width, &cur, kfs_width, clip_time_secs, &resp_width,
+                keyframe_tolerance,
             );
         });
         if enabled != outline_enabled {
@@ -2329,7 +2294,7 @@ fn show_title_effects_group(
                 let ol = outlines[i].clone();
                 let display_width = ol.evaluated_width(clip_time_secs);
                 let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
-                let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
+                let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs, keyframe_tolerance);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                     let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
@@ -2351,6 +2316,7 @@ fn show_title_effects_group(
                         cmds, clip_id, target_oid,
                         i,
                         w_val, &ol, kfs_width, clip_time_secs, &resp_width,
+                        keyframe_tolerance,
                     );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = outlines.clone();
@@ -2465,16 +2431,19 @@ fn show_title_effects_group(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::SHADOW_OFFSET_X,
                 ox, &cur, kfs_ox, clip_time_secs, &resp_ox,
+                keyframe_tolerance,
             );
             handle_shadow_axis_response(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::SHADOW_OFFSET_Y,
                 oy, &cur, kfs_oy, clip_time_secs, &resp_oy,
+                keyframe_tolerance,
             );
             handle_shadow_axis_response(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::SHADOW_BLUR,
                 blur, &cur, kfs_blur, clip_time_secs, &resp_blur,
+                keyframe_tolerance,
             );
         });
         if enabled != shadow_enabled {
@@ -2526,29 +2495,32 @@ fn show_title_effects_group(
                     let mut ox = display_ox;
                     let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "offset_x",
                         ox, &sh, kfs_ox, clip_time_secs, &r_ox,
+                        keyframe_tolerance,
                     );
                     let mut oy = display_oy;
                     let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "offset_y",
                         oy, &sh, kfs_oy, clip_time_secs, &r_oy,
+                        keyframe_tolerance,
                     );
                     let mut bl = display_bl;
                     let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "blur",
                         bl, &sh, kfs_bl, clip_time_secs, &r_bl,
+                        keyframe_tolerance,
                     );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = shadows.clone();
@@ -2670,16 +2642,19 @@ fn show_title_effects_group(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X,
                 ox, &cur, kfs_ox, clip_time_secs, &resp_ox,
+                keyframe_tolerance,
             );
             handle_inner_shadow_axis_response(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y,
                 oy, &cur, kfs_oy, clip_time_secs, &resp_oy,
+                keyframe_tolerance,
             );
             handle_inner_shadow_axis_response(
                 cmds, clip_id, target_oid,
                 klipp_core::title_effect_keys::INNER_SHADOW_BLUR,
                 blur, &cur, kfs_blur, clip_time_secs, &resp_blur,
+                keyframe_tolerance,
             );
         });
         if enabled != inner_enabled {
@@ -2730,29 +2705,32 @@ fn show_title_effects_group(
                     let mut ox = display_ox;
                     let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "offset_x",
                         ox, &sh, kfs_ox, clip_time_secs, &r_ox,
+                        keyframe_tolerance,
                     );
                     let mut oy = display_oy;
                     let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "offset_y",
                         oy, &sh, kfs_oy, clip_time_secs, &r_oy,
+                        keyframe_tolerance,
                     );
                     let mut bl = display_bl;
                     let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
                         ui, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
-                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs)),
+                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
                         cmds, clip_id, target_oid, i, "blur",
                         bl, &sh, kfs_bl, clip_time_secs, &r_bl,
+                        keyframe_tolerance,
                     );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = inners.clone();
@@ -4092,12 +4070,13 @@ fn show_title_editor(
     cmds: &mut Vec<AppCommand>,
     chips: &mut title_tab::TitleChips,
 ) {
+    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
     let clip_id = clip.id;
     let td = match &clip.kind {
         klipp_timeline::ClipKind::Title(td) => td,
         _ => return,
     };
-    let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+    let clip_time_secs = keyframe_selection::clip_time(state, clip);
 
     // ── Project Asset banner ──
     // Only when the clip is linked. Shows the asset name + how
@@ -4265,7 +4244,7 @@ fn show_title_editor(
 
     // ── Effects group ──
     if let Some(tb) = tb_target {
-        show_title_effects_group(ui, theme, clip_id, tb, cmds, target_oid, clip_time_secs);
+        show_title_effects_group(ui, theme, clip_id, tb, cmds, target_oid, clip_time_secs, keyframe_tolerance);
         ui.add_space(8.0);
     }
 
@@ -4496,7 +4475,7 @@ fn show_title_editor(
                 .and_then(|tb| tb.motion_blur.as_ref())
                 .map(|m| m.shutter_angle_keyframes.as_slice())
                 .unwrap_or(&[]);
-            let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs);
+            let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
 
             let mut shutter = display_shutter;
             let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
@@ -4506,6 +4485,7 @@ fn show_title_editor(
             handle_motion_blur_axis_response(
                 cmds, clip_id, target_oid,
                 shutter, &mb, kfs_shutter, clip_time_secs, &resp_shutter,
+                keyframe_tolerance,
             );
 
             // Samples is integer-valued — not keyframable; keeps the
@@ -4580,9 +4560,9 @@ fn show_title_editor(
             .and_then(|tb| tb.extrusion.as_ref())
             .map(|e| e.lighting_keyframes.as_slice())
             .unwrap_or(&[]);
-        let ks_depth = title_object_keyframe_state(kfs_depth, clip_time_secs);
-        let ks_angle = title_object_keyframe_state(kfs_angle, clip_time_secs);
-        let ks_lighting = title_object_keyframe_state(kfs_lighting, clip_time_secs);
+        let ks_depth = title_object_keyframe_state(kfs_depth, clip_time_secs, keyframe_tolerance);
+        let ks_angle = title_object_keyframe_state(kfs_angle, clip_time_secs, keyframe_tolerance);
+        let ks_lighting = title_object_keyframe_state(kfs_lighting, clip_time_secs, keyframe_tolerance);
 
         let mut depth = display_depth;
         let mut angle = display_angle;
@@ -4625,16 +4605,19 @@ fn show_title_editor(
             cmds, clip_id, target_oid,
             klipp_core::title_effect_keys::EXTRUSION_DEPTH,
             depth, &ext, kfs_depth, clip_time_secs, &resp_depth,
+            keyframe_tolerance,
         );
         handle_extrusion_axis_response(
             cmds, clip_id, target_oid,
             klipp_core::title_effect_keys::EXTRUSION_ANGLE,
             angle, &ext, kfs_angle, clip_time_secs, &resp_angle,
+            keyframe_tolerance,
         );
         handle_extrusion_axis_response(
             cmds, clip_id, target_oid,
             klipp_core::title_effect_keys::EXTRUSION_LIGHTING,
             lighting, &ext, kfs_lighting, clip_time_secs, &resp_lighting,
+            keyframe_tolerance,
         );
     }
     ui.add_space(8.0);

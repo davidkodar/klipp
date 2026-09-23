@@ -41,7 +41,8 @@ pub struct Keyframe {
 }
 
 /// Timestamp tolerance for keyframe identity, in seconds. This absorbs rounding
-/// from timeline/source-time conversions without merging adjacent video frames.
+/// from floating-point arithmetic without merging adjacent video frames.
+/// This does not absorb quantization to a video frame.
 /// Mouse hit testing should use a separate, pixel-based tolerance.
 pub const KEYFRAME_TIME_EPSILON: f64 = 1e-6;
 

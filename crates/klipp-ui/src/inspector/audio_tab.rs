@@ -591,6 +591,7 @@ fn show_clip_audio(
     duck: &mut DuckSettings,
     tracks: &[TrackInfo],
 ) {
+    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
@@ -766,7 +767,7 @@ fn show_clip_audio(
         ui.add_space(4.0);
 
         // Keyframe state helpers
-        let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+        let kf_tolerance = keyframe_tolerance;
         let gain_ks = build_kf_state(&clip.gain_keyframes, clip_time_secs, kf_tolerance);
         let vol_ks = build_kf_state(&clip.volume_keyframes, clip_time_secs, kf_tolerance);
         let pan_ks = build_kf_state(&clip.pan_keyframes, clip_time_secs, kf_tolerance);
@@ -976,6 +977,7 @@ fn show_clip_audio(
                     &clip.audio_effects, &clip.audio_effect_keyframes,
                     clip_time_secs, clip_timeline_in_secs, clip_rate,
                     &state.ladspa_plugins, cmds,
+                    keyframe_tolerance,
                 );
             });
         ui.add_space(4.0);
@@ -1083,13 +1085,7 @@ fn show_clip_audio(
 // ══════════════════════════════════════════════════
 
 fn build_kf_state(keyframes: &[klipp_core::Keyframe], time: f64, tol: f64) -> KeyframeState {
-    KeyframeState {
-        has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - time).abs() < tol),
-        has_any_keyframes: !keyframes.is_empty(),
-        prev_keyframe_time: keyframes.iter().rfind(|k| k.time_secs < time - tol).map(|k| k.time_secs),
-        next_keyframe_time: keyframes.iter().find(|k| k.time_secs > time + tol).map(|k| k.time_secs),
-        current_interpolation: keyframes.iter().find(|k| (k.time_secs - time).abs() < tol).map(|k| k.interpolation),
-    }
+    crate::inspector::keyframe_selection::state(keyframes, time, tol)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1148,12 +1144,12 @@ fn handle_audio_param(
         });
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
-        if let Some(ki) = keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = resp.keyframe_ease_preset {
-        if let Some(ki) = keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetAudioKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             for idx in [ki.saturating_sub(1), ki] {
                 if idx >= keyframes.len() { continue; }
@@ -1163,7 +1159,7 @@ fn handle_audio_param(
         }
     }
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });

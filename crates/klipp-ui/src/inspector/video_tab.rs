@@ -110,20 +110,8 @@ impl TransformParams {
 }
 
 /// Compute KeyframeState for a given keyframe vec at a given clip-relative time.
-fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64) -> KeyframeState {
-    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
-    KeyframeState {
-        has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
-        has_any_keyframes: !keyframes.is_empty(),
-        prev_keyframe_time: keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance)
-            .map(|k| k.time_secs),
-        next_keyframe_time: keyframes.iter()
-            .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
-            .map(|k| k.time_secs),
-        current_interpolation: keyframes.iter()
-            .find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance)
-            .map(|k| k.interpolation),
-    }
+fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64, keyframe_tolerance: f64) -> KeyframeState {
+    crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, keyframe_tolerance)
 }
 
 pub fn show(
@@ -234,10 +222,11 @@ fn show_clip_video(
     clip_time_secs: f64,
     is_timeline: bool,
 ) {
+    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
-    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+    let kf_tolerance = keyframe_tolerance;
     let pad = 14.0;
 
     // ── ROLE ──
@@ -257,14 +246,14 @@ fn show_clip_video(
     let mut rotation = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_time_secs, transform.rotation);
 
     // Keyframe states
-    let pos_x_ks = keyframe_state(&clip.transform_pos_x_keyframes, clip_time_secs);
-    let pos_y_ks = keyframe_state(&clip.transform_pos_y_keyframes, clip_time_secs);
-    let scale_ks = keyframe_state(&clip.transform_scale_keyframes, clip_time_secs);
-    let rot_ks = keyframe_state(&clip.transform_rotation_keyframes, clip_time_secs);
+    let pos_x_ks = keyframe_state(&clip.transform_pos_x_keyframes, clip_time_secs, keyframe_tolerance);
+    let pos_y_ks = keyframe_state(&clip.transform_pos_y_keyframes, clip_time_secs, keyframe_tolerance);
+    let scale_ks = keyframe_state(&clip.transform_scale_keyframes, clip_time_secs, keyframe_tolerance);
+    let rot_ks = keyframe_state(&clip.transform_rotation_keyframes, clip_time_secs, keyframe_tolerance);
     let mut tilt_x = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, clip_time_secs, transform.rotation_x);
     let mut tilt_y = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, clip_time_secs, transform.rotation_y);
-    let tilt_x_ks = keyframe_state(&clip.transform_tilt_x_keyframes, clip_time_secs);
-    let tilt_y_ks = keyframe_state(&clip.transform_tilt_y_keyframes, clip_time_secs);
+    let tilt_x_ks = keyframe_state(&clip.transform_tilt_x_keyframes, clip_time_secs, keyframe_tolerance);
+    let tilt_y_ks = keyframe_state(&clip.transform_tilt_y_keyframes, clip_time_secs, keyframe_tolerance);
     // A tilt is drawn in moderate perspective when none is set (see the
     // renderer's `tilt`), so that is what the row shows.
     let mut persp = if transform.perspective > 0.0 { transform.perspective } else { 1.0 };
@@ -272,7 +261,7 @@ fn show_clip_video(
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
     let mut opacity = klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_time_secs, get_opacity(clip));
-    let opacity_ks = keyframe_state(&clip.opacity_keyframes, clip_time_secs);
+    let opacity_ks = keyframe_state(&clip.opacity_keyframes, clip_time_secs, keyframe_tolerance);
 
     // We need to collect scrubby results inside the card, then handle commands after
     // Use a struct to shuttle results out of the closure
@@ -562,12 +551,12 @@ fn show_clip_video(
 
     // ── Keyframe toggle/nav for Position X ──
     if let Some(interp) = r_px.keyframe_set_interpolation {
-        if let Some(ki) = clip.transform_pos_x_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_pos_x_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionX, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = r_px.keyframe_ease_preset {
-        if let Some(ki) = clip.transform_pos_x_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_pos_x_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionX, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             let kfs = &clip.transform_pos_x_keyframes;
             for idx in [ki.saturating_sub(1), ki] {
@@ -578,7 +567,7 @@ fn show_clip_video(
         }
     }
     if r_px.keyframe_toggled {
-        if clip.transform_pos_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(&clip.transform_pos_x_keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionX, time_secs: clip_time_secs, value: pos_x });
@@ -598,12 +587,12 @@ fn show_clip_video(
 
     // ── Keyframe toggle/nav for Position Y ──
     if let Some(interp) = r_py.keyframe_set_interpolation {
-        if let Some(ki) = clip.transform_pos_y_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_pos_y_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionY, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = r_py.keyframe_ease_preset {
-        if let Some(ki) = clip.transform_pos_y_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_pos_y_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::PositionY, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             let kfs = &clip.transform_pos_y_keyframes;
             for idx in [ki.saturating_sub(1), ki] {
@@ -614,7 +603,7 @@ fn show_clip_video(
         }
     }
     if r_py.keyframe_toggled {
-        if clip.transform_pos_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(&clip.transform_pos_y_keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::PositionY, time_secs: clip_time_secs, value: pos_y });
@@ -634,12 +623,12 @@ fn show_clip_video(
 
     // ── Keyframe toggle/nav for Scale ──
     if let Some(interp) = r_sc.keyframe_set_interpolation {
-        if let Some(ki) = clip.transform_scale_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_scale_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Scale, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = r_sc.keyframe_ease_preset {
-        if let Some(ki) = clip.transform_scale_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_scale_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Scale, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             let kfs = &clip.transform_scale_keyframes;
             for idx in [ki.saturating_sub(1), ki] {
@@ -650,7 +639,7 @@ fn show_clip_video(
         }
     }
     if r_sc.keyframe_toggled {
-        if clip.transform_scale_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(&clip.transform_scale_keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs, value: scale_val });
@@ -670,12 +659,12 @@ fn show_clip_video(
 
     // ── Keyframe toggle/nav for Rotation ──
     if let Some(interp) = r_ro.keyframe_set_interpolation {
-        if let Some(ki) = clip.transform_rotation_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_rotation_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Rotation, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = r_ro.keyframe_ease_preset {
-        if let Some(ki) = clip.transform_rotation_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.transform_rotation_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Rotation, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             let kfs = &clip.transform_rotation_keyframes;
             for idx in [ki.saturating_sub(1), ki] {
@@ -686,7 +675,7 @@ fn show_clip_video(
         }
     }
     if r_ro.keyframe_toggled {
-        if clip.transform_rotation_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(&clip.transform_rotation_keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs, value: rotation });
@@ -706,8 +695,8 @@ fn show_clip_video(
 
     // ── Keyframe toggle/nav for Tilt X and Tilt Y ──
     let seek = (clip_timeline_in_secs, clip_rate);
-    keyframe_controls(cmds, &r_tx, &clip.transform_tilt_x_keyframes, &tilt_x_ks, VideoParam::TiltX, tilt_x, clip_id, clip_time_secs, seek);
-    keyframe_controls(cmds, &r_ty, &clip.transform_tilt_y_keyframes, &tilt_y_ks, VideoParam::TiltY, tilt_y, clip_id, clip_time_secs, seek);
+    keyframe_controls(cmds, &r_tx, &clip.transform_tilt_x_keyframes, &tilt_x_ks, VideoParam::TiltX, tilt_x, clip_id, clip_time_secs, seek, keyframe_tolerance);
+    keyframe_controls(cmds, &r_ty, &clip.transform_tilt_y_keyframes, &tilt_y_ks, VideoParam::TiltY, tilt_y, clip_id, clip_time_secs, seek, keyframe_tolerance);
 
     // ── Opacity keyframe/drag handling ──
     if r_op.drag_started {
@@ -739,12 +728,12 @@ fn show_clip_video(
     }
 
     if let Some(interp) = r_op.keyframe_set_interpolation {
-        if let Some(ki) = clip.opacity_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.opacity_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Opacity, keyframe_index: ki, interpolation: interp });
         }
     }
     if let Some(preset) = r_op.keyframe_ease_preset {
-        if let Some(ki) = clip.opacity_keyframes.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if let Some(ki) = crate::inspector::keyframe_selection::nearest(&clip.opacity_keyframes, clip_time_secs, kf_tolerance) {
             cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param: VideoParam::Opacity, keyframe_index: ki, interpolation: klipp_core::Interpolation::Bezier });
             let kfs = &clip.opacity_keyframes;
             for idx in [ki.saturating_sub(1), ki] {
@@ -755,7 +744,7 @@ fn show_clip_video(
         }
     }
     if r_op.keyframe_toggled {
-        if clip.opacity_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance) {
+        if crate::inspector::keyframe_selection::nearest(&clip.opacity_keyframes, clip_time_secs, kf_tolerance).is_some() {
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Opacity, time_secs: clip_time_secs, value: opacity });
@@ -1566,6 +1555,7 @@ fn show_compositing_section(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
 ) {
+    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
     let clip_id = clip.id;
     let pad = 14.0;
     section_card(ui, "COMPOSITING", theme, |ui| {
@@ -1832,7 +1822,7 @@ fn show_compositing_section(
                     // render path evaluates them and overrides the
                     // static value frame-by-frame. Mirrors the opacity/
                     // transform UX users already know.
-                    let kf_tolerance_secs = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
+                    let kf_tolerance_secs = keyframe_tolerance;
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("Feather")
@@ -1849,8 +1839,7 @@ fn show_compositing_section(
                         {
                             // If kfs exist near the playhead, rewrite
                             // that kf; otherwise fold the static value.
-                            let near_kf = clip.matte_feather_keyframes.iter()
-                                .position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                            let near_kf = crate::inspector::keyframe_selection::nearest(&clip.matte_feather_keyframes, clip_time_secs, kf_tolerance_secs);
                             if let Some(idx) = near_kf {
                                 cmds.push(AppCommand::MoveVideoKeyframe {
                                     clip_id,
@@ -1882,8 +1871,7 @@ fn show_compositing_section(
                             }
                         }
                         // Keyframe diamond toggle.
-                        let has_kf_here = clip.matte_feather_keyframes.iter()
-                            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                        let has_kf_here = crate::inspector::keyframe_selection::nearest(&clip.matte_feather_keyframes, clip_time_secs, kf_tolerance_secs).is_some();
                         let diamond_label = if has_kf_here { "◆" } else { "◇" };
                         if ui.small_button(diamond_label).on_hover_text(
                             if has_kf_here { "Remove keyframe at playhead" } else { "Add keyframe at playhead" }
@@ -1916,8 +1904,7 @@ fn show_compositing_section(
                             .suffix(" px")
                             .clamping(egui::SliderClamping::Always)).changed()
                         {
-                            let near_kf = clip.matte_choke_keyframes.iter()
-                                .position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                            let near_kf = crate::inspector::keyframe_selection::nearest(&clip.matte_choke_keyframes, clip_time_secs, kf_tolerance_secs);
                             if let Some(idx) = near_kf {
                                 cmds.push(AppCommand::MoveVideoKeyframe {
                                     clip_id,
@@ -1944,8 +1931,7 @@ fn show_compositing_section(
                                 });
                             }
                         }
-                        let has_kf_here = clip.matte_choke_keyframes.iter()
-                            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                        let has_kf_here = crate::inspector::keyframe_selection::nearest(&clip.matte_choke_keyframes, clip_time_secs, kf_tolerance_secs).is_some();
                         let diamond_label = if has_kf_here { "◆" } else { "◇" };
                         if ui.small_button(diamond_label).on_hover_text(
                             if has_kf_here { "Remove keyframe at playhead" } else { "Add keyframe at playhead" }
@@ -3715,9 +3701,10 @@ fn keyframe_controls(
     clip_id: klipp_core::ClipId,
     clip_time_secs: f64,
     (timeline_in_secs, rate): (f64, u32),
+    keyframe_tolerance: f64,
 ) {
-    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
-    let here = kfs.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance);
+    let kf_tolerance = keyframe_tolerance;
+    let here = crate::inspector::keyframe_selection::nearest(kfs, clip_time_secs, kf_tolerance);
     if let (Some(interp), Some(ki)) = (r.keyframe_set_interpolation, here) {
         cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: interp });
     }
@@ -4336,28 +4323,29 @@ mod tilt_tests {
 
     #[test]
     fn the_tilt_rows_keyframe_button_keys_the_tilt_track() {
+        let keyframe_tolerance = 0.5 / 24.0;
         let clip_id = klipp_core::ClipId::new();
         let mut r = crate::widgets::scrubby_param::ScrubbyParamResponse {
             changed: false, drag_started: false, drag_stopped: false, lost_focus: false, reset_clicked: false,
             keyframe_toggled: true, keyframe_nav_prev: false, keyframe_nav_next: false,
             keyframe_set_interpolation: None, keyframe_ease_preset: None,
         };
-        let ks = keyframe_state(&[], 1.0);
+        let ks = keyframe_state(&[], 1.0, keyframe_tolerance);
         let mut cmds = Vec::new();
-        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24));
+        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24), keyframe_tolerance);
         assert!(matches!(cmds[0], AppCommand::AddVideoKeyframe { param: VideoParam::TiltY, value, .. } if value == 30.0));
         assert!(matches!(cmds[1], AppCommand::SetVideoRubberBandParam(VideoParam::TiltY)));
 
         // With a key already there, the button takes it off.
         let key = klipp_core::Keyframe { time_secs: 1.0, value: 30.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
         cmds.clear();
-        keyframe_controls(&mut cmds, &r, std::slice::from_ref(&key), &keyframe_state(std::slice::from_ref(&key), 1.0), VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24));
+        keyframe_controls(&mut cmds, &r, std::slice::from_ref(&key), &keyframe_state(std::slice::from_ref(&key), 1.0, keyframe_tolerance), VideoParam::TiltY, 30.0, clip_id, 1.0, (0.0, 24), keyframe_tolerance);
         assert!(matches!(cmds[0], AppCommand::RemoveVideoKeyframe { param: VideoParam::TiltY, .. }));
 
         // Nothing clicked, nothing sent.
         r.keyframe_toggled = false;
         cmds.clear();
-        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltX, 0.0, clip_id, 1.0, (0.0, 24));
+        keyframe_controls(&mut cmds, &r, &[], &ks, VideoParam::TiltX, 0.0, clip_id, 1.0, (0.0, 24), keyframe_tolerance);
         assert!(cmds.is_empty());
     }
 }
