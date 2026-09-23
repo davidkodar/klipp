@@ -1493,6 +1493,7 @@ fn camera_section(
     let seq = state.sequence();
     let idx = state.active_sequence_idx;
     let at = state.playhead.to_secs_f64();
+    let fps = seq.fps.as_f64();
     section_card(ui, "CAMERA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         for param in [CameraParam::X, CameraParam::Y, CameraParam::Zoom, CameraParam::Roll] {
             let keys = match param {
@@ -1501,19 +1502,8 @@ fn camera_section(
                 CameraParam::Zoom => &seq.camera.zoom_keyframes,
                 CameraParam::Roll => &seq.camera.roll_keyframes,
             };
-            let resting = param.resting();
-            let mut value = klipp_core::keyframe::evaluate(keys, at, resting);
-            // "Is there a key here" is asked of the function that would
-            // remove it, rather than by repeating its tolerance. That
-            // number is being changed by the keyframe-precision work,
-            // and a second copy here would be a second thing to find —
-            // this way the diamond cannot light for a key the click
-            // would then fail to remove, whatever the tolerance becomes.
-            let keyed = {
-                let mut probe = keys.clone();
-                klipp_core::keyframe::remove_keyframe_at(&mut probe, at);
-                probe.len() < keys.len()
-            };
+            let row = CameraRow::at(keys, at, fps, param.resting());
+            let mut value = row.value;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(param.label()).color(theme.text_secondary));
                 let speed = match param {
@@ -1522,25 +1512,153 @@ fn camera_section(
                     _ => 0.002,
                 };
                 if ui.add(egui::DragValue::new(&mut value).speed(speed)).changed() {
-                    cmds.push(klipp_core::AppCommand::SetSequenceCameraKey {
-                        sequence_idx: idx, param, time_secs: at, value,
-                    });
+                    cmds.push(row.set(idx, param, value));
                 }
-                let mark = if keyed { "\u{25C6}" } else { "\u{25C7}" };
-                let tint = if keyed { theme.accent } else { theme.text_dim };
+                let mark = if row.keyed { "\u{25C6}" } else { "\u{25C7}" };
+                let tint = if row.keyed { theme.accent } else { theme.text_dim };
                 if ui.add(egui::Button::new(egui::RichText::new(mark).color(tint)).frame(false))
-                    .on_hover_text(if keyed { "Remove this key" } else { "Key at the playhead" })
+                    .on_hover_text(if row.keyed { "Remove this key" } else { "Key at the playhead" })
                     .clicked()
                 {
-                    cmds.push(if keyed {
-                        klipp_core::AppCommand::RemoveSequenceCameraKey { sequence_idx: idx, param, time_secs: at }
-                    } else {
-                        klipp_core::AppCommand::SetSequenceCameraKey {
-                            sequence_idx: idx, param, time_secs: at, value,
-                        }
-                    });
+                    cmds.push(if row.keyed { row.remove(idx, param) } else { row.set(idx, param, value) });
                 }
             });
         }
     });
+}
+
+/// The key a camera row stands on, or the moment it would key.
+///
+/// The row is asked at a displayed frame, but a key is stored at an exact
+/// timestamp that need not sit on one: an agent writes 0.7 s into a 24 fps
+/// sequence, and no frame of that sequence is at 0.7 s. So the row selects
+/// the nearest key within half a frame, as every other inspector row does,
+/// and edits or removes *that* key at its own stored timestamp. Only when
+/// no key is near does the canonical playhead become the time. Asking the
+/// remover instead, at the playhead, left the diamond dark on a key the
+/// playhead was on and stacked a second key beside it on every drag.
+struct CameraRow {
+    /// Where an edit or removal goes: the selected key's stored timestamp,
+    /// or the playhead when there is none.
+    time_secs: f64,
+    /// Whether that moment already holds a key.
+    keyed: bool,
+    /// What the row shows: the key's value, or the curve at the playhead.
+    value: f32,
+}
+
+impl CameraRow {
+    fn at(keys: &[klipp_core::Keyframe], playhead_secs: f64, fps: f64, resting: f32) -> Self {
+        match super::keyframe_selection::nearest(keys, playhead_secs, 0.5 / fps) {
+            Some(i) => Self { time_secs: keys[i].time_secs, keyed: true, value: keys[i].value },
+            None => Self {
+                time_secs: playhead_secs,
+                keyed: false,
+                value: klipp_core::keyframe::evaluate(keys, playhead_secs, resting),
+            },
+        }
+    }
+
+    fn set(&self, sequence_idx: usize, param: klipp_core::CameraParam, value: f32) -> AppCommand {
+        AppCommand::SetSequenceCameraKey { sequence_idx, param, time_secs: self.time_secs, value }
+    }
+
+    fn remove(&self, sequence_idx: usize, param: klipp_core::CameraParam) -> AppCommand {
+        AppCommand::RemoveSequenceCameraKey { sequence_idx, param, time_secs: self.time_secs }
+    }
+}
+
+#[cfg(test)]
+mod camera_row_tests {
+    use super::*;
+    use klipp_core::keyframe::{remove_keyframe_at, upsert_keyframe};
+    use klipp_core::{CameraParam, Interpolation, Keyframe};
+
+    fn keys(times: &[f64]) -> Vec<Keyframe> {
+        times
+            .iter()
+            .map(|&time_secs| Keyframe {
+                time_secs,
+                value: 0.5,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            })
+            .collect()
+    }
+
+    /// The timestamp a camera command carries, whichever it is.
+    fn time_of(cmd: &AppCommand) -> f64 {
+        match cmd {
+            AppCommand::SetSequenceCameraKey { time_secs, .. }
+            | AppCommand::RemoveSequenceCameraKey { time_secs, .. } => *time_secs,
+            other => panic!("not a camera command: {other:?}"),
+        }
+    }
+
+    /// A key at 0.7 s in a 24 fps sequence sits between frames 16 and
+    /// 17; standing on frame 17 (0.708333…) the row is on that key,
+    /// and what it emits goes to 0.7 exactly — so the edit replaces the
+    /// key and the removal takes it, rather than adding one beside it.
+    #[test]
+    fn an_off_frame_key_is_edited_where_it_is_stored() {
+        let stored = keys(&[0.7]);
+        let row = CameraRow::at(&stored, 17.0 / 24.0, 24.0, 0.0);
+        assert!(row.keyed, "the diamond should light on frame 17 for the key at 0.7 s");
+        assert_eq!(row.value, 0.5);
+        let set = row.set(0, CameraParam::X, 0.3);
+        let remove = row.remove(0, CameraParam::X);
+        assert_eq!(time_of(&set), 0.7);
+        assert_eq!(time_of(&remove), 0.7);
+
+        let mut edited = stored.clone();
+        upsert_keyframe(&mut edited, time_of(&set), 0.3);
+        assert_eq!(edited.len(), 1, "editing the key should not add a second one at the frame");
+        assert_eq!(edited[0].value, 0.3);
+        let mut cleared = stored.clone();
+        remove_keyframe_at(&mut cleared, time_of(&remove));
+        assert!(cleared.is_empty(), "removing from frame 17 should take the key at 0.7 s");
+    }
+
+    /// Keys on consecutive frames at 60, 120 and 29.97 fps are distinct
+    /// keys: each frame — and a scrub a quarter-frame past it — selects
+    /// its own, emits its stored time, and leaves its neighbours alone.
+    #[test]
+    fn consecutive_keys_stay_distinct_at_high_and_fractional_rates() {
+        for fps in [60.0, 120.0, 30000.0 / 1001.0] {
+            let times: Vec<f64> = (0..48).map(|i| i as f64 / fps).collect();
+            let stored = keys(&times);
+            for (i, &t) in times.iter().enumerate() {
+                for probe in [t, t + 0.25 / fps] {
+                    let row = CameraRow::at(&stored, probe, fps, 0.0);
+                    assert!(row.keyed, "frame {i} at {fps} fps holds a key");
+                    assert_eq!(row.time_secs, t, "frame {i} at {fps} fps should select its own key, probed at {probe}");
+                    let set = row.set(0, CameraParam::Zoom, 1.5);
+                    let mut edited = stored.clone();
+                    upsert_keyframe(&mut edited, time_of(&set), 1.5);
+                    assert_eq!(edited.len(), stored.len(), "editing frame {i} at {fps} fps should not add a key");
+                    assert_eq!(edited[i].value, 1.5, "…and should change only that key");
+                    assert!(edited.iter().enumerate().all(|(j, k)| j == i || k.value == 0.5));
+                    let mut cleared = stored.clone();
+                    remove_keyframe_at(&mut cleared, time_of(&row.remove(0, CameraParam::Zoom)));
+                    assert_eq!(cleared.len(), stored.len() - 1, "removing frame {i} at {fps} fps should take one key");
+                    assert!(cleared.iter().all(|k| k.time_secs != t), "…and that key");
+                }
+            }
+        }
+    }
+
+    /// Between keys, the row is the curve at the playhead and a key goes
+    /// to the playhead — the canonical one it was given.
+    #[test]
+    fn with_no_key_near_the_playhead_is_the_moment() {
+        let stored = keys(&[1.0, 2.0]);
+        let row = CameraRow::at(&stored, 1.5, 24.0, 0.0);
+        assert!(!row.keyed);
+        assert_eq!(row.time_secs, 1.5);
+        assert_eq!(row.value, 0.5);
+        assert_eq!(time_of(&row.set(0, CameraParam::Roll, 2.0)), 1.5);
+        let empty: Vec<Keyframe> = Vec::new();
+        assert_eq!(CameraRow::at(&empty, 1.5, 24.0, 1.0).value, 1.0, "no keys: the resting value");
+    }
 }

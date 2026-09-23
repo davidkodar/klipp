@@ -39427,29 +39427,6 @@ mod sequence_camera_tests {
         assert!(cam.x_keyframes.is_empty(), "clearing the key at that moment removes it");
     }
 
-    /// The inspector lights its diamond by asking the remover whether
-    /// it would remove anything. That has to agree with the remover
-    /// itself for every moment, including one just inside its
-    /// tolerance — which is the whole reason it is asked rather than
-    /// having its number copied.
-    #[test]
-    fn the_diamond_agrees_with_the_remover() {
-        let mut cam = klipp_timeline::Camera::default();
-        apply_camera_key(&mut cam, CameraParam::Roll, 3.0, Some(-2.0));
-        for probe_at in [3.0, 3.01, 2.99, 3.5] {
-            let keys = &cam.roll_keyframes;
-            let lit = {
-                let mut probe = keys.clone();
-                klipp_core::keyframe::remove_keyframe_at(&mut probe, probe_at);
-                probe.len() < keys.len()
-            };
-            let mut after = cam.clone();
-            apply_camera_key(&mut after, CameraParam::Roll, probe_at, None);
-            let removed = after.roll_keyframes.len() < cam.roll_keyframes.len();
-            assert_eq!(lit, removed, "at {probe_at}: the diamond said {lit}, the remove did {removed}");
-        }
-    }
-
     /// Nothing keyed means the camera is still the camera: no keys, no
     /// lists, nothing written to the project.
     #[test]
