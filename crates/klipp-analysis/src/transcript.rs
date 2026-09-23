@@ -397,6 +397,34 @@ impl crate::Analyser for TranscriptAnalyser {
     }
 }
 
+/// Models already loaded, by the id and the device they were built for.
+///
+/// A context is the 574 MB of weights plus whatever the backend put on
+/// the GPU, and it is read-only once built — whisper keeps the mutable
+/// part in a state, which every transcription still makes for itself.
+/// So one load serves a whole queue instead of one file.
+///
+/// The lock doubles as the one that made the load safe: ggml brings its
+/// Vulkan backend up lazily and that initialisation is not thread-safe,
+/// so two analysis threads building a context at once raced in it and
+/// called through a half-written vtable. Whoever gets here second now
+/// either waits for the first load and then finds it, or finds it
+/// already there.
+type Cached = (String, bool, std::sync::Arc<whisper_rs::WhisperContext>);
+static CONTEXTS: std::sync::Mutex<Vec<Cached>> = std::sync::Mutex::new(Vec::new());
+
+/// Let the weights go. Called when the analysis queue drains: holding
+/// half a gigabyte of model, and its share of the GPU, against the
+/// chance of another file arriving is not a trade an editor wants
+/// while it is trying to play video.
+pub fn release_models() {
+    let mut cache = CONTEXTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !cache.is_empty() {
+        tracing::info!("released {} cached whisper model(s)", cache.len());
+        cache.clear();
+    }
+}
+
 fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
     use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
@@ -415,20 +443,35 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
         _ => DtwModelPreset::Base,
     };
     cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
-    let ctx = match WhisperContext::new_with_params(model, cparams) {
-        Ok(ctx) => ctx,
-        // A GPU that will not have it (no memory left, a driver without
-        // what the shaders need) is not the end: the CPU does the same
-        // work in about a third of the file's length.
-        Err(e) if on_gpu => {
-            tracing::warn!("whisper could not start on the GPU ({e}); running on the CPU");
-            let mut cpu = WhisperContextParameters::default();
-            cpu.use_gpu(false);
-            cpu.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
-            WhisperContext::new_with_params(model, cpu).map_err(|e| format!("whisper model: {e}"))?
+    let ctx = {
+        let mut cache = CONTEXTS.lock().unwrap_or_else(|e| e.into_inner());
+        match cache.iter().find(|(id, gpu, _)| id == model_id && *gpu == on_gpu) {
+            Some((_, _, ctx)) => ctx.clone(),
+            None => {
+                let t = std::time::Instant::now();
+                let built = match WhisperContext::new_with_params(model, cparams) {
+                    Ok(ctx) => ctx,
+                    // A GPU that will not have it (no memory left, a
+                    // driver without what the shaders need) is not the
+                    // end: the CPU does the same work in about a third
+                    // of the file's length.
+                    Err(e) if on_gpu => {
+                        tracing::warn!("whisper could not start on the GPU ({e}); running on the CPU");
+                        let mut cpu = WhisperContextParameters::default();
+                        cpu.use_gpu(false);
+                        cpu.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+                        WhisperContext::new_with_params(model, cpu).map_err(|e| format!("whisper model: {e}"))?
+                    }
+                    Err(e) => return Err(format!("whisper model: {e}")),
+                };
+                tracing::info!("loaded whisper model {model_id} in {:.1} s", t.elapsed().as_secs_f64());
+                let ctx = std::sync::Arc::new(built);
+                cache.push((model_id.to_string(), on_gpu, ctx.clone()));
+                ctx
+            }
         }
-        Err(e) => return Err(format!("whisper model: {e}")),
     };
+    // The state is per transcription; the weights behind it are shared.
     let mut state = ctx.create_state().map_err(|e| format!("whisper state: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     // Half the machine, up to sixteen: whisper stops gaining past that,

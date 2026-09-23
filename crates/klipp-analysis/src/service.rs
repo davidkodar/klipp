@@ -164,6 +164,18 @@ fn pump(s: &mut Service) {
                     s.completed.push(item.id);
                 }
                 pump(&mut s);
+                // Nothing left to analyse: give the models back. A
+                // loaded transcription model is half a gigabyte and a
+                // share of the GPU, and the editor wants both for
+                // playing video.
+                let idle = s.running == 0 && s.queue.is_empty();
+                drop(s);
+                #[cfg(feature = "transcript")]
+                if idle {
+                    crate::transcript::release_models();
+                }
+                #[cfg(not(feature = "transcript"))]
+                let _ = idle;
             })
             .ok();
     }
