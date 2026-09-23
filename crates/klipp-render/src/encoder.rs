@@ -928,7 +928,7 @@ impl Encoder {
         // 10-bit outputs take the transform at 16 bits — built from the
         // 8-bit result they would carry 8 bits of data.
         if self.is_deep() && self.gif_filter.is_none() {
-            let display = self.display.frame(linear_rgba, |v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16);
+            let display = self.display.frame(linear_rgba, |v, n| klipp_color::display::quantise(v, n, 65535.0) as u16);
             if self.hdr_mode == klipp_core::HdrMode::Pq {
                 let light = display
                     .chunks_exact(4)
@@ -938,7 +938,7 @@ impl Encoder {
             }
             return self.encode_video_frame_u16(&display, width, height);
         }
-        let display_u8 = self.display.frame(linear_rgba, |v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        let display_u8 = self.display.frame(linear_rgba, |v, n| klipp_color::display::quantise(v, n, 255.0) as u8);
         self.encode_video_frame(&display_u8, width, height)
     }
 

@@ -480,6 +480,17 @@ pub enum ControlCommand {
         fps: Option<f64>,
         #[serde(default)]
         crf: Option<u32>,
+        /// Bits a channel: 8, or 10 for a delivery that has to hold a
+        /// gradient. Eight bits give 256 steps, and a dark, shallow ramp
+        /// crosses so few of them that the encoder quantises it into
+        /// visible bands; ten give 1024 and the bands go away. Measured
+        /// on a film whose frame is mostly one dark gradient, as the
+        /// share of 8x8 blocks the encoder flattened completely: 8-bit
+        /// at crf 20, 84%; 10-bit at the same bitrate, 47%; 10-bit at
+        /// crf 14, 18%, which is the compositor's own figure, at a sixth
+        /// of the bitrate 8-bit needed to reach it. Left out, 8.
+        #[serde(default)]
+        bit_depth: Option<u8>,
         /// Integrated loudness target in LUFS; none leaves the mix as it is.
         #[serde(default)]
         target_lufs: Option<f32>,
