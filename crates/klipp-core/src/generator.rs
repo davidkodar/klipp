@@ -5,7 +5,7 @@ use crate::{FourPointGradient, GeneratorData, TimerFormat, TimerMode};
 /// Render a generator frame at the given resolution.
 /// `elapsed_secs` is the clip-relative time (used by Countdown + Timer);
 /// `total_secs` is the clip's full duration (used by Countdown).
-/// A generator's frame in linear light, for the compositor.
+/// A generator's frame as sRGB-encoded half floats, for the compositor.
 ///
 /// The two continuous-tone generators draw straight into float; a
 /// gradient is the one thing here that eight bits genuinely cannot
@@ -14,21 +14,21 @@ use crate::{FourPointGradient, GeneratorData, TimerFormat, TimerMode};
 /// colour, bars, text or noise — nothing a wider buffer would
 /// improve — so it is drawn as bytes and widened exactly the way the
 /// decode pass would have widened it.
-pub fn render_generator_linear(
+pub fn render_generator_f16(
     data: &GeneratorData,
     width: u32,
     height: u32,
     elapsed_secs: f64,
     total_secs: f64,
-) -> Vec<f32> {
+) -> Vec<u32> {
     match data {
         GeneratorData::Gradient { top, bottom, angle_deg, four_point: None } => {
-            render_gradient_linear(*top, *bottom, *angle_deg, width, height)
+            render_gradient_f16(*top, *bottom, *angle_deg, width, height)
         }
         GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
-            render_living_gradient_linear(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
+            render_living_gradient_f16(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
         }
-        _ => srgb_u8_to_linear_f32(&render_generator(data, width, height, elapsed_secs, total_secs)),
+        _ => srgb_u8_to_f16(&render_generator(data, width, height, elapsed_secs, total_secs)),
     }
 }
 
@@ -328,22 +328,35 @@ pub fn srgb_u8_to_linear_f32(rgba: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// A two-point gradient in linear light, without ever being eight bits.
+/// Two RGBA halves to a u32 pair: what the GPU reads with
+/// `unpack2x16float`.
+#[inline]
+fn pack_f16(px: [f32; 4]) -> [u32; 2] {
+    let h = |v: f32| half::f16::from_f32(v).to_bits() as u32;
+    [h(px[0]) | (h(px[1]) << 16), h(px[2]) | (h(px[3]) << 16)]
+}
+
+/// A two-point gradient, sRGB-encoded, in half floats.
 ///
-/// The ramp is worked out in the same sRGB-encoded space the u8 path
-/// uses and converted per pixel at the end, so the picture is the one
-/// that path draws — only the steps between its values are gone, and
-/// with them the need to dither. Interpolating in linear light instead
-/// would be a different, brighter gradient, which is a look to choose
-/// rather than a precision to fix.
-pub fn render_gradient_linear(
+/// Encoded rather than linear, and packed rather than whole, because of
+/// where the work lands. sRGB is a power curve; converting on the CPU is
+/// a `powf` a channel, 6.2 million of them across a 1080p frame, and it
+/// cost more than drawing the gradient did. The GPU already decodes the
+/// eight-bit path on its way into the layer and will decode this one
+/// the same way, for nothing. Half floats carry eleven bits of mantissa
+/// where sRGB asks for eight, at half the bytes of f32.
+///
+/// The ramp itself is the one the byte path draws — this is a change of
+/// precision, not of look. Interpolating in linear light would be a
+/// different, brighter gradient, and that is a thing to choose.
+pub fn render_gradient_f16(
     top: [u8; 4],
     bottom: [u8; 4],
     angle_deg: f32,
     width: u32,
     height: u32,
-) -> Vec<f32> {
-    let mut buf = vec![0f32; (width as usize) * (height as usize) * 4];
+) -> Vec<u32> {
+    let mut buf = vec![0u32; (width as usize) * (height as usize) * 2];
     let (w, h) = (width as f32, height as f32);
     let theta = angle_deg.to_radians();
     let (dir_x, dir_y) = (theta.sin(), theta.cos());
@@ -357,21 +370,23 @@ pub fn render_gradient_linear(
             let dx = x as f32 - cx;
             let dy = y as f32 - cy;
             let t = (((dx * dir_x + dy * dir_y) + half_extent) / extent).clamp(0.0, 1.0);
-            let i = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            for c in 0..3 {
-                let v = (top[c] as f32 + (bottom[c] as f32 - top[c] as f32) * t) / 255.0;
-                buf[i + c] = srgb_to_linear(v);
+            let mut px = [0f32; 4];
+            for c in 0..4 {
+                px[c] = (top[c] as f32 + (bottom[c] as f32 - top[c] as f32) * t) / 255.0;
             }
-            buf[i + 3] = (top[3] as f32 + (bottom[3] as f32 - top[3] as f32) * t) / 255.0;
+            let i = ((y as usize) * (width as usize) + (x as usize)) * 2;
+            let packed = pack_f16(px);
+            buf[i] = packed[0];
+            buf[i + 1] = packed[1];
         }
     }
     buf
 }
 
-/// [`render_living_gradient`] in linear light. The drifting angle and
-/// the soft light that crosses it are the same; only the buffer they
-/// land in is wider.
-pub fn render_living_gradient_linear(
+/// [`render_living_gradient`] as sRGB-encoded half floats. The drifting
+/// angle and the light that crosses it are the same; the glow lifts in
+/// the encoded space it has always lifted in, so it keeps its shape.
+pub fn render_living_gradient_f16(
     a: [u8; 4],
     b: [u8; 4],
     angle_deg: f32,
@@ -380,9 +395,9 @@ pub fn render_living_gradient_linear(
     width: u32,
     height: u32,
     elapsed_secs: f64,
-) -> Vec<f32> {
+) -> Vec<u32> {
     let t = elapsed_secs as f32;
-    let mut buf = render_gradient_linear(a, b, angle_deg + drift_deg_per_sec * t, width, height);
+    let mut buf = render_gradient_f16(a, b, angle_deg + drift_deg_per_sec * t, width, height);
     if glow <= 0.0 {
         return buf;
     }
@@ -391,8 +406,6 @@ pub fn render_living_gradient_linear(
     let cy = h * (0.5 + 0.22 * (t * 0.21).sin());
     let radius = w.max(h) * 0.45;
     let inv = 1.0 / (2.0 * radius * radius);
-    // The glow lifts toward white the same way, but in the space the
-    // u8 path lifts in — sRGB-encoded — so it keeps its shape.
     for y in 0..height {
         for x in 0..width {
             let dx = x as f32 - cx;
@@ -401,20 +414,47 @@ pub fn render_living_gradient_linear(
             if f < 0.002 {
                 continue;
             }
-            let i = ((y * width + x) * 4) as usize;
-            for c in 0..3 {
-                let enc = linear_to_srgb(buf[i + c]);
-                buf[i + c] = srgb_to_linear((enc + (1.0 - enc) * f * 0.6).min(1.0));
+            let i = ((y * width + x) * 2) as usize;
+            let rg = buf[i];
+            let ba = buf[i + 1];
+            let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
+            let mut px = [un(rg & 0xFFFF), un(rg >> 16), un(ba & 0xFFFF), un(ba >> 16)];
+            for v in px.iter_mut().take(3) {
+                *v = (*v + (1.0 - *v) * f * 0.6).min(1.0);
             }
+            let packed = pack_f16(px);
+            buf[i] = packed[0];
+            buf[i + 1] = packed[1];
         }
     }
     buf
 }
 
-/// The sRGB OETF, the inverse of [`srgb_to_linear`].
-#[inline]
-fn linear_to_srgb(v: f32) -> f32 {
-    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+/// Packed sRGB half floats unpacked and decoded to linear f32 — what
+/// the GPU does on its way into a layer, for the CPU path that has no
+/// GPU under it.
+pub fn srgb_f16_to_linear_f32(packed: &[u32]) -> Vec<f32> {
+    let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
+    packed
+        .chunks_exact(2)
+        .flat_map(|p| {
+            [
+                srgb_to_linear(un(p[0] & 0xFFFF)),
+                srgb_to_linear(un(p[0] >> 16)),
+                srgb_to_linear(un(p[1] & 0xFFFF)),
+                un(p[1] >> 16),
+            ]
+        })
+        .collect()
+}
+
+/// Eight-bit sRGB RGBA repacked as sRGB half floats, for the
+/// generators with no float path of their own. No precision is gained
+/// and none is lost; it just takes the same road as the rest.
+pub fn srgb_u8_to_f16(rgba: &[u8]) -> Vec<u32> {
+    rgba.chunks_exact(4)
+        .flat_map(|p| pack_f16([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]))
+        .collect()
 }
 
 pub fn render_living_gradient(
@@ -911,47 +951,47 @@ fn draw_solid_rect(
 
 #[cfg(test)]
 mod tests {
-    /// The float gradient draws the picture the eight-bit one draws.
+    /// The half-float gradient draws the picture the eight-bit one draws.
     ///
-    /// Compared back in sRGB-encoded space, where a code value means
-    /// the same thing in both: the float path must land within about a
-    /// code value of the byte path, which is all the dither and the
-    /// rounding can account for. Anything wider would mean the two are
-    /// drawing different gradients, not the same one at different
-    /// precisions.
+    /// Both are sRGB-encoded, so a code value means the same thing in
+    /// each: the f16 path must land within about a code value of the
+    /// byte path, which is all the dither and the rounding can account
+    /// for. Anything wider would mean they are drawing different
+    /// gradients, not the same one at different precisions.
     #[test]
-    fn the_float_gradient_matches_the_eight_bit_one() {
+    fn the_f16_gradient_matches_the_eight_bit_one() {
         let (w, h) = (64u32, 48u32);
         let top = [4u8, 3, 12, 255];
         let bottom = [18u8, 12, 48, 255];
         for angle in [0.0f32, 25.0, 90.0, 200.0] {
             let bytes = render_gradient(top, bottom, angle, w, h);
-            let floats = render_gradient_linear(top, bottom, angle, w, h);
+            let halves = render_gradient_f16(top, bottom, angle, w, h);
+            let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
             let mut worst = 0.0f32;
-            for (b, f) in bytes.chunks_exact(4).zip(floats.chunks_exact(4)) {
+            for (i, b) in bytes.chunks_exact(4).enumerate() {
+                let (rg, ba) = (halves[i * 2], halves[i * 2 + 1]);
+                let got = [un(rg & 0xFFFF), un(rg >> 16), un(ba & 0xFFFF)];
                 for c in 0..3 {
-                    let as_code = linear_to_srgb(f[c]) * 255.0;
-                    worst = worst.max((as_code - b[c] as f32).abs());
+                    worst = worst.max((got[c] * 255.0 - b[c] as f32).abs());
                 }
             }
-            assert!(worst <= 1.5, "angle {angle}: float and byte gradients differ by {worst} code values");
+            assert!(worst <= 1.5, "angle {angle}: f16 and byte gradients differ by {worst} code values");
         }
     }
 
-    /// And it is smoother than the thing it replaces: a shallow ramp
-    /// that the byte path can only draw in a dozen steps has no steps
-    /// at all in float.
+    /// And it is smoother than the thing it replaces: a shallow ramp the
+    /// byte path can only draw in a dozen steps has hundreds in f16.
     #[test]
-    fn the_float_gradient_has_no_steps() {
+    fn the_f16_gradient_has_no_steps() {
         let (w, h) = (16u32, 512u32);
-        let floats = render_gradient_linear([4, 3, 12, 255], [18, 12, 48, 255], 0.0, w, h);
-        // Down one column, in encoded space, how many distinct values.
+        let halves = render_gradient_f16([4, 3, 12, 255], [18, 12, 48, 255], 0.0, w, h);
         let mut seen = std::collections::BTreeSet::new();
         for y in 0..h as usize {
-            let v = linear_to_srgb(floats[(y * w as usize) * 4 + 2]) * 255.0;
-            seen.insert((v * 64.0) as i64);
+            let ba = halves[(y * w as usize) * 2 + 1];
+            let blue = half::f16::from_bits((ba & 0xFFFF) as u16).to_f32();
+            seen.insert((blue * 255.0 * 64.0) as i64);
         }
-        assert!(seen.len() > 200, "a float ramp down 512 rows should be near-continuous, got {} levels", seen.len());
+        assert!(seen.len() > 200, "a half-float ramp down 512 rows should be near-continuous, got {} levels", seen.len());
     }
 
     use super::*;

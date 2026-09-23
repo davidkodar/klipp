@@ -1461,11 +1461,11 @@ impl Renderer {
             }
             ClipKind::Generator(g) if fx_on_gpu && c.node_graph.is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();
-                // Straight into the layer as linear floats: a stack
-                // layer is f32 already, so the eight-bit staging and
-                // its decode pass only cost a generator precision.
-                let px = crate::synth::render_generator_with_slate_linear(&mut self.titles, g, width, height, clip_time, total);
-                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear_f32(slot, &px))
+                // Half floats, sRGB-encoded, decoded on the way into
+                // the layer: the precision eight bits could not hold,
+                // without moving sRGB's power curve onto the CPU.
+                let px = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
+                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16(slot, &px))
             }
             _ => {
                 // Anything the stack has no seed for, or a CPU-only
@@ -1860,7 +1860,8 @@ impl Renderer {
             }
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-                let mut linear = crate::synth::render_generator_with_slate_linear(&mut self.titles, g, width, height, clip_time, total);
+                let packed = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
+                let mut linear = klipp_core::generator::srgb_f16_to_linear_f32(&packed);
                 self.authored_to_working(&mut linear);
                 (GradeInput::Cpu(Arc::new(linear)), None)
             }

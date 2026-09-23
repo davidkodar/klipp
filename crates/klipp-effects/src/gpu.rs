@@ -354,6 +354,7 @@ pub struct GpuEffectsPipeline {
     stack_layers: Vec<std::sync::Arc<wgpu::Buffer>>,
     stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
+    stack_sprite_f16: Option<wgpu::Buffer>,
     /// Title sprites kept on the GPU by the id their renderer gave
     /// them, so a title that only moves or fades from frame to frame is
     /// uploaded once and placed by a pass. Frame-sized RGBA8; dropped
@@ -374,6 +375,7 @@ pub struct GpuEffectsPipeline {
     blend_layer_pipeline: wgpu::ComputePipeline,
     premultiply_pipeline: wgpu::ComputePipeline,
     sprite_rows_pipeline: wgpu::ComputePipeline,
+    sprite_rows_f16_pipeline: wgpu::ComputePipeline,
     matte_extract_pipeline: wgpu::ComputePipeline,
     mask_min_h_pipeline: wgpu::ComputePipeline,
     mask_min_v_pipeline: wgpu::ComputePipeline,
@@ -1227,6 +1229,7 @@ impl GpuEffectsPipeline {
         let blend_layer_pipeline = create_pipeline(&device, &pipeline_layout, "blend_layer", SHADER_BLEND_LAYER);
         let premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "premultiply", SHADER_PREMULTIPLY);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
+        let sprite_rows_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows_f16", SHADER_SPRITE_ROWS_F16);
         let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
         let storage_entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1426,6 +1429,7 @@ impl GpuEffectsPipeline {
             stack_layers: Vec::new(),
             stack_acc: None,
             stack_sprite_u8: None,
+            stack_sprite_f16: None,
             stack_sprites: Vec::new(),
             stack_sprite_tick: 0,
             sprite_place_pipeline,
@@ -1438,6 +1442,7 @@ impl GpuEffectsPipeline {
             blend_layer_pipeline,
             premultiply_pipeline,
             sprite_rows_pipeline,
+            sprite_rows_f16_pipeline,
             matte_extract_pipeline,
             mask_min_h_pipeline,
             mask_min_v_pipeline,
@@ -5251,25 +5256,45 @@ impl GpuEffectsPipeline {
 
     /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
     /// (a title, a generator): decoded to linear on the GPU, alpha kept.
-    /// Layer `i` straight from linear-light f32 RGBA.
+    /// Layer `i` from sRGB-encoded half floats, decoded on the way in.
     ///
     /// The sibling of [`Self::stack_layer_from_srgb_u8`], for a source
-    /// that never went through eight bits. A stack layer is already
-    /// `array<vec4<f32>>` — the u8 path exists to stage bytes and let
-    /// `sprite_rows` decode them — so a caller holding linear floats
-    /// can write them in and skip both the staging buffer and the
-    /// decode pass.
-    pub fn stack_layer_from_linear_f32(&mut self, i: usize, rgba: &[f32]) -> bool {
+    /// with more than eight bits to give. The decode stays here, where
+    /// the u8 path's decode is: sRGB is a power curve, and a `powf` a
+    /// channel across a 1080p frame is 6.2 million of them, which on
+    /// the CPU cost more than the whole generator did — 88 ms a frame
+    /// against 35 — and on the GPU costs nothing anyone can measure.
+    ///
+    /// Half floats rather than whole ones because the source is
+    /// display-referred: eleven bits of mantissa against sRGB's eight
+    /// is already far more than the picture can hold, and it is eight
+    /// bytes a pixel instead of sixteen. Two halves ride in each u32,
+    /// unpacked with `unpack2x16float`, so it asks nothing of the
+    /// device that the eight-bit path does not.
+    pub fn stack_layer_from_srgb_f16(&mut self, i: usize, packed: &[u32]) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
+        let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
-        if rgba.len() as u64 != pixel_count * 4 {
+        if packed.len() as u64 != pixel_count * 2 {
             return false;
         }
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        // The whole layer is written, so there is nothing to clear.
-        self.queue.write_buffer(&layer, 0, bytemuck::cast_slice(rgba));
+        let bytes = pixel_count * 8;
+        if self.stack_sprite_f16.as_ref().is_none_or(|b| b.size() < bytes) {
+            self.stack_sprite_f16 = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_f16"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let sprite = self.stack_sprite_f16.as_ref().unwrap();
+        self.upload(sprite, 0, bytemuck::cast_slice(packed));
+        self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height });
+        let px = width * height;
+        self.stack_pass(&self.sprite_rows_f16_pipeline, sprite, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_sprite_f16");
         true
     }
 
@@ -9611,6 +9636,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // An sRGB RGBA8 sprite, rows y0..y1, decoded to linear with its alpha
 // kept straight.
+
+// A generator's frame as sRGB-encoded half floats, decoded to linear
+// where every other layer is decoded — on the GPU. Two halves to a
+// u32, so it needs no f16 shader feature, and eight bytes a pixel
+// against the sixteen a linear f32 upload costs.
+const SHADER_SPRITE_ROWS_F16: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, y0: u32, y1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = params.y0 * params.width + gid.x;
+    if idx >= params.y1 * params.width { return; }
+    let rg = unpack2x16float(input[idx * 2u]);
+    let ba = unpack2x16float(input[idx * 2u + 1u]);
+    output[idx] = pack(vec4<f32>(srgb_to_linear_c(rg.x), srgb_to_linear_c(rg.y), srgb_to_linear_c(ba.x), ba.y));
+}
+"
+);
+
 const SHADER_SPRITE_ROWS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "

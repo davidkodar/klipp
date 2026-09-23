@@ -169,6 +169,7 @@ ringbuf = "0.4"
 
 # Safe transmute for GPU buffer data
 bytemuck = { version = "1.14", features = ["derive"] }
+half = { version = "2", features = ["bytemuck"] }
 
 # OpenColorIO (color management)
 # Note: requires system libOpenColorIO - bindings via C FFI
