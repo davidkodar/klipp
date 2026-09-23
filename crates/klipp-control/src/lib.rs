@@ -2682,7 +2682,7 @@ fn handle(
                 return Err("the timeline is empty; nothing to review".into());
             }
             let _ = std::fs::remove_file(&draft);
-            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), target_lufs: None, true_peak_dbtp: None, burn_captions: None }, &mut None)?;
+            handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), bit_depth: None, target_lufs: None, true_peak_dbtp: None, burn_captions: None }, &mut None)?;
             // The draft, waited for: a review is the picture as rendered.
             let started = std::time::Instant::now();
             let job = loop {
@@ -4250,7 +4250,7 @@ reference:   {}",
             send_envelope(ctx, cmds, true)
         }
 
-        ControlCommand::Export { path, width, height, fps, crf, target_lufs, true_peak_dbtp, burn_captions } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -4296,6 +4296,11 @@ reference:   {}",
             }
             if let Some(c) = crf {
                 settings.crf = c;
+            }
+            match bit_depth {
+                None => {}
+                Some(d @ (8 | 10)) => settings.bit_depth = d,
+                Some(d) => return Err(format!("bit_depth {d} is not a depth; give 8 or 10")),
             }
             if target_lufs.is_some() {
                 settings.target_lufs = target_lufs;

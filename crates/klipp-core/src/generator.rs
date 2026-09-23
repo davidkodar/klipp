@@ -306,9 +306,10 @@ pub fn render_living_gradient(
                 continue;
             }
             let i = ((y * width + x) * 4) as usize;
+            let d = dither_at(x, y);
             for c in 0..3 {
                 let v = buf[i + c] as f32;
-                buf[i + c] = (v + (255.0 - v) * f * 0.6).min(255.0) as u8;
+                buf[i + c] = (v + (255.0 - v) * f * 0.6 + d).round().clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -409,9 +410,10 @@ pub fn render_gradient(
             let proj = dx * dir_x + dy * dir_y;
             let t = ((proj + half_extent) / extent).clamp(0.0, 1.0);
             let i = ((y as usize) * (width as usize) + (x as usize)) * 4;
-            buf[i] = lerp_u8(top[0], bottom[0], t);
-            buf[i + 1] = lerp_u8(top[1], bottom[1], t);
-            buf[i + 2] = lerp_u8(top[2], bottom[2], t);
+            let d = dither_at(x, y);
+            buf[i] = lerp_u8_dithered(top[0], bottom[0], t, d);
+            buf[i + 1] = lerp_u8_dithered(top[1], bottom[1], t, d);
+            buf[i + 2] = lerp_u8_dithered(top[2], bottom[2], t, d);
             buf[i + 3] = lerp_u8(top[3], bottom[3], t);
         }
     }
@@ -466,6 +468,37 @@ pub fn render_four_point_gradient(
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+/// A Bayer 8x8 ordered dither, in code values, centred on zero.
+///
+/// A gradient is a ramp of real numbers quantised to 256 steps. Where
+/// the ramp is long and shallow — a dark backdrop that crosses a dozen
+/// code values over a whole frame — the steps land as visible bands.
+/// Nudging each pixel by up to half a code value before rounding trades
+/// the bands for noise far below what anyone can see. Ordered, not
+/// random, so it does not crawl from frame to frame.
+#[inline]
+fn dither_at(x: u32, y: u32) -> f32 {
+    const BAYER: [u8; 64] = [
+        0, 32, 8, 40, 2, 34, 10, 42,
+        48, 16, 56, 24, 50, 18, 58, 26,
+        12, 44, 4, 36, 14, 46, 6, 38,
+        60, 28, 52, 20, 62, 30, 54, 22,
+        3, 35, 11, 43, 1, 33, 9, 41,
+        51, 19, 59, 27, 49, 17, 57, 25,
+        15, 47, 7, 39, 13, 45, 5, 37,
+        63, 31, 55, 23, 61, 29, 53, 21,
+    ];
+    (BAYER[((y % 8) * 8 + (x % 8)) as usize] as f32 + 0.5) / 64.0 - 0.5
+}
+
+/// `lerp_u8` with that nudge applied before the rounding.
+#[inline]
+fn lerp_u8_dithered(a: u8, b: u8, t: f32, dither: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t + dither)
         .round()
         .clamp(0.0, 255.0) as u8
 }
