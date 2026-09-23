@@ -306,10 +306,10 @@ fn display_transform_from_pre_to(
                 [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)],
                 tone_map_op,
             );
-            dst[0] = (encode_sdr(mapped[0], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[1] = (encode_sdr(mapped[1], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[2] = (encode_sdr(mapped[2], transfer).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[0] = quantise(encode_sdr(mapped[0], transfer), 0.0, 255.0) as u8;
+            dst[1] = quantise(encode_sdr(mapped[1], transfer), 0.0, 255.0) as u8;
+            dst[2] = quantise(encode_sdr(mapped[2], transfer), 0.0, 255.0) as u8;
+            dst[3] = quantise(chunk[3], 0.0, 255.0) as u8;
         });
     out
 }
@@ -414,10 +414,10 @@ pub fn display_transform_ws_pre_to(
             // the legacy path.
             let acescg = [pre(chunk[0]), pre(chunk[1]), pre(chunk[2])];
             let encoded = crate::aces::acescg_to_rec709_sdr(acescg);
-            dst[0] = (encoded[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[1] = (encoded[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[2] = (encoded[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[0] = quantise(encoded[0], 0.0, 255.0) as u8;
+            dst[1] = quantise(encoded[1], 0.0, 255.0) as u8;
+            dst[2] = quantise(encoded[2], 0.0, 255.0) as u8;
+            dst[3] = quantise(chunk[3], 0.0, 255.0) as u8;
         });
     let _ = tone_map_op; // Intentionally unused in the ACES path.
     out
@@ -536,7 +536,8 @@ pub fn display_transform_for_export(
     working_space: klipp_core::WorkingColorspace,
     odt: OdtChoice,
 ) -> Vec<u8> {
-    export_pixels(linear_rgba, tone_map_op, working_space, odt, |v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+    export_pixels(linear_rgba, tone_map_op, working_space, odt,
+                  |v, _| quantise(v, 0.0, 255.0) as u8)
 }
 
 /// [`display_transform_for_export`] at 16 bits per channel, for 10-bit
@@ -549,7 +550,8 @@ pub fn display_transform_for_export_u16(
     working_space: klipp_core::WorkingColorspace,
     odt: OdtChoice,
 ) -> Vec<u16> {
-    export_pixels(linear_rgba, tone_map_op, working_space, odt, |v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16)
+    export_pixels(linear_rgba, tone_map_op, working_space, odt,
+                  |v, _| quantise(v, 0.0, 65535.0) as u16)
 }
 
 /// The export display transform for one pixel: linear working-space RGB
@@ -826,15 +828,69 @@ fn export_pixels<T: Copy + Default + Send + Sync>(
     tone_map_op: ToneMapOp,
     working_space: klipp_core::WorkingColorspace,
     odt: OdtChoice,
-    q: impl Fn(f32) -> T + Sync,
+    q: impl Fn(f32, f32) -> T + Sync,
 ) -> Vec<T> {
     ExportDisplay::new(tone_map_op, working_space, odt).frame(linear_rgba, q)
 }
 
+/// A triangular dither for one pixel, in output code values, in
+/// `[-1, 1]`.
+///
+/// This is the seam where a frame of real numbers becomes integers, and
+/// rounding alone is not enough. A gradient that crosses few code values
+/// across the frame — a dark backdrop, a soft vignette, a slow fade —
+/// rounds to flat plateaus with hard steps between them, and the eye
+/// reads the steps as bands. Nudging each pixel by a fraction of a code
+/// value before the rounding turns the step into a scatter, which the
+/// eye averages back to the value that was asked for.
+///
+/// Triangular rather than uniform because uniform noise leaves the
+/// quantisation error correlated with the signal — the point of dither
+/// is to decorrelate it. One offset for all three channels rather than
+/// three: monochrome noise is far less visible than coloured noise at
+/// the same amplitude, and alpha is not dithered at all, since nothing
+/// looks at it and compositing wants it exact.
+///
+/// Deterministic in the pixel's index, so an export is reproducible and
+/// tests can predict it.
+#[inline]
+pub fn dither_at(index: usize) -> f32 {
+    #[inline]
+    fn hash(mut x: u32) -> u32 {
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7feb_352d);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846c_a68b);
+        x ^= x >> 16;
+        x
+    }
+    let a = hash(index as u32) as f32 / u32::MAX as f32;
+    let b = hash((index as u32) ^ 0x9e37_79b9) as f32 / u32::MAX as f32;
+    a + b - 1.0
+}
+
+/// One channel, dithered and quantised to a scale of `scale` code
+/// values, as a float ready to be cast.
+///
+/// Values that already sit on a code value are left alone. Pure black,
+/// pure white and a saturated primary are exact, and dither can only
+/// make them wrong — white nudged down comes back 254, which is a
+/// dulled highlight and, on a run of them, a visible lift in the
+/// blacks at the other end.
+#[inline]
+pub fn quantise(v: f32, dither: f32, scale: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    let d = if v <= 0.0 || v >= 1.0 { 0.0 } else { dither };
+    (v * scale + 0.5 + d).clamp(0.0, scale)
+}
+
 impl ExportDisplay {
-    /// The transform over an RGBA frame, each channel quantised by `q`
-    /// (alpha passes through `q` untransformed).
-    pub fn frame<T: Copy + Default + Send + Sync>(&self, linear_rgba: &[f32], q: impl Fn(f32) -> T + Sync) -> Vec<T> {
+    /// The transform over an RGBA frame, each channel quantised by `q`.
+    ///
+    /// `q` is handed the encoded channel and a dither offset in output
+    /// code values, and is expected to add it before rounding. Alpha
+    /// passes through untransformed and undithered.
+    pub fn frame<T: Copy + Default + Send + Sync>(&self, linear_rgba: &[f32], q: impl Fn(f32, f32) -> T + Sync) -> Vec<T> {
         use rayon::prelude::*;
         assert!(
             linear_rgba.len().is_multiple_of(4),
@@ -844,12 +900,14 @@ impl ExportDisplay {
         let mut out = vec![T::default(); linear_rgba.len()];
         out.par_chunks_exact_mut(4)
             .zip(linear_rgba.par_chunks_exact(4))
-            .for_each(|(dst, chunk)| {
+            .enumerate()
+            .for_each(|(i, (dst, chunk))| {
                 let e = d.encode([chunk[0], chunk[1], chunk[2]]);
-                dst[0] = q(e[0]);
-                dst[1] = q(e[1]);
-                dst[2] = q(e[2]);
-                dst[3] = q(chunk[3]);
+                let n = dither_at(i);
+                dst[0] = q(e[0], n);
+                dst[1] = q(e[1], n);
+                dst[2] = q(e[2], n);
+                dst[3] = q(chunk[3], 0.0);
             });
         out
     }
