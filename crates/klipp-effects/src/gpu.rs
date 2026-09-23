@@ -5251,6 +5251,28 @@ impl GpuEffectsPipeline {
 
     /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
     /// (a title, a generator): decoded to linear on the GPU, alpha kept.
+    /// Layer `i` straight from linear-light f32 RGBA.
+    ///
+    /// The sibling of [`Self::stack_layer_from_srgb_u8`], for a source
+    /// that never went through eight bits. A stack layer is already
+    /// `array<vec4<f32>>` — the u8 path exists to stage bytes and let
+    /// `sprite_rows` decode them — so a caller holding linear floats
+    /// can write them in and skip both the staging buffer and the
+    /// decode pass.
+    pub fn stack_layer_from_linear_f32(&mut self, i: usize, rgba: &[f32]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let pixel_count = self.stack_pixel_count();
+        if rgba.len() as u64 != pixel_count * 4 {
+            return false;
+        }
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        // The whole layer is written, so there is nothing to clear.
+        self.queue.write_buffer(&layer, 0, bytemuck::cast_slice(rgba));
+        true
+    }
+
     pub fn stack_layer_from_srgb_u8(&mut self, i: usize, rgba: &[u8]) -> bool {
         let h = self.stack_dims.1;
         self.stack_layer_from_srgb_u8_rows(i, rgba, 0, h)

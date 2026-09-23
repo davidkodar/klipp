@@ -11,6 +11,30 @@
 /// Free function — takes `&mut TitleRenderer` so any caller with
 /// access to the engine's title_renderer can use it without going
 /// through &mut self.
+/// [`render_generator_with_slate`] in linear light.
+///
+/// A slate or a placeholder is text, drawn by the title renderer into
+/// bytes, so those are widened the way the decode pass widens them.
+/// Everything else goes to `render_generator_linear`, where the two
+/// continuous-tone generators draw straight into float.
+pub fn render_generator_with_slate_linear(
+    title_renderer: &mut klipp_title::TitleRenderer,
+    gen_data: &klipp_core::GeneratorData,
+    w: u32,
+    h: u32,
+    elapsed_secs: f64,
+    total_secs: f64,
+) -> Vec<f32> {
+    if matches!(
+        gen_data,
+        klipp_core::GeneratorData::Slate { .. } | klipp_core::GeneratorData::Placeholder { .. }
+    ) {
+        let bytes = render_generator_with_slate(title_renderer, gen_data, w, h, elapsed_secs, total_secs);
+        return klipp_core::generator::srgb_u8_to_linear_f32(&bytes);
+    }
+    klipp_core::generator::render_generator_linear(gen_data, w, h, elapsed_secs, total_secs)
+}
+
 pub fn render_generator_with_slate(
     title_renderer: &mut klipp_title::TitleRenderer,
     gen_data: &klipp_core::GeneratorData,
