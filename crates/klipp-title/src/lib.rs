@@ -1255,17 +1255,25 @@ impl TitleRenderer {
         let tb = title.primary_text_or_default();
         let w = width as usize;
         let h = height as usize;
-        let mut buf = vec![0u8; w * h * 4];
+        // The working buffer is float, on the same 0..255 scale the
+        // layers already compute in. A title is a stack — a backing
+        // panel, a shadow, a glow, an outline, the glyphs — and each
+        // one used to be rounded into eight bits before the next one
+        // read it back, so five layers meant five roundings, each
+        // throwing away what the next needed. It is rounded once now,
+        // where the buffer leaves this function.
+        let mut buf = vec![0f32; w * h * 4];
 
         // Fill background if requested
         if let TitleBackground::FullFrame { color } = &title.background {
+            let fill = [color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32];
             for pixel in buf.chunks_exact_mut(4) {
-                pixel.copy_from_slice(color);
+                pixel.copy_from_slice(&fill);
             }
         }
 
         if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
-            return buf;
+            return to_bytes(&buf);
         }
 
         let scale = layout.scale;
@@ -1513,7 +1521,7 @@ impl TitleRenderer {
             }
         }
 
-        buf
+        to_bytes(&buf)
     }
 
     /// Render a `TitleData` to an RGBA buffer of `width x height` pixels (backward compat).
@@ -3805,7 +3813,7 @@ fn is_in_rounded_rect(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32, r: f
 }
 
 fn render_extrusion(
-    buf: &mut [u8],
+    buf: &mut [f32],
     alpha_mask: &[u8],
     mask_w: usize,
     mask_h: usize,
@@ -4260,7 +4268,7 @@ fn rasterize_to_mask_motion(
 /// Draw an alpha mask onto an RGBA buffer using a given color and intensity.
 #[allow(clippy::too_many_arguments)]
 fn draw_mask_to_buf(
-    buf: &mut [u8],
+    buf: &mut [f32],
     mask: &[u8],
     mask_w: usize,
     mask_h: usize,
@@ -4291,7 +4299,7 @@ fn draw_mask_to_buf(
 /// Draw rich text fill: each glyph is drawn with its own color.
 #[allow(clippy::too_many_arguments)]
 fn draw_rich_text_fill(
-    buf: &mut [u8],
+    buf: &mut [f32],
     buf_w: usize,
     buf_h: usize,
     mask_x0: usize,
@@ -4411,7 +4419,7 @@ fn blur_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
 /// Draw a pattern fill through an alpha mask.
 #[allow(clippy::too_many_arguments)]
 fn draw_pattern_fill(
-    buf: &mut [u8],
+    buf: &mut [f32],
     mask: &[u8],
     mask_w: usize,
     mask_h: usize,
@@ -4547,34 +4555,46 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 
 /// Alpha-blend `src` (RGBA) over the pixel at `buf[idx..idx+4]`.
 #[inline]
-fn blend_pixel(buf: &mut [u8], idx: usize, src: &[u8; 4]) {
-    let sa = src[3] as u32;
-    if sa == 0 {
+/// One source pixel over the working buffer.
+///
+/// The source is still eight-bit — a title's colours come from the
+/// document as bytes and nothing is gained by widening them — but what
+/// it lands on is not. The old version did this in 1/255 integer units
+/// and rounded the result back into a byte, which is correct for one
+/// layer and lossy for five: a backing panel, a shadow, a glow, an
+/// outline and the glyphs each read back what the last one had rounded.
+/// The working buffer, rounded once, where it leaves the compositor.
+fn to_bytes(buf: &[f32]) -> Vec<u8> {
+    buf.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect()
+}
+
+fn blend_pixel(buf: &mut [f32], idx: usize, src: &[u8; 4]) {
+    let sa = src[3] as f32 / 255.0;
+    if sa <= 0.0 {
         return;
     }
-    if sa == 255 {
-        buf[idx] = src[0];
-        buf[idx + 1] = src[1];
-        buf[idx + 2] = src[2];
-        buf[idx + 3] = 255;
+    if src[3] == 255 {
+        buf[idx] = src[0] as f32;
+        buf[idx + 1] = src[1] as f32;
+        buf[idx + 2] = src[2] as f32;
+        buf[idx + 3] = 255.0;
         return;
     }
-    let da = buf[idx + 3] as u32;
-    let inv_sa = 255 - sa;
-    // Straight-alpha "over", in 1/255 units: the result's alpha, and
-    // the colour as the alpha-weighted mix divided back out of it, so a
-    // translucent edge keeps its colour instead of going dark.
-    let out_a = sa * 255 + da * inv_sa; // ×255
-    if out_a == 0 {
+    let da = buf[idx + 3] / 255.0;
+    let inv_sa = 1.0 - sa;
+    // Straight-alpha "over": the result's alpha, and the colour as the
+    // alpha-weighted mix divided back out of it, so a translucent edge
+    // keeps its colour instead of going dark.
+    let out_a = sa + da * inv_sa;
+    if out_a <= 0.0 {
         return;
     }
     for i in 0..3 {
-        let sc = src[i] as u32;
-        let dc = buf[idx + i] as u32;
-        let mixed = sc * sa * 255 + dc * da * inv_sa; // ×255²
-        buf[idx + i] = ((mixed + out_a / 2) / out_a).min(255) as u8;
+        let sc = src[i] as f32;
+        let dc = buf[idx + i];
+        buf[idx + i] = ((sc * sa + dc * da * inv_sa) / out_a).clamp(0.0, 255.0);
     }
-    buf[idx + 3] = ((out_a + 127) / 255).min(255) as u8;
+    buf[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0);
 }
 
 /// Per-clip cache entry for [`ensure_glyph_positions`]. Holds the
@@ -4699,6 +4719,41 @@ pub fn ensure_glyph_positions<'a>(
 
 #[cfg(test)]
 mod tests {
+    /// A faint layer used to stall against an eight-bit buffer.
+    ///
+    /// Alpha 1/255 of white over a mid grey moves the result by about
+    /// four tenths of a code value. Rounded back into a byte that is no
+    /// move at all, so the second layer read the same grey the first
+    /// one did, and a hundred of them left the pixel exactly where they
+    /// found it. A title stacks its backing, shadow, glow, outline and
+    /// glyphs this way, and the faint ends of each — the soft edge of a
+    /// glow, the falloff of a shadow — are made of exactly these
+    /// blends.
+    #[test]
+    fn faint_layers_accumulate_instead_of_stalling() {
+        let mut buf = vec![100.0f32, 100.0, 100.0, 255.0];
+        for _ in 0..30 {
+            blend_pixel(&mut buf, 0, &[200, 200, 200, 1]);
+        }
+        let out = to_bytes(&buf);
+        assert!(
+            out[0] >= 108,
+            "thirty faint layers should have carried the grey up from 100, \
+             but it is {} — which is where eight bits used to leave it",
+            out[0],
+        );
+        assert_eq!(out[3], 255, "opaque stays opaque");
+    }
+
+    /// The other end: one fully opaque layer still lands exactly on its
+    /// own colour, with no drift from the float round trip.
+    #[test]
+    fn an_opaque_layer_is_exact() {
+        let mut buf = vec![0.0f32; 4];
+        blend_pixel(&mut buf, 0, &[17, 34, 51, 255]);
+        assert_eq!(to_bytes(&buf), vec![17, 34, 51, 255]);
+    }
+
     use super::*;
     use klipp_timeline::TitlePosition;
 
