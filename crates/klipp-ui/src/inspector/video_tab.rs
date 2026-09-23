@@ -111,7 +111,7 @@ impl TransformParams {
 
 /// Compute KeyframeState for a given keyframe vec at a given clip-relative time.
 fn keyframe_state(keyframes: &[klipp_core::Keyframe], clip_time_secs: f64) -> KeyframeState {
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
     KeyframeState {
         has_keyframe_at_playhead: keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !keyframes.is_empty(),
@@ -237,7 +237,7 @@ fn show_clip_video(
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
     let pad = 14.0;
 
     // ── ROLE ──
@@ -1832,7 +1832,7 @@ fn show_compositing_section(
                     // render path evaluates them and overrides the
                     // static value frame-by-frame. Mirrors the opacity/
                     // transform UX users already know.
-                    let kf_tolerance_secs = 0.02_f64;
+                    let kf_tolerance_secs = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("Feather")
@@ -3716,7 +3716,7 @@ fn keyframe_controls(
     clip_time_secs: f64,
     (timeline_in_secs, rate): (f64, u32),
 ) {
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
     let here = kfs.iter().position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance);
     if let (Some(interp), Some(ki)) = (r.keyframe_set_interpolation, here) {
         cmds.push(AppCommand::SetVideoKeyframeInterpolation { clip_id, param, keyframe_index: ki, interpolation: interp });

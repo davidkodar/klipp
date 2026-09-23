@@ -454,7 +454,7 @@ fn title_object_keyframe_state(
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
 ) -> crate::widgets::scrubby_param::KeyframeState {
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
     crate::widgets::scrubby_param::KeyframeState {
         has_keyframe_at_playhead: keyframes
             .iter()
@@ -479,7 +479,7 @@ fn title_object_keyframe_state(
 /// corresponding AppCommand(s). Three affordances:
 /// - Diamond click: toggle a keyframe at the playhead.
 /// - Scrubby drag (when keyframes exist): upsert a keyframe at the
-///   playhead with the new value (handler dedups within ±20ms).
+///   playhead with the new value (handler uses the shared timestamp tolerance).
 /// - Scrubby drag (when no keyframes): SetTitleObjectTransform updates
 ///   the static `center` fallback. Falls back to SetTitlePosition when
 ///   no specific object is selected.
@@ -508,7 +508,7 @@ fn handle_position_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectPositionKeyframe {
                 clip_id,
@@ -555,7 +555,7 @@ fn handle_position_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectPositionKeyframeInterpolation {
                 clip_id,
@@ -610,7 +610,7 @@ fn handle_glow_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -659,7 +659,7 @@ fn handle_glow_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -711,7 +711,7 @@ fn handle_shadow_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -753,7 +753,7 @@ fn handle_shadow_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -805,7 +805,7 @@ fn handle_inner_shadow_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -847,7 +847,7 @@ fn handle_inner_shadow_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -905,7 +905,7 @@ fn handle_outline_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -943,7 +943,7 @@ fn handle_outline_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -1000,7 +1000,7 @@ fn handle_shadow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1025,7 +1025,7 @@ fn handle_shadow_layer_axis_response(
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
         if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1078,7 +1078,7 @@ fn handle_inner_shadow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1103,7 +1103,7 @@ fn handle_inner_shadow_layer_axis_response(
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
         if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1152,7 +1152,7 @@ fn handle_glow_layer_axis_response(
     };
     let object_id = oid.0;
     if resp.keyframe_toggled {
-        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON) {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key: param_key.clone(),
                 time_secs: clip_time_secs,
@@ -1177,7 +1177,7 @@ fn handle_glow_layer_axis_response(
     }
     if let Some(interp) = resp.keyframe_set_interpolation {
         if let Some((idx, _)) = keyframes.iter().enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id, object_id, param_key,
@@ -1216,7 +1216,7 @@ fn handle_motion_blur_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -1257,7 +1257,7 @@ fn handle_motion_blur_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,
@@ -1312,7 +1312,7 @@ fn handle_extrusion_axis_response(
     if resp.keyframe_toggled {
         if keyframes
             .iter()
-            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .any(|k| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
                 clip_id,
@@ -1356,7 +1356,7 @@ fn handle_extrusion_axis_response(
         if let Some((idx, _)) = keyframes
             .iter()
             .enumerate()
-            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON)
         {
             cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
                 clip_id,

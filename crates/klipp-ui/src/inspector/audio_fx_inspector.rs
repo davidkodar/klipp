@@ -4,10 +4,8 @@ use klipp_audio::ladspa::LadspaPluginInfo;
 use klipp_core::{AppCommand, AudioEffectInstance, ClipId, Keyframe};
 use std::collections::HashMap;
 
-/// Tolerance for "is there a kf at the playhead?" — same as
-/// `inspector::effects_tab::effect_keyframe_state`. ~20ms wide so a
-/// scrub jitter doesn't cause the diamond to flip on/off.
-const KF_TOLERANCE_SECS: f64 = 0.02;
+// Semantic timestamp matching must agree with insertion/deletion.
+use klipp_core::keyframe::KEYFRAME_TIME_EPSILON as KF_TOLERANCE_SECS;
 
 /// Build the KeyframeState the scrubby_param widget needs for one
 /// audio-effect param. Mirrors `effect_keyframe_state` in the video
@@ -1263,14 +1261,29 @@ mod helper_tests {
     fn audio_kf_state_at_playhead_detects_within_tolerance() {
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:gain".to_string(), vec![kf(0.5, 0.5)]);
-        // Within 20ms — must register as "at playhead"
-        let s = audio_kf_state(&map, 0, "gain", 0.51);
+        // Timestamp conversion roundoff still identifies the current key.
+        let s = audio_kf_state(&map, 0, "gain", 0.5 + 1e-8);
         assert!(s.has_keyframe_at_playhead);
         assert!(s.has_any_keyframes);
         // Outside tolerance — must not register
         let s = audio_kf_state(&map, 0, "gain", 0.6);
         assert!(!s.has_keyframe_at_playhead);
         assert!(s.has_any_keyframes);
+    }
+
+    #[test]
+    fn audio_kf_state_keeps_adjacent_frames_distinct() {
+        for fps in [60.0, 120.0, 60000.0 / 1001.0] {
+            let dt = 1.0 / fps;
+            let map = HashMap::from([("0:gain".to_string(), vec![
+                kf(0.0, 0.0), kf(dt, 1.0), kf(2.0 * dt, 2.0),
+            ])]);
+            let state = audio_kf_state(&map, 0, "gain", dt);
+            assert!(state.has_keyframe_at_playhead);
+            assert_eq!(state.prev_keyframe_time, Some(0.0));
+            assert_eq!(state.next_keyframe_time, Some(2.0 * dt));
+            assert!(!audio_kf_state(&map, 0, "gain", 3.0 * dt).has_keyframe_at_playhead);
+        }
     }
 
     #[test]

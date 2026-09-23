@@ -1348,7 +1348,7 @@ fn builtin_effect_is_default(effect: &klipp_effects::BuiltinEffect) -> bool {
 fn effect_keyframe_state(clip: &Clip, effect_index: usize, param_name: &str, clip_time_secs: f64) -> KeyframeState {
     let key = format!("{}:{}", effect_index, param_name);
     let kfs = clip.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
     KeyframeState {
         has_keyframe_at_playhead: kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
         has_any_keyframes: !kfs.is_empty(),
@@ -1398,7 +1398,7 @@ fn show_builtin_effect_params(
     let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
-    let kf_tolerance = 0.02;
+    let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
 
     // ── Preset selector ──
     let effect_key = crate::effect_presets::builtin_effect_key(effect);

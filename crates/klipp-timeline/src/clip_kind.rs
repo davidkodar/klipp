@@ -255,7 +255,7 @@ impl ObjectTransform {
         }
     }
 
-    /// Insert (or replace, within ±20ms) a keyframe at `time_secs`.
+    /// Insert (or replace at the same timestamp) a keyframe at `time_secs`.
     /// Keeps the vec sorted by `time_secs` so the renderer's
     /// `evaluate(...)` walk stays correct.
     pub fn upsert_position_keyframe(
@@ -264,23 +264,10 @@ impl ObjectTransform {
         time_secs: f64,
         value: f32,
     ) {
-        let kfs = self.position_keyframes_mut(axis);
-        kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-        kfs.push(klipp_core::Keyframe {
-            time_secs,
-            value,
-            interpolation: klipp_core::Interpolation::Linear,
-            tangent_out: (0.0, 0.0),
-            tangent_in: (0.0, 0.0),
-        });
-        kfs.sort_by(|a, b| {
-            a.time_secs
-                .partial_cmp(&b.time_secs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        klipp_core::keyframe::upsert_keyframe(self.position_keyframes_mut(axis), time_secs, value);
     }
 
-    /// Remove keyframe(s) within ±20ms of `time_secs`. No-op if none
+    /// Remove keyframe(s) at `time_secs` using the shared timestamp tolerance. No-op if none
     /// match; matches the NLE-standard "click diamond again to delete"
     /// affordance.
     pub fn remove_position_keyframe_at(
@@ -288,8 +275,7 @@ impl ObjectTransform {
         axis: klipp_core::TitlePositionAxis,
         time_secs: f64,
     ) {
-        self.position_keyframes_mut(axis)
-            .retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+        klipp_core::keyframe::remove_keyframe_at(self.position_keyframes_mut(axis), time_secs);
     }
 
     /// Move the keyframe at `index` to a new (time, value). Re-sorts
@@ -2285,7 +2271,7 @@ mod tests {
     }
 
     /// `upsert_position_keyframe` inserts in time order and replaces
-    /// any existing keyframe within the ±20ms dedup window. This is
+    /// an existing keyframe at the same timestamp. This is
     /// the contract every `AddTitleObjectPositionKeyframe` handler
     /// invocation relies on.
     #[test]
@@ -2310,10 +2296,12 @@ mod tests {
         let mid = t.center_x_keyframes.iter().find(|k| (k.time_secs - 0.5).abs() < 0.01).unwrap();
         assert_eq!(mid.value, 0.42, "second upsert at same time must replace value");
 
-        // Within ±20ms is "same time" for the dedup — so 0.51s
-        // overwrites the 0.5s entry rather than adding a new one.
+        // A nearby but distinct timestamp must retain its own key.
         t.upsert_position_keyframe(TitlePositionAxis::X, 0.51, 0.5);
-        assert_eq!(t.center_x_keyframes.len(), 3, "±20ms dedup must not duplicate");
+        assert_eq!(t.center_x_keyframes.len(), 4, "nearby keys must survive");
+        t.remove_position_keyframe_at(TitlePositionAxis::X, 0.51);
+        assert_eq!(t.center_x_keyframes[1].time_secs, 0.5);
+        assert_eq!(t.center_x_keyframes.len(), 3);
 
         // Default interpolation is Linear.
         for kf in &t.center_x_keyframes {
@@ -2338,7 +2326,7 @@ mod tests {
         let times: Vec<f64> = t.center_x_keyframes.iter().map(|k| k.time_secs).collect();
         assert_eq!(times, vec![0.0, 2.0]);
 
-        // No-op when no keyframe is within ±20ms.
+        // No-op when no keyframe matches the timestamp.
         t.remove_position_keyframe_at(TitlePositionAxis::X, 5.0);
         assert_eq!(t.center_x_keyframes.len(), 2, "remove far from any kf must no-op");
 

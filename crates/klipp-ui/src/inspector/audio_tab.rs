@@ -766,7 +766,7 @@ fn show_clip_audio(
         ui.add_space(4.0);
 
         // Keyframe state helpers
-        let kf_tolerance = 0.02;
+        let kf_tolerance = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
         let gain_ks = build_kf_state(&clip.gain_keyframes, clip_time_secs, kf_tolerance);
         let vol_ks = build_kf_state(&clip.volume_keyframes, clip_time_secs, kf_tolerance);
         let pan_ks = build_kf_state(&clip.pan_keyframes, clip_time_secs, kf_tolerance);
