@@ -6,7 +6,7 @@
 use crate::browser::title_previews::TitlePreviews;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
-use klipp_timeline::{LayerFx, 
+use klipp_timeline::{TitleObjectContent, LayerFx, 
     CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TextAlignment, TextBox,
     TitleData, TitleLoop, TitleMotion,
 };
@@ -68,9 +68,34 @@ impl TitleChips {
 
 /// The clip's text as a chip would show it: the first line, short,
 /// large and centred, in the layer's own face and style.
-fn chip_title(tb: &TextBox, fx: &LayerFx, adjust: impl FnOnce(&mut TextBox, &mut LayerFx)) -> TitleData {
-    let mut t = tb.clone();
+/// What a chip previews a motion or a loop on: the text it belongs
+/// to, or the layer itself when the layer is a shape or a picture —
+/// a card should see its own pill rise, not a word standing in for it.
+#[derive(Clone)]
+pub enum ChipSubject {
+    Text(TextBox),
+    Layer(TitleObjectContent),
+}
+
+fn chip_title(subject: &ChipSubject, fx: &LayerFx, adjust: impl FnOnce(&mut TextBox, &mut LayerFx)) -> TitleData {
     let mut f = fx.clone();
+    let ChipSubject::Text(tb) = subject else {
+        let ChipSubject::Layer(content) = subject else { unreachable!() };
+        // The layer, fitted to the chip, with its stack and the motion
+        // or loop the chip is about; the text box the adjustment sees
+        // is scratch, since a layer has no type to restyle.
+        f.motion = TitleMotion::default();
+        f.loops.clear();
+        let mut scratch = TextBox::default();
+        adjust(&mut scratch, &mut f);
+        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None };
+        let mut xf = klipp_timeline::default_text_transform();
+        xf.size = klipp_timeline::TitlePosition { x: 0.6, y: 0.6 };
+        let id = td.add_object(content.clone(), xf);
+        td.object_mut(id).expect("just added").fx = Some(f);
+        return td;
+    };
+    let mut t = tb.clone();
     let line = t.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let short: String = line.chars().take(14).collect();
     t.text = if short.is_empty() { "Title".to_string() } else { short };
@@ -92,8 +117,15 @@ fn chip_title(tb: &TextBox, fx: &LayerFx, adjust: impl FnOnce(&mut TextBox, &mut
 
 /// A signature of everything about the layer that changes how a chip
 /// looks, so the cache renews when the style does.
-fn style_signature(tb: &TextBox, fx: &LayerFx) -> u64 {
+fn style_signature(subject: &ChipSubject, fx: &LayerFx) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    let tb = match subject {
+        ChipSubject::Text(tb) => tb,
+        ChipSubject::Layer(content) => {
+            format!("{content:?}{:?}{:?}{:?}{:?}", fx.outlines, fx.shadows, fx.glows, fx.inner_shadows).hash(&mut h);
+            return h.finish();
+        }
+    };
     tb.font_name.hash(&mut h);
     format!("{:?}", tb.font_style).hash(&mut h);
     tb.color.hash(&mut h);
@@ -104,8 +136,12 @@ fn style_signature(tb: &TextBox, fx: &LayerFx) -> u64 {
     h.finish()
 }
 
-fn chip_text(tb: &TextBox) -> String {
-    tb.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("Title").trim().chars().take(14).collect()
+fn chip_text(subject: &ChipSubject) -> String {
+    match subject {
+        ChipSubject::Text(tb) => tb.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("Title").trim().chars().take(14).collect(),
+        ChipSubject::Layer(TitleObjectContent::Shape(_)) => "shape".into(),
+        ChipSubject::Layer(_) => "picture".into(),
+    }
 }
 
 /// Hover elapsed time for a chip, kept in egui's temp data.
@@ -130,7 +166,7 @@ fn hover_time(elapsed: f32, from: f32, len: f32) -> f32 {
 struct ChipSpec<'a> {
     /// What the chip is, for the cache and the hover clock.
     id: String,
-    tb: &'a TextBox,
+    subject: &'a ChipSubject,
     /// The layer's stack, which is where the style a chip shows lives.
     fx: &'a LayerFx,
     /// The moment shown at rest, and the hover loop's start and length.
@@ -154,8 +190,8 @@ fn chip(
     let label_h = if spec.label.is_some() { 16.0 } else { 0.0 };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size.x, size.y + label_h), egui::Sense::click());
     let pic = egui::Rect::from_min_size(rect.min, size);
-    let template = format!("chip:{}:{:x}", spec.id, style_signature(spec.tb, spec.fx));
-    let text = chip_text(spec.tb);
+    let template = format!("chip:{}:{:x}", spec.id, style_signature(spec.subject, spec.fx));
+    let text = chip_text(spec.subject);
     let hovered = resp.hovered();
     let elapsed = hover_elapsed(ui, resp.id, hovered);
     let time = match elapsed {
@@ -242,8 +278,8 @@ impl Direction {
 }
 
 /// The chip title for one motion in one direction.
-fn motion_chip_title(tb: &TextBox, fx: &LayerFx, dir: Direction, m: Option<Motion>) -> TitleData {
-    chip_title(tb, fx, |_, f| {
+fn motion_chip_title(subject: &ChipSubject, fx: &LayerFx, dir: Direction, m: Option<Motion>) -> TitleData {
+    chip_title(subject, fx, |_, f| {
         f.motion = match dir {
             Direction::Enter => TitleMotion { enter: m, exit: None },
             Direction::Exit => TitleMotion { enter: None, exit: m },
@@ -258,7 +294,7 @@ fn motion_row(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     chips: &mut TitleChips,
-    tb: &TextBox,
+    subject: &ChipSubject,
     fx: &LayerFx,
     dir: Direction,
     slot: &mut Option<Motion>,
@@ -273,15 +309,15 @@ fn motion_row(
             egui::Label::new(egui::RichText::new(dir.label()).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
         );
         let current = *slot;
-        let tb_c = tb.clone();
+        let s_c = subject.clone();
         let fx_c = fx.clone();
-        let make = move || motion_chip_title(&tb_c, &fx_c, dir, current);
+        let make = move || motion_chip_title(&s_c, &fx_c, dir, current);
         let kind_id = current.map(|m| format!("{:?}:{:.2}:{:?}", m.kind, m.duration_secs, m.easing)).unwrap_or_else(|| "none".into());
         let resp = chip(
             ui,
             theme,
             chips,
-            ChipSpec { id: format!("row:{}:{}", dir.label(), kind_id), tb, fx, rest, hover_from, hover_len, selected: false, label: None },
+            ChipSpec { id: format!("row:{}:{}", dir.label(), kind_id), subject, fx, rest, hover_from, hover_len, selected: false, label: None },
             ROW_CHIP,
             make,
         );
@@ -320,16 +356,16 @@ fn motion_row(
                         m.kind = k;
                         m
                     });
-                    let tb_c = tb.clone();
+                    let s_c = subject.clone();
                     let fx_c = fx.clone();
-                    let make = move || motion_chip_title(&tb_c, &fx_c, dir, m);
+                    let make = move || motion_chip_title(&s_c, &fx_c, dir, m);
                     let label = k.map(|k| k.label()).unwrap_or("None");
                     let id = format!("gallery:{}:{}", dir.label(), label);
                     let resp = chip(
                         ui,
                         theme,
                         chips,
-                        ChipSpec { id, tb, fx, rest, hover_from, hover_len, selected: *k == selected_kind, label: Some(label) },
+                        ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected: *k == selected_kind, label: Some(label) },
                         GALLERY_CHIP,
                         make,
                     );
@@ -412,7 +448,7 @@ pub fn show_motion_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
-    tb: &TextBox,
+    subject: &ChipSubject,
     fx: &LayerFx,
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
@@ -421,19 +457,19 @@ pub fn show_motion_card(
     ui.add_space(4.0);
     let mut motion = fx.motion;
     let mut changed = false;
-    changed |= motion_row(ui, theme, chips, tb, fx, Direction::Enter, &mut motion.enter);
+    changed |= motion_row(ui, theme, chips, subject, fx, Direction::Enter, &mut motion.enter);
     ui.add_space(4.0);
-    changed |= motion_row(ui, theme, chips, tb, fx, Direction::Exit, &mut motion.exit);
+    changed |= motion_row(ui, theme, chips, subject, fx, Direction::Exit, &mut motion.exit);
     if changed {
         cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
     }
     ui.add_space(8.0);
-    show_loops(ui, theme, clip_id, tb, fx, chips, cmds);
+    show_loops(ui, theme, clip_id, subject, fx, chips, cmds);
 }
 
-fn loop_chip_title(tb: &TextBox, fx: &LayerFx, l: &TitleLoop) -> TitleData {
+fn loop_chip_title(subject: &ChipSubject, fx: &LayerFx, l: &TitleLoop) -> TitleData {
     let l = l.clone();
-    chip_title(tb, fx, move |_, f| f.loops = vec![l])
+    chip_title(subject, fx, move |_, f| f.loops = vec![l])
 }
 
 /// The loops: a gallery to add from, then one row per loop with its
@@ -442,7 +478,7 @@ fn show_loops(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
-    tb: &TextBox,
+    subject: &ChipSubject,
     fx: &LayerFx,
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
@@ -471,15 +507,15 @@ fn show_loops(
             for row in items.chunks(3) {
                 ui.horizontal(|ui| {
                     for l in row {
-                        let tb_c = tb.clone();
+                        let s_c = subject.clone();
                         let fx_c = fx.clone();
                         let l_c = l.clone();
-                        let make = move || loop_chip_title(&tb_c, &fx_c, &l_c);
+                        let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
                         let resp = chip(
                             ui,
                             theme,
                             chips,
-                            ChipSpec { id: format!("loop:{}", l.label()), tb, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(l.label()) },
+                            ChipSpec { id: format!("loop:{}", l.label()), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(l.label()) },
                             GALLERY_CHIP,
                             make,
                         );
@@ -620,21 +656,22 @@ pub fn show_style_card(
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
 ) {
+    let subject = ChipSubject::Text(tb.clone());
     caption(ui, theme, "STYLE");
     ui.add_space(4.0);
     // Presets, rendered on this text.
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         for (id, label) in super::PRESET_REGISTRY.iter().filter(|(id, _)| *id != 0) {
-            let tb_c = tb.clone();
+            let s_c = ChipSubject::Text(tb.clone());
             let fx_c = fx.clone();
             let pid = *id;
-            let make = move || chip_title(&tb_c, &fx_c, |t, f| crate::app::apply_title_preset(t, f, pid));
+            let make = move || chip_title(&s_c, &fx_c, |t, f| crate::app::apply_title_preset(t, f, pid));
             let resp = chip(
                 ui,
                 theme,
                 chips,
-                ChipSpec { id: format!("preset:{pid}"), tb, fx, rest: 1.0, hover_from: 1.0, hover_len: FRAME_STEP, selected: false, label: Some(label) },
+                ChipSpec { id: format!("preset:{pid}"), subject: &subject, fx, rest: 1.0, hover_from: 1.0, hover_len: FRAME_STEP, selected: false, label: Some(label) },
                 ROW_CHIP,
                 make,
             );
@@ -753,4 +790,26 @@ pub fn show_style_card(
             cmds.push(AppCommand::SetTitleGlow { clip_id, enabled: on, color, radius, intensity });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shape previews as itself: the chip's title is the shape, sized
+    /// for the chip, carrying the motion the chip is about and nothing
+    /// of the stack's own motion or loops.
+    #[test]
+    fn a_shape_chip_is_the_shape_with_the_motion_on_it() {
+        let shape = TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 4.0 }, fill: Some([1, 2, 3, 255]), stroke: None, fit: None });
+        let fx = LayerFx { loops: vec![TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.5 }], ..Default::default() };
+        let rise = Motion::new(MotionKind::Rise).duration(0.3);
+        let td = motion_chip_title(&ChipSubject::Layer(shape.clone()), &fx, Direction::Enter, Some(rise));
+        assert_eq!(td.objects.len(), 1);
+        assert_eq!(td.objects[0].content, shape, "the chip shows the shape itself");
+        let chip_fx = td.objects[0].fx();
+        assert_eq!(chip_fx.motion.enter, Some(rise), "with the motion the chip is about");
+        assert!(chip_fx.loops.is_empty(), "and not the layer's own loops");
+        assert_eq!(chip_text(&ChipSubject::Layer(shape)), "shape");
+    }
 }

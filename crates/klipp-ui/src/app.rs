@@ -3763,6 +3763,17 @@ impl KlippApp {
     /// `target_textbox_mut(td, target_oid)` (the first TextBox in the stack).
     /// Used by every per-property title command so Inspector edits
     /// follow the on-canvas / Layers-panel selection.
+    /// The selected layer of `clip_id`, whatever it is: the target of a
+    /// command on a layer's stack — motion, loops, effects, motion blur
+    /// — which a shape or a picture carries as a text does.
+    fn title_layer_target_id(
+        &self,
+        clip_id: klipp_core::ClipId,
+    ) -> Option<klipp_timeline::TitleObjectId> {
+        let (selected_clip, oid) = self.state.selected_title_object?;
+        (selected_clip == clip_id).then_some(oid)
+    }
+
     fn title_text_target_id(
         &self,
         clip_id: klipp_core::ClipId,
@@ -15976,7 +15987,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleMotion { clip_id, motion } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17347,7 +17358,7 @@ impl KlippApp {
                 // when a shadow already exists so existing offset/blur
                 // keyframes survive the edit.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17391,7 +17402,7 @@ impl KlippApp {
                 // surviving slots in place; new slots start with empty
                 // keyframe vecs. Mirrors SetTitleOutlines.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17431,7 +17442,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleShadowLayer { clip_id, index, enabled, color, offset_x, offset_y, blur } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17456,7 +17467,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleShadowStackEnabled { clip_id, enabled } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17478,7 +17489,7 @@ impl KlippApp {
                 // Outline Layers stack (outlines[1..]) is preserved untouched
                 // — disabling the primary outline must not nuke the stack.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17514,7 +17525,7 @@ impl KlippApp {
                 // exists so any existing radius/intensity keyframes
                 // survive the edit (toggle-mute semantics).
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17547,7 +17558,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleGlows { clip_id, glows } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17584,7 +17595,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleGlowLayer { clip_id, index, enabled, color, radius, intensity } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17608,7 +17619,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleGlowStackEnabled { clip_id, enabled } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17627,7 +17638,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleOutlines { clip_id, outlines } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17673,7 +17684,7 @@ impl KlippApp {
                 // on that index. Used by the keyframe-aware scrubby
                 // path in the inspector.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17696,7 +17707,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleOutlineStackEnabled { clip_id, enabled } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17718,7 +17729,7 @@ impl KlippApp {
                 // exists so existing keyframes survive an Inspector
                 // tweak — same pattern as SetTitleShadow.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17754,7 +17765,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleInnerShadows { clip_id, shadows } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17794,7 +17805,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleInnerShadowLayer { clip_id, index, enabled, color, offset_x, offset_y, blur } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17819,7 +17830,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleInnerShadowStackEnabled { clip_id, enabled } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -17883,7 +17894,7 @@ impl KlippApp {
                 // survive an Inspector tweak — same pattern as the
                 // other effects.
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -18057,7 +18068,7 @@ impl KlippApp {
             }
             AppCommand::SetTitleLoops { clip_id, loops } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                let target_oid = self.title_layer_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
