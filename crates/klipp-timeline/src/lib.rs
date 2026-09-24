@@ -74,4 +74,4 @@ pub use sequence::{
 };
 
 pub mod vector_path;
-pub use vector_path::{VectorPath, PathPose, PathContour, PathVertex, PathKeyframe};
+pub use vector_path::{StrokeGlow, PathTrim, TrimRange, TrimKeyframe, VectorPath, PathPose, PathContour, PathVertex, PathKeyframe};

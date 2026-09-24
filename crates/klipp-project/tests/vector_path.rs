@@ -13,6 +13,19 @@ fn path_titles_round_trip_with_an_explicit_unsupported_reader_tag() {
     end.fill = [1.0, 0.0, 0.0, 1.0];
     end.contours[0].vertices[0].outgoing = [0.3, 0.7];
     p.key(1.0, end).unwrap();
+    p.pose.stroke_glow=Some(klipp_timeline::StrokeGlow{radius:24.0,strength:0.8});
+    p.trim = Some(klipp_timeline::PathTrim::default());
+    p.trim
+        .as_mut()
+        .unwrap()
+        .key(
+            0.5,
+            klipp_timeline::TrimRange {
+                end: 0.4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let mut td = TitleData::default();
     td.objects.clear();
     td.add_object(

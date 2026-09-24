@@ -62,3 +62,84 @@ fn curved_open_strokes_have_antialiasing_and_scale_with_output() {
         "open contours must not fill"
     );
 }
+
+#[test]
+fn trim_keys_bypass_cache_and_glow_only_follows_revealed_stroke() {
+    let mut p = VectorPath::default();
+    p.pose.fill = [0.0; 4];
+    p.pose.stroke_width = 24.0;
+    p.pose.stroke_glow = Some(klipp_timeline::StrokeGlow {
+        radius: 32.0,
+        strength: 1.0,
+    });
+    let mut trim = klipp_timeline::PathTrim::default();
+    trim.key(
+        0.0,
+        klipp_timeline::TrimRange {
+            end: 0.0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    trim.key(1.0, klipp_timeline::TrimRange::default()).unwrap();
+    p.trim = Some(trim);
+    let mut renderer = TitleRenderer::new();
+    let td = title(p.clone());
+    let empty = renderer.render_with_time(&td, 320, 180, None, 0.0);
+    assert!(empty.chunks_exact(4).all(|p| p[3] == 0));
+    let full = renderer.render_with_time(&td, 320, 180, None, 1.0);
+    let partial = renderer.render_with_time(&td, 320, 180, None, 0.25);
+    let area = |p: &[u8]| p.chunks_exact(4).map(|p| p[3] as f64).sum::<f64>();
+    assert!(area(&full) > area(&partial) * 2.0);
+    // First quarter is the top edge; the bottom edge has neither stroke nor halo.
+    assert!(partial[(155 * 320 + 160) * 4 + 3] == 0);
+    p.pose.stroke_glow.as_mut().unwrap().strength = 0.0;
+    let sharp = renderer.render_with_time(&title(p), 320, 180, None, 0.25);
+    assert!(area(&partial) > area(&sharp));
+    assert_eq!(renderer.render_with_time(&td, 320, 180, None, 0.0), empty);
+}
+
+#[test]
+fn trim_never_erases_the_fill() {
+    let mut p = VectorPath::default();
+    p.pose.stroke = [0.0; 4];
+    p.pose.fill = [1.0, 0.0, 0.0, 1.0];
+    let mut renderer = TitleRenderer::new();
+    let original = renderer.render_with_time(&title(p.clone()), 160, 90, None, 0.0);
+    p.trim = Some(klipp_timeline::PathTrim {
+        range: klipp_timeline::TrimRange {
+            end: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    assert_eq!(
+        renderer.render_with_time(&title(p), 160, 90, None, 0.0),
+        original
+    );
+}
+
+#[test]
+fn untrimmed_dots_survive_and_subpixel_glow_does_not_thicken_edges() {
+    let mut p = VectorPath::default();
+    p.pose.fill = [0.0; 4];
+    p.pose.stroke_width = 20.0;
+    p.pose.contours[0].closed = false;
+    p.pose.contours[0].vertices.truncate(2);
+    for v in &mut p.pose.contours[0].vertices {
+        v.point = [0.5, 0.5];
+        v.incoming = v.point;
+        v.outgoing = v.point;
+    }
+    let mut renderer = TitleRenderer::new();
+    let original = renderer.render_with_time(&title(p.clone()), 320, 180, None, 0.0);
+    assert!(original.chunks_exact(4).any(|p| p[3] > 0));
+    p.pose.stroke_glow = Some(klipp_timeline::StrokeGlow {
+        radius: 2.0,
+        strength: 1.0,
+    });
+    assert_eq!(
+        renderer.render_with_time(&title(p), 320, 180, None, 0.0),
+        original
+    );
+}

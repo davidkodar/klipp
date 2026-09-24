@@ -43,6 +43,19 @@ fn agent_paths_share_the_model_and_undo_without_losing_text() {
     last.contours[0].vertices[0].incoming = [0.2, 0.7];
     last.fill = [1.0, 0.2, 0.0, 1.0];
     path.key(2.0, last).unwrap();
+    path.trim = Some(klipp_timeline::PathTrim::default());
+    path.trim
+        .as_mut()
+        .unwrap()
+        .key(
+            1.0,
+            klipp_timeline::TrimRange {
+                start: 0.2,
+                end: 0.7,
+                offset: 0.5,
+            },
+        )
+        .unwrap();
     let op: Op =
         serde_json::from_value(json!({"op":"vector_path","clip_id":id,"path":path})).unwrap();
     let plan = ops::resolve(&sequences[0], &pool, &[op]).unwrap();
