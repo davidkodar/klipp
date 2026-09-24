@@ -1118,10 +1118,13 @@ fn media_analysis_returns_null_for_undecoded_bins_and_ignores_old_sentinel_cache
         let old = h.ok(json!({"method":"media_analysis","media_id":id.0.to_string()}));
         assert!(old["motion"].is_null(), "v{version} must require re-analysis");
     }
-    let motion = klipp_analysis::motion::parse_metadata("frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=9\n", 3.0);
+    // One frame of 90 in the first second reads 3.0 at the reference
+    // cadence: "gentle", so the measured shot cannot match the static
+    // query below and only the unknown seconds are in question.
+    let motion = klipp_analysis::motion::parse_metadata("frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=90\n", 3.0);
     klipp_analysis::store::save(&key, "motion", klipp_analysis::motion::VERSION, &serde_json::to_value(motion).unwrap()).unwrap();
     let response = h.ok(json!({"method": "media_analysis", "media_id": id.0.to_string()}));
-    let expected = 0.3_f32 as f64;
+    let expected = 3.0_f32 as f64;
     assert!((response["motion"]["per_second"][0].as_f64().unwrap() - expected).abs() < 1e-6);
     assert!(response["motion"]["per_second"][1].is_null());
     assert!(response["motion"]["per_second"][2].is_null());
