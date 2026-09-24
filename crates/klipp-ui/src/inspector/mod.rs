@@ -418,6 +418,12 @@ fn show_template_controls(
                         if let (Some(min), Some(max)) = (range.min, range.max) { drag = drag.range(min..=max); }
                     }
                     changed = ui.add(drag).changed();
+                    if changed {
+                        if let Some(range) = &parameter.range {
+                            if let Some(min) = range.min { *number = number.max(min); }
+                            if let Some(max) = range.max { *number = number.min(max); }
+                        }
+                    }
                 }
                 crate::parameterized_templates::TemplateValue::Bool(enabled) => {
                     changed = ui.checkbox(enabled, "").changed();
