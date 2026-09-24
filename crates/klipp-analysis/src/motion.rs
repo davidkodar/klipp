@@ -123,12 +123,7 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
         .collect();
     intervals.sort_by(f64::total_cmp);
     let observed_interval = intervals
-        .iter()
-        .rev()
-        .take(16)
-        .copied()
-        .collect::<Vec<_>>()
-        .get(8.min(intervals.len().saturating_sub(1)))
+        .get(intervals.len() / 2)
         .copied()
         .unwrap_or(0.1)
         .clamp(1e-6, 0.1);
