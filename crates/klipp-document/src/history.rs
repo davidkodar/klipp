@@ -1087,6 +1087,12 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             old_state: old_state.clone(),
             new_state: new_state.clone(),
         },
+        // A drag on the sequence camera's keys: the whole camera as it was
+        // when the drag began and as it is at its end.
+        (
+            EditCommand::SetSequenceCamera { old, .. },
+            EditCommand::SetSequenceCamera { new, .. },
+        ) => EditCommand::SetSequenceCamera { old: old.clone(), new: new.clone() },
         // Unmatched pair: the pre-drag and post-drag commands are different
         // variants, or this is a coalesce-eligible variant someone wired up
         // without extending combine_old_new. Loudly flag in debug, fall back
@@ -2589,5 +2595,39 @@ mod merge_tests {
         // Something else on top is not merged into.
         h.push(HistoryEntry { command: EditCommand::SetSequenceCamera { old: Box::default(), new: Box::default() } });
         assert!(!h.merge_into_last(|last| matches!(last, EditCommand::SetClipDepth { .. })));
+    }
+}
+
+#[cfg(test)]
+mod camera_drag_tests {
+    use super::*;
+
+    fn camera_with_x_at(time_secs: f64) -> Box<klipp_timeline::Camera> {
+        let mut cam = klipp_timeline::Camera::default();
+        klipp_core::keyframe::upsert_keyframe(&mut cam.x_keyframes, time_secs, 0.5);
+        Box::new(cam)
+    }
+
+    /// Every frame of a camera-key drag moves the key again; the history
+    /// keeps the camera from before the first move and from after the
+    /// last, as one entry, so undo puts the key back where the drag
+    /// found it.
+    #[test]
+    fn a_camera_drag_is_one_entry_from_its_start_to_its_end() {
+        let mut h = CommandHistory::new();
+        let before = camera_with_x_at(1.0);
+        let after = camera_with_x_at(2.5);
+        h.begin_drag("camera:0".into(), HistoryEntry { command: EditCommand::SetSequenceCamera { old: before.clone(), new: before.clone() } });
+        assert!(h.is_dragging("camera:0"));
+        h.end_drag(HistoryEntry { command: EditCommand::SetSequenceCamera { old: after.clone(), new: after.clone() } });
+        assert_eq!(h.undo_stack.len(), 1);
+        match &h.undo_stack.back().unwrap().command {
+            EditCommand::SetSequenceCamera { old, new } => {
+                assert_eq!(old, &before, "undo returns to the camera from before the drag");
+                assert_eq!(new, &after, "redo returns to the camera from its end");
+            }
+            other => panic!("not a camera entry: {other:?}"),
+        }
+        assert!(!h.is_dragging("camera:0"));
     }
 }

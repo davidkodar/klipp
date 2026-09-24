@@ -87,3 +87,19 @@ Each track header shows:
 - Mute / Solo (audio)
 - Visibility (video)
 - Output target indicator (which audio bus the track sends to)
+
+## Camera Lane
+
+The sequence camera's move — where it looks, how far in, its roll — is keyed on the sequence, not on a clip, so its keys have a lane of their own between the ruler and the tracks. The diamond at the right of the track header column's ruler spacer shows or hides it; the diamond is lit when the camera carries keys, so a move written over the control socket is not invisible until someone thinks to look.
+
+The lane has one row per value: **X**, **Y**, **Zoom** and **Roll**, each in its own colour, with every key drawn at the moment it is stored. The pointer finds a key by the same rule the inspector's CAMERA rows use: the nearest key within the displayed frame, and it is edited at its own timestamp, never moved by being looked at.
+
+- **Click** a key to select it; the curve editor follows the selection.
+- **Drag** a key along the lane to move it in time. It snaps to the playhead and to other camera keys; its value is left alone.
+- **Alt-click** a row to add a key at the playhead's frame, holding the value the curve has there.
+- **Double-click** a key to remove it.
+- **Right-click** a key for the curve out of it (Linear, Hold, Bezier), a named ease into it, or removal.
+
+A drag is one undo step, however far the key travelled.
+
+With no clip selected, the curve editor shows the sequence camera's four curves over the sequence's time instead of a clip's. Keys are added by double-click at the exact moment under the pointer, dragged in time and value, and given Bezier handles, as a clip's keyframes are.
