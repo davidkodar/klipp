@@ -13,6 +13,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use klipp_timeline::{
+    Easing, LayerFx, Motion, MotionBlur, MotionKind, ObjectTransform, Shape, ShapeKind,
+    ShapeStroke, TextAlignment, TextBox, TextGlow, TitleData, TitleLoop, TitleMotion,
+    TitleObjectContent, TitlePosition,
+};
+
 /// File extension for user-authored composition templates.
 pub const EXTENSION: &str = "klipptemplate";
 pub const FORMAT_VERSION: u32 = 1;
@@ -149,6 +155,264 @@ impl CompositionTemplate {
             bindings: Vec::new(),
             written_by: env!("CARGO_PKG_VERSION").to_string(),
         }
+    }
+}
+
+/// The bundled terminal card used by the Lunel-style launch-film workflow.
+///
+/// This is deliberately ordinary title content: a dark rounded panel, a
+/// monospaced command line and a blinking cursor. The card enters and exits
+/// with eased motion, drifts a few pixels while held, and carries the same
+/// motion-blur path as any hand-built title. The stable object ids are used by
+/// the template bindings below.
+pub fn terminal_card_composition() -> TitleData {
+    let mut title = TitleData::default();
+    title.objects.clear();
+    title.next_object_id = 0;
+    let card_transform = ObjectTransform {
+        center: TitlePosition { x: 0.5, y: 0.5 },
+        center_x_keyframes: vec![
+            key(0.0, 0.44, Easing::OutCubic),
+            key(0.16, 0.5, Easing::OutCubic),
+            key(0.55, 0.5, Easing::InOutCubic),
+            key(0.9, 0.505, Easing::InOutCubic),
+            key(1.25, 0.49, Easing::OutCubic),
+        ],
+        center_y_keyframes: vec![
+            key(0.0, 0.52, Easing::OutCubic),
+            key(0.16, 0.5, Easing::OutCubic),
+            key(0.72, 0.497, Easing::InOutCubic),
+            key(1.1, 0.503, Easing::InOutCubic),
+            key(1.3, 0.5, Easing::OutCubic),
+        ],
+        size: TitlePosition { x: 0.42, y: 0.22 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+    };
+    let mut card_fx = LayerFx {
+        motion: TitleMotion::both(
+            Motion::new(MotionKind::SlideRight)
+                .duration(0.16)
+                .easing(Easing::OutCubic)
+                .distance(0.7),
+            Motion::new(MotionKind::SlideLeft)
+                .duration(0.18)
+                .delay(0.05)
+                .easing(Easing::InCubic)
+                .distance(0.7),
+        ),
+        motion_blur: Some(MotionBlur {
+            enabled: true,
+            shutter_angle: 180.0,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 8,
+        }),
+        glows: vec![TextGlow {
+            enabled: true,
+            color: [132, 96, 255, 170],
+            radius: 20.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.35,
+            intensity_keyframes: Vec::new(),
+        }],
+        ..LayerFx::default()
+    };
+    card_fx.loops.push(TitleLoop::Pulse {
+        rate_hz: 0.55,
+        min_opacity: 0.94,
+    });
+    let card_id = title.add_object(
+        TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle {
+                corner_radius: 24.0,
+            },
+            fill: Some([18, 17, 29, 244]),
+            stroke: Some(ShapeStroke {
+                color: [115, 92, 190, 180],
+                width: 2.0,
+            }),
+            fit: None,
+        }),
+        card_transform,
+    );
+    if let Some(card) = title.object_mut(card_id) {
+        card.fx = Some(card_fx);
+    }
+
+    let mut command = TextBox {
+        text: "$ find invoice.pdf".into(),
+        font_size: 42.0,
+        font_name: "JetBrains Mono".into(),
+        color: [235, 231, 255, 255],
+        alignment: TextAlignment::Left,
+        ..TextBox::default()
+    };
+    command.write_on = 1.0;
+    let text_transform = ObjectTransform {
+        center: TitlePosition { x: 0.5, y: 0.49 },
+        center_x_keyframes: Vec::new(),
+        center_y_keyframes: Vec::new(),
+        size: TitlePosition { x: 0.34, y: 0.08 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+    };
+    let text_fx = LayerFx {
+        motion: TitleMotion::both(
+            Motion::new(MotionKind::Typewriter)
+                .duration(0.34)
+                .easing(Easing::Linear),
+            Motion::new(MotionKind::Fade)
+                .duration(0.12)
+                .easing(Easing::InCubic),
+        ),
+        motion_blur: Some(MotionBlur {
+            enabled: true,
+            shutter_angle: 140.0,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 6,
+        }),
+        glows: vec![TextGlow {
+            enabled: true,
+            color: [160, 132, 255, 150],
+            radius: 9.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.4,
+            intensity_keyframes: Vec::new(),
+        }],
+        ..LayerFx::default()
+    };
+    let command_id = title.add_object(TitleObjectContent::TextBox(command), text_transform);
+    if let Some(command_object) = title.object_mut(command_id) {
+        command_object.fx = Some(text_fx);
+    }
+
+    let cursor_transform = ObjectTransform {
+        center: TitlePosition { x: 0.63, y: 0.49 },
+        center_x_keyframes: Vec::new(),
+        center_y_keyframes: Vec::new(),
+        size: TitlePosition { x: 0.008, y: 0.065 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+    };
+    let cursor_fx = LayerFx {
+        loops: vec![TitleLoop::Blink {
+            rate_hz: 2.2,
+            duty: 0.5,
+        }],
+        ..LayerFx::default()
+    };
+    let cursor_id = title.add_object(
+        TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 2.0 },
+            fill: Some([184, 157, 255, 255]),
+            stroke: None,
+            fit: None,
+        }),
+        cursor_transform,
+    );
+    if let Some(cursor) = title.object_mut(cursor_id) {
+        cursor.fx = Some(cursor_fx);
+    }
+    title
+}
+
+/// Metadata for the bundled terminal card. The composition itself is created
+/// in the project that installs the template; these bindings remain stable
+/// because `terminal_card_composition` allocates objects in a fixed order.
+pub fn terminal_card_template(composition_id: Uuid) -> CompositionTemplate {
+    let mut template = CompositionTemplate::new("Terminal Card", composition_id);
+    template.category = "Launch cards".into();
+    template.parameters = BTreeMap::from([
+        (
+            "command_text".into(),
+            TemplateParameter {
+                label: "Command text".into(),
+                default: TemplateValue::Text("$ find invoice.pdf".into()),
+                range: None,
+                choices: Vec::new(),
+            },
+        ),
+        (
+            "accent".into(),
+            TemplateParameter {
+                label: "Accent color".into(),
+            default: TemplateValue::Color([160.0 / 255.0, 132.0 / 255.0, 1.0, 1.0]),
+                range: None,
+                choices: Vec::new(),
+            },
+        ),
+        (
+            "typing_speed".into(),
+            TemplateParameter {
+                label: "Typing speed".into(),
+                default: TemplateValue::Number(0.34),
+                range: Some(NumberRange {
+                    min: Some(0.05),
+                    max: Some(2.0),
+                }),
+                choices: Vec::new(),
+            },
+        ),
+        (
+            "entry_direction".into(),
+            TemplateParameter {
+                label: "Entry direction".into(),
+                default: TemplateValue::Enum("right".into()),
+                range: None,
+                choices: vec!["left".into(), "right".into()],
+            },
+        ),
+        (
+            "float_amount".into(),
+            TemplateParameter {
+                label: "Float amount".into(),
+                default: TemplateValue::Number(1.0),
+                range: Some(NumberRange {
+                    min: Some(0.0),
+                    max: Some(4.0),
+                }),
+                choices: Vec::new(),
+            },
+        ),
+    ]);
+    template.bindings = vec![
+        TemplateBinding {
+            parameter: "command_text".into(),
+            property: "object:1.text".into(),
+        },
+        TemplateBinding {
+            parameter: "accent".into(),
+            property: "object:0.fill_and_glow".into(),
+        },
+        TemplateBinding {
+            parameter: "typing_speed".into(),
+            property: "object:1.motion.enter.duration_secs".into(),
+        },
+        TemplateBinding {
+            parameter: "entry_direction".into(),
+            property: "object:0.motion.enter.direction".into(),
+        },
+        TemplateBinding {
+            parameter: "float_amount".into(),
+            property: "object:0.float.keyframes".into(),
+        },
+    ];
+    template
+}
+
+fn key(time_secs: f64, value: f32, easing: Easing) -> klipp_core::Keyframe {
+    klipp_core::Keyframe {
+        time_secs,
+        value,
+        interpolation: match easing {
+            Easing::Linear => klipp_core::Interpolation::Linear,
+            Easing::InOutCubic | Easing::InCubic | Easing::OutCubic => {
+                klipp_core::Interpolation::Bezier
+            }
+            _ => klipp_core::Interpolation::Linear,
+        },
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
     }
 }
 
@@ -346,5 +610,31 @@ mod tests {
         let json = serde_json::to_string(&template).unwrap();
         let loaded: CompositionTemplate = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded, template);
+    }
+
+    #[test]
+    fn terminal_card_has_panel_command_cursor_and_motion() {
+        let title = terminal_card_composition();
+        assert_eq!(title.objects.len(), 3);
+        assert!(matches!(
+            title.objects[0].content,
+            TitleObjectContent::Shape(_)
+        ));
+        assert!(matches!(
+            title.objects[1].content,
+            TitleObjectContent::TextBox(_)
+        ));
+        assert!(matches!(
+            title.objects[2].content,
+            TitleObjectContent::Shape(_)
+        ));
+        assert!(title.objects[0].transform.center_x_keyframes.len() >= 4);
+        assert!(title.objects[0].fx().motion.is_active());
+        assert!(title.objects[1].fx().motion.enter.is_some());
+        assert!(title.objects[2]
+            .fx()
+            .loops
+            .iter()
+            .any(|loop_| matches!(loop_, TitleLoop::Blink { .. })));
     }
 }
