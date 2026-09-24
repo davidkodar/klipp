@@ -84,59 +84,6 @@ fn lcg_next(state: &mut u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Gaussian elimination solver for NxN (N=6)
-// ---------------------------------------------------------------------------
-
-/// Solve a 6x6 linear system via Gaussian elimination with partial pivoting.
-/// Returns None if the system is singular.
-#[allow(clippy::needless_range_loop)]
-fn solve_6x6(a: &mut [[f64; 6]; 6], b: &mut [f64; 6]) -> Option<[f64; 6]> {
-    // Forward elimination
-    for col in 0..6 {
-        // Partial pivoting
-        let mut max_row = col;
-        let mut max_val = a[col][col].abs();
-        for row in (col + 1)..6 {
-            let v = a[row][col].abs();
-            if v > max_val {
-                max_val = v;
-                max_row = row;
-            }
-        }
-        if max_val < 1e-12 {
-            return None;
-        }
-        if max_row != col {
-            a.swap(col, max_row);
-            b.swap(col, max_row);
-        }
-
-        let pivot = a[col][col];
-        for row in (col + 1)..6 {
-            let factor = a[row][col] / pivot;
-            for k in col..6 {
-                a[row][k] -= factor * a[col][k];
-            }
-            b[row] -= factor * b[col];
-        }
-    }
-
-    // Back substitution
-    let mut x = [0.0f64; 6];
-    for col in (0..6).rev() {
-        let mut sum = b[col];
-        for k in (col + 1)..6 {
-            sum -= a[col][k] * x[k];
-        }
-        if a[col][col].abs() < 1e-12 {
-            return None;
-        }
-        x[col] = sum / a[col][col];
-    }
-    Some(x)
-}
-
-// ---------------------------------------------------------------------------
 // Affine fitting
 // ---------------------------------------------------------------------------
 
@@ -171,7 +118,7 @@ fn fit_affine_3pt(matches: &[Match]) -> Option<Homography> {
         b[r1] = m.dst_y;
     }
 
-    solve_6x6(&mut a, &mut b).map(|x| Homography {
+    crate::homography::solve(&mut a, &mut b).map(|x| Homography {
         h: [
             [x[0], x[1], x[2]], // a, b, tx
             [x[3], x[4], x[5]], // c, d, ty
@@ -212,7 +159,7 @@ fn fit_affine_lstsq(matches: &[Match]) -> Option<Homography> {
         }
     }
 
-    solve_6x6(&mut ata, &mut atb).map(|x| Homography {
+    crate::homography::solve(&mut ata, &mut atb).map(|x| Homography {
         h: [
             [x[0], x[1], x[2]],
             [x[3], x[4], x[5]],

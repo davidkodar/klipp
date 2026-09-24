@@ -289,6 +289,30 @@ pub(crate) fn apply(
                 mix(top, bot, fy)
             })
         }
+        CornerPin { tl, tr, br, bl } => {
+            let corners = [tl, tr, br, bl];
+            if crate::corner_pin::is_still(&corners) {
+                return p;
+            }
+            // No quadrilateral: nothing to pin the picture to, so
+            // nothing is drawn.
+            let Some(inv) = crate::corner_pin::inverse_map(w, h, &corners) else {
+                return vec![0.0; p.len()];
+            };
+            each_pixel(&p, w, h, |x, y, f| {
+                let Some((sx, sy)) = crate::corner_pin::sample_point(&inv, x as f32, y as f32) else {
+                    return [0.0; 4];
+                };
+                let (x0, y0) = (sx.floor() as i32, sy.floor() as i32);
+                let (fx, fy) = (sx - x0 as f32, sy - y0 as f32);
+                let s = |xx: i32, yy: i32| {
+                    if xx < 0 || yy < 0 || xx >= w as i32 || yy >= h as i32 { [0.0; 4] } else { f.at(xx as usize, yy as usize) }
+                };
+                let top = mix(s(x0, y0), s(x0 + 1, y0), fx);
+                let bot = mix(s(x0, y0 + 1), s(x0 + 1, y0 + 1), fx);
+                mix(top, bot, fy)
+            })
+        }
         ChromaKey { key_color, tolerance, soft_edge, spill_method, spill_strength } => {
             let (rf, gf, bf) = (key_color[0] as f32, key_color[1] as f32, key_color[2] as f32);
             let key_cb = 128.0 + (-0.168736 * rf - 0.331264 * gf + 0.5 * bf);

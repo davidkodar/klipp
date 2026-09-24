@@ -32,6 +32,9 @@ Removes portions of the frame from any edge. Parameters: left / right / top / bo
 ### Transform
 GPU-accelerated position, scale, rotation. Same controls as the inspector's Transform section but executed in the effects chain so subsequent effects see the transformed frame.
 
+### Corner Pin
+Pins the picture to four corners — where its top-left, top-right, bottom-right and bottom-left land, as fractions of the frame — so it sits on a screen, a sign or a wall in the shot with that surface's perspective. Straight lines stay straight. Outside the four corners is transparent, and corners that make no quadrilateral draw nothing. Each coordinate is keyframable from its row in the inspector. With on-canvas controls on, the four corners are handles in the viewer: drag one to move it, and a drag is one undo step. The pin runs before the clip's transform, with the picture, so it scales and moves with the layer.
+
 ### Chroma Key
 Removes a specific colour (green screen / blue screen):
 

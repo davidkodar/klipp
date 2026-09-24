@@ -56,6 +56,7 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("Crop feathered", Crop { left: 0.1, right: 0.05, top: 0.1, bottom: 0.2, feather: 0.05 }),
         ("GaussianBlur", GaussianBlur { radius: 4.0 }),
         ("Sharpen", Sharpen { amount: 1.0 }),
+        ("CornerPin", CornerPin { tl: [0.1, 0.15], tr: [0.85, 0.05], br: [0.8, 0.9], bl: [0.2, 0.8] }),
         ("Transform", Transform {
             position_x: 10.0, position_y: -5.0, scale_x: 0.8, scale_y: 0.8, rotation: 10.0,
             anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,

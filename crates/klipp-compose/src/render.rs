@@ -2807,6 +2807,12 @@ pub fn clip_effects(
                 *softness = param("softness", *softness);
                 *radius = param("radius", *radius);
             }
+            BuiltinEffect::CornerPin { tl, tr, br, bl } => {
+                for (corner, names) in [tl, tr, br, bl].into_iter().zip(klipp_effects::corner_pin::PARAMS) {
+                    corner[0] = param(names[0], corner[0]);
+                    corner[1] = param(names[1], corner[1]);
+                }
+            }
             BuiltinEffect::Opacity { value } => {
                 // Clip opacity keyframes / modifiers first, then the
                 // effect's own parameter keyframes — the viewer's order.

@@ -466,6 +466,11 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
                 focal_ref: None }
         }
+        klipp_effects::BuiltinEffect::CornerPin { .. } => {
+            // A card leaning back into the frame: the pin as a picture
+            // on a surface, not a rectangle.
+            klipp_effects::corner_pin::with_corners([[0.12, 0.2], [0.88, 0.08], [0.8, 0.9], [0.2, 0.82]])
+        }
         klipp_effects::BuiltinEffect::ChromaKey { .. } => {
             klipp_effects::BuiltinEffect::ChromaKey {
                 key_color: [0, 255, 0],

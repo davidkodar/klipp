@@ -44,10 +44,12 @@ pub use cpu::{apply_3d_lut, equalize_cdf, EQUALIZE_CDF_LEN};
 pub mod color_fade;
 pub mod color_wgsl;
 pub mod composite;
+pub mod corner_pin;
 pub mod frei0r_effect;
 pub mod gpu;
 pub mod gpu_context;
 pub mod gpu_scopes;
+pub mod homography;
 pub mod light;
 pub mod nv12_gpu;
 pub mod p010_gpu;
@@ -754,6 +756,17 @@ pub enum BuiltinEffect {
         /// don't drop fields when v2 source/mixer support lands.
         params: Vec<klipp_frei0r::Frei0rValue>,
     },
+
+    /// The picture pinned to four corners: where its top-left,
+    /// top-right, bottom-right and bottom-left land, as fractions of the
+    /// frame. The map is a homography, so a picture pinned onto a screen
+    /// or a sign in the shot keeps its straight lines straight and takes
+    /// the surface's perspective. Outside the four corners is
+    /// transparent; a quadrilateral the map cannot reach (three corners
+    /// in a line) draws nothing. `[0,0] [1,0] [1,1] [0,1]` is the
+    /// picture as it is. Runs before the clip's transform, with the
+    /// picture, so it scales and moves with the layer.
+    CornerPin { tl: [f32; 2], tr: [f32; 2], br: [f32; 2], bl: [f32; 2] },
 }
 
 /// sRGB → linear-light (IEC 61966-2-1). Scalar helper mirroring
@@ -948,6 +961,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
                 && rotation_x.abs() < f32::EPSILON
                 && rotation_y.abs() < f32::EPSILON
         }
+        BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
         // Effects whose visual contribution depends on data (chroma
         // key, bloom, glow, light rays, vignette etc.) — be
         // conservative and never claim identity. False positives

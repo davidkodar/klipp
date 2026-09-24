@@ -149,6 +149,14 @@ impl EffectRegistry {
                 grouping: "Distort".into(),
             },
             EffectEntry {
+                name: "Corner Pin".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::corner_pin::still()),
+                source_label: "Built-in",
+                description: "Pin the picture to four corners, in perspective".into(),
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "Chroma Key".into(),
                 category: EffectCategory::Keying,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ChromaKey {
