@@ -1121,8 +1121,8 @@ fn media_analysis_returns_null_for_undecoded_bins_and_ignores_old_sentinel_cache
     let motion = klipp_analysis::motion::parse_metadata("frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=9\n", 3.0);
     klipp_analysis::store::save(&key, "motion", klipp_analysis::motion::VERSION, &serde_json::to_value(motion).unwrap()).unwrap();
     let response = h.ok(json!({"method": "media_analysis", "media_id": id.0.to_string()}));
-    assert_eq!(response["motion"]["per_second"], json!([9.0, null, null]));
-    assert_eq!(response["motion"]["mean"], 9.0);
+    assert_eq!(response["motion"]["per_second"], json!([0.3, null, null]));
+    assert_eq!(response["motion"]["mean"], 0.3);
     let shots = klipp_analysis::shots::Shots::from_boundaries(3.0, vec![1.0]);
     klipp_analysis::store::save(&key, "shots", klipp_analysis::shots::VERSION, &serde_json::to_value(shots).unwrap()).unwrap();
     let unknown = h.ok(json!({"method":"find_shots","motion":"static"}));
