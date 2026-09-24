@@ -10,7 +10,10 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "motion";
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
+/// The reference cadence used to make YDIF comparable across source rates.
+/// A 30 fps stream with six units of YDIF per frame therefore measures 6.0.
+const REFERENCE_FPS: f64 = 30.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Motion {
@@ -90,7 +93,7 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
     // the allowance is measured from the decoded timestamps, never assumed.
     let seconds = duration_secs.ceil().max(1.0) as usize;
     let mut sums = vec![0.0f64; seconds];
-    let mut weights = vec![0.0f64; seconds];
+    let mut measured = vec![false; seconds];
     let mut decoded_times = Vec::new();
     let mut samples = Vec::new();
     let mut t: Option<f64> = None;
@@ -120,7 +123,12 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
         .collect();
     intervals.sort_by(f64::total_cmp);
     let observed_interval = intervals
-        .get(intervals.len() / 2)
+        .iter()
+        .rev()
+        .take(16)
+        .copied()
+        .collect::<Vec<_>>()
+        .get(8.min(intervals.len().saturating_sub(1)))
         .copied()
         .unwrap_or(0.1)
         .clamp(1e-6, 0.1);
@@ -129,48 +137,45 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
         if time > tail_limit {
             continue;
         }
-        let next = decoded_times
-            .iter()
-            .find(|candidate| **candidate > time)
-            .copied()
-            .unwrap_or(time + observed_interval);
         let tail_sample = time >= seconds as f64;
-        let start = if tail_sample { (seconds - 1) as f64 } else { time };
-        // A decoded sample describes the next native frame interval. Never
-        // let one YDIF value span a missing-frame gap: the gap is the held
-        // picture and is filled as zero below.
-        let end = if tail_sample {
-            (seconds as f64).min(start + observed_interval)
+        let second = if tail_sample {
+            seconds - 1
         } else {
-            next.min(time + observed_interval).min(seconds as f64)
+            (time.floor() as usize).min(seconds - 1)
         };
-        if end <= start {
-            continue;
-        }
-        let first = start.floor() as usize;
-        let last = ((end - 1e-12).floor() as usize).min(seconds - 1);
-        for second in first..=last {
-            let overlap = (end.min(second as f64 + 1.0) - start.max(second as f64)).max(0.0);
-            sums[second] += value as f64 * overlap;
-            weights[second] += overlap;
-        }
+        // YDIF is a per-frame difference. Count each decoded transition once,
+        // then normalize by time at a fixed reference cadence. Weighting by
+        // dwell would make a held VFR picture look busier than its CFR twin.
+        sums[second] += value as f64;
+        measured[second] = true;
     }
     for second in 0..seconds {
-        if weights[second] > 0.0 {
+        if measured[second] {
             continue;
         }
         let start = second as f64;
         let end = (second + 1) as f64;
-        let bracketed = decoded_times.iter().any(|time| *time <= start)
-            && decoded_times.iter().any(|time| *time >= end);
+        let bracketed = decoded_times.first().is_some_and(|time| *time <= start)
+            && decoded_times.last().is_some_and(|time| *time >= end);
         if bracketed {
-            weights[second] = 1.0;
+            measured[second] = true;
         }
     }
     let per_second = sums
         .iter()
-        .zip(&weights)
-        .map(|(sum, weight)| (*weight > 0.0).then(|| (*sum / *weight) as f32))
+        .zip(&measured)
+        .enumerate()
+        .map(|(second, (sum, has_measurement))| {
+            if !has_measurement {
+                return None;
+            }
+            let coverage = if second + 1 == seconds {
+                (duration_secs - second as f64).clamp(0.0, 1.0).max(1.0_f64.min(observed_interval))
+            } else {
+                1.0
+            };
+            Some((*sum / (coverage * REFERENCE_FPS)) as f32)
+        })
         .collect();
     Motion::from_samples(duration_secs, per_second)
 }
@@ -202,16 +207,16 @@ mod tests {
     #[test]
     fn video_tail_inside_existing_bin_is_retained() {
         let m=parse_metadata("frame:0 pts_time:4.6\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.67\nlavfi.signalstats.YDIF=4\n",4.5);
-        assert_eq!(m.per_second[4],Some(3.0));
+        assert_eq!(m.per_second[4],Some(0.4));
     }
     #[test]
     fn tail_samples_allow_one_sampling_interval_but_not_arbitrary_late_data() {
         let text = "frame:0 pts_time:4.94\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.96\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.98\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.00\nlavfi.signalstats.YDIF=10\nframe:4 pts_time:5.02\nlavfi.signalstats.YDIF=14\nframe:5 pts_time:5.50\nlavfi.signalstats.YDIF=255\n";
         let m = parse_metadata(text, 5.0);
-        assert_eq!(m.per_second[4], Some(6.0));
+        assert_eq!(m.per_second[4], Some(1.0));
         assert!(m.per_second[..4].iter().all(Option::is_none));
         let variable = "frame:0 pts_time:4.85\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.9\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.97\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.03\nlavfi.signalstats.YDIF=10\n";
-        assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(4.4));
+        assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(0.53333336));
     }
 
     #[test]
@@ -219,7 +224,7 @@ mod tests {
         let text = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=2\n\
 frame:1 pts_time:3.0\nlavfi.signalstats.YDIF=4\n";
         let m = parse_metadata(text, 4.0);
-        assert_eq!(m.per_second, vec![Some(2.0), Some(0.0), Some(0.0), Some(4.0)]);
+        assert_eq!(m.per_second, vec![Some(0.06666667), Some(0.0), Some(0.0), Some(0.13333334)]);
     }
 
     #[test]
@@ -227,8 +232,32 @@ frame:1 pts_time:3.0\nlavfi.signalstats.YDIF=4\n";
         let text = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=2\n\
 frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=2\n";
         let m = parse_metadata(text, 1.0);
-        assert_eq!(m.mean, Some(2.0));
-        assert_eq!(m.class_within(0.0, 1.0), Some("gentle"));
+        assert_eq!(m.mean, Some(0.13333334));
+        assert_eq!(m.class_within(0.0, 1.0), Some("static"));
+    }
+
+    #[test]
+    fn equivalent_cfr_vfr_and_high_rate_inputs_have_one_class() {
+        let cfr30 = (0..30)
+            .map(|i| format!("frame:{i} pts_time:{:.6}\nlavfi.signalstats.YDIF=3\n", i as f64 / 30.0))
+            .collect::<String>();
+        let cfr60 = (0..60)
+            .map(|i| format!("frame:{i} pts_time:{:.6}\nlavfi.signalstats.YDIF=1.5\n", i as f64 / 60.0))
+            .collect::<String>();
+        let vfr = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=45\nframe:1 pts_time:0.5\nlavfi.signalstats.YDIF=45\n";
+        let classes = [cfr30, cfr60, vfr.to_string()]
+            .into_iter()
+            .map(|text| parse_metadata(&text, 1.0).class_within(0.0, 1.0))
+            .collect::<Vec<_>>();
+        assert_eq!(classes, vec![Some("gentle"), Some("gentle"), Some("gentle")]);
+    }
+
+    #[test]
+    fn subsecond_holds_do_not_change_the_motion_class_at_a_boundary() {
+        let held_short = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=8\nframe:1 pts_time:0.9\nlavfi.signalstats.YDIF=8\nframe:2 pts_time:2.0\nlavfi.signalstats.YDIF=8\n";
+        let held_long = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=8\nframe:1 pts_time:1.1\nlavfi.signalstats.YDIF=8\nframe:2 pts_time:2.0\nlavfi.signalstats.YDIF=8\n";
+        assert_eq!(parse_metadata(held_short, 2.0).class_within(0.0, 2.0), Some("static"));
+        assert_eq!(parse_metadata(held_long, 2.0).class_within(0.0, 2.0), Some("static"));
     }
 
     #[test]
@@ -238,18 +267,18 @@ frame:1 pts:20 pts_time:0.5\nlavfi.signalstats.YDIF=2\n\
 frame:2 pts:40 pts_time:1.2\nlavfi.signalstats.YDIF=12\n\
 frame:3 pts:60 pts_time:1.8\nlavfi.signalstats.YDIF=8\n";
         let m = parse_metadata(text, 2.0);
-        assert_eq!(m.per_second, vec![Some(1.0), Some(10.0)]);
+        assert_eq!(m.per_second, vec![Some(0.06666667), Some(0.6666667)]);
         assert_eq!(m.class_within(0.0, 1.0), Some("static"));
-        assert_eq!(m.class_within(1.0, 2.0), Some("busy"));
+        assert_eq!(m.class_within(1.0, 2.0), Some("static"));
         assert_eq!(class_for(5.0), "moving");
     }
     #[test]
     fn undecoded_seconds_survive_cache_round_trip_as_missing() {
         let m = parse_metadata("frame:1 pts:1 pts_time:0.5\nlavfi.signalstats.YDIF=12\n", 21.0);
-        assert_eq!(m.mean, Some(12.0));
-        assert_eq!(m.p95, Some(12.0));
+        assert_eq!(m.mean, Some(0.4));
+        assert_eq!(m.p95, Some(0.4));
         assert_eq!(m.mean_within(1.0, 21.0), None);
-        assert_eq!(m.class_within(0.0, 21.0), Some("busy"));
+        assert_eq!(m.class_within(0.0, 21.0), Some("static"));
         let cached = serde_json::to_value(&m).unwrap();
         assert!(cached["per_second"][1].is_null());
         assert_eq!(serde_json::from_value::<Motion>(cached).unwrap(), m);

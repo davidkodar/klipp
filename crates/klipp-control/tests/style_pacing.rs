@@ -118,7 +118,11 @@ fn complete_response_keeps_cut_statistics_descriptive() {
 
 #[test]
 fn decoded_motion_does_not_become_static_because_of_an_audio_tail() {
-    let motion = klipp_analysis::motion::parse_metadata("frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=12\n", 21.0);
+    let motion = klipp_analysis::motion::parse_metadata(
+        "frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=255\n\
+frame:2 pts_time:0.51\nlavfi.signalstats.YDIF=255\n",
+        21.0,
+    );
     let evidence = pacing(&[], Some(&motion), None);
     assert_eq!(evidence["within_shot_sample_seconds"], 1);
     assert_eq!(evidence["within_shot_motion_class"], "busy");
