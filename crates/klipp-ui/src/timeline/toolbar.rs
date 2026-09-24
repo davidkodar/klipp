@@ -213,10 +213,17 @@ fn show_context_actions(
                 cmds.push(AppCommand::RippleTrimTail { clip_id: id });
             }
 
+            let duplicate = action_btn(ui, "Duplicate", "Duplicate the selected clip");
+            if duplicate.clicked() {
+                cmds.push(AppCommand::DuplicateClip { clip_id: id });
+            }
+
             let delete = action_btn(ui, "Delete", "Delete the selected clip");
             if delete.clicked() {
                 cmds.push(AppCommand::RemoveClip { clip_id: id });
             }
+
+            show_transition_menu(ui, state, theme, cmds, &[id]);
 
             if clip.linked_clip_id.is_some() {
                 let unlink = action_btn(ui, "Unlink", "Unlink the selected audio/video pair");
@@ -242,7 +249,87 @@ fn show_context_actions(
                 });
             }
         }
+
+        show_transition_menu(ui, state, theme, cmds, &ids);
     }
+}
+
+fn show_transition_menu(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+    cmds: &mut Vec<AppCommand>,
+    selected_ids: &[klipp_core::ClipId],
+) {
+    let targets = transition_targets(state, selected_ids);
+    let enabled = !targets.is_empty();
+    ui.add_enabled_ui(enabled, |ui| {
+        let response = ui.menu_button("Transition", |ui| {
+            ui.set_min_width(190.0);
+            let max_h = (ui.ctx().screen_rect().height() * 0.65).max(220.0);
+            egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+                for &(kind_id, label) in klipp_engine::transition::all_transition_kinds() {
+                    if targets.len() == 1 {
+                        if ui.button(label).clicked() {
+                            let (track_index, clip_a_id, clip_b_id) = targets[0];
+                            cmds.push(AppCommand::AddTransition {
+                                track_index,
+                                clip_a_id,
+                                clip_b_id,
+                                kind_id,
+                                duration_frames: state.default_transition_frames,
+                            });
+                            ui.close_menu();
+                        }
+                    } else if ui.button(format!("{label} ({} cuts)", targets.len())).clicked() {
+                        for &(track_index, clip_a_id, clip_b_id) in &targets {
+                            cmds.push(AppCommand::AddTransition {
+                                track_index,
+                                clip_a_id,
+                                clip_b_id,
+                                kind_id,
+                                duration_frames: state.default_transition_frames,
+                            });
+                        }
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
+        styled_tooltip(
+            &response.response,
+            theme,
+            "Add a transition at the selected cut",
+            None,
+        );
+    });
+}
+
+fn transition_targets(
+    state: &AppState,
+    selected_ids: &[klipp_core::ClipId],
+) -> Vec<(usize, klipp_core::ClipId, klipp_core::ClipId)> {
+    let mut targets = Vec::new();
+    for (track_index, track) in state.sequence().tracks.iter().enumerate() {
+        let positions: Vec<usize> = track
+            .clips
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clip)| selected_ids.contains(&clip.id).then_some(index))
+            .collect();
+        if positions.len() == 2 && positions[1] == positions[0] + 1 {
+            targets.push((track_index, track.clips[positions[0]].id, track.clips[positions[1]].id));
+        } else if positions.len() == 1 {
+            let pos = positions[0];
+            if pos > 0 {
+                targets.push((track_index, track.clips[pos - 1].id, track.clips[pos].id));
+            }
+            if pos + 1 < track.clips.len() {
+                targets.push((track_index, track.clips[pos].id, track.clips[pos + 1].id));
+            }
+        }
+    }
+    targets
 }
 
 fn selected_clip_ids(state: &AppState) -> Vec<klipp_core::ClipId> {
