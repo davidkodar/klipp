@@ -1836,28 +1836,7 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Title(td) => {
-                let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
-                let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
-                let u8s = self.titles.render_with_window(td, width, height, gpu, clip_time as f32, Some(total));
-                if tracing::enabled!(tracing::Level::DEBUG) {
-                    let opaque = u8s.chunks_exact(4).step_by(64).filter(|p| p[3] > 0).count() * 64;
-                    tracing::debug!(
-                        "TITLE_LAYER clip={} t={clip_time:.2}/{total:.2} {width}x{height} objects={} text={:?} font={} size={} opaque_px~{opaque}",
-                        clip.id, td.objects.len(), td.text(), td.font_name(), td.font_size(),
-                    );
-                }
-                let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
-                let blur = self.titles.last_blur();
-                if blur > 0.5 {
-                    // The blur entrance, as the GPU stack blurs the placed sprite.
-                    let luma = klipp_color::linear::luma_coefs(self.working);
-                    linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, clip_time, luma);
-                }
-                self.authored_to_working(&mut linear);
-                (GradeInput::Cpu(Arc::new(linear)), None)
-            }
+            ClipKind::Title(td) => (GradeInput::Cpu(Arc::new(self.title_linear_at(clip, td, clip_time, width, height))), None),
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let packed = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
@@ -1889,49 +1868,58 @@ impl Renderer {
         };
         let pixels = self.ofx(clip, pixels, clip_time, width, height, provider);
         // A title whose own drawing moves is drawn again at every shutter
-        // sample, and a sample has to carry what the frame carries — the
-        // node grade and plugins, the working space, the deferred blur
-        // entrance. So the samples are made here, where that path is,
-        // through the one function that walks it, rather than inside
-        // `motion_blurred`, which would have to rebuild the path to do
-        // the same and got it wrong the first time.
-        let per_sample = match (&clip.kind, title_motion_blur(clip)) {
-            (ClipKind::Title(td), Some(mb)) if title_raster_moves(td).is_some() => {
-                let offsets = shutter_offsets(mb.evaluated_shutter_angle(clip_time), fps, mb.samples);
-                Some(offsets.iter().map(|o| self.title_pixels_at(clip, td, (clip_time + o).max(0.0), fps, width, height)).collect::<Vec<_>>())
-            }
+        // sample, by `title_pixels_at`, which carries a sample through
+        // what the frame above was just carried through.
+        let redrawn = match &clip.kind {
+            ClipKind::Title(td) => title_raster_moves(td),
             _ => None,
         };
         let pixels = match (title_motion_blur(clip), self.shutter.get(&clip.id).cloned()) {
-            (Some(samples), _) => self.motion_blurred(clip, pixels, per_sample, &fx, samples, time, fps, width, height),
+            (Some(samples), _) => self.motion_blurred(clip, pixels, redrawn, &fx, samples, time, fps, width, height),
             (None, Some(samples)) => self.shuttered(clip, pixels, &fx, &samples, clip_time, width, height),
             (None, None) => self.effects(&fx, pixels, clip_time, width, height),
         };
         Some((pixels, opacity))
     }
 
-    /// A title's pixels at one instant, through everything a frame of it
-    /// goes through: rasterised at that time, decoded, its deferred blur
-    /// entrance applied, brought into the working space, graded, and run
-    /// through its plugins. `render_clip` does this for the frame in
-    /// line; this does it for a shutter sample, so the two cannot drift.
-    fn title_pixels_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+    /// A title as working-space linear pixels at one instant: rasterised
+    /// at that time, decoded, its deferred blur entrance applied, and
+    /// brought into the working space. The frame's Title branch in
+    /// `render_clip` and each shutter sample in `title_pixels_at` both
+    /// start here, so the title-specific steps exist once.
+    fn title_linear_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, width: u32, height: u32) -> Vec<f32> {
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
         let u8s = {
             let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
             let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
             self.titles.render_with_window(td, width, height, gpu, t as f32, Some(total))
         };
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let opaque = u8s.chunks_exact(4).step_by(64).filter(|p| p[3] > 0).count() * 64;
+            tracing::debug!(
+                "TITLE_LAYER clip={} t={t:.2}/{total:.2} {width}x{height} objects={} text={:?} font={} size={} opaque_px~{opaque}",
+                clip.id, td.objects.len(), td.text(), td.font_name(), td.font_size(),
+            );
+        }
         let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
         let blur = self.titles.last_blur();
         if blur > 0.5 {
+            // The blur entrance, as the GPU stack blurs the placed sprite.
             let luma = klipp_color::linear::luma_coefs(self.working);
             linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, t, luma);
         }
         self.authored_to_working(&mut linear);
+        linear
+    }
+
+    /// One shutter sample of a title: `title_linear_at`, then the node
+    /// grade and the plugins at that instant — the two calls `render_clip`
+    /// makes for the frame after its own `title_linear_at`. The one
+    /// difference is that a temporal plugin is handed no neighbouring
+    /// frames for a sample; it runs on the sample alone, as on a still.
+    fn title_pixels_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        let linear = self.title_linear_at(clip, td, t, width, height);
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height);
-        // A temporal plugin is handed no neighbouring frames for a
-        // sample; it runs on the sample alone, as it would on a still.
         self.ofx(clip, graded, t, width, height, None)
     }
 
@@ -2410,7 +2398,7 @@ impl Renderer {
         &mut self,
         clip: &Clip,
         pixels: Vec<f32>,
-        per_sample: Option<Vec<Vec<f32>>>,
+        redrawn: Option<&klipp_timeline::TitleData>,
         fx: &[BuiltinEffect],
         mb: klipp_timeline::MotionBlur,
         time: Timecode,
@@ -2428,10 +2416,12 @@ impl Renderer {
         // eight times blurs only where the clip went, not where the
         // letters did — a word rising into place came out as sharp
         // letters sliding, which is the one thing motion blur exists to
-        // avoid. `render_clip` hands such a title one buffer per sample,
-        // each made the way the frame is made; for anything else the
-        // single buffer is reused exactly as before and this costs
-        // nothing.
+        // avoid. When `redrawn` names the title, each sample is drawn
+        // afresh at its own instant — one sample in memory at a time,
+        // consumed before the next is made, so a UHD title at sixteen
+        // samples holds one 127 MiB sample and not sixteen. For anything
+        // else the single buffer is reused exactly as before and this
+        // costs nothing.
         //
         // What it costs when it does fire: one title rasterisation a
         // sample instead of one a frame, and a title is not cheap to
@@ -2441,17 +2431,14 @@ impl Renderer {
         // a seam in it, eight is smooth, and the cost is linear in
         // between. The renderer's cache does not soften this, because
         // a title that moves is exactly the one it declines to cache.
-        if let Some(s) = &per_sample {
-            debug_assert_eq!(s.len(), n, "one sample buffer per shutter offset");
-        }
         let mut acc = vec![0.0f32; pixels.len()];
-        for (i, offset) in offsets.into_iter().enumerate() {
+        for offset in offsets {
             let t = clip_time + offset;
             let ctx = klipp_core::EvalContext { clip_time_secs: t.max(0.0), ..eval::eval_context(clip, time, fps) };
             let (px, py, sx, sy, ro, ax, ay) = eval::evaluate_clip_own_transform(clip, t.max(0.0), &ctx);
             let xf = transform_effect((px, py, sx, sy, ro, ax, ay), tilt(clip, fx, t.max(0.0)));
-            let at_sample = match &per_sample {
-                Some(s) => s[i].clone(),
+            let at_sample = match redrawn {
+                Some(td) => self.title_pixels_at(clip, td, t.max(0.0), fps, width, height),
                 None => pixels.clone(),
             };
             let sample = self.effects(&[xf], at_sample, t.max(0.0), width, height);
