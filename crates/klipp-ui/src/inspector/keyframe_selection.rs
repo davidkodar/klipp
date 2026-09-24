@@ -75,7 +75,7 @@ pub(crate) fn state(
 /// Inspector commands use a displayed frame, while the document mutation uses
 /// precise timestamp identity. Resolve only inspector add/remove commands here;
 /// agent-authored timestamps and curve moves retain their original precision.
-pub(super) fn resolve_command(sequence: &Sequence, command: &mut AppCommand) {
+pub(crate) fn resolve_command(sequence: &Sequence, command: &mut AppCommand) {
     resolve_with(command, frame_tolerance(sequence), |id| {
         sequence
             .tracks
@@ -539,4 +539,28 @@ mod tests {
         }
     }
 
+}
+
+/// Controls editing an in-frame key display its stored value, not the
+/// interpolated value at a different timestamp. Non-key frames evaluate normally.
+pub(crate) fn editable_value(keys: &[Keyframe], time: f64, default: f32, tolerance: f64) -> f32 {
+    nearest(keys, time, tolerance).map_or_else(|| klipp_core::keyframe::evaluate(keys,time,default), |i| keys[i].value)
+}
+
+#[cfg(test)]
+mod edit_value_tests {
+    use super::*;
+    #[test]
+    fn dragging_an_off_grid_key_starts_at_its_value() {
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys,0.7,0.0);
+        klipp_core::keyframe::upsert_keyframe(&mut keys,1.0,100.0);
+        let time = 17.0/24.0;
+        let value = editable_value(&keys,time,0.0,0.5/24.0);
+        assert_eq!(value,0.0);
+        let stored = keys[nearest(&keys,time,0.5/24.0).unwrap()].time_secs;
+        klipp_core::keyframe::upsert_keyframe(&mut keys,stored,value+1.0);
+        assert_eq!(editable_value(&keys,time,0.0,0.5/24.0),1.0);
+        assert_eq!(keys[1].value,100.0);
+    }
 }

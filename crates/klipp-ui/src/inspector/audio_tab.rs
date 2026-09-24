@@ -596,9 +596,9 @@ fn show_clip_audio(
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
 
-    let mut gain = klipp_core::keyframe::evaluate(&clip.gain_keyframes, clip_time_secs, clip.gain);
-    let mut volume = klipp_core::keyframe::evaluate(&clip.volume_keyframes, clip_time_secs, clip.volume);
-    let mut pan = klipp_core::keyframe::evaluate(&clip.pan_keyframes, clip_time_secs, clip.pan);
+    let mut gain = crate::inspector::keyframe_selection::editable_value(&clip.gain_keyframes, clip_time_secs, clip.gain, keyframe_tolerance);
+    let mut volume = crate::inspector::keyframe_selection::editable_value(&clip.volume_keyframes, clip_time_secs, clip.volume, keyframe_tolerance);
+    let mut pan = crate::inspector::keyframe_selection::editable_value(&clip.pan_keyframes, clip_time_secs, clip.pan, keyframe_tolerance);
     let mut fade_in = clip.fade_in_secs;
     let mut fade_out = clip.fade_out_secs;
     let mut fade_in_curve = clip.fade_in_curve;

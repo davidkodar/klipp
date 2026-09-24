@@ -738,42 +738,18 @@ impl NodeKeyframeTrack {
         }
     }
 
-    /// Add a keyframe at the given time. If one exists at that time (±1ms), update it.
+    /// Insert at stored-time precision, preserving existing interpolation.
     pub fn set_keyframe(&mut self, time_secs: f64, value: f32) {
-        let epsilon = 0.001;
-        for kf in &mut self.keyframes {
-            if (kf.time_secs - time_secs).abs() < epsilon {
-                kf.value = value;
-                return;
-            }
-        }
-        let idx = self.keyframes.partition_point(|kf| kf.time_secs < time_secs);
-        self.keyframes.insert(
-            idx,
-            klipp_core::Keyframe {
-                time_secs,
-                value,
-                interpolation: klipp_core::Interpolation::Linear,
-                tangent_out: (0.0, 0.0),
-                tangent_in: (0.0, 0.0),
-            },
-        );
+        klipp_core::keyframe::upsert_keyframe(&mut self.keyframes, time_secs, value);
     }
 
-    /// Remove the keyframe nearest to the given time (within ±10ms).
+    /// Remove only the identified stored timestamp.
     pub fn remove_keyframe(&mut self, time_secs: f64) -> bool {
-        let epsilon = 0.01;
-        if let Some(idx) = self
-            .keyframes
-            .iter()
-            .position(|kf| (kf.time_secs - time_secs).abs() < epsilon)
-        {
-            self.keyframes.remove(idx);
-            true
-        } else {
-            false
-        }
+        let before = self.keyframes.len();
+        klipp_core::keyframe::remove_keyframe_at(&mut self.keyframes,time_secs);
+        self.keyframes.len() != before
     }
+
 }
 
 #[cfg(test)]
@@ -987,5 +963,22 @@ mod matte_combine_op_tests {
         // Default params must not write the key at all.
         let s = serde_json::to_string(&NodeParams::default()).expect("serialise");
         assert!(!s.contains("matte_combine_op"), "default params wrote the key: {s}");
+    }
+}
+
+#[cfg(test)]
+mod precision_review_tests {
+    use super::*;
+    #[test]
+    fn adjacent_high_rate_keys_survive_exact_remove_and_value_edit() {
+        let mut t = NodeKeyframeTrack { param_name: "exposure".into(), keyframes: vec![] };
+        t.set_keyframe(5.0/120.0, 1.0); t.set_keyframe(6.0/120.0, 2.0);
+        t.keyframes[0].interpolation = klipp_core::Interpolation::Bezier;
+        t.set_keyframe(5.0/120.0,3.0);
+        assert_eq!(t.keyframes[0].interpolation,klipp_core::Interpolation::Bezier);
+        assert!(t.remove_keyframe(6.0/120.0));
+        assert_eq!(t.keyframes.len(),1); assert_eq!(t.keyframes[0].time_secs,5.0/120.0);
+        t.set_keyframe(0.7,1.0); t.set_keyframe(0.7005,2.0);
+        assert_eq!(t.keyframes.len(),3);
     }
 }

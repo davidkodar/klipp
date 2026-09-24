@@ -1296,6 +1296,7 @@ mod tests {
                 klipp_core::keyframe::upsert_keyframe(&mut stored, k.time_secs, k.value);
             }
             assert_eq!(stored.len(), planned.len());
+            assert!(planned.windows(2).all(|w| w[1].time_secs - w[0].time_secs >= 0.05 - 1e-9));
         }
     }
 

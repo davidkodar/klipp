@@ -1085,15 +1085,16 @@ impl NodeInspectorPanel {
                 .find(|n| n.kind == NodeKind::Corrector)
                 .map(|n| (n.id, n.label.clone(), n.enabled)));
         if let Some((target_id, target_label, target_enabled)) = bypass_target {
-            let (track_has_kfs, kf_at_playhead, effective_on) = {
+            let (track_has_kfs, kf_at_playhead, effective_on, key_time) = {
                 let node = graph.nodes.iter().find(|n| n.id == target_id);
                 let track = node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK));
                 let has_kfs = track.is_some_and(|t| !t.keyframes.is_empty());
-                let at_ph = track.is_some_and(|t| t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3));
-                let on = track.and_then(|t| t.evaluate(clip_time_secs))
+                let selected = track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
+                let at_ph = selected.is_some();
+                let on = selected.map(|k| k.value).or_else(|| track.and_then(|t| t.evaluate(clip_time_secs)))
                     .map(|v| v >= 0.5)
                     .unwrap_or(target_enabled);
-                (has_kfs, at_ph, on)
+                (has_kfs, at_ph, on, selected.map_or(clip_time_secs, |k| k.time_secs))
             };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1104,7 +1105,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id: target_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if shown { 1.0 } else { 0.0 },
                         });
                     } else {
@@ -1149,13 +1150,13 @@ impl NodeInspectorPanel {
                             cmds.push(AppCommand::RemoveKeyframe {
                                 clip_id, node_id: target_id,
                                 param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: clip_time_secs,
+                                time_secs: key_time,
                             });
                         } else {
                             cmds.push(AppCommand::AddKeyframe {
                                 clip_id, node_id: target_id,
                                 param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: clip_time_secs,
+                                time_secs: key_time,
                                 value: if effective_on { 1.0 } else { 0.0 },
                             });
                         }
@@ -1557,11 +1558,10 @@ impl NodeInspectorPanel {
         let clip_time_secs = frame.time_secs;
         let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
         let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
-        let bypass_kf_at_playhead = enabled_track.is_some_and(|t| {
-            t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-        });
-        let effective_on = enabled_track
-            .and_then(|t| t.evaluate(clip_time_secs))
+        let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
+        let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
+        let bypass_kf_at_playhead = selected.is_some();
+        let effective_on = selected.map(|k| k.value).or_else(|| enabled_track.and_then(|t| t.evaluate(clip_time_secs)))
             .map(|v| v >= 0.5)
             .unwrap_or(*enabled);
 
@@ -1578,7 +1578,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if shown { 1.0 } else { 0.0 },
                         });
                     } else {
@@ -1603,13 +1603,13 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::RemoveKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                         });
                     } else {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if effective_on { 1.0 } else { 0.0 },
                         });
                     }

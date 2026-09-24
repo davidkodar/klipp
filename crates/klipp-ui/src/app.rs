@@ -605,7 +605,7 @@ enum SaveOutcome {
 
 /// A linked clip may have a differently nudged key in the same displayed frame.
 fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, value: Option<f32>) {
-    let target = crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(time, |i| keys[i].time_secs);
+    let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(time, |i| keys[i].time_secs) } else { time };
     match value {
         Some(value) => klipp_core::keyframe::upsert_keyframe(keys, target, value),
         None => klipp_core::keyframe::remove_keyframe_at(keys, target),
@@ -8692,7 +8692,16 @@ impl KlippApp {
     }
 
     fn handle_audio_keyframe_curves(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
-        let tolerance = crate::inspector::keyframe_selection::frame_tolerance(self.state.sequence());
+        let mut resolved;
+        let (cmd, frame_time) = if let AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs, value } = cmd {
+            resolved = match value {
+                Some(value) => AppCommand::AddAudioKeyframe { clip_id: *clip_id, param: *param, time_secs: *time_secs, value: *value },
+                None => AppCommand::RemoveAudioKeyframe { clip_id: *clip_id, param: *param, time_secs: *time_secs },
+            };
+            crate::inspector::keyframe_selection::resolve_command(self.state.sequence(), &mut resolved);
+            (&resolved, Some(*time_secs))
+        } else { (cmd, None) };
+        let tolerance = if frame_time.is_some() { crate::inspector::keyframe_selection::frame_tolerance(self.state.sequence()) } else { 0.0 };
         match cmd {
                 AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
                     let mut linked_partner_id = None;
@@ -8731,7 +8740,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, *time_secs, tolerance, Some(*value));
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, Some(*value));
                                 break;
                             }
                         }
@@ -8793,7 +8802,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, *time_secs, tolerance, None);
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, None);
                                 break;
                             }
                         }
@@ -24713,6 +24722,7 @@ impl KlippApp {
             }
             // K — Toggle keyframe at playhead for the active parameter
             if kb.is_action_pressed("toggle_keyframe", i) {
+                let mut keys_in_frame = 0;
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     // Find the clip and its track kind
@@ -24734,9 +24744,10 @@ impl KlippApp {
                                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                             klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                         };
+                                        keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
                                         let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
-                                        if let Some(kf) = existing {
-                                            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                        if existing.is_some() {
+                                            cmds.push(AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs: clip_time_secs, value: None });
                                         } else {
                                             let default_val = match param {
                                                 klipp_core::AudioParam::Volume => clip.volume,
@@ -24744,13 +24755,14 @@ impl KlippApp {
                                                 klipp_core::AudioParam::Gain => clip.gain,
                                             };
                                             let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
-                                            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                            cmds.push(AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs: clip_time_secs, value: Some(value) });
                                         }
                                     }
                                     crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
                                         let key = format!("{effect_index}:{param_name}");
                                         let empty: Vec<klipp_core::Keyframe> = Vec::new();
                                         let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
+                                        keys_in_frame = crate::inspector::keyframe_selection::state(kfs_ref, clip_time_secs, tolerance).keys_in_frame;
                                         let existing = crate::inspector::keyframe_selection::nearest(kfs_ref, clip_time_secs, tolerance).map(|i| &kfs_ref[i]);
                                         if let Some(kf) = existing {
                                             cmds.push(AppCommand::RemoveAudioEffectKeyframe {
@@ -24790,7 +24802,8 @@ impl KlippApp {
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
-                                let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
+                                keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
+                                        let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                 if let Some(kf) = existing {
                                     cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kf.time_secs });
                                 } else {
@@ -24812,6 +24825,7 @@ impl KlippApp {
                         }
                     }
                 }
+                if keys_in_frame > 1 { self.state.toast.show(format!("{keys_in_frame} keys share this frame; K edits the nearest. Use Shift+K for individual subframe keys.")); }
             }
             // Shift+K — Toggle curve editor (keyframe editor) panel
             if kb.is_action_pressed("toggle_keyframe_editor", i) {
@@ -39294,5 +39308,24 @@ mod linked_audio_frame_tests {
         edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, None);
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].time_secs, 0.750);
+    }
+}
+
+#[cfg(test)]
+mod exact_audio_review_tests {
+    use super::edit_linked_audio_key;
+    #[test]
+    fn exact_linked_edits_do_not_overwrite_nearby_keys() {
+        let mut main = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut main,0.707,0.5);
+        let mut partner = main.clone();
+        klipp_core::keyframe::upsert_keyframe(&mut main,0.700,0.3);
+        edit_linked_audio_key(&mut partner,0.700,0.0,Some(0.3));
+        assert_eq!(main,partner);
+        assert_eq!(partner.len(),2);
+        klipp_core::keyframe::remove_keyframe_at(&mut main,0.700);
+        edit_linked_audio_key(&mut partner,0.700,0.0,None);
+        assert_eq!(main,partner);
+        assert_eq!(partner[0].time_secs,0.707);
     }
 }

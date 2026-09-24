@@ -240,18 +240,18 @@ fn show_clip_video(
     let transform_drag_key = format!("{:?}:video_transform", clip_id);
 
     // Keyframed values at playhead
-    let mut pos_x = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_time_secs, transform.position_x);
-    let mut pos_y = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_time_secs, transform.position_y);
-    let mut scale_val = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_time_secs, transform.scale_x);
-    let mut rotation = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_time_secs, transform.rotation);
+    let mut pos_x = crate::inspector::keyframe_selection::editable_value(&clip.transform_pos_x_keyframes, clip_time_secs, transform.position_x, keyframe_tolerance);
+    let mut pos_y = crate::inspector::keyframe_selection::editable_value(&clip.transform_pos_y_keyframes, clip_time_secs, transform.position_y, keyframe_tolerance);
+    let mut scale_val = crate::inspector::keyframe_selection::editable_value(&clip.transform_scale_keyframes, clip_time_secs, transform.scale_x, keyframe_tolerance);
+    let mut rotation = crate::inspector::keyframe_selection::editable_value(&clip.transform_rotation_keyframes, clip_time_secs, transform.rotation, keyframe_tolerance);
 
     // Keyframe states
     let pos_x_ks = keyframe_state(&clip.transform_pos_x_keyframes, clip_time_secs, keyframe_tolerance);
     let pos_y_ks = keyframe_state(&clip.transform_pos_y_keyframes, clip_time_secs, keyframe_tolerance);
     let scale_ks = keyframe_state(&clip.transform_scale_keyframes, clip_time_secs, keyframe_tolerance);
     let rot_ks = keyframe_state(&clip.transform_rotation_keyframes, clip_time_secs, keyframe_tolerance);
-    let mut tilt_x = klipp_core::keyframe::evaluate(&clip.transform_tilt_x_keyframes, clip_time_secs, transform.rotation_x);
-    let mut tilt_y = klipp_core::keyframe::evaluate(&clip.transform_tilt_y_keyframes, clip_time_secs, transform.rotation_y);
+    let mut tilt_x = crate::inspector::keyframe_selection::editable_value(&clip.transform_tilt_x_keyframes, clip_time_secs, transform.rotation_x, keyframe_tolerance);
+    let mut tilt_y = crate::inspector::keyframe_selection::editable_value(&clip.transform_tilt_y_keyframes, clip_time_secs, transform.rotation_y, keyframe_tolerance);
     let tilt_x_ks = keyframe_state(&clip.transform_tilt_x_keyframes, clip_time_secs, keyframe_tolerance);
     let tilt_y_ks = keyframe_state(&clip.transform_tilt_y_keyframes, clip_time_secs, keyframe_tolerance);
     // A tilt is drawn in moderate perspective when none is set (see the
@@ -260,7 +260,7 @@ fn show_clip_video(
 
     // Opacity
     let opacity_drag_key = format!("{:?}:video_opacity", clip_id);
-    let mut opacity = klipp_core::keyframe::evaluate(&clip.opacity_keyframes, clip_time_secs, get_opacity(clip));
+    let mut opacity = crate::inspector::keyframe_selection::editable_value(&clip.opacity_keyframes, clip_time_secs, get_opacity(clip), keyframe_tolerance);
     let opacity_ks = keyframe_state(&clip.opacity_keyframes, clip_time_secs, keyframe_tolerance);
 
     // We need to collect scrubby results inside the card, then handle commands after
@@ -1830,9 +1830,9 @@ fn show_compositing_section(
                                 .color(theme.text_dim),
                         );
                         ui.add_space(8.0);
-                        let mut feather = klipp_core::keyframe::evaluate(
+                        let mut feather = crate::inspector::keyframe_selection::editable_value(
                             &clip.matte_feather_keyframes, clip_time_secs, binding.feather_px,
-                        );
+                            keyframe_tolerance);
                         if ui.add(egui::Slider::new(&mut feather, 0.0..=50.0)
                             .suffix(" px")
                             .clamping(egui::SliderClamping::Always)).changed()
@@ -1897,9 +1897,9 @@ fn show_compositing_section(
                                 .color(theme.text_dim),
                         );
                         ui.add_space(8.0);
-                        let mut choke = klipp_core::keyframe::evaluate(
+                        let mut choke = crate::inspector::keyframe_selection::editable_value(
                             &clip.matte_choke_keyframes, clip_time_secs, binding.choke_px,
-                        );
+                            keyframe_tolerance);
                         if ui.add(egui::Slider::new(&mut choke, 0.0..=50.0)
                             .suffix(" px")
                             .clamping(egui::SliderClamping::Always)).changed()

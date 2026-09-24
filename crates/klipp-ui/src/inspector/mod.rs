@@ -372,7 +372,15 @@ impl NewInspectorPanel {
         });
 
         for cmd in &mut cmds {
-            keyframe_selection::resolve_command(state.sequence(), cmd);
+            match cmd {
+                AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
+                    *cmd = AppCommand::EditAudioKeyframeAtFrame { clip_id: *clip_id, param: *param, time_secs: *time_secs, value: Some(*value) };
+                }
+                AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs } => {
+                    *cmd = AppCommand::EditAudioKeyframeAtFrame { clip_id: *clip_id, param: *param, time_secs: *time_secs, value: None };
+                }
+                _ => keyframe_selection::resolve_command(state.sequence(), cmd),
+            }
         }
         cmds
     }

@@ -30,11 +30,12 @@ fn audio_kf_eval(
     param_name: &str,
     clip_time_secs: f64,
     default: f32,
+    tolerance: f64,
 ) -> f32 {
     let key = format!("{effect_index}:{param_name}");
     if let Some(kfs) = audio_effect_keyframes.get(&key) {
         if !kfs.is_empty() {
-            return klipp_core::keyframe::evaluate(kfs, clip_time_secs, default);
+            return crate::inspector::keyframe_selection::editable_value(kfs, clip_time_secs, default, tolerance);
         }
     }
     default
@@ -754,8 +755,7 @@ pub fn show_content(
                                 idx,
                                 desc.name,
                                 clip_time_secs,
-                                static_value,
-                            );
+                                static_value, keyframe_tolerance);
                             let unit_suffix = match desc.unit {
                                 klipp_audio::dsp::ParamUnit::Db => " dB",
                                 klipp_audio::dsp::ParamUnit::Hz => " Hz",
@@ -818,8 +818,7 @@ pub fn show_content(
                         idx,
                         "__wetdry",
                         clip_time_secs,
-                        static_wet_dry,
-                    );
+                        static_wet_dry, keyframe_tolerance);
                     let kf_state = Some(audio_kf_state(
                         audio_effect_keyframes, idx, "__wetdry", clip_time_secs,
                         keyframe_tolerance,
@@ -944,8 +943,7 @@ fn render_ladspa_params(
             effect_index,
             &port.name,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = (port.max - port.min).max(f32::EPSILON);
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if port.is_integer {
@@ -1054,8 +1052,7 @@ fn render_lv2_params(
             effect_index,
             &port.symbol,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = max - min;
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if range > 100.0 {
@@ -1154,8 +1151,7 @@ fn render_clap_params(
             effect_index,
             &key,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = (port.max - port.min).max(f32::EPSILON);
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if range > 100.0 {
@@ -1241,7 +1237,7 @@ mod helper_tests {
     #[test]
     fn audio_kf_eval_falls_back_to_default_when_no_track() {
         let map: HashMap<String, Vec<Keyframe>> = HashMap::new();
-        assert_eq!(audio_kf_eval(&map, 0, "gain", 0.5, 0.7), 0.7);
+        assert_eq!(audio_kf_eval(&map, 0, "gain", 0.5, 0.7, 0.0), 0.7);
     }
 
     #[test]
@@ -1249,7 +1245,7 @@ mod helper_tests {
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:gain".to_string(), vec![kf(0.0, 0.0), kf(1.0, 1.0)]);
         // Linear ramp 0 → 1 over [0, 1]; midpoint = 0.5.
-        let v = audio_kf_eval(&map, 0, "gain", 0.5, 99.0);
+        let v = audio_kf_eval(&map, 0, "gain", 0.5, 99.0, 0.0);
         assert!((v - 0.5).abs() < 1e-3, "expected ~0.5, got {v}");
     }
 
@@ -1321,8 +1317,8 @@ mod helper_tests {
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
         ]);
         // Step interp before second kf: still 0.0
-        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0), 0.0);
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0, 0.0), 0.0);
         // After second kf: 1.0
-        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0), 1.0);
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0, 0.0), 1.0);
     }
 }
