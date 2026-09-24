@@ -5451,10 +5451,20 @@ impl KlippApp {
                     let avail_w = self.state.last_timeline_content_width;
                     let raw_zoom = if max_secs > 0.01 { avail_w / (max_secs as f32 * 1.05) } else { 0.0 };
                     let clamped = raw_zoom.clamp(0.1, 2000.0);
-                    tracing::info!(
-                        "TL_ZOOM FitTimelineToWindow max_secs={:.3} avail_w={:.1} raw_zoom={:.4} clamped={:.4}",
-                        max_secs, avail_w, raw_zoom, clamped
+                    let total_track_h: f32 = seq.tracks.iter()
+                        .map(crate::panels::timeline::track_row_height)
+                        .sum();
+                    let track_scale = crate::panels::timeline::fit_track_scale(
+                        total_track_h,
+                        self.state.last_timeline_tracks_height,
                     );
+                    tracing::info!(
+                        "TL_ZOOM FitTimelineToWindow max_secs={:.3} avail_w={:.1} raw_zoom={:.4} clamped={:.4} total_track_h={:.1} avail_track_h={:.1} track_scale={:.3}",
+                        max_secs, avail_w, raw_zoom, clamped, total_track_h,
+                        self.state.last_timeline_tracks_height, track_scale
+                    );
+                    self.state.timeline_track_scale = track_scale;
+                    self.state.timeline_scroll_y = 0.0;
                     if max_secs > 0.01 {
                         self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
@@ -5488,10 +5498,20 @@ impl KlippApp {
                     let w = self.state.last_timeline_content_width;
                     let raw = if dur > 0.0 && w > 0.0 { w / dur } else { 0.0 };
                     let clamped = raw.clamp(0.1, 2000.0);
-                    tracing::info!(
-                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} raw={:.4} clamped={:.4}",
-                        dur, w, raw, clamped
+                    let total_track_h: f32 = self.state.sequence().tracks.iter()
+                        .map(crate::panels::timeline::track_row_height)
+                        .sum();
+                    let track_scale = crate::panels::timeline::fit_track_scale(
+                        total_track_h,
+                        self.state.last_timeline_tracks_height,
                     );
+                    tracing::info!(
+                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} raw={:.4} clamped={:.4} total_track_h={:.1} avail_track_h={:.1} track_scale={:.3}",
+                        dur, w, raw, clamped, total_track_h,
+                        self.state.last_timeline_tracks_height, track_scale
+                    );
+                    self.state.timeline_track_scale = track_scale;
+                    self.state.timeline_scroll_y = 0.0;
                     if dur > 0.0 && w > 0.0 {
                         self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
@@ -18963,6 +18983,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackCustomHeight { track_id, height } => {
+                self.state.timeline_track_scale = 1.0;
                 let seq = self.state.sequence_mut();
                 if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.custom_height = height.map(|h| h.clamp(32.0, 300.0));
@@ -18971,6 +18992,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTrackAutomationLaneHeight { track_id, height } => {
+                self.state.timeline_track_scale = 1.0;
                 let seq = self.state.sequence_mut();
                 if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
                     track.automation_lane_height = height.map(|h| {
@@ -25233,12 +25255,7 @@ impl KlippApp {
             }
             // Z — Fit to window (no modifiers)
             if kb.is_action_pressed("fit_to_window", i) {
-                let dur_secs = self.state.sequence_duration().to_secs_f64() as f32;
-                if dur_secs > 0.0 {
-                    let content_width = self.state.last_timeline_content_width - 20.0;
-                    self.state.timeline_zoom = (content_width / dur_secs).clamp(0.1, 2000.0);
-                    self.state.timeline_scroll_x = 0.0;
-                }
+                cmds.push(AppCommand::FitTimelineToWindow);
             }
             // Shift+Z — Zoom to selection
             if kb.is_action_pressed("zoom_to_selection", i) {

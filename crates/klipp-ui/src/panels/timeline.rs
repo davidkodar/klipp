@@ -245,6 +245,29 @@ pub(crate) fn track_row_height(track: &klipp_timeline::Track) -> f32 {
     effective_track_height(track) + automation_lane_height(track)
 }
 
+/// Apply the transient Fit scale to a track's full row without changing its
+/// persisted/custom height. A scale below one is only used while fitting a
+/// tall stack; normal interaction keeps the user's authored dimensions.
+pub(crate) fn scaled_track_height(track: &klipp_timeline::Track, scale: f32) -> f32 {
+    effective_track_height(track) * scale.clamp(0.1, 1.0)
+}
+
+pub(crate) fn scaled_track_row_height(track: &klipp_timeline::Track, scale: f32) -> f32 {
+    track_row_height(track) * scale.clamp(0.1, 1.0)
+}
+
+/// Return the transient vertical scale needed to fit a track stack in the
+/// visible timeline area. A normal-sized stack stays at authored size; only
+/// an overflowing stack is compressed, with the same lower bound as the
+/// timeline's other fit scales.
+pub(crate) fn fit_track_scale(total_height: f32, available_height: f32) -> f32 {
+    if total_height > 0.0 && available_height > 0.0 {
+        (available_height / total_height).clamp(0.1, 1.0)
+    } else {
+        1.0
+    }
+}
+
 /// Get effective track height using preferences for defaults.
 #[allow(dead_code)]
 fn effective_track_height_with_prefs(track: &klipp_timeline::Track, tl: &crate::prefs::TimelinePrefs) -> f32 {
@@ -1229,10 +1252,12 @@ impl TimelinePanel {
         let track_count = state.sequence().tracks.len();
         // Total Y footprint must include the per-track automation lane
         // when visible. `track_row_height` folds it in.
+        let track_scale = state.timeline_track_scale;
         let total_tracks_h: f32 = (0..track_count)
-            .map(|ti| track_row_height(&state.sequence().tracks[ti]))
+            .map(|ti| scaled_track_row_height(&state.sequence().tracks[ti], track_scale))
             .sum();
         let available_h = content_rect.bottom() - tracks_start_y;
+        state.last_timeline_tracks_height = available_h.max(0.0);
         let max_scroll_y = (total_tracks_h - available_h).max(0.0);
         self.reveal_graded_track(state, available_h);
         state.timeline_scroll_y = state.timeline_scroll_y.clamp(0.0, max_scroll_y);
@@ -1324,8 +1349,8 @@ impl TimelinePanel {
             let mut pre_y = tracks_start_y - scroll_y;
             for ti in 0..track_count {
                 let tk = state.sequence().tracks[ti].kind;
-                let th = effective_track_height(&state.sequence().tracks[ti]);
-                let row_h = track_row_height(&state.sequence().tracks[ti]);
+                let th = scaled_track_height(&state.sequence().tracks[ti], track_scale);
+                let row_h = scaled_track_row_height(&state.sequence().tracks[ti], track_scale);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(content_rect.left(), pre_y),
                     egui::vec2(content_rect.width(), th),
@@ -1345,7 +1370,7 @@ impl TimelinePanel {
         for track_idx in 0..track_count {
             let track_kind = state.sequence().tracks[track_idx].kind;
             let track_name = state.sequence().tracks[track_idx].name.clone();
-            let track_height = effective_track_height(&state.sequence().tracks[track_idx]);
+            let track_height = scaled_track_height(&state.sequence().tracks[track_idx], track_scale);
 
             // Draw track header label and controls — skip when embedded or outside visible area.
             // A track is visible if at least 16px of it is showing (enough for a label row).
@@ -1438,7 +1463,8 @@ impl TimelinePanel {
             // Per-track expandable automation lane. Sits in
             // the row's bottom slice, sized by `automation_lane_height`.
             // Skipped when the track has it collapsed (height = 0).
-            let lane_h = automation_lane_height(&state.sequence().tracks[track_idx]);
+            let lane_h = automation_lane_height(&state.sequence().tracks[track_idx])
+                * track_scale.clamp(0.1, 1.0);
             if lane_h > 0.0 && track_visible {
                 let lane_rect = egui::Rect::from_min_size(
                     egui::pos2(content_rect.left(), track_y + track_height),
@@ -1838,7 +1864,7 @@ impl TimelinePanel {
         }
         let mut row_top: f32 = 0.0;
         for ti in 0..track_idx {
-            row_top += track_row_height(&seq.tracks[ti]);
+            row_top += scaled_track_row_height(&seq.tracks[ti], state.timeline_track_scale);
         }
         state.timeline_scroll_y = row_top;
     }
@@ -1871,9 +1897,9 @@ impl TimelinePanel {
         let Some((track_idx, _)) = seq.find_clip(clip_id) else { return };
         let mut row_top = 0.0_f32;
         for ti in 0..track_idx {
-            row_top += track_row_height(&seq.tracks[ti]);
+            row_top += scaled_track_row_height(&seq.tracks[ti], state.timeline_track_scale);
         }
-        let row_h = track_row_height(&seq.tracks[track_idx]);
+        let row_h = scaled_track_row_height(&seq.tracks[track_idx], state.timeline_track_scale);
         let row_bottom = row_top + row_h;
 
         let view_top = state.timeline_scroll_y;
@@ -9170,7 +9196,7 @@ impl TimelinePanel {
                                         Some(r) => r,
                                         None => continue,
                                     };
-                                    let other_h = effective_track_height(other_track);
+                                    let other_h = scaled_track_height(other_track, state.timeline_track_scale);
 
                                     for clip in &other_track.clips {
                                         if clip.kind.is_gap() { continue; }
@@ -14917,7 +14943,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
-                        let track_height = effective_track_height(track);
+                        let track_height = scaled_track_height(track, state.timeline_track_scale);
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
@@ -15046,7 +15072,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_bh.clip_id) {
-                        let track_height = effective_track_height(track);
+                        let track_height = scaled_track_height(track, state.timeline_track_scale);
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -15056,7 +15082,7 @@ impl TimelinePanel {
                                 let lane_right = (cx + cw).min(track_rect.right());
                                 egui::Rect::from_min_max(
                                     egui::pos2(lane_left, track_rect.bottom() + 1.0),
-                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) - 1.0),
+                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) * state.timeline_track_scale.clamp(0.1, 1.0) - 1.0),
                                 )
                             } else {
                                 egui::Rect::from_min_size(
@@ -15158,7 +15184,7 @@ impl TimelinePanel {
                 let scroll = state.timeline_scroll_x;
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = effective_track_height(track);
+                        let track_height = scaled_track_height(track, state.timeline_track_scale);
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
@@ -15309,7 +15335,7 @@ impl TimelinePanel {
                 // Find clip in sequence to get its rect
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
-                        let track_height = effective_track_height(track);
+                        let track_height = scaled_track_height(track, state.timeline_track_scale);
                         // Find track_rect from track_rects cache
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left(); // approximation — content_rect not available here
@@ -15324,7 +15350,7 @@ impl TimelinePanel {
                                 let lane_right = (cx + cw).min(track_rect.right());
                                 egui::Rect::from_min_max(
                                     egui::pos2(lane_left, track_rect.bottom() + 1.0),
-                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) - 1.0),
+                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) * state.timeline_track_scale.clamp(0.1, 1.0) - 1.0),
                                 )
                             } else {
                                 egui::Rect::from_min_size(
@@ -15493,7 +15519,7 @@ impl TimelinePanel {
 
         for (ti, track) in state.sequence().tracks.iter().enumerate() {
             let Some(clip) = track.find_clip(drag_kf.clip_id) else { continue };
-            let track_height = effective_track_height(track);
+            let track_height = scaled_track_height(track, state.timeline_track_scale);
             let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
 
             let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
@@ -15614,7 +15640,7 @@ impl TimelinePanel {
 
         for (ti, track) in state.sequence().tracks.iter().enumerate() {
             let Some(clip) = track.find_clip(drag.clip_id) else { continue };
-            let track_height = effective_track_height(track);
+            let track_height = scaled_track_height(track, state.timeline_track_scale);
             let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
             let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
             let cw = clip.duration().to_secs_f64() as f32 * zoom;
@@ -16011,6 +16037,21 @@ mod tests {
         let mut t = make_video_track();
         t.custom_height = Some(80.0);
         assert_eq!(effective_track_height(&t), 80.0);
+    }
+
+    #[test]
+    fn fit_track_scale_keeps_a_stack_that_already_fits() {
+        assert_eq!(fit_track_scale(400.0, 600.0), 1.0);
+    }
+
+    #[test]
+    fn fit_track_scale_compresses_a_tall_stack_to_the_visible_height() {
+        assert!((fit_track_scale(1200.0, 600.0) - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn fit_track_scale_has_a_readable_lower_bound() {
+        assert_eq!(fit_track_scale(10_000.0, 100.0), 0.1);
     }
 
     #[test]
