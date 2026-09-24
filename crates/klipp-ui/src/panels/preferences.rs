@@ -960,6 +960,20 @@ impl PreferencesPanel {
             });
         });
 
+        Self::setting_row_with_subtitle(
+            ui,
+            "Adapt timeline to window",
+            "Keep the timeline fitted when the window or layout size changes",
+            theme,
+            |ui| {
+                let mut val = prefs.editing.adaptive_timeline_fit;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.editing.adaptive_timeline_fit = val;
+                    *dirty = true;
+                }
+            },
+        );
+
         // Per-target snap toggles. Mirror the right-click context
         // menu on the timeline-toolbar Snap icon and the ruler context
         // menu — both surfaces share the same SnapConfig, so this

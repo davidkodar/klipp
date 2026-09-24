@@ -19,7 +19,10 @@ use klipp_core::AppCommand;
 /// Phase 7A: Structure + track headers + ruler (new visual shell)
 /// Phase 7B: Clip rendering delegated to existing panels/timeline.rs
 /// Phase 7C: Full migration of interaction logic
-pub struct NewTimelinePanel;
+#[derive(Default)]
+pub struct NewTimelinePanel {
+    last_adaptive_fit: Option<(u32, u32, u32, u32)>,
+}
 
 impl NewTimelinePanel {
     pub fn show(
@@ -29,6 +32,7 @@ impl NewTimelinePanel {
         theme: &KlippTheme,
         old_timeline: &mut crate::panels::timeline::TimelinePanel,
         kb: &crate::keybindings::KeyBindings,
+        adaptive_fit: bool,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let full_rect = ui.max_rect();
@@ -138,6 +142,37 @@ impl NewTimelinePanel {
             egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h + lane_h),
             timeline_content_rect.max,
         );
+
+        // Recompute both timeline axes only when the available viewport or
+        // content footprint changes. This preserves manual interaction while
+        // keeping the opt-in adaptive mode responsive to resize and layout changes.
+        if adaptive_fit {
+            let duration_secs = state.sequence_duration().to_secs_f64() as f32;
+            let total_track_h: f32 = state.sequence().tracks.iter()
+                .map(crate::panels::timeline::track_row_height)
+                .sum();
+            let signature = (
+                tracks_rect.width().to_bits(),
+                tracks_rect.height().to_bits(),
+                duration_secs.to_bits(),
+                total_track_h.to_bits(),
+            );
+            if self.last_adaptive_fit != Some(signature) {
+                let raw_zoom = if duration_secs > 0.01 {
+                    tracks_rect.width() / (duration_secs * 1.05)
+                } else { 0.0 };
+                state.timeline_zoom = raw_zoom.clamp(0.1, 2000.0);
+                state.timeline_scroll_x = 0.0;
+                state.timeline_track_scale = crate::panels::timeline::fit_track_scale(
+                    total_track_h,
+                    tracks_rect.height(),
+                );
+                state.timeline_scroll_y = 0.0;
+                self.last_adaptive_fit = Some(signature);
+            }
+        } else {
+            self.last_adaptive_fit = None;
+        }
 
         let ruler_painter = ui.painter().with_clip_rect(ruler_rect);
         ruler::draw_ruler(&ruler_painter, ruler_rect, pps, scroll_x, duration_secs, theme);
