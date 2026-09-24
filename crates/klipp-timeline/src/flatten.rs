@@ -48,15 +48,29 @@ fn binding_parts(property: &str) -> Result<(usize, &str), String> {
 
 /// Validate the binding grammar once, at insertion, so flattening cannot
 /// silently reinterpret a saved template instance.
-pub fn validate_template_instance(instance: &klipp_core::TemplateInstance) -> Result<(), String> {
+pub fn validate_template_instance(instance: &klipp_core::TemplateInstance, sequence: &Sequence) -> Result<(), String> {
     for (parameter, property) in &instance.bindings {
-        binding_parts(property).map_err(|e| format!("parameter '{parameter}': {e}"))?;
+        let (index, path) = binding_parts(property).map_err(|e| format!("parameter '{parameter}': {e}"))?;
+        let target = sequence.tracks.iter().flat_map(|track| &track.clips)
+            .filter_map(|clip| match &clip.kind { ClipKind::Title(title) => Some(title), _ => None })
+            .flat_map(|title| title.objects.iter()).nth(index)
+            .ok_or_else(|| format!("parameter '{parameter}' targets missing object {index}"))?;
+        if let Some(value) = instance.overrides.get(parameter) {
+            match (path, value) {
+                ("text", klipp_core::TemplateValue::Text(_)) if matches!(target.content, crate::TitleObjectContent::TextBox(_)) => {}
+                ("fill_and_glow", klipp_core::TemplateValue::Color(_)) if matches!(target.content, crate::TitleObjectContent::Shape(_)) => {}
+                ("motion.enter.duration_secs", klipp_core::TemplateValue::Number(_)) if target.fx().motion.enter.is_some() => {}
+                ("motion.enter.direction", klipp_core::TemplateValue::Enum(direction)) if ["left", "right", "up", "down"].contains(&direction.as_str()) && target.fx().motion.enter.is_some() => {}
+                ("float.keyframes", klipp_core::TemplateValue::Number(_)) if !target.transform.center_y_keyframes.is_empty() => {}
+                _ => return Err(format!("value for parameter '{parameter}' does not fit '{property}'")),
+            }
+        }
     }
     Ok(())
 }
 
 fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::TemplateInstance) -> Result<(), String> {
-    validate_template_instance(instance)?;
+    validate_template_instance(instance, sequence)?;
     for track in &mut sequence.tracks {
         for clip in &mut track.clips {
             let ClipKind::Title(title) = &mut clip.kind else { continue };
@@ -181,12 +195,10 @@ pub fn resolve_precomposition(
         return None;
     }
     let mut inner = all_sequences.iter().find(|s| s.id == sequence_id)?.clone();
-    match &clip.kind {
-        ClipKind::Precomposition { template_instance: Some(instance), .. }
-        | ClipKind::TemplatePrecomposition { template_instance: instance, .. } => {
-            let _ = apply_template_instance(&mut inner, instance);
+    if let ClipKind::TemplatePrecomposition { template_instance: instance, .. } = &clip.kind {
+        if apply_template_instance(&mut inner, instance).is_err() {
+            return None;
         }
-        _ => {}
     }
     Some(Arc::new(flatten_within(&inner, all_sequences, ancestors, Some(clip.id))))
 }

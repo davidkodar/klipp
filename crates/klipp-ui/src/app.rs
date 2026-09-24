@@ -15606,6 +15606,7 @@ impl KlippApp {
                     self.state.toast.show("The template's composition is missing");
                     return true;
                 };
+                let template_sequence = self.state.sequences.iter().find(|candidate| candidate.id == sequence_id).cloned();
                 if self.state.sequences[sequence_idx].id == sequence_id {
                     self.state.toast.show("A template cannot be inserted into its own composition");
                     return true;
@@ -15647,7 +15648,11 @@ impl KlippApp {
                     overrides: std::collections::BTreeMap::new(),
                     media_slots: std::collections::BTreeMap::new(),
                 };
-                if let Err(error) = klipp_timeline::flatten::validate_template_instance(&instance) {
+                let Some(template_sequence) = template_sequence.as_ref() else {
+                    self.state.toast.show("Template composition is missing");
+                    return false;
+                };
+                if let Err(error) = klipp_timeline::flatten::validate_template_instance(&instance, template_sequence) {
                     self.state.toast.show(format!("Template cannot be inserted: {error}"));
                     return false;
                 }

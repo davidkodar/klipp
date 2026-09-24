@@ -552,8 +552,6 @@ pub enum ClipKindJson {
     Gap,
     Sequence {
         sequence_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        template_instance: Option<klipp_core::TemplateInstance>,
     },
     Generator {
         #[serde(default)]
@@ -564,8 +562,6 @@ pub enum ClipKindJson {
     /// the tag by name rather than reading the clip as something else.
     Precomposition {
         sequence_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        template_instance: Option<klipp_core::TemplateInstance>,
     },
     /// A precomposition with a live template instance. Appended so readers
     /// that predate template runtime resolution refuse it by tag.

@@ -639,88 +639,6 @@ fn eased(keys: &[(f64, f32, Easing)]) -> Vec<klipp_core::Keyframe> {
 /// on a timeline clip; these helpers keep catalogue validation in the UI.
 pub use klipp_core::TemplateInstance;
 
-/// Resolve exposed values onto an ordinary title.  Bindings are deliberately
-/// explicit and typed: an unknown object or property is an error instead of a
-/// silently broken card.
-pub fn resolve_bindings(
-    title: &mut TitleData,
-    template: &CompositionTemplate,
-    instance: &TemplateInstance,
-) -> Result<(), String> {
-    for binding in &template.bindings {
-        let value = instance
-            .value(template, &binding.parameter)
-            .ok_or_else(|| format!("missing value for '{}'", binding.parameter))?;
-        let (object, path) = binding
-            .property
-            .strip_prefix("object:")
-            .and_then(|rest| rest.split_once('.'))
-            .ok_or_else(|| format!("invalid binding path '{}'", binding.property))?;
-        let object_id: u32 = object
-            .parse()
-            .map_err(|_| format!("invalid object id '{object}'"))?;
-        let target = title
-            .objects
-            .get_mut(object_id as usize)
-            .ok_or_else(|| format!("binding object {object_id} does not exist"))?;
-        match (path, value) {
-            ("text", TemplateValue::Text(text)) => match &mut target.content {
-                TitleObjectContent::TextBox(box_) => box_.text = text.clone(),
-                _ => return Err(format!("object {object_id} is not text")),
-            },
-            ("fill_and_glow", TemplateValue::Color(color)) => {
-                let rgba = [
-                    (color[0].clamp(0.0, 1.0) * 255.0) as u8,
-                    (color[1].clamp(0.0, 1.0) * 255.0) as u8,
-                    (color[2].clamp(0.0, 1.0) * 255.0) as u8,
-                    (color[3].clamp(0.0, 1.0) * 255.0) as u8,
-                ];
-                match &mut target.content {
-                    TitleObjectContent::Shape(shape) => shape.fill = Some(rgba),
-                    _ => return Err(format!("object {object_id} is not a shape")),
-                }
-                if let Some(glow) = target.fx_mut().glows.first_mut() {
-                    glow.color = rgba;
-                }
-            }
-            ("motion.enter.duration_secs", TemplateValue::Number(seconds)) => {
-                let motion = target
-                    .fx_mut()
-                    .motion
-                    .enter
-                    .as_mut()
-                    .ok_or_else(|| format!("object {object_id} has no entrance motion"))?;
-                motion.duration_secs = *seconds as f32;
-            }
-            ("motion.enter.direction", TemplateValue::Enum(direction)) => {
-                let motion = target
-                    .fx_mut()
-                    .motion
-                    .enter
-                    .as_mut()
-                    .ok_or_else(|| format!("object {object_id} has no entrance motion"))?;
-                motion.kind = match direction.as_str() {
-                    "left" => MotionKind::SlideRight,
-                    "right" => MotionKind::SlideLeft,
-                    "up" => MotionKind::Rise,
-                    "down" => MotionKind::Drop,
-                    other => return Err(format!("unknown entry direction '{other}'")),
-                };
-            }
-            ("float.keyframes", TemplateValue::Number(amount)) => {
-                let keyframes = &mut target.transform.center_y_keyframes;
-                for key in keyframes {
-                    key.value = key.value.max(0.0) + *amount as f32 * 0.01;
-                }
-            }
-            (property, value) => {
-                return Err(format!("value {:?} cannot bind to '{}'", value, property));
-            }
-        }
-    }
-    Ok(())
-}
-
 trait TemplateInstanceExt {
     #[allow(dead_code)]
     fn set(
@@ -729,6 +647,7 @@ trait TemplateInstanceExt {
         name: &str,
         value: TemplateValue,
     ) -> Result<(), String>;
+    #[allow(dead_code)]
     fn value<'a>(
         &'a self,
         template: &'a CompositionTemplate,
@@ -879,34 +798,6 @@ fn safe_stem(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolver_applies_terminal_overrides_to_materialized_title() {
-        let mut title = terminal_card_composition();
-        let template_id = Uuid::new_v4();
-        let template = terminal_card_template(template_id);
-        let instance = TemplateInstance {
-            template_id,
-            bindings: BTreeMap::new(),
-            overrides: BTreeMap::from([
-                (
-                    "command_text".into(),
-                    TemplateValue::Text("xytx --launch".into()),
-                ),
-                ("typing_speed".into(), TemplateValue::Number(0.8)),
-            ]),
-            media_slots: BTreeMap::new(),
-        };
-        resolve_bindings(&mut title, &template, &instance).unwrap();
-        match &title.objects[1].content {
-            TitleObjectContent::TextBox(text) => assert_eq!(text.text, "xytx --launch"),
-            _ => panic!("terminal command is not a text layer"),
-        }
-        assert_eq!(
-            title.objects[1].fx().motion.enter.unwrap().duration_secs,
-            0.8
-        );
-    }
 
     #[test]
     fn instance_uses_defaults_and_validates_overrides() {
