@@ -222,7 +222,7 @@ fn show_clip_video(
     clip_time_secs: f64,
     is_timeline: bool,
 ) {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
@@ -1555,7 +1555,7 @@ fn show_compositing_section(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
 ) {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let clip_id = clip.id;
     let pad = 14.0;
     section_card(ui, "COMPOSITING", theme, |ui| {
@@ -3719,8 +3719,8 @@ fn keyframe_controls(
         }
     }
     if r.keyframe_toggled {
-        if here.is_some() {
-            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: clip_time_secs });
+        if let Some(i) = here {
+            cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kfs[i].time_secs });
         } else {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param, time_secs: clip_time_secs, value });
         }

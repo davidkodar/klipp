@@ -1379,7 +1379,7 @@ fn show_builtin_effect_params(
     clip_time_secs: f64,
     state: &AppState,
 ) -> Option<klipp_effects::BuiltinEffect> {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let mut updated = effect.clone();
     let mut changed = false;
     let mut any_drag_started = false;

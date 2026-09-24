@@ -591,7 +591,7 @@ fn show_clip_audio(
     duck: &mut DuckSettings,
     tracks: &[TrackInfo],
 ) {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let clip_id = clip.id;
     let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
     let clip_rate = clip.timeline_in.rate;
@@ -772,12 +772,12 @@ fn show_clip_audio(
         let vol_ks = build_kf_state(&clip.volume_keyframes, clip_time_secs, kf_tolerance);
         let pan_ks = build_kf_state(&clip.pan_keyframes, clip_time_secs, kf_tolerance);
 
-        let gain_prev_kf = clip.gain_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
-        let gain_next_kf = clip.gain_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
-        let vol_prev_kf = clip.volume_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
-        let vol_next_kf = clip.volume_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
-        let pan_prev_kf = clip.pan_keyframes.iter().rfind(|k| k.time_secs < clip_time_secs - kf_tolerance).map(|k| k.time_secs);
-        let pan_next_kf = clip.pan_keyframes.iter().find(|k| k.time_secs > clip_time_secs + kf_tolerance).map(|k| k.time_secs);
+        let gain_prev_kf = gain_ks.prev_keyframe_time;
+        let gain_next_kf = gain_ks.next_keyframe_time;
+        let vol_prev_kf = vol_ks.prev_keyframe_time;
+        let vol_next_kf = vol_ks.next_keyframe_time;
+        let pan_prev_kf = pan_ks.prev_keyframe_time;
+        let pan_next_kf = pan_ks.next_keyframe_time;
 
         let drag_key = format!("{:?}:audio", clip_id);
 
@@ -1023,6 +1023,7 @@ fn show_clip_audio(
 
             // Duck Level
             let empty_ks = Some(KeyframeState {
+                keys_in_frame: 0,
                 has_keyframe_at_playhead: false,
                 has_any_keyframes: false,
                 prev_keyframe_time: None,

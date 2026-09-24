@@ -8,12 +8,21 @@ pub(super) fn clip_time(state: &crate::state::AppState, clip: &Clip) -> f64 {
     (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0)
 }
 
+/// Half a displayed sequence frame; storage identity remains a separate rule.
+pub(crate) fn frame_tolerance(sequence: &Sequence) -> f64 {
+    0.5 / sequence.fps.as_f64()
+}
+
+fn in_window(key_time: f64, time: f64, tolerance: f64) -> bool {
+    (key_time - time).abs() <= tolerance + klipp_core::keyframe::KEYFRAME_TIME_EPSILON
+}
+
 /// Pick the closest key within half a sequence frame. Equal distances prefer
 /// the earlier entry in the sorted track. Never move the stored timestamp.
 pub(crate) fn nearest(keys: &[Keyframe], time: f64, tolerance: f64) -> Option<usize> {
     keys.iter()
         .enumerate()
-        .filter(|(_, k)| (k.time_secs - time).abs() <= tolerance)
+        .filter(|(_, k)| in_window(k.time_secs, time, tolerance))
         .min_by(|(_, a), (_, b)| {
             (a.time_secs - time)
                 .abs()
@@ -24,7 +33,7 @@ pub(crate) fn nearest(keys: &[Keyframe], time: f64, tolerance: f64) -> Option<us
 
 /// Selection and navigation share the displayed frame window. A rounded
 /// off-grid key is current, so previous/next must not select it again.
-pub(super) fn state(
+pub(crate) fn state(
     keys: &[Keyframe],
     time: f64,
     tolerance: f64,
@@ -33,14 +42,15 @@ pub(super) fn state(
     crate::widgets::scrubby_param::KeyframeState {
         has_keyframe_at_playhead: current.is_some(),
         has_any_keyframes: !keys.is_empty(),
+        keys_in_frame: keys.iter().filter(|k| in_window(k.time_secs, time, tolerance)).count(),
         current_interpolation: current.map(|i| keys[i].interpolation),
         prev_keyframe_time: keys
             .iter()
-            .rfind(|k| k.time_secs < time - tolerance)
+            .rfind(|k| k.time_secs < time && !in_window(k.time_secs, time, tolerance))
             .map(|k| k.time_secs),
         next_keyframe_time: keys
             .iter()
-            .find(|k| k.time_secs > time + tolerance)
+            .find(|k| k.time_secs > time && !in_window(k.time_secs, time, tolerance))
             .map(|k| k.time_secs),
     }
 }
@@ -49,7 +59,7 @@ pub(super) fn state(
 /// precise timestamp identity. Resolve only inspector add/remove commands here;
 /// agent-authored timestamps and curve moves retain their original precision.
 pub(super) fn resolve_command(sequence: &Sequence, command: &mut AppCommand) {
-    resolve_with(command, 0.5 / sequence.fps.as_f64(), |id| {
+    resolve_with(command, frame_tolerance(sequence), |id| {
         sequence
             .tracks
             .iter()
@@ -445,4 +455,37 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn decimal_half_frame_boundaries_have_no_selection_navigation_gap() {
+        for fps in [24.0, 30.0, 60.0, 120.0, 30000.0 / 1001.0] {
+            let tol = 0.5 / fps;
+            for frame in 0..2000 {
+                let t = frame as f64 / fps;
+                for k in [t - tol, t + tol] {
+                    let track = keys(&[k]);
+                    assert_eq!(nearest(&track, t, tol), Some(0), "{fps} fps, frame {frame}");
+                    let selection = state(&track, t, tol);
+                    assert!(selection.has_keyframe_at_playhead);
+                    assert_eq!(selection.prev_keyframe_time, None);
+                    assert_eq!(selection.next_keyframe_time, None);
+                }
+                let track = keys(&[t - tol - 2e-6, t + tol + 2e-6]);
+                let selection = state(&track, t, tol);
+                assert!(!selection.has_keyframe_at_playhead);
+                assert_eq!(selection.prev_keyframe_time, Some(track[0].time_secs));
+                assert_eq!(selection.next_keyframe_time, Some(track[1].time_secs));
+            }
+        }
+    }
+
+    #[test]
+    fn subframe_keys_are_counted_instead_of_silently_hidden() {
+        let track = keys(&(0..20).map(|i| i as f64 / 120.0).collect::<Vec<_>>());
+        let selection = state(&track, 1.0 / 24.0, 0.5 / 24.0);
+        assert_eq!(selection.keys_in_frame, 5);
+        assert_eq!(nearest(&track, 1.0 / 24.0, 0.5 / 24.0), Some(5));
+        assert_eq!(selection.prev_keyframe_time, Some(2.0 / 120.0));
+        assert_eq!(selection.next_keyframe_time, Some(8.0 / 120.0));
+    }
+
 }

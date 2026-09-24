@@ -125,10 +125,7 @@ fn dispatch_audio_kf_response(
     if resp.keyframe_nav_prev {
         let key = format!("{effect_index}:{param_name}");
         if let Some(kfs) = audio_effect_keyframes.get(&key) {
-            if let Some(prev_t) = kfs
-                .iter()
-                .rfind(|k| k.time_secs < clip_time_secs - keyframe_tolerance)
-                .map(|k| k.time_secs)
+            if let Some(prev_t) = crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance).prev_keyframe_time
             {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
                     clip_timeline_in_secs + prev_t,
@@ -141,10 +138,7 @@ fn dispatch_audio_kf_response(
     if resp.keyframe_nav_next {
         let key = format!("{effect_index}:{param_name}");
         if let Some(kfs) = audio_effect_keyframes.get(&key) {
-            if let Some(next_t) = kfs
-                .iter()
-                .find(|k| k.time_secs > clip_time_secs + keyframe_tolerance)
-                .map(|k| k.time_secs)
+            if let Some(next_t) = crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance).next_keyframe_time
             {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
                     clip_timeline_in_secs + next_t,

@@ -632,6 +632,21 @@ impl NodeInspectorPanel {
         clip_time_secs: f64,
         tracked_mask_indices: &[usize],
     ) {
+        Self::render_masks_body_with_tolerance(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, tracked_mask_indices, 1e-3);
+    }
+
+    /// Edit-workspace masks use the same displayed-frame selection as other rows.
+    pub fn render_masks_body_with_tolerance(
+        ui: &mut egui::Ui,
+        masks: &mut klipp_core::MaskStack,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+        tracked_mask_indices: &[usize],
+        tolerance: f64,
+    ) {
         let mut masks_changed = false;
 
         ui.horizontal(|ui| {
@@ -712,6 +727,7 @@ impl NodeInspectorPanel {
                 display_val: f32,
                 has_keyframes: bool,
                 has_kf_at_playhead: bool,
+                key_time: f64,
                 range: std::ops::RangeInclusive<f32>,
             }
             let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
@@ -724,16 +740,17 @@ impl NodeInspectorPanel {
                 } else {
                     static_val
                 };
-                let has_kf_at_playhead = track.is_some_and(|t| {
-                    t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-                });
+                let selected = track.and_then(|t| crate::inspector::keyframe_selection::nearest(t, clip_time_secs, tolerance).map(|i| &t[i]));
+                let has_kf_at_playhead = selected.is_some();
+                let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
+                let display_val = selected.map_or(display_val, |k| k.value);
                 let range = match param_name {
                     "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
                     "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
                     "rotation" => -180.0..=180.0,
                     _ => 0.0..=1.0,
                 };
-                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
+                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, key_time, range }
             }).collect();
 
             ui.add_space(4.0);
@@ -840,12 +857,12 @@ impl NodeInspectorPanel {
                         if info.has_kf_at_playhead {
                             cmds.push(AppCommand::RemoveMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                             });
                         } else {
                             cmds.push(AppCommand::AddMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                                 value: info.display_val,
                             });
                         }
@@ -879,7 +896,7 @@ impl NodeInspectorPanel {
                         if info.has_keyframes {
                             cmds.push(AppCommand::AddMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                                 value: val,
                             });
                         } else {

@@ -1339,7 +1339,7 @@ fn show_title_position_block(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
 ) {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     use crate::state::TitlePositionPreset;
     use crate::widgets::inspector_group::quick_preset_button;
 
@@ -4070,7 +4070,7 @@ fn show_title_editor(
     cmds: &mut Vec<AppCommand>,
     chips: &mut title_tab::TitleChips,
 ) {
-    let keyframe_tolerance = 0.5 / state.sequence().fps.as_f64();
+    let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let clip_id = clip.id;
     let td = match &clip.kind {
         klipp_timeline::ClipKind::Title(td) => td,
