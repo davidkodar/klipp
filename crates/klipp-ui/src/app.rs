@@ -604,8 +604,8 @@ enum SaveOutcome {
 }
 
 /// A linked clip may have a differently nudged key in the same displayed frame.
-fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, value: Option<f32>) {
-    let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(time, |i| keys[i].time_secs) } else { time };
+fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, insert_time: f64, value: Option<f32>) {
+    let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(insert_time, |i| keys[i].time_secs) } else { time };
     match value {
         Some(value) => klipp_core::keyframe::upsert_keyframe(keys, target, value),
         None => klipp_core::keyframe::remove_keyframe_at(keys, target),
@@ -8660,7 +8660,7 @@ impl KlippApp {
 
         // Remove duplicate times (keep the last keyframe at each time)
         keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-        keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < 0.01);
+        keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON);
 
         // 4. Apply keyframes to the target clip
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -8740,7 +8740,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, Some(*value));
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, Some(*value));
                                 break;
                             }
                         }
@@ -8802,7 +8802,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, None);
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, None);
                                 break;
                             }
                         }
@@ -39300,12 +39300,12 @@ mod linked_audio_frame_tests {
         let mut keys = Vec::new();
         upsert_keyframe(&mut keys, 0.707, 0.5);
         upsert_keyframe(&mut keys, 0.750, 0.8);
-        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, Some(0.3));
+        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, 0.707, Some(0.3));
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0].time_secs, 0.707);
         assert_eq!(keys[0].value, 0.3);
         assert_eq!(keys[1].value, 0.8);
-        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, None);
+        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, 0.707, None);
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].time_secs, 0.750);
     }
@@ -39320,12 +39320,22 @@ mod exact_audio_review_tests {
         klipp_core::keyframe::upsert_keyframe(&mut main,0.707,0.5);
         let mut partner = main.clone();
         klipp_core::keyframe::upsert_keyframe(&mut main,0.700,0.3);
-        edit_linked_audio_key(&mut partner,0.700,0.0,Some(0.3));
+        edit_linked_audio_key(&mut partner,0.700,0.0,0.700,Some(0.3));
         assert_eq!(main,partner);
         assert_eq!(partner.len(),2);
         klipp_core::keyframe::remove_keyframe_at(&mut main,0.700);
-        edit_linked_audio_key(&mut partner,0.700,0.0,None);
+        edit_linked_audio_key(&mut partner,0.700,0.0,0.700,None);
         assert_eq!(main,partner);
+        assert_eq!(partner[0].time_secs,0.707);
+    }
+}
+
+#[cfg(test)]
+mod linked_missing_key_review_tests {
+    #[test]
+    fn absent_partner_key_uses_the_selected_main_timestamp() {
+        let mut partner=vec![];
+        super::edit_linked_audio_key(&mut partner,0.700,0.5/24.0,0.707,Some(0.25));
         assert_eq!(partner[0].time_secs,0.707);
     }
 }

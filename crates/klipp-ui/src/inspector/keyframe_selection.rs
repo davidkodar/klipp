@@ -28,6 +28,13 @@ pub(crate) fn frame_tolerance(sequence: &Sequence) -> f64 {
     0.5 / sequence.fps.as_f64()
 }
 
+/// Timeline clicks select an existing key in the displayed frame, or create
+/// a frame-aligned key. Exact curve-editor operations do not call this.
+pub(crate) fn timeline_key_time(keys: &[Keyframe], time: f64, fps: f64) -> f64 {
+    let frame = (time * fps).round() / fps;
+    nearest(keys, frame, 0.5 / fps).map_or(frame, |i| keys[i].time_secs)
+}
+
 fn in_window(key_time: f64, time: f64, tolerance: f64) -> bool {
     (key_time - time).abs() <= tolerance + klipp_core::keyframe::KEYFRAME_TIME_EPSILON
 }
@@ -562,5 +569,17 @@ mod edit_value_tests {
         klipp_core::keyframe::upsert_keyframe(&mut keys,stored,value+1.0);
         assert_eq!(editable_value(&keys,time,0.0,0.5/24.0),1.0);
         assert_eq!(keys[1].value,100.0);
+    }
+}
+
+#[cfg(test)]
+mod timeline_click_tests {
+    #[test]
+    fn clicks_select_existing_keys_or_insert_on_frames() {
+        let mut keys=vec![];klipp_core::keyframe::upsert_keyframe(&mut keys,1.0,0.0);
+        assert_eq!(super::timeline_key_time(&keys,1.004,120.0),1.0);
+        assert_eq!(super::timeline_key_time(&[],1.004,24.0),1.0);
+        let mut off_grid=vec![];klipp_core::keyframe::upsert_keyframe(&mut off_grid,0.707,0.0);
+        assert_eq!(super::timeline_key_time(&off_grid,0.700,24.0),0.707);
     }
 }

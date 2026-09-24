@@ -12008,7 +12008,7 @@ impl TimelinePanel {
                                         cmds.push(AppCommand::AddVideoKeyframe {
                                             clip_id: vrb_clip_id,
                                             param: vrb_param,
-                                            time_secs: vrb_hover_t,
+                                            time_secs: crate::inspector::keyframe_selection::timeline_key_time(vrb_keyframes, vrb_hover_t, state.sequence().fps.as_f64()),
                                             value: vrb_click_val,
                                         });
                                     }
@@ -12526,7 +12526,7 @@ impl TimelinePanel {
                 // create a keyframe wherever the alt-click lands.
                 if alt_held && primary_clicked && hovered_kf_idx.is_none() {
                     if let Some(p) = pointer_pos {
-                        let t = x_to_time(p.x);
+                        let t = crate::inspector::keyframe_selection::timeline_key_time(&c.kfs, x_to_time(p.x), state.sequence().fps.as_f64());
                         let v = y_to_value(p.y);
                         cmds.push(AppCommand::AddAudioKeyframe {
                             clip_id: c.clip_id,
@@ -12695,7 +12695,7 @@ impl TimelinePanel {
                         if let Some(press_pos) =
                             ui.input(|i| i.pointer.press_origin()).or(pointer_pos)
                         {
-                            let t = x_to_time(press_pos.x);
+                            let t = crate::inspector::keyframe_selection::timeline_key_time(&c.kfs, x_to_time(press_pos.x), state.sequence().fps.as_f64());
                             let v = y_to_value(press_pos.y);
                             let new_idx = c.kfs.iter().take_while(|kf| kf.time_secs < t).count();
                             cmds.push(AppCommand::AddAudioKeyframe {
@@ -13285,7 +13285,7 @@ impl TimelinePanel {
 
                         // Alt+click on line to add keyframe (blocked during fade drag)
                         if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
-                            let t = x_to_time(pos.x);
+                            let t = crate::inspector::keyframe_selection::timeline_key_time(kf_keyframes, x_to_time(pos.x), state.sequence().fps.as_f64());
                             let v = y_to_value(pos.y);
                             cmds.push(AppCommand::AddAudioKeyframe {
                                 clip_id: kf_clip_id,
@@ -13659,13 +13659,15 @@ impl TimelinePanel {
                     // Value picked from the y-position; same auto-scale.
                     let normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
                     let value = param_min + normalized * param_range;
-                    cmds.push(AppCommand::AddAudioEffectKeyframe {
+                    let mut command = AppCommand::AddAudioEffectKeyframe {
                         clip_id: kf_clip_id,
                         effect_index,
                         param_name: param_name.to_string(),
-                        time_secs: t,
+                        time_secs: (t * state.sequence().fps.as_f64()).round() / state.sequence().fps.as_f64(),
                         value,
-                    });
+                    };
+                    crate::inspector::keyframe_selection::resolve_command(state.sequence(), &mut command);
+                    cmds.push(command);
                 }
             }
         }
