@@ -9,7 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-pub const VERSION: u32 = 7;
+// Invalidate results derived from the previous shot-boundary selection.
+pub const VERSION: u32 = 8;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];

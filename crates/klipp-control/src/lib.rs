@@ -744,26 +744,20 @@ pub fn style_cut_summary(shots: &[(f64, f64)], boundaries: &[f64], duration: f64
 /// Luma differences and freeze detection measure change, not the meaning of an
 /// animation, and must not be converted into a universal shot-length recipe.
 pub fn style_pacing_evidence(
-    boundaries: &[f64],
+    shots: &klipp_analysis::shots::Shots,
     motion: Option<&klipp_analysis::motion::Motion>,
     sheet: Option<&klipp_analysis::beatsheet::BeatSheet>,
 ) -> serde_json::Value {
-    // The slow scene pass samples at 2 Hz. A boundary on that grid can
-    // represent a cut up to 0.5 s earlier; provenance is not retained in
-    // Shots. Conservatively exclude bins intersecting that uncertainty
-    // interval as well as the boundary bin. Arbitrary fast-pass times
-    // still exclude only their own half-open bin.
+    // Preserve actual detector provenance. An exact beat-aligned fast cut
+    // excludes only its own bin. Widen only known slow-only detections.
     let mut excluded = std::collections::HashSet::new();
-    for &b in boundaries.iter().filter(|b| b.is_finite() && **b >= 0.0) {
-        let start = if (b * 2.0 - (b * 2.0).round()).abs() < 1e-6 { (b - 0.5).max(0.0) } else { b };
-        excluded.insert(start.floor() as usize);
-        excluded.insert(b.floor() as usize);
-    }
+    for &b in &shots.boundaries { excluded.insert(b.floor() as usize); }
+    for &b in &shots.slow_boundaries { excluded.insert((b - 0.5).max(0.0).floor() as usize); }
     let mut valid = 0;
     let mut samples = Vec::new();
     if let Some(m) = motion {
         for (i, &v) in m.per_second.iter().enumerate() {
-            if klipp_analysis::motion::valid_sample(v) {
+            if let Some(v) = v {
                 valid += 1;
                 if !excluded.contains(&i) { samples.push(v); }
             }
@@ -786,17 +780,18 @@ pub fn style_pacing_evidence(
         Some("static") => guidance.push_str("Measured within-shot change is low, but small animated elements can be missed by a whole-frame average. Inspect the reference before choosing holds. "),
         Some(_) => guidance.push_str("Measured change continues inside detected shots. Inspect entrances, reveals, transformations and exits before choosing edit timings. "),
         None if motion_evidence == "excluded_by_cuts" => guidance.push_str("Motion was analysed, but every valid one-second sample overlaps a cut or its timing uncertainty; within-shot motion cannot be isolated at this sampling rate. "),
-        None => guidance.push_str("Within-shot motion evidence is unavailable; cut statistics alone cannot establish the reference's visual pace. "),
+        None if motion_evidence == "no_valid_samples" => guidance.push_str("No decoded motion samples are available. Re-analyse the reference and check that its video stream decodes. "),
+        None => guidance.push_str("Within-shot motion evidence is unavailable; cut statistics alone cannot establish the reference's visual pace. Re-analyse the reference to populate missing or outdated analysis. "),
     }
     if holds.as_ref().is_some_and(|h| !h.is_empty()) {
         guidance.push_str("Detected settled intervals are inspection candidates, not prescribed hold lengths. ");
     }
-    guidance.push_str("Luma differences and freeze detection do not identify semantic events or distinguish motion graphics from camera or subject movement. ");
+    guidance.push_str("Luma differences can include gradual transitions beyond the detector timing window. Luma differences and freeze detection do not identify semantic events or distinguish motion graphics from camera or subject movement. ");
     serde_json::json!({
         "within_shot_mean_ydif": within_mean,
         "within_shot_sample_seconds": samples.len(),
         "valid_sample_seconds": valid,
-        "cut_exclusion": "boundary bins plus up to 0.5 s before boundaries on the slow-pass grid",
+        "cut_exclusion": "boundary bins plus up to 0.5 s before known slow-only detections",
         "within_shot_motion_class": motion_class,
         "motion_evidence": motion_evidence,
         "detected_holds": holds,
@@ -807,7 +802,7 @@ pub fn style_pacing_evidence(
 
 /// Analysis inputs used to derive both the motion summary and pacing evidence.
 pub struct StylePacingInput<'a> {
-    pub boundaries: &'a [f64],
+    pub shots: &'a klipp_analysis::shots::Shots,
     pub motion: Option<&'a klipp_analysis::motion::Motion>,
     pub sheet: Option<&'a klipp_analysis::beatsheet::BeatSheet>,
 }
@@ -823,8 +818,8 @@ pub fn style_profile_response(
     look: serde_json::Value,
     analysis: StylePacingInput<'_>,
 ) -> serde_json::Value {
-    let pacing = style_pacing_evidence(analysis.boundaries, analysis.motion, analysis.sheet);
-    let motion = analysis.motion.and_then(|m| m.mean_within(0.0, m.per_second.len() as f64)).map(|mean| json!({
+    let pacing = style_pacing_evidence(analysis.shots, analysis.motion, analysis.sheet);
+    let motion = analysis.motion.and_then(klipp_analysis::motion::Motion::overall_mean).map(|mean| json!({
         "class": klipp_analysis::motion::class_for(mean), "mean": mean,
         "scope": "whole_file_including_cuts",
     }));
@@ -853,7 +848,11 @@ pub fn style_profile_response(
         if beats.confidence > 0.3 { format!("; {:.0} BPM", beats.bpm) } else { String::new() },
         look.get("summary").and_then(|v| v.as_str()).unwrap_or("not measured"),
         motion.as_ref().and_then(|m| m.get("class")).and_then(|v| v.as_str()).unwrap_or("unknown"),
-        pacing["within_shot_motion_class"].as_str().unwrap_or("not isolated"),
+        pacing["within_shot_motion_class"].as_str().unwrap_or(match pacing["motion_evidence"].as_str() {
+            Some("no_valid_samples") => "no decoded samples",
+            Some("excluded_by_cuts") => "excluded by cuts",
+            _ => "unavailable",
+        }),
     );
     json!({
         "text": text, "media_id": media_id, "filename": filename,
@@ -863,7 +862,7 @@ pub fn style_profile_response(
         "motion": motion,
         "guidance": guide,
         "pacing_evidence": pacing,
-        "next": "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music.",
+        "next": if analysis.motion.is_none() { "Re-analyse the reference to populate missing or outdated motion analysis, then request style_profile again." } else { "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music." },
     })
 }
 
@@ -3885,7 +3884,7 @@ reference:   {}",
                 json!(null)
             };
             Ok(style_profile_response(&filename, &media_id, cuts, &beats, look,
-                StylePacingInput { boundaries: &shots.boundaries, motion: report.motion.as_ref(), sheet: report.beatsheet.as_ref() }))
+                StylePacingInput { shots, motion: report.motion.as_ref(), sheet: report.beatsheet.as_ref() }))
         }
 
         ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {

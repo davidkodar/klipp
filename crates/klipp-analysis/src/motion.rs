@@ -8,30 +8,44 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "motion";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Motion {
     pub duration_secs: f64,
     /// Mean YDIF over each whole second of the file, in order.
-    /// -1 marks a second with no decoded measurement; it is never stillness.
-    /// A finite sentinel survives the JSON cache without becoming null/NaN.
-    pub per_second: Vec<f32>,
-    pub mean: f32,
-    pub p95: f32,
+    /// None / JSON null means no decoded measurement; Some(0) is stillness.
+    pub per_second: Vec<Option<f32>>,
+    pub mean: Option<f32>,
+    pub p95: Option<f32>,
 }
 
 impl Motion {
+    /// Build the cached summary and bins together; callers must not invent
+    /// a mean inconsistent with the samples returned by MediaAnalysis.
+    pub fn from_samples(duration_secs: f64, samples: Vec<Option<f32>>) -> Self {
+        let per_second: Vec<_> = samples.into_iter().map(|v| v.filter(|v| valid_sample(*v))).collect();
+        let mean = mean_of(per_second.iter().flatten().copied());
+        let mut sorted: Vec<_> = per_second.iter().flatten().copied().collect();
+        sorted.sort_by(f32::total_cmp);
+        let p95 = sorted.get(((sorted.len() as f32 * 0.95) as usize).min(sorted.len().saturating_sub(1))).copied();
+        Self { duration_secs, per_second, mean, p95 }
+    }
+
+    /// The authoritative whole-file mean, absent when nothing was measured.
+    pub fn overall_mean(&self) -> Option<f32> {
+        self.mean
+    }
+
     /// The seconds `from..to` of the file.
-    fn slice(&self, from: f64, to: f64) -> &[f32] {
+    fn slice(&self, from: f64, to: f64) -> &[Option<f32>] {
         let a = (from.max(0.0).floor() as usize).min(self.per_second.len());
         let b = (to.max(0.0).ceil() as usize).clamp(a, self.per_second.len());
         &self.per_second[a..b]
     }
 
     pub fn mean_within(&self, from: f64, to: f64) -> Option<f32> {
-        let samples: Vec<f32> = self.slice(from, to).iter().copied().filter(|v| valid_sample(*v)).collect();
-        (!samples.is_empty()).then(|| samples.iter().sum::<f32>() / samples.len() as f32)
+        mean_of(self.slice(from, to).iter().flatten().copied())
     }
 
     /// A word for the amount of movement in `from..to`.
@@ -40,9 +54,13 @@ impl Motion {
     }
 }
 
-/// Whether a bin contains an actual finite measurement.
-pub fn valid_sample(value: f32) -> bool {
-    value.is_finite() && value >= 0.0
+fn mean_of(values: impl Iterator<Item = f32>) -> Option<f32> {
+    let (sum, count) = values.fold((0.0f64, 0usize), |(sum, count), v| (sum + v as f64, count + 1));
+    (count > 0).then(|| (sum / count as f64) as f32)
+}
+
+fn valid_sample(value: f32) -> bool {
+    value.is_finite() && (0.0..=255.0).contains(&value)
 }
 
 /// YDIF is on a 0 to 255 scale; these bands come from looking at
@@ -80,12 +98,8 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
             }
         }
     }
-    let per_second: Vec<f32> = sums.iter().zip(&counts).map(|(s, c)| if *c > 0 { s / *c as f32 } else { -1.0 }).collect();
-    let mut sorted: Vec<f32> = per_second.iter().copied().filter(|v| valid_sample(*v)).collect();
-    let mean = if sorted.is_empty() { 0.0 } else { sorted.iter().sum::<f32>() / sorted.len() as f32 };
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let p95 = sorted.get(((sorted.len() as f32 * 0.95) as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0.0);
-    Motion { duration_secs, per_second, mean, p95 }
+    let per_second = sums.iter().zip(&counts).map(|(s, c)| (*c > 0).then(|| s / *c as f32)).collect();
+    Motion::from_samples(duration_secs, per_second)
 }
 
 pub struct MotionAnalyser;
@@ -119,7 +133,7 @@ frame:1 pts:20 pts_time:0.5\nlavfi.signalstats.YDIF=2\n\
 frame:2 pts:40 pts_time:1.2\nlavfi.signalstats.YDIF=12\n\
 frame:3 pts:60 pts_time:1.8\nlavfi.signalstats.YDIF=8\n";
         let m = parse_metadata(text, 2.0);
-        assert_eq!(m.per_second, vec![1.0, 10.0]);
+        assert_eq!(m.per_second, vec![Some(1.0), Some(10.0)]);
         assert_eq!(m.class_within(0.0, 1.0), Some("static"));
         assert_eq!(m.class_within(1.0, 2.0), Some("busy"));
         assert_eq!(class_for(5.0), "moving");
@@ -127,15 +141,17 @@ frame:3 pts:60 pts_time:1.8\nlavfi.signalstats.YDIF=8\n";
     #[test]
     fn undecoded_seconds_survive_cache_round_trip_as_missing() {
         let m = parse_metadata("frame:1 pts:1 pts_time:0.5\nlavfi.signalstats.YDIF=12\n", 21.0);
-        assert_eq!(m.mean, 12.0);
-        assert_eq!(m.p95, 12.0);
+        assert_eq!(m.mean, Some(12.0));
+        assert_eq!(m.p95, Some(12.0));
         assert_eq!(m.mean_within(1.0, 21.0), None);
         assert_eq!(m.class_within(0.0, 21.0), Some("busy"));
         let cached = serde_json::to_value(&m).unwrap();
-        assert_eq!(cached["per_second"][1], -1.0);
+        assert!(cached["per_second"][1].is_null());
         assert_eq!(serde_json::from_value::<Motion>(cached).unwrap(), m);
         let invalid = parse_metadata("frame:0 pts_time:NaN\nlavfi.signalstats.YDIF=3\nframe:1 pts_time:0.5\nlavfi.signalstats.YDIF=NaN\n", 2.0);
         assert_eq!(invalid.mean_within(0.0, 2.0), None);
+        assert_eq!(invalid.mean, None);
+        assert_eq!(invalid.p95, None);
     }
 
 }

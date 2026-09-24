@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "shots";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Scene-change score above which a frame starts a new shot; ffmpeg's
 /// `scene` is 0 to 1, and 0.3 is the customary threshold.
@@ -27,6 +27,9 @@ pub struct Shots {
     /// Where each new shot starts, seconds from the file's start; the
     /// first shot starts at 0 and is not listed.
     pub boundaries: Vec<f64>,
+    /// Subset detected only at 2 Hz. These can lag the actual change by
+    /// up to 0.5 s; a boundary's numeric value does not identify its source.
+    pub slow_boundaries: Vec<f64>,
     pub shots: Vec<Shot>,
 }
 
@@ -44,7 +47,26 @@ impl Shots {
             start = *b;
         }
         shots.push(Shot { start_secs: start, end_secs: duration_secs });
-        Self { duration_secs, boundaries, shots }
+        Self { duration_secs, boundaries, slow_boundaries: Vec::new(), shots }
+    }
+
+    /// Merge detector passes while retaining the full-rate time whenever
+    /// both passes detect the same change. Explicit boundaries alone are
+    /// treated as precise; only a slow-only detection gains uncertainty.
+    pub fn from_passes(duration_secs: f64, fast: Vec<f64>, slow: Vec<f64>) -> Self {
+        let fast = Self::from_boundaries(duration_secs, fast).boundaries;
+        let slow = Self::from_boundaries(duration_secs, slow).boundaries;
+        let slow_boundaries: Vec<f64> = slow.into_iter().filter(|t| {
+            let i = fast.partition_point(|f| *f < *t);
+            !fast.get(i).is_some_and(|f| (*f - *t).abs() < 0.6)
+                && !(i > 0 && (fast[i - 1] - *t).abs() < 0.6)
+        }).collect();
+        let mut boundaries = fast;
+        boundaries.extend(&slow_boundaries);
+        boundaries.sort_by(f64::total_cmp);
+        let mut result = Self::from_boundaries(duration_secs, boundaries);
+        result.slow_boundaries = slow_boundaries;
+        result
     }
 
     /// The shots overlapping `from..to` of the file.
@@ -93,9 +115,7 @@ impl crate::Analyser for ShotsAnalyser {
         // Both rates come out of the one decode every whole-picture
         // analyser shares (see `videopass`).
         let pass = crate::videopass::get(ctx, item)?;
-        let mut boundaries = pass.scene_fast.clone();
-        boundaries.extend(pass.scene_slow.iter().copied());
-        let shots = Shots::from_boundaries(item.duration.to_secs_f64(), boundaries);
+        let shots = Shots::from_passes(item.duration.to_secs_f64(), pass.scene_fast.clone(), pass.scene_slow.clone());
         serde_json::to_value(shots).map_err(|e| e.to_string())
     }
 }
@@ -124,4 +144,12 @@ some other line pts_time:9.9\n";
         assert_eq!(s.boundaries, vec![3.0, 7.0]);
         assert_eq!(s.shots.len(), 3);
     }
+    #[test]
+    fn fast_timestamps_win_duplicates_and_slow_only_provenance_survives_json() {
+        let shots = Shots::from_passes(8.0, vec![2.98, 5.0], vec![3.0, 5.0, 7.0]);
+        assert_eq!(shots.boundaries, vec![2.98, 5.0, 7.0]);
+        assert_eq!(shots.slow_boundaries, vec![7.0]);
+        assert_eq!(serde_json::from_value::<Shots>(serde_json::to_value(&shots).unwrap()).unwrap(), shots);
+    }
+
 }
