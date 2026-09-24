@@ -15563,6 +15563,73 @@ impl KlippApp {
                 };
                 self.handle_title_lifecycle(&AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }, _needs_refresh)
             }
+            AppCommand::InsertCompositionTemplate { template_id } => {
+                let Some(template) = self
+                    .state
+                    .composition_templates
+                    .templates()
+                    .find(|template| template.id == *template_id)
+                    .cloned()
+                else {
+                    self.state.toast.show("That template is no longer available");
+                    return true;
+                };
+                let sequence_idx = self.state.active_sequence_idx;
+                let sequence_id = klipp_core::SequenceId(template.composition_id);
+                let Some(duration) = self
+                    .state
+                    .sequences
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                    .map(|sequence| sequence.total_duration())
+                else {
+                    self.state.toast.show("The template's composition is missing");
+                    return true;
+                };
+                if self.state.sequences[sequence_idx].id == sequence_id {
+                    self.state.toast.show("A template cannot be inserted into its own composition");
+                    return true;
+                }
+                if duration.to_secs_f64() <= 0.0 {
+                    self.state.toast.show("The template's composition is empty");
+                    return true;
+                }
+                let fps_rate = self.state.sequences[sequence_idx].fps.rate();
+                let timeline_in = self.state.playhead.rescale_to(fps_rate);
+                let timeline_out = timeline_in + duration.rescale_to(timeline_in.rate);
+                // An unlocked video track with room for the whole span,
+                // else a new one on top — as a title finds its track.
+                let seq = &mut self.state.sequences[sequence_idx];
+                let free = seq.tracks.iter().position(|t| {
+                    t.kind == klipp_timeline::TrackKind::Video
+                        && !t.locked
+                        && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
+                });
+                let track_index = match free {
+                    Some(i) => i,
+                    None => {
+                        let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count() + 1;
+                        seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Video {n}"), klipp_timeline::TrackKind::Video));
+                        0
+                    }
+                };
+                // A template is composed in isolation and placed as one
+                // picture: a precomposition, not a flattened compound.
+                let clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
+                let clip_id = clip.id;
+                seq.tracks[track_index].clips.push(clip.clone());
+                seq.tracks[track_index].sort_clips();
+                self.state.push_history(klipp_document::history::EditCommand::LegacyAppendClip {
+                    clip,
+                    track_index,
+                });
+                self.state.selected_clip = Some(clip_id);
+                self.state.selected_clips.clear();
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                self.state.toast.show(format!("Inserted template '{}'", template.name));
+                true
+            }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
                 let ti = *track_index;
                 // Check if this track was just created (it's a fresh text track with no clips)

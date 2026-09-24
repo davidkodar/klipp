@@ -13,6 +13,7 @@ pub mod generators_tab;
 
 use crate::icons::Icon;
 use crate::layout_state::{BrowserTab, LibraryCategory};
+use crate::templates_tab;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -1317,6 +1318,7 @@ impl BrowserPanel {
                 LibraryCategory::Transitions => "Search transitions\u{2026}",
                 LibraryCategory::Generators => "Search generators\u{2026}",
                 LibraryCategory::Audio => "",
+                LibraryCategory::Templates => "Search templates\u{2026}",
             },
         };
 
@@ -4614,13 +4616,14 @@ impl BrowserPanel {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         // ── Category tabs: the same strip as every other tab row ──
-        let categories: [(LibraryCategory, &str, &str); 6] = [
+        let categories: [(LibraryCategory, &str, &str); 7] = [
             (LibraryCategory::VideoFx, "VIDEO FX", "VFX"),
             (LibraryCategory::AudioFx, "AUDIO FX", "AFX"),
             (LibraryCategory::Titles, "TITLES", "TTL"),
             (LibraryCategory::Transitions, "TRANSITIONS", "TRN"),
             (LibraryCategory::Generators, "GENERATORS", "GEN"),
             (LibraryCategory::Audio, "MUSIC & SFX", "AUD"),
+            (LibraryCategory::Templates, "TEMPLATES", "TPL"),
         ];
         let labels: Vec<&str> = categories.iter().map(|c| c.1).collect();
         let brief: Vec<&str> = categories.iter().map(|c| c.2).collect();
@@ -4869,6 +4872,7 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Audio => self.show_audio_library(ui, state, theme),
+            LibraryCategory::Templates => templates_tab::show(ui, state, theme, &self.search_query),
         }
     }
 

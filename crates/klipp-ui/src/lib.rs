@@ -66,6 +66,8 @@ pub mod layout_state;
 pub(crate) mod layout;
 pub mod media_watcher;
 pub mod panels;
+pub mod parameterized_templates;
+pub mod templates_tab;
 pub mod prefs;
 pub mod presets;
 pub mod effect_presets;
