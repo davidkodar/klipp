@@ -149,7 +149,7 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
                         offset, duration
                     ));
                 }
-                ClipKind::Sequence { .. } => {
+                ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } => {
                     let offset = tc_str(clip.timeline_in, fps);
                     let duration = tc_str(clip.duration(), fps);
                     xml.push_str(&format!(

@@ -2063,6 +2063,27 @@ impl Clip {
         timeline_in: Timecode,
         timeline_out: Timecode,
     ) -> Self {
+        Self { kind: ClipKind::Sequence { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+    }
+
+    /// Create a precomposition of `sequence_id` with the given timeline
+    /// extent: the same timing as a compound clip, composed in isolation.
+    pub fn precomposition(
+        sequence_id: klipp_core::SequenceId,
+        timeline_in: Timecode,
+        timeline_out: Timecode,
+    ) -> Self {
+        Self { kind: ClipKind::Precomposition { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+    }
+
+    /// What a compound clip and a precomposition share: a source range
+    /// that starts at the inner sequence's beginning and runs the clip's
+    /// length, and nothing else set.
+    fn nested(
+        sequence_id: klipp_core::SequenceId,
+        timeline_in: Timecode,
+        timeline_out: Timecode,
+    ) -> Self {
         let dur = timeline_out - timeline_in;
         Self {
             id: ClipId::new(),

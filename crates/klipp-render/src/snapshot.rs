@@ -521,7 +521,9 @@ fn snapshot_audio_track(
     let mut clips = Vec::new();
     for clip in &track.clips {
         if !clip.enabled { continue; }
-        if let ClipKind::Sequence { sequence_id } = &clip.kind {
+        // Sound has no surface to be isolated on: a precomposition's
+        // audio is flattened into the mix exactly as a compound's is.
+        if let ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } = &clip.kind {
             if depth < MAX_COMPOUND_DEPTH {
                 flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
                 continue;
@@ -578,7 +580,7 @@ fn snapshot_audio_track(
 fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled || clip.multicam_group.is_some() || matches!(clip.kind, ClipKind::Sequence { .. }) {
+        if !clip.enabled || clip.multicam_group.is_some() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
             continue;
         }
         let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };

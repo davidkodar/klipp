@@ -558,6 +558,11 @@ pub enum ClipKindJson {
         data: serde_json::Value,
     },
     AdjustmentLayer,
+    /// Appended after every earlier kind: a reader from before it refuses
+    /// the tag by name rather than reading the clip as something else.
+    Precomposition {
+        sequence_id: String,
+    },
 }
 
 fn default_one_f32() -> f32 { 1.0 }

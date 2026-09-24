@@ -488,6 +488,9 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             data: serde_json::to_value(data).unwrap_or_default(),
         },
         ClipKind::AdjustmentLayer => ClipKindJson::AdjustmentLayer,
+        ClipKind::Precomposition { sequence_id } => ClipKindJson::Precomposition {
+            sequence_id: sequence_id.to_string(),
+        },
     }
 }
 
