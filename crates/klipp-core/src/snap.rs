@@ -55,7 +55,9 @@ impl SnapConfig {
             SnapTargetKind::ClipEdge => self.clips,
             SnapTargetKind::Playhead => self.playhead,
             SnapTargetKind::Marker => self.markers,
-            SnapTargetKind::SequenceStart | SnapTargetKind::InPoint | SnapTargetKind::OutPoint => self.in_out,
+            SnapTargetKind::SequenceStart | SnapTargetKind::InPoint | SnapTargetKind::OutPoint => {
+                self.in_out
+            }
             SnapTargetKind::Grid => self.grid,
         }
     }
@@ -66,8 +68,7 @@ impl SnapConfig {
 /// Resolving to seconds is the UI layer's job: `Adaptive` consults the
 /// ruler's tick density at the current zoom, `Frame` derives from the
 /// active sequence fps. Other variants resolve to fixed seconds.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum GridInterval {
     /// Grid snap disabled. Default — preserves byte-identical behaviour
     /// for users who never toggle grid snap on.
@@ -91,7 +92,6 @@ pub enum GridInterval {
     /// sensible range (e.g. > 0).
     Custom(f64),
 }
-
 
 impl GridInterval {
     /// Short label for menu / dropdown rendering.

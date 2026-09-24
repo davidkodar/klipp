@@ -56,15 +56,29 @@ impl ClipLog {
         if !self.take.is_empty() {
             parts.push(format!("Take {}", self.take));
         }
-        if parts.is_empty() { None } else { Some(parts.join(" \u{00B7} ")) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" \u{00B7} "))
+        }
     }
 
     /// Whether `needle` (already lower-case) appears in any logged text.
     pub fn matches(&self, needle: &str) -> bool {
-        [&self.scene, &self.shot, &self.take, &self.description, &self.comments, &self.reel]
-            .iter()
-            .any(|s| s.to_lowercase().contains(needle))
-            || self.keywords.iter().any(|k| k.to_lowercase().contains(needle))
+        [
+            &self.scene,
+            &self.shot,
+            &self.take,
+            &self.description,
+            &self.comments,
+            &self.reel,
+        ]
+        .iter()
+        .any(|s| s.to_lowercase().contains(needle))
+            || self
+                .keywords
+                .iter()
+                .any(|k| k.to_lowercase().contains(needle))
     }
 }
 
@@ -84,8 +98,15 @@ mod tests {
 
     #[test]
     fn the_slate_line_names_what_is_set() {
-        let log = ClipLog { scene: "12".into(), take: "2".into(), ..Default::default() };
-        assert_eq!(log.slate_line().as_deref(), Some("Scene 12 \u{00B7} Take 2"));
+        let log = ClipLog {
+            scene: "12".into(),
+            take: "2".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            log.slate_line().as_deref(),
+            Some("Scene 12 \u{00B7} Take 2")
+        );
         assert_eq!(ClipLog::default().slate_line(), None);
         assert!(ClipLog::default().is_empty());
     }

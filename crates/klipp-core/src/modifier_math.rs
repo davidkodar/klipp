@@ -78,8 +78,7 @@ pub fn spring_value(time_secs: f64, target: f32, stiffness: f32, damping: f32) -
         target
             * (1.0
                 - envelope
-                    * ((zeta * omega * t).cos()
-                        + (zeta * omega / omega_d) * (omega_d * t).sin()))
+                    * ((zeta * omega * t).cos() + (zeta * omega / omega_d) * (omega_d * t).sin()))
     } else {
         // Overdamped or critically damped - no oscillation
         let r = (-zeta * omega * t).exp();

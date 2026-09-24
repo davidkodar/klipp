@@ -175,14 +175,27 @@ mod tests {
             primaries: ColorPrimaries::Bt709,
             transfer: ColorTransfer::Bt709,
         };
-        assert_eq!(ids(cs), [COLOR_RANGE_FULL, MATRIX_BT709, TRANSFER_BT709, PRIMARIES_BT709]);
+        assert_eq!(
+            ids(cs),
+            [
+                COLOR_RANGE_FULL,
+                MATRIX_BT709,
+                TRANSFER_BT709,
+                PRIMARIES_BT709
+            ]
+        );
     }
 
     #[test]
     fn ids_for_default_bt709_limited_sdr() {
         assert_eq!(
             ids(SourceColorspace::BT709_LIMITED_SDR),
-            [COLOR_RANGE_LIMITED, MATRIX_BT709, TRANSFER_BT709, PRIMARIES_BT709],
+            [
+                COLOR_RANGE_LIMITED,
+                MATRIX_BT709,
+                TRANSFER_BT709,
+                PRIMARIES_BT709
+            ],
         );
     }
 
@@ -194,7 +207,15 @@ mod tests {
             primaries: ColorPrimaries::Bt2020,
             transfer: ColorTransfer::Pq,
         };
-        assert_eq!(ids(cs), [COLOR_RANGE_LIMITED, MATRIX_BT2020_NCL, TRANSFER_PQ, PRIMARIES_BT2020]);
+        assert_eq!(
+            ids(cs),
+            [
+                COLOR_RANGE_LIMITED,
+                MATRIX_BT2020_NCL,
+                TRANSFER_PQ,
+                PRIMARIES_BT2020
+            ]
+        );
     }
 
     #[test]

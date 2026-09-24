@@ -75,7 +75,13 @@ pub enum ClipKind {
     /// A gap placeholder — no media, no rendering. Pure timing spacer.
     Gap,
     /// A nested sequence (compound clip) — references another sequence by ID.
-    Sequence { sequence_id: klipp_core::SequenceId },
+    Sequence {
+        sequence_id: klipp_core::SequenceId,
+        /// Optional installed template metadata. Keeping this on the clip
+        /// makes overrides survive project save/load and ordinary duplication.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template_instance: Option<klipp_core::TemplateInstance>,
+    },
     /// A procedurally-generated frame source (solid color, gradient, bars, countdown).
     Generator(GeneratorData),
     /// Adjustment layer — transparent clip that applies its effects to all clips below.
@@ -93,7 +99,11 @@ pub enum ClipKind {
     /// without it must refuse the file by name, not flatten the scene into
     /// the wrong picture. Child identity at render time is scoped to the
     /// instance, so one scene can be laid in twice.
-    Precomposition { sequence_id: klipp_core::SequenceId },
+    Precomposition {
+        sequence_id: klipp_core::SequenceId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template_instance: Option<klipp_core::TemplateInstance>,
+    },
 }
 
 // GeneratorData is defined in klipp-core and re-exported here for convenience.
@@ -124,7 +134,9 @@ impl ClipKind {
     pub fn needs_decoder(&self) -> bool {
         match self {
             // A precomposition's inner media is decoded like a compound's.
-            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } => true,
+            ClipKind::Media { .. }
+            | ClipKind::Sequence { .. }
+            | ClipKind::Precomposition { .. } => true,
             ClipKind::Title(_) | ClipKind::Generator(_) => false,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
@@ -225,20 +237,12 @@ impl ObjectTransform {
         let x = if self.center_x_keyframes.is_empty() {
             self.center.x
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.center_x_keyframes,
-                time_secs,
-                self.center.x,
-            )
+            klipp_core::keyframe::evaluate(&self.center_x_keyframes, time_secs, self.center.x)
         };
         let y = if self.center_y_keyframes.is_empty() {
             self.center.y
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.center_y_keyframes,
-                time_secs,
-                self.center.y,
-            )
+            klipp_core::keyframe::evaluate(&self.center_y_keyframes, time_secs, self.center.y)
         };
         TitlePosition { x, y }
     }
@@ -417,7 +421,10 @@ fn is_true(b: &bool) -> bool {
 /// A still layer with nothing on it: what an object without an
 /// authored stack reads as, so a reader never has to ask twice.
 static STILL_FX: LayerFx = LayerFx {
-    motion: TitleMotion { enter: None, exit: None },
+    motion: TitleMotion {
+        enter: None,
+        exit: None,
+    },
     loops: Vec::new(),
     glows: Vec::new(),
     glow_stack_enabled: true,
@@ -542,10 +549,16 @@ impl LegacyTextFx {
     }
 }
 
-fn default_one_f32() -> f32 { 1.0 }
-fn default_one_f32_tb() -> f32 { 1.0 }
+fn default_one_f32() -> f32 {
+    1.0
+}
+fn default_one_f32_tb() -> f32 {
+    1.0
+}
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// What kind of layer an object is. `TextBox` for typography,
 /// `Shape` for primitives like the bar in a lower-third. New layer
@@ -775,8 +788,12 @@ impl LayerFx {
             }
         } else if param_key.starts_with("glow.") {
             // Legacy unindexed glow keys → glows[0].
-            self.glows.get_mut(0).and_then(|g| g.keyframes_mut_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key) {
+            self.glows
+                .get_mut(0)
+                .and_then(|g| g.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key)
+        {
             let layer = self.inner_shadows.get_mut(idx)?;
             match field {
                 "offset_x" => Some(&mut layer.offset_x_keyframes),
@@ -785,8 +802,12 @@ impl LayerFx {
                 _ => None,
             }
         } else if param_key.starts_with("inner_shadow.") {
-            self.inner_shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
+            self.inner_shadows
+                .get_mut(0)
+                .and_then(|s| s.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_shadow_param_key(param_key)
+        {
             let layer = self.shadows.get_mut(idx)?;
             match field {
                 "offset_x" => Some(&mut layer.offset_x_keyframes),
@@ -797,10 +818,16 @@ impl LayerFx {
         } else if param_key.starts_with("shadow.") {
             // Legacy unindexed shadow keys always route to shadows[0]
             // so old projects keep working.
-            self.shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
+            self.shadows
+                .get_mut(0)
+                .and_then(|s| s.keyframes_mut_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
-            self.motion_blur.as_mut().and_then(|m| m.keyframes_mut_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
+            self.motion_blur
+                .as_mut()
+                .and_then(|m| m.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_outline_param_key(param_key)
+        {
             match field {
                 "width" => self.outlines.get_mut(idx).map(|o| &mut o.width_keyframes),
                 _ => None,
@@ -821,7 +848,9 @@ impl LayerFx {
             }
         } else if param_key.starts_with("glow.") {
             self.glows.first().and_then(|g| g.keyframes_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key) {
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key)
+        {
             let layer = self.inner_shadows.get(idx)?;
             match field {
                 "offset_x" => Some(layer.offset_x_keyframes.as_slice()),
@@ -830,8 +859,12 @@ impl LayerFx {
                 _ => None,
             }
         } else if param_key.starts_with("inner_shadow.") {
-            self.inner_shadows.first().and_then(|s| s.keyframes_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
+            self.inner_shadows
+                .first()
+                .and_then(|s| s.keyframes_for(param_key))
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_shadow_param_key(param_key)
+        {
             let layer = self.shadows.get(idx)?;
             match field {
                 "offset_x" => Some(layer.offset_x_keyframes.as_slice()),
@@ -840,10 +873,16 @@ impl LayerFx {
                 _ => None,
             }
         } else if param_key.starts_with("shadow.") {
-            self.shadows.first().and_then(|s| s.keyframes_for(param_key))
+            self.shadows
+                .first()
+                .and_then(|s| s.keyframes_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
-            self.motion_blur.as_ref().and_then(|m| m.keyframes_for(param_key))
-        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
+            self.motion_blur
+                .as_ref()
+                .and_then(|m| m.keyframes_for(param_key))
+        } else if let Some((idx, field)) =
+            klipp_core::title_effect_keys::parse_outline_param_key(param_key)
+        {
             match field {
                 "width" => self.outlines.get(idx).map(|o| o.width_keyframes.as_slice()),
                 _ => None,
@@ -863,9 +902,13 @@ impl TextBox {
         param_key: &str,
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
         if param_key.starts_with("extrusion.") {
-            self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
+            self.extrusion
+                .as_mut()
+                .and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("char_anim.") {
-            self.char_animation.as_mut().and_then(|c| c.keyframes_mut_for(param_key))
+            self.char_animation
+                .as_mut()
+                .and_then(|c| c.keyframes_mut_for(param_key))
         } else {
             None
         }
@@ -874,9 +917,13 @@ impl TextBox {
     /// Read-only mirror of `effect_keyframes_mut_for`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         if param_key.starts_with("extrusion.") {
-            self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
+            self.extrusion
+                .as_ref()
+                .and_then(|e| e.keyframes_for(param_key))
         } else if param_key.starts_with("char_anim.") {
-            self.char_animation.as_ref().and_then(|c| c.keyframes_for(param_key))
+            self.char_animation
+                .as_ref()
+                .and_then(|c| c.keyframes_for(param_key))
         } else {
             None
         }
@@ -886,9 +933,15 @@ impl TextBox {
 impl TitleObject {
     /// The keyframe vec of any effect param on this object: the
     /// stack's, or, for a text layer, the text's own.
-    pub fn effect_keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn effect_keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
         let Self { content, fx, .. } = self;
-        if let Some(keys) = fx.as_mut().and_then(|f| f.effect_keyframes_mut_for(param_key)) {
+        if let Some(keys) = fx
+            .as_mut()
+            .and_then(|f| f.effect_keyframes_mut_for(param_key))
+        {
             return Some(keys);
         }
         match content {
@@ -909,7 +962,9 @@ impl TitleObject {
     }
 }
 
-fn default_one_u8() -> u8 { 1 }
+fn default_one_u8() -> u8 {
+    1
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum TextDirection {
@@ -1089,56 +1144,167 @@ impl TitleData {
             out.changed = true;
             out.clear_clip_keyframes = !matches!(
                 legacy,
-                T::Typewriter { .. } | T::TypewriterOut { .. } | T::Counter { .. }
-                    | T::ColorCycle { .. } | T::ColorBlend { .. } | T::OutlineDrawOn { .. }
+                T::Typewriter { .. }
+                    | T::TypewriterOut { .. }
+                    | T::Counter { .. }
+                    | T::ColorCycle { .. }
+                    | T::ColorBlend { .. }
+                    | T::OutlineDrawOn { .. }
             );
             let chars = self.text().chars().count().max(1) as f32;
             let font = self.font_size().max(1.0);
             if let Some(tb) = self.primary_object_mut().map(TitleObject::fx_mut) {
                 let enter = |k: MotionKind, d: f32| Motion::new(k).duration(d.max(0.05));
-                let typing = |cps: f32| Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, 1.0 / cps.max(0.5));
+                let typing = |cps: f32| {
+                    Motion::new(MotionKind::Typewriter)
+                        .duration(0.05)
+                        .stagger(StaggerUnit::Char, 1.0 / cps.max(0.5))
+                };
                 match legacy {
                     T::Static => {}
-                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec }),
-                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec }),
-                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false }),
-                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false }),
-                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true }),
-                    T::Typewriter { chars_per_sec } => tb.motion.enter = Some(typing(chars_per_sec)),
-                    T::TypewriterOut { chars_per_sec } => tb.motion.exit = Some(typing(chars_per_sec)),
-                    T::OutlineDrawOn { duration_secs } => {
-                        tb.motion.enter = Some(Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, duration_secs.max(0.1) / chars));
+                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll {
+                        direction: ScrollDirection::Up,
+                        speed_px_per_sec,
+                    }),
+                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll {
+                        direction: ScrollDirection::Down,
+                        speed_px_per_sec,
+                    }),
+                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl {
+                        direction: CrawlDirection::Left,
+                        speed_px_per_sec,
+                        repeat: false,
+                    }),
+                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl {
+                        direction: CrawlDirection::Right,
+                        speed_px_per_sec,
+                        repeat: false,
+                    }),
+                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl {
+                        direction: CrawlDirection::Left,
+                        speed_px_per_sec,
+                        repeat: true,
+                    }),
+                    T::Typewriter { chars_per_sec } => {
+                        tb.motion.enter = Some(typing(chars_per_sec))
                     }
-                    T::FadeIn { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Fade, duration_secs)),
-                    T::FadeOut { duration_secs } => tb.motion.exit = Some(enter(MotionKind::Fade, duration_secs)),
+                    T::TypewriterOut { chars_per_sec } => {
+                        tb.motion.exit = Some(typing(chars_per_sec))
+                    }
+                    T::OutlineDrawOn { duration_secs } => {
+                        tb.motion.enter = Some(
+                            Motion::new(MotionKind::Typewriter)
+                                .duration(0.05)
+                                .stagger(StaggerUnit::Char, duration_secs.max(0.1) / chars),
+                        );
+                    }
+                    T::FadeIn { duration_secs } => {
+                        tb.motion.enter = Some(enter(MotionKind::Fade, duration_secs))
+                    }
+                    T::FadeOut { duration_secs } => {
+                        tb.motion.exit = Some(enter(MotionKind::Fade, duration_secs))
+                    }
                     T::FadeInOut { fade_secs } => {
                         tb.motion.enter = Some(enter(MotionKind::Fade, fade_secs));
                         tb.motion.exit = Some(enter(MotionKind::Fade, fade_secs));
                     }
                     T::Flash { rate_hz } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: 0.5 }),
-                    T::Blink { rate_hz, duty_cycle } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: duty_cycle }),
-                    T::Pulse { rate_hz, min_opacity } => tb.loops.push(TitleLoop::Pulse { rate_hz, min_opacity }),
-                    T::ZoomIn { duration_secs, from_scale } => {
-                        let k = if from_scale > 1.0 { MotionKind::ScaleDown } else { MotionKind::ScaleUp };
+                    T::Blink {
+                        rate_hz,
+                        duty_cycle,
+                    } => tb.loops.push(TitleLoop::Blink {
+                        rate_hz,
+                        duty: duty_cycle,
+                    }),
+                    T::Pulse {
+                        rate_hz,
+                        min_opacity,
+                    } => tb.loops.push(TitleLoop::Pulse {
+                        rate_hz,
+                        min_opacity,
+                    }),
+                    T::ZoomIn {
+                        duration_secs,
+                        from_scale,
+                    } => {
+                        let k = if from_scale > 1.0 {
+                            MotionKind::ScaleDown
+                        } else {
+                            MotionKind::ScaleUp
+                        };
                         tb.motion.enter = Some(enter(k, duration_secs));
                     }
-                    T::ZoomOut { duration_secs, to_scale } => {
-                        let k = if to_scale > 1.0 { MotionKind::ScaleDown } else { MotionKind::ScaleUp };
+                    T::ZoomOut {
+                        duration_secs,
+                        to_scale,
+                    } => {
+                        let k = if to_scale > 1.0 {
+                            MotionKind::ScaleDown
+                        } else {
+                            MotionKind::ScaleUp
+                        };
                         tb.motion.exit = Some(enter(k, duration_secs));
                     }
-                    T::SlideInLeft { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideRight, duration_secs).distance(6.0)),
-                    T::SlideInRight { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideLeft, duration_secs).distance(6.0)),
-                    T::SlideInTop { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Drop, duration_secs).distance(6.0)),
-                    T::SlideInBottom { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Rise, duration_secs).distance(6.0)),
-                    T::SpinIn { duration_secs, .. } => tb.motion.enter = Some(enter(MotionKind::ScaleUp, duration_secs).easing(Easing::OutBack)),
-                    T::BounceIn { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Rise, duration_secs).easing(Easing::OutBounce).distance(1.5)),
-                    T::Wave { amplitude_px, rate_hz } => tb.loops.push(TitleLoop::Wave { amplitude: amplitude_px / font, rate_hz }),
-                    T::Shake { amplitude_px, rate_hz } => tb.loops.push(TitleLoop::Shake { amplitude: amplitude_px / font, rate_hz }),
-                    T::ColorCycle { rate_hz } => tb.loops.push(TitleLoop::ColorCycle { rate_hz }),
-                    T::ColorBlend { color_a, color_b, rate_hz } => tb.loops.push(TitleLoop::ColorBlend { color_a, color_b, rate_hz }),
-                    T::Counter { from_value, to_value, duration_secs, decimals } => {
-                        tb.loops.push(TitleLoop::Counter { from: from_value, to: to_value, duration_secs, decimals })
+                    T::SlideInLeft { duration_secs } => {
+                        tb.motion.enter =
+                            Some(enter(MotionKind::SlideRight, duration_secs).distance(6.0))
                     }
+                    T::SlideInRight { duration_secs } => {
+                        tb.motion.enter =
+                            Some(enter(MotionKind::SlideLeft, duration_secs).distance(6.0))
+                    }
+                    T::SlideInTop { duration_secs } => {
+                        tb.motion.enter = Some(enter(MotionKind::Drop, duration_secs).distance(6.0))
+                    }
+                    T::SlideInBottom { duration_secs } => {
+                        tb.motion.enter = Some(enter(MotionKind::Rise, duration_secs).distance(6.0))
+                    }
+                    T::SpinIn { duration_secs, .. } => {
+                        tb.motion.enter =
+                            Some(enter(MotionKind::ScaleUp, duration_secs).easing(Easing::OutBack))
+                    }
+                    T::BounceIn { duration_secs } => {
+                        tb.motion.enter = Some(
+                            enter(MotionKind::Rise, duration_secs)
+                                .easing(Easing::OutBounce)
+                                .distance(1.5),
+                        )
+                    }
+                    T::Wave {
+                        amplitude_px,
+                        rate_hz,
+                    } => tb.loops.push(TitleLoop::Wave {
+                        amplitude: amplitude_px / font,
+                        rate_hz,
+                    }),
+                    T::Shake {
+                        amplitude_px,
+                        rate_hz,
+                    } => tb.loops.push(TitleLoop::Shake {
+                        amplitude: amplitude_px / font,
+                        rate_hz,
+                    }),
+                    T::ColorCycle { rate_hz } => tb.loops.push(TitleLoop::ColorCycle { rate_hz }),
+                    T::ColorBlend {
+                        color_a,
+                        color_b,
+                        rate_hz,
+                    } => tb.loops.push(TitleLoop::ColorBlend {
+                        color_a,
+                        color_b,
+                        rate_hz,
+                    }),
+                    T::Counter {
+                        from_value,
+                        to_value,
+                        duration_secs,
+                        decimals,
+                    } => tb.loops.push(TitleLoop::Counter {
+                        from: from_value,
+                        to: to_value,
+                        duration_secs,
+                        decimals,
+                    }),
                 }
             }
         }
@@ -1153,11 +1319,19 @@ impl TitleData {
                     let fx = fx.get_or_insert_with(LayerFx::default);
                     if let Some((kind, easing)) = char_entrance_motion(ca.entrance) {
                         if fx.motion.enter.is_none() {
-                            fx.motion.enter = Some(Motion::new(kind).duration(0.4).easing(easing).stagger(StaggerUnit::Char, ca.stagger.max(0.0)));
+                            fx.motion.enter = Some(
+                                Motion::new(kind)
+                                    .duration(0.4)
+                                    .easing(easing)
+                                    .stagger(StaggerUnit::Char, ca.stagger.max(0.0)),
+                            );
                         }
                     }
                     if ca.wave_amplitude > 0.0 {
-                        fx.loops.push(TitleLoop::Wave { amplitude: ca.wave_amplitude * 0.3 / tb.font_size.max(1.0), rate_hz: ca.wave_speed });
+                        fx.loops.push(TitleLoop::Wave {
+                            amplitude: ca.wave_amplitude * 0.3 / tb.font_size.max(1.0),
+                            rate_hz: ca.wave_speed,
+                        });
                     }
                 }
             }
@@ -1175,7 +1349,10 @@ impl TitleData {
             animation_type: TitleAnimationType::default(),
             background: TitleBackground::None,
         };
-        td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
+        td.add_object(
+            TitleObjectContent::TextBox(text_box),
+            default_text_transform(),
+        );
         td
     }
 
@@ -1254,11 +1431,15 @@ impl TitleData {
 
     /// The object holding the primary text.
     pub fn primary_object(&self) -> Option<&TitleObject> {
-        self.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
+        self.objects
+            .iter()
+            .find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
     }
 
     pub fn primary_object_mut(&mut self) -> Option<&mut TitleObject> {
-        self.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
+        self.objects
+            .iter_mut()
+            .find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
     }
 
     /// The primary text's stack, or a still one when there is no text.
@@ -1313,7 +1494,9 @@ impl TitleData {
     // through `primary_text_mut()` (or, for full multi-object
     // editing, direct iteration over `self.objects`).
     pub fn text(&self) -> String {
-        self.primary_text().map(|tb| tb.text.clone()).unwrap_or_default()
+        self.primary_text()
+            .map(|tb| tb.text.clone())
+            .unwrap_or_default()
     }
     pub fn font_size(&self) -> f32 {
         self.primary_text().map_or(72.0, |tb| tb.font_size)
@@ -1324,13 +1507,16 @@ impl TitleData {
             .unwrap_or_else(|| "sans-serif".into())
     }
     pub fn font_style(&self) -> FontStyle {
-        self.primary_text().map_or(FontStyle::Regular, |tb| tb.font_style)
+        self.primary_text()
+            .map_or(FontStyle::Regular, |tb| tb.font_style)
     }
     pub fn color(&self) -> [u8; 4] {
-        self.primary_text().map_or([255, 255, 255, 255], |tb| tb.color)
+        self.primary_text()
+            .map_or([255, 255, 255, 255], |tb| tb.color)
     }
     pub fn alignment(&self) -> TextAlignment {
-        self.primary_text().map_or(TextAlignment::Center, |tb| tb.alignment)
+        self.primary_text()
+            .map_or(TextAlignment::Center, |tb| tb.alignment)
     }
     /// Position of the primary text object on the title canvas.
     /// Sourced from the object's transform.center, falling back to
@@ -1410,7 +1596,8 @@ impl TitleData {
         self.primary_text().is_some_and(|tb| tb.strikethrough)
     }
     pub fn case_transform(&self) -> TextCase {
-        self.primary_text().map_or(TextCase::None, |tb| tb.case_transform)
+        self.primary_text()
+            .map_or(TextCase::None, |tb| tb.case_transform)
     }
     pub fn baseline_shift(&self) -> f32 {
         self.primary_text().map_or(0.0, |tb| tb.baseline_shift)
@@ -1419,7 +1606,9 @@ impl TitleData {
         self.primary_text().map_or(0.0, |tb| tb.drop_cap_scale)
     }
     pub fn style_runs(&self) -> Vec<StyleRun> {
-        self.primary_text().map(|tb| tb.style_runs.clone()).unwrap_or_default()
+        self.primary_text()
+            .map(|tb| tb.style_runs.clone())
+            .unwrap_or_default()
     }
     pub fn ass_style_name(&self) -> Option<String> {
         self.primary_text().and_then(|tb| tb.ass_style_name.clone())
@@ -1510,7 +1699,10 @@ pub enum TitleAnimationType {
     /// Rotates from `from_degrees` → 0 over `duration_secs` while
     /// holding the textbox at its anchor. Negative angles spin
     /// clockwise; positive counter-clockwise.
-    SpinIn { duration_secs: f32, from_degrees: f32 },
+    SpinIn {
+        duration_secs: f32,
+        from_degrees: f32,
+    },
     /// Scale-based overshoot entrance: 0 → ~1.15× → 1.0 over
     /// `duration_secs`, giving a tactile "pop" before settling.
     BounceIn { duration_secs: f32 },
@@ -1604,10 +1796,7 @@ impl MotionBlur {
     }
 
     /// Mutable accessor for the keyframe vec named by `param_key`.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
             klipp_core::title_effect_keys::MOTION_BLUR_SHUTTER_ANGLE => {
                 Some(&mut self.shutter_angle_keyframes)
@@ -1660,11 +1849,7 @@ impl TextExtrusion {
         if self.depth_keyframes.is_empty() {
             self.depth
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.depth_keyframes,
-                time_secs,
-                self.depth,
-            )
+            klipp_core::keyframe::evaluate(&self.depth_keyframes, time_secs, self.depth)
         }
     }
 
@@ -1673,11 +1858,7 @@ impl TextExtrusion {
         if self.angle_keyframes.is_empty() {
             self.angle
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.angle_keyframes,
-                time_secs,
-                self.angle,
-            )
+            klipp_core::keyframe::evaluate(&self.angle_keyframes, time_secs, self.angle)
         }
     }
 
@@ -1686,19 +1867,12 @@ impl TextExtrusion {
         if self.lighting_keyframes.is_empty() {
             self.lighting
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.lighting_keyframes,
-                time_secs,
-                self.lighting,
-            )
+            klipp_core::keyframe::evaluate(&self.lighting_keyframes, time_secs, self.lighting)
         }
     }
 
     /// Mutable accessor for the keyframe vec named by `param_key`.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
             klipp_core::title_effect_keys::EXTRUSION_DEPTH => Some(&mut self.depth_keyframes),
             klipp_core::title_effect_keys::EXTRUSION_ANGLE => Some(&mut self.angle_keyframes),
@@ -1723,18 +1897,18 @@ pub enum TextPath {
     /// Text follows a circular arc
     Arc {
         radius: f32,      // radius in pixels (100-500)
-        start_angle: f32,  // degrees, where text starts (0 = right, 90 = bottom)
-        sweep: f32,        // degrees of arc the text spans (positive = clockwise)
+        start_angle: f32, // degrees, where text starts (0 = right, 90 = bottom)
+        sweep: f32,       // degrees of arc the text spans (positive = clockwise)
     },
     /// Text follows a full circle
     Circle {
-        radius: f32,      // radius in pixels
+        radius: f32, // radius in pixels
     },
     /// Text follows a sine wave
     Wave {
-        amplitude: f32,   // vertical amplitude in pixels (10-100)
-        frequency: f32,   // number of wave cycles across the text (0.5-5)
-        phase: f32,       // phase offset in degrees (0-360)
+        amplitude: f32, // vertical amplitude in pixels (10-100)
+        frequency: f32, // number of wave cycles across the text (0.5-5)
+        phase: f32,     // phase offset in degrees (0-360)
     },
 }
 
@@ -1768,11 +1942,7 @@ impl CharAnimation {
         if self.stagger_keyframes.is_empty() {
             self.stagger
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.stagger_keyframes,
-                time_secs,
-                self.stagger,
-            )
+            klipp_core::keyframe::evaluate(&self.stagger_keyframes, time_secs, self.stagger)
         }
     }
 
@@ -1794,23 +1964,20 @@ impl CharAnimation {
         if self.wave_speed_keyframes.is_empty() {
             self.wave_speed
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.wave_speed_keyframes,
-                time_secs,
-                self.wave_speed,
-            )
+            klipp_core::keyframe::evaluate(&self.wave_speed_keyframes, time_secs, self.wave_speed)
         }
     }
 
     /// Mutable accessor for the keyframe vec named by `param_key`.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
             klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => Some(&mut self.stagger_keyframes),
-            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => Some(&mut self.wave_amplitude_keyframes),
-            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => Some(&mut self.wave_speed_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => {
+                Some(&mut self.wave_amplitude_keyframes)
+            }
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => {
+                Some(&mut self.wave_speed_keyframes)
+            }
             _ => None,
         }
     }
@@ -1819,7 +1986,9 @@ impl CharAnimation {
     pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         match param_key {
             klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => Some(&self.stagger_keyframes),
-            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => Some(&self.wave_amplitude_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => {
+                Some(&self.wave_amplitude_keyframes)
+            }
             klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => Some(&self.wave_speed_keyframes),
             _ => None,
         }
@@ -1847,9 +2016,14 @@ pub enum CharEntrance {
     BlurIn,
 }
 
-use klipp_core::title_motion::{CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
+use klipp_core::title_motion::{
+    CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop,
+    TitleMotion,
+};
 
-fn default_one() -> f32 { 1.0 }
+fn default_one() -> f32 {
+    1.0
+}
 
 impl Default for TitleData {
     fn default() -> Self {
@@ -1925,11 +2099,7 @@ impl TitleShadow {
         if self.offset_x_keyframes.is_empty() {
             self.offset_x
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.offset_x_keyframes,
-                time_secs,
-                self.offset_x,
-            )
+            klipp_core::keyframe::evaluate(&self.offset_x_keyframes, time_secs, self.offset_x)
         }
     }
 
@@ -1938,11 +2108,7 @@ impl TitleShadow {
         if self.offset_y_keyframes.is_empty() {
             self.offset_y
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.offset_y_keyframes,
-                time_secs,
-                self.offset_y,
-            )
+            klipp_core::keyframe::evaluate(&self.offset_y_keyframes, time_secs, self.offset_y)
         }
     }
 
@@ -1951,21 +2117,14 @@ impl TitleShadow {
         if self.blur_keyframes.is_empty() {
             self.blur
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.blur_keyframes,
-                time_secs,
-                self.blur,
-            )
+            klipp_core::keyframe::evaluate(&self.blur_keyframes, time_secs, self.blur)
         }
     }
 
     /// Mutable accessor for the keyframe vec named by `param_key`
     /// (one of the `klipp_core::title_effect_keys` constants). Returns
     /// `None` for unknown keys.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
             klipp_core::title_effect_keys::SHADOW_OFFSET_X => Some(&mut self.offset_x_keyframes),
             klipp_core::title_effect_keys::SHADOW_OFFSET_Y => Some(&mut self.offset_y_keyframes),
@@ -2009,11 +2168,7 @@ impl TextOutline {
         if self.width_keyframes.is_empty() {
             self.width
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.width_keyframes,
-                time_secs,
-                self.width,
-            )
+            klipp_core::keyframe::evaluate(&self.width_keyframes, time_secs, self.width)
         }
     }
 }
@@ -2049,11 +2204,7 @@ impl TextGlow {
         if self.radius_keyframes.is_empty() {
             self.radius
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.radius_keyframes,
-                time_secs,
-                self.radius,
-            )
+            klipp_core::keyframe::evaluate(&self.radius_keyframes, time_secs, self.radius)
         }
     }
 
@@ -2062,11 +2213,7 @@ impl TextGlow {
         if self.intensity_keyframes.is_empty() {
             self.intensity
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.intensity_keyframes,
-                time_secs,
-                self.intensity,
-            )
+            klipp_core::keyframe::evaluate(&self.intensity_keyframes, time_secs, self.intensity)
         }
     }
 
@@ -2074,10 +2221,7 @@ impl TextGlow {
     /// `param_key` (one of the constants in
     /// [`klipp_core::title_effect_keys`]). Returns `None` for an
     /// unknown key — handlers should debug_assert on that.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
             klipp_core::title_effect_keys::GLOW_RADIUS => Some(&mut self.radius_keyframes),
             klipp_core::title_effect_keys::GLOW_INTENSITY => Some(&mut self.intensity_keyframes),
@@ -2132,11 +2276,7 @@ impl InnerShadow {
         if self.offset_x_keyframes.is_empty() {
             self.offset_x
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.offset_x_keyframes,
-                time_secs,
-                self.offset_x,
-            )
+            klipp_core::keyframe::evaluate(&self.offset_x_keyframes, time_secs, self.offset_x)
         }
     }
 
@@ -2146,11 +2286,7 @@ impl InnerShadow {
         if self.offset_y_keyframes.is_empty() {
             self.offset_y
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.offset_y_keyframes,
-                time_secs,
-                self.offset_y,
-            )
+            klipp_core::keyframe::evaluate(&self.offset_y_keyframes, time_secs, self.offset_y)
         }
     }
 
@@ -2160,22 +2296,19 @@ impl InnerShadow {
         if self.blur_keyframes.is_empty() {
             self.blur
         } else {
-            klipp_core::keyframe::evaluate(
-                &self.blur_keyframes,
-                time_secs,
-                self.blur,
-            )
+            klipp_core::keyframe::evaluate(&self.blur_keyframes, time_secs, self.blur)
         }
     }
 
     /// Mutable accessor for the keyframe vec named by `param_key`.
-    pub fn keyframes_mut_for(
-        &mut self,
-        param_key: &str,
-    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+    pub fn keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
         match param_key {
-            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X => Some(&mut self.offset_x_keyframes),
-            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y => Some(&mut self.offset_y_keyframes),
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X => {
+                Some(&mut self.offset_x_keyframes)
+            }
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y => {
+                Some(&mut self.offset_y_keyframes)
+            }
             klipp_core::title_effect_keys::INNER_SHADOW_BLUR => Some(&mut self.blur_keyframes),
             _ => None,
         }
@@ -2194,10 +2327,26 @@ impl InnerShadow {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum TextPattern {
-    HorizontalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
-    VerticalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
-    Checkerboard { color_a: [u8; 4], color_b: [u8; 4], cell_size: f32 },
-    DiagonalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
+    HorizontalStripes {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        stripe_width: f32,
+    },
+    VerticalStripes {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        stripe_width: f32,
+    },
+    Checkerboard {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        cell_size: f32,
+    },
+    DiagonalStripes {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        stripe_width: f32,
+    },
 }
 
 /// Source of the texture fill — either a user-picked file or one of
@@ -2454,20 +2603,42 @@ mod tests {
 
     #[test]
     fn clip_kind_playability() {
-        assert!(ClipKind::Media { media_id: MediaId::new() }.is_playable());
+        assert!(ClipKind::Media {
+            media_id: MediaId::new()
+        }
+        .is_playable());
         assert!(ClipKind::Title(TitleData::default()).is_playable());
         assert!(ClipKind::Generator(GeneratorData::default()).is_playable());
-        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.is_playable());
-        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.is_playable());
+        assert!(ClipKind::Sequence {
+            sequence_id: SequenceId::new(),
+            template_instance: None
+        }
+        .is_playable());
+        assert!(ClipKind::Precomposition {
+            sequence_id: SequenceId::new(),
+            template_instance: None
+        }
+        .is_playable());
         assert!(!ClipKind::Gap.is_playable());
         assert!(!ClipKind::AdjustmentLayer.is_playable());
     }
 
     #[test]
     fn clip_kind_decoder_need() {
-        assert!(ClipKind::Media { media_id: MediaId::new() }.needs_decoder());
-        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.needs_decoder());
-        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.needs_decoder());
+        assert!(ClipKind::Media {
+            media_id: MediaId::new()
+        }
+        .needs_decoder());
+        assert!(ClipKind::Sequence {
+            sequence_id: SequenceId::new(),
+            template_instance: None
+        }
+        .needs_decoder());
+        assert!(ClipKind::Precomposition {
+            sequence_id: SequenceId::new(),
+            template_instance: None
+        }
+        .needs_decoder());
         assert!(!ClipKind::Title(TitleData::default()).needs_decoder());
         assert!(!ClipKind::Generator(GeneratorData::default()).needs_decoder());
     }
@@ -2545,8 +2716,15 @@ mod tests {
         // updates in place.
         t.upsert_position_keyframe(TitlePositionAxis::X, 0.5, 0.42);
         assert_eq!(t.center_x_keyframes.len(), 3);
-        let mid = t.center_x_keyframes.iter().find(|k| (k.time_secs - 0.5).abs() < 0.01).unwrap();
-        assert_eq!(mid.value, 0.42, "second upsert at same time must replace value");
+        let mid = t
+            .center_x_keyframes
+            .iter()
+            .find(|k| (k.time_secs - 0.5).abs() < 0.01)
+            .unwrap();
+        assert_eq!(
+            mid.value, 0.42,
+            "second upsert at same time must replace value"
+        );
 
         // A nearby but distinct timestamp must retain its own key.
         t.upsert_position_keyframe(TitlePositionAxis::X, 0.51, 0.5);
@@ -2580,7 +2758,11 @@ mod tests {
 
         // No-op when no keyframe matches the timestamp.
         t.remove_position_keyframe_at(TitlePositionAxis::X, 5.0);
-        assert_eq!(t.center_x_keyframes.len(), 2, "remove far from any kf must no-op");
+        assert_eq!(
+            t.center_x_keyframes.len(),
+            2,
+            "remove far from any kf must no-op"
+        );
 
         // Remove on the Y axis must not touch the X vec.
         t.remove_position_keyframe_at(TitlePositionAxis::Y, 0.0);
@@ -2622,9 +2804,8 @@ mod tests {
         t.upsert_position_keyframe(TitlePositionAxis::Y, 0.0, 0.1);
         t.upsert_position_keyframe(TitlePositionAxis::Y, 1.0, 0.9);
 
-        let ok = t.set_position_keyframe_interpolation(
-            TitlePositionAxis::Y, 1, Interpolation::Bezier,
-        );
+        let ok =
+            t.set_position_keyframe_interpolation(TitlePositionAxis::Y, 1, Interpolation::Bezier);
         assert!(ok);
         assert_eq!(t.center_y_keyframes[0].interpolation, Interpolation::Linear);
         assert_eq!(t.center_y_keyframes[1].interpolation, Interpolation::Bezier);
@@ -2634,7 +2815,9 @@ mod tests {
 
         // Out-of-range returns false.
         assert!(!t.set_position_keyframe_interpolation(
-            TitlePositionAxis::Y, 99, Interpolation::Step,
+            TitlePositionAxis::Y,
+            99,
+            Interpolation::Step,
         ));
     }
 
@@ -2823,18 +3006,23 @@ mod tests {
         // Mutable router: insert a keyframe through the param-key path.
         klipp_core::keyframe::upsert_keyframe(
             g.keyframes_mut_for(title_effect_keys::GLOW_RADIUS).unwrap(),
-            0.0, 8.0,
+            0.0,
+            8.0,
         );
         klipp_core::keyframe::upsert_keyframe(
-            g.keyframes_mut_for(title_effect_keys::GLOW_INTENSITY).unwrap(),
-            1.0, 0.4,
+            g.keyframes_mut_for(title_effect_keys::GLOW_INTENSITY)
+                .unwrap(),
+            1.0,
+            0.4,
         );
         assert_eq!(g.radius_keyframes.len(), 1);
         assert_eq!(g.intensity_keyframes.len(), 1);
 
         // Read-only router round-trips the same data.
         assert_eq!(
-            g.keyframes_for(title_effect_keys::GLOW_RADIUS).unwrap().len(),
+            g.keyframes_for(title_effect_keys::GLOW_RADIUS)
+                .unwrap()
+                .len(),
             1,
         );
 
@@ -2933,17 +3121,21 @@ mod tests {
             color: [10, 20, 30, 200],
             offset_x: 3.0,
             offset_x_keyframes: vec![Keyframe {
-                time_secs: 0.5, value: 5.0,
+                time_secs: 0.5,
+                value: 5.0,
                 interpolation: Interpolation::Bezier,
-                tangent_in: (-0.1, 0.0), tangent_out: (0.1, 0.0),
+                tangent_in: (-0.1, 0.0),
+                tangent_out: (0.1, 0.0),
             }],
             offset_y: 3.0,
             offset_y_keyframes: Vec::new(),
             blur: 6.0,
             blur_keyframes: vec![Keyframe {
-                time_secs: 0.0, value: 0.0,
+                time_secs: 0.0,
+                value: 0.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             }],
         };
         let json = serde_json::to_string(&s).expect("serialise");
@@ -2982,8 +3174,12 @@ mod tests {
 
         let mut tb = LayerFx::default();
         // No shadow yet: router returns None for every shadow key.
-        assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).is_none());
-        assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).is_none());
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR)
+            .is_none());
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X)
+            .is_none());
 
         tb.shadows.push(TitleShadow {
             enabled: true,
@@ -2997,16 +3193,22 @@ mod tests {
         });
         // After enabling: each param key lands on its own vec.
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).unwrap(),
-            0.0, 5.0,
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X)
+                .unwrap(),
+            0.0,
+            5.0,
         );
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_Y).unwrap(),
-            0.0, 7.0,
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_Y)
+                .unwrap(),
+            0.0,
+            7.0,
         );
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).unwrap(),
-            0.5, 12.0,
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR)
+                .unwrap(),
+            0.5,
+            12.0,
         );
         let s = tb.shadows.first().unwrap();
         assert_eq!(s.offset_x_keyframes.len(), 1);
@@ -3017,7 +3219,9 @@ mod tests {
         assert_eq!(s.blur_keyframes[0].value, 12.0);
 
         // Glow keys must not accidentally match shadow.
-        assert!(tb.effect_keyframes_mut_for(title_effect_keys::GLOW_RADIUS).is_none());
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::GLOW_RADIUS)
+            .is_none());
         // Unknown shadow key returns None.
         assert!(tb.effect_keyframes_mut_for("shadow.opacity").is_none());
     }
@@ -3050,9 +3254,12 @@ mod tests {
         let mut s = InnerShadow {
             enabled: true,
             color: [0, 0, 0, 180],
-            offset_x: 2.0, offset_x_keyframes: Vec::new(),
-            offset_y: 3.0, offset_y_keyframes: Vec::new(),
-            blur: 4.0, blur_keyframes: Vec::new(),
+            offset_x: 2.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 4.0,
+            blur_keyframes: Vec::new(),
         };
         // Empty: returns static.
         assert_eq!(s.evaluated_offset_x(0.5), 2.0);
@@ -3061,14 +3268,18 @@ mod tests {
         // With kfs on blur only: blur ramps, offsets stay static.
         s.blur_keyframes = vec![
             Keyframe {
-                time_secs: 0.0, value: 0.0,
+                time_secs: 0.0,
+                value: 0.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
             Keyframe {
-                time_secs: 1.0, value: 10.0,
+                time_secs: 1.0,
+                value: 10.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
         ];
         assert!((s.evaluated_blur(0.5) - 5.0).abs() < 1e-5);
@@ -3085,9 +3296,12 @@ mod tests {
             enabled: true,
             face_color: [255, 255, 255, 255],
             side_color: [80, 80, 80, 255],
-            depth: 10.0, depth_keyframes: Vec::new(),
-            angle: 135.0, angle_keyframes: Vec::new(),
-            lighting: 0.5, lighting_keyframes: Vec::new(),
+            depth: 10.0,
+            depth_keyframes: Vec::new(),
+            angle: 135.0,
+            angle_keyframes: Vec::new(),
+            lighting: 0.5,
+            lighting_keyframes: Vec::new(),
         };
         // Empty: returns static.
         assert_eq!(e.evaluated_depth(0.5), 10.0);
@@ -3097,14 +3311,18 @@ mod tests {
         // Keyframe just `depth`: depth ramps, others stay static.
         e.depth_keyframes = vec![
             Keyframe {
-                time_secs: 0.0, value: 5.0,
+                time_secs: 0.0,
+                value: 5.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
             Keyframe {
-                time_secs: 1.0, value: 25.0,
+                time_secs: 1.0,
+                value: 25.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
         ];
         assert!((e.evaluated_depth(0.5) - 15.0).abs() < 1e-5);
@@ -3181,16 +3399,24 @@ mod tests {
     fn shadow_indexed_keyframe_routing_is_per_slot() {
         let mut tb = LayerFx::default();
         tb.shadows.push(TitleShadow {
-            enabled: true, color: [0, 0, 0, 200],
-            offset_x: 1.0, offset_x_keyframes: Vec::new(),
-            offset_y: 1.0, offset_y_keyframes: Vec::new(),
-            blur: 1.0, blur_keyframes: Vec::new(),
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 1.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 1.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 1.0,
+            blur_keyframes: Vec::new(),
         });
         tb.shadows.push(TitleShadow {
-            enabled: true, color: [255, 0, 0, 200],
-            offset_x: 5.0, offset_x_keyframes: Vec::new(),
-            offset_y: 5.0, offset_y_keyframes: Vec::new(),
-            blur: 5.0, blur_keyframes: Vec::new(),
+            enabled: true,
+            color: [255, 0, 0, 200],
+            offset_x: 5.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 5.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 5.0,
+            blur_keyframes: Vec::new(),
         });
 
         // shadow.0.offset_x → shadows[0]. shadow.1.blur → shadows[1].
@@ -3198,11 +3424,13 @@ mod tests {
         let key_1_bl = klipp_core::title_effect_keys::shadow_blur_key(1);
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key_0_ox).unwrap(),
-            0.0, 7.0,
+            0.0,
+            7.0,
         );
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key_1_bl).unwrap(),
-            0.0, 12.0,
+            0.0,
+            12.0,
         );
         assert_eq!(tb.shadows[0].offset_x_keyframes.len(), 1);
         assert_eq!(tb.shadows[0].offset_x_keyframes[0].value, 7.0);
@@ -3218,8 +3446,10 @@ mod tests {
 
         // Legacy unindexed key still routes to slot 0.
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::SHADOW_OFFSET_Y).unwrap(),
-            0.0, 9.0,
+            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::SHADOW_OFFSET_Y)
+                .unwrap(),
+            0.0,
+            9.0,
         );
         assert_eq!(tb.shadows[0].offset_y_keyframes.len(), 1);
         assert_eq!(tb.shadows[0].offset_y_keyframes[0].value, 9.0);
@@ -3288,14 +3518,17 @@ mod tests {
         let key1 = klipp_core::title_effect_keys::glow_radius_key(1);
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key1).unwrap(),
-            0.0, 30.0,
+            0.0,
+            30.0,
         );
         assert_eq!(tb.glows[1].radius_keyframes.len(), 1);
         assert_eq!(tb.glows[0].radius_keyframes.len(), 0);
         // Legacy `glow.radius` still routes to glows[0].
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::GLOW_RADIUS).unwrap(),
-            0.0, 8.0,
+            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::GLOW_RADIUS)
+                .unwrap(),
+            0.0,
+            8.0,
         );
         assert_eq!(tb.glows[0].radius_keyframes.len(), 1);
     }
@@ -3307,16 +3540,22 @@ mod tests {
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [10, 20, 30, 200],
-            offset_x: 2.0, offset_x_keyframes: Vec::new(),
-            offset_y: 3.0, offset_y_keyframes: Vec::new(),
-            blur: 4.0, blur_keyframes: Vec::new(),
+            offset_x: 2.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 4.0,
+            blur_keyframes: Vec::new(),
         });
         tb.inner_shadows.push(InnerShadow {
             enabled: false,
             color: [50, 60, 70, 220],
-            offset_x: 5.0, offset_x_keyframes: Vec::new(),
-            offset_y: 6.0, offset_y_keyframes: Vec::new(),
-            blur: 8.0, blur_keyframes: Vec::new(),
+            offset_x: 5.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 6.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 8.0,
+            blur_keyframes: Vec::new(),
         });
         tb.inner_shadow_stack_enabled = false;
         let json = serde_json::to_string(&tb).expect("serialise");
@@ -3345,21 +3584,28 @@ mod tests {
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [0, 0, 0, 200],
-            offset_x: 1.0, offset_x_keyframes: Vec::new(),
-            offset_y: 1.0, offset_y_keyframes: Vec::new(),
-            blur: 2.0, blur_keyframes: Vec::new(),
+            offset_x: 1.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 1.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 2.0,
+            blur_keyframes: Vec::new(),
         });
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [255, 0, 0, 200],
-            offset_x: 4.0, offset_x_keyframes: Vec::new(),
-            offset_y: 4.0, offset_y_keyframes: Vec::new(),
-            blur: 6.0, blur_keyframes: Vec::new(),
+            offset_x: 4.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 4.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: Vec::new(),
         });
         let key1 = klipp_core::title_effect_keys::inner_shadow_blur_key(1);
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key1).unwrap(),
-            0.0, 12.0,
+            0.0,
+            12.0,
         );
         assert_eq!(tb.inner_shadows[1].blur_keyframes.len(), 1);
         // shadows[0] untouched.
@@ -3381,9 +3627,11 @@ mod tests {
             color: [10, 20, 30, 200],
             offset_x: 3.0,
             offset_x_keyframes: vec![Keyframe {
-                time_secs: 0.0, value: 3.0,
+                time_secs: 0.0,
+                value: 3.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             }],
             offset_y: 4.0,
             offset_y_keyframes: Vec::new(),
@@ -3452,7 +3700,10 @@ mod tests {
         };
         let json = serde_json::to_string(&tb).expect("serialise");
         let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
-        assert!(!round.outline_stack_enabled, "explicit false must survive round-trip");
+        assert!(
+            !round.outline_stack_enabled,
+            "explicit false must survive round-trip"
+        );
 
         // Legacy JSON: omit the field entirely. Must default to true.
         let legacy_json = r#"{
@@ -3517,27 +3768,38 @@ mod tests {
 
         let mut tb = TextBox::default();
         // No extrusion yet: every extrusion.* key returns None.
-        assert!(tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH).is_none());
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH)
+            .is_none());
 
         tb.extrusion = Some(TextExtrusion {
             enabled: true,
             face_color: [255, 255, 255, 255],
             side_color: [80, 80, 80, 255],
-            depth: 10.0, depth_keyframes: Vec::new(),
-            angle: 135.0, angle_keyframes: Vec::new(),
-            lighting: 0.5, lighting_keyframes: Vec::new(),
+            depth: 10.0,
+            depth_keyframes: Vec::new(),
+            angle: 135.0,
+            angle_keyframes: Vec::new(),
+            lighting: 0.5,
+            lighting_keyframes: Vec::new(),
         });
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH).unwrap(),
-            0.0, 20.0,
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH)
+                .unwrap(),
+            0.0,
+            20.0,
         );
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_ANGLE).unwrap(),
-            0.0, 90.0,
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_ANGLE)
+                .unwrap(),
+            0.0,
+            90.0,
         );
         klipp_core::keyframe::upsert_keyframe(
-            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_LIGHTING).unwrap(),
-            0.0, 0.8,
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_LIGHTING)
+                .unwrap(),
+            0.0,
+            0.8,
         );
         let e = tb.extrusion.as_ref().unwrap();
         assert_eq!(e.depth_keyframes[0].value, 20.0);
@@ -3565,14 +3827,18 @@ mod tests {
 
         o.width_keyframes = vec![
             Keyframe {
-                time_secs: 0.0, value: 1.0,
+                time_secs: 0.0,
+                value: 1.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
             Keyframe {
-                time_secs: 1.0, value: 9.0,
+                time_secs: 1.0,
+                value: 9.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
         ];
         assert!((o.evaluated_width(0.5) - 5.0).abs() < 1e-5);
@@ -3603,11 +3869,15 @@ mod tests {
         let mut tb = LayerFx::default();
         // Push two outline layers with width_keyframes empty.
         tb.outlines.push(TextOutline {
-            enabled: true, color: [255, 0, 0, 255], width: 2.0,
+            enabled: true,
+            color: [255, 0, 0, 255],
+            width: 2.0,
             width_keyframes: Vec::new(),
         });
         tb.outlines.push(TextOutline {
-            enabled: true, color: [0, 0, 255, 255], width: 4.0,
+            enabled: true,
+            color: [0, 0, 255, 255],
+            width: 4.0,
             width_keyframes: Vec::new(),
         });
 
@@ -3615,7 +3885,8 @@ mod tests {
         let key0 = title_effect_keys::outline_width_key(0);
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key0).unwrap(),
-            0.0, 8.0,
+            0.0,
+            8.0,
         );
         assert_eq!(tb.outlines[0].width_keyframes.len(), 1);
         assert_eq!(tb.outlines[1].width_keyframes.len(), 0);
@@ -3624,7 +3895,8 @@ mod tests {
         let key1 = title_effect_keys::outline_width_key(1);
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(&key1).unwrap(),
-            0.0, 12.0,
+            0.0,
+            12.0,
         );
         assert_eq!(tb.outlines[0].width_keyframes.len(), 1);
         assert_eq!(tb.outlines[1].width_keyframes.len(), 1);
@@ -3649,9 +3921,12 @@ mod tests {
         let mut c = CharAnimation {
             enabled: true,
             entrance: CharEntrance::FadeIn,
-            stagger: 0.05, stagger_keyframes: Vec::new(),
-            wave_amplitude: 0.0, wave_amplitude_keyframes: Vec::new(),
-            wave_speed: 1.0, wave_speed_keyframes: Vec::new(),
+            stagger: 0.05,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude: 0.0,
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed: 1.0,
+            wave_speed_keyframes: Vec::new(),
         };
         // Empty: returns static.
         assert_eq!(c.evaluated_stagger(0.5), 0.05);
@@ -3661,14 +3936,18 @@ mod tests {
         // Keyframe stagger: ramps, others stay static.
         c.stagger_keyframes = vec![
             Keyframe {
-                time_secs: 0.0, value: 0.02,
+                time_secs: 0.0,
+                value: 0.02,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
             Keyframe {
-                time_secs: 1.0, value: 0.10,
+                time_secs: 1.0,
+                value: 0.10,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
         ];
         assert!((c.evaluated_stagger(0.5) - 0.06).abs() < 1e-5);
@@ -3706,14 +3985,18 @@ mod tests {
         assert_eq!(mb.evaluated_shutter_angle(0.0), 180.0);
         mb.shutter_angle_keyframes = vec![
             Keyframe {
-                time_secs: 0.0, value: 90.0,
+                time_secs: 0.0,
+                value: 90.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
             Keyframe {
-                time_secs: 1.0, value: 270.0,
+                time_secs: 1.0,
+                value: 270.0,
                 interpolation: Interpolation::Linear,
-                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
             },
         ];
         assert!((mb.evaluated_shutter_angle(0.5) - 180.0).abs() < 1e-5);
@@ -3746,14 +4029,18 @@ mod tests {
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [0, 0, 0, 180],
-            offset_x: 2.0, offset_x_keyframes: Vec::new(),
-            offset_y: 3.0, offset_y_keyframes: Vec::new(),
-            blur: 4.0, blur_keyframes: Vec::new(),
+            offset_x: 2.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 4.0,
+            blur_keyframes: Vec::new(),
         });
         klipp_core::keyframe::upsert_keyframe(
             tb.effect_keyframes_mut_for(title_effect_keys::INNER_SHADOW_OFFSET_X)
                 .unwrap(),
-            0.0, 5.0,
+            0.0,
+            5.0,
         );
         // inner_shadow.* lands on the right vec.
         assert_eq!(
@@ -3775,7 +4062,10 @@ mod legacy_animation_migration_tests {
     use super::*;
 
     fn title() -> TitleData {
-        TitleData::single_text(TextBox { text: "Roll\nCredits".into(), ..Default::default() })
+        TitleData::single_text(TextBox {
+            text: "Roll\nCredits".into(),
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -3789,13 +4079,18 @@ mod legacy_animation_migration_tests {
     #[test]
     fn a_scroll_becomes_a_loop_and_its_baked_keyframes_go() {
         let mut td = title();
-        td.animation_type = TitleAnimationType::ScrollUp { speed_px_per_sec: 60.0 };
+        td.animation_type = TitleAnimationType::ScrollUp {
+            speed_px_per_sec: 60.0,
+        };
         let m = td.migrate_legacy_animation();
         assert!(m.changed && m.clear_clip_keyframes);
         assert!(matches!(td.animation_type, TitleAnimationType::Static));
         assert_eq!(
             td.primary_fx().loops,
-            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 }]
+            vec![TitleLoop::Scroll {
+                direction: ScrollDirection::Up,
+                speed_px_per_sec: 60.0
+            }]
         );
     }
 
@@ -3805,17 +4100,31 @@ mod legacy_animation_migration_tests {
         td.animation_type = TitleAnimationType::FadeInOut { fade_secs: 0.8 };
         td.migrate_legacy_animation();
         let fx = td.primary_fx();
-        assert_eq!(fx.motion.enter.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
-        assert_eq!(fx.motion.exit.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
+        assert_eq!(
+            fx.motion.enter.map(|m| (m.kind, m.duration_secs)),
+            Some((MotionKind::Fade, 0.8))
+        );
+        assert_eq!(
+            fx.motion.exit.map(|m| (m.kind, m.duration_secs)),
+            Some((MotionKind::Fade, 0.8))
+        );
     }
 
     #[test]
     fn a_counter_keeps_the_clip_keyframes_it_never_wrote() {
         let mut td = title();
-        td.animation_type = TitleAnimationType::Counter { from_value: 0.0, to_value: 9.0, duration_secs: 2.0, decimals: 1 };
+        td.animation_type = TitleAnimationType::Counter {
+            from_value: 0.0,
+            to_value: 9.0,
+            duration_secs: 2.0,
+            decimals: 1,
+        };
         let m = td.migrate_legacy_animation();
         assert!(m.changed && !m.clear_clip_keyframes);
-        assert!(matches!(td.primary_fx().loops[0], TitleLoop::Counter { decimals: 1, .. }));
+        assert!(matches!(
+            td.primary_fx().loops[0],
+            TitleLoop::Counter { decimals: 1, .. }
+        ));
     }
 
     #[test]
@@ -3835,7 +4144,10 @@ mod legacy_animation_migration_tests {
         assert!(td.primary_text().unwrap().char_animation.is_none());
         let fx = td.primary_fx();
         let e = fx.motion.enter.unwrap();
-        assert_eq!((e.kind, e.stagger, e.stagger_secs), (MotionKind::Rise, StaggerUnit::Char, 0.07));
+        assert_eq!(
+            (e.kind, e.stagger, e.stagger_secs),
+            (MotionKind::Rise, StaggerUnit::Char, 0.07)
+        );
         assert!(matches!(fx.loops[0], TitleLoop::Wave { rate_hz, .. } if rate_hz == 2.0));
     }
 }

@@ -76,7 +76,11 @@ impl Default for VideoTimeline {
     fn default() -> Self {
         let mut sequence = Sequence::new_default();
         sequence.tracks.clear();
-        Self { sequence, media: HashMap::new(), global_lut_opacity: 1.0 }
+        Self {
+            sequence,
+            media: HashMap::new(),
+            global_lut_opacity: 1.0,
+        }
     }
 }
 
@@ -222,15 +226,25 @@ impl AudioClipShape {
     pub fn is_silent(&self) -> bool {
         self.volume == 0.0
             && self.volume_keyframes.is_empty()
-            && !self.param_modifiers.contains_key(&klipp_core::ParamId::Volume)
+            && !self
+                .param_modifiers
+                .contains_key(&klipp_core::ParamId::Volume)
     }
 }
 
 /// The clip whose sound settings `clip` plays with: its linked video
 /// clip when it has one on the timeline, else itself.
-fn sound_settings_source<'a>(seq: &'a Sequence, clip: &'a klipp_timeline::Clip) -> &'a klipp_timeline::Clip {
+fn sound_settings_source<'a>(
+    seq: &'a Sequence,
+    clip: &'a klipp_timeline::Clip,
+) -> &'a klipp_timeline::Clip {
     clip.linked_clip_id
-        .and_then(|lid| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
+        .and_then(|lid| {
+            seq.tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == lid)
+        })
         .unwrap_or(clip)
 }
 
@@ -342,7 +356,14 @@ impl SequenceSnapshot {
         let mut audio_tracks = Vec::new();
         for track in seq.tracks.iter().rev() {
             if track.kind == TrackKind::Audio {
-                audio_tracks.push(snapshot_audio_track(track, seq, all_sequences, media_pool, fps, 0)?);
+                audio_tracks.push(snapshot_audio_track(
+                    track,
+                    seq,
+                    all_sequences,
+                    media_pool,
+                    fps,
+                    0,
+                )?);
             }
         }
         // A video clip with no audio clip linked to it plays the sound
@@ -364,7 +385,14 @@ impl SequenceSnapshot {
         // containing track's controls already composed into them — the
         // one path that sound takes, so the viewer and the export agree.
         for track in timeline.tracks.iter().filter(|t| t.precomposition_sound) {
-            audio_tracks.push(snapshot_audio_track(track, &timeline, all_sequences, media_pool, fps, 0)?);
+            audio_tracks.push(snapshot_audio_track(
+                track,
+                &timeline,
+                all_sequences,
+                media_pool,
+                fps,
+                0,
+            )?);
         }
         if !burn_in {
             for t in &mut timeline.tracks {
@@ -389,14 +417,17 @@ impl SequenceSnapshot {
         for clip in clips {
             if let ClipKind::Media { media_id } = &clip.kind {
                 let media_id: &klipp_core::MediaId = media_id;
-                let item = media_pool
-                    .get(media_id)
-                    .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
-                media.insert(*media_id, MediaFile {
-                    path: item.path.clone(),
-                    log_format: camera_log_format(item),
-                    source_rotation: item.source_rotation,
-                });
+                let item = media_pool.get(media_id).ok_or_else(|| {
+                    RenderError::Snapshot(format!("media {media_id:?} not in pool"))
+                })?;
+                media.insert(
+                    *media_id,
+                    MediaFile {
+                        path: item.path.clone(),
+                        log_format: camera_log_format(item),
+                        source_rotation: item.source_rotation,
+                    },
+                );
             }
         }
 
@@ -406,9 +437,16 @@ impl SequenceSnapshot {
         // Subtitle tracks are the captions; text tracks stand in only when
         // there are none, or an embedded subtitle stream would carry the
         // titles and lower thirds too.
-        let has_subtitles = seq.tracks.iter().any(|t| t.kind == TrackKind::Subtitle && !t.clips.is_empty());
+        let has_subtitles = seq
+            .tracks
+            .iter()
+            .any(|t| t.kind == TrackKind::Subtitle && !t.clips.is_empty());
         for track in seq.tracks.iter() {
-            let wanted = if has_subtitles { track.kind == TrackKind::Subtitle } else { track.kind == TrackKind::Text };
+            let wanted = if has_subtitles {
+                track.kind == TrackKind::Subtitle
+            } else {
+                track.kind == TrackKind::Text
+            };
             if !wanted {
                 continue;
             }
@@ -498,7 +536,11 @@ impl SequenceSnapshot {
             sample_rate: 48000, // Standard NLE audio rate
             duration_frames,
             export_range,
-            video: VideoTimeline { sequence: timeline, media, global_lut_opacity: 1.0 },
+            video: VideoTimeline {
+                sequence: timeline,
+                media,
+                global_lut_opacity: 1.0,
+            },
             audio_tracks,
             pan_law: settings.pan_law,
             global_lut_path,
@@ -523,7 +565,9 @@ impl SequenceSnapshot {
 
     /// End frame of the export range (exclusive), or duration_frames.
     pub fn end_frame(&self) -> u64 {
-        self.export_range.map(|(_, e)| e).unwrap_or(self.duration_frames)
+        self.export_range
+            .map(|(_, e)| e)
+            .unwrap_or(self.duration_frames)
     }
 }
 
@@ -540,13 +584,23 @@ fn snapshot_audio_track(
 ) -> Result<AudioTrackSnapshot, RenderError> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled { continue; }
+        if !clip.enabled {
+            continue;
+        }
         // A precomposition's sound is not taken here: flattening puts
         // it on runtime tracks of its own, with the scene's controls,
         // and the snapshot takes those below — once.
-        if let ClipKind::Sequence { sequence_id } = &clip.kind {
+        if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
             if depth < MAX_COMPOUND_DEPTH {
-                flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
+                flatten_compound_audio_clips(
+                    clip,
+                    *sequence_id,
+                    all_sequences,
+                    media_pool,
+                    fps,
+                    depth,
+                    &mut clips,
+                )?;
                 continue;
             }
         }
@@ -568,7 +622,10 @@ fn snapshot_audio_track(
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
-                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64());
+                    let shape = AudioClipShape::of(
+                        sound_settings_source(seq, clip),
+                        clip.duration().to_secs_f64(),
+                    );
                     if shape.is_silent() {
                         continue;
                     }
@@ -598,18 +655,33 @@ fn snapshot_audio_track(
 /// The sound of a video track's clips that have no audio clip linked to
 /// them: those play the sound in their files, as in the viewer, with
 /// their own settings. `None` when the track has no such clip.
-fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
+fn snapshot_video_track_sound(
+    track: &Track,
+    seq: &Sequence,
+    media_pool: &MediaPool,
+    fps: f64,
+) -> Option<AudioTrackSnapshot> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled || clip.multicam_group.is_some() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
+        if !clip.enabled
+            || clip.multicam_group.is_some()
+            || matches!(
+                clip.kind,
+                ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }
+            )
+        {
             continue;
         }
-        let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };
+        let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else {
+            continue;
+        };
         if !media.has_audio {
             continue;
         }
         let partner_on_audio = clip.linked_clip_id.is_some_and(|lid| {
-            seq.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
+            seq.tracks
+                .iter()
+                .any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid))
         });
         if partner_on_audio {
             continue;
@@ -631,7 +703,13 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
     if clips.is_empty() {
         return None;
     }
-    Some(AudioTrackSnapshot { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, clips })
+    Some(AudioTrackSnapshot {
+        volume: track.volume,
+        pan: track.pan,
+        muted: track.muted,
+        solo: track.solo,
+        clips,
+    })
 }
 
 /// Flatten a compound clip's inner sequence audio tracks into the parent audio clip list.
@@ -652,8 +730,12 @@ fn flatten_compound_audio_clips(
         depth,
     );
     for clip in flat_clips {
-        let Some(media_id) = clip.media_id() else { continue };
-        let Some(media) = media_pool.get(&media_id) else { continue };
+        let Some(media_id) = clip.media_id() else {
+            continue;
+        };
+        let Some(media) = media_pool.get(&media_id) else {
+            continue;
+        };
         if !media.has_audio {
             continue;
         }
@@ -700,21 +782,30 @@ fn flatten_multicam_audio_clips(
     }
     // Fill in segment from 0 to first cut if needed
     if segments.is_empty() || segments[0].0 > 0.001 {
-        let first_end = if segments.is_empty() { clip_duration_secs } else { segments[0].0 };
+        let first_end = if segments.is_empty() {
+            clip_duration_secs
+        } else {
+            segments[0].0
+        };
         if first_end > 0.001 {
             segments.insert(0, (0.0, first_end, 0));
         }
     }
 
-    let angle_clips: Vec<&klipp_timeline::Clip> = track.clips.iter()
+    let angle_clips: Vec<&klipp_timeline::Clip> = track
+        .clips
+        .iter()
         .filter(|c| c.multicam_group == Some(group_id) && c.enabled)
         .collect();
 
     for (seg_start, seg_end, angle) in &segments {
-        let angle_clip = angle_clips.iter()
+        let angle_clip = angle_clips
+            .iter()
             .find(|c| c.multicam_angle == *angle)
             .or_else(|| angle_clips.iter().find(|c| c.multicam_angle == 0));
-        let Some(angle_clip) = angle_clip else { continue };
+        let Some(angle_clip) = angle_clip else {
+            continue;
+        };
 
         let media_id = match angle_clip.media_id() {
             Some(mid) => mid,
@@ -756,7 +847,10 @@ fn time_to_frame(rt: &RationalTime, fps: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_core::{ClipId, LogFormat, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
+    use klipp_core::{
+        ClipId, EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, LogFormat,
+        MediaId, Resolution,
+    };
     use klipp_media::{MediaItem, MediaItemKind, MediaPool};
     use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
@@ -855,7 +949,6 @@ mod tests {
         }
     }
 
-
     fn make_sequence_with_length_secs(secs: f64) -> Sequence {
         let mut seq = make_sequence();
         let frames = (secs * 24.0).round() as i64;
@@ -875,11 +968,20 @@ mod tests {
             crf: 18,
             preset: EncoderPreset::Medium,
             audio_codec: ExportAudioCodec::Aac,
-            audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
-            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+            audio_bitrate_kbps: Some(192),
+            video_bitrate_kbps: None,
+            rate_control: klipp_core::RateControl::Crf,
+            burn_in_subtitles: true,
+            embed_subtitles: false,
+            target_lufs: None,
+            true_peak_dbtp: None,
+            embed_chapters: false,
+            bit_depth: 0,
+            hdr_mode: klipp_core::HdrMode::Sdr,
+            tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
-            mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }
+            mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
+        }
     }
 
     /// The export dialog's frame-rate override has to change how many
@@ -893,7 +995,13 @@ mod tests {
         let mut pool = MediaPool::new();
         pool.add(make_media_item(media_id, "/media/clip1.mp4"));
         let mut seq = make_sequence();
-        let mut clip = Clip::media(media_id, make_rational(24, 24), make_rational(240, 24), make_rational(0, 24), make_rational(216, 24));
+        let mut clip = Clip::media(
+            media_id,
+            make_rational(24, 24),
+            make_rational(240, 24),
+            make_rational(0, 24),
+            make_rational(216, 24),
+        );
         clip.id = ClipId::new();
         seq.tracks[0].clips.push(clip.clone());
         seq.tracks[1].clips.push(clip);
@@ -902,12 +1010,28 @@ mod tests {
         let mut settings = make_settings();
         settings.fps = Some(Fps::new(12, 1));
 
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            true,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
         assert_eq!((snap.fps_num, snap.fps_den), (12, 1));
         assert_eq!(snap.duration_frames, 120, "10 s at 12 fps");
-        assert_eq!(snap.export_range, Some((24, 72)), "the marked range, at 12 fps");
+        assert_eq!(
+            snap.export_range,
+            Some((24, 72)),
+            "the marked range, at 12 fps"
+        );
         let a = &snap.audio_tracks[0].clips[0];
-        assert_eq!((a.timeline_start_frame, a.timeline_end_frame), (12, 120), "the audio clip, at 12 fps");
+        assert_eq!(
+            (a.timeline_start_frame, a.timeline_end_frame),
+            (12, 120),
+            "the audio clip, at 12 fps"
+        );
     }
 
     #[test]
@@ -928,11 +1052,19 @@ mod tests {
 
         let mut seq = make_sequence();
         seq.tracks[0].clips.push(clip);
-        seq.in_point = Some(make_rational(24, 24));  // 1 second in
+        seq.in_point = Some(make_rational(24, 24)); // 1 second in
         seq.out_point = Some(make_rational(120, 24)); // 5 seconds in
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            true,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(snap.export_range, Some((24, 120)));
         assert_eq!(snap.frames_to_export(), 96);
@@ -953,7 +1085,15 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(snap.chapters.len(), 3, "three markers → three chapters");
         assert_eq!(snap.chapters[0].start_ms, 0);
@@ -974,21 +1114,32 @@ mod tests {
         let mut seq = make_sequence_with_length_secs(60.0);
         seq.markers.push(make_marker_at_secs(5.0, "Outside"));
         seq.markers.push(make_marker_at_secs(15.0, "Inside"));
-        seq.in_point = Some(make_rational(240, 24));  // 10s
+        seq.in_point = Some(make_rational(240, 24)); // 10s
         seq.out_point = Some(make_rational(720, 24)); // 30s
 
         let mut settings = make_settings();
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            true,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(
             snap.chapters.len(),
             1,
             "5s marker is outside the zone — only 15s marker survives"
         );
-        assert_eq!(snap.chapters[0].start_ms, 5_000, "15s - 10s zone start = 5000ms");
+        assert_eq!(
+            snap.chapters[0].start_ms, 5_000,
+            "15s - 10s zone start = 5000ms"
+        );
         assert_eq!(snap.chapters[0].end_ms, 20_000, "clamped to zone duration");
         assert_eq!(snap.chapters[0].title, "Inside");
     }
@@ -1003,7 +1154,15 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert!(snap.chapters.is_empty());
     }
@@ -1018,7 +1177,15 @@ mod tests {
         let settings = make_settings(); // embed_chapters: false by default
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert!(snap.chapters.is_empty());
     }
@@ -1032,7 +1199,8 @@ mod tests {
         let mut seq = make_sequence_with_length_secs(60.0);
         // Default helper produces Chapter-kind markers.
         seq.markers.push(make_marker_at_secs(0.0, "Real chapter A"));
-        seq.markers.push(make_marker_at_secs(30.0, "Real chapter B"));
+        seq.markers
+            .push(make_marker_at_secs(30.0, "Real chapter B"));
         // Inline non-Chapter markers — must be filtered out.
         for (secs, label, kind) in [
             (5.0_f64, "todo note", klipp_core::MarkerKind::ToDo),
@@ -1059,7 +1227,15 @@ mod tests {
         settings.embed_chapters = true;
 
         let pool = MediaPool::new();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(
             snap.chapters.len(),
@@ -1097,7 +1273,15 @@ mod tests {
         seq.tracks[1].pan = -0.5;
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(snap.audio_tracks.len(), 1);
         let at = &snap.audio_tracks[0];
@@ -1160,7 +1344,15 @@ mod tests {
         seq.tracks.push(sub_track);
 
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
         assert_eq!(snap.subtitle_tracks.len(), 1);
         assert_eq!(snap.subtitle_tracks[0].clips.len(), 2);
@@ -1210,9 +1402,21 @@ mod tests {
         // burn_in OFF — subtitle data should still be in subtitle_tracks
         let mut settings = make_settings();
         settings.burn_in_subtitles = false;
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
 
-        assert_eq!(snap.subtitle_tracks.len(), 1, "subtitle_tracks should be populated even without burn-in");
+        assert_eq!(
+            snap.subtitle_tracks.len(),
+            1,
+            "subtitle_tracks should be populated even without burn-in"
+        );
         assert_eq!(snap.subtitle_tracks[0].clips[0].text, "Test");
     }
 
@@ -1221,7 +1425,15 @@ mod tests {
         let pool = MediaPool::new();
         let seq = make_sequence();
         let settings = make_settings();
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &settings,
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
         assert!(snap.subtitle_tracks.is_empty());
     }
 
@@ -1246,13 +1458,28 @@ mod tests {
         pool.add(make_media_item(media_id, "/media/clip1.mp4"));
         let mut seq = make_sequence();
         seq.tracks[0].clips.push(media_clip(media_id, 0, 48));
-        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let snap = SequenceSnapshot::from_sequence(
+            &seq,
+            &pool,
+            &make_settings(),
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear,
+        )
+        .unwrap();
         let flat = klipp_timeline::flatten::flatten_sequence(&seq, &[]);
         assert_eq!(snap.video.sequence.tracks.len(), flat.tracks.len());
-        assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
+        assert_eq!(
+            snap.video.sequence.tracks[0].clips[0].id,
+            seq.tracks[0].clips[0].id
+        );
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0 }),
+            Some(&MediaFile {
+                path: PathBuf::from("/media/clip1.mp4"),
+                log_format: None,
+                source_rotation: 0
+            }),
         );
     }
 
@@ -1263,10 +1490,20 @@ mod tests {
     #[test]
     fn media_table_carries_the_effective_camera_log_format() {
         let cases: [(LogFormat, bool, LogFormat, Option<LogFormat>); 4] = [
-            (LogFormat::Srgb, false, LogFormat::SLog3, Some(LogFormat::SLog3)), // detected
-            (LogFormat::VLog, true, LogFormat::SLog3, Some(LogFormat::VLog)),   // user's choice wins
-            (LogFormat::Srgb, true, LogFormat::SLog3, None),                    // explicit sRGB override
-            (LogFormat::Srgb, false, LogFormat::PQ, None),                      // PQ: the file says so
+            (
+                LogFormat::Srgb,
+                false,
+                LogFormat::SLog3,
+                Some(LogFormat::SLog3),
+            ), // detected
+            (
+                LogFormat::VLog,
+                true,
+                LogFormat::SLog3,
+                Some(LogFormat::VLog),
+            ), // user's choice wins
+            (LogFormat::Srgb, true, LogFormat::SLog3, None), // explicit sRGB override
+            (LogFormat::Srgb, false, LogFormat::PQ, None),   // PQ: the file says so
         ];
         for (chosen, user_set, detected, want) in cases {
             let media_id = MediaId::new();
@@ -1278,7 +1515,15 @@ mod tests {
             pool.add(item);
             let mut seq = make_sequence();
             seq.tracks[0].clips.push(media_clip(media_id, 0, 24));
-            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+            let snap = SequenceSnapshot::from_sequence(
+                &seq,
+                &pool,
+                &make_settings(),
+                None,
+                false,
+                klipp_core::WorkingColorspace::Rec709Linear,
+            )
+            .unwrap();
             assert_eq!(
                 snap.video.media[&media_id].log_format, want,
                 "chosen {chosen:?} (user set {user_set}), detected {detected:?}",
@@ -1291,13 +1536,28 @@ mod tests {
     #[test]
     fn subtitle_tracks_are_hidden_unless_burned_in() {
         let mut seq = make_sequence();
-        seq.tracks.insert(0, Track::new("Subtitles", TrackKind::Subtitle));
+        seq.tracks
+            .insert(0, Track::new("Subtitles", TrackKind::Subtitle));
         let pool = MediaPool::new();
         for burn in [true, false] {
             let mut settings = make_settings();
             settings.burn_in_subtitles = burn;
-            let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-            let sub = snap.video.sequence.tracks.iter().find(|t| t.kind == TrackKind::Subtitle).unwrap();
+            let snap = SequenceSnapshot::from_sequence(
+                &seq,
+                &pool,
+                &settings,
+                None,
+                false,
+                klipp_core::WorkingColorspace::Rec709Linear,
+            )
+            .unwrap();
+            let sub = snap
+                .video
+                .sequence
+                .tracks
+                .iter()
+                .find(|t| t.kind == TrackKind::Subtitle)
+                .unwrap();
             assert_eq!(sub.visible, burn);
         }
     }
@@ -1307,6 +1567,14 @@ mod tests {
     fn missing_media_is_an_error() {
         let mut seq = make_sequence();
         seq.tracks[0].clips.push(media_clip(MediaId::new(), 0, 24));
-        assert!(SequenceSnapshot::from_sequence(&seq, &MediaPool::new(), &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).is_err());
+        assert!(SequenceSnapshot::from_sequence(
+            &seq,
+            &MediaPool::new(),
+            &make_settings(),
+            None,
+            false,
+            klipp_core::WorkingColorspace::Rec709Linear
+        )
+        .is_err());
     }
 }

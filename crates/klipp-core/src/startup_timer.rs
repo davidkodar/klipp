@@ -81,5 +81,8 @@ impl Drop for LogTimer {
 /// Useful for "phase boundary" markers like "main entered" or "first frame painted".
 pub fn mark(label: &'static str) {
     let t_offset = process_start().elapsed().as_secs_f64();
-    info!("STARTUP_PERF [T+{:>6.3}s] {:<48}     -- mark --", t_offset, label);
+    info!(
+        "STARTUP_PERF [T+{:>6.3}s] {:<48}     -- mark --",
+        t_offset, label
+    );
 }

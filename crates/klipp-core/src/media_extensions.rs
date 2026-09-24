@@ -52,9 +52,7 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Audio file extensions Klipp can decode and play.
-pub const AUDIO_EXTENSIONS: &[&str] = &[
-    "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-];
+pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff"];
 
 /// Still-image extensions Klipp can decode (via ffmpeg or the `image` crate).
 ///
@@ -67,8 +65,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// need to know "is this a raw file that needs special decoding?" should
 /// use [`is_raw`] instead of `is_image`.
 pub const IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
-    "heic", "heif", "avif", "jxl",
+    "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr", "heic", "heif", "avif", "jxl",
     // Camera RAW formats — actual decode goes through the embedded-JPEG
     // extractor (klipp_engine::extract_raw_preview) instead of ffmpeg.
     "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
@@ -92,17 +89,17 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
 /// doc comment for the full design rationale and the upgrade path to real
 /// RAW decoding via `rawler` or `libraw` if Klipp ever needs that.
 pub const RAW_EXTENSIONS: &[&str] = &[
-    "arw",  // Sony Alpha
-    "cr2",  // Canon (older)
-    "cr3",  // Canon (newer)
-    "nef",  // Nikon
-    "raf",  // Fujifilm
-    "orf",  // Olympus
-    "rw2",  // Panasonic
-    "dng",  // Adobe Digital Negative (also produced by some phones)
-    "pef",  // Pentax
-    "srw",  // Samsung
-    "rwl",  // Leica
+    "arw", // Sony Alpha
+    "cr2", // Canon (older)
+    "cr3", // Canon (newer)
+    "nef", // Nikon
+    "raf", // Fujifilm
+    "orf", // Olympus
+    "rw2", // Panasonic
+    "dng", // Adobe Digital Negative (also produced by some phones)
+    "pef", // Pentax
+    "srw", // Samsung
+    "rwl", // Leica
 ];
 
 /// Build a `Vec` containing every media extension from all three categories.
@@ -258,9 +255,7 @@ mod tests {
 
     #[test]
     fn audio_extensions_baseline() {
-        let expected: &[&str] = &[
-            "wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff",
-        ];
+        let expected: &[&str] = &["wav", "mp3", "aac", "flac", "ogg", "m4a", "aiff"];
         assert_eq!(AUDIO_EXTENSIONS, expected);
     }
 
@@ -270,9 +265,8 @@ mod tests {
         // The RAW formats are decoded via embedded-JPEG preview extraction,
         // not ffmpeg — see klipp_engine::extract_raw_preview.
         let expected: &[&str] = &[
-            "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr",
-            "heic", "heif", "avif", "jxl",
-            "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
+            "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "exr", "heic", "heif", "avif",
+            "jxl", "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2", "dng", "pef", "srw", "rwl",
         ];
         assert_eq!(IMAGE_EXTENSIONS, expected);
     }
@@ -357,7 +351,8 @@ mod tests {
         // category. If this fails, predicates become ambiguous.
         use std::collections::HashSet;
         let mut seen: HashSet<&str> = HashSet::new();
-        for &ext in VIDEO_EXTENSIONS.iter()
+        for &ext in VIDEO_EXTENSIONS
+            .iter()
             .chain(AUDIO_EXTENSIONS.iter())
             .chain(IMAGE_EXTENSIONS.iter())
         {
@@ -392,12 +387,14 @@ mod tests {
     fn all_lowercase_in_constants() {
         // The case-insensitive predicates assume the constants are lowercase.
         // Defend that assumption.
-        for &ext in VIDEO_EXTENSIONS.iter()
+        for &ext in VIDEO_EXTENSIONS
+            .iter()
             .chain(AUDIO_EXTENSIONS.iter())
             .chain(IMAGE_EXTENSIONS.iter())
         {
             assert_eq!(
-                ext, ext.to_lowercase(),
+                ext,
+                ext.to_lowercase(),
                 "extension '{}' is not lowercase",
                 ext
             );
@@ -527,10 +524,10 @@ mod tests {
     fn is_media_rejects_unrelated() {
         assert!(!is_media("txt"));
         assert!(!is_media("json"));
-        assert!(!is_media("srt"));    // subtitle, separate domain
-        assert!(!is_media("klipp"));  // project file, separate domain
-        assert!(!is_media("cube"));   // LUT, separate domain
-        assert!(!is_media("tga"));    // texture-only, intentionally excluded
+        assert!(!is_media("srt")); // subtitle, separate domain
+        assert!(!is_media("klipp")); // project file, separate domain
+        assert!(!is_media("cube")); // LUT, separate domain
+        assert!(!is_media("tga")); // texture-only, intentionally excluded
     }
 
     #[test]
@@ -579,7 +576,9 @@ mod tests {
     fn path_with_unicode_filename_does_not_panic() {
         // The user has Swedish-named files like "Pappa röker pipa.mp4".
         // Make sure unicode in the path doesn't break extension extraction.
-        assert!(path_is_video(&PathBuf::from("/home/david/Pappa röker pipa!.mp4")));
+        assert!(path_is_video(&PathBuf::from(
+            "/home/david/Pappa röker pipa!.mp4"
+        )));
         assert!(path_is_image(&PathBuf::from("/photos/Tāves mörmor.JPG")));
         assert!(path_is_audio(&PathBuf::from("/musik/röst.wav")));
     }
@@ -604,7 +603,9 @@ mod tests {
     #[test]
     fn path_in_directory_with_dot_in_name() {
         // Edge case: directory with a dot in its name.
-        assert!(path_is_video(&PathBuf::from("/home/user/My.Movies/clip.mp4")));
+        assert!(path_is_video(&PathBuf::from(
+            "/home/user/My.Movies/clip.mp4"
+        )));
         assert!(!path_is_video(&PathBuf::from("/home/user/foo.mp4/notes")));
     }
 }

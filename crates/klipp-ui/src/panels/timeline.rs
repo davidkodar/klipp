@@ -137,8 +137,18 @@ fn pick_primary_kf_param(params: &[String]) -> Option<String> {
         .iter()
         .find(|n| !n.starts_with("__"))
         .map(|s| (*s).clone())
-        .or_else(|| sorted.iter().find(|n| n.as_str() == "__wetdry").map(|s| (*s).clone()))
-        .or_else(|| sorted.iter().find(|n| n.as_str() == "__bypass").map(|s| (*s).clone()))
+        .or_else(|| {
+            sorted
+                .iter()
+                .find(|n| n.as_str() == "__wetdry")
+                .map(|s| (*s).clone())
+        })
+        .or_else(|| {
+            sorted
+                .iter()
+                .find(|n| n.as_str() == "__bypass")
+                .map(|s| (*s).clone())
+        })
 }
 
 /// Pill label for the audio rubber band when it's showing an effect
@@ -156,15 +166,14 @@ fn format_effect_param_pill(effect_index: usize, param_name: &str) -> String {
 /// Formatted active/bypass time-range summary for a `__bypass` kf
 /// track over a clip of `clip_dur_secs`. Implicit baseline is "active"
 /// before the first kf. Used in the bypass-strip hover tooltip.
-fn bypass_envelope_summary(
-    kfs: &[klipp_core::Keyframe],
-    clip_dur_secs: f64,
-) -> String {
+fn bypass_envelope_summary(kfs: &[klipp_core::Keyframe], clip_dur_secs: f64) -> String {
     if kfs.is_empty() {
         return "active throughout".into();
     }
     let fmt = |t: f64| -> String {
-        if t < 60.0 { format!("{t:.2}s") } else {
+        if t < 60.0 {
+            format!("{t:.2}s")
+        } else {
             let m = (t / 60.0) as i64;
             let s = t - (m as f64) * 60.0;
             format!("{m}:{s:05.2}")
@@ -183,7 +192,9 @@ fn bypass_envelope_summary(
             clip_dur_secs
         };
         let t0 = kf.time_secs.max(0.0).min(clip_dur_secs);
-        if next_t <= t0 + 0.001 { continue; }
+        if next_t <= t0 + 0.001 {
+            continue;
+        }
         let label = if kf.value > 0.5 { "active" } else { "bypassed" };
         parts.push(format!("{label} {}–{}", fmt(t0), fmt(next_t)));
     }
@@ -247,7 +258,10 @@ pub(crate) fn track_row_height(track: &klipp_timeline::Track) -> f32 {
 
 /// Get effective track height using preferences for defaults.
 #[allow(dead_code)]
-fn effective_track_height_with_prefs(track: &klipp_timeline::Track, tl: &crate::prefs::TimelinePrefs) -> f32 {
+fn effective_track_height_with_prefs(
+    track: &klipp_timeline::Track,
+    tl: &crate::prefs::TimelinePrefs,
+) -> f32 {
     track.custom_height.unwrap_or(match track.kind {
         TrackKind::Audio => tl.min_track_height.max(AUDIO_TRACK_HEIGHT), // use pref default
         TrackKind::Text | TrackKind::Subtitle => tl.text_track_height,
@@ -330,7 +344,9 @@ fn sync_editing_prefs_to_timeline(snap_px: f32) {
     TL_SNAP_THRESHOLD_PX.set(snap_px);
 }
 
-fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
+fn snap_threshold_px() -> f32 {
+    TL_SNAP_THRESHOLD_PX.get()
+}
 
 // ─── Audio rubber-band paint helpers ─────────────────────────────────────
 // Pure paint primitives shared between the inline overlay
@@ -348,8 +364,8 @@ fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
 fn audio_param_range(param: klipp_core::AudioParam) -> (f32, f32, f32) {
     match param {
         klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
-        klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
-        klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32, 1.0_f32),
+        klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32, 0.0_f32),
+        klipp_core::AudioParam::Gain => (0.0_f32, 2.0_f32, 1.0_f32),
     }
 }
 
@@ -373,7 +389,11 @@ fn audio_param_y_to_value(rect: egui::Rect, param: klipp_core::AudioParam, y: f3
 /// position within `rect`. Caller passes whatever range the keyframes
 /// were authored against (typically `clip.source_out - clip.source_in`).
 fn audio_param_time_to_x(rect: egui::Rect, time_range_secs: f64, t: f64) -> f32 {
-    let frac = if time_range_secs > 0.0 { (t / time_range_secs).clamp(0.0, 1.0) } else { 0.0 };
+    let frac = if time_range_secs > 0.0 {
+        (t / time_range_secs).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     rect.left() + frac as f32 * rect.width()
 }
 
@@ -391,35 +411,40 @@ struct AudioCurvePalette {
 }
 
 fn audio_curve_palette(param: klipp_core::AudioParam) -> AudioCurvePalette {
-    let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color) = match param {
-        klipp_core::AudioParam::Volume => (
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
-            egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
-            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
-            egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
-        ),
-        klipp_core::AudioParam::Pan => (
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
-            egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
-            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
-            egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
-        ),
-        klipp_core::AudioParam::Gain => (
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
-            egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
-            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
-            egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
-        ),
-    };
+    let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color) =
+        match param {
+            klipp_core::AudioParam::Volume => (
+                egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
+                egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
+                egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
+                egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
+                egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
+                egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
+            ),
+            klipp_core::AudioParam::Pan => (
+                egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
+                egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
+                egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
+                egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
+                egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
+                egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
+            ),
+            klipp_core::AudioParam::Gain => (
+                egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
+                egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
+                egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
+                egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
+                egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
+                egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
+            ),
+        };
     AudioCurvePalette {
-        line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm,
-        fill_color, ref_color,
+        line_color,
+        line_color_dim,
+        diamond_fill_sel,
+        diamond_fill_norm,
+        fill_color,
+        ref_color,
         shadow_color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
     }
 }
@@ -462,17 +487,24 @@ fn paint_audio_curve_band(
     } else {
         palette.diamond_fill_norm
     };
-    let line_width = if is_selected || is_multi_selected { 3.0_f32 } else { 2.0_f32 };
+    let line_width = if is_selected || is_multi_selected {
+        3.0_f32
+    } else {
+        2.0_f32
+    };
     let shadow_width = line_width + 1.0_f32;
 
     let value_to_y = |v: f32| audio_param_value_to_y(rect, param, v);
     let time_to_x = |t: f64| audio_param_time_to_x(rect, time_range_secs, t);
 
     // 1) Reference line at unity / centre.
-    let unity_y = rect.bottom()
-        - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * rect.height();
+    let unity_y =
+        rect.bottom() - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * rect.height();
     painter.line_segment(
-        [egui::pos2(rect.left(), unity_y), egui::pos2(rect.right(), unity_y)],
+        [
+            egui::pos2(rect.left(), unity_y),
+            egui::pos2(rect.right(), unity_y),
+        ],
         egui::Stroke::new(1.0_f32, palette.ref_color),
     );
 
@@ -555,7 +587,11 @@ fn paint_audio_curve_band(
         let cy = value_to_y(kf.value);
         let is_hovered = hovered_kf_idx == Some(ki);
         let is_kf_selected = selected_kf_idx == Some(ki);
-        let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
+        let d = if is_hovered || is_kf_selected {
+            9.0_f32
+        } else {
+            8.0_f32
+        };
 
         // Dark outline diamond behind for contrast.
         let outline_d = d + 1.5;
@@ -584,7 +620,10 @@ fn paint_audio_curve_band(
         let stroke = if is_kf_selected {
             egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
         } else {
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+            egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220),
+            )
         };
         painter.add(egui::Shape::convex_polygon(
             vec![
@@ -599,7 +638,9 @@ fn paint_audio_curve_band(
 
         // 6) Bezier tangent handles. Only paint them when the host clip is
         // selected — they would otherwise crowd the inline overlay.
-        if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+        if kf.interpolation == klipp_core::Interpolation::Bezier
+            && (is_selected || is_multi_selected)
+        {
             let pixels_per_sec = if time_range_secs > 0.0 {
                 rect.width() / time_range_secs as f32
             } else {
@@ -607,7 +648,10 @@ fn paint_audio_curve_band(
             };
             let value_scale = rect.height() / param_range;
             let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
-                active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
+                active_line_color.r(),
+                active_line_color.g(),
+                active_line_color.b(),
+                120,
             );
             let handle_radius = 4.0_f32;
 
@@ -622,7 +666,10 @@ fn paint_audio_curve_band(
                 egui::pos2(tout_x, tout_y),
                 handle_radius,
                 active_line_color,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                ),
             );
 
             // In (left).
@@ -636,16 +683,23 @@ fn paint_audio_curve_band(
                 egui::pos2(tin_x, tin_y),
                 handle_radius,
                 active_line_color,
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                ),
             );
         }
     }
 }
 
 // Accessor functions replacing the old consts
-fn clip_gap() -> f32 { TL_CLIP_GAP.get() }
+fn clip_gap() -> f32 {
+    TL_CLIP_GAP.get()
+}
 #[allow(dead_code)]
-fn trim_handle_width() -> f32 { TL_TRIM_HANDLE_WIDTH.get() }
+fn trim_handle_width() -> f32 {
+    TL_TRIM_HANDLE_WIDTH.get()
+}
 
 // Keep const for backward compat in places that can't use function calls
 const CLIP_GAP: f32 = 3.0; // fallback only — prefer clip_gap()
@@ -653,12 +707,12 @@ const TRIM_HANDLE_WIDTH: f32 = 14.0;
 const OVERVIEW_BAR_HEIGHT: f32 = 24.0;
 
 const CLIP_COLORS: &[(u8, u8, u8)] = &[
-    (50, 90, 160),   // blue
-    (50, 130, 80),   // green
-    (160, 90, 50),   // orange
-    (130, 50, 130),  // purple
-    (50, 130, 130),  // teal
-    (160, 50, 80),   // red
+    (50, 90, 160),  // blue
+    (50, 130, 80),  // green
+    (160, 90, 50),  // orange
+    (130, 50, 130), // purple
+    (50, 130, 130), // teal
+    (160, 50, 80),  // red
 ];
 
 fn clip_color(index: usize) -> egui::Color32 {
@@ -673,7 +727,11 @@ fn clip_color_bright(index: usize) -> egui::Color32 {
     TL_CLIP_COLORS.with(|colors| {
         let colors = colors.borrow();
         let c = colors[index % colors.len()];
-        egui::Color32::from_rgb(c[0].saturating_add(30), c[1].saturating_add(30), c[2].saturating_add(30))
+        egui::Color32::from_rgb(
+            c[0].saturating_add(30),
+            c[1].saturating_add(30),
+            c[2].saturating_add(30),
+        )
     })
 }
 
@@ -793,7 +851,10 @@ pub struct TimelinePanel {
     pub(crate) search_hits: Vec<crate::panels::timeline_search::SearchHit>,
     /// What each media item's screen showed, read from the analysis
     /// once per `analysis_generation` while a search is open.
-    pub(crate) screen_text_cache: std::collections::HashMap<klipp_core::MediaId, std::rc::Rc<Vec<crate::panels::timeline_search::ScreenLine>>>,
+    pub(crate) screen_text_cache: std::collections::HashMap<
+        klipp_core::MediaId,
+        std::rc::Rc<Vec<crate::panels::timeline_search::ScreenLine>>,
+    >,
     pub(crate) screen_text_cache_generation: u64,
     /// Which clip the Colour strip has already been scrolled to reveal.
     ///
@@ -838,13 +899,20 @@ pub(crate) fn alpha_for_kind_change(
     now: std::time::Instant,
 ) -> f32 {
     // No current snap → no legend → alpha is moot.
-    let Some(_) = current_kind else { return 1.0; };
+    let Some(_) = current_kind else {
+        return 1.0;
+    };
     // First-ever snap counts as a kind change (prev_kind = None).
     let kind_changed = prev_kind != current_kind;
-    if !kind_changed { return 1.0; }
+    if !kind_changed {
+        return 1.0;
+    }
     let elapsed_ms = now.saturating_duration_since(last_change_time).as_millis() as u64;
-    if elapsed_ms >= SNAP_LEGEND_FADE_MS { 1.0 }
-    else { elapsed_ms as f32 / SNAP_LEGEND_FADE_MS as f32 }
+    if elapsed_ms >= SNAP_LEGEND_FADE_MS {
+        1.0
+    } else {
+        elapsed_ms as f32 / SNAP_LEGEND_FADE_MS as f32
+    }
 }
 
 #[allow(dead_code)]
@@ -982,7 +1050,10 @@ pub(crate) fn slide_clamped_window(
     let mut new_tl_out = orig_tl_out + dt;
 
     if let Some((left_in, orig_left_out)) = left_constraint {
-        let min_dur = klipp_core::RationalTime { value: 1, rate: orig_left_out.rate };
+        let min_dur = klipp_core::RationalTime {
+            value: 1,
+            rate: orig_left_out.rate,
+        };
         let min_left_out = left_in + min_dur;
         let new_left_out = orig_left_out + dt;
         if new_left_out.value < min_left_out.value {
@@ -995,7 +1066,10 @@ pub(crate) fn slide_clamped_window(
     if let Some((right_out, orig_right_in)) = right_constraint {
         let recalc_dt = new_tl_in - orig_tl_in;
         let new_right_in = orig_right_in + recalc_dt;
-        let min_dur = klipp_core::RationalTime { value: 1, rate: orig_right_in.rate };
+        let min_dur = klipp_core::RationalTime {
+            value: 1,
+            rate: orig_right_in.rate,
+        };
         if (right_out - new_right_in).value < min_dur.value {
             let max_right_in = right_out - min_dur;
             let correction = new_right_in - max_right_in;
@@ -1029,17 +1103,25 @@ pub(crate) fn slip_clamped_source_range(
     let mut new_src_out = orig_out + dt;
 
     if new_src_in.value < 0 {
-        let shift = klipp_core::RationalTime { value: -new_src_in.value, rate: new_src_in.rate };
+        let shift = klipp_core::RationalTime {
+            value: -new_src_in.value,
+            rate: new_src_in.rate,
+        };
         new_src_in.value = 0;
         new_src_out += shift;
     }
     if let Some(media_dur) = media_duration {
         let media_dur_rt = media_dur.rescale_to(new_src_out.rate);
         if new_src_out.value > media_dur_rt.value {
-            let overshoot = klipp_core::RationalTime { value: new_src_out.value - media_dur_rt.value, rate: new_src_out.rate };
+            let overshoot = klipp_core::RationalTime {
+                value: new_src_out.value - media_dur_rt.value,
+                rate: new_src_out.rate,
+            };
             new_src_out = media_dur_rt;
             new_src_in -= overshoot;
-            if new_src_in.value < 0 { new_src_in.value = 0; }
+            if new_src_in.value < 0 {
+                new_src_in.value = 0;
+            }
         }
     }
 
@@ -1053,17 +1135,42 @@ pub(crate) fn resolve_fade_drag_target_full(
     seq: &klipp_timeline::Sequence,
     clip: &klipp_timeline::Clip,
 ) -> Option<(
-    f32, f32, f32, f32, f32,
+    f32,
+    f32,
+    f32,
+    f32,
+    f32,
     klipp_core::FadeCurve,
     klipp_core::FadeCurve,
     klipp_timeline::ChannelConfig,
 )> {
     if let Some(linked_id) = clip.linked_clip_id {
-        seq.tracks.iter()
+        seq.tracks
+            .iter()
             .find_map(|t| t.find_clip(linked_id))
-            .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config))
+            .map(|c| {
+                (
+                    c.gain,
+                    c.volume,
+                    c.pan,
+                    c.fade_in_secs,
+                    c.fade_out_secs,
+                    c.fade_in_curve,
+                    c.fade_out_curve,
+                    c.channel_config,
+                )
+            })
     } else {
-        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config))
+        Some((
+            clip.gain,
+            clip.volume,
+            clip.pan,
+            clip.fade_in_secs,
+            clip.fade_out_secs,
+            clip.fade_in_curve,
+            clip.fade_out_curve,
+            clip.channel_config,
+        ))
     }
 }
 
@@ -1075,11 +1182,18 @@ pub(crate) fn resolve_fade_drag_target_short(
     clip: &klipp_timeline::Clip,
 ) -> Option<(f32, f32, f32, f32, f32)> {
     if let Some(linked_id) = clip.linked_clip_id {
-        seq.tracks.iter()
+        seq.tracks
+            .iter()
             .find_map(|t| t.find_clip(linked_id))
             .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
     } else {
-        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs))
+        Some((
+            clip.gain,
+            clip.volume,
+            clip.pan,
+            clip.fade_in_secs,
+            clip.fade_out_secs,
+        ))
     }
 }
 
@@ -1116,7 +1230,12 @@ impl TimelinePanel {
         // lands inside its rect this frame. Scopes Ctrl+F (and any
         // future panel-keyed shortcut) to the timeline when the user
         // has clicked it. Mirrors markers.rs:347 / app.rs:30501.
-        crate::state::note_active_panel(state, crate::state::PanelKind::Timeline, ui.ctx(), panel_rect);
+        crate::state::note_active_panel(
+            state,
+            crate::state::PanelKind::Timeline,
+            ui.ctx(),
+            panel_rect,
+        );
 
         // Honour a one-shot Ctrl+F focus request for the Timeline panel.
         // When set, open the search bar — the focus is grabbed by the
@@ -1167,7 +1286,10 @@ impl TimelinePanel {
             );
             bg_painter.rect_filled(rect, 0.0, tt.bg_deep);
             bg_painter.line_segment(
-                [egui::pos2(rect.right(), rect.top()), egui::pos2(rect.right(), rect.bottom())],
+                [
+                    egui::pos2(rect.right(), rect.top()),
+                    egui::pos2(rect.right(), rect.bottom()),
+                ],
                 egui::Stroke::new(1.0_f32, tt.border),
             );
             // Track header resize handle (wider hit area for easier grabbing)
@@ -1175,15 +1297,23 @@ impl TimelinePanel {
                 egui::pos2(rect.right() - 4.0, panel_rect.top()),
                 egui::vec2(8.0, panel_rect.height()),
             );
-            let handle_response = ui.interact(handle_rect, ui.id().with("header_resize"), egui::Sense::drag());
+            let handle_response = ui.interact(
+                handle_rect,
+                ui.id().with("header_resize"),
+                egui::Sense::drag(),
+            );
             if handle_response.dragged() {
-                state.track_header_width = (state.track_header_width + handle_response.drag_delta().x)
+                state.track_header_width = (state.track_header_width
+                    + handle_response.drag_delta().x)
                     .clamp(TRACK_HEADER_MIN_WIDTH, TRACK_HEADER_MAX_WIDTH);
             }
             if handle_response.hovered() || handle_response.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 bg_painter.line_segment(
-                    [egui::pos2(rect.right() - 1.0, panel_rect.top()), egui::pos2(rect.right() - 1.0, panel_rect.bottom())],
+                    [
+                        egui::pos2(rect.right() - 1.0, panel_rect.top()),
+                        egui::pos2(rect.right() - 1.0, panel_rect.bottom()),
+                    ],
                     egui::Stroke::new(2.0_f32, tt.border_light),
                 );
             }
@@ -1196,15 +1326,17 @@ impl TimelinePanel {
         } else {
             panel_rect.left() + state.track_header_width
         };
-        let content_rect = egui::Rect::from_min_max(
-            egui::pos2(content_left, panel_rect.top()),
-            panel_rect.max,
-        );
+        let content_rect =
+            egui::Rect::from_min_max(egui::pos2(content_left, panel_rect.top()), panel_rect.max);
         state.last_timeline_content_width = content_rect.width();
         let painter = bg_painter.with_clip_rect(content_rect.intersect(ui.clip_rect()));
 
         // Overview / minimap bar (above ruler) — skip when embedded
-        let overview_height = if state.show_overview_bar && !self.embedded { OVERVIEW_BAR_HEIGHT } else { 0.0 };
+        let overview_height = if state.show_overview_bar && !self.embedded {
+            OVERVIEW_BAR_HEIGHT
+        } else {
+            0.0
+        };
         if state.show_overview_bar && !self.embedded {
             let overview_rect = egui::Rect::from_min_size(
                 content_rect.min,
@@ -1216,16 +1348,28 @@ impl TimelinePanel {
         // Find/search bar (between overview and ruler). Only renders
         // when `search_visible` and not embedded — the embedded shell
         // can host its own search surface in a follow-up.
-        let search_bar_height = if self.search_visible && !self.embedded { SEARCH_BAR_HEIGHT } else { 0.0 };
+        let search_bar_height = if self.search_visible && !self.embedded {
+            SEARCH_BAR_HEIGHT
+        } else {
+            0.0
+        };
 
         // ── Hoisted layout construction (ruler_rect computed here, drawing deferred below) ──
         let ruler_height_used = if self.embedded { 0.0 } else { RULER_HEIGHT };
         let ruler_rect = egui::Rect::from_min_size(
-            egui::pos2(content_rect.left(), content_rect.top() + overview_height + search_bar_height),
+            egui::pos2(
+                content_rect.left(),
+                content_rect.top() + overview_height + search_bar_height,
+            ),
             egui::vec2(content_rect.width(), ruler_height_used),
         );
-        let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
-        let tracks_start_y = content_rect.top() + overview_height + search_bar_height + ruler_height_used + pool_h;
+        let pool_h = if self.embedded {
+            0.0
+        } else {
+            MEDIA_POOL_HEIGHT
+        };
+        let tracks_start_y =
+            content_rect.top() + overview_height + search_bar_height + ruler_height_used + pool_h;
         let track_count = state.sequence().tracks.len();
         // Total Y footprint must include the per-track automation lane
         // when visible. `track_row_height` folds it in.
@@ -1271,7 +1415,14 @@ impl TimelinePanel {
             self.draw_ruler_ticks(&painter, &ruler_rect, state);
         }
 
-        self.handle_ruler_interaction(ui, state, &painter, &layout, overview_bar_consumed, &mut cmds);
+        self.handle_ruler_interaction(
+            ui,
+            state,
+            &painter,
+            &layout,
+            overview_bar_consumed,
+            &mut cmds,
+        );
 
         // Media pool, zoom buttons, toggle buttons — skip when embedded
         if !self.embedded {
@@ -1349,11 +1500,19 @@ impl TimelinePanel {
 
             // Draw track header label and controls — skip when embedded or outside visible area.
             // A track is visible if at least 16px of it is showing (enough for a label row).
-            let track_visible = track_y < tracks_clip_bottom - 4.0 && track_y + track_height > tracks_start_y;
+            let track_visible =
+                track_y < tracks_clip_bottom - 4.0 && track_y + track_height > tracks_start_y;
             if !self.embedded && track_visible {
                 self.draw_single_track_header(
-                    ui, state, track_idx, track_y, track_height, &track_name,
-                    &layout, &header_painter, &mut cmds,
+                    ui,
+                    state,
+                    track_idx,
+                    track_y,
+                    track_height,
+                    &track_name,
+                    &layout,
+                    &header_painter,
+                    &mut cmds,
                 );
             } // end if !self.embedded (track header controls)
 
@@ -1376,7 +1535,8 @@ impl TimelinePanel {
             // without consuming the timeline pan/zoom channel. Only audio
             // tracks respond; other kinds fall through to normal scroll.
             if track_kind == TrackKind::Audio {
-                let pointer_over_track = ui.input(|i| i.pointer.interact_pos())
+                let pointer_over_track = ui
+                    .input(|i| i.pointer.interact_pos())
                     .is_some_and(|p| track_rect.contains(p));
                 if pointer_over_track {
                     let alt_held = ui.input(|i| i.modifiers.alt);
@@ -1399,7 +1559,8 @@ impl TimelinePanel {
                         }
                         if (factor - 1.0).abs() > 1e-4 {
                             let track_id_here = state.sequence().tracks[track_idx].id;
-                            let cur = state.waveform_zoom
+                            let cur = state
+                                .waveform_zoom
                                 .get(&track_id_here)
                                 .copied()
                                 .unwrap_or(1.0);
@@ -1413,25 +1574,91 @@ impl TimelinePanel {
             // Draw clips for this track (clipped to lane rect, bounded by tracks area)
             // Skip rendering for tracks fully outside the visible area
             if track_visible {
-            let lane_painter = painter.with_clip_rect(track_rect.intersect(tracks_clip));
-            self.draw_track_clips(
-                ui, &lane_painter, &track_rect, &content_rect,
-                state, &mut cmds, track_idx, true,
-            );
+                let lane_painter = painter.with_clip_rect(track_rect.intersect(tracks_clip));
+                self.draw_track_clips(
+                    ui,
+                    &lane_painter,
+                    &track_rect,
+                    &content_rect,
+                    state,
+                    &mut cmds,
+                    track_idx,
+                    true,
+                );
 
-            self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
-            self.handle_file_browser_dnd_over_track(ui, state, track_idx, track_kind, track_rect, &painter, &mut cmds);
+                self.handle_media_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_kind,
+                    &track_name,
+                    track_rect,
+                    &painter,
+                    &mut cmds,
+                );
+                self.handle_file_browser_dnd_over_track(
+                    ui, state, track_idx, track_kind, track_rect, &painter, &mut cmds,
+                );
 
-            self.handle_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
-            self.handle_audio_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
-            self.handle_transition_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
-            self.handle_title_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
-            self.handle_generator_dnd_over_track(ui, state, track_idx, track_kind, track_rect, content_rect, &painter, &mut cmds);
+                self.handle_effect_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_rect,
+                    content_rect,
+                    &painter,
+                    &mut cmds,
+                );
+                self.handle_audio_effect_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_rect,
+                    content_rect,
+                    &painter,
+                    &mut cmds,
+                );
+                self.handle_transition_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_rect,
+                    content_rect,
+                    &painter,
+                    &mut cmds,
+                );
+                self.handle_title_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_kind,
+                    track_rect,
+                    content_rect,
+                    &painter,
+                    &mut cmds,
+                );
+                self.handle_generator_dnd_over_track(
+                    ui,
+                    state,
+                    track_idx,
+                    track_kind,
+                    track_rect,
+                    content_rect,
+                    &painter,
+                    &mut cmds,
+                );
             } // end if track_visible (clip rendering + drag-drop)
 
             if !self.embedded && track_visible {
                 self.handle_track_resize_handle(
-                    ui, state, track_idx, track_y, track_height, header_rect, &painter, &mut cmds,
+                    ui,
+                    state,
+                    track_idx,
+                    track_y,
+                    track_height,
+                    header_rect,
+                    &painter,
+                    &mut cmds,
                 );
             }
 
@@ -1445,8 +1672,13 @@ impl TimelinePanel {
                     egui::vec2(content_rect.width(), lane_h),
                 );
                 self.draw_automation_lane(
-                    ui, &painter, lane_rect, &content_rect, track_idx,
-                    state, &mut cmds,
+                    ui,
+                    &painter,
+                    lane_rect,
+                    &content_rect,
+                    track_idx,
+                    state,
+                    &mut cmds,
                 );
 
                 // Lane resize handle along the bottom edge. Mirrors the
@@ -1503,7 +1735,13 @@ impl TimelinePanel {
         self.handle_audio_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Audio EFFECT keyframe rubber band drag update ──────────────
-        self.handle_audio_effect_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
+        self.handle_audio_effect_keyframe_drag(
+            ui,
+            state,
+            &mut cmds,
+            pointer_released,
+            pointer_down,
+        );
 
         // ── Video keyframe rubber band drag update ─────────────────────
         self.handle_video_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
@@ -1518,7 +1756,13 @@ impl TimelinePanel {
         self.handle_video_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Audio EFFECT Bezier tangent handle drag update ──────────────
-        self.handle_audio_effect_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
+        self.handle_audio_effect_bezier_tangent_drag(
+            ui,
+            state,
+            &mut cmds,
+            pointer_released,
+            pointer_down,
+        );
 
         // ── Keyframe interpolation context menu popup ───────────────────────
         self.show_keyframe_context_menu(ui, state, &mut cmds);
@@ -1534,7 +1778,9 @@ impl TimelinePanel {
         }
 
         // --- Status bar --- (skip when embedded)
-        if self.embedded { return cmds; }
+        if self.embedded {
+            return cmds;
+        }
         self.draw_status_bar(ui, state, &layout);
 
         cmds
@@ -1548,8 +1794,8 @@ impl TimelinePanel {
     /// Cheap when the query is empty — bails out before any walk.
     fn build_search_hits(&mut self, state: &AppState) {
         use crate::panels::timeline_search::{
-            clip_filename_matches, clip_marker_matches, sequence_marker_matches,
-            SearchHit, SearchHitKind,
+            clip_filename_matches, clip_marker_matches, sequence_marker_matches, SearchHit,
+            SearchHitKind,
         };
 
         self.search_hits.clear();
@@ -1592,20 +1838,45 @@ impl TimelinePanel {
                 }
                 // Lines the screen showed, at the moment each came up.
                 if track.kind == klipp_timeline::TrackKind::Video {
-                    if let Some((mid, item)) = clip.media_id().and_then(|mid| state.media_pool.get(&mid).map(|m| (mid, m))) {
-                        let lines = self.screen_text_cache.entry(mid).or_insert_with(|| {
-                            std::rc::Rc::new(
-                                klipp_analysis::report::MediaAnalysis::load(&item.path)
-                                    .screentext
-                                    .map(|st| st.spans.into_iter().map(|s| crate::panels::timeline_search::ScreenLine { text: s.text, start_secs: s.start_secs, end_secs: s.end_secs }).collect())
-                                    .unwrap_or_default(),
-                            )
-                        }).clone();
+                    if let Some((mid, item)) = clip
+                        .media_id()
+                        .and_then(|mid| state.media_pool.get(&mid).map(|m| (mid, m)))
+                    {
+                        let lines = self
+                            .screen_text_cache
+                            .entry(mid)
+                            .or_insert_with(|| {
+                                std::rc::Rc::new(
+                                    klipp_analysis::report::MediaAnalysis::load(&item.path)
+                                        .screentext
+                                        .map(|st| {
+                                            st.spans
+                                                .into_iter()
+                                                .map(|s| {
+                                                    crate::panels::timeline_search::ScreenLine {
+                                                        text: s.text,
+                                                        start_secs: s.start_secs,
+                                                        end_secs: s.end_secs,
+                                                    }
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                )
+                            })
+                            .clone();
                         let rate = clip.timeline_in.rate;
-                        for off in crate::panels::timeline_search::screen_text_hits(&lines, clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64(), q, cs) {
+                        for off in crate::panels::timeline_search::screen_text_hits(
+                            &lines,
+                            clip.source_in.to_secs_f64(),
+                            clip.source_out.to_secs_f64(),
+                            q,
+                            cs,
+                        ) {
                             self.search_hits.push(SearchHit {
                                 kind: SearchHitKind::ScreenText,
-                                position: clip.timeline_in + klipp_core::RationalTime::from_secs_f64(off, rate),
+                                position: clip.timeline_in
+                                    + klipp_core::RationalTime::from_secs_f64(off, rate),
                                 track_idx: Some(track_idx),
                                 clip_id: Some(clip.id),
                             });
@@ -1638,9 +1909,7 @@ impl TimelinePanel {
         if self.search_hits.is_empty() {
             self.search_match_cursor = 0;
         } else {
-            self.search_match_cursor = self
-                .search_match_cursor
-                .min(self.search_hits.len() - 1);
+            self.search_match_cursor = self.search_match_cursor.min(self.search_hits.len() - 1);
         }
     }
 
@@ -1689,7 +1958,11 @@ impl TimelinePanel {
         } else if self.search_hits.is_empty() {
             "No matches".to_string()
         } else {
-            format!("{} of {}", self.search_match_cursor + 1, self.search_hits.len())
+            format!(
+                "{} of {}",
+                self.search_match_cursor + 1,
+                self.search_hits.len()
+            )
         };
 
         // Trailing controls (right-to-left).
@@ -1769,7 +2042,11 @@ impl TimelinePanel {
             {
                 prev_clicked = true;
             }
-            let aa_label = if self.search_case_sensitive { "Aa" } else { "aa" };
+            let aa_label = if self.search_case_sensitive {
+                "Aa"
+            } else {
+                "aa"
+            };
             if ui
                 .small_button(aa_label)
                 .on_hover_text(if self.search_case_sensitive {
@@ -1782,8 +2059,7 @@ impl TimelinePanel {
                 aa_clicked = true;
             }
             if !counter.is_empty() {
-                let counter_color = if self.search_hits.is_empty()
-                    && !self.search_query.is_empty()
+                let counter_color = if self.search_hits.is_empty() && !self.search_query.is_empty()
                 {
                     // No-match state — amber tint. Use accent (theme's
                     // warm amber/gold token) directly; text colour
@@ -1793,11 +2069,7 @@ impl TimelinePanel {
                 } else {
                     tt.text_secondary
                 };
-                ui.label(
-                    egui::RichText::new(counter)
-                        .size(11.0)
-                        .color(counter_color),
-                );
+                ui.label(egui::RichText::new(counter).size(11.0).color(counter_color));
             }
         });
 
@@ -1861,14 +2133,18 @@ impl TimelinePanel {
             self.colour_revealed_clip = None;
             return;
         }
-        let Some(clip_id) = state.selected_clip else { return };
+        let Some(clip_id) = state.selected_clip else {
+            return;
+        };
         if self.colour_revealed_clip == Some(clip_id) {
             return;
         }
         self.colour_revealed_clip = Some(clip_id);
 
         let seq = state.sequence();
-        let Some((track_idx, _)) = seq.find_clip(clip_id) else { return };
+        let Some((track_idx, _)) = seq.find_clip(clip_id) else {
+            return;
+        };
         let mut row_top = 0.0_f32;
         for ti in 0..track_idx {
             row_top += track_row_height(&seq.tracks[ti]);
@@ -1897,12 +2173,7 @@ impl TimelinePanel {
     /// passes. Persistent thin border on every hit; pulse on the
     /// active cursor's hit. Reads `self.search_hits` (built by
     /// `build_search_hits` during `draw_search_bar`).
-    fn draw_search_highlights(
-        &self,
-        ui: &egui::Ui,
-        state: &AppState,
-        layout: &TimelineLayout,
-    ) {
+    fn draw_search_highlights(&self, ui: &egui::Ui, state: &AppState, layout: &TimelineLayout) {
         use crate::panels::timeline_search::SearchHitKind;
         if self.search_hits.is_empty() {
             return;
@@ -1923,7 +2194,11 @@ impl TimelinePanel {
 
         for (i, hit) in self.search_hits.iter().enumerate() {
             let is_cursor = i == self.search_match_cursor;
-            let stroke = if is_cursor { cursor_stroke } else { persistent_stroke };
+            let stroke = if is_cursor {
+                cursor_stroke
+            } else {
+                persistent_stroke
+            };
             match hit.kind {
                 SearchHitKind::Clip => {
                     if let Some(cid) = hit.clip_id {
@@ -1938,7 +2213,9 @@ impl TimelinePanel {
                     // pixel position cached, so recompute from
                     // clip_rect + (time_secs / clip_dur).
                     if let Some(cid) = hit.clip_id {
-                        if let Some(clip_rect) = self.frame_cache.clip_screen_rects.get(&cid).copied() {
+                        if let Some(clip_rect) =
+                            self.frame_cache.clip_screen_rects.get(&cid).copied()
+                        {
                             // Locate the clip to find its duration and
                             // map the marker's hit position to a frac.
                             if let Some(clip) = state.sequence().all_clips().find(|c| c.id == cid) {
@@ -1967,8 +2244,7 @@ impl TimelinePanel {
                     // draw_ruler_markers at line ~3114.
                     let zoom = state.timeline_zoom;
                     let scroll = state.timeline_scroll_x;
-                    let x = layout.content_rect.left()
-                        + hit.position.to_secs_f64() as f32 * zoom
+                    let x = layout.content_rect.left() + hit.position.to_secs_f64() as f32 * zoom
                         - scroll;
                     let ruler = layout.ruler_rect;
                     if x >= ruler.left() - 6.0 && x <= ruler.right() + 6.0 {
@@ -2713,10 +2989,7 @@ impl TimelinePanel {
                                 } else {
                                     format!("  {}", label)
                                 };
-                                if ui
-                                    .add(egui::Button::new(display).frame(false))
-                                    .clicked()
-                                {
+                                if ui.add(egui::Button::new(display).frame(false)).clicked() {
                                     if !is_active {
                                         cmds.push(AppCommand::SetAudioAutomationLaneParam {
                                             track_idx: menu.track_idx,
@@ -2774,7 +3047,9 @@ impl TimelinePanel {
                         state.dragging_media_group.clone()
                     };
                     let compatible = group.iter().any(|id| {
-                        state.media_pool.get(id).is_some_and(|item| crate::drag_drop::media_fits_track(item, track_kind))
+                        state.media_pool.get(id).is_some_and(|item| {
+                            crate::drag_drop::media_fits_track(item, track_kind)
+                        })
                     });
                     if compatible {
                         painter.rect_stroke(
@@ -2785,7 +3060,13 @@ impl TimelinePanel {
                         if !any_down {
                             state.dragging_media = None;
                             state.dragging_media_group.clear();
-                            tracing::info!("Media drop: {} item(s) ({:?}) -> track {} ({})", group.len(), drag_media_id, track_idx, track_name);
+                            tracing::info!(
+                                "Media drop: {} item(s) ({:?}) -> track {} ({})",
+                                group.len(),
+                                drag_media_id,
+                                track_idx,
+                                track_name
+                            );
                             if group.len() == 1 {
                                 cmds.push(AppCommand::AppendClipToTrack {
                                     media_id: drag_media_id,
@@ -2831,11 +3112,15 @@ impl TimelinePanel {
             Some(crate::drag_drop::DragPayload::FilePaths { paths }) => Some(paths.clone()),
             _ => None,
         };
-        let Some(paths) = paths_snapshot else { return; };
+        let Some(paths) = paths_snapshot else {
+            return;
+        };
 
         let hover_pos = ui.input(|i| i.pointer.hover_pos());
         let any_down = ui.input(|i| i.pointer.any_down());
-        let Some(pos) = hover_pos else { return; };
+        let Some(pos) = hover_pos else {
+            return;
+        };
         if !track_rect.contains(pos) {
             return;
         }
@@ -2843,9 +3128,11 @@ impl TimelinePanel {
         // Classify each dragged path against the target track kind.
         // Audio tracks accept .wav/.mp3/etc.; video tracks accept video and
         // still-image files (stills become a still clip on a video track).
-        let compatible: Vec<std::path::PathBuf> = paths.iter()
+        let compatible: Vec<std::path::PathBuf> = paths
+            .iter()
             .filter(|p| {
-                let ext = p.extension()
+                let ext = p
+                    .extension()
                     .map(|e| e.to_string_lossy().to_lowercase())
                     .unwrap_or_default();
                 let is_video = crate::browser::VIDEO_EXTENSIONS.contains(&ext.as_str());
@@ -2863,11 +3150,7 @@ impl TimelinePanel {
         if compatible.is_empty() {
             // None of the dragged files match this track kind — paint a red
             // "rejected" outline so the user understands why nothing happened.
-            painter.rect_stroke(
-                track_rect,
-                0.0,
-                egui::Stroke::new(2.0_f32, tt.marker_error),
-            );
+            painter.rect_stroke(track_rect, 0.0, egui::Stroke::new(2.0_f32, tt.marker_error));
             // On release we still need to clear the payload — but only if
             // pointer is over THIS rejecting track. Other handlers may still
             // be matching the same payload on other tracks; let them claim it.
@@ -2875,11 +3158,7 @@ impl TimelinePanel {
         }
 
         // Compatible drop — paint blue accept outline.
-        painter.rect_stroke(
-            track_rect,
-            0.0,
-            egui::Stroke::new(2.0_f32, tt.marker_info),
-        );
+        painter.rect_stroke(track_rect, 0.0, egui::Stroke::new(2.0_f32, tt.marker_info));
 
         if !any_down {
             // Mouse released over this track — claim the drop.
@@ -2888,10 +3167,7 @@ impl TimelinePanel {
             let skipped = paths.len() - imported_count;
             for path in compatible {
                 let media_id = klipp_core::MediaId::new();
-                cmds.push(AppCommand::LoadMediaFile {
-                    path,
-                    media_id,
-                });
+                cmds.push(AppCommand::LoadMediaFile { path, media_id });
                 cmds.push(AppCommand::AppendClipToTrack {
                     media_id,
                     track_index: track_idx,
@@ -2903,7 +3179,9 @@ impl TimelinePanel {
                     imported_count, skipped
                 ));
             } else {
-                state.toast.show(format!("Imported {} file(s) to timeline", imported_count));
+                state
+                    .toast
+                    .show(format!("Imported {} file(s) to timeline", imported_count));
             }
         }
     }
@@ -2918,7 +3196,10 @@ impl TimelinePanel {
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })) {
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::Effect { .. })
+        ) {
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
@@ -2928,11 +3209,16 @@ impl TimelinePanel {
                     let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
                     let mut hit_clip_id = None;
                     for clip in clips {
-                        let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                        let clip_x = content_rect.left()
+                            + clip.timeline_in.to_secs_f64() as f32 * zoom
+                            - scroll;
                         let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
                         let clip_rect = egui::Rect::from_min_size(
                             egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
-                            egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                            egui::vec2(
+                                (clip_w - CLIP_GAP * 2.0).max(2.0),
+                                track_rect.height() - 4.0,
+                            ),
                         );
                         if clip_rect.contains(pos) {
                             hit_clip_id = Some(clip.id);
@@ -2947,7 +3233,12 @@ impl TimelinePanel {
 
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
-                            if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
+                            if let Some(crate::drag_drop::DragPayload::Effect {
+                                name,
+                                is_builtin,
+                                plugin_id,
+                            }) = state.drag_drop.end()
+                            {
                                 if state.selected_clip != Some(clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
@@ -2994,12 +3285,18 @@ impl TimelinePanel {
                                         .unwrap_or_default();
                                     if !effects.is_empty() {
                                         for effect in effects {
-                                            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
+                                            cmds.push(AppCommand::AddBuiltinEffect {
+                                                clip_id,
+                                                effect,
+                                            });
                                         }
                                         state.toast.show(format!("\"{}\" applied to clip", name));
                                     }
                                 } else {
-                                    cmds.push(AppCommand::AddEffect { clip_id, plugin_name: plugin_id });
+                                    cmds.push(AppCommand::AddEffect {
+                                        clip_id,
+                                        plugin_name: plugin_id,
+                                    });
                                     state.toast.show(format!("\"{}\" applied to clip", name));
                                 }
                             }
@@ -3022,7 +3319,10 @@ impl TimelinePanel {
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::AudioEffect { .. })) {
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::AudioEffect { .. })
+        ) {
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
@@ -3032,17 +3332,23 @@ impl TimelinePanel {
                     let clips = &state.sequences[state.active_sequence_idx].tracks[track_idx].clips;
                     let mut hit_clip_id = None;
                     for clip in clips {
-                        let clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                        let clip_x = content_rect.left()
+                            + clip.timeline_in.to_secs_f64() as f32 * zoom
+                            - scroll;
                         let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
                         let clip_rect = egui::Rect::from_min_size(
                             egui::pos2(clip_x + CLIP_GAP, track_rect.top() + 2.0),
-                            egui::vec2((clip_w - CLIP_GAP * 2.0).max(2.0), track_rect.height() - 4.0),
+                            egui::vec2(
+                                (clip_w - CLIP_GAP * 2.0).max(2.0),
+                                track_rect.height() - 4.0,
+                            ),
                         );
                         if clip_rect.contains(pos) {
                             hit_clip_id = Some(clip.id);
                             let tt = theme();
                             painter.rect_stroke(
-                                clip_rect, 2.0,
+                                clip_rect,
+                                2.0,
                                 egui::Stroke::new(2.0_f32, tt.marker_success),
                             );
                             break;
@@ -3051,11 +3357,18 @@ impl TimelinePanel {
 
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
-                            if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
+                            if let Some(crate::drag_drop::DragPayload::AudioEffect {
+                                name,
+                                type_id,
+                            }) = state.drag_drop.end()
+                            {
                                 if state.selected_clip != Some(clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
+                                cmds.push(AppCommand::AddAudioEffect {
+                                    clip_id,
+                                    effect_type: type_id,
+                                });
                                 state.toast.show(format!("\"{}\" applied to clip", name));
                             }
                         } else {
@@ -3097,7 +3410,8 @@ impl TimelinePanel {
         let mut best: Option<(usize, f32)> = None;
         for i in 0..clips.len().saturating_sub(1) {
             let a = &clips[i];
-            let boundary_secs = a.timeline_in.to_secs_f64() as f32 + a.duration().to_secs_f64() as f32;
+            let boundary_secs =
+                a.timeline_in.to_secs_f64() as f32 + a.duration().to_secs_f64() as f32;
             let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
             let dist = (hover_pos.x - boundary_x).abs();
             if dist < 40.0 && best.is_none_or(|(_, d)| dist < d) {
@@ -3128,11 +3442,7 @@ impl TimelinePanel {
             3.0,
             egui::Color32::from_rgba_unmultiplied(warn.r(), warn.g(), warn.b(), 60),
         );
-        painter.rect_stroke(
-            highlight_rect,
-            3.0,
-            egui::Stroke::new(2.0_f32, warn),
-        );
+        painter.rect_stroke(highlight_rect, 3.0, egui::Stroke::new(2.0_f32, warn));
 
         let any_down = ui.input(|i| i.pointer.any_down());
         if !any_down {
@@ -3141,9 +3451,13 @@ impl TimelinePanel {
                 .transitions
                 .iter()
                 .any(|t| t.clip_a_id == clip_a_id && t.clip_b_id == clip_b_id);
-            if let Some(crate::drag_drop::DragPayload::Transition { name, .. }) = state.drag_drop.end() {
+            if let Some(crate::drag_drop::DragPayload::Transition { name, .. }) =
+                state.drag_drop.end()
+            {
                 if already {
-                    state.toast.show("Transition already exists at this cut".to_string());
+                    state
+                        .toast
+                        .show("Transition already exists at this cut".to_string());
                 } else {
                     cmds.push(AppCommand::AddTransition {
                         track_index: track_idx,
@@ -3169,12 +3483,16 @@ impl TimelinePanel {
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. })) {
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::Title { .. })
+        ) {
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
                 if track_rect.contains(pos) {
-                    let compatible = track_kind == TrackKind::Text || track_kind == TrackKind::Video;
+                    let compatible =
+                        track_kind == TrackKind::Text || track_kind == TrackKind::Video;
                     if compatible {
                         painter.rect_stroke(
                             track_rect,
@@ -3182,10 +3500,16 @@ impl TimelinePanel {
                             egui::Stroke::new(2.0_f32, theme().accent_alt),
                         );
                         if !any_down {
-                            if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name }) = state.drag_drop.end() {
+                            if let Some(crate::drag_drop::DragPayload::Title {
+                                title_data,
+                                template_name,
+                            }) = state.drag_drop.end()
+                            {
                                 let rel_x = pos.x - content_rect.left();
-                                let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
-                                let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+                                let time_secs =
+                                    (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
+                                let fps_rate =
+                                    state.sequences[state.active_sequence_idx].fps.rate();
                                 let frame = (time_secs * fps_rate as f32) as i64;
                                 let timeline_in = RationalTime::from_frames(frame.max(0), fps_rate);
                                 let duration_frames = fps_rate * 5;
@@ -3195,18 +3519,30 @@ impl TimelinePanel {
                                 // the primary video decoder.
                                 let actual_track_idx = if track_kind == TrackKind::Video {
                                     // Find or create a Text track
-                                    let text_idx = state.sequences[state.active_sequence_idx].tracks.iter()
-                                        .position(|t| t.kind == TrackKind::Text && t.clip_at_timecode(timeline_in).is_none());
+                                    let text_idx = state.sequences[state.active_sequence_idx]
+                                        .tracks
+                                        .iter()
+                                        .position(|t| {
+                                            t.kind == TrackKind::Text
+                                                && t.clip_at_timecode(timeline_in).is_none()
+                                        });
                                     match text_idx {
                                         Some(idx) => idx,
                                         None => {
-                                            let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                                .filter(|t| t.kind == TrackKind::Text).count() + 1;
+                                            let track_num = state.sequences
+                                                [state.active_sequence_idx]
+                                                .tracks
+                                                .iter()
+                                                .filter(|t| t.kind == TrackKind::Text)
+                                                .count()
+                                                + 1;
                                             let track = klipp_timeline::Track::new(
                                                 &format!("Text {track_num}"),
                                                 TrackKind::Text,
                                             );
-                                            state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                                            state.sequences[state.active_sequence_idx]
+                                                .tracks
+                                                .insert(0, track);
                                             0
                                         }
                                     }
@@ -3218,7 +3554,9 @@ impl TimelinePanel {
                                     timeline_in,
                                     duration_frames,
                                 });
-                                state.toast.show(format!("\"{}\" title added to track", template_name));
+                                state
+                                    .toast
+                                    .show(format!("\"{}\" title added to track", template_name));
                             }
                         }
                     } else {
@@ -3245,7 +3583,10 @@ impl TimelinePanel {
         painter: &egui::Painter,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Generator { .. })) {
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::Generator { .. })
+        ) {
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
@@ -3257,9 +3598,16 @@ impl TimelinePanel {
                         egui::Stroke::new(2.0_f32, tt.marker_success),
                     );
                     if !any_down {
-                        if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
-                            cmds.push(AppCommand::CreateGeneratorClip { track_index: Some(track_idx), data });
-                            state.toast.show(format!("\"{}\" generator added to timeline", name));
+                        if let Some(crate::drag_drop::DragPayload::Generator { name, data }) =
+                            state.drag_drop.end()
+                        {
+                            cmds.push(AppCommand::CreateGeneratorClip {
+                                track_index: Some(track_idx),
+                                data,
+                            });
+                            state
+                                .toast
+                                .show(format!("\"{}\" generator added to timeline", name));
                         }
                     }
                 }
@@ -3297,46 +3645,74 @@ impl TimelinePanel {
         if handle_resp.double_clicked() {
             let new_h = {
                 let track = &mut state.sequences[state.active_sequence_idx].tracks[track_idx];
-                if track.custom_height.is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0) {
+                if track
+                    .custom_height
+                    .is_some_and(|h| h <= MIN_TRACK_HEIGHT + 1.0)
+                {
                     track.pre_collapse_height.take()
                 } else {
                     track.pre_collapse_height = track.custom_height.or(Some(track_height));
                     Some(MIN_TRACK_HEIGHT)
                 }
             };
-            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: new_h });
+            cmds.push(AppCommand::SetTrackCustomHeight {
+                track_id,
+                height: new_h,
+            });
         }
 
         handle_resp.context_menu(|ui| {
             if ui.button("Small (32px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(32.0) });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: Some(32.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Medium (64px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(64.0) });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: Some(64.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Large (120px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: Some(120.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Expanded (200px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: Some(200.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Maximum (300px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(300.0) });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: Some(300.0),
+                });
                 ui.close_menu();
             }
             ui.separator();
             if ui.button("Reset to default").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: None });
+                cmds.push(AppCommand::SetTrackCustomHeight {
+                    track_id,
+                    height: None,
+                });
                 ui.close_menu();
             }
         });
 
         if handle_resp.drag_started() {
-            self.resizing_track = Some((track_idx, handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0), track_height));
+            self.resizing_track = Some((
+                track_idx,
+                handle_resp.interact_pointer_pos.map(|p| p.y).unwrap_or(0.0),
+                track_height,
+            ));
         }
         if handle_resp.dragged() {
             if let Some((ri, start_y, orig_h)) = self.resizing_track {
@@ -3350,7 +3726,8 @@ impl TimelinePanel {
                                 t.custom_height = Some(new_h);
                             }
                         } else {
-                            state.sequences[state.active_sequence_idx].tracks[track_idx].custom_height = Some(new_h);
+                            state.sequences[state.active_sequence_idx].tracks[track_idx]
+                                .custom_height = Some(new_h);
                         }
                         state.dirty = true;
                     }
@@ -3360,7 +3737,10 @@ impl TimelinePanel {
         if handle_resp.drag_stopped() {
             self.resizing_track = None;
             let final_h = state.sequence().tracks[track_idx].custom_height;
-            cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: final_h });
+            cmds.push(AppCommand::SetTrackCustomHeight {
+                track_id,
+                height: final_h,
+            });
         }
         if handle_resp.hovered() || handle_resp.dragged() {
             let tt = theme();
@@ -3410,24 +3790,39 @@ impl TimelinePanel {
 
         if handle_resp.double_clicked() {
             // Double-click → reset to default (clears the override).
-            cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: None });
+            cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                track_id,
+                height: None,
+            });
         }
 
         handle_resp.context_menu(|ui| {
             if ui.button("Compact (60px)").clicked() {
-                cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(60.0) });
+                cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                    track_id,
+                    height: Some(60.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Default (120px)").clicked() {
-                cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: None });
+                cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                    track_id,
+                    height: None,
+                });
                 ui.close_menu();
             }
             if ui.button("Tall (200px)").clicked() {
-                cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(200.0) });
+                cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                    track_id,
+                    height: Some(200.0),
+                });
                 ui.close_menu();
             }
             if ui.button("Maximum (400px)").clicked() {
-                cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: Some(400.0) });
+                cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                    track_id,
+                    height: Some(400.0),
+                });
                 ui.close_menu();
             }
         });
@@ -3444,10 +3839,8 @@ impl TimelinePanel {
                 if ri == track_idx {
                     if let Some(pos) = ui.ctx().pointer_latest_pos() {
                         let delta = pos.y - start_y;
-                        let new_h = (orig_h + delta).clamp(
-                            MIN_AUTOMATION_LANE_HEIGHT,
-                            MAX_AUTOMATION_LANE_HEIGHT,
-                        );
+                        let new_h = (orig_h + delta)
+                            .clamp(MIN_AUTOMATION_LANE_HEIGHT, MAX_AUTOMATION_LANE_HEIGHT);
                         // Live mutation during the drag (no
                         // command-per-frame); the final value lands
                         // through SetTrackAutomationLaneHeight on
@@ -3462,7 +3855,10 @@ impl TimelinePanel {
         if handle_resp.drag_stopped() {
             self.resizing_lane = None;
             let final_h = state.sequence().tracks[track_idx].automation_lane_height;
-            cmds.push(AppCommand::SetTrackAutomationLaneHeight { track_id, height: final_h });
+            cmds.push(AppCommand::SetTrackAutomationLaneHeight {
+                track_id,
+                height: final_h,
+            });
         }
         if handle_resp.hovered() || handle_resp.dragged() {
             let tt = theme();
@@ -3485,22 +3881,39 @@ impl TimelinePanel {
     ) {
         let content_rect = layout.content_rect;
         // Title template drag released outside any track — auto-create text track
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Title { .. }))
-            && !ui.input(|i| i.pointer.any_down())
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::Title { .. })
+        ) && !ui.input(|i| i.pointer.any_down())
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 // Check if cursor is outside all track rects
-                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                let on_any_track = self
+                    .frame_cache
+                    .track_rects
+                    .iter()
+                    .any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
-                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name }) = state.drag_drop.end() {
+                    if let Some(crate::drag_drop::DragPayload::Title {
+                        title_data,
+                        template_name,
+                    }) = state.drag_drop.end()
+                    {
                         // Create a new text track and place the title there
-                        let track_num = state.sequence().tracks.iter()
-                            .filter(|t| t.kind == TrackKind::Text).count() + 1;
+                        let track_num = state
+                            .sequence()
+                            .tracks
+                            .iter()
+                            .filter(|t| t.kind == TrackKind::Text)
+                            .count()
+                            + 1;
                         let track = klipp_timeline::Track::new(
                             &format!("Text {track_num}"),
                             TrackKind::Text,
                         );
-                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
+                        state.sequences[state.active_sequence_idx]
+                            .tracks
+                            .insert(0, track);
                         let track_idx = 0;
                         let rel_x = cursor_pos.x - content_rect.left();
                         let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
@@ -3516,7 +3929,9 @@ impl TimelinePanel {
                         });
                         state.dirty = true;
                         cmds.push(AppCommand::SequenceUpdated);
-                        state.toast.show(format!("\"{}\" title added to new track", template_name));
+                        state
+                            .toast
+                            .show(format!("\"{}\" title added to new track", template_name));
                     }
                 } else if !on_any_track {
                     // Released outside content area — cancel drag
@@ -3528,15 +3943,28 @@ impl TimelinePanel {
         }
 
         // Generator drag released outside any track — CreateGeneratorClip handles track creation
-        if matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Generator { .. }))
-            && !ui.input(|i| i.pointer.any_down())
+        if matches!(
+            &state.drag_drop.payload,
+            Some(crate::drag_drop::DragPayload::Generator { .. })
+        ) && !ui.input(|i| i.pointer.any_down())
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
+                let on_any_track = self
+                    .frame_cache
+                    .track_rects
+                    .iter()
+                    .any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
-                    if let Some(crate::drag_drop::DragPayload::Generator { name, data }) = state.drag_drop.end() {
-                        cmds.push(AppCommand::CreateGeneratorClip { track_index: None, data });
-                        state.toast.show(format!("\"{}\" generator added to timeline", name));
+                    if let Some(crate::drag_drop::DragPayload::Generator { name, data }) =
+                        state.drag_drop.end()
+                    {
+                        cmds.push(AppCommand::CreateGeneratorClip {
+                            track_index: None,
+                            data,
+                        });
+                        state
+                            .toast
+                            .show(format!("\"{}\" generator added to timeline", name));
                     }
                 } else if !on_any_track {
                     state.drag_drop.end();
@@ -3564,19 +3992,35 @@ impl TimelinePanel {
                 let group = state.dragging_media_group.clone();
                 let append_group = |track_index: usize| -> AppCommand {
                     if group.len() > 1 {
-                        AppCommand::AppendMediaBatchToTrack { media_ids: group.clone(), track_index }
+                        AppCommand::AppendMediaBatchToTrack {
+                            media_ids: group.clone(),
+                            track_index,
+                        }
                     } else {
-                        AppCommand::AppendClipToTrack { media_id: drag_media_id, track_index }
+                        AppCommand::AppendClipToTrack {
+                            media_id: drag_media_id,
+                            track_index,
+                        }
                     }
                 };
                 if state.auto_create_tracks {
                     if let Some(cursor_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                        let is_audio_only = state.media_pool.get(&drag_media_id)
+                        let is_audio_only = state
+                            .media_pool
+                            .get(&drag_media_id)
                             .map(|item| item.video_codec.is_empty())
                             .unwrap_or(false);
                         // Check if cursor is above topmost track or below bottommost track
-                        let first_rect_top = self.frame_cache.track_rects.first().map(|(_, _, r)| r.top());
-                        let last_rect_bottom = self.frame_cache.track_rects.last().map(|(_, _, r)| r.bottom());
+                        let first_rect_top = self
+                            .frame_cache
+                            .track_rects
+                            .first()
+                            .map(|(_, _, r)| r.top());
+                        let last_rect_bottom = self
+                            .frame_cache
+                            .track_rects
+                            .last()
+                            .map(|(_, _, r)| r.bottom());
                         let above_all = first_rect_top.is_some_and(|top| cursor_pos.y < top);
                         let below_all = last_rect_bottom.is_some_and(|bot| cursor_pos.y > bot);
 
@@ -3591,7 +4035,9 @@ impl TimelinePanel {
                             };
                             cmds.push(append_group(track_idx));
                             handled = true;
-                            tracing::info!("Auto-created video track for media drop above timeline");
+                            tracing::info!(
+                                "Auto-created video track for media drop above timeline"
+                            );
                         } else if below_all && is_audio_only {
                             // Create new audio track at bottom
                             let name = state.sequence().next_track_name(TrackKind::Audio);
@@ -3599,18 +4045,25 @@ impl TimelinePanel {
                             let track_idx = state.sequence().tracks.len() - 1;
                             cmds.push(append_group(track_idx));
                             handled = true;
-                            tracing::info!("Auto-created audio track for media drop below timeline");
+                            tracing::info!(
+                                "Auto-created audio track for media drop below timeline"
+                            );
                         } else if below_all && !is_audio_only {
                             // Video media below all tracks — create video track above audio
                             let name = state.sequence().next_track_name(TrackKind::Video);
                             state.sequence_mut().add_video_track(name);
                             // add_video_track inserts before first audio track
-                            let track_idx = state.sequence().tracks.iter()
+                            let track_idx = state
+                                .sequence()
+                                .tracks
+                                .iter()
                                 .rposition(|t| t.kind == TrackKind::Video)
                                 .unwrap_or(0);
                             cmds.push(append_group(track_idx));
                             handled = true;
-                            tracing::info!("Auto-created video track for media drop below timeline");
+                            tracing::info!(
+                                "Auto-created video track for media drop below timeline"
+                            );
                         } else if above_all && is_audio_only {
                             // Audio media above all tracks — create audio track at bottom
                             let name = state.sequence().next_track_name(TrackKind::Audio);
@@ -3618,7 +4071,9 @@ impl TimelinePanel {
                             let track_idx = state.sequence().tracks.len() - 1;
                             cmds.push(append_group(track_idx));
                             handled = true;
-                            tracing::info!("Auto-created audio track for media drop above timeline");
+                            tracing::info!(
+                                "Auto-created audio track for media drop above timeline"
+                            );
                         }
                     }
                 }
@@ -3660,28 +4115,54 @@ impl TimelinePanel {
                     if ui.button("Video Track").clicked() {
                         let name = state.sequence().next_track_name(TrackKind::Video);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Video);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.sequences[state.active_sequence_idx]
+                            .tracks
+                            .push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
                     if ui.button("Audio Track").clicked() {
                         let name = state.sequence().next_track_name(TrackKind::Audio);
                         let track = klipp_timeline::Track::new(&name, TrackKind::Audio);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.sequences[state.active_sequence_idx]
+                            .tracks
+                            .push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
                     if ui.button("Text Track").clicked() {
-                        let name = format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1);
+                        let name = format!(
+                            "Text {}",
+                            state
+                                .sequence()
+                                .tracks
+                                .iter()
+                                .filter(|t| t.kind == TrackKind::Text)
+                                .count()
+                                + 1
+                        );
                         let track = klipp_timeline::Track::new(&name, TrackKind::Text);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.sequences[state.active_sequence_idx]
+                            .tracks
+                            .push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
                     if ui.button("Subtitle Track").clicked() {
-                        let name = format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1);
+                        let name = format!(
+                            "Subtitle {}",
+                            state
+                                .sequence()
+                                .tracks
+                                .iter()
+                                .filter(|t| t.kind == TrackKind::Subtitle)
+                                .count()
+                                + 1
+                        );
                         let track = klipp_timeline::Track::new(&name, TrackKind::Subtitle);
-                        state.sequences[state.active_sequence_idx].tracks.push(track);
+                        state.sequences[state.active_sequence_idx]
+                            .tracks
+                            .push(track);
                         cmds.push(AppCommand::SequenceUpdated);
                         ui.close_menu();
                     }
@@ -3741,7 +4222,10 @@ impl TimelinePanel {
                             let hit_id = ui.id().with(("range_marker", marker.id.0));
                             let hit = ui.interact(fill_rect, hit_id, egui::Sense::hover());
                             if hit.hovered() {
-                                hit.on_hover_text(marker_tooltip_text(marker, Some(dur.to_secs_f64())));
+                                hit.on_hover_text(marker_tooltip_text(
+                                    marker,
+                                    Some(dur.to_secs_f64()),
+                                ));
                             }
                         }
                     }
@@ -3771,7 +4255,11 @@ impl TimelinePanel {
                 }
             }
 
-            let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
+            let ruler_response = ui.interact(
+                ruler_rect,
+                ui.id().with("ruler"),
+                egui::Sense::click_and_drag(),
+            );
             if ruler_response.drag_started() {
                 self.scrub_begin(state, cmds);
             }
@@ -3837,7 +4325,11 @@ impl TimelinePanel {
             ui.set_min_width(200.0);
 
             // ── Snap (master + per-target submenu) ──
-            let master_label = if snap_cfg.master { "\u{2714} Snap" } else { "    Snap" };
+            let master_label = if snap_cfg.master {
+                "\u{2714} Snap"
+            } else {
+                "    Snap"
+            };
             if ui.button(format!("{master_label} (N)")).clicked() {
                 cmds.push(AppCommand::SetSnapMaster(!snap_cfg.master));
                 ui.close_menu();
@@ -3852,9 +4344,16 @@ impl TimelinePanel {
                         (SnapTargetKind::Grid, "Grid", snap_cfg.grid),
                     ];
                     for &(target, label, enabled) in rows {
-                        let row_label = if enabled { format!("\u{2714} {label}") } else { format!("    {label}") };
+                        let row_label = if enabled {
+                            format!("\u{2714} {label}")
+                        } else {
+                            format!("    {label}")
+                        };
                         if ui.button(row_label).clicked() {
-                            cmds.push(AppCommand::SetSnapTarget { target, enabled: !enabled });
+                            cmds.push(AppCommand::SetSnapTarget {
+                                target,
+                                enabled: !enabled,
+                            });
                             ui.close_menu();
                         }
                     }
@@ -3958,19 +4457,22 @@ impl TimelinePanel {
                 let px_per_sec = overview_rect.width() / dur_secs;
                 let zoom = state.timeline_zoom;
                 let content_w = state.last_timeline_content_width;
-                let (pointer_pos, primary_down, primary_released, drag_delta) = ui.input(|i| (
-                    i.pointer.latest_pos(),
-                    i.pointer.primary_down(),
-                    i.pointer.primary_released(),
-                    i.pointer.delta(),
-                ));
+                let (pointer_pos, primary_down, primary_released, drag_delta) = ui.input(|i| {
+                    (
+                        i.pointer.latest_pos(),
+                        i.pointer.primary_down(),
+                        i.pointer.primary_released(),
+                        i.pointer.delta(),
+                    )
+                });
                 let in_overview = pointer_pos.is_some_and(|p| overview_rect.contains(p));
 
                 // Drag: pointer is in overview and button held with movement
                 if in_overview && primary_down && drag_delta.x.abs() > 0.5 {
                     overview_bar_consumed = true;
                     let delta_secs = drag_delta.x / px_per_sec;
-                    state.timeline_scroll_x = (state.timeline_scroll_x + delta_secs * zoom).max(0.0);
+                    state.timeline_scroll_x =
+                        (state.timeline_scroll_x + delta_secs * zoom).max(0.0);
                 }
                 // Click: pointer released in overview — jump viewport
                 if in_overview && primary_released {
@@ -3993,10 +4495,14 @@ impl TimelinePanel {
         // Draw media drag ghost — a translucent clip preview following the cursor
         if let Some(drag_media_id) = state.dragging_media {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let item_name = state.media_pool.get(&drag_media_id)
+                let item_name = state
+                    .media_pool
+                    .get(&drag_media_id)
                     .map(|m| m.filename.clone())
                     .unwrap_or_default();
-                let item_dur = state.media_pool.get(&drag_media_id)
+                let item_dur = state
+                    .media_pool
+                    .get(&drag_media_id)
                     .map(|m| m.duration.to_secs_f64() as f32)
                     .unwrap_or(1.0);
 
@@ -4014,10 +4520,19 @@ impl TimelinePanel {
                 ));
 
                 // Clip background
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220)));
+                ghost_painter.rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 80, 140, 200),
+                );
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(120, 160, 240, 220),
+                    ),
+                );
                 // A group shows its size: "+2" for three clips travelling.
                 if state.dragging_media_group.len() > 1 {
                     let badge = format!("+{}", state.dragging_media_group.len() - 1);
@@ -4075,7 +4590,9 @@ impl TimelinePanel {
         }
 
         // Draw title drag ghost — a translucent title preview following the cursor
-        if let Some(crate::drag_drop::DragPayload::Title { ref template_name, .. }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::Title {
+            ref template_name, ..
+        }) = state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 140.0;
@@ -4090,10 +4607,19 @@ impl TimelinePanel {
                     ui.id().with("title_drag_ghost"),
                 ));
 
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220)));
+                ghost_painter.rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(120, 80, 180, 200),
+                );
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(180, 140, 255, 220),
+                    ),
+                );
 
                 // "T" icon
                 ghost_painter.text(
@@ -4118,7 +4644,8 @@ impl TimelinePanel {
         }
 
         // Draw effect drag ghost — a translucent pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::Effect { ref name, .. }) =
+            state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 120.0;
@@ -4133,10 +4660,19 @@ impl TimelinePanel {
                     ui.id().with("effect_drag_ghost"),
                 ));
 
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230)));
+                ghost_painter.rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(140, 80, 200, 210),
+                );
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(200, 160, 255, 230),
+                    ),
+                );
 
                 // "FX" icon
                 ghost_painter.text(
@@ -4148,7 +4684,11 @@ impl TimelinePanel {
                 );
 
                 // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = if name.len() > 14 {
+                    format!("{}...", &name[..11])
+                } else {
+                    name.clone()
+                };
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 32.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4162,7 +4702,8 @@ impl TimelinePanel {
         }
 
         // Draw audio effect drag ghost — teal pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::AudioEffect { ref name, .. }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::AudioEffect { ref name, .. }) =
+            state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 130.0;
@@ -4177,10 +4718,19 @@ impl TimelinePanel {
                     ui.id().with("audio_effect_drag_ghost"),
                 ));
 
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230)));
+                ghost_painter.rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(60, 160, 120, 210),
+                );
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(100, 220, 170, 230),
+                    ),
+                );
 
                 // Audio icon
                 ghost_painter.text(
@@ -4192,7 +4742,11 @@ impl TimelinePanel {
                 );
 
                 // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = if name.len() > 14 {
+                    format!("{}...", &name[..11])
+                } else {
+                    name.clone()
+                };
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4206,27 +4760,39 @@ impl TimelinePanel {
         }
 
         // Draw transition drag ghost — orange pill following the cursor
-        if let Some(crate::drag_drop::DragPayload::Transition { ref name, .. }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::Transition { ref name, .. }) =
+            state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 130.0;
                 let ghost_h = 28.0;
-                let ghost_rect = egui::Rect::from_center_size(
-                    cursor_pos,
-                    egui::vec2(ghost_w, ghost_h),
-                );
+                let ghost_rect =
+                    egui::Rect::from_center_size(cursor_pos, egui::vec2(ghost_w, ghost_h));
 
                 let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Tooltip,
                     ui.id().with("transition_drag_ghost"),
                 ));
 
-                ghost_painter.rect_filled(ghost_rect, 4.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 180, 40, 210));
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(255, 210, 100, 230)));
+                ghost_painter.rect_filled(
+                    ghost_rect,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 180, 40, 210),
+                );
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(255, 210, 100, 230),
+                    ),
+                );
 
-                let truncated = if name.len() > 16 { format!("{}...", &name[..13]) } else { name.clone() };
+                let truncated = if name.len() > 16 {
+                    format!("{}...", &name[..13])
+                } else {
+                    name.clone()
+                };
                 ghost_painter.text(
                     ghost_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -4240,7 +4806,8 @@ impl TimelinePanel {
         }
 
         // Draw generator drag ghost — pill colored by the generator's own content
-        if let Some(crate::drag_drop::DragPayload::Generator { ref name, ref data }) = state.drag_drop.payload
+        if let Some(crate::drag_drop::DragPayload::Generator { ref name, ref data }) =
+            state.drag_drop.payload
         {
             if let Some(cursor_pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let ghost_w = 140.0;
@@ -4251,35 +4818,64 @@ impl TimelinePanel {
                 );
 
                 let pill_color = match data {
-                    klipp_core::GeneratorData::SolidColor { color } =>
-                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
-                    klipp_core::GeneratorData::Gradient { top, .. } =>
-                        egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], 220),
-                    klipp_core::GeneratorData::ColorBars =>
-                        egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220),
-                    klipp_core::GeneratorData::ColorBars100 =>
-                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220),
-                    klipp_core::GeneratorData::Countdown =>
-                        egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
-                    klipp_core::GeneratorData::Timer { background_color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
-                    klipp_core::GeneratorData::Slate { background_color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(background_color[0], background_color[1], background_color[2], 220),
-                    klipp_core::GeneratorData::StillFrame { .. } =>
-                        egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220),
-                    klipp_core::GeneratorData::Polygon { color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
-                    klipp_core::GeneratorData::LivingGradient { a, .. } =>
-                        egui::Color32::from_rgba_premultiplied(a[0], a[1], a[2], 220),
-                    klipp_core::GeneratorData::Grain { color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
-                    klipp_core::GeneratorData::Placeholder { color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
-                    klipp_core::GeneratorData::Star { color, .. } =>
-                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220),
+                    klipp_core::GeneratorData::SolidColor { color } => {
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220)
+                    }
+                    klipp_core::GeneratorData::Gradient { top, .. } => {
+                        egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], 220)
+                    }
+                    klipp_core::GeneratorData::ColorBars => {
+                        egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220)
+                    }
+                    klipp_core::GeneratorData::ColorBars100 => {
+                        egui::Color32::from_rgba_unmultiplied(180, 180, 180, 220)
+                    }
+                    klipp_core::GeneratorData::Countdown => {
+                        egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220)
+                    }
+                    klipp_core::GeneratorData::Timer {
+                        background_color, ..
+                    } => egui::Color32::from_rgba_premultiplied(
+                        background_color[0],
+                        background_color[1],
+                        background_color[2],
+                        220,
+                    ),
+                    klipp_core::GeneratorData::Slate {
+                        background_color, ..
+                    } => egui::Color32::from_rgba_premultiplied(
+                        background_color[0],
+                        background_color[1],
+                        background_color[2],
+                        220,
+                    ),
+                    klipp_core::GeneratorData::StillFrame { .. } => {
+                        egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220)
+                    }
+                    klipp_core::GeneratorData::Polygon { color, .. } => {
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220)
+                    }
+                    klipp_core::GeneratorData::LivingGradient { a, .. } => {
+                        egui::Color32::from_rgba_premultiplied(a[0], a[1], a[2], 220)
+                    }
+                    klipp_core::GeneratorData::Grain { color, .. } => {
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220)
+                    }
+                    klipp_core::GeneratorData::Placeholder { color, .. } => {
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220)
+                    }
+                    klipp_core::GeneratorData::Star { color, .. } => {
+                        egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], 220)
+                    }
                 };
-                let lum = 0.299 * pill_color.r() as f32 + 0.587 * pill_color.g() as f32 + 0.114 * pill_color.b() as f32;
-                let text_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
+                let lum = 0.299 * pill_color.r() as f32
+                    + 0.587 * pill_color.g() as f32
+                    + 0.114 * pill_color.b() as f32;
+                let text_color = if lum > 140.0 {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                };
 
                 let ghost_painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Tooltip,
@@ -4287,8 +4883,14 @@ impl TimelinePanel {
                 ));
 
                 ghost_painter.rect_filled(ghost_rect, 4.0, pill_color);
-                ghost_painter.rect_stroke(ghost_rect, 4.0,
-                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(180, 220, 180, 220)));
+                ghost_painter.rect_stroke(
+                    ghost_rect,
+                    4.0,
+                    egui::Stroke::new(
+                        1.5_f32,
+                        egui::Color32::from_rgba_unmultiplied(180, 220, 180, 220),
+                    ),
+                );
 
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 14.0, ghost_rect.center().y),
@@ -4298,7 +4900,11 @@ impl TimelinePanel {
                     text_color,
                 );
 
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = if name.len() > 14 {
+                    format!("{}...", &name[..11])
+                } else {
+                    name.clone()
+                };
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4324,23 +4930,41 @@ impl TimelinePanel {
         let m_zoom = state.timeline_zoom;
         let m_scroll = state.timeline_scroll_x;
         if !self.embedded && state.active_tool == Tool::Select {
-            let pointer = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
+            let pointer = ui.input(|i| {
+                (
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                )
+            });
             let (pressed, down, released) = pointer;
             let cur_pos = ui.input(|i| i.pointer.latest_pos());
 
             // Start marquee: primary press with no existing drag operation
-            if pressed && self.marquee_start.is_none()
-                && self.dragging_clip.is_none() && self.trimming_clip.is_none()
-                && self.roll_trimming.is_none() && self.slipping_clip.is_none()
-                && self.sliding_clip.is_none() && self.resizing_track.is_none()
+            if pressed
+                && self.marquee_start.is_none()
+                && self.dragging_clip.is_none()
+                && self.trimming_clip.is_none()
+                && self.roll_trimming.is_none()
+                && self.slipping_clip.is_none()
+                && self.sliding_clip.is_none()
+                && self.resizing_track.is_none()
             {
                 if let Some(pos) = cur_pos {
                     // Only start if in the content area (not header) and not on a clip
                     if pos.x > content_rect.left() && pos.y >= tracks_start_y - scroll_y {
                         let on_clip = self.frame_cache.track_rects.iter().any(|(ti, _, tr)| {
                             let clips = &state.sequence().tracks[*ti].clips;
-                            self.hit_test_clip_body(clips, &content_rect, tr, m_zoom, m_scroll,
-                                tr.height(), pos).is_some()
+                            self.hit_test_clip_body(
+                                clips,
+                                &content_rect,
+                                tr,
+                                m_zoom,
+                                m_scroll,
+                                tr.height(),
+                                pos,
+                            )
+                            .is_some()
                         });
                         if !on_clip {
                             self.marquee_start = Some(pos);
@@ -4358,24 +4982,39 @@ impl TimelinePanel {
                         let tt = theme();
                         let mi = tt.marker_info;
                         ui.painter().rect_filled(
-                            marquee_rect, 2.0,
-                            egui::Color32::from_rgba_premultiplied(mi.r() / 3, mi.g() / 2, mi.b(), 30),
+                            marquee_rect,
+                            2.0,
+                            egui::Color32::from_rgba_premultiplied(
+                                mi.r() / 3,
+                                mi.g() / 2,
+                                mi.b(),
+                                30,
+                            ),
                         );
-                        ui.painter().rect_stroke(
-                            marquee_rect, 2.0,
-                            egui::Stroke::new(1.0_f32, mi),
-                        );
+                        ui.painter()
+                            .rect_stroke(marquee_rect, 2.0, egui::Stroke::new(1.0_f32, mi));
 
                         // Collect clips intersecting the marquee
                         let mut selected = Vec::new();
                         for (ti, _, track_rect) in &self.frame_cache.track_rects {
-                            if marquee_rect.max.y < track_rect.top() || marquee_rect.min.y > track_rect.bottom() {
+                            if marquee_rect.max.y < track_rect.top()
+                                || marquee_rect.min.y > track_rect.bottom()
+                            {
                                 continue; // marquee doesn't overlap this track
                             }
                             let th = track_rect.height();
                             for clip in &state.sequence().tracks[*ti].clips {
-                                if clip.kind.is_gap() { continue; }
-                                let cr = Self::clip_screen_rect(clip, &content_rect, track_rect, m_zoom, m_scroll, th);
+                                if clip.kind.is_gap() {
+                                    continue;
+                                }
+                                let cr = Self::clip_screen_rect(
+                                    clip,
+                                    &content_rect,
+                                    track_rect,
+                                    m_zoom,
+                                    m_scroll,
+                                    th,
+                                );
                                 if marquee_rect.intersects(cr) {
                                     selected.push(clip.id);
                                 }
@@ -4417,8 +5056,7 @@ impl TimelinePanel {
         // Kick the audio skim session on the clip currently under the playhead
         // so the very first drag tick already has audio available.
         if state.audio_skimming_enabled {
-            if let Some((media_id, source_path, source_secs)) =
-                Self::scrub_clip_at_playhead(state)
+            if let Some((media_id, source_path, source_secs)) = Self::scrub_clip_at_playhead(state)
             {
                 cmds.push(AppCommand::BrowserSkimAudioStart {
                     media_id,
@@ -4490,7 +5128,8 @@ impl TimelinePanel {
                         target: klipp_core::ViewerMode::Program,
                     });
                 } else {
-                    state.skim_queued_request = Some((media_id, source_secs, klipp_core::ViewerMode::Program));
+                    state.skim_queued_request =
+                        Some((media_id, source_secs, klipp_core::ViewerMode::Program));
                 }
                 state.browser_skim_active_this_frame = true;
             }
@@ -4512,8 +5151,14 @@ impl TimelinePanel {
         // past the clip.
         let title_clip = {
             let seq = &state.sequences[state.active_sequence_idx];
-            seq.tracks.iter()
-                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle))
+            seq.tracks
+                .iter()
+                .filter(|t| {
+                    matches!(
+                        t.kind,
+                        klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle
+                    )
+                })
                 .find_map(|t| t.clip_at_timecode(state.playhead))
                 .filter(|(_, clip)| clip.title_data().is_some())
                 .map(|(_, clip)| clip.id)
@@ -4560,17 +5205,23 @@ impl TimelinePanel {
     /// Mirrors the logic `show_filmstrip_preview` uses so the filmstrip
     /// preview, the audio skim, and the actual seek all reference the same
     /// clip at the same source position.
-    fn scrub_clip_at_playhead(state: &AppState) -> Option<(klipp_core::MediaId, std::path::PathBuf, f64)> {
+    fn scrub_clip_at_playhead(
+        state: &AppState,
+    ) -> Option<(klipp_core::MediaId, std::path::PathBuf, f64)> {
         let playhead = state.playhead;
         let playhead_secs = playhead.to_secs_f64();
         let seq = &state.sequences[state.active_sequence_idx];
-        let pick = seq.tracks.iter()
+        let pick = seq
+            .tracks
+            .iter()
             .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
             .find_map(|t| t.clip_at_timecode(playhead))
-            .or_else(|| seq.tracks.iter()
-                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Audio))
-                .find_map(|t| t.clip_at_timecode(playhead))
-            )?;
+            .or_else(|| {
+                seq.tracks
+                    .iter()
+                    .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Audio))
+                    .find_map(|t| t.clip_at_timecode(playhead))
+            })?;
         let (_, clip) = pick;
         let media_id = clip.media_id()?;
         let media = state.media_pool.get(&media_id)?;
@@ -4579,7 +5230,15 @@ impl TimelinePanel {
         Some((media_id, media.path.clone(), source_secs))
     }
 
-    fn draw_playhead(&self, ui: &mut egui::Ui, state: &mut AppState, painter: &egui::Painter, content_rect: egui::Rect, ruler_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    fn draw_playhead(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        painter: &egui::Painter,
+        content_rect: egui::Rect,
+        ruler_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
         let seq_dur = state.sequence_duration();
         if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
             let playhead_secs = state.playhead_smooth_secs as f32;
@@ -4598,8 +5257,7 @@ impl TimelinePanel {
                         let view_end = state.timeline_scroll_x + view_width;
                         if playhead_x_abs > view_end || playhead_x_abs < state.timeline_scroll_x {
                             // Jump one page so playhead is at ~10% from left
-                            state.timeline_scroll_x =
-                                (playhead_x_abs - view_width * 0.1).max(0.0);
+                            state.timeline_scroll_x = (playhead_x_abs - view_width * 0.1).max(0.0);
                         }
                     }
                     PlayheadFollow::Smooth => {
@@ -4607,8 +5265,7 @@ impl TimelinePanel {
                         let target_scroll =
                             (playhead_secs * state.timeline_zoom - view_width * 0.25).max(0.0);
                         // Smooth lerp to avoid jarring jumps
-                        state.timeline_scroll_x +=
-                            (target_scroll - state.timeline_scroll_x) * 0.15;
+                        state.timeline_scroll_x += (target_scroll - state.timeline_scroll_x) * 0.15;
                     }
                     PlayheadFollow::Off => {}
                 }
@@ -4626,14 +5283,20 @@ impl TimelinePanel {
                     (playhead_x - 4.0)..=(playhead_x + 4.0),
                     content_rect.top()..=content_rect.bottom(),
                 );
-                painter.rect_filled(halo_outer, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 18));
+                painter.rect_filled(
+                    halo_outer,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 18),
+                );
                 let halo_inner = egui::Rect::from_x_y_ranges(
                     (playhead_x - 2.0)..=(playhead_x + 2.0),
                     content_rect.top()..=content_rect.bottom(),
                 );
-                painter.rect_filled(halo_inner, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 40));
+                painter.rect_filled(
+                    halo_inner,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(ph.r(), ph.g(), ph.b(), 40),
+                );
                 painter.line_segment(
                     [
                         egui::pos2(playhead_x, content_rect.top()),
@@ -4645,16 +5308,16 @@ impl TimelinePanel {
                 // Playhead head — DaVinci-style pentagon (flat top, vertical
                 // sides, tapered point). Single 5-vertex convex polygon.
                 let head_color = ph;
-                let half_w = 5.0_f32;             // width = 10px
-                let shoulder_h = 8.0_f32;         // rectangular body height
-                let total_h = 14.0_f32;           // total height (tip 6px below shoulder)
+                let half_w = 5.0_f32; // width = 10px
+                let shoulder_h = 8.0_f32; // rectangular body height
+                let total_h = 14.0_f32; // total height (tip 6px below shoulder)
                 let top_y = ruler_rect.top() + 1.0;
                 let pentagon = egui::Shape::convex_polygon(
                     vec![
                         egui::pos2(playhead_x - half_w, top_y),
                         egui::pos2(playhead_x + half_w, top_y),
                         egui::pos2(playhead_x + half_w, top_y + shoulder_h),
-                        egui::pos2(playhead_x,          top_y + total_h),
+                        egui::pos2(playhead_x, top_y + total_h),
                         egui::pos2(playhead_x - half_w, top_y + shoulder_h),
                     ],
                     head_color,
@@ -4725,7 +5388,8 @@ impl TimelinePanel {
                             // Display name: media filename for media
                             // clips, generic kind label otherwise.
                             // Mirrors the timeline status-bar pattern.
-                            clip_name = clip.media_id()
+                            clip_name = clip
+                                .media_id()
                                 .and_then(|mid| state.media_pool.get(&mid))
                                 .map(|m| m.filename.clone());
                             break 'outer;
@@ -4741,7 +5405,10 @@ impl TimelinePanel {
                 let one_frame = 1.0 / state.fps.rate() as f64;
                 for marker in &state.sequence().markers {
                     let pos = marker.position.to_secs_f64();
-                    let end = marker.duration.map(|d| pos + d.to_secs_f64()).unwrap_or(pos);
+                    let end = marker
+                        .duration
+                        .map(|d| pos + d.to_secs_f64())
+                        .unwrap_or(pos);
                     if (pos - snap_secs).abs() < one_frame || (end - snap_secs).abs() < one_frame {
                         // Compact snap-legend form: prepend the kind
                         // badge if the marker has a non-default kind,
@@ -4774,7 +5441,13 @@ impl TimelinePanel {
         }
     }
 
-    fn draw_snap_line(&mut self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect, tracks_start_y: f32) {
+    fn draw_snap_line(
+        &mut self,
+        state: &AppState,
+        painter: &egui::Painter,
+        content_rect: egui::Rect,
+        tracks_start_y: f32,
+    ) {
         let snap_data = self.frame_cache.snap_line_x;
         // Update the kind-change timer EVERY frame (whether snapping
         // is active or not) so the next snap re-fades correctly.
@@ -4783,8 +5456,12 @@ impl TimelinePanel {
             self.legend_state.last_kind = current_kind;
             self.legend_state.last_change_time = std::time::Instant::now();
         }
-        let Some((snap_x, kind)) = snap_data else { return; };
-        if snap_x < content_rect.left() || snap_x > content_rect.right() { return; }
+        let Some((snap_x, kind)) = snap_data else {
+            return;
+        };
+        if snap_x < content_rect.left() || snap_x > content_rect.right() {
+            return;
+        }
 
         let tt = theme();
         let alpha_factor = alpha_for_kind_change(
@@ -4798,7 +5475,10 @@ impl TimelinePanel {
         let pill_alpha = (220.0 * alpha_factor) as u8;
         let snap_color = tt.accent;
         let snap_color_faded = egui::Color32::from_rgba_unmultiplied(
-            snap_color.r(), snap_color.g(), snap_color.b(), line_alpha,
+            snap_color.r(),
+            snap_color.g(),
+            snap_color.b(),
+            line_alpha,
         );
         // Thick amber line spanning full track area
         painter.line_segment(
@@ -4816,7 +5496,12 @@ impl TimelinePanel {
             ],
             egui::Stroke::new(
                 6.0_f32,
-                egui::Color32::from_rgba_unmultiplied(snap_color.r(), snap_color.g(), snap_color.b(), glow_alpha),
+                egui::Color32::from_rgba_unmultiplied(
+                    snap_color.r(),
+                    snap_color.g(),
+                    snap_color.b(),
+                    glow_alpha,
+                ),
             ),
         );
         // Target-aware legend label — replaces the old timecode-only
@@ -4851,7 +5536,12 @@ impl TimelinePanel {
         );
     }
 
-    fn draw_connection_lines(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect) {
+    fn draw_connection_lines(
+        &self,
+        state: &AppState,
+        painter: &egui::Painter,
+        content_rect: egui::Rect,
+    ) {
         let tt = theme();
         let cc = tt.text_dim;
         // u8 * 60 overflows for any channel value ≥ 5; cast to u16
@@ -4949,7 +5639,11 @@ impl TimelinePanel {
                 egui::pos2(header_rect.left(), track_y),
                 egui::vec2(state.track_header_width, track_height),
             );
-            bg_painter.rect_filled(dim_rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 60));
+            bg_painter.rect_filled(
+                dim_rect,
+                0.0,
+                egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
+            );
         }
 
         // Track name: inline text edit when renaming, static label otherwise
@@ -4973,7 +5667,10 @@ impl TimelinePanel {
                     let new_name = buf.trim().to_string();
                     if !new_name.is_empty() && new_name != track_name {
                         let track_id = state.sequence().tracks[track_idx].id;
-                        cmds.push(AppCommand::RenameTrack { track_id, name: new_name });
+                        cmds.push(AppCommand::RenameTrack {
+                            track_id,
+                            name: new_name,
+                        });
                     }
                     self.renaming_track = None;
                 }
@@ -4987,7 +5684,11 @@ impl TimelinePanel {
                     egui::Align2::LEFT_TOP,
                     track_name,
                     egui::FontId::proportional(10.0),
-                    if track_locked { tt.text_dim } else { label_color },
+                    if track_locked {
+                        tt.text_dim
+                    } else {
+                        label_color
+                    },
                 );
             }
         } else {
@@ -4996,7 +5697,11 @@ impl TimelinePanel {
                 egui::Align2::LEFT_TOP,
                 track_name,
                 egui::FontId::proportional(10.0),
-                if track_locked { tt.text_dim } else { label_color },
+                if track_locked {
+                    tt.text_dim
+                } else {
+                    label_color
+                },
             );
         }
 
@@ -5006,11 +5711,23 @@ impl TimelinePanel {
             match track_kind {
                 TrackKind::Text | TrackKind::Subtitle => {
                     let l_rect = egui::Rect::from_min_size(
-                        egui::pos2(header_rect.right() - 42.0, track_y + (track_height - 14.0) / 2.0),
+                        egui::pos2(
+                            header_rect.right() - 42.0,
+                            track_y + (track_height - 14.0) / 2.0,
+                        ),
                         egui::vec2(18.0, 14.0),
                     );
-                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
+                    let l_resp = ui
+                        .interact(
+                            l_rect,
+                            ui.id().with(("lock_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track_locked {
+                            "Unlock track"
+                        } else {
+                            "Lock track"
+                        });
                     let l_bg = if track_locked {
                         tt.accent_dim
                     } else if l_resp.hovered() {
@@ -5019,30 +5736,74 @@ impl TimelinePanel {
                         tt.bg_raised
                     };
                     bg_painter.rect_filled(l_rect, 2.0, l_bg);
-                    let l_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
-                    let l_color = if track_locked { tt.text_primary } else { tt.text_dim };
-                    l_icon.image(10.0).tint(l_color).paint_at(ui, l_rect.shrink(2.0).intersect(tracks_clip));
+                    let l_icon = if track_locked {
+                        Icon::Lock
+                    } else {
+                        Icon::LockOpen
+                    };
+                    let l_color = if track_locked {
+                        tt.text_primary
+                    } else {
+                        tt.text_dim
+                    };
+                    l_icon
+                        .image(10.0)
+                        .tint(l_color)
+                        .paint_at(ui, l_rect.shrink(2.0).intersect(tracks_clip));
                     if l_resp.clicked() {
                         let track_id = state.sequence().tracks[track_idx].id;
-                        cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        cmds.push(AppCommand::SetTrackLocked {
+                            track_id,
+                            locked: !track_locked,
+                        });
                     }
 
                     let v_rect = egui::Rect::from_min_size(
-                        egui::pos2(header_rect.right() - 22.0, track_y + (track_height - 14.0) / 2.0),
+                        egui::pos2(
+                            header_rect.right() - 22.0,
+                            track_y + (track_height - 14.0) / 2.0,
+                        ),
                         egui::vec2(18.0, 14.0),
                     );
-                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track.visible { "Hide track" } else { "Show track" });
-                    bg_painter.rect_filled(v_rect, 2.0, if v_resp.hovered() {
-                        tt.bg_hover
+                    let v_resp = ui
+                        .interact(
+                            v_rect,
+                            ui.id().with(("vis_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track.visible {
+                            "Hide track"
+                        } else {
+                            "Show track"
+                        });
+                    bg_painter.rect_filled(
+                        v_rect,
+                        2.0,
+                        if v_resp.hovered() {
+                            tt.bg_hover
+                        } else {
+                            tt.bg_raised
+                        },
+                    );
+                    let v_icon = if track.visible {
+                        Icon::Eye
                     } else {
-                        tt.bg_raised
-                    });
-                    let v_icon = if track.visible { Icon::Eye } else { Icon::EyeSlash };
-                    let v_col = if track.visible { tt.text_secondary } else { tt.text_dim };
-                    v_icon.image(10.0).tint(v_col).paint_at(ui, v_rect.shrink(2.0).intersect(tracks_clip));
+                        Icon::EyeSlash
+                    };
+                    let v_col = if track.visible {
+                        tt.text_secondary
+                    } else {
+                        tt.text_dim
+                    };
+                    v_icon
+                        .image(10.0)
+                        .tint(v_col)
+                        .paint_at(ui, v_rect.shrink(2.0).intersect(tracks_clip));
                     if v_resp.clicked() {
-                        cmds.push(AppCommand::SetTrackVisibility { track_index: track_idx, visible: !track.visible });
+                        cmds.push(AppCommand::SetTrackVisibility {
+                            track_index: track_idx,
+                            visible: !track.visible,
+                        });
                     }
                 }
                 TrackKind::Video => {
@@ -5050,8 +5811,17 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 42.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let l_resp = ui.interact(l_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
+                    let l_resp = ui
+                        .interact(
+                            l_rect,
+                            ui.id().with(("lock_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track_locked {
+                            "Unlock track"
+                        } else {
+                            "Lock track"
+                        });
                     let l_bg = if track_locked {
                         tt.accent_dim
                     } else if l_resp.hovered() {
@@ -5060,32 +5830,66 @@ impl TimelinePanel {
                         tt.bg_raised
                     };
                     bg_painter.rect_filled(l_rect, 2.0, l_bg);
-                    let l_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
-                    let l_color = if track_locked { tt.text_primary } else { tt.text_dim };
-                    l_icon.image(10.0).tint(l_color).paint_at(ui, l_rect.shrink(2.0).intersect(tracks_clip));
+                    let l_icon = if track_locked {
+                        Icon::Lock
+                    } else {
+                        Icon::LockOpen
+                    };
+                    let l_color = if track_locked {
+                        tt.text_primary
+                    } else {
+                        tt.text_dim
+                    };
+                    l_icon
+                        .image(10.0)
+                        .tint(l_color)
+                        .paint_at(ui, l_rect.shrink(2.0).intersect(tracks_clip));
                     if l_resp.clicked() {
                         let track_id = state.sequence().tracks[track_idx].id;
-                        cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        cmds.push(AppCommand::SetTrackLocked {
+                            track_id,
+                            locked: !track_locked,
+                        });
                     }
 
                     let v_rect = egui::Rect::from_min_size(
                         egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let v_resp = ui.interact(v_rect, ui.id().with(("vis_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track.visible { "Hide track" } else { "Show track" });
+                    let v_resp = ui
+                        .interact(
+                            v_rect,
+                            ui.id().with(("vis_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track.visible {
+                            "Hide track"
+                        } else {
+                            "Show track"
+                        });
                     let v_col = if track.visible {
                         tt.text_secondary
                     } else {
                         tt.text_dim
                     };
-                    bg_painter.rect_filled(v_rect, 2.0, if v_resp.hovered() {
-                        tt.bg_hover
+                    bg_painter.rect_filled(
+                        v_rect,
+                        2.0,
+                        if v_resp.hovered() {
+                            tt.bg_hover
+                        } else {
+                            tt.bg_raised
+                        },
+                    );
+                    let v_icon = if track.visible {
+                        Icon::Eye
                     } else {
-                        tt.bg_raised
-                    });
-                    let v_icon = if track.visible { Icon::Eye } else { Icon::EyeSlash };
-                    v_icon.image(10.0).tint(v_col).paint_at(ui, v_rect.shrink(2.0).intersect(tracks_clip));
+                        Icon::EyeSlash
+                    };
+                    v_icon
+                        .image(10.0)
+                        .tint(v_col)
+                        .paint_at(ui, v_rect.shrink(2.0).intersect(tracks_clip));
                     if v_resp.clicked() {
                         cmds.push(AppCommand::SetTrackVisibility {
                             track_index: track_idx,
@@ -5098,28 +5902,40 @@ impl TimelinePanel {
                         egui::pos2(header_rect.left() + 2.0, track_y + track_height - 18.0),
                         egui::vec2(header_rect.width() - 26.0, 14.0),
                     );
-                    let opacity_resp = ui.interact(
-                        opacity_rect, ui.id().with(("opacity_ctrl", track_idx)),
-                        egui::Sense::click_and_drag(),
-                    )
-                    .on_hover_text("Track opacity — drag to adjust, double-click to reset");
+                    let opacity_resp = ui
+                        .interact(
+                            opacity_rect,
+                            ui.id().with(("opacity_ctrl", track_idx)),
+                            egui::Sense::click_and_drag(),
+                        )
+                        .on_hover_text("Track opacity — drag to adjust, double-click to reset");
                     bg_painter.rect_filled(opacity_rect, 2.0, tt.bg_panel);
                     let fill_w = opacity_rect.width() * track.opacity;
                     let fill_rect = egui::Rect::from_min_size(
-                        opacity_rect.left_top(), egui::vec2(fill_w, opacity_rect.height()),
+                        opacity_rect.left_top(),
+                        egui::vec2(fill_w, opacity_rect.height()),
                     );
                     bg_painter.rect_filled(fill_rect, 2.0, tt.role_video);
                     bg_painter.text(
-                        opacity_rect.center(), egui::Align2::CENTER_CENTER,
-                        format!("{}%", opacity_pct), egui::FontId::proportional(10.0),
+                        opacity_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{}%", opacity_pct),
+                        egui::FontId::proportional(10.0),
                         tt.text_secondary,
                     );
                     if opacity_resp.double_clicked() {
-                        cmds.push(AppCommand::SetTrackOpacity { track_index: track_idx, opacity: 1.0 });
+                        cmds.push(AppCommand::SetTrackOpacity {
+                            track_index: track_idx,
+                            opacity: 1.0,
+                        });
                     } else if opacity_resp.dragged() {
                         let dx = opacity_resp.drag_delta().x;
-                        let new_opacity = (track.opacity + dx / opacity_rect.width()).clamp(0.0, 1.0);
-                        cmds.push(AppCommand::SetTrackOpacity { track_index: track_idx, opacity: new_opacity });
+                        let new_opacity =
+                            (track.opacity + dx / opacity_rect.width()).clamp(0.0, 1.0);
+                        cmds.push(AppCommand::SetTrackOpacity {
+                            track_index: track_idx,
+                            opacity: new_opacity,
+                        });
                     }
                 }
                 TrackKind::Audio => {
@@ -5127,8 +5943,17 @@ impl TimelinePanel {
                         egui::pos2(header_rect.right() - 22.0, track_y + 4.0),
                         egui::vec2(18.0, 14.0),
                     );
-                    let al_resp = ui.interact(al_rect, ui.id().with(("lock_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track_locked { "Unlock track" } else { "Lock track" });
+                    let al_resp = ui
+                        .interact(
+                            al_rect,
+                            ui.id().with(("lock_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track_locked {
+                            "Unlock track"
+                        } else {
+                            "Lock track"
+                        });
                     let al_bg = if track_locked {
                         tt.accent_dim
                     } else if al_resp.hovered() {
@@ -5137,20 +5962,44 @@ impl TimelinePanel {
                         tt.bg_raised
                     };
                     bg_painter.rect_filled(al_rect, 2.0, al_bg);
-                    let al_icon = if track_locked { Icon::Lock } else { Icon::LockOpen };
-                    let al_color = if track_locked { tt.text_primary } else { tt.text_dim };
-                    al_icon.image(10.0).tint(al_color).paint_at(ui, al_rect.shrink(2.0).intersect(tracks_clip));
+                    let al_icon = if track_locked {
+                        Icon::Lock
+                    } else {
+                        Icon::LockOpen
+                    };
+                    let al_color = if track_locked {
+                        tt.text_primary
+                    } else {
+                        tt.text_dim
+                    };
+                    al_icon
+                        .image(10.0)
+                        .tint(al_color)
+                        .paint_at(ui, al_rect.shrink(2.0).intersect(tracks_clip));
                     if al_resp.clicked() {
                         let track_id = state.sequence().tracks[track_idx].id;
-                        cmds.push(AppCommand::SetTrackLocked { track_id, locked: !track_locked });
+                        cmds.push(AppCommand::SetTrackLocked {
+                            track_id,
+                            locked: !track_locked,
+                        });
                     }
 
                     let btn_y = track_y + track_height - 16.0;
                     let m_rect = egui::Rect::from_min_size(
-                        egui::pos2(header_rect.left() + 4.0, btn_y), egui::vec2(16.0, 12.0),
+                        egui::pos2(header_rect.left() + 4.0, btn_y),
+                        egui::vec2(16.0, 12.0),
                     );
-                    let m_resp = ui.interact(m_rect, ui.id().with(("mute_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track.muted { "Unmute track" } else { "Mute track" });
+                    let m_resp = ui
+                        .interact(
+                            m_rect,
+                            ui.id().with(("mute_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track.muted {
+                            "Unmute track"
+                        } else {
+                            "Mute track"
+                        });
                     let m_bg = if track.muted {
                         tt.marker_error
                     } else if m_resp.hovered() {
@@ -5159,17 +6008,37 @@ impl TimelinePanel {
                         tt.bg_raised
                     };
                     bg_painter.rect_filled(m_rect, 2.0, m_bg);
-                    let m_icon = if track.muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
-                    m_icon.image(10.0).tint(tt.text_primary).paint_at(ui, m_rect.shrink(1.0).intersect(tracks_clip));
+                    let m_icon = if track.muted {
+                        Icon::SpeakerSlash
+                    } else {
+                        Icon::SpeakerHigh
+                    };
+                    m_icon
+                        .image(10.0)
+                        .tint(tt.text_primary)
+                        .paint_at(ui, m_rect.shrink(1.0).intersect(tracks_clip));
                     if m_resp.clicked() {
-                        cmds.push(AppCommand::SetTrackMute { track_index: track_idx, muted: !track.muted });
+                        cmds.push(AppCommand::SetTrackMute {
+                            track_index: track_idx,
+                            muted: !track.muted,
+                        });
                     }
 
                     let s_rect = egui::Rect::from_min_size(
-                        egui::pos2(m_rect.right() + 2.0, btn_y), egui::vec2(16.0, 12.0),
+                        egui::pos2(m_rect.right() + 2.0, btn_y),
+                        egui::vec2(16.0, 12.0),
                     );
-                    let s_resp = ui.interact(s_rect, ui.id().with(("solo_btn", track_idx)), egui::Sense::click())
-                        .on_hover_text(if track.solo { "Unsolo track" } else { "Solo track" });
+                    let s_resp = ui
+                        .interact(
+                            s_rect,
+                            ui.id().with(("solo_btn", track_idx)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if track.solo {
+                            "Unsolo track"
+                        } else {
+                            "Solo track"
+                        });
                     let s_bg = if track.solo {
                         tt.marker_info
                     } else if s_resp.hovered() {
@@ -5178,39 +6047,58 @@ impl TimelinePanel {
                         tt.bg_raised
                     };
                     bg_painter.rect_filled(s_rect, 2.0, s_bg);
-                    bg_painter.text(s_rect.center(), egui::Align2::CENTER_CENTER, "S",
-                        egui::FontId::proportional(10.0), tt.text_primary);
+                    bg_painter.text(
+                        s_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "S",
+                        egui::FontId::proportional(10.0),
+                        tt.text_primary,
+                    );
                     if s_resp.clicked() {
-                        cmds.push(AppCommand::SetTrackSolo { track_index: track_idx, solo: !track.solo });
+                        cmds.push(AppCommand::SetTrackSolo {
+                            track_index: track_idx,
+                            solo: !track.solo,
+                        });
                     }
 
                     let vol_rect = egui::Rect::from_min_size(
                         egui::pos2(s_rect.right() + 4.0, btn_y),
                         egui::vec2(header_rect.right() - s_rect.right() - 8.0, 12.0),
                     );
-                    let vol_resp = ui.interact(
-                        vol_rect, ui.id().with(("vol_ctrl", track_idx)),
-                        egui::Sense::click_and_drag(),
-                    )
-                    .on_hover_text("Track volume — drag to adjust, double-click to reset");
+                    let vol_resp = ui
+                        .interact(
+                            vol_rect,
+                            ui.id().with(("vol_ctrl", track_idx)),
+                            egui::Sense::click_and_drag(),
+                        )
+                        .on_hover_text("Track volume — drag to adjust, double-click to reset");
                     bg_painter.rect_filled(vol_rect, 2.0, tt.bg_panel);
                     let fill_w = vol_rect.width() * (track.volume / 1.3);
                     let fill_rect = egui::Rect::from_min_size(
-                        vol_rect.left_top(), egui::vec2(fill_w, vol_rect.height()),
+                        vol_rect.left_top(),
+                        egui::vec2(fill_w, vol_rect.height()),
                     );
                     bg_painter.rect_filled(fill_rect, 2.0, tt.role_dialogue);
                     let vol_pct = (track.volume * 100.0) as u32;
                     bg_painter.text(
-                        vol_rect.center(), egui::Align2::CENTER_CENTER,
-                        format!("{}%", vol_pct), egui::FontId::proportional(10.0),
+                        vol_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{}%", vol_pct),
+                        egui::FontId::proportional(10.0),
                         tt.text_secondary,
                     );
                     if vol_resp.double_clicked() {
-                        cmds.push(AppCommand::SetTrackVolume { track_index: track_idx, volume: 1.0 });
+                        cmds.push(AppCommand::SetTrackVolume {
+                            track_index: track_idx,
+                            volume: 1.0,
+                        });
                     } else if vol_resp.dragged() {
                         let dx = vol_resp.drag_delta().x;
                         let new_vol = (track.volume + dx / vol_rect.width() * 1.3).clamp(0.0, 1.3);
-                        cmds.push(AppCommand::SetTrackVolume { track_index: track_idx, volume: new_vol });
+                        cmds.push(AppCommand::SetTrackVolume {
+                            track_index: track_idx,
+                            volume: new_vol,
+                        });
                     }
 
                     let pan_y = btn_y - 14.0;
@@ -5219,19 +6107,27 @@ impl TimelinePanel {
                         egui::vec2(header_rect.width() - 8.0, 10.0),
                     );
                     let pan_resp = ui.interact(
-                        pan_rect, ui.id().with(("pan_ctrl", track_idx)),
+                        pan_rect,
+                        ui.id().with(("pan_ctrl", track_idx)),
                         egui::Sense::click_and_drag(),
                     );
                     bg_painter.rect_filled(pan_rect, 2.0, tt.bg_panel);
                     let cx = pan_rect.center().x;
                     bg_painter.line_segment(
-                        [egui::pos2(cx, pan_rect.top()), egui::pos2(cx, pan_rect.bottom())],
+                        [
+                            egui::pos2(cx, pan_rect.top()),
+                            egui::pos2(cx, pan_rect.bottom()),
+                        ],
                         egui::Stroke::new(1.0_f32, tt.border),
                     );
                     let pan_x = cx + (track.pan * pan_rect.width() * 0.5);
                     bg_painter.rect_filled(
-                        egui::Rect::from_center_size(egui::pos2(pan_x, pan_rect.center().y), egui::vec2(4.0, 8.0)),
-                        1.0, tt.role_dialogue,
+                        egui::Rect::from_center_size(
+                            egui::pos2(pan_x, pan_rect.center().y),
+                            egui::vec2(4.0, 8.0),
+                        ),
+                        1.0,
+                        tt.role_dialogue,
                     );
                     let pan_label = if track.pan.abs() < 0.05 {
                         "C".to_string()
@@ -5242,22 +6138,33 @@ impl TimelinePanel {
                     };
                     bg_painter.text(
                         egui::pos2(pan_rect.right() - 2.0, pan_rect.center().y),
-                        egui::Align2::RIGHT_CENTER, &pan_label,
-                        egui::FontId::proportional(10.0), tt.text_dim,
+                        egui::Align2::RIGHT_CENTER,
+                        &pan_label,
+                        egui::FontId::proportional(10.0),
+                        tt.text_dim,
                     );
                     if pan_resp.dragged() {
                         let dx = pan_resp.drag_delta().x;
                         let new_pan = (track.pan + dx / (pan_rect.width() * 0.5)).clamp(-1.0, 1.0);
-                        cmds.push(AppCommand::SetTrackPan { track_index: track_idx, pan: new_pan });
+                        cmds.push(AppCommand::SetTrackPan {
+                            track_index: track_idx,
+                            pan: new_pan,
+                        });
                     } else if pan_resp.double_clicked() {
-                        cmds.push(AppCommand::SetTrackPan { track_index: track_idx, pan: 0.0 });
+                        cmds.push(AppCommand::SetTrackPan {
+                            track_index: track_idx,
+                            pan: 0.0,
+                        });
                     }
 
                     let vu_y = track_y + 4.0;
                     let vu_w = header_rect.width() - 8.0;
                     let vu_h = 3.0;
-                    let (peak_l, peak_r) = state.track_peak_levels
-                        .get(track_idx).copied().unwrap_or((0.0, 0.0));
+                    let (peak_l, peak_r) = state
+                        .track_peak_levels
+                        .get(track_idx)
+                        .copied()
+                        .unwrap_or((0.0, 0.0));
                     for (ch, peak) in [(0, peak_l), (1, peak_r)] {
                         let bar_rect = egui::Rect::from_min_size(
                             egui::pos2(header_rect.left() + 4.0, vu_y + ch as f32 * (vu_h + 1.0)),
@@ -5274,7 +6181,8 @@ impl TimelinePanel {
                                 tt.marker_success
                             };
                             let fill_rect = egui::Rect::from_min_size(
-                                bar_rect.left_top(), egui::vec2(fill, vu_h),
+                                bar_rect.left_top(),
+                                egui::vec2(fill, vu_h),
                             );
                             bg_painter.rect_filled(fill_rect, 1.0, color);
                         }
@@ -5290,44 +6198,94 @@ impl TimelinePanel {
                 egui::vec2(state.track_header_width, track_height),
             );
             let hdr_resp = ui.interact(
-                hdr_rect, ui.id().with(("track_hdr_ctx", track_idx)),
+                hdr_rect,
+                ui.id().with(("track_hdr_ctx", track_idx)),
                 egui::Sense::click(),
             );
             let track_id = state.sequence().tracks[track_idx].id;
             hdr_resp.context_menu(|ui| {
                 ui.set_min_width(180.0);
                 ui.menu_button("Add Track Above", |ui| {
-                    for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
-                        ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
+                    for (label, kind) in [
+                        ("Video Track", TrackKind::Video),
+                        ("Audio Track", TrackKind::Audio),
+                        ("Text Track", TrackKind::Text),
+                        ("Subtitle Track", TrackKind::Subtitle),
+                    ] {
                         if ui.button(label).clicked() {
                             let name = if kind == TrackKind::Text {
-                                format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1)
+                                format!(
+                                    "Text {}",
+                                    state
+                                        .sequence()
+                                        .tracks
+                                        .iter()
+                                        .filter(|t| t.kind == TrackKind::Text)
+                                        .count()
+                                        + 1
+                                )
                             } else if kind == TrackKind::Subtitle {
-                                format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1)
+                                format!(
+                                    "Subtitle {}",
+                                    state
+                                        .sequence()
+                                        .tracks
+                                        .iter()
+                                        .filter(|t| t.kind == TrackKind::Subtitle)
+                                        .count()
+                                        + 1
+                                )
                             } else {
                                 state.sequence().next_track_name(kind)
                             };
                             let track = klipp_timeline::Track::new(&name, kind);
-                            state.sequences[state.active_sequence_idx].tracks.insert(track_idx, track);
+                            state.sequences[state.active_sequence_idx]
+                                .tracks
+                                .insert(track_idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
                             ui.close_menu();
                         }
                     }
                 });
                 ui.menu_button("Add Track Below", |ui| {
-                    for (label, kind) in [("Video Track", TrackKind::Video), ("Audio Track", TrackKind::Audio),
-                        ("Text Track", TrackKind::Text), ("Subtitle Track", TrackKind::Subtitle)] {
+                    for (label, kind) in [
+                        ("Video Track", TrackKind::Video),
+                        ("Audio Track", TrackKind::Audio),
+                        ("Text Track", TrackKind::Text),
+                        ("Subtitle Track", TrackKind::Subtitle),
+                    ] {
                         if ui.button(label).clicked() {
                             let name = if kind == TrackKind::Text {
-                                format!("Text {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Text).count() + 1)
+                                format!(
+                                    "Text {}",
+                                    state
+                                        .sequence()
+                                        .tracks
+                                        .iter()
+                                        .filter(|t| t.kind == TrackKind::Text)
+                                        .count()
+                                        + 1
+                                )
                             } else if kind == TrackKind::Subtitle {
-                                format!("Subtitle {}", state.sequence().tracks.iter().filter(|t| t.kind == TrackKind::Subtitle).count() + 1)
+                                format!(
+                                    "Subtitle {}",
+                                    state
+                                        .sequence()
+                                        .tracks
+                                        .iter()
+                                        .filter(|t| t.kind == TrackKind::Subtitle)
+                                        .count()
+                                        + 1
+                                )
                             } else {
                                 state.sequence().next_track_name(kind)
                             };
                             let track = klipp_timeline::Track::new(&name, kind);
-                            let idx = (track_idx + 1).min(state.sequences[state.active_sequence_idx].tracks.len());
-                            state.sequences[state.active_sequence_idx].tracks.insert(idx, track);
+                            let idx = (track_idx + 1)
+                                .min(state.sequences[state.active_sequence_idx].tracks.len());
+                            state.sequences[state.active_sequence_idx]
+                                .tracks
+                                .insert(idx, track);
                             cmds.push(AppCommand::SequenceUpdated);
                             ui.close_menu();
                         }
@@ -5341,15 +6299,13 @@ impl TimelinePanel {
                 // Per-track waveform amplitude zoom reset (#50). Only shown
                 // for audio tracks where the zoom actually applies.
                 if state.sequence().tracks[track_idx].kind == TrackKind::Audio {
-                    let has_zoom = state.waveform_zoom
+                    let has_zoom = state
+                        .waveform_zoom
                         .get(&track_id)
                         .copied()
                         .map(|v| (v - 1.0).abs() > 1e-4)
                         .unwrap_or(false);
-                    let resp = ui.add_enabled(
-                        has_zoom,
-                        egui::Button::new("Reset Waveform Zoom"),
-                    );
+                    let resp = ui.add_enabled(has_zoom, egui::Button::new("Reset Waveform Zoom"));
                     if resp.clicked() {
                         cmds.push(AppCommand::ResetWaveformZoom { track_id });
                         ui.close_menu();
@@ -5362,7 +6318,9 @@ impl TimelinePanel {
                     cmds.push(AppCommand::RemoveTrack { track_id });
                     ui.close_menu();
                 }
-                if has_clips { remove_resp.on_disabled_hover_text("Remove clips first"); }
+                if has_clips {
+                    remove_resp.on_disabled_hover_text("Remove clips first");
+                }
                 if ui.button("Remove Track (with clips)").clicked() {
                     cmds.push(AppCommand::RemoveTrack { track_id });
                     ui.close_menu();
@@ -5372,7 +6330,10 @@ impl TimelinePanel {
 
         // Track separator
         bg_painter.line_segment(
-            [egui::pos2(panel_rect.left(), track_y), egui::pos2(panel_rect.right(), track_y)],
+            [
+                egui::pos2(panel_rect.left(), track_y),
+                egui::pos2(panel_rect.right(), track_y),
+            ],
             egui::Stroke::new(1.0_f32, tt.border),
         );
     }
@@ -5383,7 +6344,10 @@ impl TimelinePanel {
         let status_painter = ui.painter_at(layout.status_rect);
         status_painter.rect_filled(layout.status_rect, 0.0, tt.bg_deep);
         status_painter.line_segment(
-            [layout.status_rect.left_top(), layout.status_rect.right_top()],
+            [
+                layout.status_rect.left_top(),
+                layout.status_rect.right_top(),
+            ],
             egui::Stroke::new(1.0_f32, tt.border_light),
         );
 
@@ -5394,9 +6358,19 @@ impl TimelinePanel {
         let cy = layout.status_rect.center().y;
 
         let total_clips: usize = state.sequence().tracks.iter().map(|t| t.clips.len()).sum();
-        let mut left_text = format!("{} clip{}", total_clips, if total_clips != 1 { "s" } else { "" });
+        let mut left_text = format!(
+            "{} clip{}",
+            total_clips,
+            if total_clips != 1 { "s" } else { "" }
+        );
         if let Some(clip_id) = state.selected_clip {
-            if let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) {
+            if let Some(clip) = state
+                .sequence()
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == clip_id)
+            {
                 if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
                     left_text += &format!("{sep}{}", media.filename);
                 }
@@ -5406,7 +6380,10 @@ impl TimelinePanel {
         }
         status_painter.text(
             egui::pos2(layout.status_rect.left() + 8.0, cy),
-            egui::Align2::LEFT_CENTER, left_text, font.clone(), bright,
+            egui::Align2::LEFT_CENTER,
+            left_text,
+            font.clone(),
+            bright,
         );
 
         let view_secs = layout.content_rect.width() / state.timeline_zoom;
@@ -5429,17 +6406,24 @@ impl TimelinePanel {
         }
         status_painter.text(
             egui::pos2(layout.status_rect.right() - 8.0, cy),
-            egui::Align2::RIGHT_CENTER, right_text, font, dim,
+            egui::Align2::RIGHT_CENTER,
+            right_text,
+            font,
+            dim,
         );
     }
 
     /// Handle scroll (vertical/horizontal) and zoom (Ctrl+wheel) input.
-    fn handle_scroll_zoom(&mut self, ui: &mut egui::Ui, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+    fn handle_scroll_zoom(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
         let avail_rect = ui.available_rect_before_wrap();
         if ui.rect_contains_pointer(avail_rect) {
-            let (zoom_factor, pointer_pos) = ui.input(|i| {
-                (i.zoom_delta(), i.pointer.interact_pos())
-            });
+            let (zoom_factor, pointer_pos) =
+                ui.input(|i| (i.zoom_delta(), i.pointer.interact_pos()));
 
             if (zoom_factor - 1.0).abs() > 0.001 {
                 // Ctrl+scroll (or pinch): zoom anywhere in the timeline panel
@@ -5474,13 +6458,11 @@ impl TimelinePanel {
                 //   * Native horizontal scroll (trackpad) → always horizontal timeline pan
                 let shift = ui.input(|i| i.modifiers.shift);
                 let content_left = avail_rect.left() + state.track_header_width;
-                let pointer_in_header = pointer_pos
-                    .is_some_and(|p| p.x < content_left);
+                let pointer_in_header = pointer_pos.is_some_and(|p| p.x < content_left);
 
                 // Native horizontal trackpad scroll → always horizontal timeline pan
                 if smooth_sx.abs() > 0.1 {
-                    state.timeline_scroll_x =
-                        (state.timeline_scroll_x - smooth_sx).max(0.0);
+                    state.timeline_scroll_x = (state.timeline_scroll_x - smooth_sx).max(0.0);
                     state.playhead_follow = PlayheadFollow::Off;
                 }
 
@@ -5488,11 +6470,9 @@ impl TimelinePanel {
                 if smooth_sy.abs() > 0.1 {
                     let route_vertical = pointer_in_header || shift;
                     if route_vertical {
-                        state.timeline_scroll_y =
-                            (state.timeline_scroll_y - smooth_sy).max(0.0);
+                        state.timeline_scroll_y = (state.timeline_scroll_y - smooth_sy).max(0.0);
                     } else {
-                        state.timeline_scroll_x =
-                            (state.timeline_scroll_x - smooth_sy).max(0.0);
+                        state.timeline_scroll_x = (state.timeline_scroll_x - smooth_sy).max(0.0);
                         state.playhead_follow = PlayheadFollow::Off;
                     }
                 }
@@ -5526,14 +6506,14 @@ impl TimelinePanel {
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
             let has_fx = !clip.effects.is_empty()
-                || clip.builtin_effects.iter().any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
+                || clip
+                    .builtin_effects
+                    .iter()
+                    .any(|e| !matches!(e, klipp_effects::BuiltinEffect::Transform { .. }));
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
-                let fx_galley = painter.layout_no_wrap(
-                    "FX".to_string(),
-                    fx_font,
-                    egui::Color32::WHITE,
-                );
+                let fx_galley =
+                    painter.layout_no_wrap("FX".to_string(), fx_font, egui::Color32::WHITE);
                 let pill_w = fx_galley.size().x + 6.0;
                 let pill_h = fx_galley.size().y + 2.0;
                 let pill_rect = egui::Rect::from_min_size(
@@ -5565,7 +6545,8 @@ impl TimelinePanel {
                 egui::pos2(clip_rect.right() - 8.0, clip_rect.top() + 8.0),
                 egui::vec2(9.0, 9.0),
             );
-            crate::icons::Icon::Lock.image(9.0)
+            crate::icons::Icon::Lock
+                .image(9.0)
                 .tint(theme().overlay(120))
                 .paint_at(ui, icon_rect);
         }
@@ -5579,11 +6560,8 @@ impl TimelinePanel {
             if clip_rect.width() > 30.0 {
                 let source_id = binding.source_clip_id;
                 let m_font = egui::FontId::proportional(10.0);
-                let m_galley = painter.layout_no_wrap(
-                    "M".to_string(),
-                    m_font.clone(),
-                    egui::Color32::WHITE,
-                );
+                let m_galley =
+                    painter.layout_no_wrap("M".to_string(), m_font.clone(), egui::Color32::WHITE);
                 let pill_w = m_galley.size().x + 8.0;
                 let pill_h = m_galley.size().y + 2.0;
                 let pill_rect = egui::Rect::from_min_size(
@@ -5611,7 +6589,8 @@ impl TimelinePanel {
                     egui::Color32::WHITE,
                 );
                 let id = ui.id().with(("matte_badge", clip.id, source_id));
-                let resp = ui.interact(pill_rect, id, egui::Sense::click())
+                let resp = ui
+                    .interact(pill_rect, id, egui::Sense::click())
                     .on_hover_text("Jump to matte source clip");
                 if resp.clicked() {
                     cmds.push(AppCommand::SelectClip(Some(source_id)));
@@ -5631,7 +6610,10 @@ impl TimelinePanel {
         // clips where the stripes would just look like noise.
         // Stencil clips share the same hidden-from-composite visual
         // as `consumed_as_matte` (different reason, same outcome).
-        if (clip.consumed_as_matte || clip.matte_stencil.is_some()) && clip_rect.width() > 24.0 && clip_rect.height() > 12.0 {
+        if (clip.consumed_as_matte || clip.matte_stencil.is_some())
+            && clip_rect.width() > 24.0
+            && clip_rect.height() > 12.0
+        {
             let stripe_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70);
             let spacing = 8.0_f32;
             let mut x = clip_rect.left() - clip_rect.height();
@@ -5647,14 +6629,21 @@ impl TimelinePanel {
             // Tiny "matte source" tag bottom-left.
             if clip_rect.width() > 60.0 {
                 let tag_font = egui::FontId::proportional(10.0);
-                let tag_text = if clip.matte_stencil.is_some() { "STENCIL" } else { "MATTE SOURCE" };
+                let tag_text = if clip.matte_stencil.is_some() {
+                    "STENCIL"
+                } else {
+                    "MATTE SOURCE"
+                };
                 let tag_galley = painter.layout_no_wrap(
                     tag_text.to_string(),
                     tag_font,
                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
                 );
                 let tag_rect = egui::Rect::from_min_size(
-                    egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - tag_galley.size().y - 4.0),
+                    egui::pos2(
+                        clip_rect.left() + 4.0,
+                        clip_rect.bottom() - tag_galley.size().y - 4.0,
+                    ),
                     tag_galley.size(),
                 );
                 painter.rect_filled(
@@ -5672,8 +6661,10 @@ impl TimelinePanel {
             let handle_inset = 2.0; // vertical inset from clip edges
             let ts = tt.text_secondary;
             let tp = tt.text_primary;
-            let handle_color = egui::Color32::from_rgba_premultiplied(ts.r() / 4, ts.g() / 4, ts.b() / 4, 60);
-            let grip_color = egui::Color32::from_rgba_premultiplied(tp.r() / 6, tp.g() / 6, tp.b() / 6, 40);
+            let handle_color =
+                egui::Color32::from_rgba_premultiplied(ts.r() / 4, ts.g() / 4, ts.b() / 4, 60);
+            let grip_color =
+                egui::Color32::from_rgba_premultiplied(tp.r() / 6, tp.g() / 6, tp.b() / 6, 40);
 
             // Left handle
             let lh = egui::Rect::from_min_size(
@@ -5699,7 +6690,10 @@ impl TimelinePanel {
             painter.rect_filled(rh, 2.0, handle_color);
             for dy in [-5.0_f32, 0.0, 5.0] {
                 painter.line_segment(
-                    [egui::pos2(rh.center().x - 1.5, cy + dy), egui::pos2(rh.center().x + 1.5, cy + dy)],
+                    [
+                        egui::pos2(rh.center().x - 1.5, cy + dy),
+                        egui::pos2(rh.center().x + 1.5, cy + dy),
+                    ],
                     egui::Stroke::new(1.0_f32, grip_color),
                 );
             }
@@ -5714,9 +6708,15 @@ impl TimelinePanel {
                 let font_size = 11.0;
                 let max_text_width = clip_rect.width() - 28.0;
                 let (badge_letter, badge_color) = if matches!(track_kind, TrackKind::Subtitle) {
-                    ("S", egui::Color32::from_rgba_premultiplied(180, 210, 255, 180))
+                    (
+                        "S",
+                        egui::Color32::from_rgba_premultiplied(180, 210, 255, 180),
+                    )
                 } else {
-                    ("T", egui::Color32::from_rgba_premultiplied(200, 180, 255, 180))
+                    (
+                        "T",
+                        egui::Color32::from_rgba_premultiplied(200, 180, 255, 180),
+                    )
                 };
                 let badge_rect = egui::Rect::from_min_size(
                     egui::pos2(clip_rect.left() + 3.0, clip_rect.center().y - 8.0),
@@ -5766,8 +6766,8 @@ impl TimelinePanel {
                 // Falls back to a shadowed overlay when the clip is too short
                 // to reserve a dedicated strip.
                 let label_strip = clip_label_strip_rect(clip_rect, track_kind);
-                let is_selected = state.selected_clip == Some(clip.id)
-                    || state.selected_clips.contains(&clip.id);
+                let is_selected =
+                    state.selected_clip == Some(clip.id) || state.selected_clips.contains(&clip.id);
                 if let Some(strip) = label_strip {
                     // When the clip is selected, paint the label strip in the
                     // same accent colour as the selection border so the label
@@ -5782,7 +6782,10 @@ impl TimelinePanel {
                     painter.rect_filled(strip, 0.0, strip_bg);
                     painter.line_segment(
                         [strip.left_top(), strip.right_top()],
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
+                        egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+                        ),
                     );
                     let max_text_width = strip.width() - 10.0;
                     if max_text_width > 10.0 {
@@ -5798,7 +6801,9 @@ impl TimelinePanel {
                         let text_pos = egui::pos2(strip.left() + 5.0, strip.center().y);
                         let font = egui::FontId::proportional(font_size);
                         if draw_outline {
-                            for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                            for &(dx, dy) in
+                                &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)]
+                            {
                                 painter.text(
                                     egui::pos2(text_pos.x + dx, text_pos.y + dy),
                                     egui::Align2::LEFT_CENTER,
@@ -5836,9 +6841,8 @@ impl TimelinePanel {
                     let truncated = truncate_text(&label, max_text_width, font_size);
                     let font = egui::FontId::proportional(font_size);
                     // Draw dark outline/shadow for readability on any background
-                    let shadow_offsets: &[(f32, f32)] = &[
-                        (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
-                    ];
+                    let shadow_offsets: &[(f32, f32)] =
+                        &[(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
                     let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
                     for &(dx, dy) in shadow_offsets {
                         painter.text(
@@ -5862,10 +6866,8 @@ impl TimelinePanel {
                 if media.proxy_ready && state.use_proxies && clip_rect.width() > 30.0 {
                     let badge_font = egui::FontId::proportional(10.0);
                     let badge_pos = egui::pos2(clip_rect.right() - 12.0, clip_rect.top() + 8.0);
-                    let badge_rect = egui::Rect::from_center_size(
-                        badge_pos,
-                        egui::vec2(12.0, 11.0),
-                    );
+                    let badge_rect =
+                        egui::Rect::from_center_size(badge_pos, egui::vec2(12.0, 11.0));
                     painter.rect_filled(badge_rect, 2.0, tt.accent);
                     painter.text(
                         badge_pos,
@@ -5879,19 +6881,22 @@ impl TimelinePanel {
         }
 
         // Render cache indicator — 3px amber bar at top edge showing cached frame %
-        if let Some(&(_, cached, total)) = state.render_cache_ranges.iter()
+        if let Some(&(_, cached, total)) = state
+            .render_cache_ranges
+            .iter()
             .find(|(id, _, _)| *id == clip.id)
         {
             if cached > 0 && total > 0 && clip_rect.width() > 10.0 {
                 let frac = (cached as f32 / total as f32).clamp(0.0, 1.0);
                 let bar_w = clip_rect.width() * frac;
-                let bar_rect = egui::Rect::from_min_size(
-                    clip_rect.left_top(),
-                    egui::vec2(bar_w, 3.0),
-                );
+                let bar_rect =
+                    egui::Rect::from_min_size(clip_rect.left_top(), egui::vec2(bar_w, 3.0));
                 let acc = tt.accent;
-                painter.rect_filled(bar_rect, 0.0,
-                    egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160));
+                painter.rect_filled(
+                    bar_rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160),
+                );
             }
         }
 
@@ -5900,7 +6905,11 @@ impl TimelinePanel {
             let dot_x = clip_rect.right() - 8.0;
             let dot_y = clip_rect.bottom() - 7.0;
             let dot_pos = egui::pos2(dot_x, dot_y);
-            painter.circle_filled(dot_pos, 3.5, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+            painter.circle_filled(
+                dot_pos,
+                3.5,
+                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+            );
             painter.circle_filled(dot_pos, 2.5, tt.accent);
         }
 
@@ -5909,8 +6918,13 @@ impl TimelinePanel {
             let g_pos = egui::pos2(clip_rect.left() + 10.0, clip_rect.bottom() - 8.0);
             let g_rect = egui::Rect::from_center_size(g_pos, egui::vec2(14.0, 11.0));
             painter.rect_filled(g_rect, 2.0, tt.marker_info);
-            painter.text(g_pos, egui::Align2::CENTER_CENTER, "G",
-                egui::FontId::proportional(10.0), tt.text_primary);
+            painter.text(
+                g_pos,
+                egui::Align2::CENTER_CENTER,
+                "G",
+                egui::FontId::proportional(10.0),
+                tt.text_primary,
+            );
         }
 
         // Multicam indicators (gated by multicam_show_angles pref synced to state)
@@ -5922,17 +6936,31 @@ impl TimelinePanel {
                 egui::vec2(16.0, 14.0),
             );
             painter.rect_filled(badge_rect, 2.0, tt.marker_info);
-            painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER, &angle_text,
-                egui::FontId::proportional(10.0), tt.text_primary);
+            painter.text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &angle_text,
+                egui::FontId::proportional(10.0),
+                tt.text_primary,
+            );
 
             // "MC" badge (top-left)
             let mc_rect = egui::Rect::from_min_size(
                 egui::pos2(clip_rect.left() + 2.0, clip_rect.top() + 2.0),
                 egui::vec2(20.0, 14.0),
             );
-            painter.rect_filled(mc_rect, 2.0, egui::Color32::from_rgba_premultiplied(20, 15, 3, 40));
-            painter.text(mc_rect.center(), egui::Align2::CENTER_CENTER, "MC",
-                egui::FontId::proportional(10.0), tt.accent);
+            painter.rect_filled(
+                mc_rect,
+                2.0,
+                egui::Color32::from_rgba_premultiplied(20, 15, 3, 40),
+            );
+            painter.text(
+                mc_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "MC",
+                egui::FontId::proportional(10.0),
+                tt.accent,
+            );
 
             // Cut list visualization (only on primary angle)
             if clip.multicam_angle == 0 && !clip.multicam_cuts.is_empty() {
@@ -5959,14 +6987,22 @@ impl TimelinePanel {
                             clip_dur
                         };
 
-                        let x_start = clip_rect.left() + (start_t / clip_dur) as f32 * clip_rect.width();
-                        let x_end = clip_rect.left() + (end_t / clip_dur) as f32 * clip_rect.width();
-                        let color = angle_colors.get(angle as usize).copied()
+                        let x_start =
+                            clip_rect.left() + (start_t / clip_dur) as f32 * clip_rect.width();
+                        let x_end =
+                            clip_rect.left() + (end_t / clip_dur) as f32 * clip_rect.width();
+                        let color = angle_colors
+                            .get(angle as usize)
+                            .copied()
                             .unwrap_or(tt.text_dim);
 
                         painter.rect_filled(
-                            egui::Rect::from_min_max(egui::pos2(x_start, bar_y), egui::pos2(x_end, bar_y + bar_h)),
-                            0.0, color,
+                            egui::Rect::from_min_max(
+                                egui::pos2(x_start, bar_y),
+                                egui::pos2(x_end, bar_y + bar_h),
+                            ),
+                            0.0,
+                            color,
                         );
                     }
                 }
@@ -6005,9 +7041,11 @@ impl TimelinePanel {
             clip_source_in_secs,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let compound = if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            let compound = if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 Some(*sequence_id)
-            } else { None };
+            } else {
+                None
+            };
             (
                 clip.id,
                 clip.timeline_in.to_secs_f64(),
@@ -6045,7 +7083,8 @@ impl TimelinePanel {
         }
 
         // Range selection overlay — amber tint on clips within in/out range
-        if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point) {
+        if let (Some(in_pt), Some(out_pt)) = (state.sequence().in_point, state.sequence().out_point)
+        {
             let range_in_secs = in_pt.to_secs_f64();
             let range_out_secs = out_pt.to_secs_f64();
             let clip_in_secs = clip_timeline_in_secs;
@@ -6060,7 +7099,11 @@ impl TimelinePanel {
                         egui::pos2(overlay_left, clip_rect.top()),
                         egui::pos2(overlay_right, clip_rect.bottom()),
                     );
-                    crate::timeline::range_visuals::draw_clip_overlay(painter, overlay_rect, &theme());
+                    crate::timeline::range_visuals::draw_clip_overlay(
+                        painter,
+                        overlay_rect,
+                        &theme(),
+                    );
                 }
             }
         }
@@ -6078,23 +7121,36 @@ impl TimelinePanel {
                 // Show metadata tooltip on clip hover (only when not skimming)
                 if !state.skimming_enabled {
                     if let Some(media) = clip_media_id.and_then(|mid| state.media_pool.get(&mid)) {
-                        egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), egui::Id::new("clip_meta_tooltip"), |ui| {
-                            ui.label(egui::RichText::new(&media.filename).strong());
-                            ui.label(format!("{} x {} \u{00b7} {}", media.resolution.width, media.resolution.height, media.video_codec));
-                            if media.camera_make.is_some() || media.camera_model.is_some() {
-                                let make = media.camera_make.as_deref().unwrap_or("");
-                                let model = media.camera_model.as_deref().unwrap_or("");
-                                ui.label(format!("Camera: {make} {model}").trim().to_string());
-                            }
-                            if let Some(bd) = media.bit_depth {
-                                let pf = media.pixel_format.as_deref().unwrap_or("");
-                                ui.label(format!("{bd}-bit {pf}"));
-                            }
-                            if let Some(vbr) = media.video_bitrate_kbps {
-                                if vbr >= 1000 { ui.label(format!("{:.1} Mbps", vbr as f64 / 1000.0)); }
-                                else { ui.label(format!("{vbr} kbps")); }
-                            }
-                        });
+                        egui::show_tooltip_at_pointer(
+                            ui.ctx(),
+                            ui.layer_id(),
+                            egui::Id::new("clip_meta_tooltip"),
+                            |ui| {
+                                ui.label(egui::RichText::new(&media.filename).strong());
+                                ui.label(format!(
+                                    "{} x {} \u{00b7} {}",
+                                    media.resolution.width,
+                                    media.resolution.height,
+                                    media.video_codec
+                                ));
+                                if media.camera_make.is_some() || media.camera_model.is_some() {
+                                    let make = media.camera_make.as_deref().unwrap_or("");
+                                    let model = media.camera_model.as_deref().unwrap_or("");
+                                    ui.label(format!("Camera: {make} {model}").trim().to_string());
+                                }
+                                if let Some(bd) = media.bit_depth {
+                                    let pf = media.pixel_format.as_deref().unwrap_or("");
+                                    ui.label(format!("{bd}-bit {pf}"));
+                                }
+                                if let Some(vbr) = media.video_bitrate_kbps {
+                                    if vbr >= 1000 {
+                                        ui.label(format!("{:.1} Mbps", vbr as f64 / 1000.0));
+                                    } else {
+                                        ui.label(format!("{vbr} kbps"));
+                                    }
+                                }
+                            },
+                        );
                     }
                 }
 
@@ -6106,8 +7162,8 @@ impl TimelinePanel {
                     // short-circuits to None for compound clips, so this branch
                     // does not need to early-return.
                     if let Some(sequence_id) = clip_compound_seq_id {
-                        let frac = ((pos.x - clip_rect.min.x) / clip_rect.width())
-                            .clamp(0.0, 1.0) as f64;
+                        let frac =
+                            ((pos.x - clip_rect.min.x) / clip_rect.width()).clamp(0.0, 1.0) as f64;
                         let resolved_video = {
                             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                             resolve_compound_at_frac(
@@ -6138,8 +7194,11 @@ impl TimelinePanel {
                                         target: klipp_core::ViewerMode::Program,
                                     });
                                 } else {
-                                    state.skim_queued_request =
-                                        Some((inner_media_id, inner_source_secs, klipp_core::ViewerMode::Program));
+                                    state.skim_queued_request = Some((
+                                        inner_media_id,
+                                        inner_source_secs,
+                                        klipp_core::ViewerMode::Program,
+                                    ));
                                 }
                             }
 
@@ -6161,7 +7220,8 @@ impl TimelinePanel {
 
                             if state.audio_skimming_enabled {
                                 let resolved_audio = {
-                                    let clip = &state.sequence().tracks[track_idx].clips[clip_index];
+                                    let clip =
+                                        &state.sequence().tracks[track_idx].clips[clip_index];
                                     resolve_compound_at_frac(
                                         clip,
                                         sequence_id,
@@ -6177,11 +7237,9 @@ impl TimelinePanel {
                                         .map(|m| m.path.clone())
                                     {
                                         let now = std::time::Instant::now();
-                                        let elapsed = state
-                                            .skim_last_audio_dispatch
-                                            .elapsed()
-                                            .as_millis()
-                                            as u64;
+                                        let elapsed =
+                                            state.skim_last_audio_dispatch.elapsed().as_millis()
+                                                as u64;
                                         let is_new = state.skim_audio_session.is_none();
                                         if is_new {
                                             state.skim_last_audio_dispatch = now;
@@ -6212,7 +7270,9 @@ impl TimelinePanel {
                         let skim_time = source_in_secs + clip_dur * frac as f64;
 
                         // Check if skim file exists for this media
-                        let has_skim_file = state.media_pool.get(&media_id)
+                        let has_skim_file = state
+                            .media_pool
+                            .get(&media_id)
                             .and_then(|m| m.skim_file.as_ref())
                             .is_some_and(|p| p.exists());
 
@@ -6224,7 +7284,8 @@ impl TimelinePanel {
                                     target: klipp_core::ViewerMode::Program,
                                 });
                             } else {
-                                state.skim_queued_request = Some((media_id, skim_time, klipp_core::ViewerMode::Program));
+                                state.skim_queued_request =
+                                    Some((media_id, skim_time, klipp_core::ViewerMode::Program));
                             }
                         }
 
@@ -6259,14 +7320,18 @@ impl TimelinePanel {
                                 state.skim_speed_px_per_sec = 0.0;
                             } else {
                                 let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
-                                state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+                                state.skim_speed_px_per_sec =
+                                    state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
                             }
                             state.skim_last_x = pos.x;
                             state.skim_last_update = now;
 
-                            if let Some(source_path) = state.media_pool.get(&media_id).map(|m| m.path.clone()) {
+                            if let Some(source_path) =
+                                state.media_pool.get(&media_id).map(|m| m.path.clone())
+                            {
                                 let is_new = state.skim_audio_session.is_none();
-                                let elapsed = state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
+                                let elapsed =
+                                    state.skim_last_audio_dispatch.elapsed().as_millis() as u64;
 
                                 if is_new {
                                     state.skim_last_audio_dispatch = std::time::Instant::now();
@@ -6287,7 +7352,8 @@ impl TimelinePanel {
                                 // the silence check never re-runs and
                                 // audio keeps playing through a
                                 // stationary hover.
-                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+                                ui.ctx()
+                                    .request_repaint_after(std::time::Duration::from_millis(120));
                             }
                         }
                     }
@@ -6321,7 +7387,9 @@ impl TimelinePanel {
                         // All clip edges
                         for track in &state.sequence().tracks {
                             for c in &track.clips {
-                                for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
+                                for &edge_secs in
+                                    &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()]
+                                {
                                     let d = (raw_secs - edge_secs).abs();
                                     if d < snap_thresh_secs && d < best_dist {
                                         best_dist = d;
@@ -6395,8 +7463,12 @@ impl TimelinePanel {
         track_kind: klipp_timeline::TrackKind,
         pointer_pos: Option<egui::Pos2>,
     ) -> Option<crate::state::RubberBandParam> {
-        if track_kind != TrackKind::Audio { return None; }
-        if clip_rect.width() < 8.0 || clip.kind.is_gap() { return None; }
+        if track_kind != TrackKind::Audio {
+            return None;
+        }
+        if clip_rect.width() < 8.0 || clip.kind.is_gap() {
+            return None;
+        }
 
         // Group kf tracks by effect index. BTreeMap keeps the visual
         // order stable across frames (and matches the inspector's
@@ -6404,14 +7476,21 @@ impl TimelinePanel {
         let mut effect_kf_params: std::collections::BTreeMap<usize, Vec<String>> =
             std::collections::BTreeMap::new();
         for (key, kfs) in &clip.audio_effect_keyframes {
-            if kfs.is_empty() { continue; }
+            if kfs.is_empty() {
+                continue;
+            }
             if let Some((idx_str, name)) = key.split_once(':') {
                 if let Ok(idx) = idx_str.parse::<usize>() {
-                    effect_kf_params.entry(idx).or_default().push(name.to_string());
+                    effect_kf_params
+                        .entry(idx)
+                        .or_default()
+                        .push(name.to_string());
                 }
             }
         }
-        if effect_kf_params.is_empty() { return None; }
+        if effect_kf_params.is_empty() {
+            return None;
+        }
 
         const STRIP_HEIGHT: f32 = 2.0;
         let strip_y = clip_rect.top() + 1.0;
@@ -6435,10 +7514,15 @@ impl TimelinePanel {
                 egui::vec2(cell_width, STRIP_HEIGHT),
             );
 
-            let effect_color = clip.audio_effects.get(*effect_idx)
-                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(
-                    &inst.effect_type, &theme_ref,
-                ))
+            let effect_color = clip
+                .audio_effects
+                .get(*effect_idx)
+                .map(|inst| {
+                    crate::browser::audio_fx_tab::audio_effect_color_for_type(
+                        &inst.effect_type,
+                        &theme_ref,
+                    )
+                })
                 .unwrap_or(theme_ref.accent);
 
             painter.rect_filled(cell_rect, 0.0, effect_color);
@@ -6463,10 +7547,15 @@ impl TimelinePanel {
             // Subtle highlight: brighten the hovered cell with a 1px
             // top-edge accent line so the user sees what they're about
             // to click on.
-            let accent_color = clip.audio_effects.get(effect_idx)
-                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(
-                    &inst.effect_type, &theme_ref,
-                ))
+            let accent_color = clip
+                .audio_effects
+                .get(effect_idx)
+                .map(|inst| {
+                    crate::browser::audio_fx_tab::audio_effect_color_for_type(
+                        &inst.effect_type,
+                        &theme_ref,
+                    )
+                })
                 .unwrap_or(theme_ref.accent);
             painter.rect_filled(
                 egui::Rect::from_min_size(
@@ -6475,21 +7564,29 @@ impl TimelinePanel {
                 ),
                 0.0,
                 egui::Color32::from_rgba_unmultiplied(
-                    accent_color.r(), accent_color.g(), accent_color.b(), 240,
+                    accent_color.r(),
+                    accent_color.g(),
+                    accent_color.b(),
+                    240,
                 ),
             );
 
             // Tooltip: effect name + comma-separated kf'd params.
-            let effect_name = clip.audio_effects.get(effect_idx)
+            let effect_name = clip
+                .audio_effects
+                .get(effect_idx)
                 .map(|inst| effect_display_name(&inst.effect_type))
                 .unwrap_or_else(|| format!("FX {effect_idx}"));
             let mut sorted_params = params.clone();
             sorted_params.sort();
-            let pretty_params: Vec<String> = sorted_params.iter().map(|n| match n.as_str() {
-                "__bypass" => "Bypass".to_string(),
-                "__wetdry" => "Mix".to_string(),
-                other => other.to_string(),
-            }).collect();
+            let pretty_params: Vec<String> = sorted_params
+                .iter()
+                .map(|n| match n.as_str() {
+                    "__bypass" => "Bypass".to_string(),
+                    "__wetdry" => "Mix".to_string(),
+                    other => other.to_string(),
+                })
+                .collect();
             egui::show_tooltip_at(
                 ui.ctx(),
                 ui.layer_id(),
@@ -6530,30 +7627,42 @@ impl TimelinePanel {
         track_kind: klipp_timeline::TrackKind,
         pointer_pos: Option<egui::Pos2>,
     ) {
-        if track_kind != TrackKind::Audio { return; }
-        if clip_rect.width() < 8.0 || clip.kind.is_gap() { return; }
+        if track_kind != TrackKind::Audio {
+            return;
+        }
+        if clip_rect.width() < 8.0 || clip.kind.is_gap() {
+            return;
+        }
         let clip_dur_secs = clip.duration().to_secs_f64();
-        if clip_dur_secs <= 0.0 { return; }
+        if clip_dur_secs <= 0.0 {
+            return;
+        }
 
         // Find non-empty bypass kf tracks; sort deterministically by
         // effect index so visual order matches the inspector chain.
-        let mut bypass_tracks: Vec<(usize, &Vec<klipp_core::Keyframe>)> = clip.audio_effect_keyframes
+        let mut bypass_tracks: Vec<(usize, &Vec<klipp_core::Keyframe>)> = clip
+            .audio_effect_keyframes
             .iter()
             .filter_map(|(k, kfs)| {
-                if kfs.is_empty() { return None; }
+                if kfs.is_empty() {
+                    return None;
+                }
                 let rest = k.strip_suffix(":__bypass")?;
                 let idx: usize = rest.parse().ok()?;
                 Some((idx, kfs))
             })
             .collect();
-        if bypass_tracks.is_empty() { return; }
+        if bypass_tracks.is_empty() {
+            return;
+        }
         bypass_tracks.sort_by_key(|(idx, _)| *idx);
 
         const STRIP_HEIGHT: f32 = 3.0;
         const STRIP_GAP: f32 = 1.0;
         const MAX_VISIBLE: usize = 3;
         let visible: usize = bypass_tracks.len().min(MAX_VISIBLE);
-        let total_h = visible as f32 * STRIP_HEIGHT + (visible.saturating_sub(1)) as f32 * STRIP_GAP;
+        let total_h =
+            visible as f32 * STRIP_HEIGHT + (visible.saturating_sub(1)) as f32 * STRIP_GAP;
         let strips_top_y = clip_rect.bottom() - total_h - 1.0; // 1px gap from clip bottom
 
         let theme = theme();
@@ -6575,8 +7684,15 @@ impl TimelinePanel {
 
             // Resolve effect's stable colour from its type_id (matches
             // the FX library tile colour).
-            let effect_color = clip.audio_effects.get(*effect_idx)
-                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(&inst.effect_type, &theme))
+            let effect_color = clip
+                .audio_effects
+                .get(*effect_idx)
+                .map(|inst| {
+                    crate::browser::audio_fx_tab::audio_effect_color_for_type(
+                        &inst.effect_type,
+                        &theme,
+                    )
+                })
                 .unwrap_or(theme.accent);
 
             // Faint background so the strip is visible even when bypassed
@@ -6660,7 +7776,9 @@ impl TimelinePanel {
 
         // Hover tooltip — formatted summary of the active/bypass ranges.
         if let Some((effect_idx, kfs, _rect)) = hover_target {
-            let effect_name = clip.audio_effects.get(effect_idx)
+            let effect_name = clip
+                .audio_effects
+                .get(effect_idx)
                 .map(|inst| effect_display_name(&inst.effect_type))
                 .unwrap_or_else(|| format!("FX {effect_idx}"));
             let summary = bypass_envelope_summary(kfs, clip_dur_secs);
@@ -6694,7 +7812,10 @@ impl TimelinePanel {
             crate::prefs::FadeOverlayMode::AudioOnly => track_kind == TrackKind::Audio,
             crate::prefs::FadeOverlayMode::Both => {
                 track_kind == TrackKind::Audio
-                    || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio)
+                    || clip
+                        .media_id()
+                        .and_then(|mid| state.media_pool.get(&mid))
+                        .is_some_and(|m| m.has_audio)
             }
         };
         if show_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
@@ -6702,18 +7823,19 @@ impl TimelinePanel {
             let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve) {
                 (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
             };
-            let (fi_secs, fo_secs, fi_curve, fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
-                let mut found = resolve_fade(clip);
-                for t in &state.sequence().tracks {
-                    if let Some(vc) = t.find_clip(linked_id) {
-                        found = resolve_fade(vc);
-                        break;
+            let (fi_secs, fo_secs, fi_curve, fo_curve) =
+                if let Some(linked_id) = clip.linked_clip_id {
+                    let mut found = resolve_fade(clip);
+                    for t in &state.sequence().tracks {
+                        if let Some(vc) = t.find_clip(linked_id) {
+                            found = resolve_fade(vc);
+                            break;
+                        }
                     }
-                }
-                found
-            } else {
-                resolve_fade(clip)
-            };
+                    found
+                } else {
+                    resolve_fade(clip)
+                };
 
             let clip_dur_secs = clip.duration().to_secs_f64() as f32;
             let fade_clip_painter = painter.with_clip_rect(clip_rect);
@@ -6725,9 +7847,14 @@ impl TimelinePanel {
 
             let tt = theme();
             let acc = tt.accent;
-            let fade_line_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 200);
+            let fade_line_color =
+                egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 200);
             let fade_line_highlight = egui::Color32::from_rgba_unmultiplied(
-                acc.r().saturating_add(20), acc.g().saturating_add(40), acc.b().saturating_add(110), 100);
+                acc.r().saturating_add(20),
+                acc.g().saturating_add(40),
+                acc.b().saturating_add(110),
+                100,
+            );
             let fade_line_shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120);
             let num_segments: usize = 40;
             let num_gradient_strips: usize = 10;
@@ -6796,7 +7923,10 @@ impl TimelinePanel {
                         egui::pos2(clip_rect.left() + fade_in_px, clip_rect.top()),
                         egui::pos2(clip_rect.left() + fade_in_px, clip_rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)),
+                    egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80),
+                    ),
                 );
             }
 
@@ -6866,7 +7996,10 @@ impl TimelinePanel {
                         egui::pos2(fade_start_x, clip_rect.top()),
                         egui::pos2(fade_start_x, clip_rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)),
+                    egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80),
+                    ),
                 );
             }
         }
@@ -6888,8 +8021,13 @@ impl TimelinePanel {
             // Draw waveform overlay for clips with audio peak data
             // Try waveform_data first, then fall back to audio_cache.peaks
             if let Some(mid) = clip.media_id() {
-                let wf_data = state.media_pool.get(&mid).and_then(|m| m.waveform_data.as_ref().cloned());
-                let ac_peaks = state.media_pool.get(&mid)
+                let wf_data = state
+                    .media_pool
+                    .get(&mid)
+                    .and_then(|m| m.waveform_data.as_ref().cloned());
+                let ac_peaks = state
+                    .media_pool
+                    .get(&mid)
                     .and_then(|m| m.audio_cache.as_ref())
                     .map(|c| c.peaks.clone());
                 let peaks_ref = wf_data.or(ac_peaks);
@@ -6917,7 +8055,10 @@ impl TimelinePanel {
                             // the bottom label strip (if one is reserved).
                             let label_strip = clip_label_strip_rect(clip_rect, track_kind);
                             let wave_rect = match label_strip {
-                                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                                Some(lr) => egui::Rect::from_min_max(
+                                    clip_rect.left_top(),
+                                    egui::pos2(clip_rect.right(), lr.top()),
+                                ),
                                 None => clip_rect,
                             };
                             let clip_painter = painter.with_clip_rect(wave_rect);
@@ -6928,28 +8069,40 @@ impl TimelinePanel {
                             // Per-track amplitude zoom (#50). Default 1.0 when
                             // no entry for this track. Clamp guards against
                             // stored extreme values.
-                            let wf_zoom = state.waveform_zoom
+                            let wf_zoom = state
+                                .waveform_zoom
                                 .get(&track_id)
                                 .copied()
                                 .unwrap_or(1.0)
                                 .clamp(0.1, 8.0);
 
                             // Resolve fade params for waveform shaping (FCP-style tapered waveform)
-                            let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve) {
-                                (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
+                            let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (
+                                f32,
+                                f32,
+                                klipp_core::FadeCurve,
+                                klipp_core::FadeCurve,
+                            ) {
+                                (
+                                    c.fade_in_secs,
+                                    c.fade_out_secs,
+                                    c.fade_in_curve,
+                                    c.fade_out_curve,
+                                )
                             };
-                            let (wf_fi_secs, wf_fo_secs, wf_fi_curve, wf_fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
-                                let mut found = wf_resolve_fade(clip);
-                                for t in &state.sequence().tracks {
-                                    if let Some(vc) = t.find_clip(linked_id) {
-                                        found = wf_resolve_fade(vc);
-                                        break;
+                            let (wf_fi_secs, wf_fo_secs, wf_fi_curve, wf_fo_curve) =
+                                if let Some(linked_id) = clip.linked_clip_id {
+                                    let mut found = wf_resolve_fade(clip);
+                                    for t in &state.sequence().tracks {
+                                        if let Some(vc) = t.find_clip(linked_id) {
+                                            found = wf_resolve_fade(vc);
+                                            break;
+                                        }
                                     }
-                                }
-                                found
-                            } else {
-                                wf_resolve_fade(clip)
-                            };
+                                    found
+                                } else {
+                                    wf_resolve_fade(clip)
+                                };
                             let wf_clip_dur = clip.duration().to_secs_f64() as f32;
 
                             // Compute fade envelope at a given time position
@@ -6959,7 +8112,10 @@ impl TimelinePanel {
                                     let frac = (col_time / wf_fi_secs).clamp(0.0, 1.0);
                                     gain = wf_fi_curve.gain(frac as f64) as f32;
                                 }
-                                if wf_fo_secs > 0.001 && wf_clip_dur > 0.001 && col_time > wf_clip_dur - wf_fo_secs {
+                                if wf_fo_secs > 0.001
+                                    && wf_clip_dur > 0.001
+                                    && col_time > wf_clip_dur - wf_fo_secs
+                                {
                                     let remaining = wf_clip_dur - col_time;
                                     let frac = (remaining / wf_fo_secs).clamp(0.0, 1.0);
                                     gain *= wf_fo_curve.gain(frac as f64) as f32;
@@ -6986,8 +8142,10 @@ impl TimelinePanel {
                                 // Amplitude zoom scales the waveform height.
                                 // `.min(half_h)` caps at the full track half-height so
                                 // waveforms can't bleed outside the clip rect when zoom > 1.
-                                let top_h = (pmax.abs().sqrt().min(1.0) * half_h * fade * wf_zoom).min(half_h);
-                                let bot_h = (pmin.abs().sqrt().min(1.0) * half_h * fade * wf_zoom).min(half_h);
+                                let top_h = (pmax.abs().sqrt().min(1.0) * half_h * fade * wf_zoom)
+                                    .min(half_h);
+                                let bot_h = (pmin.abs().sqrt().min(1.0) * half_h * fade * wf_zoom)
+                                    .min(half_h);
                                 let y_top = center_y - top_h;
                                 let y_bot = center_y + bot_h;
 
@@ -7033,13 +8191,16 @@ impl TimelinePanel {
             // confined to the rect above that strip.
             let label_strip = clip_label_strip_rect(clip_rect, track_kind);
             let strip_rect = match label_strip {
-                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                Some(lr) => egui::Rect::from_min_max(
+                    clip_rect.left_top(),
+                    egui::pos2(clip_rect.right(), lr.top()),
+                ),
                 None => clip_rect,
             };
             // Compound clip: resolve inner media per tile and stitch together
             // a strip from those inner clips' filmstrips. Keeps the existing
             // per-MediaId cache; no new storage.
-            if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 draw_compound_filmstrip(
                     painter,
                     strip_rect,
@@ -7062,7 +8223,10 @@ impl TimelinePanel {
                 return;
             }
             let mut drew_filmstrip = false;
-            if let Some(filmstrip) = clip.media_id().and_then(|mid| state.filmstrip_textures.get(&mid)) {
+            if let Some(filmstrip) = clip
+                .media_id()
+                .and_then(|mid| state.filmstrip_textures.get(&mid))
+            {
                 if !filmstrip.is_empty() {
                     drew_filmstrip = true;
                     let clip_in_secs = clip.source_in.to_secs_f64();
@@ -7106,20 +8270,29 @@ impl TimelinePanel {
                         };
 
                         let tile_center_x = (x0 + x1) * 0.5;
-                        let frac = ((tile_center_x - strip_rect.left()) / strip_rect.width().max(1.0)) as f64;
+                        let frac = ((tile_center_x - strip_rect.left())
+                            / strip_rect.width().max(1.0))
+                            as f64;
                         let source_time = clip_in_secs + frac * (clip_out_secs - clip_in_secs);
 
                         let idx = match filmstrip.binary_search_by(|f| {
-                            f.0.partial_cmp(&source_time).unwrap_or(std::cmp::Ordering::Equal)
+                            f.0.partial_cmp(&source_time)
+                                .unwrap_or(std::cmp::Ordering::Equal)
                         }) {
                             Ok(i) => i,
                             Err(i) => {
-                                if i == 0 { 0 }
-                                else if i >= filmstrip.len() { filmstrip.len() - 1 }
-                                else {
+                                if i == 0 {
+                                    0
+                                } else if i >= filmstrip.len() {
+                                    filmstrip.len() - 1
+                                } else {
                                     let d_left = (filmstrip[i - 1].0 - source_time).abs();
                                     let d_right = (filmstrip[i].0 - source_time).abs();
-                                    if d_left <= d_right { i - 1 } else { i }
+                                    if d_left <= d_right {
+                                        i - 1
+                                    } else {
+                                        i
+                                    }
                                 }
                             }
                         };
@@ -7132,8 +8305,14 @@ impl TimelinePanel {
 
                         if draw_sep {
                             clip_painter.line_segment(
-                                [egui::pos2(x0, strip_rect.top()), egui::pos2(x0, strip_rect.bottom())],
-                                egui::Stroke::new(sep_w, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140)),
+                                [
+                                    egui::pos2(x0, strip_rect.top()),
+                                    egui::pos2(x0, strip_rect.bottom()),
+                                ],
+                                egui::Stroke::new(
+                                    sep_w,
+                                    egui::Color32::from_rgba_premultiplied(0, 0, 0, 140),
+                                ),
                             );
                         }
 
@@ -7148,10 +8327,7 @@ impl TimelinePanel {
                         clip_painter.image(
                             tex.id(),
                             tile_rect,
-                            egui::Rect::from_min_max(
-                                egui::pos2(0.0, 0.0),
-                                egui::pos2(1.0, 1.0),
-                            ),
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                             filmstrip_tint,
                         );
                         // Subtle bottom gradient to lift dark frames
@@ -7173,17 +8349,30 @@ impl TimelinePanel {
                     // Request refinement if tiles are too sparse for current zoom.
                     // Debounce: only request once every 2 seconds.
                     if visible_count > 3 && filmstrip.len() > 1 {
-                        let secs_per_tile = (clip_out_secs - clip_in_secs) / num_tiles.max(1) as f64;
-                        let min_interval = clip.media_id().and_then(|mid| state.thumbnail_cache.filmstrip_min_interval(&mid));
-                        let debounce_ok = self.last_refine_request
+                        let secs_per_tile =
+                            (clip_out_secs - clip_in_secs) / num_tiles.max(1) as f64;
+                        let min_interval = clip
+                            .media_id()
+                            .and_then(|mid| state.thumbnail_cache.filmstrip_min_interval(&mid));
+                        let debounce_ok = self
+                            .last_refine_request
                             .map(|t| t.elapsed().as_secs_f64() > 0.5)
                             .unwrap_or(true);
                         if let Some(min_iv) = min_interval {
-                            if secs_per_tile < min_iv * 0.5 && !state.filmstrip_generating && debounce_ok {
-                                let vis_start_frac = ((first_visible as f32 * tile_w) / strip_rect.width().max(1.0)) as f64;
-                                let vis_end_frac = ((last_visible as f32 * tile_w) / strip_rect.width().max(1.0)).min(1.0) as f64;
-                                let range_start = clip_in_secs + vis_start_frac * (clip_out_secs - clip_in_secs);
-                                let range_end = clip_in_secs + vis_end_frac * (clip_out_secs - clip_in_secs);
+                            if secs_per_tile < min_iv * 0.5
+                                && !state.filmstrip_generating
+                                && debounce_ok
+                            {
+                                let vis_start_frac = ((first_visible as f32 * tile_w)
+                                    / strip_rect.width().max(1.0))
+                                    as f64;
+                                let vis_end_frac = ((last_visible as f32 * tile_w)
+                                    / strip_rect.width().max(1.0))
+                                .min(1.0) as f64;
+                                let range_start =
+                                    clip_in_secs + vis_start_frac * (clip_out_secs - clip_in_secs);
+                                let range_end =
+                                    clip_in_secs + vis_end_frac * (clip_out_secs - clip_in_secs);
                                 let new_interval = secs_per_tile.max(0.5);
                                 if let Some(mid) = clip.media_id() {
                                     cmds.push(AppCommand::RefineFilmstrip {
@@ -7214,7 +8403,10 @@ impl TimelinePanel {
             }
             if !drew_filmstrip {
                 // Fallback: single thumbnail or solid color
-                if let Some(tex) = clip.media_id().and_then(|mid| state.thumbnail_textures.get(&mid)) {
+                if let Some(tex) = clip
+                    .media_id()
+                    .and_then(|mid| state.thumbnail_textures.get(&mid))
+                {
                     painter.image(
                         tex.id(),
                         strip_rect,
@@ -7237,14 +8429,20 @@ impl TimelinePanel {
             // the name never overlaps the waveform.
             let label_strip = clip_label_strip_rect(clip_rect, track_kind);
             let content_rect = match label_strip {
-                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                Some(lr) => egui::Rect::from_min_max(
+                    clip_rect.left_top(),
+                    egui::pos2(clip_rect.right(), lr.top()),
+                ),
                 None => clip_rect,
             };
             painter.rect_filled(content_rect, 2.0, fill_color);
 
             // Poster frame thumbnail for audio clips linked to video
             if let Some(linked_id) = clip.linked_clip_id {
-                let linked_media_id = state.sequence().tracks.iter()
+                let linked_media_id = state
+                    .sequence()
+                    .tracks
+                    .iter()
                     .find_map(|t| t.find_clip(linked_id))
                     .and_then(|c| c.media_id());
                 if let Some(mid) = linked_media_id {
@@ -7296,10 +8494,19 @@ impl TimelinePanel {
                 // (and its linked counterpart, if any). After this block all
                 // borrows into `state` are dropped.
                 let drag_data = {
-                    let clip_opt = state.sequence().tracks[track_idx].clips.iter()
+                    let clip_opt = state.sequence().tracks[track_idx]
+                        .clips
+                        .iter()
                         .find(|c| c.id == fade_clip_id);
                     if let Some(clip) = clip_opt {
-                        let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                        let cr = Self::clip_screen_rect(
+                            clip,
+                            content_rect,
+                            track_rect,
+                            zoom,
+                            scroll,
+                            track_height,
+                        );
                         let clip_dur_secs = clip.duration().to_secs_f64() as f32;
                         let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
                         let target = resolve_fade_drag_target_full(state.sequence(), clip);
@@ -7319,10 +8526,16 @@ impl TimelinePanel {
                         let new_fade = frac * clip_dur_secs;
 
                         if let Some((gain, volume, pan, fi, fo, fi_c, fo_c, ch)) = target {
-                            let (new_fi, new_fo) = if is_fade_in { (new_fade, fo) } else { (fi, new_fade) };
+                            let (new_fi, new_fo) = if is_fade_in {
+                                (new_fade, fo)
+                            } else {
+                                (fi, new_fade)
+                            };
                             cmds.push(AppCommand::UpdateClipAudio {
                                 clip_id: cmd_clip_id,
-                                gain, volume, pan,
+                                gain,
+                                volume,
+                                pan,
                                 fade_in_secs: new_fi,
                                 fade_out_secs: new_fo,
                                 fade_in_curve: fi_c,
@@ -7338,7 +8551,9 @@ impl TimelinePanel {
         // Release: end drag
         if pointer_released || !pointer_down {
             let end_data = {
-                let clip_opt = state.sequence().tracks[track_idx].clips.iter()
+                let clip_opt = state.sequence().tracks[track_idx]
+                    .clips
+                    .iter()
                     .find(|c| c.id == fade_clip_id);
                 clip_opt.map(|clip| {
                     let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
@@ -7359,8 +8574,11 @@ impl TimelinePanel {
                     cmds.push(AppCommand::EndAudioDrag {
                         key: format!("{:?}:audio", cmd_clip_id),
                         clip_id: cmd_clip_id,
-                        new_gain: g, new_volume: v, new_pan: p,
-                        new_fade_in: fi, new_fade_out: fo,
+                        new_gain: g,
+                        new_volume: v,
+                        new_pan: p,
+                        new_fade_in: fi,
+                        new_fade_out: fo,
                     });
                 }
             }
@@ -7396,16 +8614,42 @@ impl TimelinePanel {
                 // splits into Phase 1 (scan, no &mut) and Phase 2 (apply, no clip borrow).
                 let mut started_fade_drag = false;
                 if state.active_tool == Tool::Select {
-                    let fade_hit: Option<(klipp_core::ClipId, klipp_core::ClipId, bool, f32, f32, f32, f32, f32, f32)> = {
+                    let fade_hit: Option<(
+                        klipp_core::ClipId,
+                        klipp_core::ClipId,
+                        bool,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                    )> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
                         let mut found = None;
                         for clip in clips {
-                            if clip.kind.is_gap() { continue; }
+                            if clip.kind.is_gap() {
+                                continue;
+                            }
                             let clip_has_audio = track_kind == TrackKind::Audio
-                                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
-                            if !clip_has_audio { continue; }
-                            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
-                            if cr.width() < 20.0 { continue; }
+                                || clip
+                                    .media_id()
+                                    .and_then(|mid| state.media_pool.get(&mid))
+                                    .is_some_and(|m| m.has_audio);
+                            if !clip_has_audio {
+                                continue;
+                            }
+                            let cr = Self::clip_screen_rect(
+                                clip,
+                                content_rect,
+                                track_rect,
+                                zoom,
+                                scroll,
+                                track_height,
+                            );
+                            if cr.width() < 20.0 {
+                                continue;
+                            }
 
                             // Resolve current fade values (reads linked clip if any).
                             let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
@@ -7423,43 +8667,72 @@ impl TimelinePanel {
                                 (clip.fade_in_secs, clip.fade_out_secs)
                             };
                             let clip_dur_secs = clip.duration().to_secs_f64() as f32;
-                            let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * cr.width() } else { 0.0 };
+                            let fi_offset_px = if clip_dur_secs > 0.001 {
+                                (cur_fi / clip_dur_secs) * cr.width()
+                            } else {
+                                0.0
+                            };
                             let fi_x = cr.left() + fi_offset_px;
-                            let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * cr.width() } else { 0.0 };
+                            let fo_offset_px = if clip_dur_secs > 0.001 {
+                                (cur_fo / clip_dur_secs) * cr.width()
+                            } else {
+                                0.0
+                            };
                             let fo_x = cr.right() - fo_offset_px;
 
-                            let near_fi = (pos.x - fi_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
-                                && cr.contains(pos) && content_rect.contains(pos);
-                            let near_fo = (pos.x - fo_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
-                                && cr.contains(pos) && content_rect.contains(pos);
+                            let near_fi = (pos.x - fi_x).abs() < 8.0
+                                && (pos.y - cr.top()).abs() < 10.0
+                                && cr.contains(pos)
+                                && content_rect.contains(pos);
+                            let near_fo = (pos.x - fo_x).abs() < 8.0
+                                && (pos.y - cr.top()).abs() < 10.0
+                                && cr.contains(pos)
+                                && content_rect.contains(pos);
 
                             if near_fi || near_fo {
                                 let is_in = near_fi;
                                 let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
-                                let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
-                                    state.sequence().tracks.iter()
-                                        .find_map(|t| t.find_clip(linked_id))
-                                        .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
-                                        .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
-                                } else {
-                                    (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
-                                };
+                                let (g, v, p, fi_s, fo_s) =
+                                    if let Some(linked_id) = clip.linked_clip_id {
+                                        state
+                                            .sequence()
+                                            .tracks
+                                            .iter()
+                                            .find_map(|t| t.find_clip(linked_id))
+                                            .map(|c| {
+                                                (
+                                                    c.gain,
+                                                    c.volume,
+                                                    c.pan,
+                                                    c.fade_in_secs,
+                                                    c.fade_out_secs,
+                                                )
+                                            })
+                                            .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
+                                    } else {
+                                        (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
+                                    };
                                 let cur = if is_in { cur_fi } else { cur_fo };
-                                found = Some((clip.id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s));
+                                found =
+                                    Some((clip.id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s));
                                 break;
                             }
                         }
                         found
                     };
-                    if let Some((clip_id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s)) = fade_hit {
+                    if let Some((clip_id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s)) = fade_hit
+                    {
                         // See matching EndAudioDrag below — key
                         // shape must match UpdateClipAudio's
                         // is_dragging gate.
                         cmds.push(AppCommand::BeginAudioDrag {
                             key: format!("{:?}:audio", cmd_clip_id),
                             clip_id: cmd_clip_id,
-                            old_gain: g, old_volume: v, old_pan: p,
-                            old_fade_in: fi_s, old_fade_out: fo_s,
+                            old_gain: g,
+                            old_volume: v,
+                            old_pan: p,
+                            old_fade_in: fi_s,
+                            old_fade_out: fo_s,
                         });
                         state.dragging_fade_handle = Some((clip_id, is_in, cur));
                         started_fade_drag = true;
@@ -7480,16 +8753,40 @@ impl TimelinePanel {
                         } else {
                             let mut found = None;
                             for i in 0..clips.len() - 1 {
-                                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
-                                let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
-                                let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() {
+                                    continue;
+                                }
+                                let cr_a = Self::clip_screen_rect(
+                                    &clips[i],
+                                    content_rect,
+                                    track_rect,
+                                    zoom,
+                                    scroll,
+                                    track_height,
+                                );
+                                let cr_b = Self::clip_screen_rect(
+                                    &clips[i + 1],
+                                    content_rect,
+                                    track_rect,
+                                    zoom,
+                                    scroll,
+                                    track_height,
+                                );
                                 let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
                                 if (pos.x - junction_x).abs() < roll_threshold
-                                    && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
+                                    && pos.y >= track_rect.top()
+                                    && pos.y <= track_rect.top() + track_height
                                 {
-                                    let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
+                                    let gap_secs = (clips[i + 1].timeline_in
+                                        - clips[i].timeline_out)
+                                        .to_secs_f64()
+                                        .abs();
                                     if gap_secs < 0.001 {
-                                        tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
+                                        tracing::debug!(
+                                            "drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}",
+                                            clips[i].id,
+                                            clips[i + 1].id
+                                        );
                                         found = Some(RollTrimState {
                                             clip_a_id: clips[i].id,
                                             clip_b_id: clips[i + 1].id,
@@ -7515,158 +8812,272 @@ impl TimelinePanel {
                 }
                 // First: check if pointer is near any clip edge (trim)
                 if !started_fade_drag && !started_roll_trim {
-                // Edge hit: copy out the small Copy fields the trim state needs
-                // so we can drop the clips borrow before the ripple-collect step
-                // which itself re-borrows clips (and again before any state &mut).
-                let edge_hit: Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, TrimEdge)> = {
-                    let clips = &state.sequence().tracks[track_idx].clips;
-                    self.hit_test_edge(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hc, edge)| (hc.id, hc.source_in, hc.source_out, hc.timeline_in, hc.timeline_out, edge))
-                };
-                if let Some((hit_clip_id, hit_src_in, hit_src_out, hit_tl_in, hit_tl_out, edge)) = edge_hit {
-                    tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip_id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
-                    let subsequent: Vec<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)> = if state.ripple_enabled {
-                        state.sequence().tracks[track_idx].clips.iter()
-                            .filter(|c| c.id != hit_clip_id && c.timeline_in >= hit_tl_in)
-                            .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    self.trimming_clip = Some(TrimState {
-                        clip_id: hit_clip_id,
-                        track_idx,
-                        edge,
-                        start_x: pos.x,
-                        original_source_in: hit_src_in,
-                        original_source_out: hit_src_out,
-                        original_timeline_in: hit_tl_in,
-                        original_timeline_out: hit_tl_out,
-                        subsequent_clips: subsequent,
-                    });
-                }
-                // Range tool: drag anywhere in track area sets range. No clip
-                // borrow live here, so the state.range_drag mutation is fine.
-                else if state.active_tool == Tool::Range {
-                    let x_in_content = pos.x - content_rect.left() + scroll;
-                    let anchor_secs = (x_in_content as f64 / zoom as f64).max(0.0);
-                    state.range_drag = Some(crate::state::RangeDragState {
-                        kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
-                        original_in: state.sequence().in_point,
-                        original_out: state.sequence().out_point,
-                    });
-                }
-                // Second: check if pointer is inside a clip body (drag/move or slip/slide)
-                else {
-                    // Phase 1: collect everything the body branches need from the
-                    // hit clip and (if any) its left/right neighbours into one
-                    // owned struct. After this scope `state` is fully free.
-                    #[allow(clippy::type_complexity)]
-                    let body_hit: Option<(
+                    // Edge hit: copy out the small Copy fields the trim state needs
+                    // so we can drop the clips borrow before the ripple-collect step
+                    // which itself re-borrows clips (and again before any state &mut).
+                    let edge_hit: Option<(
                         klipp_core::ClipId,
-                        klipp_core::RationalTime, // timeline_in
-                        klipp_core::RationalTime, // timeline_out
-                        klipp_core::RationalTime, // source_in
-                        klipp_core::RationalTime, // source_out
-                        Option<klipp_core::ClipId>, // linked_clip_id
-                        Option<klipp_core::MediaId>, // media_id
-                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // left: id, timeline_out, source_out
-                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // right: id, timeline_in, source_in
+                        klipp_core::RationalTime,
+                        klipp_core::RationalTime,
+                        klipp_core::RationalTime,
+                        klipp_core::RationalTime,
+                        TrimEdge,
                     )> = {
                         let clips = &state.sequence().tracks[track_idx].clips;
-                        self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
+                        self.hit_test_edge(
+                            clips,
+                            content_rect,
+                            track_rect,
+                            zoom,
+                            scroll,
+                            track_height,
+                            pos,
+                        )
+                        .map(|(_, hc, edge)| {
+                            (
+                                hc.id,
+                                hc.source_in,
+                                hc.source_out,
+                                hc.timeline_in,
+                                hc.timeline_out,
+                                edge,
+                            )
+                        })
+                    };
+                    if let Some((
+                        hit_clip_id,
+                        hit_src_in,
+                        hit_src_out,
+                        hit_tl_in,
+                        hit_tl_out,
+                        edge,
+                    )) = edge_hit
+                    {
+                        tracing::debug!(
+                            "drag_started TRIM: clip={:?}, edge={:?}",
+                            hit_clip_id,
+                            match edge {
+                                TrimEdge::Left => "left",
+                                TrimEdge::Right => "right",
+                            }
+                        );
+                        let subsequent: Vec<(
+                            klipp_core::ClipId,
+                            klipp_core::RationalTime,
+                            klipp_core::RationalTime,
+                        )> = if state.ripple_enabled {
+                            state.sequence().tracks[track_idx]
+                                .clips
+                                .iter()
+                                .filter(|c| c.id != hit_clip_id && c.timeline_in >= hit_tl_in)
+                                .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        self.trimming_clip = Some(TrimState {
+                            clip_id: hit_clip_id,
+                            track_idx,
+                            edge,
+                            start_x: pos.x,
+                            original_source_in: hit_src_in,
+                            original_source_out: hit_src_out,
+                            original_timeline_in: hit_tl_in,
+                            original_timeline_out: hit_tl_out,
+                            subsequent_clips: subsequent,
+                        });
+                    }
+                    // Range tool: drag anywhere in track area sets range. No clip
+                    // borrow live here, so the state.range_drag mutation is fine.
+                    else if state.active_tool == Tool::Range {
+                        let x_in_content = pos.x - content_rect.left() + scroll;
+                        let anchor_secs = (x_in_content as f64 / zoom as f64).max(0.0);
+                        state.range_drag = Some(crate::state::RangeDragState {
+                            kind: crate::state::RangeDragKind::RulerCreate { anchor_secs },
+                            original_in: state.sequence().in_point,
+                            original_out: state.sequence().out_point,
+                        });
+                    }
+                    // Second: check if pointer is inside a clip body (drag/move or slip/slide)
+                    else {
+                        // Phase 1: collect everything the body branches need from the
+                        // hit clip and (if any) its left/right neighbours into one
+                        // owned struct. After this scope `state` is fully free.
+                        #[allow(clippy::type_complexity)]
+                        let body_hit: Option<(
+                            klipp_core::ClipId,
+                            klipp_core::RationalTime,    // timeline_in
+                            klipp_core::RationalTime,    // timeline_out
+                            klipp_core::RationalTime,    // source_in
+                            klipp_core::RationalTime,    // source_out
+                            Option<klipp_core::ClipId>,  // linked_clip_id
+                            Option<klipp_core::MediaId>, // media_id
+                            Option<(
+                                klipp_core::ClipId,
+                                klipp_core::RationalTime,
+                                klipp_core::RationalTime,
+                            )>, // left: id, timeline_out, source_out
+                            Option<(
+                                klipp_core::ClipId,
+                                klipp_core::RationalTime,
+                                klipp_core::RationalTime,
+                            )>, // right: id, timeline_in, source_in
+                        )> = {
+                            let clips = &state.sequence().tracks[track_idx].clips;
+                            self.hit_test_clip_body(
+                                clips,
+                                content_rect,
+                                track_rect,
+                                zoom,
+                                scroll,
+                                track_height,
+                                pos,
+                            )
                             .map(|(_, hc)| {
                                 let clip_idx = clips.iter().position(|c| c.id == hc.id);
-                                let left = clip_idx.and_then(|i| if i > 0 {
-                                    let lc = &clips[i - 1];
-                                    if !lc.kind.is_gap() { Some((lc.id, lc.timeline_out, lc.source_out)) } else { None }
-                                } else { None });
-                                let right = clip_idx.and_then(|i| if i + 1 < clips.len() {
-                                    let rc = &clips[i + 1];
-                                    if !rc.kind.is_gap() { Some((rc.id, rc.timeline_in, rc.source_in)) } else { None }
-                                } else { None });
-                                (hc.id, hc.timeline_in, hc.timeline_out, hc.source_in, hc.source_out, hc.linked_clip_id, hc.media_id(), left, right)
+                                let left = clip_idx.and_then(|i| {
+                                    if i > 0 {
+                                        let lc = &clips[i - 1];
+                                        if !lc.kind.is_gap() {
+                                            Some((lc.id, lc.timeline_out, lc.source_out))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                });
+                                let right = clip_idx.and_then(|i| {
+                                    if i + 1 < clips.len() {
+                                        let rc = &clips[i + 1];
+                                        if !rc.kind.is_gap() {
+                                            Some((rc.id, rc.timeline_in, rc.source_in))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                });
+                                (
+                                    hc.id,
+                                    hc.timeline_in,
+                                    hc.timeline_out,
+                                    hc.source_in,
+                                    hc.source_out,
+                                    hc.linked_clip_id,
+                                    hc.media_id(),
+                                    left,
+                                    right,
+                                )
                             })
-                    };
+                        };
 
-                    if let Some((hit_id, hit_tl_in, hit_tl_out, hit_src_in, hit_src_out, linked_id, media_id, left, right)) = body_hit {
-                        let alt_held = ui.input(|i| i.modifiers.alt);
-                        let shift_held = ui.input(|i| i.modifiers.shift);
-                        let gesture = body_drag_gesture(state.active_tool, alt_held, shift_held);
-                        if matches!(gesture, BodyDragGesture::Slide | BodyDragGesture::Slip | BodyDragGesture::Move) {
-
-                            if matches!(gesture, BodyDragGesture::Slide) {
-                                tracing::debug!("drag_started SLIDE: clip={:?}", hit_id);
-                                let (linked_orig_in, linked_orig_out) = linked_id
-                                    .and_then(|lid| {
-                                        state.sequence().tracks.iter()
+                        if let Some((
+                            hit_id,
+                            hit_tl_in,
+                            hit_tl_out,
+                            hit_src_in,
+                            hit_src_out,
+                            linked_id,
+                            media_id,
+                            left,
+                            right,
+                        )) = body_hit
+                        {
+                            let alt_held = ui.input(|i| i.modifiers.alt);
+                            let shift_held = ui.input(|i| i.modifiers.shift);
+                            let gesture =
+                                body_drag_gesture(state.active_tool, alt_held, shift_held);
+                            if matches!(
+                                gesture,
+                                BodyDragGesture::Slide
+                                    | BodyDragGesture::Slip
+                                    | BodyDragGesture::Move
+                            ) {
+                                if matches!(gesture, BodyDragGesture::Slide) {
+                                    tracing::debug!("drag_started SLIDE: clip={:?}", hit_id);
+                                    let (linked_orig_in, linked_orig_out) = linked_id
+                                        .and_then(|lid| {
+                                            state
+                                                .sequence()
+                                                .tracks
+                                                .iter()
+                                                .flat_map(|t| t.clips.iter())
+                                                .find(|c| c.id == lid)
+                                                .map(|c| (c.timeline_in, c.timeline_out))
+                                        })
+                                        .map(|(a, b)| (Some(a), Some(b)))
+                                        .unwrap_or((None, None));
+                                    self.sliding_clip = Some(SlideState {
+                                        clip_id: hit_id,
+                                        track_idx,
+                                        start_x: pos.x,
+                                        original_timeline_in: hit_tl_in,
+                                        original_timeline_out: hit_tl_out,
+                                        left_clip_id: left.map(|(id, _, _)| id),
+                                        original_left_out: left.map(|(_, tl_out, _)| tl_out),
+                                        original_left_source_out: left
+                                            .map(|(_, _, src_out)| src_out),
+                                        right_clip_id: right.map(|(id, _, _)| id),
+                                        original_right_in: right.map(|(_, tl_in, _)| tl_in),
+                                        original_right_source_in: right
+                                            .map(|(_, _, src_in)| src_in),
+                                        linked_clip_id: linked_id,
+                                        linked_original_in: linked_orig_in,
+                                        linked_original_out: linked_orig_out,
+                                    });
+                                } else if matches!(gesture, BodyDragGesture::Slip) {
+                                    tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
+                                    let media_dur = media_id.and_then(|mid| {
+                                        state.media_pool.get(&mid).map(|m| m.duration)
+                                    });
+                                    let (linked_src_in, linked_src_out) = linked_id
+                                        .and_then(|lid| {
+                                            state
+                                                .sequence()
+                                                .tracks
+                                                .iter()
+                                                .flat_map(|t| t.clips.iter())
+                                                .find(|c| c.id == lid)
+                                                .map(|c| (c.source_in, c.source_out))
+                                        })
+                                        .map(|(a, b)| (Some(a), Some(b)))
+                                        .unwrap_or((None, None));
+                                    self.slipping_clip = Some(SlipState {
+                                        clip_id: hit_id,
+                                        track_idx,
+                                        start_x: pos.x,
+                                        original_source_in: hit_src_in,
+                                        original_source_out: hit_src_out,
+                                        media_duration: media_dur,
+                                        linked_clip_id: linked_id,
+                                        linked_original_source_in: linked_src_in,
+                                        linked_original_source_out: linked_src_out,
+                                    });
+                                } else if matches!(gesture, BodyDragGesture::Move) {
+                                    tracing::debug!("drag_started MOVE: clip={:?}", hit_id);
+                                    let linked_orig = linked_id.and_then(|lid| {
+                                        state
+                                            .sequence()
+                                            .tracks
+                                            .iter()
                                             .flat_map(|t| t.clips.iter())
                                             .find(|c| c.id == lid)
-                                            .map(|c| (c.timeline_in, c.timeline_out))
-                                    })
-                                    .map(|(a, b)| (Some(a), Some(b)))
-                                    .unwrap_or((None, None));
-                                self.sliding_clip = Some(SlideState {
-                                    clip_id: hit_id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_timeline_in: hit_tl_in,
-                                    original_timeline_out: hit_tl_out,
-                                    left_clip_id: left.map(|(id, _, _)| id),
-                                    original_left_out: left.map(|(_, tl_out, _)| tl_out),
-                                    original_left_source_out: left.map(|(_, _, src_out)| src_out),
-                                    right_clip_id: right.map(|(id, _, _)| id),
-                                    original_right_in: right.map(|(_, tl_in, _)| tl_in),
-                                    original_right_source_in: right.map(|(_, _, src_in)| src_in),
-                                    linked_clip_id: linked_id,
-                                    linked_original_in: linked_orig_in,
-                                    linked_original_out: linked_orig_out,
-                                });
-                            } else if matches!(gesture, BodyDragGesture::Slip) {
-                                tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
-                                let media_dur = media_id.and_then(|mid| {
-                                    state.media_pool.get(&mid).map(|m| m.duration)
-                                });
-                                let (linked_src_in, linked_src_out) = linked_id
-                                    .and_then(|lid| {
-                                        state.sequence().tracks.iter()
-                                            .flat_map(|t| t.clips.iter())
-                                            .find(|c| c.id == lid)
-                                            .map(|c| (c.source_in, c.source_out))
-                                    })
-                                    .map(|(a, b)| (Some(a), Some(b)))
-                                    .unwrap_or((None, None));
-                                self.slipping_clip = Some(SlipState {
-                                    clip_id: hit_id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_source_in: hit_src_in,
-                                    original_source_out: hit_src_out,
-                                    media_duration: media_dur,
-                                    linked_clip_id: linked_id,
-                                    linked_original_source_in: linked_src_in,
-                                    linked_original_source_out: linked_src_out,
-                                });
-                            } else if matches!(gesture, BodyDragGesture::Move) {
-                                tracing::debug!("drag_started MOVE: clip={:?}", hit_id);
-                                let linked_orig = linked_id.and_then(|lid| {
-                                    state.sequence().tracks.iter()
-                                        .flat_map(|t| t.clips.iter())
-                                        .find(|c| c.id == lid)
-                                        .map(|c| c.timeline_in)
-                                });
-                                self.dragging_clip = Some(DragState {
-                                    clip_id: hit_id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_timeline_in: hit_tl_in,
-                                    linked_clip_id: linked_id,
-                                    linked_original_in: linked_orig,
-                                });
+                                            .map(|c| c.timeline_in)
+                                    });
+                                    self.dragging_clip = Some(DragState {
+                                        clip_id: hit_id,
+                                        track_idx,
+                                        start_x: pos.x,
+                                        original_timeline_in: hit_tl_in,
+                                        linked_clip_id: linked_id,
+                                        linked_original_in: linked_orig,
+                                    });
+                                }
                             }
                         }
                     }
-                }
                 } // end if !started_fade_drag
             }
         }
@@ -7702,9 +9113,12 @@ impl TimelinePanel {
                     {
                         let track = &state.sequences[state.active_sequence_idx].tracks[track_idx];
                         for transition in &track.transitions {
-                            if let Some(clip_a) = track.clips.iter().find(|c| c.id == transition.clip_a_id) {
+                            if let Some(clip_a) =
+                                track.clips.iter().find(|c| c.id == transition.clip_a_id)
+                            {
                                 let boundary_secs = clip_a.timeline_out.to_secs_f64() as f32;
-                                let boundary_x = content_rect.left() + boundary_secs * zoom - scroll;
+                                let boundary_x =
+                                    content_rect.left() + boundary_secs * zoom - scroll;
                                 let dur_px = transition.duration.to_secs_f64() as f32 * zoom;
                                 let half = (dur_px * 0.5).max(6.0);
                                 let trans_rect = egui::Rect::from_x_y_ranges(
@@ -7730,19 +9144,37 @@ impl TimelinePanel {
                 // Hit-test against the live clips slice; copy out the small
                 // Copy fields we need so the borrow ends before any &mut state
                 // mutation below.
-                let hit_data: Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, bool, Option<klipp_core::GroupId>)> = {
+                let hit_data: Option<(
+                    klipp_core::ClipId,
+                    klipp_core::RationalTime,
+                    klipp_core::RationalTime,
+                    bool,
+                    Option<klipp_core::GroupId>,
+                )> = {
                     let clips_slice = &state.sequence().tracks[track_idx].clips;
-                    self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hit_clip)| (
+                    self.hit_test_clip_body(
+                        clips_slice,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                        pos,
+                    )
+                    .map(|(_, hit_clip)| {
+                        (
                             hit_clip.id,
                             hit_clip.timeline_in,
                             hit_clip.timeline_out,
                             matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }),
                             hit_clip.group_id,
-                        ))
+                        )
+                    })
                 };
 
-                if let Some((hit_clip_id, hit_tl_in, hit_tl_out, _hit_is_seq, hit_group_id)) = hit_data {
+                if let Some((hit_clip_id, hit_tl_in, hit_tl_out, _hit_is_seq, hit_group_id)) =
+                    hit_data
+                {
                     if state.active_tool == Tool::Blade {
                         // Snap blade position when snap is enabled (hold Shift to override)
                         let mut cut_secs = click_secs;
@@ -7760,7 +9192,9 @@ impl TimelinePanel {
                             // Clip edges
                             for track in &state.sequence().tracks {
                                 for c in &track.clips {
-                                    for &edge_secs in &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
+                                    for &edge_secs in
+                                        &[c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()]
+                                    {
                                         let d = (click_secs - edge_secs).abs();
                                         if d < snap_thresh_secs && d < best_dist {
                                             best_dist = d;
@@ -7831,7 +9265,10 @@ impl TimelinePanel {
                         } else {
                             // If clip is grouped, select all group members
                             if let Some(gid) = hit_group_id {
-                                state.selected_clips = state.sequence().tracks.iter()
+                                state.selected_clips = state
+                                    .sequence()
+                                    .tracks
+                                    .iter()
                                     .flat_map(|t| t.clips.iter())
                                     .filter(|c| c.group_id == Some(gid))
                                     .map(|c| c.id)
@@ -7870,12 +9307,27 @@ impl TimelinePanel {
             if let Some(pos) = track_response.interact_pointer_pos {
                 let dbl_hit: Option<(klipp_core::ClipId, bool)> = {
                     let clips_slice = &state.sequence().tracks[track_idx].clips;
-                    self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hit_clip)| (hit_clip.id, matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. })))
+                    self.hit_test_clip_body(
+                        clips_slice,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                        pos,
+                    )
+                    .map(|(_, hit_clip)| {
+                        (
+                            hit_clip.id,
+                            matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }),
+                        )
+                    })
                 };
                 if let Some((hit_clip_id, is_seq)) = dbl_hit {
                     if is_seq {
-                        cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip_id });
+                        cmds.push(AppCommand::OpenCompoundClip {
+                            clip_id: hit_clip_id,
+                        });
                     }
                 }
             }
@@ -7904,8 +9356,16 @@ impl TimelinePanel {
             if let Some(pos) = pointer_pos {
                 let hit_id: Option<klipp_core::ClipId> = {
                     let clips = &state.sequence().tracks[track_idx].clips;
-                    self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hit_clip)| hit_clip.id)
+                    self.hit_test_clip_body(
+                        clips,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                        pos,
+                    )
+                    .map(|(_, hit_clip)| hit_clip.id)
                 };
                 if let Some(hit_clip_id) = hit_id {
                     // Store the clip id so the context menu can use it
@@ -8870,7 +10330,12 @@ impl TimelinePanel {
         fps: klipp_core::Fps,
         snap_enabled: bool,
         snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
+        snap_targets: &[(
+            f64,
+            RationalTime,
+            Option<ClipId>,
+            klipp_core::SnapTargetKind,
+        )],
         grid_interval_secs: Option<f64>,
         track_height: f32,
         pointer_pos: Option<egui::Pos2>,
@@ -8880,8 +10345,19 @@ impl TimelinePanel {
         let tt = theme();
         let rate = fps.rate();
         let snap_cfg = state.snap;
-        let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
+        let find_snap = |edge_time: RationalTime,
+                         exclude_clip: ClipId|
+         -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
+            Self::find_snap_target(
+                snap_enabled,
+                snap_threshold_secs,
+                snap_targets,
+                edge_time,
+                exclude_clip,
+                grid_interval_secs,
+                rate,
+                Some(&snap_cfg),
+            )
         };
 
         // Handle ongoing drag (only process once, on the drag's source track)
@@ -8891,7 +10367,10 @@ impl TimelinePanel {
                 // Skip — will be handled when we draw the correct track
             } else if let Some(pos) = pointer_pos {
                 // Determine which track the pointer is hovering over
-                let hover_track_idx = self.frame_cache.track_rects.iter()
+                let hover_track_idx = self
+                    .frame_cache
+                    .track_rects
+                    .iter()
                     .find(|(_, _, rect)| rect.contains(pos))
                     .map(|(idx, _, _)| *idx);
 
@@ -8902,7 +10381,10 @@ impl TimelinePanel {
                     let new_timeline_in = {
                         let sum = drag.original_timeline_in + dt_frames;
                         if sum.value < 0 {
-                            RationalTime { value: 0, rate: sum.rate }
+                            RationalTime {
+                                value: 0,
+                                rate: sum.rate,
+                            }
                         } else {
                             sum
                         }
@@ -8913,37 +10395,49 @@ impl TimelinePanel {
                     let shift_held = ui.input(|i| i.modifiers.shift);
 
                     if !shift_held {
-                    if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
-                        if let Some(clip) = track.find_clip(drag.clip_id) {
-                            let dur = clip.duration();
-                            let new_out = new_timeline_in + dur;
+                        if let Some(track) = state.sequence().tracks.get(drag.track_idx) {
+                            if let Some(clip) = track.find_clip(drag.clip_id) {
+                                let dur = clip.duration();
+                                let new_out = new_timeline_in + dur;
 
-                            // Snap left edge
-                            if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_timeline_in, drag.clip_id) {
-                                final_in = snap_target;
-                                snapped = true;
-                                let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
-                                self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
-                            }
-                            // Snap right edge (if no left-edge snap found, or if right is closer)
-                            if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_out, drag.clip_id) {
-                                let right_snap_in = snap_target - dur;
-                                // Prefer whichever snap is closer in pixels
-                                let left_dist = if snapped {
-                                    ((final_in.to_secs_f64() - new_timeline_in.to_secs_f64()).abs() * zoom as f64) as f32
-                                } else {
-                                    f32::MAX
-                                };
-                                let right_dist = ((snap_target.to_secs_f64() - new_out.to_secs_f64()).abs() * zoom as f64) as f32;
-                                if !snapped || right_dist < left_dist {
-                                    final_in = right_snap_in;
+                                // Snap left edge
+                                if let Some((snap_target, snap_secs, snap_kind)) =
+                                    find_snap(new_timeline_in, drag.clip_id)
+                                {
+                                    final_in = snap_target;
                                     snapped = true;
-                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
+                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom
+                                        - state.timeline_scroll_x;
                                     self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
+                                }
+                                // Snap right edge (if no left-edge snap found, or if right is closer)
+                                if let Some((snap_target, snap_secs, snap_kind)) =
+                                    find_snap(new_out, drag.clip_id)
+                                {
+                                    let right_snap_in = snap_target - dur;
+                                    // Prefer whichever snap is closer in pixels
+                                    let left_dist = if snapped {
+                                        ((final_in.to_secs_f64() - new_timeline_in.to_secs_f64())
+                                            .abs()
+                                            * zoom as f64)
+                                            as f32
+                                    } else {
+                                        f32::MAX
+                                    };
+                                    let right_dist =
+                                        ((snap_target.to_secs_f64() - new_out.to_secs_f64()).abs()
+                                            * zoom as f64)
+                                            as f32;
+                                    if !snapped || right_dist < left_dist {
+                                        final_in = right_snap_in;
+                                        snapped = true;
+                                        let snap_x = content_rect.left() + snap_secs as f32 * zoom
+                                            - state.timeline_scroll_x;
+                                        self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
+                                    }
                                 }
                             }
                         }
-                    }
                     } // end if !shift_held
 
                     // Clamp to >= 0
@@ -8951,7 +10445,10 @@ impl TimelinePanel {
                         final_in.value = 0;
                     }
 
-                    let is_primary = state.sequence().tracks.get(drag.track_idx)
+                    let is_primary = state
+                        .sequence()
+                        .tracks
+                        .get(drag.track_idx)
                         .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
 
                     if is_primary {
@@ -8965,17 +10462,24 @@ impl TimelinePanel {
 
                         // PRIMARY TRACK: Don't move clip in sequence.
                         // Keep it at original position. Draw a floating ghost + insertion indicator.
-                        let clip_dur = state.sequence().tracks.get(drag.track_idx)
+                        let clip_dur = state
+                            .sequence()
+                            .tracks
+                            .get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .map(|c| c.duration().to_secs_f64() as f32)
                             .unwrap_or(1.0);
 
                         // Determine ghost track (follows cursor to compatible tracks)
                         let ghost_target_rect = if let Some(target_idx) = hover_track_idx {
-                            let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
-                            let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                            let source_kind =
+                                state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                            let target_kind =
+                                state.sequence().tracks.get(target_idx).map(|t| t.kind);
                             if source_kind == target_kind {
-                                self.frame_cache.track_rects.iter()
+                                self.frame_cache
+                                    .track_rects
+                                    .iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                     .map(|(_, _, r)| *r)
                             } else {
@@ -8983,11 +10487,13 @@ impl TimelinePanel {
                             }
                         } else {
                             None
-                        }.unwrap_or(*track_rect);
+                        }
+                        .unwrap_or(*track_rect);
 
                         // Ghost clip following cursor — unclipped so it renders on any track
                         let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
-                        let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
+                        let ghost_x =
+                            content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
                         let ghost_w = clip_dur * zoom;
                         let ghost_rect = egui::Rect::from_min_size(
                             egui::pos2(ghost_x, ghost_target_rect.top() + 2.0),
@@ -8995,13 +10501,26 @@ impl TimelinePanel {
                         );
 
                         let mi = tt.marker_info;
-                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
-                        let ghost_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
+                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(
+                            mi.r() / 2,
+                            mi.g() / 2,
+                            mi.b() / 2,
+                            128,
+                        );
+                        let ghost_border =
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
-                        ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
+                        ghost_painter.rect_stroke(
+                            ghost_rect,
+                            2.0,
+                            egui::Stroke::new(2.0_f32, ghost_border),
+                        );
 
                         // Draw filmstrip in ghost if available
-                        if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
+                        if let Some(media_id) = state
+                            .sequence()
+                            .tracks
+                            .get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .and_then(|c| c.media_id())
                         {
@@ -9010,7 +10529,10 @@ impl TimelinePanel {
                                 thumb_painter.image(
                                     tex.id(),
                                     ghost_rect,
-                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
                                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
                                 );
                             }
@@ -9021,13 +10543,20 @@ impl TimelinePanel {
                             let guide_top = self.frame_cache.tracks_start_y;
                             let guide_bottom = self.frame_cache.tracks_clip_bottom;
                             let mi = tt.marker_info;
-                            let guide_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80);
+                            let guide_color =
+                                egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80);
                             ghost_painter.line_segment(
-                                [egui::pos2(ghost_rect.left(), guide_top), egui::pos2(ghost_rect.left(), guide_bottom)],
+                                [
+                                    egui::pos2(ghost_rect.left(), guide_top),
+                                    egui::pos2(ghost_rect.left(), guide_bottom),
+                                ],
                                 egui::Stroke::new(1.0_f32, guide_color),
                             );
                             ghost_painter.line_segment(
-                                [egui::pos2(ghost_rect.right(), guide_top), egui::pos2(ghost_rect.right(), guide_bottom)],
+                                [
+                                    egui::pos2(ghost_rect.right(), guide_top),
+                                    egui::pos2(ghost_rect.right(), guide_bottom),
+                                ],
                                 egui::Stroke::new(1.0_f32, guide_color),
                             );
                             let tc_text = {
@@ -9051,10 +10580,16 @@ impl TimelinePanel {
                             // Find insertion point (between which clips)
                             let mut insert_x = content_rect.left() - scroll; // before all clips
                             for c in &track.clips {
-                                if c.id == drag.clip_id { continue; }
-                                let c_mid = (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0;
+                                if c.id == drag.clip_id {
+                                    continue;
+                                }
+                                let c_mid = (c.timeline_in.to_secs_f64()
+                                    + c.timeline_out.to_secs_f64())
+                                    / 2.0;
                                 if target_secs > c_mid {
-                                    insert_x = content_rect.left() + c.timeline_out.to_secs_f64() as f32 * zoom - scroll;
+                                    insert_x = content_rect.left()
+                                        + c.timeline_out.to_secs_f64() as f32 * zoom
+                                        - scroll;
                                 }
                             }
                             // Draw insertion line — amber for Insert, blue for Overwrite
@@ -9063,7 +10598,10 @@ impl TimelinePanel {
                                 klipp_timeline::magnetic::EditMode::Overwrite => tt.marker_info,
                             };
                             painter.line_segment(
-                                [egui::pos2(insert_x, track_rect.top()), egui::pos2(insert_x, track_rect.bottom())],
+                                [
+                                    egui::pos2(insert_x, track_rect.top()),
+                                    egui::pos2(insert_x, track_rect.bottom()),
+                                ],
                                 egui::Stroke::new(3.0_f32, insert_color),
                             );
                             // Small triangles at top and bottom of insertion line
@@ -9074,7 +10612,8 @@ impl TimelinePanel {
                                     egui::pos2(insert_x - tri_size, track_rect.top() - tri_size),
                                     egui::pos2(insert_x + tri_size, track_rect.top() - tri_size),
                                 ],
-                                insert_color, egui::Stroke::NONE,
+                                insert_color,
+                                egui::Stroke::NONE,
                             ));
                             painter.add(egui::Shape::convex_polygon(
                                 vec![
@@ -9082,7 +10621,8 @@ impl TimelinePanel {
                                     egui::pos2(insert_x - tri_size, track_rect.bottom() + tri_size),
                                     egui::pos2(insert_x + tri_size, track_rect.bottom() + tri_size),
                                 ],
-                                insert_color, egui::Stroke::NONE,
+                                insert_color,
+                                egui::Stroke::NONE,
                             ));
                         }
 
@@ -9093,10 +10633,20 @@ impl TimelinePanel {
                                 egui::vec2(ghost_w + 2.0, track_rect.height() - 2.0),
                             );
                             let acc = tt.accent;
-                            painter.rect_stroke(drop_rect, 4.0,
-                                egui::Stroke::new(3.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)));
-                            painter.rect_stroke(drop_rect, 4.0,
-                                egui::Stroke::new(1.5_f32, acc));
+                            painter.rect_stroke(
+                                drop_rect,
+                                4.0,
+                                egui::Stroke::new(
+                                    3.0_f32,
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        acc.r(),
+                                        acc.g(),
+                                        acc.b(),
+                                        80,
+                                    ),
+                                ),
+                            );
+                            painter.rect_stroke(drop_rect, 4.0, egui::Stroke::new(1.5_f32, acc));
                         }
 
                         // ── Items 11-14: Cascade preview, ripple arrows, connected previews, anchor snap ──
@@ -9109,14 +10659,28 @@ impl TimelinePanel {
                             if effective_mode == klipp_timeline::magnetic::EditMode::Insert {
                                 let insert_secs = final_in.to_secs_f64();
                                 for c in &track.clips {
-                                    if c.id == drag.clip_id { continue; }
+                                    if c.id == drag.clip_id {
+                                        continue;
+                                    }
                                     let c_in_secs = c.timeline_in.to_secs_f64();
                                     // Clips to the right of insertion point will ripple right
-                                    let will_ripple_right = c_in_secs >= insert_secs && delta_secs > 0.01;
-                                    let will_ripple_left = c_in_secs >= drag_clip_in.to_secs_f64() && delta_secs < -0.01 && c_in_secs > insert_secs;
+                                    let will_ripple_right =
+                                        c_in_secs >= insert_secs && delta_secs > 0.01;
+                                    let will_ripple_left = c_in_secs >= drag_clip_in.to_secs_f64()
+                                        && delta_secs < -0.01
+                                        && c_in_secs > insert_secs;
                                     if will_ripple_right || will_ripple_left {
-                                        let c_rect = Self::clip_screen_rect(c, content_rect, track_rect, zoom, scroll, track_height);
-                                        if c_rect.right() < content_rect.left() || c_rect.left() > content_rect.right() {
+                                        let c_rect = Self::clip_screen_rect(
+                                            c,
+                                            content_rect,
+                                            track_rect,
+                                            zoom,
+                                            scroll,
+                                            track_height,
+                                        );
+                                        if c_rect.right() < content_rect.left()
+                                            || c_rect.left() > content_rect.right()
+                                        {
                                             continue; // off-screen
                                         }
                                         let c_w = c_rect.width();
@@ -9126,27 +10690,50 @@ impl TimelinePanel {
                                         let cy = c_rect.center().y;
 
                                         // Determine number of arrows based on clip width
-                                        let arrow_count = if c_w > 40.0 { 3 } else if c_w > 20.0 { 1 } else { 0 };
+                                        let arrow_count = if c_w > 40.0 {
+                                            3
+                                        } else if c_w > 20.0 {
+                                            1
+                                        } else {
+                                            0
+                                        };
                                         if arrow_count > 0 {
                                             let spacing = c_w / (arrow_count as f32 + 1.0);
                                             for i in 0..arrow_count {
                                                 let ax = c_rect.left() + spacing * (i as f32 + 1.0);
                                                 let points = if arrow_right {
                                                     vec![
-                                                        egui::pos2(ax - arrow_w / 2.0, cy - arrow_h / 2.0),
+                                                        egui::pos2(
+                                                            ax - arrow_w / 2.0,
+                                                            cy - arrow_h / 2.0,
+                                                        ),
                                                         egui::pos2(ax + arrow_w / 2.0, cy),
-                                                        egui::pos2(ax - arrow_w / 2.0, cy + arrow_h / 2.0),
+                                                        egui::pos2(
+                                                            ax - arrow_w / 2.0,
+                                                            cy + arrow_h / 2.0,
+                                                        ),
                                                     ]
                                                 } else {
                                                     vec![
-                                                        egui::pos2(ax + arrow_w / 2.0, cy - arrow_h / 2.0),
+                                                        egui::pos2(
+                                                            ax + arrow_w / 2.0,
+                                                            cy - arrow_h / 2.0,
+                                                        ),
                                                         egui::pos2(ax - arrow_w / 2.0, cy),
-                                                        egui::pos2(ax + arrow_w / 2.0, cy + arrow_h / 2.0),
+                                                        egui::pos2(
+                                                            ax + arrow_w / 2.0,
+                                                            cy + arrow_h / 2.0,
+                                                        ),
                                                     ]
                                                 };
                                                 painter.add(egui::Shape::convex_polygon(
                                                     points,
-                                                    egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 180),
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        amber.r(),
+                                                        amber.g(),
+                                                        amber.b(),
+                                                        180,
+                                                    ),
                                                     egui::Stroke::NONE,
                                                 ));
                                             }
@@ -9157,13 +10744,24 @@ impl TimelinePanel {
 
                             // Items 11 + 13: Cascade preview — connected clips show preview positions
                             if delta_secs.abs() > 0.001 {
-                                for (other_ti, other_track) in state.sequence().tracks.iter().enumerate() {
-                                    if other_ti == drag.track_idx { continue; }
-                                    let is_connected = other_track.magnetic_role == klipp_timeline::TrackRole::Connected
-                                        || other_track.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline;
-                                    if !is_connected { continue; }
+                                for (other_ti, other_track) in
+                                    state.sequence().tracks.iter().enumerate()
+                                {
+                                    if other_ti == drag.track_idx {
+                                        continue;
+                                    }
+                                    let is_connected = other_track.magnetic_role
+                                        == klipp_timeline::TrackRole::Connected
+                                        || other_track.magnetic_role
+                                            == klipp_timeline::TrackRole::ConnectedStoryline;
+                                    if !is_connected {
+                                        continue;
+                                    }
 
-                                    let other_track_rect = self.frame_cache.track_rects.iter()
+                                    let other_track_rect = self
+                                        .frame_cache
+                                        .track_rects
+                                        .iter()
                                         .find(|(idx, _, _)| *idx == other_ti)
                                         .map(|(_, _, r)| *r);
                                     let other_track_rect = match other_track_rect {
@@ -9173,20 +10771,34 @@ impl TimelinePanel {
                                     let other_h = effective_track_height(other_track);
 
                                     for clip in &other_track.clips {
-                                        if clip.kind.is_gap() { continue; }
+                                        if clip.kind.is_gap() {
+                                            continue;
+                                        }
                                         // Check if this clip is anchored to a primary clip that would move
-                                        let would_cascade = if other_track.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline {
+                                        let would_cascade = if other_track.magnetic_role
+                                            == klipp_timeline::TrackRole::ConnectedStoryline
+                                        {
                                             // Storyline: all clips cascade if any primary anchor moves
-                                            other_track.storyline_anchor.as_ref().is_some_and(|sa| {
-                                                track.clips.iter().any(|pc| pc.id == sa.anchor_clip_id)
-                                            })
+                                            other_track.storyline_anchor.as_ref().is_some_and(
+                                                |sa| {
+                                                    track
+                                                        .clips
+                                                        .iter()
+                                                        .any(|pc| pc.id == sa.anchor_clip_id)
+                                                },
+                                            )
                                         } else {
                                             clip.magnetic_anchor.as_ref().is_some_and(|anchor| {
                                                 // Cascade if the anchor is on a primary clip that ripples
-                                                track.clips.iter().any(|pc| pc.id == anchor.anchor_clip_id)
+                                                track
+                                                    .clips
+                                                    .iter()
+                                                    .any(|pc| pc.id == anchor.anchor_clip_id)
                                             })
                                         };
-                                        if !would_cascade { continue; }
+                                        if !would_cascade {
+                                            continue;
+                                        }
 
                                         // Compute preview position with cascade delta
                                         let delta_rt = final_in - drag_clip_in;
@@ -9195,26 +10807,47 @@ impl TimelinePanel {
                                         let clip_dur_secs = clip.duration().to_secs_f64();
 
                                         // Item 11: Draw connected clip at preview position with 60% opacity
-                                        let px = content_rect.left() + preview_in_secs as f32 * zoom - scroll;
+                                        let px = content_rect.left()
+                                            + preview_in_secs as f32 * zoom
+                                            - scroll;
                                         let pw = clip_dur_secs as f32 * zoom;
                                         let preview_rect = egui::Rect::from_min_size(
                                             egui::pos2(px, other_track_rect.top() + 2.0),
                                             egui::vec2(pw.max(2.0), other_h - 4.0),
                                         );
-                                        if preview_rect.right() >= content_rect.left() && preview_rect.left() <= content_rect.right() {
+                                        if preview_rect.right() >= content_rect.left()
+                                            && preview_rect.left() <= content_rect.right()
+                                        {
                                             // 60% opacity fill
-                                            painter.rect_filled(preview_rect, 2.0,
-                                                egui::Color32::from_rgba_unmultiplied(tt.marker_info.r() / 2, tt.marker_info.g() / 2, tt.marker_info.b() / 2, 153));
+                                            painter.rect_filled(
+                                                preview_rect,
+                                                2.0,
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    tt.marker_info.r() / 2,
+                                                    tt.marker_info.g() / 2,
+                                                    tt.marker_info.b() / 2,
+                                                    153,
+                                                ),
+                                            );
                                             // Dashed amber border
-                                            let dash_color = egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 180);
+                                            let dash_color = egui::Color32::from_rgba_unmultiplied(
+                                                amber.r(),
+                                                amber.g(),
+                                                amber.b(),
+                                                180,
+                                            );
                                             let dash_len = 5.0_f32;
                                             let gap_len = 3.0_f32;
                                             // Top edge
                                             let mut dx = preview_rect.left();
                                             while dx < preview_rect.right() {
-                                                let end_x = (dx + dash_len).min(preview_rect.right());
+                                                let end_x =
+                                                    (dx + dash_len).min(preview_rect.right());
                                                 painter.line_segment(
-                                                    [egui::pos2(dx, preview_rect.top()), egui::pos2(end_x, preview_rect.top())],
+                                                    [
+                                                        egui::pos2(dx, preview_rect.top()),
+                                                        egui::pos2(end_x, preview_rect.top()),
+                                                    ],
                                                     egui::Stroke::new(1.5_f32, dash_color),
                                                 );
                                                 dx += dash_len + gap_len;
@@ -9222,9 +10855,13 @@ impl TimelinePanel {
                                             // Bottom edge
                                             dx = preview_rect.left();
                                             while dx < preview_rect.right() {
-                                                let end_x = (dx + dash_len).min(preview_rect.right());
+                                                let end_x =
+                                                    (dx + dash_len).min(preview_rect.right());
                                                 painter.line_segment(
-                                                    [egui::pos2(dx, preview_rect.bottom()), egui::pos2(end_x, preview_rect.bottom())],
+                                                    [
+                                                        egui::pos2(dx, preview_rect.bottom()),
+                                                        egui::pos2(end_x, preview_rect.bottom()),
+                                                    ],
                                                     egui::Stroke::new(1.5_f32, dash_color),
                                                 );
                                                 dx += dash_len + gap_len;
@@ -9234,34 +10871,71 @@ impl TimelinePanel {
                                         // Item 13: Ghost outline at destination (30% opacity) if different from current
                                         let current_secs = clip.timeline_in.to_secs_f64();
                                         if (preview_in_secs - current_secs).abs() > 0.001 {
-                                            let dest_x = content_rect.left() + preview_in_secs as f32 * zoom - scroll;
+                                            let dest_x = content_rect.left()
+                                                + preview_in_secs as f32 * zoom
+                                                - scroll;
                                             let dest_rect = egui::Rect::from_min_size(
                                                 egui::pos2(dest_x, other_track_rect.top() + 2.0),
                                                 egui::vec2(pw.max(2.0), other_h - 4.0),
                                             );
-                                            if dest_rect.right() >= content_rect.left() && dest_rect.left() <= content_rect.right() {
-                                                painter.rect_stroke(dest_rect, 2.0,
-                                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 77)));
+                                            if dest_rect.right() >= content_rect.left()
+                                                && dest_rect.left() <= content_rect.right()
+                                            {
+                                                painter.rect_stroke(
+                                                    dest_rect,
+                                                    2.0,
+                                                    egui::Stroke::new(
+                                                        1.0_f32,
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            amber.r(),
+                                                            amber.g(),
+                                                            amber.b(),
+                                                            77,
+                                                        ),
+                                                    ),
+                                                );
                                             }
                                         }
 
                                         // Draw preview anchor line from connected clip to primary
                                         if let Some(anchor) = &clip.magnetic_anchor {
-                                            let anchor_clip = track.clips.iter().find(|pc| pc.id == anchor.anchor_clip_id);
+                                            let anchor_clip = track
+                                                .clips
+                                                .iter()
+                                                .find(|pc| pc.id == anchor.anchor_clip_id);
                                             if let Some(ac) = anchor_clip {
                                                 let anchor_preview_in = ac.timeline_in + delta_rt;
                                                 let anchor_x = content_rect.left()
-                                                    + (anchor_preview_in + anchor.offset).to_secs_f64() as f32 * zoom - scroll;
+                                                    + (anchor_preview_in + anchor.offset)
+                                                        .to_secs_f64()
+                                                        as f32
+                                                        * zoom
+                                                    - scroll;
                                                 let from_y = preview_rect.top();
                                                 let to_y = track_rect.bottom();
-                                                let (top_y, bottom_y) = if from_y < to_y { (from_y, to_y) } else { (to_y, from_y) };
+                                                let (top_y, bottom_y) = if from_y < to_y {
+                                                    (from_y, to_y)
+                                                } else {
+                                                    (to_y, from_y)
+                                                };
                                                 // Dashed amber anchor line
                                                 let mut dy = top_y;
                                                 while dy < bottom_y {
                                                     let end_y = (dy + 5.0).min(bottom_y);
                                                     painter.line_segment(
-                                                        [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 120)),
+                                                        [
+                                                            egui::pos2(anchor_x, dy),
+                                                            egui::pos2(anchor_x, end_y),
+                                                        ],
+                                                        egui::Stroke::new(
+                                                            1.0_f32,
+                                                            egui::Color32::from_rgba_unmultiplied(
+                                                                amber.r(),
+                                                                amber.g(),
+                                                                amber.b(),
+                                                                120,
+                                                            ),
+                                                        ),
                                                     );
                                                     dy += 8.0;
                                                 }
@@ -9280,15 +10954,23 @@ impl TimelinePanel {
                         // Highlight target track for primary cross-track drag
                         if let Some(target_idx) = hover_track_idx {
                             if target_idx != drag.track_idx {
-                                let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
-                                let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                                let source_kind =
+                                    state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                                let target_kind =
+                                    state.sequence().tracks.get(target_idx).map(|t| t.kind);
                                 if source_kind == target_kind {
-                                    if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
+                                    if let Some((_, _, rect)) = self
+                                        .frame_cache
+                                        .track_rects
+                                        .iter()
                                         .find(|(idx, _, _)| *idx == target_idx)
                                     {
                                         let hl = ui.painter_at(ui.ctx().screen_rect());
-                                        hl.rect_stroke(*rect, 0.0,
-                                            egui::Stroke::new(2.0_f32, tt.marker_info));
+                                        hl.rect_stroke(
+                                            *rect,
+                                            0.0,
+                                            egui::Stroke::new(2.0_f32, tt.marker_info),
+                                        );
                                     }
                                 }
                             }
@@ -9296,22 +10978,28 @@ impl TimelinePanel {
 
                         // Store target for primary cross-track drop
                         non_primary_target_in = Some(final_in);
-
                     } else {
                         // NON-PRIMARY: Deferred movement with ghost preview
                         // (same visual pattern as primary — don't move clip in state during drag)
-                        let clip_dur = state.sequence().tracks.get(drag.track_idx)
+                        let clip_dur = state
+                            .sequence()
+                            .tracks
+                            .get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .map(|c| c.duration().to_secs_f64() as f32)
                             .unwrap_or(1.0);
 
                         // Determine which track to draw the ghost on
                         let ghost_track_rect = if let Some(target_idx) = hover_track_idx {
-                            let source_kind = state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
-                            let target_kind = state.sequence().tracks.get(target_idx).map(|t| t.kind);
+                            let source_kind =
+                                state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                            let target_kind =
+                                state.sequence().tracks.get(target_idx).map(|t| t.kind);
                             if source_kind == target_kind {
                                 // Compatible track — draw ghost on target track
-                                self.frame_cache.track_rects.iter()
+                                self.frame_cache
+                                    .track_rects
+                                    .iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                     .map(|(_, _, r)| *r)
                             } else {
@@ -9319,25 +11007,40 @@ impl TimelinePanel {
                             }
                         } else {
                             None
-                        }.unwrap_or(*track_rect);
+                        }
+                        .unwrap_or(*track_rect);
 
                         // Ghost clip following cursor — use unclipped painter so ghost
                         // renders on ANY track, not just the source track
                         let ghost_painter = ui.painter_at(ui.ctx().screen_rect());
-                        let ghost_x = content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
+                        let ghost_x =
+                            content_rect.left() + final_in.to_secs_f64() as f32 * zoom - scroll;
                         let ghost_w = clip_dur * zoom;
                         let ghost_rect = egui::Rect::from_min_size(
                             egui::pos2(ghost_x, ghost_track_rect.top() + 2.0),
                             egui::vec2(ghost_w, ghost_track_rect.height() - 4.0),
                         );
                         let mi = tt.marker_info;
-                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(mi.r() / 2, mi.g() / 2, mi.b() / 2, 128);
-                        let ghost_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
+                        let ghost_fill = egui::Color32::from_rgba_unmultiplied(
+                            mi.r() / 2,
+                            mi.g() / 2,
+                            mi.b() / 2,
+                            128,
+                        );
+                        let ghost_border =
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 180);
                         ghost_painter.rect_filled(ghost_rect, 2.0, ghost_fill);
-                        ghost_painter.rect_stroke(ghost_rect, 2.0, egui::Stroke::new(2.0_f32, ghost_border));
+                        ghost_painter.rect_stroke(
+                            ghost_rect,
+                            2.0,
+                            egui::Stroke::new(2.0_f32, ghost_border),
+                        );
 
                         // Draw filmstrip thumbnail in ghost if available
-                        if let Some(media_id) = state.sequence().tracks.get(drag.track_idx)
+                        if let Some(media_id) = state
+                            .sequence()
+                            .tracks
+                            .get(drag.track_idx)
                             .and_then(|t| t.find_clip(drag.clip_id))
                             .and_then(|c| c.media_id())
                         {
@@ -9346,7 +11049,10 @@ impl TimelinePanel {
                                 thumb_painter.image(
                                     tex.id(),
                                     ghost_rect,
-                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
                                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 128),
                                 );
                             }
@@ -9354,8 +11060,11 @@ impl TimelinePanel {
 
                         // Snap indicator — amber glow
                         if snapped {
-                            ghost_painter.rect_stroke(ghost_rect, 4.0,
-                                egui::Stroke::new(1.5_f32, tt.accent));
+                            ghost_painter.rect_stroke(
+                                ghost_rect,
+                                4.0,
+                                egui::Stroke::new(1.5_f32, tt.accent),
+                            );
                         }
 
                         // Full-height vertical guidelines on both edges of the ghost clip
@@ -9363,19 +11072,27 @@ impl TimelinePanel {
                         let guide_bottom = self.frame_cache.tracks_clip_bottom;
                         let guide_color = if snapped {
                             let a = tt.accent;
-                            egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 100) // amber when snapped
+                            egui::Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), 100)
+                        // amber when snapped
                         } else {
                             let mi = tt.marker_info;
-                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80) // blue normally
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80)
+                            // blue normally
                         };
                         // Left edge guide
                         ghost_painter.line_segment(
-                            [egui::pos2(ghost_rect.left(), guide_top), egui::pos2(ghost_rect.left(), guide_bottom)],
+                            [
+                                egui::pos2(ghost_rect.left(), guide_top),
+                                egui::pos2(ghost_rect.left(), guide_bottom),
+                            ],
                             egui::Stroke::new(1.0_f32, guide_color),
                         );
                         // Right edge guide
                         ghost_painter.line_segment(
-                            [egui::pos2(ghost_rect.right(), guide_top), egui::pos2(ghost_rect.right(), guide_bottom)],
+                            [
+                                egui::pos2(ghost_rect.right(), guide_top),
+                                egui::pos2(ghost_rect.right(), guide_bottom),
+                            ],
                             egui::Stroke::new(1.0_f32, guide_color),
                         );
 
@@ -9400,23 +11117,38 @@ impl TimelinePanel {
 
                     // Auto-connect/disconnect indicator during non-primary drag
                     if !is_primary {
-                        let primary_rect = self.frame_cache.track_rects.iter()
-                            .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
-                                .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
+                        let primary_rect = self
+                            .frame_cache
+                            .track_rects
+                            .iter()
+                            .find(|(idx, _, _)| {
+                                state.sequence().tracks.get(*idx).is_some_and(|t| {
+                                    t.magnetic_role == klipp_timeline::TrackRole::Primary
+                                })
+                            })
                             .map(|(_, _, r)| *r);
                         if let Some(primary_r) = primary_rect {
-                            let drag_clip_y = if let Some(pos) = pointer_pos { pos.y } else { track_rect.center().y };
+                            let drag_clip_y = if let Some(pos) = pointer_pos {
+                                pos.y
+                            } else {
+                                track_rect.center().y
+                            };
                             let primary_center_y = primary_r.center().y;
                             let dist_px = (drag_clip_y - primary_center_y).abs();
                             let track_h = track_rect.height();
                             let dist_tracks = dist_px / track_h;
 
-                            let clip_is_connected = state.sequence().tracks.get(drag.track_idx)
+                            let clip_is_connected = state
+                                .sequence()
+                                .tracks
+                                .get(drag.track_idx)
                                 .and_then(|t| t.find_clip(drag.clip_id))
                                 .is_some_and(|c| c.magnetic_anchor.is_some());
 
-                            let connect_threshold = klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE;
-                            let disconnect_threshold = klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE;
+                            let connect_threshold =
+                                klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE;
+                            let disconnect_threshold =
+                                klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE;
 
                             if dist_tracks < connect_threshold && !clip_is_connected {
                                 // Will auto-connect on drop — show chain icon + dashed anchor line
@@ -9427,29 +11159,66 @@ impl TimelinePanel {
                                         egui::vec2(90.0, 16.0),
                                     );
                                     let bp = tt.bg_panel;
-                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
-                                    painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, amber));
-                                    painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
-                                        "\u{229E} Will connect", egui::FontId::monospace(10.0), amber);
+                                    painter.rect_filled(
+                                        pill_rect,
+                                        4.0,
+                                        egui::Color32::from_rgba_unmultiplied(
+                                            bp.r(),
+                                            bp.g(),
+                                            bp.b(),
+                                            220,
+                                        ),
+                                    );
+                                    painter.rect_stroke(
+                                        pill_rect,
+                                        4.0,
+                                        egui::Stroke::new(1.0_f32, amber),
+                                    );
+                                    painter.text(
+                                        pill_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "\u{229E} Will connect",
+                                        egui::FontId::monospace(10.0),
+                                        amber,
+                                    );
 
                                     // Dashed amber vertical line from dragged clip to primary
-                                    let clip_x = state.sequence().tracks.get(drag.track_idx)
+                                    let clip_x = state
+                                        .sequence()
+                                        .tracks
+                                        .get(drag.track_idx)
                                         .and_then(|t| t.find_clip(drag.clip_id))
-                                        .map(|c| content_rect.left() + c.timeline_in.to_secs_f64() as f32 * zoom - scroll);
+                                        .map(|c| {
+                                            content_rect.left()
+                                                + c.timeline_in.to_secs_f64() as f32 * zoom
+                                                - scroll
+                                        });
                                     if let Some(anchor_x) = clip_x {
-                                        let (top_y, bottom_y) = if primary_r.center().y > track_rect.center().y {
-                                            (track_rect.bottom(), primary_r.top())
-                                        } else {
-                                            (primary_r.bottom(), track_rect.top())
-                                        };
+                                        let (top_y, bottom_y) =
+                                            if primary_r.center().y > track_rect.center().y {
+                                                (track_rect.bottom(), primary_r.top())
+                                            } else {
+                                                (primary_r.bottom(), track_rect.top())
+                                            };
                                         let mut dy = top_y;
                                         let dash_len = 5.0_f32;
                                         let gap_len = 3.0_f32;
                                         while dy < bottom_y {
                                             let end_y = (dy + dash_len).min(bottom_y);
                                             painter.line_segment(
-                                                [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(amber.r(), amber.g(), amber.b(), 160)),
+                                                [
+                                                    egui::pos2(anchor_x, dy),
+                                                    egui::pos2(anchor_x, end_y),
+                                                ],
+                                                egui::Stroke::new(
+                                                    1.0_f32,
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        amber.r(),
+                                                        amber.g(),
+                                                        amber.b(),
+                                                        160,
+                                                    ),
+                                                ),
                                             );
                                             dy += dash_len + gap_len;
                                         }
@@ -9464,34 +11233,72 @@ impl TimelinePanel {
                                         egui::vec2(100.0, 16.0),
                                     );
                                     let bp = tt.bg_panel;
-                                    painter.rect_filled(pill_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
-                                    painter.rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, warn_color));
-                                    painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER,
-                                        "\u{229F} Will disconnect", egui::FontId::monospace(10.0), warn_color);
+                                    painter.rect_filled(
+                                        pill_rect,
+                                        4.0,
+                                        egui::Color32::from_rgba_unmultiplied(
+                                            bp.r(),
+                                            bp.g(),
+                                            bp.b(),
+                                            220,
+                                        ),
+                                    );
+                                    painter.rect_stroke(
+                                        pill_rect,
+                                        4.0,
+                                        egui::Stroke::new(1.0_f32, warn_color),
+                                    );
+                                    painter.text(
+                                        pill_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "\u{229F} Will disconnect",
+                                        egui::FontId::monospace(10.0),
+                                        warn_color,
+                                    );
 
                                     // Existing anchor line turns red-dashed to indicate it will break
-                                    if let Some(anchor) = state.sequence().tracks.get(drag.track_idx)
+                                    if let Some(anchor) = state
+                                        .sequence()
+                                        .tracks
+                                        .get(drag.track_idx)
                                         .and_then(|t| t.find_clip(drag.clip_id))
                                         .and_then(|c| c.magnetic_anchor.clone())
                                     {
-                                        let anchor_clip_in = state.sequence().tracks.iter()
+                                        let anchor_clip_in = state
+                                            .sequence()
+                                            .tracks
+                                            .iter()
                                             .flat_map(|t| t.clips.iter())
                                             .find(|c| c.id == anchor.anchor_clip_id)
                                             .map(|c| c.timeline_in);
                                         if let Some(ac_in) = anchor_clip_in {
                                             let anchor_x = content_rect.left()
-                                                + (ac_in + anchor.offset).to_secs_f64() as f32 * zoom - scroll;
-                                            let (top_y, bottom_y) = if primary_r.center().y > track_rect.center().y {
-                                                (track_rect.bottom(), primary_r.top())
-                                            } else {
-                                                (primary_r.bottom(), track_rect.top())
-                                            };
+                                                + (ac_in + anchor.offset).to_secs_f64() as f32
+                                                    * zoom
+                                                - scroll;
+                                            let (top_y, bottom_y) =
+                                                if primary_r.center().y > track_rect.center().y {
+                                                    (track_rect.bottom(), primary_r.top())
+                                                } else {
+                                                    (primary_r.bottom(), track_rect.top())
+                                                };
                                             let mut dy = top_y;
                                             while dy < bottom_y {
                                                 let end_y = (dy + 5.0).min(bottom_y);
                                                 painter.line_segment(
-                                                    [egui::pos2(anchor_x, dy), egui::pos2(anchor_x, end_y)],
-                                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(warn_color.r(), warn_color.g(), warn_color.b(), 160)),
+                                                    [
+                                                        egui::pos2(anchor_x, dy),
+                                                        egui::pos2(anchor_x, end_y),
+                                                    ],
+                                                    egui::Stroke::new(
+                                                        1.0_f32,
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            warn_color.r(),
+                                                            warn_color.g(),
+                                                            warn_color.b(),
+                                                            160,
+                                                        ),
+                                                    ),
                                                 );
                                                 dy += 8.0;
                                             }
@@ -9505,17 +11312,21 @@ impl TimelinePanel {
                     // Highlight target track if different from source (unclipped so it shows on any track)
                     if let Some(target_idx) = hover_track_idx {
                         if target_idx != drag.track_idx {
-                            let source_kind = state.sequence().tracks.get(drag.track_idx)
-                                .map(|t| t.kind);
-                            let target_kind = state.sequence().tracks.get(target_idx)
-                                .map(|t| t.kind);
+                            let source_kind =
+                                state.sequence().tracks.get(drag.track_idx).map(|t| t.kind);
+                            let target_kind =
+                                state.sequence().tracks.get(target_idx).map(|t| t.kind);
                             if source_kind == target_kind {
-                                if let Some((_, _, rect)) = self.frame_cache.track_rects.iter()
+                                if let Some((_, _, rect)) = self
+                                    .frame_cache
+                                    .track_rects
+                                    .iter()
                                     .find(|(idx, _, _)| *idx == target_idx)
                                 {
                                     let highlight_painter = ui.painter_at(ui.ctx().screen_rect());
                                     highlight_painter.rect_stroke(
-                                        *rect, 0.0,
+                                        *rect,
+                                        0.0,
                                         egui::Stroke::new(2.0_f32, tt.marker_info),
                                     );
                                 }
@@ -9536,7 +11347,9 @@ impl TimelinePanel {
 
                 // Check if pointer is over a different compatible track
                 let target_track = pointer_pos.and_then(|pos| {
-                    self.frame_cache.track_rects.iter()
+                    self.frame_cache
+                        .track_rects
+                        .iter()
                         .find(|(_, _, rect)| rect.contains(pos))
                         .map(|(idx, _, _)| *idx)
                 });
@@ -9573,8 +11386,10 @@ impl TimelinePanel {
                         }
                     } else {
                         // Same track move
-                        let is_primary = state.sequence().tracks.get(from_track)
-                            .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary);
+                        let is_primary =
+                            state.sequence().tracks.get(from_track).is_some_and(|t| {
+                                t.magnetic_role == klipp_timeline::TrackRole::Primary
+                            });
                         if is_primary {
                             // Magnetic: route by edit mode (Insert = ripple move, Overwrite = replace)
                             let target_time = pointer_pos.map(|pos| {
@@ -9583,7 +11398,8 @@ impl TimelinePanel {
                                 RationalTime::from_secs_f64(secs, fps.rate())
                             });
                             if let Some(target_time) = target_time {
-                                if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
+                                if let Some(track) = state.sequence_mut().tracks.get_mut(from_track)
+                                {
                                     track.sort_clips();
                                 }
                                 // Alt override: temporarily treat as Overwrite when Alt is held
@@ -9596,26 +11412,44 @@ impl TimelinePanel {
                                 let result = match effective_mode {
                                     klipp_timeline::magnetic::EditMode::Insert => {
                                         klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                            state.sequence_mut(), clip_id, target_time)
+                                            state.sequence_mut(),
+                                            clip_id,
+                                            target_time,
+                                        )
                                     }
                                     klipp_timeline::magnetic::EditMode::Overwrite => {
                                         // Remove clip from track first, then overwrite at target
-                                        let clip_data = state.sequence().tracks.get(from_track)
-                                            .and_then(|t| t.find_clip(clip_id)).cloned();
+                                        let clip_data = state
+                                            .sequence()
+                                            .tracks
+                                            .get(from_track)
+                                            .and_then(|t| t.find_clip(clip_id))
+                                            .cloned();
                                         if let Some(clip_data) = clip_data {
                                             // Remove the clip being dragged
-                                            if let Some(track) = state.sequence_mut().tracks.get_mut(from_track) {
+                                            if let Some(track) =
+                                                state.sequence_mut().tracks.get_mut(from_track)
+                                            {
                                                 track.clips.retain(|c| c.id != clip_id);
                                             }
                                             klipp_timeline::magnetic::MagneticEditor::overwrite_primary(
                                                 state.sequence_mut(), clip_data, target_time)
                                         } else {
                                             klipp_timeline::magnetic::MagneticEditor::move_primary(
-                                                state.sequence_mut(), clip_id, target_time)
+                                                state.sequence_mut(),
+                                                clip_id,
+                                                target_time,
+                                            )
                                         }
                                     }
                                 };
-                                state.active_history_mut().push(crate::history::HistoryEntry { command: crate::history::EditCommand::Magnetic(result.command) });
+                                state
+                                    .active_history_mut()
+                                    .push(crate::history::HistoryEntry {
+                                        command: crate::history::EditCommand::Magnetic(
+                                            result.command,
+                                        ),
+                                    });
                                 state.dirty = true;
                                 cmds.push(AppCommand::SequenceUpdated);
                             }
@@ -9638,28 +11472,48 @@ impl TimelinePanel {
                             }
 
                             // Auto-connect/disconnect on drop for non-primary tracks
-                            let primary_rect = self.frame_cache.track_rects.iter()
-                                .find(|(idx, _, _)| state.sequence().tracks.get(*idx)
-                                    .is_some_and(|t| t.magnetic_role == klipp_timeline::TrackRole::Primary))
+                            let primary_rect = self
+                                .frame_cache
+                                .track_rects
+                                .iter()
+                                .find(|(idx, _, _)| {
+                                    state.sequence().tracks.get(*idx).is_some_and(|t| {
+                                        t.magnetic_role == klipp_timeline::TrackRole::Primary
+                                    })
+                                })
                                 .map(|(pi, _, r)| (*pi, *r));
-                            if let (Some(pos), Some((primary_ti, primary_r))) = (pointer_pos, primary_rect) {
+                            if let (Some(pos), Some((primary_ti, primary_r))) =
+                                (pointer_pos, primary_rect)
+                            {
                                 let dist_px = (pos.y - primary_r.center().y).abs();
                                 let track_h = track_rect.height().max(1.0);
                                 let dist_tracks = dist_px / track_h;
 
-                                let clip_is_connected = state.sequence().tracks.get(from_track)
+                                let clip_is_connected = state
+                                    .sequence()
+                                    .tracks
+                                    .get(from_track)
                                     .and_then(|t| t.find_clip(clip_id))
                                     .is_some_and(|c| c.magnetic_anchor.is_some());
 
-                                if dist_tracks < klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE && !clip_is_connected {
+                                if dist_tracks
+                                    < klipp_timeline::magnetic::AUTO_CONNECT_TRACK_DISTANCE
+                                    && !clip_is_connected
+                                {
                                     // Auto-connect: find nearest primary clip
-                                    let clip_in = state.sequence().tracks.get(from_track)
+                                    let clip_in = state
+                                        .sequence()
+                                        .tracks
+                                        .get(from_track)
                                         .and_then(|t| t.find_clip(clip_id))
                                         .map(|c| c.timeline_in);
                                     if let Some(clip_in) = clip_in {
-                                        let anchor_id = state.sequence().tracks[primary_ti].clips.iter()
+                                        let anchor_id = state.sequence().tracks[primary_ti]
+                                            .clips
+                                            .iter()
                                             .min_by_key(|c| {
-                                                let mid = c.timeline_in + (c.timeline_out - c.timeline_in);
+                                                let mid = c.timeline_in
+                                                    + (c.timeline_out - c.timeline_in);
                                                 let diff = mid - clip_in;
                                                 diff.value.unsigned_abs()
                                             })
@@ -9668,20 +11522,34 @@ impl TimelinePanel {
                                             let result = klipp_timeline::magnetic::MagneticEditor::connect_clip(
                                                 state.sequence_mut(), clip_id, anchor_id,
                                                 klipp_timeline::AnchorAlignment::StartAligned);
-                                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                                command: crate::history::EditCommand::Magnetic(result.command),
-                                            });
+                                            state.active_history_mut().push(
+                                                crate::history::HistoryEntry {
+                                                    command: crate::history::EditCommand::Magnetic(
+                                                        result.command,
+                                                    ),
+                                                },
+                                            );
                                             state.dirty = true;
                                             cmds.push(AppCommand::SequenceUpdated);
                                         }
                                     }
-                                } else if dist_tracks > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE && clip_is_connected {
+                                } else if dist_tracks
+                                    > klipp_timeline::magnetic::AUTO_DISCONNECT_TRACK_DISTANCE
+                                    && clip_is_connected
+                                {
                                     // Auto-disconnect
-                                    let result = klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
-                                        state.sequence_mut(), clip_id);
-                                    state.active_history_mut().push(crate::history::HistoryEntry {
-                                        command: crate::history::EditCommand::Magnetic(result.command),
-                                    });
+                                    let result =
+                                        klipp_timeline::magnetic::MagneticEditor::disconnect_clip(
+                                            state.sequence_mut(),
+                                            clip_id,
+                                        );
+                                    state
+                                        .active_history_mut()
+                                        .push(crate::history::HistoryEntry {
+                                            command: crate::history::EditCommand::Magnetic(
+                                                result.command,
+                                            ),
+                                        });
                                     state.dirty = true;
                                     cmds.push(AppCommand::SequenceUpdated);
                                 }
@@ -9731,21 +11599,32 @@ impl TimelinePanel {
                     if pointer_down {
                         let dx = pos.x - slide.start_x;
                         let dt_secs = dx as f64 / zoom as f64;
-                        let dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
+                        let dt =
+                            RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
 
                         // Look up neighbour constraints from current state in
                         // a tightly-scoped block. The left/right clamps need
                         // the neighbour's CURRENT timeline_in/out to compute
                         // minimum durations.
-                        let left_constraint = if let (Some(left_id), Some(orig_left_out)) = (slide.left_clip_id, slide.original_left_out) {
-                            state.sequence().tracks.get(track_idx)
+                        let left_constraint = if let (Some(left_id), Some(orig_left_out)) =
+                            (slide.left_clip_id, slide.original_left_out)
+                        {
+                            state
+                                .sequence()
+                                .tracks
+                                .get(track_idx)
                                 .and_then(|t| t.find_clip(left_id))
                                 .map(|c| (c.timeline_in, orig_left_out))
                         } else {
                             None
                         };
-                        let right_constraint = if let (Some(right_id), Some(orig_right_in)) = (slide.right_clip_id, slide.original_right_in) {
-                            state.sequence().tracks.get(track_idx)
+                        let right_constraint = if let (Some(right_id), Some(orig_right_in)) =
+                            (slide.right_clip_id, slide.original_right_in)
+                        {
+                            state
+                                .sequence()
+                                .tracks
+                                .get(track_idx)
                                 .and_then(|t| t.find_clip(right_id))
                                 .map(|c| (c.timeline_out, orig_right_in))
                         } else {
@@ -9769,18 +11648,22 @@ impl TimelinePanel {
                                 clip.timeline_out = new_tl_out;
                             }
                             // Adjust left neighbor's out point (and source_out)
-                            if let (Some(left_id), Some(orig_left_out), Some(orig_left_src_out)) =
-                                (slide.left_clip_id, slide.original_left_out, slide.original_left_source_out)
-                            {
+                            if let (Some(left_id), Some(orig_left_out), Some(orig_left_src_out)) = (
+                                slide.left_clip_id,
+                                slide.original_left_out,
+                                slide.original_left_source_out,
+                            ) {
                                 if let Some(lc) = track.find_clip_mut(left_id) {
                                     lc.timeline_out = orig_left_out + actual_dt;
                                     lc.source_out = orig_left_src_out + actual_dt;
                                 }
                             }
                             // Adjust right neighbor's in point (and source_in)
-                            if let (Some(right_id), Some(orig_right_in), Some(orig_right_src_in)) =
-                                (slide.right_clip_id, slide.original_right_in, slide.original_right_source_in)
-                            {
+                            if let (Some(right_id), Some(orig_right_in), Some(orig_right_src_in)) = (
+                                slide.right_clip_id,
+                                slide.original_right_in,
+                                slide.original_right_source_in,
+                            ) {
                                 if let Some(rc) = track.find_clip_mut(right_id) {
                                     rc.timeline_in = orig_right_in + actual_dt;
                                     rc.source_in = orig_right_src_in + actual_dt;
@@ -9789,9 +11672,11 @@ impl TimelinePanel {
                         }
 
                         // Apply slide to linked partner
-                        if let (Some(lid), Some(linked_in), Some(linked_out)) =
-                            (slide.linked_clip_id, slide.linked_original_in, slide.linked_original_out)
-                        {
+                        if let (Some(lid), Some(linked_in), Some(linked_out)) = (
+                            slide.linked_clip_id,
+                            slide.linked_original_in,
+                            slide.linked_original_out,
+                        ) {
                             for track in &mut state.sequence_mut().tracks {
                                 if let Some(lclip) = track.find_clip_mut(lid) {
                                     lclip.timeline_in = linked_in + actual_dt;
@@ -9807,14 +11692,24 @@ impl TimelinePanel {
                         let sign = if delta_secs >= 0.0 { "+" } else { "" };
                         let badge_text = format!("SLIDE  {sign}{:.2}s", delta_secs);
                         let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
-                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(108.0, 16.0));
+                        let badge_rect =
+                            egui::Rect::from_min_size(badge_pos, egui::vec2(108.0, 16.0));
                         let tt = theme();
                         let bp = tt.bg_panel;
                         let mi = tt.marker_info;
-                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                        painter.rect_filled(
+                            badge_rect,
+                            4.0,
+                            egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220),
+                        );
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, mi));
-                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(10.0), mi);
+                        painter.text(
+                            badge_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            &badge_text,
+                            egui::FontId::monospace(10.0),
+                            mi,
+                        );
 
                         // Highlight all three involved clips. The mutations
                         // above moved their timeline positions, so we look
@@ -9824,20 +11719,39 @@ impl TimelinePanel {
                         // mutation snapshot and lagged by one frame, which
                         // was an incidental side-effect of the &[Clip]
                         // parameter, not a deliberate visual choice).
-                        let highlight_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 50);
-                        let highlight_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
+                        let highlight_color =
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 50);
+                        let highlight_border =
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
                         let cids = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id];
-                        let highlight_rects: Vec<egui::Rect> = state.sequence().tracks.get(track_idx)
+                        let highlight_rects: Vec<egui::Rect> = state
+                            .sequence()
+                            .tracks
+                            .get(track_idx)
                             .map(|t| {
-                                cids.iter().filter_map(|c| *c)
+                                cids.iter()
+                                    .filter_map(|c| *c)
                                     .filter_map(|cid| t.find_clip(cid))
-                                    .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height))
+                                    .map(|clip| {
+                                        Self::clip_screen_rect(
+                                            clip,
+                                            content_rect,
+                                            track_rect,
+                                            zoom,
+                                            scroll,
+                                            track_height,
+                                        )
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
                         for cr in highlight_rects {
                             painter.rect_filled(cr, 2.0, highlight_color);
-                            painter.rect_stroke(cr, 2.0, egui::Stroke::new(1.5_f32, highlight_border));
+                            painter.rect_stroke(
+                                cr,
+                                2.0,
+                                egui::Stroke::new(1.5_f32, highlight_border),
+                            );
                         }
                     }
                 }
@@ -9849,8 +11763,12 @@ impl TimelinePanel {
                         let track = state.sequence().tracks.get(track_idx);
                         track.and_then(|t| {
                             let clip = t.find_clip(slide.clip_id)?;
-                            let nl_out = slide.left_clip_id.and_then(|lid| t.find_clip(lid).map(|c| c.timeline_out));
-                            let nr_in = slide.right_clip_id.and_then(|rid| t.find_clip(rid).map(|c| c.timeline_in));
+                            let nl_out = slide
+                                .left_clip_id
+                                .and_then(|lid| t.find_clip(lid).map(|c| c.timeline_out));
+                            let nr_in = slide
+                                .right_clip_id
+                                .and_then(|rid| t.find_clip(rid).map(|c| c.timeline_in));
                             Some((clip.timeline_in, clip.timeline_out, nl_out, nr_in))
                         })
                     };
@@ -9863,21 +11781,23 @@ impl TimelinePanel {
                             let old_l_out = slide.original_left_out;
                             let r_id = slide.right_clip_id;
                             let old_r_in = slide.original_right_in;
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::LegacySlideClip {
-                                    clip_id: cid,
-                                    old_timeline_in: old_tl_in,
-                                    old_timeline_out: old_tl_out,
-                                    new_timeline_in: new_tl_in,
-                                    new_timeline_out: new_tl_out,
-                                    left_clip_id: l_id,
-                                    old_left_out: old_l_out,
-                                    new_left_out,
-                                    right_clip_id: r_id,
-                                    old_right_in: old_r_in,
-                                    new_right_in,
-                                },
-                            });
+                            state
+                                .active_history_mut()
+                                .push(crate::history::HistoryEntry {
+                                    command: crate::history::EditCommand::LegacySlideClip {
+                                        clip_id: cid,
+                                        old_timeline_in: old_tl_in,
+                                        old_timeline_out: old_tl_out,
+                                        new_timeline_in: new_tl_in,
+                                        new_timeline_out: new_tl_out,
+                                        left_clip_id: l_id,
+                                        old_left_out: old_l_out,
+                                        new_left_out,
+                                        right_clip_id: r_id,
+                                        old_right_in: old_r_in,
+                                        new_right_in,
+                                    },
+                                });
                             cmds.push(AppCommand::SlideClip {
                                 clip_id: cid,
                                 new_timeline_in: new_tl_in,
@@ -9955,25 +11875,52 @@ impl TimelinePanel {
                         let sign = if delta_secs >= 0.0 { "+" } else { "" };
                         let badge_text = format!("SLIP  {sign}{:.2}s", delta_secs);
                         let badge_pos = egui::pos2(pos.x + 14.0, pos.y - 22.0);
-                        let badge_rect = egui::Rect::from_min_size(badge_pos, egui::vec2(100.0, 16.0));
+                        let badge_rect =
+                            egui::Rect::from_min_size(badge_pos, egui::vec2(100.0, 16.0));
                         let tt = theme();
                         let bp = tt.bg_panel;
                         let acc = tt.accent;
-                        painter.rect_filled(badge_rect, 4.0, egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220));
+                        painter.rect_filled(
+                            badge_rect,
+                            4.0,
+                            egui::Color32::from_rgba_unmultiplied(bp.r(), bp.g(), bp.b(), 220),
+                        );
                         painter.rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, acc));
-                        painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
-                            &badge_text, egui::FontId::monospace(10.0), acc);
+                        painter.text(
+                            badge_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            &badge_text,
+                            egui::FontId::monospace(10.0),
+                            acc,
+                        );
 
                         // Draw semi-transparent directional arrow overlay on
                         // the clip. Slip changes source_in/out only, so the
                         // clip's screen rect (driven by timeline_in + duration)
                         // is unchanged whether we look it up before or after
                         // the mutation above.
-                        let overlay_rect = state.sequence().tracks.get(track_idx)
+                        let overlay_rect = state
+                            .sequence()
+                            .tracks
+                            .get(track_idx)
                             .and_then(|t| t.find_clip(slip.clip_id))
-                            .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height));
+                            .map(|clip| {
+                                Self::clip_screen_rect(
+                                    clip,
+                                    content_rect,
+                                    track_rect,
+                                    zoom,
+                                    scroll,
+                                    track_height,
+                                )
+                            });
                         if let Some(cr) = overlay_rect {
-                            let overlay_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 40);
+                            let overlay_color = egui::Color32::from_rgba_unmultiplied(
+                                acc.r(),
+                                acc.g(),
+                                acc.b(),
+                                40,
+                            );
                             painter.rect_filled(cr, 2.0, overlay_color);
                         }
                     }
@@ -9982,23 +11929,30 @@ impl TimelinePanel {
                 if pointer_released {
                     // Finalize slip: push undo entry and emit sync command
                     // Extract values before borrowing state.history
-                    let new_vals = state.sequence().tracks.get(track_idx)
+                    let new_vals = state
+                        .sequence()
+                        .tracks
+                        .get(track_idx)
                         .and_then(|t| t.find_clip(slip.clip_id))
                         .map(|c| (c.source_in, c.source_out));
                     if let Some((new_src_in, new_src_out)) = new_vals {
-                        if new_src_in != slip.original_source_in || new_src_out != slip.original_source_out {
+                        if new_src_in != slip.original_source_in
+                            || new_src_out != slip.original_source_out
+                        {
                             let cid = slip.clip_id;
                             let old_si = slip.original_source_in;
                             let old_so = slip.original_source_out;
-                            state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::LegacySlipClip {
-                                    clip_id: cid,
-                                    old_source_in: old_si,
-                                    old_source_out: old_so,
-                                    new_source_in: new_src_in,
-                                    new_source_out: new_src_out,
-                                },
-                            });
+                            state
+                                .active_history_mut()
+                                .push(crate::history::HistoryEntry {
+                                    command: crate::history::EditCommand::LegacySlipClip {
+                                        clip_id: cid,
+                                        old_source_in: old_si,
+                                        old_source_out: old_so,
+                                        new_source_in: new_src_in,
+                                        new_source_out: new_src_out,
+                                    },
+                                });
                             cmds.push(AppCommand::SlipClip {
                                 clip_id: cid,
                                 new_source_in: new_src_in,
@@ -10042,44 +11996,81 @@ impl TimelinePanel {
                     let dt_frames = RationalTime::from_secs_f64(dt_secs, fps.rate());
 
                     // Get media durations for clamping
-                    let media_a_dur = state.sequence().tracks.get(roll.track_idx)
+                    let media_a_dur = state
+                        .sequence()
+                        .tracks
+                        .get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_a_id))
                         .and_then(|c| c.media_id())
                         .and_then(|mid| state.media_pool.get(&mid))
                         .map(|m| m.duration)
-                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
-                    let _media_b_dur = state.sequence().tracks.get(roll.track_idx)
+                        .unwrap_or(RationalTime {
+                            value: i64::MAX,
+                            rate: fps.rate(),
+                        });
+                    let _media_b_dur = state
+                        .sequence()
+                        .tracks
+                        .get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_b_id))
                         .and_then(|c| c.media_id())
                         .and_then(|mid| state.media_pool.get(&mid))
                         .map(|m| m.duration)
-                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
+                        .unwrap_or(RationalTime {
+                            value: i64::MAX,
+                            rate: fps.rate(),
+                        });
 
                     // Compute new boundary position
                     let mut new_a_source_out = roll.original_a_source_out + dt_frames;
                     let mut new_b_source_in = roll.original_b_source_in + dt_frames;
 
                     // Get clip A's source_in (start of used range) for clamping
-                    let clip_a_source_in = state.sequence().tracks.get(roll.track_idx)
+                    let clip_a_source_in = state
+                        .sequence()
+                        .tracks
+                        .get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_a_id))
                         .map(|c| c.source_in)
                         .unwrap_or(roll.original_a_source_out);
                     // Get clip B's source_out for clamping
-                    let clip_b_source_out = state.sequence().tracks.get(roll.track_idx)
+                    let clip_b_source_out = state
+                        .sequence()
+                        .tracks
+                        .get(roll.track_idx)
                         .and_then(|t| t.find_clip(roll.clip_b_id))
                         .map(|c| c.source_out)
                         .unwrap_or(roll.original_b_source_in);
 
                     // Clamp: clip A source_out must stay > clip A source_in (min 1 frame)
-                    let min_a_out = clip_a_source_in + RationalTime { value: 1, rate: clip_a_source_in.rate };
+                    let min_a_out = clip_a_source_in
+                        + RationalTime {
+                            value: 1,
+                            rate: clip_a_source_in.rate,
+                        };
                     // Clamp: clip A source_out must not exceed media duration
-                    if new_a_source_out < min_a_out { new_a_source_out = min_a_out; }
-                    if new_a_source_out > media_a_dur { new_a_source_out = media_a_dur; }
+                    if new_a_source_out < min_a_out {
+                        new_a_source_out = min_a_out;
+                    }
+                    if new_a_source_out > media_a_dur {
+                        new_a_source_out = media_a_dur;
+                    }
                     // Clamp: clip B source_in must stay >= 0 and < clip B source_out
-                    let zero = RationalTime { value: 0, rate: new_b_source_in.rate };
-                    let max_b_in = clip_b_source_out - RationalTime { value: 1, rate: clip_b_source_out.rate };
-                    if new_b_source_in < zero { new_b_source_in = zero; }
-                    if new_b_source_in > max_b_in { new_b_source_in = max_b_in; }
+                    let zero = RationalTime {
+                        value: 0,
+                        rate: new_b_source_in.rate,
+                    };
+                    let max_b_in = clip_b_source_out
+                        - RationalTime {
+                            value: 1,
+                            rate: clip_b_source_out.rate,
+                        };
+                    if new_b_source_in < zero {
+                        new_b_source_in = zero;
+                    }
+                    if new_b_source_in > max_b_in {
+                        new_b_source_in = max_b_in;
+                    }
 
                     // Recompute consistent delta from the clamped values
                     let actual_delta_a = new_a_source_out - roll.original_a_source_out;
@@ -10104,8 +12095,10 @@ impl TimelinePanel {
                         let dist_px = ((boundary_secs - playhead_secs).abs() * zoom as f64) as f32;
                         if dist_px < 8.0 {
                             snapped_boundary = state.playhead;
-                            let snap_x = content_rect.left() + playhead_secs as f32 * zoom - state.timeline_scroll_x;
-                            self.frame_cache.snap_line_x = Some((snap_x, klipp_core::SnapTargetKind::Playhead));
+                            let snap_x = content_rect.left() + playhead_secs as f32 * zoom
+                                - state.timeline_scroll_x;
+                            self.frame_cache.snap_line_x =
+                                Some((snap_x, klipp_core::SnapTargetKind::Playhead));
                         }
                     }
 
@@ -10129,24 +12122,41 @@ impl TimelinePanel {
 
                     // Rich overlay for roll trim
                     let delta_frames = snapped_boundary - roll.original_boundary;
-                    let dur_a = final_a_timeline_out - state.sequence().tracks.get(roll.track_idx)
-                        .and_then(|t| t.find_clip(roll.clip_a_id))
-                        .map(|c| c.timeline_in)
-                        .unwrap_or(roll.original_a_timeline_out);
+                    let dur_a = final_a_timeline_out
+                        - state
+                            .sequence()
+                            .tracks
+                            .get(roll.track_idx)
+                            .and_then(|t| t.find_clip(roll.clip_a_id))
+                            .map(|c| c.timeline_in)
+                            .unwrap_or(roll.original_a_timeline_out);
                     Self::paint_trim_overlay(
-                        painter, content_rect, track_rect, zoom, scroll,
-                        snapped_boundary, delta_frames, dur_a,
-                        "Roll", state.timecode_display(),
+                        painter,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        snapped_boundary,
+                        delta_frames,
+                        dur_a,
+                        "Roll",
+                        state.timecode_display(),
                     );
                 }
             }
 
             if pointer_released && roll.track_idx == track_idx {
                 // Read final values and emit command
-                let a_out = state.sequence().tracks.get(roll.track_idx)
+                let a_out = state
+                    .sequence()
+                    .tracks
+                    .get(roll.track_idx)
                     .and_then(|t| t.find_clip(roll.clip_a_id))
                     .map(|c| (c.source_out, c.timeline_out));
-                let b_in = state.sequence().tracks.get(roll.track_idx)
+                let b_in = state
+                    .sequence()
+                    .tracks
+                    .get(roll.track_idx)
                     .and_then(|t| t.find_clip(roll.clip_b_id))
                     .map(|c| (c.source_in, c.timeline_in));
 
@@ -10198,20 +12208,31 @@ impl TimelinePanel {
     fn find_snap_target(
         snap_enabled: bool,
         snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
+        snap_targets: &[(
+            f64,
+            RationalTime,
+            Option<ClipId>,
+            klipp_core::SnapTargetKind,
+        )],
         edge_time: RationalTime,
         exclude_clip: ClipId,
         grid_interval_secs: Option<f64>,
         rate: u32,
         snap_config: Option<&crate::layout_state::SnapConfig>,
     ) -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-        if !snap_enabled { return None; }
+        if !snap_enabled {
+            return None;
+        }
         let edge_secs = edge_time.to_secs_f64();
         let mut best: Option<(f64, RationalTime, klipp_core::SnapTargetKind)> = None;
         for &(target_secs, target_tc, owner, kind) in snap_targets {
-            if owner == Some(exclude_clip) { continue; }
+            if owner == Some(exclude_clip) {
+                continue;
+            }
             if let Some(cfg) = snap_config {
-                if !cfg.is_kind_enabled(kind) { continue; }
+                if !cfg.is_kind_enabled(kind) {
+                    continue;
+                }
             }
             let dist = (edge_secs - target_secs).abs();
             if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
@@ -10226,7 +12247,8 @@ impl TimelinePanel {
                 if interval > 0.0 {
                     let nearest = (edge_secs / interval).round() * interval;
                     let dist = (edge_secs - nearest).abs();
-                    if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d) {
+                    if dist < snap_threshold_secs && best.as_ref().is_none_or(|(d, _, _)| dist < *d)
+                    {
                         let grid_tc = RationalTime::from_secs_f64(nearest, rate);
                         best = Some((dist, grid_tc, klipp_core::SnapTargetKind::Grid));
                     }
@@ -10252,7 +12274,12 @@ impl TimelinePanel {
         fps: klipp_core::Fps,
         snap_enabled: bool,
         snap_threshold_secs: f64,
-        snap_targets: &[(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)],
+        snap_targets: &[(
+            f64,
+            RationalTime,
+            Option<ClipId>,
+            klipp_core::SnapTargetKind,
+        )],
         grid_interval_secs: Option<f64>,
         pointer_pos: Option<egui::Pos2>,
         pointer_down: bool,
@@ -10260,8 +12287,19 @@ impl TimelinePanel {
     ) {
         let rate = fps.rate();
         let snap_cfg = state.snap;
-        let find_snap = |edge_time: RationalTime, exclude_clip: ClipId| -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
-            Self::find_snap_target(snap_enabled, snap_threshold_secs, snap_targets, edge_time, exclude_clip, grid_interval_secs, rate, Some(&snap_cfg))
+        let find_snap = |edge_time: RationalTime,
+                         exclude_clip: ClipId|
+         -> Option<(RationalTime, f64, klipp_core::SnapTargetKind)> {
+            Self::find_snap_target(
+                snap_enabled,
+                snap_threshold_secs,
+                snap_targets,
+                edge_time,
+                exclude_clip,
+                grid_interval_secs,
+                rate,
+                Some(&snap_cfg),
+            )
         };
 
         // Handle ongoing trim (only process on the trim's own track to avoid duplicate tooltips)
@@ -10274,22 +12312,39 @@ impl TimelinePanel {
                     let dt_secs = dx as f64 / zoom as f64;
                     let dt_frames = RationalTime::from_secs_f64(dt_secs, fps.rate());
 
-                    let media_duration = state.sequence().tracks.get(trim.track_idx)
+                    let media_duration = state
+                        .sequence()
+                        .tracks
+                        .get(trim.track_idx)
                         .and_then(|t| t.find_clip(trim.clip_id))
                         .and_then(|c| c.media_id())
                         .and_then(|mid| state.media_pool.get(&mid))
                         .map(|m| m.duration)
-                        .unwrap_or(RationalTime { value: i64::MAX, rate: fps.rate() });
+                        .unwrap_or(RationalTime {
+                            value: i64::MAX,
+                            rate: fps.rate(),
+                        });
 
                     match trim.edge {
                         TrimEdge::Left => {
                             let new_source_in = {
                                 let sum = trim.original_source_in + dt_frames;
-                                let zero = RationalTime { value: 0, rate: sum.rate };
-                                let max_in = trim.original_source_out - RationalTime { value: 1, rate: trim.original_source_out.rate };
-                                if sum < zero { zero }
-                                else if sum > max_in { max_in }
-                                else { sum }
+                                let zero = RationalTime {
+                                    value: 0,
+                                    rate: sum.rate,
+                                };
+                                let max_in = trim.original_source_out
+                                    - RationalTime {
+                                        value: 1,
+                                        rate: trim.original_source_out.rate,
+                                    };
+                                if sum < zero {
+                                    zero
+                                } else if sum > max_in {
+                                    max_in
+                                } else {
+                                    sum
+                                }
                             };
                             let source_delta = new_source_in - trim.original_source_in;
 
@@ -10302,14 +12357,24 @@ impl TimelinePanel {
                                 }
 
                                 // Snap the left edge
-                                if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_timeline_in, trim.clip_id) {
+                                if let Some((snap_target, snap_secs, snap_kind)) =
+                                    find_snap(new_timeline_in, trim.clip_id)
+                                {
                                     let snap_delta = snap_target - trim.original_timeline_in;
                                     let snapped_source_in = trim.original_source_in + snap_delta;
-                                    let zero = RationalTime { value: 0, rate: snapped_source_in.rate };
-                                    let max_in = trim.original_source_out - RationalTime { value: 1, rate: trim.original_source_out.rate };
+                                    let zero = RationalTime {
+                                        value: 0,
+                                        rate: snapped_source_in.rate,
+                                    };
+                                    let max_in = trim.original_source_out
+                                        - RationalTime {
+                                            value: 1,
+                                            rate: trim.original_source_out.rate,
+                                        };
                                     if snapped_source_in >= zero && snapped_source_in <= max_in {
                                         new_timeline_in = snap_target;
-                                        let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
+                                        let snap_x = content_rect.left() + snap_secs as f32 * zoom
+                                            - state.timeline_scroll_x;
                                         self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
                                     }
                                 }
@@ -10317,7 +12382,9 @@ impl TimelinePanel {
                                 let final_delta = new_timeline_in - trim.original_timeline_in;
                                 let final_source_in = trim.original_source_in + final_delta;
 
-                                if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
+                                if let Some(track) =
+                                    state.sequence_mut().tracks.get_mut(trim.track_idx)
+                                {
                                     if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                         c.source_in = final_source_in;
                                         c.timeline_in = new_timeline_in;
@@ -10328,9 +12395,16 @@ impl TimelinePanel {
                                 let new_duration = trim.original_timeline_out - new_timeline_in;
                                 let delta_frames = new_timeline_in - trim.original_timeline_in;
                                 Self::paint_trim_overlay(
-                                    painter, content_rect, track_rect, zoom, scroll,
-                                    new_timeline_in, delta_frames, new_duration,
-                                    "In", state.timecode_display(),
+                                    painter,
+                                    content_rect,
+                                    track_rect,
+                                    zoom,
+                                    scroll,
+                                    new_timeline_in,
+                                    delta_frames,
+                                    new_duration,
+                                    "In",
+                                    state.timecode_display(),
                                 );
                             } else {
                                 // Ripple: keep timeline_in fixed, shrink/grow timeline_out,
@@ -10342,27 +12416,44 @@ impl TimelinePanel {
 
                                 // Snap the new timeline_out
                                 let mut snapped_timeline_out = new_timeline_out;
-                                if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_timeline_out, trim.clip_id) {
+                                if let Some((snap_target, snap_secs, snap_kind)) =
+                                    find_snap(new_timeline_out, trim.clip_id)
+                                {
                                     snapped_timeline_out = snap_target;
-                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
+                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom
+                                        - state.timeline_scroll_x;
                                     self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
                                 }
 
                                 // Recompute source_in from the snapped duration
-                                let snapped_duration = snapped_timeline_out - trim.original_timeline_in;
+                                let snapped_duration =
+                                    snapped_timeline_out - trim.original_timeline_in;
                                 let snapped_source_in = trim.original_source_out - snapped_duration;
-                                let zero = RationalTime { value: 0, rate: snapped_source_in.rate };
-                                let max_in = trim.original_source_out - RationalTime { value: 1, rate: trim.original_source_out.rate };
-                                let clamped_source_in = if snapped_source_in < zero { zero }
-                                    else if snapped_source_in > max_in { max_in }
-                                    else { snapped_source_in };
+                                let zero = RationalTime {
+                                    value: 0,
+                                    rate: snapped_source_in.rate,
+                                };
+                                let max_in = trim.original_source_out
+                                    - RationalTime {
+                                        value: 1,
+                                        rate: trim.original_source_out.rate,
+                                    };
+                                let clamped_source_in = if snapped_source_in < zero {
+                                    zero
+                                } else if snapped_source_in > max_in {
+                                    max_in
+                                } else {
+                                    snapped_source_in
+                                };
 
                                 // Recalculate timeline_out from clamped source
                                 let final_duration = trim.original_source_out - clamped_source_in;
                                 let final_timeline_out = trim.original_timeline_in + final_duration;
                                 let ripple_delta = final_timeline_out - trim.original_timeline_out;
 
-                                if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
+                                if let Some(track) =
+                                    state.sequence_mut().tracks.get_mut(trim.track_idx)
+                                {
                                     if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                         c.source_in = clamped_source_in;
                                         // timeline_in stays at original
@@ -10381,31 +12472,55 @@ impl TimelinePanel {
                                 let new_duration = final_timeline_out - trim.original_timeline_in;
                                 let delta_frames = clamped_source_in - trim.original_source_in;
                                 Self::paint_trim_overlay(
-                                    painter, content_rect, track_rect, zoom, scroll,
-                                    trim.original_timeline_in, delta_frames, new_duration,
-                                    "In", state.timecode_display(),
+                                    painter,
+                                    content_rect,
+                                    track_rect,
+                                    zoom,
+                                    scroll,
+                                    trim.original_timeline_in,
+                                    delta_frames,
+                                    new_duration,
+                                    "In",
+                                    state.timecode_display(),
                                 );
                             }
                         }
                         TrimEdge::Right => {
                             let new_source_out = {
                                 let sum = trim.original_source_out + dt_frames;
-                                let min_out = trim.original_source_in + RationalTime { value: 1, rate: trim.original_source_in.rate };
-                                if sum < min_out { min_out }
-                                else if sum > media_duration { media_duration }
-                                else { sum }
+                                let min_out = trim.original_source_in
+                                    + RationalTime {
+                                        value: 1,
+                                        rate: trim.original_source_in.rate,
+                                    };
+                                if sum < min_out {
+                                    min_out
+                                } else if sum > media_duration {
+                                    media_duration
+                                } else {
+                                    sum
+                                }
                             };
                             let delta = new_source_out - trim.original_source_out;
                             let mut new_timeline_out = trim.original_timeline_out + delta;
 
                             // Snap the right edge (timeline_out)
-                            if let Some((snap_target, snap_secs, snap_kind)) = find_snap(new_timeline_out, trim.clip_id) {
+                            if let Some((snap_target, snap_secs, snap_kind)) =
+                                find_snap(new_timeline_out, trim.clip_id)
+                            {
                                 let snap_delta = snap_target - trim.original_timeline_out;
                                 let snapped_source_out = trim.original_source_out + snap_delta;
-                                let min_out = trim.original_source_in + RationalTime { value: 1, rate: trim.original_source_in.rate };
-                                if snapped_source_out >= min_out && snapped_source_out <= media_duration {
+                                let min_out = trim.original_source_in
+                                    + RationalTime {
+                                        value: 1,
+                                        rate: trim.original_source_in.rate,
+                                    };
+                                if snapped_source_out >= min_out
+                                    && snapped_source_out <= media_duration
+                                {
                                     new_timeline_out = snap_target;
-                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom - state.timeline_scroll_x;
+                                    let snap_x = content_rect.left() + snap_secs as f32 * zoom
+                                        - state.timeline_scroll_x;
                                     self.frame_cache.snap_line_x = Some((snap_x, snap_kind));
                                 }
                             }
@@ -10413,14 +12528,16 @@ impl TimelinePanel {
                             let final_delta = new_timeline_out - trim.original_timeline_out;
                             let final_source_out = trim.original_source_out + final_delta;
 
-                            if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx) {
+                            if let Some(track) = state.sequence_mut().tracks.get_mut(trim.track_idx)
+                            {
                                 if let Some(c) = track.find_clip_mut(trim.clip_id) {
                                     c.source_out = final_source_out;
                                     c.timeline_out = new_timeline_out;
                                 }
                                 // Ripple: shift subsequent clips by the out-point change
                                 if !trim.subsequent_clips.is_empty() {
-                                    let ripple_delta = new_timeline_out - trim.original_timeline_out;
+                                    let ripple_delta =
+                                        new_timeline_out - trim.original_timeline_out;
                                     for (sub_id, orig_in, orig_out) in &trim.subsequent_clips {
                                         if let Some(sc) = track.find_clip_mut(*sub_id) {
                                             sc.timeline_in = *orig_in + ripple_delta;
@@ -10431,16 +12548,26 @@ impl TimelinePanel {
                             }
 
                             // Rich timecode overlay during trim
-                            let cur_timeline_in = state.sequence().tracks.get(trim.track_idx)
+                            let cur_timeline_in = state
+                                .sequence()
+                                .tracks
+                                .get(trim.track_idx)
                                 .and_then(|t| t.find_clip(trim.clip_id))
                                 .map(|c| c.timeline_in)
                                 .unwrap_or(trim.original_timeline_in);
                             let new_duration = new_timeline_out - cur_timeline_in;
                             let delta_frames = new_timeline_out - trim.original_timeline_out;
                             Self::paint_trim_overlay(
-                                painter, content_rect, track_rect, zoom, scroll,
-                                new_timeline_out, delta_frames, new_duration,
-                                "Out", state.timecode_display(),
+                                painter,
+                                content_rect,
+                                track_rect,
+                                zoom,
+                                scroll,
+                                new_timeline_out,
+                                delta_frames,
+                                new_duration,
+                                "Out",
+                                state.timecode_display(),
                             );
                         }
                     }
@@ -10494,7 +12621,9 @@ impl TimelinePanel {
         // Tool::Trim also uses this block so junction/edge cursors + highlights appear there too;
         // it adds an extra branch below for modifier-free Slip on clip body.
         if (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
-            && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none()
+            && self.trimming_clip.is_none()
+            && self.roll_trimming.is_none()
+            && self.dragging_clip.is_none()
         {
             if let Some(pos) = pointer_pos {
                 // First: check for roll trim junction (boundary between two adjacent clips)
@@ -10502,16 +12631,34 @@ impl TimelinePanel {
                 if clips.len() >= 2 {
                     let roll_threshold = 4.0_f32; // pixels
                     for i in 0..clips.len() - 1 {
-                        let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
-                        let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                        let cr_a = Self::clip_screen_rect(
+                            &clips[i],
+                            content_rect,
+                            track_rect,
+                            zoom,
+                            scroll,
+                            track_height,
+                        );
+                        let cr_b = Self::clip_screen_rect(
+                            &clips[i + 1],
+                            content_rect,
+                            track_rect,
+                            zoom,
+                            scroll,
+                            track_height,
+                        );
                         // Junction is where clip A ends and clip B begins
                         let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
                         if (pos.x - junction_x).abs() < roll_threshold
-                            && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
-                            && !clips[i].kind.is_gap() && !clips[i + 1].kind.is_gap()
+                            && pos.y >= track_rect.top()
+                            && pos.y <= track_rect.top() + track_height
+                            && !clips[i].kind.is_gap()
+                            && !clips[i + 1].kind.is_gap()
                         {
                             // Check clips are truly adjacent (no gap between them)
-                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
+                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out)
+                                .to_secs_f64()
+                                .abs();
                             if gap_secs < 0.001 {
                                 found_roll_junction = true;
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -10531,7 +12678,8 @@ impl TimelinePanel {
                                         egui::pos2(cr_a.right() - bar_w, cr_a.top()),
                                         egui::vec2(bar_w, cr_a.height()),
                                     ),
-                                    0.0, roll_color,
+                                    0.0,
+                                    roll_color,
                                 );
                                 // Left edge of clip B
                                 painter.rect_filled(
@@ -10539,7 +12687,8 @@ impl TimelinePanel {
                                         egui::pos2(cr_b.left(), cr_b.top()),
                                         egui::vec2(bar_w, cr_b.height()),
                                     ),
-                                    0.0, roll_color,
+                                    0.0,
+                                    roll_color,
                                 );
                                 // "Roll trim" label
                                 painter.text(
@@ -10556,7 +12705,15 @@ impl TimelinePanel {
                 }
 
                 if !found_roll_junction {
-                    if let Some((cr, hit_clip, edge)) = self.hit_test_edge(clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                    if let Some((cr, hit_clip, edge)) = self.hit_test_edge(
+                        clips,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                        pos,
+                    ) {
                         // Check if pointer is in the fade handle zone (top corner) — skip trim highlight there
                         let at_top = pos.y - cr.top() < 12.0;
                         let at_near_edge = match edge {
@@ -10564,8 +12721,12 @@ impl TimelinePanel {
                             TrimEdge::Right => cr.right() - pos.x < 10.0,
                         };
                         let clip_has_audio = track_kind == TrackKind::Audio
-                            || hit_clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
-                        let in_fade_zone = at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
+                            || hit_clip
+                                .media_id()
+                                .and_then(|mid| state.media_pool.get(&mid))
+                                .is_some_and(|m| m.has_audio);
+                        let in_fade_zone =
+                            at_top && at_near_edge && clip_has_audio && !hit_clip.kind.is_gap();
 
                         if !in_fade_zone {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -10588,7 +12749,8 @@ impl TimelinePanel {
                                     egui::pos2(edge_x, cr.top()),
                                     egui::vec2(bar_w, cr.height()),
                                 ),
-                                0.0, amber_hover,
+                                0.0,
+                                amber_hover,
                             );
 
                             // Handle grip area with grip lines
@@ -10630,7 +12792,18 @@ impl TimelinePanel {
                     } else if state.active_tool == Tool::Trim {
                         // Tool::Trim: no junction, no edge — if pointer is over a clip body,
                         // show horizontal resize cursor as a slip-available indicator.
-                        if self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos).is_some() {
+                        if self
+                            .hit_test_clip_body(
+                                clips,
+                                content_rect,
+                                track_rect,
+                                zoom,
+                                scroll,
+                                track_height,
+                                pos,
+                            )
+                            .is_some()
+                        {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                         }
                     }
@@ -10642,12 +12815,24 @@ impl TimelinePanel {
         if let Some(ref trim) = self.trimming_clip {
             if trim.track_idx == track_idx {
                 if let Some(clip) = clips.iter().find(|c| c.id == trim.clip_id) {
-                    let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                    let cr = Self::clip_screen_rect(
+                        clip,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                    );
 
                     // Brighter, wider bar (3-4px) at the active trim edge
                     let active_bar_w = 4.0;
                     let acc = tt.accent;
-                    let active_color = egui::Color32::from_rgba_premultiplied(acc.r(), acc.g(), acc.b().saturating_add(48), 240);
+                    let active_color = egui::Color32::from_rgba_premultiplied(
+                        acc.r(),
+                        acc.g(),
+                        acc.b().saturating_add(48),
+                        240,
+                    );
                     let edge_x = match trim.edge {
                         TrimEdge::Left => cr.left(),
                         TrimEdge::Right => cr.right() - active_bar_w,
@@ -10657,11 +12842,13 @@ impl TimelinePanel {
                             egui::pos2(edge_x, cr.top()),
                             egui::vec2(active_bar_w, cr.height()),
                         ),
-                        0.0, active_color,
+                        0.0,
+                        active_color,
                     );
 
                     // Subtle colored tint over the clip being trimmed
-                    let tint_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 20);
+                    let tint_color =
+                        egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 20);
                     painter.rect_filled(cr, 2.0, tint_color);
                 }
             }
@@ -10671,30 +12858,55 @@ impl TimelinePanel {
         if let Some(ref roll) = self.roll_trimming {
             if roll.track_idx == track_idx {
                 let acc = tt.accent;
-                let roll_active_color = egui::Color32::from_rgba_premultiplied(acc.r(), acc.g(), acc.b(), 240);
+                let roll_active_color =
+                    egui::Color32::from_rgba_premultiplied(acc.r(), acc.g(), acc.b(), 240);
                 let bar_w = 4.0;
                 if let Some(clip_a) = clips.iter().find(|c| c.id == roll.clip_a_id) {
-                    let cr_a = Self::clip_screen_rect(clip_a, content_rect, track_rect, zoom, scroll, track_height);
+                    let cr_a = Self::clip_screen_rect(
+                        clip_a,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                    );
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(cr_a.right() - bar_w, cr_a.top()),
                             egui::vec2(bar_w, cr_a.height()),
                         ),
-                        0.0, roll_active_color,
+                        0.0,
+                        roll_active_color,
                     );
                     // Subtle tint
-                    painter.rect_filled(cr_a, 2.0, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15));
+                    painter.rect_filled(
+                        cr_a,
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15),
+                    );
                 }
                 if let Some(clip_b) = clips.iter().find(|c| c.id == roll.clip_b_id) {
-                    let cr_b = Self::clip_screen_rect(clip_b, content_rect, track_rect, zoom, scroll, track_height);
+                    let cr_b = Self::clip_screen_rect(
+                        clip_b,
+                        content_rect,
+                        track_rect,
+                        zoom,
+                        scroll,
+                        track_height,
+                    );
                     painter.rect_filled(
                         egui::Rect::from_min_size(
                             egui::pos2(cr_b.left(), cr_b.top()),
                             egui::vec2(bar_w, cr_b.height()),
                         ),
-                        0.0, roll_active_color,
+                        0.0,
+                        roll_active_color,
                     );
-                    painter.rect_filled(cr_b, 2.0, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15));
+                    painter.rect_filled(
+                        cr_b,
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 15),
+                    );
                 }
             }
         }
@@ -10734,8 +12946,10 @@ impl TimelinePanel {
                             (cut_secs - trans_dur_secs, cut_secs)
                         }
                     };
-                    let trans_start_x = content_rect.left() + (trans_start_secs * zoom as f64) as f32 - scroll;
-                    let trans_end_x = content_rect.left() + (trans_end_secs * zoom as f64) as f32 - scroll;
+                    let trans_start_x =
+                        content_rect.left() + (trans_start_secs * zoom as f64) as f32 - scroll;
+                    let trans_end_x =
+                        content_rect.left() + (trans_end_secs * zoom as f64) as f32 - scroll;
 
                     // Only draw if visible
                     if trans_end_x > content_rect.left() && trans_start_x < content_rect.right() {
@@ -10744,7 +12958,8 @@ impl TimelinePanel {
                             egui::pos2(trans_start_x, track_rect.top()),
                             egui::vec2(trans_w, track_height),
                         );
-                        let is_selected = state.selected_transition
+                        let is_selected = state
+                            .selected_transition
                             .map(|(ti, tid)| ti == track_idx && tid == transition.id)
                             .unwrap_or(false);
                         // Semi-transparent overlay (brighter when selected)
@@ -10799,11 +13014,19 @@ impl TimelinePanel {
                         let clip_a = track.find_clip(transition.clip_a_id);
                         if let (Some(clip_a), Some(clip_b)) = (clip_a, Some(clip_b)) {
                             let ha = klipp_validation::handles::compute_handle_availability(
-                                transition, clip_a, clip_b, &state.media_pool,
+                                transition,
+                                clip_a,
+                                clip_b,
+                                &state.media_pool,
                             );
                             if ha.has_shortfall() {
                                 let me = tt.marker_error;
-                                let stripe_color = egui::Color32::from_rgba_premultiplied(me.r(), me.g(), me.b(), 160);
+                                let stripe_color = egui::Color32::from_rgba_premultiplied(
+                                    me.r(),
+                                    me.g(),
+                                    me.b(),
+                                    160,
+                                );
                                 let stripe_spacing = 8.0_f32;
                                 let stripe_width = 4.0_f32;
                                 let cut_x = cx; // diamond position = cut point
@@ -10814,31 +13037,47 @@ impl TimelinePanel {
 
                                 // A-side stripe (left of cut)
                                 if ha.shortfall_a() > 0 && ha.clip_a_needed > 0 && left_w > 1.0 {
-                                    let frac = (ha.shortfall_a() as f32 / ha.clip_a_needed as f32).min(1.0);
+                                    let frac = (ha.shortfall_a() as f32 / ha.clip_a_needed as f32)
+                                        .min(1.0);
                                     let stripe_w = (left_w * frac).max(2.0);
                                     // Starts from the LEFT edge (outer), toward cut
                                     let stripe_rect = egui::Rect::from_min_size(
                                         egui::pos2(trans_start_x, track_rect.top()),
                                         egui::vec2(stripe_w, track_height),
                                     );
-                                    Self::draw_diagonal_stripes(painter, stripe_rect, stripe_color, stripe_spacing, stripe_width);
+                                    Self::draw_diagonal_stripes(
+                                        painter,
+                                        stripe_rect,
+                                        stripe_color,
+                                        stripe_spacing,
+                                        stripe_width,
+                                    );
                                 }
 
                                 // B-side stripe (right of cut)
                                 if ha.shortfall_b() > 0 && ha.clip_b_needed > 0 && right_w > 1.0 {
-                                    let frac = (ha.shortfall_b() as f32 / ha.clip_b_needed as f32).min(1.0);
+                                    let frac = (ha.shortfall_b() as f32 / ha.clip_b_needed as f32)
+                                        .min(1.0);
                                     let stripe_w = (right_w * frac).max(2.0);
                                     // Starts from the RIGHT edge (outer), toward cut
                                     let stripe_rect = egui::Rect::from_min_size(
                                         egui::pos2(trans_end_x - stripe_w, track_rect.top()),
                                         egui::vec2(stripe_w, track_height),
                                     );
-                                    Self::draw_diagonal_stripes(painter, stripe_rect, stripe_color, stripe_spacing, stripe_width);
+                                    Self::draw_diagonal_stripes(
+                                        painter,
+                                        stripe_rect,
+                                        stripe_color,
+                                        stripe_spacing,
+                                        stripe_width,
+                                    );
                                 }
 
                                 // Hover tooltip over the full ribbon
-                                let tooltip = format_shortfall_tooltip(&ha, transition.duration.rate);
-                                let hover_resp = ui.allocate_rect(indicator_rect, egui::Sense::hover());
+                                let tooltip =
+                                    format_shortfall_tooltip(&ha, transition.duration.rate);
+                                let hover_resp =
+                                    ui.allocate_rect(indicator_rect, egui::Sense::hover());
                                 hover_resp.on_hover_text(tooltip);
                             }
                         }
@@ -10872,7 +13111,10 @@ impl TimelinePanel {
             let y1 = rect.top() + (x1 - x);
             if x1 > rect.left() && x0 < rect.right() && y0 < rect.bottom() {
                 painter.line_segment(
-                    [egui::pos2(x0, y0.min(rect.bottom())), egui::pos2(x1, y1.min(rect.bottom()))],
+                    [
+                        egui::pos2(x0, y0.min(rect.bottom())),
+                        egui::pos2(x1, y1.min(rect.bottom())),
+                    ],
                     stroke,
                 );
             }
@@ -10899,9 +13141,8 @@ impl TimelinePanel {
         // Map time/speed to pixel coordinates
         // Y axis: 0x at bottom, 2x at top (unity 1x at center)
         let spd_max = 2.0_f32;
-        let map_spd_x = |t: f64| -> f32 {
-            clip_rect.left() + (t / spd_clip_dur) as f32 * clip_rect.width()
-        };
+        let map_spd_x =
+            |t: f64| -> f32 { clip_rect.left() + (t / spd_clip_dur) as f32 * clip_rect.width() };
         let map_spd_y = |v: f32| -> f32 {
             let frac = (v / spd_max).clamp(0.0, 1.0);
             clip_rect.bottom() - frac * clip_rect.height()
@@ -10910,14 +13151,18 @@ impl TimelinePanel {
         // Unity line (speed = 1.0) as a dim reference
         let unity_y = map_spd_y(1.0);
         spd_painter.line_segment(
-            [egui::pos2(clip_rect.left(), unity_y), egui::pos2(clip_rect.right(), unity_y)],
+            [
+                egui::pos2(clip_rect.left(), unity_y),
+                egui::pos2(clip_rect.right(), unity_y),
+            ],
             egui::Stroke::new(0.5_f32, egui::Color32::from_white_alpha(30)),
         );
 
         // Build polyline from evaluated speed curve
         let tt = theme();
         let spd_color = tt.marker_info;
-        let spd_fill_color = egui::Color32::from_rgba_unmultiplied(spd_color.r(), spd_color.g(), spd_color.b(), 25);
+        let spd_fill_color =
+            egui::Color32::from_rgba_unmultiplied(spd_color.r(), spd_color.g(), spd_color.b(), 25);
         let num_spd_pts = (clip_rect.width() as usize / 3).clamp(2, 120);
         let mut spd_points: Vec<egui::Pos2> = Vec::with_capacity(num_spd_pts);
         for i in 0..num_spd_pts {
@@ -10931,16 +13176,17 @@ impl TimelinePanel {
             let mut fill_poly: Vec<egui::Pos2> = spd_points.clone();
             fill_poly.push(egui::pos2(clip_rect.right(), clip_rect.bottom()));
             fill_poly.push(egui::pos2(clip_rect.left(), clip_rect.bottom()));
-            spd_painter.add(egui::Shape::convex_polygon(fill_poly, spd_fill_color, egui::Stroke::NONE));
+            spd_painter.add(egui::Shape::convex_polygon(
+                fill_poly,
+                spd_fill_color,
+                egui::Stroke::NONE,
+            ));
         }
 
         // Draw the speed curve line
         if spd_points.len() >= 2 {
             for pair in spd_points.windows(2) {
-                spd_painter.line_segment(
-                    [pair[0], pair[1]],
-                    egui::Stroke::new(1.5_f32, spd_color),
-                );
+                spd_painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, spd_color));
             }
         }
 
@@ -10950,7 +13196,8 @@ impl TimelinePanel {
             let py = map_spd_y(kf.value);
             spd_painter.circle_filled(egui::pos2(px, py), 3.0, spd_color);
             spd_painter.circle_stroke(
-                egui::pos2(px, py), 3.0,
+                egui::pos2(px, py),
+                3.0,
                 egui::Stroke::new(0.5_f32, egui::Color32::WHITE),
             );
         }
@@ -10982,7 +13229,10 @@ impl TimelinePanel {
         for (i, m) in clip.clip_markers.iter().enumerate() {
             tracing::debug!(
                 "  marker {}: t={:.3}s ({:.1}%) colour={:?}",
-                i, m.time_secs, (m.time_secs / clip_dur) * 100.0, m.color
+                i,
+                m.time_secs,
+                (m.time_secs / clip_dur) * 100.0,
+                m.color
             );
         }
         let marker_painter = painter.with_clip_rect(clip_rect);
@@ -10998,7 +13248,10 @@ impl TimelinePanel {
                 // obscuring the clip body.
                 let line_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
                 marker_painter.line_segment(
-                    [egui::pos2(x, clip_rect.top()), egui::pos2(x, clip_rect.bottom())],
+                    [
+                        egui::pos2(x, clip_rect.top()),
+                        egui::pos2(x, clip_rect.bottom()),
+                    ],
                     egui::Stroke::new(1.5_f32, line_color),
                 );
                 // Downward-pointing triangle at top edge (solid colour anchor).
@@ -11010,7 +13263,11 @@ impl TimelinePanel {
                     egui::pos2(x + half_w + 0.5, top),
                     egui::pos2(x, top + tick_h + 0.5),
                 ];
-                marker_painter.add(egui::Shape::convex_polygon(outline, dark, egui::Stroke::NONE));
+                marker_painter.add(egui::Shape::convex_polygon(
+                    outline,
+                    dark,
+                    egui::Stroke::NONE,
+                ));
                 let tri = vec![
                     egui::pos2(x - half_w, top),
                     egui::pos2(x + half_w, top),
@@ -11063,7 +13320,10 @@ impl TimelinePanel {
         painter.rect_stroke(
             clip_rect,
             3.0,
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80)),
+            egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80),
+            ),
         );
 
         // Duration label centered
@@ -11093,11 +13353,7 @@ impl TimelinePanel {
 
         // Selection highlight
         if state.selected_clip == Some(clip_id) {
-            painter.rect_stroke(
-                clip_rect,
-                3.0,
-                egui::Stroke::new(2.0_f32, tt.marker_info),
-            );
+            painter.rect_stroke(clip_rect, 3.0, egui::Stroke::new(2.0_f32, tt.marker_info));
         }
 
         true
@@ -11153,7 +13409,9 @@ impl TimelinePanel {
             );
 
             // Cache clip rect for connection line drawing
-            self.frame_cache.clip_screen_rects.insert(clip_id, clip_rect);
+            self.frame_cache
+                .clip_screen_rects
+                .insert(clip_id, clip_rect);
 
             if clip_rect.right() < content_rect.left()
                 || clip_rect.left() > content_rect.right()
@@ -11164,16 +13422,29 @@ impl TimelinePanel {
             }
 
             // Gap clip rendering — hatched pattern with duration label
-            if self.draw_gap_clip(painter, clip_rect, track_idx, clip_index, content_rect, pointer_pos, pointer_released, state, cmds) {
+            if self.draw_gap_clip(
+                painter,
+                clip_rect,
+                track_idx,
+                clip_index,
+                content_rect,
+                pointer_pos,
+                pointer_released,
+                state,
+                cmds,
+            ) {
                 continue;
             }
 
             let is_selected = state.selected_clip == Some(clip_id);
             let is_multi_selected = state.selected_clips.contains(&clip_id);
-            let is_offline = clip_media_id.and_then(|mid| state.media_pool.get(&mid))
+            let is_offline = clip_media_id
+                .and_then(|mid| state.media_pool.get(&mid))
                 .map(|m| m.offline)
                 .unwrap_or(false);
-            let is_being_dragged = self.dragging_clip.as_ref()
+            let is_being_dragged = self
+                .dragging_clip
+                .as_ref()
                 .is_some_and(|d| d.clip_id == clip_id);
 
             // Read-only batch: scoped &Clip borrow + &AppState reads coexist freely.
@@ -11184,18 +13455,68 @@ impl TimelinePanel {
 
             {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-                self.draw_filmstrip_background(painter, clip_rect, clip, state, cmds, track_kind, content_rect, fill, is_being_dragged, clip_index);
-                self.draw_audio_waveform(painter, clip_rect, clip, state, track_kind, bright_color, track_id);
+                self.draw_filmstrip_background(
+                    painter,
+                    clip_rect,
+                    clip,
+                    state,
+                    cmds,
+                    track_kind,
+                    content_rect,
+                    fill,
+                    is_being_dragged,
+                    clip_index,
+                );
+                self.draw_audio_waveform(
+                    painter,
+                    clip_rect,
+                    clip,
+                    state,
+                    track_kind,
+                    bright_color,
+                    track_id,
+                );
             }
 
             // Mutating method: receives indices, re-borrows clip internally.
-            self.draw_audio_rubber_band(ui, painter, clip_rect, track_idx, clip_index, state, cmds, track_kind, content_rect, interactive, pointer_pos, pointer_down, is_selected, is_multi_selected);
+            self.draw_audio_rubber_band(
+                ui,
+                painter,
+                clip_rect,
+                track_idx,
+                clip_index,
+                state,
+                cmds,
+                track_kind,
+                content_rect,
+                interactive,
+                pointer_pos,
+                pointer_down,
+                is_selected,
+                is_multi_selected,
+            );
 
             {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                 self.draw_audio_fade_overlay(painter, clip_rect, clip, state, track_kind);
-                self.draw_fade_drag_handles(ui, painter, clip_rect, clip, state, track_kind, content_rect, pointer_pos);
-                self.draw_audio_bypass_strips(ui, painter, clip_rect, clip, track_kind, pointer_pos);
+                self.draw_fade_drag_handles(
+                    ui,
+                    painter,
+                    clip_rect,
+                    clip,
+                    state,
+                    track_kind,
+                    content_rect,
+                    pointer_pos,
+                );
+                self.draw_audio_bypass_strips(
+                    ui,
+                    painter,
+                    clip_rect,
+                    clip,
+                    track_kind,
+                    pointer_pos,
+                );
             }
 
             // Top-edge automation indicator strip. Returns Some when
@@ -11204,7 +13525,12 @@ impl TimelinePanel {
             let switch_rb = {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                 self.draw_audio_automation_top_strip(
-                    ui, painter, clip_rect, clip, track_kind, pointer_pos,
+                    ui,
+                    painter,
+                    clip_rect,
+                    clip,
+                    track_kind,
+                    pointer_pos,
                 )
             };
             if let Some(rb) = switch_rb {
@@ -11212,7 +13538,21 @@ impl TimelinePanel {
             }
 
             // Mutating method.
-            self.draw_video_rubber_band(ui, painter, clip_rect, track_idx, clip_index, state, cmds, track_kind, interactive, pointer_pos, pointer_down, is_selected, is_multi_selected);
+            self.draw_video_rubber_band(
+                ui,
+                painter,
+                clip_rect,
+                track_idx,
+                clip_index,
+                state,
+                cmds,
+                track_kind,
+                interactive,
+                pointer_pos,
+                pointer_down,
+                is_selected,
+                is_multi_selected,
+            );
 
             {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
@@ -11220,26 +13560,102 @@ impl TimelinePanel {
                 self.draw_clip_markers(painter, clip_rect, clip);
                 // ── Speed ramp overlay ──
                 self.draw_speed_overlay(painter, clip_rect, clip);
-                self.draw_clip_badges(ui, painter, clip_rect, clip, state, track_kind, clip_is_title, is_offline, border_color, border_width, cmds);
+                self.draw_clip_badges(
+                    ui,
+                    painter,
+                    clip_rect,
+                    clip,
+                    state,
+                    track_kind,
+                    clip_is_title,
+                    is_offline,
+                    border_color,
+                    border_width,
+                    cmds,
+                );
             }
 
             // Mutating method.
-            self.draw_clip_overlays(ui, painter, clip_rect, track_idx, clip_index, state, cmds, track_kind, content_rect, zoom, scroll, interactive, pointer_pos);
-
+            self.draw_clip_overlays(
+                ui,
+                painter,
+                clip_rect,
+                track_idx,
+                clip_index,
+                state,
+                cmds,
+                track_kind,
+                content_rect,
+                zoom,
+                scroll,
+                interactive,
+                pointer_pos,
+            );
         }
 
         // Draw transition indicators between clips
-        self.draw_transition_overlays(ui, painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
+        self.draw_transition_overlays(
+            ui,
+            painter,
+            content_rect,
+            track_rect,
+            track_idx,
+            state,
+            zoom,
+            scroll,
+            track_height,
+        );
 
         // The remaining post-loop helpers all take `state: &AppState`
         // (read-only), so the slice borrow from state.sequence() coexists
         // with passing `state` immutably into each call.
         {
             let clips_slice = &state.sequence().tracks[track_idx].clips[..];
-            self.draw_audio_crossfade_indicators(painter, clips_slice, content_rect, track_rect, state, track_kind, fps, zoom, scroll);
-            self.draw_anchor_connection_lines(painter, clips_slice, content_rect, track_rect, state, zoom, scroll);
-            self.draw_collision_indicators(painter, clips_slice, content_rect, track_rect, state, track_idx, zoom, scroll);
-            self.handle_trim_hover(painter, ui, state, track_idx, clips_slice, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, track_kind, interactive);
+            self.draw_audio_crossfade_indicators(
+                painter,
+                clips_slice,
+                content_rect,
+                track_rect,
+                state,
+                track_kind,
+                fps,
+                zoom,
+                scroll,
+            );
+            self.draw_anchor_connection_lines(
+                painter,
+                clips_slice,
+                content_rect,
+                track_rect,
+                state,
+                zoom,
+                scroll,
+            );
+            self.draw_collision_indicators(
+                painter,
+                clips_slice,
+                content_rect,
+                track_rect,
+                state,
+                track_idx,
+                zoom,
+                scroll,
+            );
+            self.handle_trim_hover(
+                painter,
+                ui,
+                state,
+                track_idx,
+                clips_slice,
+                content_rect,
+                track_rect,
+                zoom,
+                scroll,
+                track_height,
+                pointer_pos,
+                track_kind,
+                interactive,
+            );
         }
 
         if !interactive {
@@ -11249,10 +13665,18 @@ impl TimelinePanel {
         // Single interaction rect for the whole track — avoids per-clip hit-test priority
         // issues in egui. We do our own hit-testing against clip rects.
         let track_interact_id = ui.id().with(("track_interact", track_idx));
-        let track_response = ui.interact(*track_rect, track_interact_id, egui::Sense::click_and_drag());
+        let track_response = ui.interact(
+            *track_rect,
+            track_interact_id,
+            egui::Sense::click_and_drag(),
+        );
 
         // Capture press origin on initial mouse-down (before drag threshold)
-        if pointer_down && self.press_origin.is_none() && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+        if pointer_down
+            && self.press_origin.is_none()
+            && self.dragging_clip.is_none()
+            && self.trimming_clip.is_none()
+        {
             if let Some(pos) = pointer_pos {
                 if track_rect.contains(pos) {
                     self.press_origin = Some(pos);
@@ -11266,7 +13690,12 @@ impl TimelinePanel {
 
         // Debug: log all interaction states
         if track_response.drag_started() {
-            tracing::debug!("track {} drag_started, pointer={:?}, press_origin={:?}", track_idx, pointer_pos, self.press_origin);
+            tracing::debug!(
+                "track {} drag_started, pointer={:?}, press_origin={:?}",
+                track_idx,
+                pointer_pos,
+                self.press_origin
+            );
         }
         if track_response.clicked() {
             tracing::debug!("track {} clicked, pointer={:?}", track_idx, pointer_pos);
@@ -11276,17 +13705,72 @@ impl TimelinePanel {
             static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let c = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if c.is_multiple_of(60) {
-                tracing::debug!("track {} hovered+pointer_down, dragging={}, trimming={}", track_idx, self.dragging_clip.is_some(), self.trimming_clip.is_some());
+                tracing::debug!(
+                    "track {} hovered+pointer_down, dragging={}, trimming={}",
+                    track_idx,
+                    self.dragging_clip.is_some(),
+                    self.trimming_clip.is_some()
+                );
             }
         }
 
-        self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
+        self.show_clip_context_menu(
+            ui,
+            &track_response,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            zoom,
+            scroll,
+            track_height,
+            track_rect,
+            pointer_pos,
+            fps,
+        );
 
-        self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
+        self.handle_clip_click(
+            ui,
+            &track_response,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            track_height,
+            fps,
+        );
 
-        self.detect_drag_start(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
+        self.detect_drag_start(
+            ui,
+            &track_response,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            track_height,
+            track_kind,
+            pointer_pos,
+        );
 
-        self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_fade_drag(
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            track_height,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
 
         // Collect snap targets upfront (avoids borrow conflicts with state mutation)
         let snap_enabled = state.snap.master && !ui.input(|i| i.modifiers.shift);
@@ -11294,22 +13778,60 @@ impl TimelinePanel {
         // Collect all snap points: (time_secs, RationalTime, owner_clip, kind)
         // The kind is plumbed through find_snap_target so commit 3 can render
         // a target-aware on-snap legend ("Clip edge" / "Playhead" / "Marker" …).
-        let snap_targets: Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> = {
+        let snap_targets: Vec<(
+            f64,
+            RationalTime,
+            Option<ClipId>,
+            klipp_core::SnapTargetKind,
+        )> = {
             let mut targets = Vec::new();
             for track in &state.sequence().tracks {
                 for clip in &track.clips {
-                    targets.push((clip.timeline_in.to_secs_f64(), clip.timeline_in, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
-                    targets.push((clip.timeline_out.to_secs_f64(), clip.timeline_out, Some(clip.id), klipp_core::SnapTargetKind::ClipEdge));
+                    targets.push((
+                        clip.timeline_in.to_secs_f64(),
+                        clip.timeline_in,
+                        Some(clip.id),
+                        klipp_core::SnapTargetKind::ClipEdge,
+                    ));
+                    targets.push((
+                        clip.timeline_out.to_secs_f64(),
+                        clip.timeline_out,
+                        Some(clip.id),
+                        klipp_core::SnapTargetKind::ClipEdge,
+                    ));
                 }
             }
-            targets.push((state.playhead.to_secs_f64(), state.playhead, None, klipp_core::SnapTargetKind::Playhead));
-            targets.push((0.0, RationalTime { value: 0, rate: fps.rate() }, None, klipp_core::SnapTargetKind::SequenceStart));
+            targets.push((
+                state.playhead.to_secs_f64(),
+                state.playhead,
+                None,
+                klipp_core::SnapTargetKind::Playhead,
+            ));
+            targets.push((
+                0.0,
+                RationalTime {
+                    value: 0,
+                    rate: fps.rate(),
+                },
+                None,
+                klipp_core::SnapTargetKind::SequenceStart,
+            ));
             // Snap to in/out markers if set
             if let Some(inp) = state.sequence().in_point {
-                targets.push((inp.to_secs_f64(), inp, None, klipp_core::SnapTargetKind::InPoint));
+                targets.push((
+                    inp.to_secs_f64(),
+                    inp,
+                    None,
+                    klipp_core::SnapTargetKind::InPoint,
+                ));
             }
             if let Some(outp) = state.sequence().out_point {
-                targets.push((outp.to_secs_f64(), outp, None, klipp_core::SnapTargetKind::OutPoint));
+                targets.push((
+                    outp.to_secs_f64(),
+                    outp,
+                    None,
+                    klipp_core::SnapTargetKind::OutPoint,
+                ));
             }
             targets
         };
@@ -11346,14 +13868,16 @@ impl TimelinePanel {
                                 let new_in = state.sequence().in_point;
                                 let new_out = state.sequence().out_point;
                                 if drag.original_in != new_in || drag.original_out != new_out {
-                                    state.active_history_mut().push(crate::history::HistoryEntry {
-                                        command: crate::history::EditCommand::SetRange {
-                                            old_in: drag.original_in,
-                                            old_out: drag.original_out,
-                                            new_in,
-                                            new_out,
-                                        },
-                                    });
+                                    state
+                                        .active_history_mut()
+                                        .push(crate::history::HistoryEntry {
+                                            command: crate::history::EditCommand::SetRange {
+                                                old_in: drag.original_in,
+                                                old_out: drag.original_out,
+                                                new_in,
+                                                new_out,
+                                            },
+                                        });
                                 }
                             }
                         }
@@ -11364,15 +13888,94 @@ impl TimelinePanel {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
-        self.process_trim_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, grid_interval_secs, pointer_pos, pointer_down, pointer_released);
+        self.process_trim_drag(
+            ui,
+            painter,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            fps,
+            snap_enabled,
+            snap_threshold_secs,
+            &snap_targets,
+            grid_interval_secs,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
 
-        self.process_roll_trim(painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, pointer_pos, pointer_down, pointer_released);
+        self.process_roll_trim(
+            painter,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            fps,
+            snap_enabled,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
 
-        self.process_slip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_slip_drag(
+            ui,
+            painter,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            track_height,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
 
-        self.process_slide_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_slide_drag(
+            ui,
+            painter,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            track_height,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
 
-        self.process_clip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, grid_interval_secs, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_clip_drag(
+            ui,
+            painter,
+            state,
+            cmds,
+            track_idx,
+            content_rect,
+            track_rect,
+            zoom,
+            scroll,
+            fps,
+            snap_enabled,
+            snap_threshold_secs,
+            &snap_targets,
+            grid_interval_secs,
+            track_height,
+            pointer_pos,
+            pointer_down,
+            pointer_released,
+        );
     }
 
     fn compute_clip_colors(
@@ -11387,10 +13990,14 @@ impl TimelinePanel {
         let is_hovered = state.hovered_clip == Some(clip.id);
         let is_title = clip.title_data().is_some();
         let is_disabled = !clip.enabled;
-        let is_offline = clip.media_id().and_then(|mid| state.media_pool.get(&mid))
+        let is_offline = clip
+            .media_id()
+            .and_then(|mid| state.media_pool.get(&mid))
             .map(|m| m.offline)
             .unwrap_or(false);
-        let is_being_dragged = self.dragging_clip.as_ref()
+        let is_being_dragged = self
+            .dragging_clip
+            .as_ref()
             .is_some_and(|d| d.clip_id == clip.id);
 
         // Use per-clip role color for audio clips (and B-Roll/Graphics video clips).
@@ -11398,7 +14005,10 @@ impl TimelinePanel {
         let role_color = theme_colors.clip_role_color(clip.role);
         let use_role_color = match track_kind {
             TrackKind::Audio => true,
-            _ => matches!(clip.role, klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics),
+            _ => matches!(
+                clip.role,
+                klipp_timeline::ClipRole::BRoll | klipp_timeline::ClipRole::Graphics
+            ),
         };
         let base_color = if is_title {
             // Dim purple tint derived from role_title.
@@ -11441,7 +14051,12 @@ impl TimelinePanel {
         let sel_width = selection_border_width();
         let (fill, border_color, border_width) = if is_being_dragged {
             // Semi-transparent when being dragged so clips underneath are visible
-            let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
+            let f = egui::Color32::from_rgba_unmultiplied(
+                base_color.r(),
+                base_color.g(),
+                base_color.b(),
+                140,
+            );
             (f, theme_colors.accent, 2.0)
         } else if is_selected || is_multi_selected {
             (bright_color, sel_color, sel_width)
@@ -11454,9 +14069,7 @@ impl TimelinePanel {
         // Dim disabled clips
         let (fill, border_color) = if is_disabled {
             let dim = |c: egui::Color32| {
-                egui::Color32::from_rgba_unmultiplied(
-                    c.r() / 2, c.g() / 2, c.b() / 2, 160,
-                )
+                egui::Color32::from_rgba_unmultiplied(c.r() / 2, c.g() / 2, c.b() / 2, 160)
             };
             (dim(fill), dim(border_color))
         } else {
@@ -11504,31 +14117,63 @@ impl TimelinePanel {
             vrb_clip_id,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let opacity_static = clip.builtin_effects.iter()
-                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                .unwrap_or(1.0);
-            let transform = clip.builtin_effects.iter()
+            let opacity_static = clip
+                .builtin_effects
+                .iter()
                 .find_map(|e| match e {
-                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                        Some((*position_x, *position_y, *scale_x, *rotation)),
+                    klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+                    _ => None,
+                })
+                .unwrap_or(1.0);
+            let transform = clip
+                .builtin_effects
+                .iter()
+                .find_map(|e| match e {
+                    klipp_effects::BuiltinEffect::Transform {
+                        position_x,
+                        position_y,
+                        scale_x,
+                        rotation,
+                        ..
+                    } => Some((*position_x, *position_y, *scale_x, *rotation)),
                     _ => None,
                 })
                 .unwrap_or((0.0, 0.0, 1.0, 0.0));
             let still_tilt = crate::inspector::video_tab::get_transform(clip);
             let (sval, kfs) = match vrb_param {
                 klipp_core::VideoParam::Opacity => (opacity_static, clip.opacity_keyframes.clone()),
-                klipp_core::VideoParam::PositionX => (transform.0, clip.transform_pos_x_keyframes.clone()),
-                klipp_core::VideoParam::PositionY => (transform.1, clip.transform_pos_y_keyframes.clone()),
-                klipp_core::VideoParam::Scale => (transform.2, clip.transform_scale_keyframes.clone()),
-                klipp_core::VideoParam::Rotation => (transform.3, clip.transform_rotation_keyframes.clone()),
-                klipp_core::VideoParam::TiltX => (still_tilt.rotation_x, clip.transform_tilt_x_keyframes.clone()),
-                klipp_core::VideoParam::TiltY => (still_tilt.rotation_y, clip.transform_tilt_y_keyframes.clone()),
+                klipp_core::VideoParam::PositionX => {
+                    (transform.0, clip.transform_pos_x_keyframes.clone())
+                }
+                klipp_core::VideoParam::PositionY => {
+                    (transform.1, clip.transform_pos_y_keyframes.clone())
+                }
+                klipp_core::VideoParam::Scale => {
+                    (transform.2, clip.transform_scale_keyframes.clone())
+                }
+                klipp_core::VideoParam::Rotation => {
+                    (transform.3, clip.transform_rotation_keyframes.clone())
+                }
+                klipp_core::VideoParam::TiltX => (
+                    still_tilt.rotation_x,
+                    clip.transform_tilt_x_keyframes.clone(),
+                ),
+                klipp_core::VideoParam::TiltY => (
+                    still_tilt.rotation_y,
+                    clip.transform_tilt_y_keyframes.clone(),
+                ),
                 klipp_core::VideoParam::MatteFeather => (
-                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                    clip.matte_source
+                        .as_ref()
+                        .map(|b| b.feather_px)
+                        .unwrap_or(0.0),
                     clip.matte_feather_keyframes.clone(),
                 ),
                 klipp_core::VideoParam::MatteChoke => (
-                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                    clip.matte_source
+                        .as_ref()
+                        .map(|b| b.choke_px)
+                        .unwrap_or(0.0),
                     clip.matte_choke_keyframes.clone(),
                 ),
             };
@@ -11539,7 +14184,9 @@ impl TimelinePanel {
                 || !clip.transform_rotation_keyframes.is_empty();
             (
                 clip.kind.is_gap(),
-                sval, kfs, any_kf,
+                sval,
+                kfs,
+                any_kf,
                 clip.duration().to_secs_f64(),
                 clip.source_in.to_secs_f64(),
                 clip.source_out.to_secs_f64(),
@@ -11553,38 +14200,47 @@ impl TimelinePanel {
 
         // Only draw when at least one video param has keyframes
         if has_any_video_kf {
-                let vrb_keyframes = &vrb_keyframes_vec[..];
+            let vrb_keyframes = &vrb_keyframes_vec[..];
 
-                // Auto-scale Y axis to actual keyframe values (with padding)
-                // so small value changes are clearly visible on the timeline
-                let mut vrb_val_min = vrb_static_val;
-                let mut vrb_val_max = vrb_static_val;
-                for kf in vrb_keyframes.iter() {
-                    if kf.value < vrb_val_min { vrb_val_min = kf.value; }
-                    if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+            // Auto-scale Y axis to actual keyframe values (with padding)
+            // so small value changes are clearly visible on the timeline
+            let mut vrb_val_min = vrb_static_val;
+            let mut vrb_val_max = vrb_static_val;
+            for kf in vrb_keyframes.iter() {
+                if kf.value < vrb_val_min {
+                    vrb_val_min = kf.value;
                 }
-                // Add 20% padding on each side so curves don't touch edges
-                let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
-                let vrb_padding = vrb_val_span * 0.2;
-                let vrb_param_min = vrb_val_min - vrb_padding;
-                let vrb_param_range = vrb_val_span + vrb_padding * 2.0;
+                if kf.value > vrb_val_max {
+                    vrb_val_max = kf.value;
+                }
+            }
+            // Add 20% padding on each side so curves don't touch edges
+            let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
+            let vrb_padding = vrb_val_span * 0.2;
+            let vrb_param_min = vrb_val_min - vrb_padding;
+            let vrb_param_range = vrb_val_span + vrb_padding * 2.0;
 
-                let vrb_clip_painter = painter.with_clip_rect(clip_rect);
+            let vrb_clip_painter = painter.with_clip_rect(clip_rect);
 
-                // Map param value to Y position within clip rect (min=bottom, max=top)
-                let vrb_value_to_y = |val: f32| -> f32 {
-                    let normalized = ((val - vrb_param_min) / vrb_param_range).clamp(0.0, 1.0);
-                    clip_rect.bottom() - normalized * clip_rect.height()
+            // Map param value to Y position within clip rect (min=bottom, max=top)
+            let vrb_value_to_y = |val: f32| -> f32 {
+                let normalized = ((val - vrb_param_min) / vrb_param_range).clamp(0.0, 1.0);
+                clip_rect.bottom() - normalized * clip_rect.height()
+            };
+
+            // Map time (relative to clip start) to X position
+            let vrb_time_to_x = |t: f64| -> f32 {
+                let frac = if vrb_clip_dur_secs > 0.0 {
+                    (t / vrb_clip_dur_secs).clamp(0.0, 1.0)
+                } else {
+                    0.0
                 };
+                clip_rect.left() + frac as f32 * clip_rect.width()
+            };
 
-                // Map time (relative to clip start) to X position
-                let vrb_time_to_x = |t: f64| -> f32 {
-                    let frac = if vrb_clip_dur_secs > 0.0 { (t / vrb_clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                    clip_rect.left() + frac as f32 * clip_rect.width()
-                };
-
-                // Cyan/blue color scheme for video (distinct from audio amber)
-                let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) = match vrb_param {
+            // Cyan/blue color scheme for video (distinct from audio amber)
+            let (vrb_line_color, vrb_line_color_dim, vrb_diamond_fill_sel, vrb_diamond_fill_norm) =
+                match vrb_param {
                     klipp_core::VideoParam::Opacity => (
                         egui::Color32::from_rgba_unmultiplied(80, 180, 255, 220),
                         egui::Color32::from_rgba_unmultiplied(70, 160, 230, 140),
@@ -11627,397 +14283,554 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(40, 160, 180, 200),
                     ),
                 };
-                let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
-                let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
-                let vrb_active_line_color = if is_selected || is_multi_selected { vrb_line_color } else { vrb_line_color_dim };
-                let vrb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
-                let vrb_shadow_width = vrb_line_width + 1.0_f32;
+            let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+            let vrb_diamond_fill = if is_selected || is_multi_selected {
+                vrb_diamond_fill_sel
+            } else {
+                vrb_diamond_fill_norm
+            };
+            let vrb_active_line_color = if is_selected || is_multi_selected {
+                vrb_line_color
+            } else {
+                vrb_line_color_dim
+            };
+            let vrb_line_width = if is_selected || is_multi_selected {
+                2.5_f32
+            } else {
+                2.0_f32
+            };
+            let vrb_shadow_width = vrb_line_width + 1.0_f32;
 
-                // Draw param pill badge at bottom-left of clip
-                let vrb_param_label = match vrb_param {
-                    klipp_core::VideoParam::Opacity => "Opa",
-                    klipp_core::VideoParam::PositionX => "PosX",
-                    klipp_core::VideoParam::PositionY => "PosY",
-                    klipp_core::VideoParam::Scale => "Scl",
-                    klipp_core::VideoParam::Rotation => "Rot",
-                    klipp_core::VideoParam::TiltX => "TltX",
-                    klipp_core::VideoParam::TiltY => "TltY",
-                    klipp_core::VideoParam::MatteFeather => "MFth",
-                    klipp_core::VideoParam::MatteChoke => "MChk",
+            // Draw param pill badge at bottom-left of clip
+            let vrb_param_label = match vrb_param {
+                klipp_core::VideoParam::Opacity => "Opa",
+                klipp_core::VideoParam::PositionX => "PosX",
+                klipp_core::VideoParam::PositionY => "PosY",
+                klipp_core::VideoParam::Scale => "Scl",
+                klipp_core::VideoParam::Rotation => "Rot",
+                klipp_core::VideoParam::TiltX => "TltX",
+                klipp_core::VideoParam::TiltY => "TltY",
+                klipp_core::VideoParam::MatteFeather => "MFth",
+                klipp_core::VideoParam::MatteChoke => "MChk",
+            };
+            let vrb_pill_font = egui::FontId::proportional(10.0);
+            let vrb_pill_galley = ui.painter().layout_no_wrap(
+                vrb_param_label.to_string(),
+                vrb_pill_font.clone(),
+                egui::Color32::WHITE,
+            );
+            let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
+            let vrb_pill_h = 14.0;
+            let vrb_pill_pos = egui::pos2(
+                clip_rect.left() + 4.0,
+                clip_rect.bottom() - vrb_pill_h - 4.0,
+            );
+            let vrb_pill_rect =
+                egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
+            if clip_rect.width() > 30.0 {
+                let vrb_pill_bg = match vrb_param {
+                    klipp_core::VideoParam::Opacity => {
+                        egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100)
+                    }
+                    klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => {
+                        egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100)
+                    }
+                    klipp_core::VideoParam::Scale => {
+                        egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100)
+                    }
+                    klipp_core::VideoParam::Rotation => {
+                        egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100)
+                    }
+                    klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => {
+                        egui::Color32::from_rgba_unmultiplied(230, 140, 210, 100)
+                    }
+                    // Matte feather/choke share a teal tint matching the
+                    // "M" badge on consumer clips, so the rubber band
+                    // and the matte indicator agree visually.
+                    klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => {
+                        egui::Color32::from_rgba_unmultiplied(40, 160, 180, 100)
+                    }
                 };
-                let vrb_pill_font = egui::FontId::proportional(10.0);
-                let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
-                let vrb_pill_w = vrb_pill_galley.size().x + 8.0;
-                let vrb_pill_h = 14.0;
-                let vrb_pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - vrb_pill_h - 4.0);
-                let vrb_pill_rect = egui::Rect::from_min_size(vrb_pill_pos, egui::vec2(vrb_pill_w, vrb_pill_h));
-                if clip_rect.width() > 30.0 {
-                    let vrb_pill_bg = match vrb_param {
-                        klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
-                        klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
-                        klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
-                        klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
-                        klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => egui::Color32::from_rgba_unmultiplied(230, 140, 210, 100),
-                        // Matte feather/choke share a teal tint matching the
-                        // "M" badge on consumer clips, so the rubber band
-                        // and the matte indicator agree visually.
-                        klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => egui::Color32::from_rgba_unmultiplied(40, 160, 180, 100),
-                    };
-                    vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
-                    vrb_clip_painter.text(
-                        vrb_pill_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        vrb_param_label,
-                        vrb_pill_font,
-                        egui::Color32::WHITE,
+                vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
+                vrb_clip_painter.text(
+                    vrb_pill_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    vrb_param_label,
+                    vrb_pill_font,
+                    egui::Color32::WHITE,
+                );
+                // Click pill to cycle video param
+                if interactive {
+                    if let Some(pos) = pointer_pos {
+                        if vrb_pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked())
+                        {
+                            state.video_rubber_band_param = match vrb_param {
+                                klipp_core::VideoParam::Opacity => {
+                                    klipp_core::VideoParam::PositionX
+                                }
+                                klipp_core::VideoParam::PositionX => {
+                                    klipp_core::VideoParam::PositionY
+                                }
+                                klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
+                                klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
+                                klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
+                                // Matte feather/choke aren't in the
+                                // pill-cycle (they only matter when a
+                                // matte_source is set, which is the
+                                // exception not the norm). Cycling
+                                // back to Opacity keeps the gesture
+                                // intuitive.
+                                // Tilt, like the matte, is reached from the
+                                // inspector's keyframe button rather than
+                                // the cycle most clips never need it in.
+                                klipp_core::VideoParam::MatteFeather
+                                | klipp_core::VideoParam::MatteChoke
+                                | klipp_core::VideoParam::TiltX
+                                | klipp_core::VideoParam::TiltY => klipp_core::VideoParam::Opacity,
+                            };
+                        }
+                    }
+                }
+            }
+
+            if vrb_keyframes.is_empty() {
+                // Selected param has no keyframes — draw flat line at static value
+                let vy = vrb_value_to_y(vrb_static_val);
+                vrb_clip_painter.line_segment(
+                    [
+                        egui::pos2(clip_rect.left(), vy),
+                        egui::pos2(clip_rect.right(), vy),
+                    ],
+                    egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
+                );
+                vrb_clip_painter.line_segment(
+                    [
+                        egui::pos2(clip_rect.left(), vy),
+                        egui::pos2(clip_rect.right(), vy),
+                    ],
+                    egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                );
+            } else {
+                // Draw curve by densely sampling evaluate() — this correctly renders
+                // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
+                let vrb_clip_time_range = vrb_source_out_secs - vrb_source_in_secs;
+
+                // Dense sampling: evaluate the keyframe curve at many points across the clip
+                let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
+                let mut vrb_curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+                for si in 0..=num_samples {
+                    let t_frac = si as f64 / num_samples as f64;
+                    let t_secs = t_frac * vrb_clip_time_range;
+                    let val = klipp_core::keyframe::evaluate(vrb_keyframes, t_secs, vrb_static_val);
+                    let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
+                    let y = vrb_value_to_y(val);
+                    vrb_curve_pts.push(egui::pos2(x, y));
+                }
+
+                // Draw shadow pass then color pass
+                for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                    vrb_clip_painter.line_segment(
+                        [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                        egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
                     );
-                    // Click pill to cycle video param
-                    if interactive {
-                        if let Some(pos) = pointer_pos {
-                            if vrb_pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
-                                state.video_rubber_band_param = match vrb_param {
-                                    klipp_core::VideoParam::Opacity => klipp_core::VideoParam::PositionX,
-                                    klipp_core::VideoParam::PositionX => klipp_core::VideoParam::PositionY,
-                                    klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
-                                    klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
-                                    klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
-                                    // Matte feather/choke aren't in the
-                                    // pill-cycle (they only matter when a
-                                    // matte_source is set, which is the
-                                    // exception not the norm). Cycling
-                                    // back to Opacity keeps the gesture
-                                    // intuitive.
-                                    // Tilt, like the matte, is reached from the
-                                    // inspector's keyframe button rather than
-                                    // the cycle most clips never need it in.
-                                    klipp_core::VideoParam::MatteFeather
-                                    | klipp_core::VideoParam::MatteChoke
-                                    | klipp_core::VideoParam::TiltX
-                                    | klipp_core::VideoParam::TiltY => klipp_core::VideoParam::Opacity,
-                                };
+                }
+                for i in 0..vrb_curve_pts.len().saturating_sub(1) {
+                    vrb_clip_painter.line_segment(
+                        [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
+                        egui::Stroke::new(vrb_line_width, vrb_active_line_color),
+                    );
+                }
+
+                // Draw diamond markers at each keyframe
+                let vrb_hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
+                    if !clip_rect.contains(pos) {
+                        return None;
+                    }
+                    let mut best: Option<(usize, f32)> = None;
+                    for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                            let kx = vrb_time_to_x(kf.time_secs);
+                            let ky = vrb_value_to_y(kf.value);
+                            let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                            if dist < 10.0 && best.is_none_or(|(_, bd)| dist < bd) {
+                                best = Some((ki, dist));
                             }
+                        }
+                    }
+                    best.map(|(i, _)| i)
+                });
+
+                for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                    if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
+                        let cx = vrb_time_to_x(kf.time_secs);
+                        let cy = vrb_value_to_y(kf.value);
+                        let is_hovered = vrb_hovered_kf_idx == Some(ki);
+                        let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
+                        // Dark outline diamond behind for contrast
+                        let outline_d = d + 1.5;
+                        let outline_diamond = vec![
+                            egui::pos2(cx, cy - outline_d),
+                            egui::pos2(cx + outline_d, cy),
+                            egui::pos2(cx, cy + outline_d),
+                            egui::pos2(cx - outline_d, cy),
+                        ];
+                        vrb_clip_painter.add(egui::Shape::convex_polygon(
+                            outline_diamond,
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+                            egui::Stroke::NONE,
+                        ));
+                        let fill = if is_hovered {
+                            egui::Color32::from_rgba_unmultiplied(
+                                vrb_diamond_fill.r().saturating_add(30),
+                                vrb_diamond_fill.g().saturating_add(30),
+                                vrb_diamond_fill.b().saturating_add(30),
+                                255,
+                            )
+                        } else {
+                            vrb_diamond_fill
+                        };
+                        let diamond = vec![
+                            egui::pos2(cx, cy - d),
+                            egui::pos2(cx + d, cy),
+                            egui::pos2(cx, cy + d),
+                            egui::pos2(cx - d, cy),
+                        ];
+                        let stroke = egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220),
+                        );
+                        vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
+
+                        // Show value tooltip on hover
+                        if is_hovered {
+                            let tooltip_text = match vrb_param {
+                                klipp_core::VideoParam::Opacity => {
+                                    format!("{:.0}%", kf.value * 100.0)
+                                }
+                                klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
+                                klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
+                                klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
+                                klipp_core::VideoParam::Rotation => {
+                                    format!("{:.1}\u{00B0}", kf.value)
+                                }
+                                klipp_core::VideoParam::TiltX => {
+                                    format!("TX:{:.1}\u{00B0}", kf.value)
+                                }
+                                klipp_core::VideoParam::TiltY => {
+                                    format!("TY:{:.1}\u{00B0}", kf.value)
+                                }
+                                klipp_core::VideoParam::MatteFeather => {
+                                    format!("Fth:{:.1}px", kf.value)
+                                }
+                                klipp_core::VideoParam::MatteChoke => {
+                                    format!("Chk:{:.1}px", kf.value)
+                                }
+                            };
+                            vrb_clip_painter.text(
+                                egui::pos2(cx, cy - 14.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                tooltip_text,
+                                egui::FontId::proportional(10.0),
+                                vrb_active_line_color,
+                            );
+                        }
+
+                        // ── Bezier tangent handles (only when clip is selected) ──
+                        if kf.interpolation == klipp_core::Interpolation::Bezier
+                            && (is_selected || is_multi_selected)
+                        {
+                            let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 {
+                                clip_rect.width() / vrb_clip_dur_secs as f32
+                            } else {
+                                1.0
+                            };
+                            let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
+                            let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                                vrb_active_line_color.r(),
+                                vrb_active_line_color.g(),
+                                vrb_active_line_color.b(),
+                                120,
+                            );
+                            let vrb_handle_radius = 4.0_f32;
+
+                            // Tangent out handle (right)
+                            let vrb_tout_x = cx + kf.tangent_out.0 as f32 * vrb_pixels_per_sec;
+                            let vrb_tout_y = cy - kf.tangent_out.1 * vrb_bz_value_scale;
+                            vrb_clip_painter.line_segment(
+                                [egui::pos2(cx, cy), egui::pos2(vrb_tout_x, vrb_tout_y)],
+                                egui::Stroke::new(1.0_f32, vrb_tangent_line_color),
+                            );
+                            vrb_clip_painter.circle(
+                                egui::pos2(vrb_tout_x, vrb_tout_y),
+                                vrb_handle_radius,
+                                vrb_active_line_color,
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                                ),
+                            );
+
+                            // Tangent in handle (left)
+                            let vrb_tin_x = cx + kf.tangent_in.0 as f32 * vrb_pixels_per_sec;
+                            let vrb_tin_y = cy - kf.tangent_in.1 * vrb_bz_value_scale;
+                            vrb_clip_painter.line_segment(
+                                [egui::pos2(cx, cy), egui::pos2(vrb_tin_x, vrb_tin_y)],
+                                egui::Stroke::new(1.0_f32, vrb_tangent_line_color),
+                            );
+                            vrb_clip_painter.circle(
+                                egui::pos2(vrb_tin_x, vrb_tin_y),
+                                vrb_handle_radius,
+                                vrb_active_line_color,
+                                egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                                ),
+                            );
                         }
                     }
                 }
 
-                if vrb_keyframes.is_empty() {
-                    // Selected param has no keyframes — draw flat line at static value
-                    let vy = vrb_value_to_y(vrb_static_val);
-                    vrb_clip_painter.line_segment(
-                        [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
-                        egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
-                    );
-                    vrb_clip_painter.line_segment(
-                        [egui::pos2(clip_rect.left(), vy), egui::pos2(clip_rect.right(), vy)],
-                        egui::Stroke::new(vrb_line_width, vrb_active_line_color),
-                    );
-                } else {
-                    // Draw curve by densely sampling evaluate() — this correctly renders
-                    // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
-                    let vrb_clip_time_range = vrb_source_out_secs - vrb_source_in_secs;
+                // ── Video keyframe interaction ───────────────────────
+                if interactive {
+                    if let Some(pos) = pointer_pos {
+                        if clip_rect.contains(pos) {
+                            let vrb_clip_time_range_i = vrb_source_out_secs - vrb_source_in_secs;
 
-                    // Dense sampling: evaluate the keyframe curve at many points across the clip
-                    let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
-                    let mut vrb_curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
-                    for si in 0..=num_samples {
-                        let t_frac = si as f64 / num_samples as f64;
-                        let t_secs = t_frac * vrb_clip_time_range;
-                        let val = klipp_core::keyframe::evaluate(vrb_keyframes, t_secs, vrb_static_val);
-                        let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
-                        let y = vrb_value_to_y(val);
-                        vrb_curve_pts.push(egui::pos2(x, y));
-                    }
-
-                    // Draw shadow pass then color pass
-                    for i in 0..vrb_curve_pts.len().saturating_sub(1) {
-                        vrb_clip_painter.line_segment(
-                            [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
-                            egui::Stroke::new(vrb_shadow_width, vrb_shadow_color),
-                        );
-                    }
-                    for i in 0..vrb_curve_pts.len().saturating_sub(1) {
-                        vrb_clip_painter.line_segment(
-                            [vrb_curve_pts[i], vrb_curve_pts[i + 1]],
-                            egui::Stroke::new(vrb_line_width, vrb_active_line_color),
-                        );
-                    }
-
-                    // Draw diamond markers at each keyframe
-                    let vrb_hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
-                        if !clip_rect.contains(pos) { return None; }
-                        let mut best: Option<(usize, f32)> = None;
-                        for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                            if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
-                                let kx = vrb_time_to_x(kf.time_secs);
-                                let ky = vrb_value_to_y(kf.value);
-                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                if dist < 10.0
-                                    && best.is_none_or(|(_, bd)| dist < bd) {
-                                        best = Some((ki, dist));
-                                    }
-                            }
-                        }
-                        best.map(|(i, _)| i)
-                    });
-
-                    for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                        if kf.time_secs >= 0.0 && kf.time_secs <= vrb_clip_time_range {
-                            let cx = vrb_time_to_x(kf.time_secs);
-                            let cy = vrb_value_to_y(kf.value);
-                            let is_hovered = vrb_hovered_kf_idx == Some(ki);
-                            let d = if is_hovered { 9.0_f32 } else { 8.0_f32 };
-                            // Dark outline diamond behind for contrast
-                            let outline_d = d + 1.5;
-                            let outline_diamond = vec![
-                                egui::pos2(cx, cy - outline_d),
-                                egui::pos2(cx + outline_d, cy),
-                                egui::pos2(cx, cy + outline_d),
-                                egui::pos2(cx - outline_d, cy),
-                            ];
-                            vrb_clip_painter.add(egui::Shape::convex_polygon(
-                                outline_diamond,
-                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
-                                egui::Stroke::NONE,
-                            ));
-                            let fill = if is_hovered {
-                                egui::Color32::from_rgba_unmultiplied(
-                                    vrb_diamond_fill.r().saturating_add(30),
-                                    vrb_diamond_fill.g().saturating_add(30),
-                                    vrb_diamond_fill.b().saturating_add(30),
-                                    255,
-                                )
-                            } else {
-                                vrb_diamond_fill
-                            };
-                            let diamond = vec![
-                                egui::pos2(cx, cy - d),
-                                egui::pos2(cx + d, cy),
-                                egui::pos2(cx, cy + d),
-                                egui::pos2(cx - d, cy),
-                            ];
-                            let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
-                            vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
-
-                            // Show value tooltip on hover
-                            if is_hovered {
-                                let tooltip_text = match vrb_param {
-                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", kf.value * 100.0),
-                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
-                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
-                                    klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
-                                    klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
-                                    klipp_core::VideoParam::TiltX => format!("TX:{:.1}\u{00B0}", kf.value),
-                                    klipp_core::VideoParam::TiltY => format!("TY:{:.1}\u{00B0}", kf.value),
-                                    klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", kf.value),
-                                    klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", kf.value),
+                            // Check if hovering near a video bezier tangent handle
+                            let mut vrb_nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                            if (is_selected || is_multi_selected)
+                                && state.dragging_video_bezier_handle.is_none()
+                            {
+                                let vrb_pps_h = if vrb_clip_dur_secs > 0.0 {
+                                    clip_rect.width() / vrb_clip_dur_secs as f32
+                                } else {
+                                    1.0
                                 };
-                                vrb_clip_painter.text(
-                                    egui::pos2(cx, cy - 14.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    tooltip_text,
-                                    egui::FontId::proportional(10.0),
-                                    vrb_active_line_color,
-                                );
-                            }
-
-                            // ── Bezier tangent handles (only when clip is selected) ──
-                            if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
-                                let vrb_pixels_per_sec = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
-                                let vrb_bz_value_scale = clip_rect.height() / vrb_param_range;
-                                let vrb_tangent_line_color = egui::Color32::from_rgba_unmultiplied(
-                                    vrb_active_line_color.r(), vrb_active_line_color.g(), vrb_active_line_color.b(), 120,
-                                );
-                                let vrb_handle_radius = 4.0_f32;
-
-                                // Tangent out handle (right)
-                                let vrb_tout_x = cx + kf.tangent_out.0 as f32 * vrb_pixels_per_sec;
-                                let vrb_tout_y = cy - kf.tangent_out.1 * vrb_bz_value_scale;
-                                vrb_clip_painter.line_segment(
-                                    [egui::pos2(cx, cy), egui::pos2(vrb_tout_x, vrb_tout_y)],
-                                    egui::Stroke::new(1.0_f32, vrb_tangent_line_color),
-                                );
-                                vrb_clip_painter.circle(
-                                    egui::pos2(vrb_tout_x, vrb_tout_y),
-                                    vrb_handle_radius,
-                                    vrb_active_line_color,
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                );
-
-                                // Tangent in handle (left)
-                                let vrb_tin_x = cx + kf.tangent_in.0 as f32 * vrb_pixels_per_sec;
-                                let vrb_tin_y = cy - kf.tangent_in.1 * vrb_bz_value_scale;
-                                vrb_clip_painter.line_segment(
-                                    [egui::pos2(cx, cy), egui::pos2(vrb_tin_x, vrb_tin_y)],
-                                    egui::Stroke::new(1.0_f32, vrb_tangent_line_color),
-                                );
-                                vrb_clip_painter.circle(
-                                    egui::pos2(vrb_tin_x, vrb_tin_y),
-                                    vrb_handle_radius,
-                                    vrb_active_line_color,
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                                );
-                            }
-                        }
-                    }
-
-                    // ── Video keyframe interaction ───────────────────────
-                    if interactive {
-                        if let Some(pos) = pointer_pos {
-                            if clip_rect.contains(pos) {
-                                let vrb_clip_time_range_i = vrb_source_out_secs - vrb_source_in_secs;
-
-                                // Check if hovering near a video bezier tangent handle
-                                let mut vrb_nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
-                                if (is_selected || is_multi_selected) && state.dragging_video_bezier_handle.is_none() {
-                                    let vrb_pps_h = if vrb_clip_dur_secs > 0.0 { clip_rect.width() / vrb_clip_dur_secs as f32 } else { 1.0 };
-                                    let vrb_vs_h = clip_rect.height() / vrb_param_range;
-                                    for (ki, kf) in vrb_keyframes.iter().enumerate() {
-                                        if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
-                                        if kf.time_secs < 0.0 || kf.time_secs > vrb_clip_time_range_i { continue; }
-                                        let cx_h = vrb_time_to_x(kf.time_secs);
-                                        let cy_h = vrb_value_to_y(kf.value);
-                                        // Tangent out handle
-                                        let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
-                                        let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
-                                        let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                        if dist_out < 8.0
-                                            && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
-                                                vrb_nearest_bezier_handle = Some((ki, true, dist_out));
-                                            }
-                                        // Tangent in handle
-                                        let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
-                                        let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
-                                        let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                        if dist_in < 8.0
-                                            && vrb_nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
-                                                vrb_nearest_bezier_handle = Some((ki, false, dist_in));
-                                            }
+                                let vrb_vs_h = clip_rect.height() / vrb_param_range;
+                                for (ki, kf) in vrb_keyframes.iter().enumerate() {
+                                    if kf.interpolation != klipp_core::Interpolation::Bezier {
+                                        continue;
+                                    }
+                                    if kf.time_secs < 0.0 || kf.time_secs > vrb_clip_time_range_i {
+                                        continue;
+                                    }
+                                    let cx_h = vrb_time_to_x(kf.time_secs);
+                                    let cy_h = vrb_value_to_y(kf.value);
+                                    // Tangent out handle
+                                    let tout_hx = cx_h + kf.tangent_out.0 as f32 * vrb_pps_h;
+                                    let tout_hy = cy_h - kf.tangent_out.1 * vrb_vs_h;
+                                    let dist_out = ((pos.x - tout_hx).powi(2)
+                                        + (pos.y - tout_hy).powi(2))
+                                    .sqrt();
+                                    if dist_out < 8.0
+                                        && vrb_nearest_bezier_handle
+                                            .is_none_or(|(_, _, d)| dist_out < d)
+                                    {
+                                        vrb_nearest_bezier_handle = Some((ki, true, dist_out));
+                                    }
+                                    // Tangent in handle
+                                    let tin_hx = cx_h + kf.tangent_in.0 as f32 * vrb_pps_h;
+                                    let tin_hy = cy_h - kf.tangent_in.1 * vrb_vs_h;
+                                    let dist_in = ((pos.x - tin_hx).powi(2)
+                                        + (pos.y - tin_hy).powi(2))
+                                    .sqrt();
+                                    if dist_in < 8.0
+                                        && vrb_nearest_bezier_handle
+                                            .is_none_or(|(_, _, d)| dist_in < d)
+                                    {
+                                        vrb_nearest_bezier_handle = Some((ki, false, dist_in));
                                     }
                                 }
+                            }
 
-                                // Cursor feedback
-                                let is_dragging_vrb_kf = state.dragging_video_keyframe.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
-                                let is_dragging_vrb_bezier = state.dragging_video_bezier_handle.as_ref().is_some_and(|d| d.clip_id == vrb_clip_id);
-                                if is_dragging_vrb_kf || is_dragging_vrb_bezier {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                } else if vrb_nearest_bezier_handle.is_some()
-                                    || vrb_hovered_kf_idx.is_some()
+                            // Cursor feedback
+                            let is_dragging_vrb_kf = state
+                                .dragging_video_keyframe
+                                .as_ref()
+                                .is_some_and(|d| d.clip_id == vrb_clip_id);
+                            let is_dragging_vrb_bezier = state
+                                .dragging_video_bezier_handle
+                                .as_ref()
+                                .is_some_and(|d| d.clip_id == vrb_clip_id);
+                            if is_dragging_vrb_kf || is_dragging_vrb_bezier {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            } else if vrb_nearest_bezier_handle.is_some()
+                                || vrb_hovered_kf_idx.is_some()
+                            {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+
+                            // Double-click diamond to delete keyframe
+                            if let Some(ki) = vrb_hovered_kf_idx {
+                                if ui.input(|i| {
+                                    i.pointer
+                                        .button_double_clicked(egui::PointerButton::Primary)
+                                }) {
+                                    let kf = &vrb_keyframes[ki];
+                                    cmds.push(AppCommand::RemoveVideoKeyframe {
+                                        clip_id: vrb_clip_id,
+                                        param: vrb_param,
+                                        time_secs: kf.time_secs,
+                                    });
+                                }
+                            }
+
+                            // Click diamond to select
+                            if let Some(ki) = vrb_hovered_kf_idx {
+                                if ui.input(|i| i.pointer.primary_clicked())
+                                    && state.dragging_video_keyframe.is_none()
                                 {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                                }
-
-                                // Double-click diamond to delete keyframe
-                                if let Some(ki) = vrb_hovered_kf_idx {
-                                    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                                        let kf = &vrb_keyframes[ki];
-                                        cmds.push(AppCommand::RemoveVideoKeyframe {
+                                    state.selected_keyframe =
+                                        Some(crate::state::SelectedKeyframe {
                                             clip_id: vrb_clip_id,
-                                            param: vrb_param,
-                                            time_secs: kf.time_secs,
-                                        });
-                                    }
-                                }
-
-                                // Click diamond to select
-                                if let Some(ki) = vrb_hovered_kf_idx {
-                                    if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() {
-                                        state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                            clip_id: vrb_clip_id,
-                                            param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                            param_kind: crate::state::KeyframeParamKind::Video(
+                                                vrb_param,
+                                            ),
                                             keyframe_index: ki,
                                         });
-                                    }
                                 }
+                            }
 
-                                // Right-click: open interpolation context menu
-                                if ui.input(|i| i.pointer.secondary_released()) {
-                                    let target_ki = vrb_hovered_kf_idx.or_else(|| {
-                                        state.selected_keyframe.as_ref()
-                                            .filter(|sk| sk.clip_id == vrb_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Video(vrb_param))
-                                            .map(|sk| sk.keyframe_index)
-                                    });
-                                    if let Some(ki) = target_ki {
-                                        if ki < vrb_keyframes.len() {
-                                            state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                            // Right-click: open interpolation context menu
+                            if ui.input(|i| i.pointer.secondary_released()) {
+                                let target_ki = vrb_hovered_kf_idx.or_else(|| {
+                                    state
+                                        .selected_keyframe
+                                        .as_ref()
+                                        .filter(|sk| {
+                                            sk.clip_id == vrb_clip_id
+                                                && sk.param_kind
+                                                    == crate::state::KeyframeParamKind::Video(
+                                                        vrb_param,
+                                                    )
+                                        })
+                                        .map(|sk| sk.keyframe_index)
+                                });
+                                if let Some(ki) = target_ki {
+                                    if ki < vrb_keyframes.len() {
+                                        state.keyframe_context_menu =
+                                            Some(crate::state::KeyframeContextMenu {
                                                 clip_id: vrb_clip_id,
-                                                param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
+                                                param_kind: crate::state::KeyframeParamKind::Video(
+                                                    vrb_param,
+                                                ),
                                                 keyframe_index: ki,
                                                 screen_pos: pos,
                                             });
-                                            self.suppress_clip_context_menu = true;
-                                        }
+                                        self.suppress_clip_context_menu = true;
                                     }
                                 }
+                            }
 
-                                // Click empty area to deselect
-                                if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
-                                    && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
-                                        state.selected_keyframe = None;
-                                    }
+                            // Click empty area to deselect
+                            if ui.input(|i| i.pointer.primary_clicked())
+                                && vrb_hovered_kf_idx.is_none()
+                                && vrb_nearest_bezier_handle.is_none()
+                                && state
+                                    .selected_keyframe
+                                    .as_ref()
+                                    .is_some_and(|sk| sk.clip_id == vrb_clip_id)
+                            {
+                                state.selected_keyframe = None;
+                            }
 
-                                // ── Start video bezier tangent handle drag ──
-                                if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
-                                    if pointer_down && state.dragging_video_bezier_handle.is_none()
-                                        && state.dragging_video_keyframe.is_none()
-                                        && state.dragging_fade_handle.is_none()
-                                    {
-                                        let drag_key = format!("kf:vtangent:{}:{:?}:{}", vrb_clip_id.0, vrb_param, vbh_ki);
-                                        cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
-                                        state.dragging_video_bezier_handle = Some(crate::state::BezierVideoHandleDrag {
+                            // ── Start video bezier tangent handle drag ──
+                            if let Some((vbh_ki, vbh_is_out, _)) = vrb_nearest_bezier_handle {
+                                if pointer_down
+                                    && state.dragging_video_bezier_handle.is_none()
+                                    && state.dragging_video_keyframe.is_none()
+                                    && state.dragging_fade_handle.is_none()
+                                {
+                                    let drag_key = format!(
+                                        "kf:vtangent:{}:{:?}:{}",
+                                        vrb_clip_id.0, vrb_param, vbh_ki
+                                    );
+                                    cmds.push(AppCommand::BeginKeyframeDrag {
+                                        key: drag_key,
+                                        clip_id: vrb_clip_id,
+                                    });
+                                    state.dragging_video_bezier_handle =
+                                        Some(crate::state::BezierVideoHandleDrag {
                                             clip_id: vrb_clip_id,
                                             param: vrb_param,
                                             keyframe_index: vbh_ki,
                                             is_out: vbh_is_out,
                                         });
-                                    }
                                 }
+                            }
 
-                                // Start drag on keyframe diamond
-                                let vrb_alt_held = ui.input(|i| i.modifiers.alt);
-                                if vrb_hovered_kf_idx.is_some() && vrb_nearest_bezier_handle.is_none()
-                                    && pointer_down && state.dragging_video_keyframe.is_none()
-                                    && state.dragging_audio_keyframe.is_none()
-                                    && state.dragging_video_bezier_handle.is_none()
-                                    && state.dragging_fade_handle.is_none()
-                                    && !vrb_alt_held
-                                    && ui.input(|i| i.pointer.is_decidedly_dragging()) {
-                                        if let Some(ki) = vrb_hovered_kf_idx {
-                                            let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
-                                            cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
-                                            state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
-                                                clip_id: vrb_clip_id,
-                                                param: vrb_param,
-                                                keyframe_index: ki,
-                                            });
-                                        }
-                                    }
-
-                                // Alt+click on rubber band line to add video keyframe
-                                if vrb_alt_held && vrb_hovered_kf_idx.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
-                                    // Compute Y of curve at pointer X
-                                    let vrb_x_frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
-                                    let vrb_hover_t = vrb_x_frac * vrb_clip_time_range;
-                                    let vrb_curve_y_at_ptr = vrb_value_to_y(
-                                        klipp_core::keyframe::evaluate(vrb_keyframes, vrb_hover_t, vrb_static_val),
+                            // Start drag on keyframe diamond
+                            let vrb_alt_held = ui.input(|i| i.modifiers.alt);
+                            if vrb_hovered_kf_idx.is_some()
+                                && vrb_nearest_bezier_handle.is_none()
+                                && pointer_down
+                                && state.dragging_video_keyframe.is_none()
+                                && state.dragging_audio_keyframe.is_none()
+                                && state.dragging_video_bezier_handle.is_none()
+                                && state.dragging_fade_handle.is_none()
+                                && !vrb_alt_held
+                                && ui.input(|i| i.pointer.is_decidedly_dragging())
+                            {
+                                if let Some(ki) = vrb_hovered_kf_idx {
+                                    let drag_key = format!(
+                                        "kf:video:{}:{:?}:{}",
+                                        vrb_clip_id.0, vrb_param, ki
                                     );
-                                    let vrb_near_line = (pos.y - vrb_curve_y_at_ptr).abs() < 6.0;
-                                    if vrb_near_line {
-                                        // Inverse Y-to-value: normalized = (clip_rect.bottom() - y) / clip_rect.height()
-                                        let vrb_normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
-                                        let vrb_click_val = vrb_param_min + vrb_normalized * vrb_param_range;
-                                        cmds.push(AppCommand::AddVideoKeyframe {
+                                    cmds.push(AppCommand::BeginKeyframeDrag {
+                                        key: drag_key,
+                                        clip_id: vrb_clip_id,
+                                    });
+                                    state.dragging_video_keyframe =
+                                        Some(crate::state::DraggingVideoKeyframe {
                                             clip_id: vrb_clip_id,
                                             param: vrb_param,
-                                            time_secs: crate::inspector::keyframe_selection::timeline_key_time(vrb_keyframes, vrb_hover_t, state.sequence().fps.as_f64()),
-                                            value: vrb_click_val,
+                                            keyframe_index: ki,
                                         });
-                                    }
+                                }
+                            }
+
+                            // Alt+click on rubber band line to add video keyframe
+                            if vrb_alt_held
+                                && vrb_hovered_kf_idx.is_none()
+                                && ui.input(|i| i.pointer.primary_clicked())
+                            {
+                                // Compute Y of curve at pointer X
+                                let vrb_x_frac = ((pos.x - clip_rect.left()) / clip_rect.width())
+                                    .clamp(0.0, 1.0)
+                                    as f64;
+                                let vrb_hover_t = vrb_x_frac * vrb_clip_time_range;
+                                let vrb_curve_y_at_ptr =
+                                    vrb_value_to_y(klipp_core::keyframe::evaluate(
+                                        vrb_keyframes,
+                                        vrb_hover_t,
+                                        vrb_static_val,
+                                    ));
+                                let vrb_near_line = (pos.y - vrb_curve_y_at_ptr).abs() < 6.0;
+                                if vrb_near_line {
+                                    // Inverse Y-to-value: normalized = (clip_rect.bottom() - y) / clip_rect.height()
+                                    let vrb_normalized = ((clip_rect.bottom() - pos.y)
+                                        / clip_rect.height())
+                                    .clamp(0.0, 1.0);
+                                    let vrb_click_val =
+                                        vrb_param_min + vrb_normalized * vrb_param_range;
+                                    cmds.push(AppCommand::AddVideoKeyframe {
+                                        clip_id: vrb_clip_id,
+                                        param: vrb_param,
+                                        time_secs:
+                                            crate::inspector::keyframe_selection::timeline_key_time(
+                                                vrb_keyframes,
+                                                vrb_hover_t,
+                                                state.sequence().fps.as_f64(),
+                                            ),
+                                        value: vrb_click_val,
+                                    });
                                 }
                             }
                         }
                     }
                 }
             }
+        }
     }
 
     /// Draw the per-track expandable automation lane. The lane sits
@@ -12060,13 +14873,17 @@ impl TimelinePanel {
         // 2) Top + bottom dividers so the lane has a clear frame.
         let divider_color = tt.border;
         lane_painter.line_segment(
-            [egui::pos2(lane_rect.left(), lane_rect.top()),
-             egui::pos2(lane_rect.right(), lane_rect.top())],
+            [
+                egui::pos2(lane_rect.left(), lane_rect.top()),
+                egui::pos2(lane_rect.right(), lane_rect.top()),
+            ],
             egui::Stroke::new(1.0_f32, divider_color),
         );
         lane_painter.line_segment(
-            [egui::pos2(lane_rect.left(), lane_rect.bottom() - 0.5),
-             egui::pos2(lane_rect.right(), lane_rect.bottom() - 0.5)],
+            [
+                egui::pos2(lane_rect.left(), lane_rect.bottom() - 0.5),
+                egui::pos2(lane_rect.right(), lane_rect.bottom() - 0.5),
+            ],
             egui::Stroke::new(1.0_f32, divider_color),
         );
 
@@ -12078,10 +14895,16 @@ impl TimelinePanel {
         let (param_min, param_range, _) = audio_param_range(param);
         let palette = audio_curve_palette(param);
         let grid_color = egui::Color32::from_rgba_unmultiplied(
-            tt.text_dim.r(), tt.text_dim.g(), tt.text_dim.b(), 28,
+            tt.text_dim.r(),
+            tt.text_dim.g(),
+            tt.text_dim.b(),
+            28,
         );
         let unity_grid_color = egui::Color32::from_rgba_unmultiplied(
-            palette.ref_color.r(), palette.ref_color.g(), palette.ref_color.b(), 110,
+            palette.ref_color.r(),
+            palette.ref_color.g(),
+            palette.ref_color.b(),
+            110,
         );
         let label_color = tt.text_dim;
         let label_font = egui::FontId::proportional(10.0);
@@ -12120,7 +14943,10 @@ impl TimelinePanel {
                 egui::Stroke::new(1.0_f32, grid_color)
             };
             lane_painter.line_segment(
-                [egui::pos2(scale_inset_left, y), egui::pos2(lane_rect.right(), y)],
+                [
+                    egui::pos2(scale_inset_left, y),
+                    egui::pos2(lane_rect.right(), y),
+                ],
                 stroke,
             );
             lane_painter.text(
@@ -12166,18 +14992,15 @@ impl TimelinePanel {
             fade_out_curve: klipp_core::FadeCurve,
             channel_config: klipp_timeline::ChannelConfig,
         }
-        let clips: Vec<ClipPaintData> = state
-            .sequence()
-            .tracks[track_idx]
+        let clips: Vec<ClipPaintData> = state.sequence().tracks[track_idx]
             .clips
             .iter()
             .filter_map(|clip| {
                 if clip.kind.is_gap() {
                     return None;
                 }
-                let clip_x = content_rect.left()
-                    + clip.timeline_in.to_secs_f64() as f32 * zoom
-                    - scroll;
+                let clip_x =
+                    content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
                 let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
                 if clip_w < 4.0 {
                     return None;
@@ -12218,9 +15041,10 @@ impl TimelinePanel {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
         let secondary_released = ui.input(|i| i.pointer.secondary_released());
-        let primary_double_clicked = ui.input(|i|
-            i.pointer.button_double_clicked(egui::PointerButton::Primary)
-        );
+        let primary_double_clicked = ui.input(|i| {
+            i.pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        });
         let alt_held = ui.input(|i| i.modifiers.alt);
 
         // Playhead indicator inside the lane — the global playhead line at
@@ -12235,7 +15059,10 @@ impl TimelinePanel {
                 - state.timeline_scroll_x;
             if playhead_x >= lane_rect.left() && playhead_x <= lane_rect.right() {
                 let ph_color = egui::Color32::from_rgba_unmultiplied(
-                    tt.accent.r(), tt.accent.g(), tt.accent.b(), 200,
+                    tt.accent.r(),
+                    tt.accent.g(),
+                    tt.accent.b(),
+                    200,
                 );
                 lane_painter.line_segment(
                     [
@@ -12348,56 +15175,49 @@ impl TimelinePanel {
             // `sub_rect.height() / param_range` to mirror the painter's
             // `value_scale`. Using `sub_rect` for X would drift when
             // the clip extends offscreen.
-            let nearest_bezier_handle: Option<(usize, bool, f32)> =
-                if (c.is_selected || c.is_multi_selected)
-                    && state.dragging_bezier_handle.is_none()
-                    && pointer_in_sub
-                {
-                    let pixels_per_sec_h = if c.time_range_secs > 0.0 {
-                        full_clip_rect.width() / c.time_range_secs as f32
-                    } else {
-                        1.0
-                    };
-                    let value_scale_h = sub_rect.height() / param_range;
-                    pointer_pos.and_then(|pos| {
-                        let mut best: Option<(usize, bool, f32)> = None;
-                        for (ki, kf) in c.kfs.iter().enumerate() {
-                            if kf.interpolation != klipp_core::Interpolation::Bezier {
-                                continue;
-                            }
-                            if kf.time_secs < 0.0 || kf.time_secs > c.time_range_secs {
-                                continue;
-                            }
-                            let cx_h = time_to_x(kf.time_secs);
-                            let cy_h = value_to_y(kf.value);
-                            // Out (right) tangent.
-                            let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
-                            let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
-                            let dist_out = ((pos.x - tout_hx).powi(2)
-                                + (pos.y - tout_hy).powi(2))
-                                .sqrt();
-                            if dist_out < 8.0
-                                && best.is_none_or(|(_, _, d)| dist_out < d)
-                            {
-                                best = Some((ki, true, dist_out));
-                            }
-                            // In (left) tangent.
-                            let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
-                            let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
-                            let dist_in = ((pos.x - tin_hx).powi(2)
-                                + (pos.y - tin_hy).powi(2))
-                                .sqrt();
-                            if dist_in < 8.0
-                                && best.is_none_or(|(_, _, d)| dist_in < d)
-                            {
-                                best = Some((ki, false, dist_in));
-                            }
-                        }
-                        best
-                    })
+            let nearest_bezier_handle: Option<(usize, bool, f32)> = if (c.is_selected
+                || c.is_multi_selected)
+                && state.dragging_bezier_handle.is_none()
+                && pointer_in_sub
+            {
+                let pixels_per_sec_h = if c.time_range_secs > 0.0 {
+                    full_clip_rect.width() / c.time_range_secs as f32
                 } else {
-                    None
+                    1.0
                 };
+                let value_scale_h = sub_rect.height() / param_range;
+                pointer_pos.and_then(|pos| {
+                    let mut best: Option<(usize, bool, f32)> = None;
+                    for (ki, kf) in c.kfs.iter().enumerate() {
+                        if kf.interpolation != klipp_core::Interpolation::Bezier {
+                            continue;
+                        }
+                        if kf.time_secs < 0.0 || kf.time_secs > c.time_range_secs {
+                            continue;
+                        }
+                        let cx_h = time_to_x(kf.time_secs);
+                        let cy_h = value_to_y(kf.value);
+                        // Out (right) tangent.
+                        let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
+                        let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                        let dist_out =
+                            ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                        if dist_out < 8.0 && best.is_none_or(|(_, _, d)| dist_out < d) {
+                            best = Some((ki, true, dist_out));
+                        }
+                        // In (left) tangent.
+                        let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
+                        let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                        let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                        if dist_in < 8.0 && best.is_none_or(|(_, _, d)| dist_in < d) {
+                            best = Some((ki, false, dist_in));
+                        }
+                    }
+                    best
+                })
+            } else {
+                None
+            };
 
             // ── Paint the curve into the full clip's screen rect ──
             // Pass `full_clip_rect` (extends beyond the visible lane
@@ -12526,7 +15346,11 @@ impl TimelinePanel {
                 // create a keyframe wherever the alt-click lands.
                 if alt_held && primary_clicked && hovered_kf_idx.is_none() {
                     if let Some(p) = pointer_pos {
-                        let t = crate::inspector::keyframe_selection::timeline_key_time(&c.kfs, x_to_time(p.x), state.sequence().fps.as_f64());
+                        let t = crate::inspector::keyframe_selection::timeline_key_time(
+                            &c.kfs,
+                            x_to_time(p.x),
+                            state.sequence().fps.as_f64(),
+                        );
                         let v = y_to_value(p.y);
                         cmds.push(AppCommand::AddAudioKeyframe {
                             clip_id: c.clip_id,
@@ -12549,22 +15373,18 @@ impl TimelinePanel {
                         && state.dragging_audio_keyframe.is_none()
                         && state.dragging_fade_handle.is_none()
                     {
-                        let drag_key = format!(
-                            "kf:tangent:{}:{:?}:{}",
-                            c.clip_id.0, param, bh_ki
-                        );
+                        let drag_key = format!("kf:tangent:{}:{:?}:{}", c.clip_id.0, param, bh_ki);
                         cmds.push(AppCommand::BeginKeyframeDrag {
                             key: drag_key,
                             clip_id: c.clip_id,
                         });
-                        state.dragging_bezier_handle =
-                            Some(crate::state::BezierHandleDrag {
-                                clip_id: c.clip_id,
-                                param,
-                                keyframe_index: bh_ki,
-                                is_out: bh_is_out,
-                                in_automation_lane: true,
-                            });
+                        state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
+                            clip_id: c.clip_id,
+                            param,
+                            keyframe_index: bh_ki,
+                            is_out: bh_is_out,
+                            in_automation_lane: true,
+                        });
                     }
                 }
 
@@ -12634,24 +15454,23 @@ impl TimelinePanel {
                     // that hits a tangent within 8 px AND a diamond
                     // within 12 px (close-clustered tangent + kf)
                     // would init both drags.
-                    if pointer_down && !other_drags && !alt_held && decided
+                    if pointer_down
+                        && !other_drags
+                        && !alt_held
+                        && decided
                         && nearest_bezier_handle.is_none()
                     {
-                        let drag_key = format!(
-                            "kf:audio:{}:{:?}:{}",
-                            c.clip_id.0, param, ki
-                        );
+                        let drag_key = format!("kf:audio:{}:{:?}:{}", c.clip_id.0, param, ki);
                         cmds.push(AppCommand::BeginKeyframeDrag {
                             key: drag_key,
                             clip_id: c.clip_id,
                         });
-                        state.dragging_audio_keyframe =
-                            Some(crate::state::DraggingKeyframe {
-                                clip_id: c.clip_id,
-                                param,
-                                keyframe_index: ki,
-                                in_automation_lane: true,
-                            });
+                        state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                            clip_id: c.clip_id,
+                            param,
+                            keyframe_index: ki,
+                            in_automation_lane: true,
+                        });
                     }
                 }
 
@@ -12695,7 +15514,11 @@ impl TimelinePanel {
                         if let Some(press_pos) =
                             ui.input(|i| i.pointer.press_origin()).or(pointer_pos)
                         {
-                            let t = crate::inspector::keyframe_selection::timeline_key_time(&c.kfs, x_to_time(press_pos.x), state.sequence().fps.as_f64());
+                            let t = crate::inspector::keyframe_selection::timeline_key_time(
+                                &c.kfs,
+                                x_to_time(press_pos.x),
+                                state.sequence().fps.as_f64(),
+                            );
                             let v = y_to_value(press_pos.y);
                             let new_idx = c.kfs.iter().take_while(|kf| kf.time_secs < t).count();
                             cmds.push(AppCommand::AddAudioKeyframe {
@@ -12704,21 +15527,18 @@ impl TimelinePanel {
                                 time_secs: t,
                                 value: v,
                             });
-                            let drag_key = format!(
-                                "kf:audio:{}:{:?}:{}",
-                                c.clip_id.0, param, new_idx
-                            );
+                            let drag_key =
+                                format!("kf:audio:{}:{:?}:{}", c.clip_id.0, param, new_idx);
                             cmds.push(AppCommand::BeginKeyframeDrag {
                                 key: drag_key,
                                 clip_id: c.clip_id,
                             });
-                            state.dragging_audio_keyframe =
-                                Some(crate::state::DraggingKeyframe {
-                                    clip_id: c.clip_id,
-                                    param,
-                                    keyframe_index: new_idx,
-                                    in_automation_lane: true,
-                                });
+                            state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                                clip_id: c.clip_id,
+                                param,
+                                keyframe_index: new_idx,
+                                in_automation_lane: true,
+                            });
                         }
                     }
                 }
@@ -12753,7 +15573,6 @@ impl TimelinePanel {
                         });
                     }
                 }
-
             }
         }
 
@@ -12796,7 +15615,10 @@ impl TimelinePanel {
         is_multi_selected: bool,
     ) {
         // Quick-exit guard before any clip access
-        if track_kind != TrackKind::Audio || clip_rect.width() <= 8.0 || !state.audio_show_rubber_band {
+        if track_kind != TrackKind::Audio
+            || clip_rect.width() <= 8.0
+            || !state.audio_show_rubber_band
+        {
             return;
         }
 
@@ -12805,12 +15627,25 @@ impl TimelinePanel {
         // sibling fn that pulls kfs from `audio_effect_keyframes`.
         let rb_param = match state.rubber_band_param.clone() {
             crate::state::RubberBandParam::ClipParam(p) => p,
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 self.draw_audio_rubber_band_effect(
-                    ui, painter, clip_rect, track_idx, clip_index,
-                    state, cmds, effect_index, &param_name,
-                    interactive, pointer_pos, pointer_down,
-                    is_selected, is_multi_selected,
+                    ui,
+                    painter,
+                    clip_rect,
+                    track_idx,
+                    clip_index,
+                    state,
+                    cmds,
+                    effect_index,
+                    &param_name,
+                    interactive,
+                    pointer_pos,
+                    pointer_down,
+                    is_selected,
+                    is_multi_selected,
                 );
                 return;
             }
@@ -12837,13 +15672,35 @@ impl TimelinePanel {
             kf_volume,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve, klipp_timeline::ChannelConfig) {
+            let resolve_clip = |c: &klipp_timeline::Clip| -> (
+                f32,
+                Vec<klipp_core::Keyframe>,
+                klipp_core::ClipId,
+                f32,
+                f32,
+                f32,
+                f32,
+                klipp_core::FadeCurve,
+                klipp_core::FadeCurve,
+                klipp_timeline::ChannelConfig,
+            ) {
                 let (static_val, kfs) = match rb_param {
                     klipp_core::AudioParam::Volume => (c.volume, c.volume_keyframes.clone()),
                     klipp_core::AudioParam::Pan => (c.pan, c.pan_keyframes.clone()),
                     klipp_core::AudioParam::Gain => (c.gain, c.gain_keyframes.clone()),
                 };
-                (static_val, kfs, c.id, c.gain, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config)
+                (
+                    static_val,
+                    kfs,
+                    c.id,
+                    c.gain,
+                    c.pan,
+                    c.fade_in_secs,
+                    c.fade_out_secs,
+                    c.fade_in_curve,
+                    c.fade_out_curve,
+                    c.channel_config,
+                )
             };
             let resolved = if let Some(linked_id) = clip.linked_clip_id {
                 let mut found = resolve_clip(clip);
@@ -12860,7 +15717,10 @@ impl TimelinePanel {
             let kvol = if let Some(linked_id) = clip.linked_clip_id {
                 let mut v = clip.volume;
                 for t in &state.sequence().tracks {
-                    if let Some(vc) = t.find_clip(linked_id) { v = vc.volume; break; }
+                    if let Some(vc) = t.find_clip(linked_id) {
+                        v = vc.volume;
+                        break;
+                    }
                 }
                 v
             } else {
@@ -12871,8 +15731,16 @@ impl TimelinePanel {
                 clip.duration().to_secs_f64(),
                 clip.source_in.to_secs_f64(),
                 clip.source_out.to_secs_f64(),
-                resolved.0, resolved.1, resolved.2, resolved.3, resolved.4,
-                resolved.5, resolved.6, resolved.7, resolved.8, resolved.9,
+                resolved.0,
+                resolved.1,
+                resolved.2,
+                resolved.3,
+                resolved.4,
+                resolved.5,
+                resolved.6,
+                resolved.7,
+                resolved.8,
+                resolved.9,
                 kvol,
             )
         };
@@ -12883,443 +15751,530 @@ impl TimelinePanel {
 
         let kf_keyframes = &kf_keyframes_vec[..];
 
+        // Fixed Y range per param so the unity / centre line lands
+        // at the same vertical position on every clip, regardless
+        // of keyframe content. The earlier auto-scale collapsed the
+        // curve to a 14%-from-bottom band on the (very common)
+        // no-keyframes case, blending into the waveform peaks.
+        // Fixed ranges match how DaVinci/Premiere present the inline
+        // rubber band; the dedicated automation lane is where
+        // zoom-to-fit auto-scaling can live as a follow-up.
+        let (param_min, param_range, unity_value) = match rb_param {
+            klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
+            klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32, 0.0_f32),
+            klipp_core::AudioParam::Gain => (0.0_f32, 2.0_f32, 1.0_f32),
+        };
 
-            // Fixed Y range per param so the unity / centre line lands
-            // at the same vertical position on every clip, regardless
-            // of keyframe content. The earlier auto-scale collapsed the
-            // curve to a 14%-from-bottom band on the (very common)
-            // no-keyframes case, blending into the waveform peaks.
-            // Fixed ranges match how DaVinci/Premiere present the inline
-            // rubber band; the dedicated automation lane is where
-            // zoom-to-fit auto-scaling can live as a follow-up.
-            let (param_min, param_range, unity_value) = match rb_param {
-                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
-                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
-                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32, 1.0_f32),
-            };
+        let clip_painter = painter.with_clip_rect(clip_rect);
 
-            let clip_painter = painter.with_clip_rect(clip_rect);
+        // Map param value to Y position within clip rect
+        // min = bottom, max = top
+        let value_to_y = |val: f32| -> f32 {
+            let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
+            clip_rect.bottom() - normalized * clip_rect.height()
+        };
 
-            // Map param value to Y position within clip rect
-            // min = bottom, max = top
-            let value_to_y = |val: f32| -> f32 {
-                let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
-                clip_rect.bottom() - normalized * clip_rect.height()
-            };
-
-            // Map time (relative to clip start) to X position
-            let time_to_x = |t: f64| -> f32 {
-                let frac = if clip_dur_secs > 0.0 { (t / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
-                clip_rect.left() + frac as f32 * clip_rect.width()
-            };
-
-            // Palette + active stroke colour are pulled from the shared
-            // `audio_curve_palette` so the inline overlay and the
-            // future automation lane stay visually identical without
-            // copying constants. The helper does the actual reference-
-            // line / fill / stroke / diamond / Bezier-tangent painting
-            // — see `paint_audio_curve_band` in the module-level
-            // helpers near the top of this file.
-            let palette = audio_curve_palette(rb_param);
-            let active_line_color = if is_selected || is_multi_selected {
-                palette.line_color
+        // Map time (relative to clip start) to X position
+        let time_to_x = |t: f64| -> f32 {
+            let frac = if clip_dur_secs > 0.0 {
+                (t / clip_dur_secs).clamp(0.0, 1.0)
             } else {
-                palette.line_color_dim
+                0.0
             };
-            let _ = unity_value; // helper handles the reference line internally
+            clip_rect.left() + frac as f32 * clip_rect.width()
+        };
 
-            // Draw param pill badge at top-left of clip (below clip name area)
-            let param_label = match rb_param {
-                klipp_core::AudioParam::Volume => "Vol",
-                klipp_core::AudioParam::Pan => "Pan",
-                klipp_core::AudioParam::Gain => "Gain",
+        // Palette + active stroke colour are pulled from the shared
+        // `audio_curve_palette` so the inline overlay and the
+        // future automation lane stay visually identical without
+        // copying constants. The helper does the actual reference-
+        // line / fill / stroke / diamond / Bezier-tangent painting
+        // — see `paint_audio_curve_band` in the module-level
+        // helpers near the top of this file.
+        let palette = audio_curve_palette(rb_param);
+        let active_line_color = if is_selected || is_multi_selected {
+            palette.line_color
+        } else {
+            palette.line_color_dim
+        };
+        let _ = unity_value; // helper handles the reference line internally
+
+        // Draw param pill badge at top-left of clip (below clip name area)
+        let param_label = match rb_param {
+            klipp_core::AudioParam::Volume => "Vol",
+            klipp_core::AudioParam::Pan => "Pan",
+            klipp_core::AudioParam::Gain => "Gain",
+        };
+        // Measure text width to size the pill dynamically
+        let pill_font = egui::FontId::proportional(10.0);
+        let pill_text_galley = ui.painter().layout_no_wrap(
+            param_label.to_string(),
+            pill_font.clone(),
+            egui::Color32::WHITE,
+        );
+        let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
+        let pill_h = 14.0;
+        let pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0);
+        let pill_rect = egui::Rect::from_min_size(pill_pos, egui::vec2(pill_w, pill_h));
+        // Only draw and handle clicks if clip is wide enough
+        if clip_rect.width() > 30.0 {
+            // Background: rubber band color at ~40% opacity
+            let pill_bg = match rb_param {
+                klipp_core::AudioParam::Volume => {
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100)
+                }
+                klipp_core::AudioParam::Pan => {
+                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100)
+                }
+                klipp_core::AudioParam::Gain => {
+                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100)
+                }
             };
-            // Measure text width to size the pill dynamically
-            let pill_font = egui::FontId::proportional(10.0);
-            let pill_text_galley = ui.painter().layout_no_wrap(param_label.to_string(), pill_font.clone(), egui::Color32::WHITE);
-            let pill_w = pill_text_galley.size().x + 8.0; // 4px padding each side
-            let pill_h = 14.0;
-            let pill_pos = egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0);
-            let pill_rect = egui::Rect::from_min_size(pill_pos, egui::vec2(pill_w, pill_h));
-            // Only draw and handle clicks if clip is wide enough
-            if clip_rect.width() > 30.0 {
-                // Background: rubber band color at ~40% opacity
-                let pill_bg = match rb_param {
-                    klipp_core::AudioParam::Volume => egui::Color32::from_rgba_unmultiplied(255, 195, 50, 100),
-                    klipp_core::AudioParam::Pan => egui::Color32::from_rgba_unmultiplied(50, 195, 255, 100),
-                    klipp_core::AudioParam::Gain => egui::Color32::from_rgba_unmultiplied(50, 220, 100, 100),
-                };
-                clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
-                clip_painter.text(
-                    pill_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    param_label,
-                    pill_font,
-                    egui::Color32::WHITE,
+            clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
+            clip_painter.text(
+                pill_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                param_label,
+                pill_font,
+                egui::Color32::WHITE,
+            );
+            // Click pill → open popup picker (Volume/Pan/Gain plus
+            // any kf'd effect param on this clip). Right-click for
+            // the legacy quick-cycle (Volume → Pan → Gain → Volume)
+            // — keyboard-free fast toggle.
+            if interactive {
+                self.show_rubber_band_pill_popup(
+                    ui, pill_rect, kf_clip_id, track_idx, clip_index, state,
                 );
-                // Click pill → open popup picker (Volume/Pan/Gain plus
-                // any kf'd effect param on this clip). Right-click for
-                // the legacy quick-cycle (Volume → Pan → Gain → Volume)
-                // — keyboard-free fast toggle.
-                if interactive {
-                    self.show_rubber_band_pill_popup(
-                        ui, pill_rect, kf_clip_id, track_idx, clip_index, state,
-                    );
+            }
+        }
+
+        // Compute paint-only "hovered keyframe" — same hit-test the
+        // helper would do, but we inline it here so we can pass the
+        // resolved index in (and reuse the local `value_to_y` /
+        // `time_to_x` closures that would otherwise be redundant
+        // with the helper's). The interaction code further down has
+        // its own `nearest_kf_idx` for drag dispatch — the two
+        // exist because the paint-only check gates on
+        // `clip_rect.contains(pos)` while the drag check doesn't.
+        let kf_paint_time_range = src_out_secs - src_in_secs;
+        let hovered_kf_idx_paint: Option<usize> = pointer_pos.and_then(|pos| {
+            if !clip_rect.contains(pos) {
+                return None;
+            }
+            let mut best: Option<(usize, f32)> = None;
+            for (ki, kf) in kf_keyframes.iter().enumerate() {
+                if kf.time_secs >= 0.0 && kf.time_secs <= kf_paint_time_range {
+                    let kx = time_to_x(kf.time_secs);
+                    let ky = value_to_y(kf.value);
+                    let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                    if dist < 10.0 && best.is_none_or(|(_, bd)| dist < bd) {
+                        best = Some((ki, dist));
+                    }
                 }
             }
-
-            // Compute paint-only "hovered keyframe" — same hit-test the
-            // helper would do, but we inline it here so we can pass the
-            // resolved index in (and reuse the local `value_to_y` /
-            // `time_to_x` closures that would otherwise be redundant
-            // with the helper's). The interaction code further down has
-            // its own `nearest_kf_idx` for drag dispatch — the two
-            // exist because the paint-only check gates on
-            // `clip_rect.contains(pos)` while the drag check doesn't.
-            let kf_paint_time_range = src_out_secs - src_in_secs;
-            let hovered_kf_idx_paint: Option<usize> = pointer_pos.and_then(|pos| {
-                if !clip_rect.contains(pos) {
-                    return None;
+            best.map(|(i, _)| i)
+        });
+        let selected_kf_idx_paint: Option<usize> =
+            state.selected_keyframe.as_ref().and_then(|sk| {
+                if sk.clip_id == kf_clip_id
+                    && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param)
+                {
+                    Some(sk.keyframe_index)
+                } else {
+                    None
                 }
-                let mut best: Option<(usize, f32)> = None;
-                for (ki, kf) in kf_keyframes.iter().enumerate() {
-                    if kf.time_secs >= 0.0 && kf.time_secs <= kf_paint_time_range {
-                        let kx = time_to_x(kf.time_secs);
-                        let ky = value_to_y(kf.value);
-                        let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                        if dist < 10.0 && best.is_none_or(|(_, bd)| dist < bd) {
-                            best = Some((ki, dist));
-                        }
-                    }
-                }
-                best.map(|(i, _)| i)
             });
-            let selected_kf_idx_paint: Option<usize> =
-                state.selected_keyframe.as_ref().and_then(|sk| {
-                    if sk.clip_id == kf_clip_id
-                        && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param)
+
+        // Hand off to the shared paint helper. This is the same
+        // entry point the per-track automation lane calls
+        // — same data, same look, just a different `rect`.
+        paint_audio_curve_band(
+            &clip_painter,
+            clip_rect,
+            rb_param,
+            kf_keyframes,
+            kf_static_val,
+            kf_paint_time_range,
+            is_selected,
+            is_multi_selected,
+            hovered_kf_idx_paint,
+            selected_kf_idx_paint,
+        );
+
+        // ── Rubber band interaction ──────────────────────────────────
+        if interactive {
+            if let Some(pos) = pointer_pos {
+                if clip_rect.contains(pos) && content_rect.contains(pos) {
+                    let alt_held = ui.input(|i| i.modifiers.alt);
+
+                    // Helper: X position to time (relative to source_in)
+                    let x_to_time = |x: f32| -> f64 {
+                        let frac =
+                            ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                        frac * clip_dur_secs
+                    };
+                    // Helper: Y position to param value
+                    let y_to_value = |y: f32| -> f32 {
+                        let normalized =
+                            ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
+                        param_min + normalized * param_range
+                    };
+
+                    // Check if hovering near a bezier tangent handle
+                    let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+                    if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none()
                     {
-                        Some(sk.keyframe_index)
-                    } else {
-                        None
-                    }
-                });
-
-            // Hand off to the shared paint helper. This is the same
-            // entry point the per-track automation lane calls
-            // — same data, same look, just a different `rect`.
-            paint_audio_curve_band(
-                &clip_painter,
-                clip_rect,
-                rb_param,
-                kf_keyframes,
-                kf_static_val,
-                kf_paint_time_range,
-                is_selected,
-                is_multi_selected,
-                hovered_kf_idx_paint,
-                selected_kf_idx_paint,
-            );
-
-            // ── Rubber band interaction ──────────────────────────────────
-            if interactive {
-                if let Some(pos) = pointer_pos {
-                    if clip_rect.contains(pos) && content_rect.contains(pos) {
-                        let alt_held = ui.input(|i| i.modifiers.alt);
-
-                        // Helper: X position to time (relative to source_in)
-                        let x_to_time = |x: f32| -> f64 {
-                            let frac = ((x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
-                            frac * clip_dur_secs
-                        };
-                        // Helper: Y position to param value
-                        let y_to_value = |y: f32| -> f32 {
-                            let normalized = ((clip_rect.bottom() - y) / clip_rect.height()).clamp(0.0, 1.0);
-                            param_min + normalized * param_range
-                        };
-
-                        // Check if hovering near a bezier tangent handle
-                        let mut nearest_bezier_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
-                        if (is_selected || is_multi_selected) && state.dragging_bezier_handle.is_none() {
-                            let pixels_per_sec_h = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                            let value_scale_h = clip_rect.height() / param_range;
-                            for (ki, kf) in kf_keyframes.iter().enumerate() {
-                                if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
-                                if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) { continue; }
-                                let cx_h = time_to_x(kf.time_secs);
-                                let cy_h = value_to_y(kf.value);
-                                // Tangent out handle
-                                let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
-                                let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
-                                let dist_out = ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
-                                if dist_out < 8.0
-                                    && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d) {
-                                        nearest_bezier_handle = Some((ki, true, dist_out));
-                                    }
-                                // Tangent in handle
-                                let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
-                                let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
-                                let dist_in = ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
-                                if dist_in < 8.0
-                                    && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d) {
-                                        nearest_bezier_handle = Some((ki, false, dist_in));
-                                    }
-                            }
-                        }
-
-                        // Check if hovering near a keyframe diamond (for drag start)
-                        let mut nearest_kf_idx: Option<usize> = None;
-                        let mut nearest_kf_dist = f32::MAX;
-                        for (ki, kf) in kf_keyframes.iter().enumerate() {
-                            if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
-                                let kx = time_to_x(kf.time_secs);
-                                let ky = value_to_y(kf.value);
-                                let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                                if dist < 10.0 && dist < nearest_kf_dist {
-                                    nearest_kf_dist = dist;
-                                    nearest_kf_idx = Some(ki);
-                                }
-                            }
-                        }
-
-                        // Check if hovering near the rubber band line
-                        let rubber_band_y = if kf_keyframes.is_empty() {
-                            value_to_y(kf_static_val)
+                        let pixels_per_sec_h = if clip_dur_secs > 0.0 {
+                            clip_rect.width() / clip_dur_secs as f32
                         } else {
-                            let t = x_to_time(pos.x);
-                            value_to_y(klipp_core::keyframe::evaluate(kf_keyframes, t, kf_static_val))
+                            1.0
                         };
-                        let near_line = (pos.y - rubber_band_y).abs() < 6.0;
-
-                        // ── Cursor feedback ──
-                        // Mid-drag the rubber-band/keyframe gesture is
-                        // dominantly vertical (we're shaping a value
-                        // curve, not panning a clip). Keep
-                        // ResizeVertical so the cursor matches the
-                        // intent the user committed to on press —
-                        // otherwise the OS-level pointer flicks to
-                        // Grabbing and reads as "I'm moving the whole
-                        // clip", which is a different operation.
-                        let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
-                        let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
-                        let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
-                        if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                        } else if nearest_bezier_handle.is_some() || nearest_kf_idx.is_some() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                        } else if near_line {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                        }
-
-                        // ── Double-click diamond to delete keyframe ──
-                        if let Some(ki) = nearest_kf_idx {
-                            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                                let kf = &kf_keyframes[ki];
-                                cmds.push(AppCommand::RemoveAudioKeyframe {
-                                    clip_id: kf_clip_id,
-                                    param: rb_param,
-                                    time_secs: kf.time_secs,
-                                });
+                        let value_scale_h = clip_rect.height() / param_range;
+                        for (ki, kf) in kf_keyframes.iter().enumerate() {
+                            if kf.interpolation != klipp_core::Interpolation::Bezier {
+                                continue;
+                            }
+                            if kf.time_secs < 0.0 || kf.time_secs > (src_out_secs - src_in_secs) {
+                                continue;
+                            }
+                            let cx_h = time_to_x(kf.time_secs);
+                            let cy_h = value_to_y(kf.value);
+                            // Tangent out handle
+                            let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
+                            let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                            let dist_out =
+                                ((pos.x - tout_hx).powi(2) + (pos.y - tout_hy).powi(2)).sqrt();
+                            if dist_out < 8.0
+                                && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_out < d)
+                            {
+                                nearest_bezier_handle = Some((ki, true, dist_out));
+                            }
+                            // Tangent in handle
+                            let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
+                            let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                            let dist_in =
+                                ((pos.x - tin_hx).powi(2) + (pos.y - tin_hy).powi(2)).sqrt();
+                            if dist_in < 8.0
+                                && nearest_bezier_handle.is_none_or(|(_, _, d)| dist_in < d)
+                            {
+                                nearest_bezier_handle = Some((ki, false, dist_in));
                             }
                         }
+                    }
 
-                        // ── Click keyframe diamond to SELECT it ──
-                        if let Some(ki) = nearest_kf_idx {
-                            if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
-                                state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                    clip_id: kf_clip_id,
-                                    param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
-                                    keyframe_index: ki,
-                                });
+                    // Check if hovering near a keyframe diamond (for drag start)
+                    let mut nearest_kf_idx: Option<usize> = None;
+                    let mut nearest_kf_dist = f32::MAX;
+                    for (ki, kf) in kf_keyframes.iter().enumerate() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= (src_out_secs - src_in_secs) {
+                            let kx = time_to_x(kf.time_secs);
+                            let ky = value_to_y(kf.value);
+                            let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                            if dist < 10.0 && dist < nearest_kf_dist {
+                                nearest_kf_dist = dist;
+                                nearest_kf_idx = Some(ki);
                             }
                         }
+                    }
 
-                        // ── Right-click: open context menu for selected keyframe or nearest diamond ──
-                        if ui.input(|i| i.pointer.secondary_released()) {
-                            let target_ki = nearest_kf_idx.or_else(|| {
-                                // If no diamond nearby, use the selected keyframe if it's on this clip
-                                state.selected_keyframe.as_ref()
-                                    .filter(|sk| sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param))
-                                    .map(|sk| sk.keyframe_index)
+                    // Check if hovering near the rubber band line
+                    let rubber_band_y = if kf_keyframes.is_empty() {
+                        value_to_y(kf_static_val)
+                    } else {
+                        let t = x_to_time(pos.x);
+                        value_to_y(klipp_core::keyframe::evaluate(
+                            kf_keyframes,
+                            t,
+                            kf_static_val,
+                        ))
+                    };
+                    let near_line = (pos.y - rubber_band_y).abs() < 6.0;
+
+                    // ── Cursor feedback ──
+                    // Mid-drag the rubber-band/keyframe gesture is
+                    // dominantly vertical (we're shaping a value
+                    // curve, not panning a clip). Keep
+                    // ResizeVertical so the cursor matches the
+                    // intent the user committed to on press —
+                    // otherwise the OS-level pointer flicks to
+                    // Grabbing and reads as "I'm moving the whole
+                    // clip", which is a different operation.
+                    let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
+                    let is_dragging_this_kf = state
+                        .dragging_audio_keyframe
+                        .as_ref()
+                        .is_some_and(|d| d.clip_id == kf_clip_id);
+                    let is_dragging_bezier = state
+                        .dragging_bezier_handle
+                        .as_ref()
+                        .is_some_and(|d| d.clip_id == kf_clip_id);
+                    if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                    } else if nearest_bezier_handle.is_some() || nearest_kf_idx.is_some() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    } else if near_line {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                    }
+
+                    // ── Double-click diamond to delete keyframe ──
+                    if let Some(ki) = nearest_kf_idx {
+                        if ui.input(|i| {
+                            i.pointer
+                                .button_double_clicked(egui::PointerButton::Primary)
+                        }) {
+                            let kf = &kf_keyframes[ki];
+                            cmds.push(AppCommand::RemoveAudioKeyframe {
+                                clip_id: kf_clip_id,
+                                param: rb_param,
+                                time_secs: kf.time_secs,
                             });
-                            if let Some(ki) = target_ki {
-                                if ki < kf_keyframes.len() {
-                                    state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                        }
+                    }
+
+                    // ── Click keyframe diamond to SELECT it ──
+                    if let Some(ki) = nearest_kf_idx {
+                        if ui.input(|i| i.pointer.primary_clicked())
+                            && state.dragging_audio_keyframe.is_none()
+                        {
+                            state.selected_keyframe = Some(crate::state::SelectedKeyframe {
+                                clip_id: kf_clip_id,
+                                param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
+                                keyframe_index: ki,
+                            });
+                        }
+                    }
+
+                    // ── Right-click: open context menu for selected keyframe or nearest diamond ──
+                    if ui.input(|i| i.pointer.secondary_released()) {
+                        let target_ki = nearest_kf_idx.or_else(|| {
+                            // If no diamond nearby, use the selected keyframe if it's on this clip
+                            state
+                                .selected_keyframe
+                                .as_ref()
+                                .filter(|sk| {
+                                    sk.clip_id == kf_clip_id
+                                        && sk.param_kind
+                                            == crate::state::KeyframeParamKind::Audio(rb_param)
+                                })
+                                .map(|sk| sk.keyframe_index)
+                        });
+                        if let Some(ki) = target_ki {
+                            if ki < kf_keyframes.len() {
+                                state.keyframe_context_menu =
+                                    Some(crate::state::KeyframeContextMenu {
                                         clip_id: kf_clip_id,
-                                        param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
+                                        param_kind: crate::state::KeyframeParamKind::Audio(
+                                            rb_param,
+                                        ),
                                         keyframe_index: ki,
                                         screen_pos: pos,
                                     });
-                                    self.suppress_clip_context_menu = true;
-                                }
+                                self.suppress_clip_context_menu = true;
                             }
                         }
+                    }
 
-                        // ── Click empty area to deselect keyframe ──
-                        if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
-                            && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
-                                state.selected_keyframe = None;
-                            }
+                    // ── Click empty area to deselect keyframe ──
+                    if ui.input(|i| i.pointer.primary_clicked())
+                        && nearest_kf_idx.is_none()
+                        && nearest_bezier_handle.is_none()
+                        && state
+                            .selected_keyframe
+                            .as_ref()
+                            .is_some_and(|sk| sk.clip_id == kf_clip_id)
+                    {
+                        state.selected_keyframe = None;
+                    }
 
-                        // ── Start bezier tangent handle drag ──
-                        if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
-                            if pointer_down && state.dragging_bezier_handle.is_none()
-                                && state.dragging_audio_keyframe.is_none()
-                                && state.dragging_fade_handle.is_none()
-                            {
-                                let drag_key = format!("kf:tangent:{}:{:?}:{}", kf_clip_id.0, rb_param, bh_ki);
-                                cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
-                                state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
-                                    clip_id: kf_clip_id,
-                                    param: rb_param,
-                                    keyframe_index: bh_ki,
-                                    is_out: bh_is_out,
-                                    in_automation_lane: false,
-                                });
-                            }
-                        }
-
-                        // Start keyframe drag only after mouse moves beyond threshold (3px)
-                        // This allows click-to-select without immediately starting a drag
-                        if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none()
-                            && pointer_down && state.dragging_audio_keyframe.is_none()
-                            && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none()
-                            && !alt_held
+                    // ── Start bezier tangent handle drag ──
+                    if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
+                        if pointer_down
+                            && state.dragging_bezier_handle.is_none()
+                            && state.dragging_audio_keyframe.is_none()
+                            && state.dragging_fade_handle.is_none()
                         {
-                            let dragged_far_enough = ui.input(|i| {
-                                i.pointer.is_decidedly_dragging()
+                            let drag_key =
+                                format!("kf:tangent:{}:{:?}:{}", kf_clip_id.0, rb_param, bh_ki);
+                            cmds.push(AppCommand::BeginKeyframeDrag {
+                                key: drag_key,
+                                clip_id: kf_clip_id,
                             });
-                            if dragged_far_enough {
-                                if let Some(ki) = nearest_kf_idx {
-                                    let drag_key = format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
-                                    cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
-                                    state.dragging_audio_keyframe = Some(crate::state::DraggingKeyframe {
+                            state.dragging_bezier_handle = Some(crate::state::BezierHandleDrag {
+                                clip_id: kf_clip_id,
+                                param: rb_param,
+                                keyframe_index: bh_ki,
+                                is_out: bh_is_out,
+                                in_automation_lane: false,
+                            });
+                        }
+                    }
+
+                    // Start keyframe drag only after mouse moves beyond threshold (3px)
+                    // This allows click-to-select without immediately starting a drag
+                    if nearest_kf_idx.is_some()
+                        && nearest_bezier_handle.is_none()
+                        && pointer_down
+                        && state.dragging_audio_keyframe.is_none()
+                        && state.dragging_bezier_handle.is_none()
+                        && state.dragging_fade_handle.is_none()
+                        && !alt_held
+                    {
+                        let dragged_far_enough = ui.input(|i| i.pointer.is_decidedly_dragging());
+                        if dragged_far_enough {
+                            if let Some(ki) = nearest_kf_idx {
+                                let drag_key =
+                                    format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
+                                cmds.push(AppCommand::BeginKeyframeDrag {
+                                    key: drag_key,
+                                    clip_id: kf_clip_id,
+                                });
+                                state.dragging_audio_keyframe =
+                                    Some(crate::state::DraggingKeyframe {
                                         clip_id: kf_clip_id,
                                         param: rb_param,
                                         keyframe_index: ki,
                                         in_automation_lane: false,
                                     });
-                                }
                             }
                         }
+                    }
 
-                        // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
-                        // Open a Begin/End drag-coalesce envelope so per-frame
-                        // UpdateClipAudio dispatches collapse to ONE history
-                        // entry and ONE autosave op-bump (the gate at
-                        // app.rs `UpdateClipAudio` checks `is_dragging` and
-                        // skips its own history push during the gesture).
-                        // Without this every drag tick was incrementing
-                        // ops_since_save → autosave spam, even though the
-                        // keyframe-diamond drag path already had its own
-                        // BeginKeyframeDrag envelope.
-                        if kf_keyframes.is_empty() && near_line && pointer_down
+                    // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
+                    // Open a Begin/End drag-coalesce envelope so per-frame
+                    // UpdateClipAudio dispatches collapse to ONE history
+                    // entry and ONE autosave op-bump (the gate at
+                    // app.rs `UpdateClipAudio` checks `is_dragging` and
+                    // skips its own history push during the gesture).
+                    // Without this every drag tick was incrementing
+                    // ops_since_save → autosave spam, even though the
+                    // keyframe-diamond drag path already had its own
+                    // BeginKeyframeDrag envelope.
+                    if kf_keyframes.is_empty() && near_line && pointer_down
                             && state.dragging_audio_keyframe.is_none()
                             && state.dragging_rubber_band.is_none()
                             && state.dragging_fade_handle.is_none()
                             && !state.drag_drop.is_active() // don't start rubber band during drag-and-drop
                             && !alt_held
-                        {
-                            cmds.push(AppCommand::BeginAudioDrag {
-                                key: format!("{:?}:audio", kf_clip_id),
-                                clip_id: kf_clip_id,
-                                old_gain: kf_gain,
-                                old_volume: kf_volume,
-                                old_pan: kf_pan,
-                                old_fade_in: kf_fade_in,
-                                old_fade_out: kf_fade_out,
-                            });
-                            state.dragging_rubber_band = Some(kf_clip_id);
-                            // Defensive: clear any stale lane-mode flag from
-                            // a prior gesture. The release handler clears
-                            // both fields, but if the previous frame's
-                            // release was somehow missed, the inline drag
-                            // update would otherwise be gated out by the
-                            // `!in_lane` check.
-                            state.dragging_rubber_band_in_lane = false;
-                        }
+                    {
+                        cmds.push(AppCommand::BeginAudioDrag {
+                            key: format!("{:?}:audio", kf_clip_id),
+                            clip_id: kf_clip_id,
+                            old_gain: kf_gain,
+                            old_volume: kf_volume,
+                            old_pan: kf_pan,
+                            old_fade_in: kf_fade_in,
+                            old_fade_out: kf_fade_out,
+                        });
+                        state.dragging_rubber_band = Some(kf_clip_id);
+                        // Defensive: clear any stale lane-mode flag from
+                        // a prior gesture. The release handler clears
+                        // both fields, but if the previous frame's
+                        // release was somehow missed, the inline drag
+                        // update would otherwise be gated out by the
+                        // `!in_lane` check.
+                        state.dragging_rubber_band_in_lane = false;
+                    }
 
-                        // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
-                        // Gate on `!in_lane` so a drag that started in the
-                        // automation lane is processed by the lane's own
-                        // dispatch (with lane-rect Y mapping), not here.
-                        if state.dragging_rubber_band == Some(kf_clip_id)
-                            && !state.dragging_rubber_band_in_lane
-                            && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
-                            && pointer_down {
-                                let new_val = y_to_value(pos.y);
-                                let (drag_gain, drag_volume, drag_pan) = match rb_param {
-                                    klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
-                                    klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
-                                    klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
-                                };
-                                cmds.push(AppCommand::UpdateClipAudio {
-                                    clip_id: kf_clip_id,
-                                    gain: drag_gain,
-                                    volume: drag_volume,
-                                    pan: drag_pan,
-                                    fade_in_secs: kf_fade_in,
-                                    fade_out_secs: kf_fade_out,
-                                    fade_in_curve: kf_fade_in_curve,
-                                    fade_out_curve: kf_fade_out_curve,
-                                    channel_config: kf_channel_config,
-                                });
-                                // Show tooltip with param-appropriate format
-                                let tooltip_text = match rb_param {
-                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
-                                    klipp_core::AudioParam::Pan => {
-                                        if new_val.abs() < 0.01 { "C".to_string() }
-                                        else if new_val < 0.0 { format!("L{:.0}", -new_val * 100.0) }
-                                        else { format!("R{:.0}", new_val * 100.0) }
-                                    }
-                                    klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
-                                };
-                                clip_painter.text(
-                                    egui::pos2(pos.x, pos.y - 14.0),
-                                    egui::Align2::CENTER_BOTTOM,
-                                    tooltip_text,
-                                    egui::FontId::proportional(10.0),
-                                    active_line_color,
-                                );
-                            }
-
-                        // Alt+click on line to add keyframe (blocked during fade drag)
-                        if alt_held && near_line && state.dragging_fade_handle.is_none() && ui.input(|i| i.pointer.primary_clicked()) {
-                            let t = crate::inspector::keyframe_selection::timeline_key_time(kf_keyframes, x_to_time(pos.x), state.sequence().fps.as_f64());
-                            let v = y_to_value(pos.y);
-                            cmds.push(AppCommand::AddAudioKeyframe {
-                                clip_id: kf_clip_id,
-                                param: rb_param,
-                                time_secs: t,
-                                value: v,
-                            });
-                        }
-
-                        // Show value tooltip when hovering near a keyframe
-                        if let Some(ki) = nearest_kf_idx {
-                            let kf = &kf_keyframes[ki];
-                            let tooltip_text = match rb_param {
-                                klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
-                                klipp_core::AudioParam::Pan => {
-                                    if kf.value.abs() < 0.01 { "C".to_string() }
-                                    else if kf.value < 0.0 { format!("L{:.0}", -kf.value * 100.0) }
-                                    else { format!("R{:.0}", kf.value * 100.0) }
+                    // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
+                    // Gate on `!in_lane` so a drag that started in the
+                    // automation lane is processed by the lane's own
+                    // dispatch (with lane-rect Y mapping), not here.
+                    if state.dragging_rubber_band == Some(kf_clip_id)
+                        && !state.dragging_rubber_band_in_lane
+                        && state.dragging_fade_handle.is_none()
+                        && !state.drag_drop.is_active()
+                        && pointer_down
+                    {
+                        let new_val = y_to_value(pos.y);
+                        let (drag_gain, drag_volume, drag_pan) = match rb_param {
+                            klipp_core::AudioParam::Volume => (kf_gain, new_val, kf_pan),
+                            klipp_core::AudioParam::Pan => (kf_gain, kf_volume, new_val),
+                            klipp_core::AudioParam::Gain => (new_val, kf_volume, kf_pan),
+                        };
+                        cmds.push(AppCommand::UpdateClipAudio {
+                            clip_id: kf_clip_id,
+                            gain: drag_gain,
+                            volume: drag_volume,
+                            pan: drag_pan,
+                            fade_in_secs: kf_fade_in,
+                            fade_out_secs: kf_fade_out,
+                            fade_in_curve: kf_fade_in_curve,
+                            fade_out_curve: kf_fade_out_curve,
+                            channel_config: kf_channel_config,
+                        });
+                        // Show tooltip with param-appropriate format
+                        let tooltip_text = match rb_param {
+                            klipp_core::AudioParam::Volume => format!("{:.0}%", new_val * 100.0),
+                            klipp_core::AudioParam::Pan => {
+                                if new_val.abs() < 0.01 {
+                                    "C".to_string()
+                                } else if new_val < 0.0 {
+                                    format!("L{:.0}", -new_val * 100.0)
+                                } else {
+                                    format!("R{:.0}", new_val * 100.0)
                                 }
-                                klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
-                            };
-                            let kx = time_to_x(kf.time_secs);
-                            let ky = value_to_y(kf.value);
-                            clip_painter.text(
-                                egui::pos2(kx, ky - 14.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                tooltip_text,
-                                egui::FontId::proportional(10.0),
-                                active_line_color,
-                            );
-                        }
+                            }
+                            klipp_core::AudioParam::Gain => format!("{:.1}x", new_val),
+                        };
+                        clip_painter.text(
+                            egui::pos2(pos.x, pos.y - 14.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            tooltip_text,
+                            egui::FontId::proportional(10.0),
+                            active_line_color,
+                        );
+                    }
+
+                    // Alt+click on line to add keyframe (blocked during fade drag)
+                    if alt_held
+                        && near_line
+                        && state.dragging_fade_handle.is_none()
+                        && ui.input(|i| i.pointer.primary_clicked())
+                    {
+                        let t = crate::inspector::keyframe_selection::timeline_key_time(
+                            kf_keyframes,
+                            x_to_time(pos.x),
+                            state.sequence().fps.as_f64(),
+                        );
+                        let v = y_to_value(pos.y);
+                        cmds.push(AppCommand::AddAudioKeyframe {
+                            clip_id: kf_clip_id,
+                            param: rb_param,
+                            time_secs: t,
+                            value: v,
+                        });
+                    }
+
+                    // Show value tooltip when hovering near a keyframe
+                    if let Some(ki) = nearest_kf_idx {
+                        let kf = &kf_keyframes[ki];
+                        let tooltip_text = match rb_param {
+                            klipp_core::AudioParam::Volume => format!("{:.1}%", kf.value * 100.0),
+                            klipp_core::AudioParam::Pan => {
+                                if kf.value.abs() < 0.01 {
+                                    "C".to_string()
+                                } else if kf.value < 0.0 {
+                                    format!("L{:.0}", -kf.value * 100.0)
+                                } else {
+                                    format!("R{:.0}", kf.value * 100.0)
+                                }
+                            }
+                            klipp_core::AudioParam::Gain => format!("{:.2}x", kf.value),
+                        };
+                        let kx = time_to_x(kf.time_secs);
+                        let ky = value_to_y(kf.value);
+                        clip_painter.text(
+                            egui::pos2(kx, ky - 14.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            tooltip_text,
+                            egui::FontId::proportional(10.0),
+                            active_line_color,
+                        );
                     }
                 }
             }
+        }
     }
 
     /// Sibling of `draw_audio_rubber_band` for the EffectParam variant
@@ -13363,13 +16318,22 @@ impl TimelinePanel {
             let static_val = clip
                 .audio_effects
                 .get(effect_index)
-                .and_then(|inst| inst.params.iter().find(|(k, _)| k == param_name).map(|(_, v)| *v))
+                .and_then(|inst| {
+                    inst.params
+                        .iter()
+                        .find(|(k, _)| k == param_name)
+                        .map(|(_, v)| *v)
+                })
                 .unwrap_or(match param_name {
                     "__bypass" => 1.0,
                     "__wetdry" => 1.0,
                     _ => 0.0,
                 });
-            let kfs = clip.audio_effect_keyframes.get(&kf_key).cloned().unwrap_or_default();
+            let kfs = clip
+                .audio_effect_keyframes
+                .get(&kf_key)
+                .cloned()
+                .unwrap_or_default();
             let effect_type = clip
                 .audio_effects
                 .get(effect_index)
@@ -13401,8 +16365,12 @@ impl TimelinePanel {
         let mut val_min = kf_static_val;
         let mut val_max = kf_static_val;
         for kf in &kf_keyframes_vec {
-            if kf.value < val_min { val_min = kf.value; }
-            if kf.value > val_max { val_max = kf.value; }
+            if kf.value < val_min {
+                val_min = kf.value;
+            }
+            if kf.value > val_max {
+                val_max = kf.value;
+            }
         }
         let val_span = (val_max - val_min).max(0.01);
         let val_padding = val_span * 0.2;
@@ -13410,14 +16378,24 @@ impl TimelinePanel {
         let param_range = val_span + val_padding * 2.0;
 
         let theme_ref = theme();
-        let line_color = crate::browser::audio_fx_tab::audio_effect_color_for_type(
-            &kf_effect_type, &theme_ref,
-        );
+        let line_color =
+            crate::browser::audio_fx_tab::audio_effect_color_for_type(&kf_effect_type, &theme_ref);
         let line_color_dim = egui::Color32::from_rgba_unmultiplied(
-            line_color.r(), line_color.g(), line_color.b(), 140,
+            line_color.r(),
+            line_color.g(),
+            line_color.b(),
+            140,
         );
-        let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
-        let rb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
+        let active_line_color = if is_selected || is_multi_selected {
+            line_color
+        } else {
+            line_color_dim
+        };
+        let rb_line_width = if is_selected || is_multi_selected {
+            2.5_f32
+        } else {
+            2.0_f32
+        };
         let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
         let rb_shadow_width = rb_line_width + 1.0_f32;
 
@@ -13436,7 +16414,9 @@ impl TimelinePanel {
         let pill_label = format_effect_param_pill(effect_index, param_name);
         let pill_font = egui::FontId::proportional(10.0);
         let pill_galley = ui.painter().layout_no_wrap(
-            pill_label.clone(), pill_font.clone(), egui::Color32::WHITE,
+            pill_label.clone(),
+            pill_font.clone(),
+            egui::Color32::WHITE,
         );
         let pill_w = pill_galley.size().x + 8.0;
         let pill_h = 14.0;
@@ -13446,7 +16426,10 @@ impl TimelinePanel {
         );
         if clip_rect.width() > 30.0 {
             let pill_bg = egui::Color32::from_rgba_unmultiplied(
-                line_color.r(), line_color.g(), line_color.b(), 100,
+                line_color.r(),
+                line_color.g(),
+                line_color.b(),
+                100,
             );
             clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
             clip_painter.text(
@@ -13492,7 +16475,10 @@ impl TimelinePanel {
             // belongs to B5).
             let mut pts: Vec<egui::Pos2> = Vec::with_capacity(kf_keyframes_vec.len() + 2);
             // Hold first kf value backward to clip start.
-            pts.push(egui::pos2(time_to_x(0.0), value_to_y(kf_keyframes_vec[0].value)));
+            pts.push(egui::pos2(
+                time_to_x(0.0),
+                value_to_y(kf_keyframes_vec[0].value),
+            ));
             for kf in &kf_keyframes_vec {
                 pts.push(egui::pos2(time_to_x(kf.time_secs), value_to_y(kf.value)));
             }
@@ -13503,7 +16489,10 @@ impl TimelinePanel {
             // Shadow
             for w in pts.windows(2) {
                 clip_painter.line_segment(
-                    [egui::pos2(w[0].x, w[0].y + 1.0), egui::pos2(w[1].x, w[1].y + 1.0)],
+                    [
+                        egui::pos2(w[0].x, w[0].y + 1.0),
+                        egui::pos2(w[1].x, w[1].y + 1.0),
+                    ],
                     egui::Stroke::new(rb_shadow_width, shadow_color),
                 );
             }
@@ -13517,7 +16506,11 @@ impl TimelinePanel {
 
             // Track click hits on tangent handles so we can prefer
             // them over diamond hits at the same screen position.
-            let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+            let pixels_per_sec = if clip_dur_secs > 0.0 {
+                clip_rect.width() / clip_dur_secs as f32
+            } else {
+                1.0
+            };
             let value_scale = clip_rect.height() / param_range;
             let mut nearest_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
             if interactive
@@ -13526,7 +16519,9 @@ impl TimelinePanel {
             {
                 if let Some(pos) = pointer_pos {
                     for (ki, kf) in kf_keyframes_vec.iter().enumerate() {
-                        if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                        if kf.interpolation != klipp_core::Interpolation::Bezier {
+                            continue;
+                        }
                         let cx = time_to_x(kf.time_secs);
                         let cy = value_to_y(kf.value);
                         let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
@@ -13550,7 +16545,11 @@ impl TimelinePanel {
             for (kf_idx, kf) in kf_keyframes_vec.iter().enumerate() {
                 let cx = time_to_x(kf.time_secs);
                 let cy = value_to_y(kf.value);
-                let r = if is_selected || is_multi_selected { 4.0 } else { 3.5 };
+                let r = if is_selected || is_multi_selected {
+                    4.0
+                } else {
+                    3.5
+                };
                 let diamond = vec![
                     egui::pos2(cx, cy - r),
                     egui::pos2(cx + r, cy),
@@ -13570,7 +16569,10 @@ impl TimelinePanel {
                     && (is_selected || is_multi_selected)
                 {
                     let tangent_line = egui::Color32::from_rgba_unmultiplied(
-                        line_color.r(), line_color.g(), line_color.b(), 120,
+                        line_color.r(),
+                        line_color.g(),
+                        line_color.b(),
+                        120,
                     );
                     let handle_r = 4.0_f32;
                     // Out handle (right)
@@ -13581,8 +16583,13 @@ impl TimelinePanel {
                         egui::Stroke::new(1.0_f32, tangent_line),
                     );
                     clip_painter.circle(
-                        egui::pos2(tout_x, tout_y), handle_r, line_color,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                        egui::pos2(tout_x, tout_y),
+                        handle_r,
+                        line_color,
+                        egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                        ),
                     );
                     // In handle (left)
                     let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
@@ -13592,8 +16599,13 @@ impl TimelinePanel {
                         egui::Stroke::new(1.0_f32, tangent_line),
                     );
                     clip_painter.circle(
-                        egui::pos2(tin_x, tin_y), handle_r, line_color,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                        egui::pos2(tin_x, tin_y),
+                        handle_r,
+                        line_color,
+                        egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
+                        ),
                     );
                 }
 
@@ -13651,22 +16663,27 @@ impl TimelinePanel {
         if interactive {
             if let Some(pos) = pointer_pos {
                 let mods = ui.input(|i| i.modifiers);
-                if mods.alt && ui.input(|i| i.pointer.primary_clicked())
-                    && clip_rect.contains(pos)
+                if mods.alt && ui.input(|i| i.pointer.primary_clicked()) && clip_rect.contains(pos)
                 {
-                    let frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                    let frac =
+                        ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
                     let t = frac * clip_dur_secs;
                     // Value picked from the y-position; same auto-scale.
-                    let normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+                    let normalized =
+                        ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
                     let value = param_min + normalized * param_range;
                     let mut command = AppCommand::AddAudioEffectKeyframe {
                         clip_id: kf_clip_id,
                         effect_index,
                         param_name: param_name.to_string(),
-                        time_secs: (t * state.sequence().fps.as_f64()).round() / state.sequence().fps.as_f64(),
+                        time_secs: (t * state.sequence().fps.as_f64()).round()
+                            / state.sequence().fps.as_f64(),
                         value,
                     };
-                    crate::inspector::keyframe_selection::resolve_command(state.sequence(), &mut command);
+                    crate::inspector::keyframe_selection::resolve_command(
+                        state.sequence(),
+                        &mut command,
+                    );
                     cmds.push(command);
                 }
             }
@@ -13693,13 +16710,17 @@ impl TimelinePanel {
         // Sense includes hover so the wheel-cycle handler below can
         // gate on pill_resp.hovered() instead of doing its own hit-test.
         let pill_resp = ui.interact(
-            pill_rect, pill_id,
+            pill_rect,
+            pill_id,
             egui::Sense::click().union(egui::Sense::hover()),
         );
 
         // Right-click cycles clip params (no popup).
         if pill_resp.secondary_clicked() {
-            let cur_clip = state.rubber_band_param.as_clip_param().unwrap_or(klipp_core::AudioParam::Volume);
+            let cur_clip = state
+                .rubber_band_param
+                .as_clip_param()
+                .unwrap_or(klipp_core::AudioParam::Volume);
             let next = match cur_clip {
                 klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
                 klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
@@ -13717,12 +16738,14 @@ impl TimelinePanel {
         // Pre-collect picker rows so we can pass owned data into the
         // closure without re-borrowing state mid-render.
         let (clip_kf_keys, effect_types): (Vec<String>, Vec<(usize, String)>) = {
-            let clip = &state.sequences[state.active_sequence_idx]
-                .tracks[track_idx]
-                .clips[clip_index];
+            let clip =
+                &state.sequences[state.active_sequence_idx].tracks[track_idx].clips[clip_index];
             let mut keys: Vec<String> = clip.audio_effect_keyframes.keys().cloned().collect();
             keys.sort();
-            let types: Vec<(usize, String)> = clip.audio_effects.iter().enumerate()
+            let types: Vec<(usize, String)> = clip
+                .audio_effects
+                .iter()
+                .enumerate()
                 .map(|(i, inst)| (i, inst.effect_type.clone()))
                 .collect();
             (keys, types)
@@ -13764,8 +16787,12 @@ impl TimelinePanel {
                 ui.set_min_width(160.0);
 
                 // ── Clip-level group ──
-                ui.label(egui::RichText::new("CLIP").size(10.0).strong()
-                    .color(theme().text_dim));
+                ui.label(
+                    egui::RichText::new("CLIP")
+                        .size(10.0)
+                        .strong()
+                        .color(theme().text_dim),
+                );
                 for (param, label) in [
                     (klipp_core::AudioParam::Volume, "Volume"),
                     (klipp_core::AudioParam::Pan, "Pan"),
@@ -13782,8 +16809,12 @@ impl TimelinePanel {
                 }
 
                 ui.separator();
-                ui.label(egui::RichText::new("EFFECTS").size(10.0).strong()
-                    .color(theme().text_dim));
+                ui.label(
+                    egui::RichText::new("EFFECTS")
+                        .size(10.0)
+                        .strong()
+                        .color(theme().text_dim),
+                );
 
                 // Group keys by effect index, preserve order via
                 // BTreeMap (sorted by index).
@@ -13799,7 +16830,8 @@ impl TimelinePanel {
 
                 for (idx, mut names) in by_effect {
                     names.sort();
-                    let effect_type = effect_types.iter()
+                    let effect_type = effect_types
+                        .iter()
                         .find(|(i, _)| *i == idx)
                         .map(|(_, t)| t.clone())
                         .unwrap_or_default();
@@ -13808,8 +16840,11 @@ impl TimelinePanel {
                     } else {
                         format!("FX {idx}: {}", effect_display_name(&effect_type))
                     };
-                    ui.label(egui::RichText::new(header).size(10.0)
-                        .color(theme().text_secondary));
+                    ui.label(
+                        egui::RichText::new(header)
+                            .size(10.0)
+                            .color(theme().text_secondary),
+                    );
                     for name in names {
                         let pretty = match name.as_str() {
                             "__bypass" => "Bypass".to_string(),
@@ -13847,7 +16882,9 @@ impl TimelinePanel {
         clip_rect: egui::Rect,
         param_name: &str,
     ) {
-        if clip_rect.width() <= 30.0 { return; }
+        if clip_rect.width() <= 30.0 {
+            return;
+        }
         let theme_ref = theme();
         let pill_w = 24.0;
         let pill_h = 14.0;
@@ -13860,7 +16897,10 @@ impl TimelinePanel {
             pill_rect,
             4.0,
             egui::Color32::from_rgba_unmultiplied(
-                theme_ref.text_dim.r(), theme_ref.text_dim.g(), theme_ref.text_dim.b(), 80,
+                theme_ref.text_dim.r(),
+                theme_ref.text_dim.g(),
+                theme_ref.text_dim.b(),
+                80,
             ),
         );
         painter.text(
@@ -13888,19 +16928,31 @@ impl TimelinePanel {
         // ── Fade drag handles (triangular grab handles at top-left / top-right) ──
         // Visible when clip is hovered or selected, and clip has audio (audio track or linked audio)
         let clip_has_audio = track_kind == TrackKind::Audio
-            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
-        let is_pointer_over_clip = pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
+            || clip
+                .media_id()
+                .and_then(|mid| state.media_pool.get(&mid))
+                .is_some_and(|m| m.has_audio);
+        let is_pointer_over_clip =
+            pointer_pos.is_some_and(|p| clip_rect.contains(p) && content_rect.contains(p));
         let is_hovered_or_selected = is_pointer_over_clip || state.selected_clip == Some(clip.id);
-        let is_dragging_this_fade = state.dragging_fade_handle.is_some_and(|(id, _, _)| id == clip.id);
-        if clip_has_audio && !clip.kind.is_gap() && clip_rect.width() > 20.0
+        let is_dragging_this_fade = state
+            .dragging_fade_handle
+            .is_some_and(|(id, _, _)| id == clip.id);
+        if clip_has_audio
+            && !clip.kind.is_gap()
+            && clip_rect.width() > 20.0
             && (is_hovered_or_selected || is_dragging_this_fade)
         {
             let handle_size = 6.0_f32;
             let tt = theme();
             let acc = tt.accent;
-            let handle_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 220);
+            let handle_color =
+                egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 220);
             let handle_hover_color = egui::Color32::from_rgb(
-                acc.r().saturating_add(20), acc.g().saturating_add(40), acc.b().saturating_add(48));
+                acc.r().saturating_add(20),
+                acc.g().saturating_add(40),
+                acc.b().saturating_add(48),
+            );
 
             // Resolve current fade values for visual positioning
             let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
@@ -13920,49 +16972,86 @@ impl TimelinePanel {
             let clip_dur_secs = clip.duration().to_secs_f64() as f32;
 
             // Fade-in handle position: at the fade boundary (or clip left if no fade)
-            let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+            let fi_offset_px = if clip_dur_secs > 0.001 {
+                (cur_fi / clip_dur_secs) * clip_rect.width()
+            } else {
+                0.0
+            };
             let fi_x = clip_rect.left() + fi_offset_px;
             // Fade-out handle position: at the fade boundary (or clip right if no fade)
-            let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * clip_rect.width() } else { 0.0 };
+            let fo_offset_px = if clip_dur_secs > 0.001 {
+                (cur_fo / clip_dur_secs) * clip_rect.width()
+            } else {
+                0.0
+            };
             let fo_x = clip_rect.right() - fo_offset_px;
 
             // Check if pointer is near a handle for hover highlight
             let near_fi = pointer_pos.is_some_and(|p| {
-                (p.x - fi_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
-                    && clip_rect.contains(p) && content_rect.contains(p)
+                (p.x - fi_x).abs() < 8.0
+                    && (p.y - clip_rect.top()).abs() < 10.0
+                    && clip_rect.contains(p)
+                    && content_rect.contains(p)
             });
             let near_fo = pointer_pos.is_some_and(|p| {
-                (p.x - fo_x).abs() < 8.0 && (p.y - clip_rect.top()).abs() < 10.0
-                    && clip_rect.contains(p) && content_rect.contains(p)
+                (p.x - fo_x).abs() < 8.0
+                    && (p.y - clip_rect.top()).abs() < 10.0
+                    && clip_rect.contains(p)
+                    && content_rect.contains(p)
             });
-            let dragging_fi = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && is_in);
-            let dragging_fo = state.dragging_fade_handle.is_some_and(|(id, is_in, _)| id == clip.id && !is_in);
+            let dragging_fi = state
+                .dragging_fade_handle
+                .is_some_and(|(id, is_in, _)| id == clip.id && is_in);
+            let dragging_fo = state
+                .dragging_fade_handle
+                .is_some_and(|(id, is_in, _)| id == clip.id && !is_in);
 
             // Draw fade-in handle (triangle pointing right at top-left area)
-            let fi_color = if near_fi || dragging_fi { handle_hover_color } else { handle_color };
+            let fi_color = if near_fi || dragging_fi {
+                handle_hover_color
+            } else {
+                handle_color
+            };
             let fi_tri = vec![
                 egui::pos2(fi_x, clip_rect.top()),
                 egui::pos2(fi_x + handle_size, clip_rect.top()),
                 egui::pos2(fi_x, clip_rect.top() + handle_size),
             ];
-            painter.add(egui::Shape::convex_polygon(fi_tri, fi_color, egui::Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(
+                fi_tri,
+                fi_color,
+                egui::Stroke::NONE,
+            ));
 
             // Draw fade-out handle (triangle pointing left at top-right area)
-            let fo_color = if near_fo || dragging_fo { handle_hover_color } else { handle_color };
+            let fo_color = if near_fo || dragging_fo {
+                handle_hover_color
+            } else {
+                handle_color
+            };
             let fo_tri = vec![
                 egui::pos2(fo_x, clip_rect.top()),
                 egui::pos2(fo_x - handle_size, clip_rect.top()),
                 egui::pos2(fo_x, clip_rect.top() + handle_size),
             ];
-            painter.add(egui::Shape::convex_polygon(fo_tri, fo_color, egui::Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(
+                fo_tri,
+                fo_color,
+                egui::Stroke::NONE,
+            ));
 
             // Cursor feedback when hovering handles
-            if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+            if (near_fi || near_fo) && self.dragging_clip.is_none() && self.trimming_clip.is_none()
+            {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
 
             // Hover tooltip labels for fade handles (only when not dragging)
-            if !dragging_fi && !dragging_fo && self.dragging_clip.is_none() && self.trimming_clip.is_none() {
+            if !dragging_fi
+                && !dragging_fo
+                && self.dragging_clip.is_none()
+                && self.trimming_clip.is_none()
+            {
                 let tp = tt.text_primary;
                 let tip_color = egui::Color32::from_rgba_premultiplied(tp.r(), tp.g(), tp.b(), 180);
                 let tip_font = egui::FontId::proportional(10.0);
@@ -13991,8 +17080,14 @@ impl TimelinePanel {
                     let boundary_x = pos.x.clamp(clip_rect.left(), clip_rect.right());
                     // Vertical line at current drag position
                     painter.line_segment(
-                        [egui::pos2(boundary_x, clip_rect.top()), egui::pos2(boundary_x, clip_rect.bottom())],
-                        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160)),
+                        [
+                            egui::pos2(boundary_x, clip_rect.top()),
+                            egui::pos2(boundary_x, clip_rect.bottom()),
+                        ],
+                        egui::Stroke::new(
+                            1.5_f32,
+                            egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160),
+                        ),
                     );
                     // Tooltip with duration
                     let frac = if dragging_fi {
@@ -14007,8 +17102,12 @@ impl TimelinePanel {
                         format!("Fade Out: {:.2}s", fade_dur)
                     };
                     egui::show_tooltip_at_pointer(
-                        ui.ctx(), ui.layer_id(), ui.id().with("fade_handle_tooltip"),
-                        |ui: &mut egui::Ui| { ui.label(label); },
+                        ui.ctx(),
+                        ui.layer_id(),
+                        ui.id().with("fade_handle_tooltip"),
+                        |ui: &mut egui::Ui| {
+                            ui.label(label);
+                        },
                     );
                 }
             }
@@ -14047,28 +17146,38 @@ impl TimelinePanel {
         if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
             let frame_dur = 1.0 / fps.rate() as f64;
             for i in 0..clips.len().saturating_sub(1) {
-                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
+                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() {
+                    continue;
+                }
                 let end_secs = clips[i].timeline_out.to_secs_f64();
                 let start_secs = clips[i + 1].timeline_in.to_secs_f64();
-                let handoff =
-                    clips[i].fade_out_secs > 0.001 && clips[i + 1].fade_in_secs > 0.001;
+                let handoff = clips[i].fade_out_secs > 0.001 && clips[i + 1].fade_in_secs > 0.001;
                 // Adjacent within 1 frame tolerance
                 if handoff && (end_secs - start_secs).abs() <= frame_dur * 1.5 {
                     let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;
                     // Only draw if visible
-                    if boundary_x >= content_rect.left() - 10.0 && boundary_x <= content_rect.right() + 10.0 {
+                    if boundary_x >= content_rect.left() - 10.0
+                        && boundary_x <= content_rect.right() + 10.0
+                    {
                         let cy = track_rect.center().y;
                         let s = 5.0_f32; // half-size of the X
                         let tt = theme();
                         let mi = tt.marker_info;
-                        let xf_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
+                        let xf_color =
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
                         // The X, and below it the two fades it stands for.
                         painter.line_segment(
-                            [egui::pos2(boundary_x - s, cy - s), egui::pos2(boundary_x + s, cy + s)],
+                            [
+                                egui::pos2(boundary_x - s, cy - s),
+                                egui::pos2(boundary_x + s, cy + s),
+                            ],
                             egui::Stroke::new(1.5_f32, xf_color),
                         );
                         painter.line_segment(
-                            [egui::pos2(boundary_x - s, cy + s), egui::pos2(boundary_x + s, cy - s)],
+                            [
+                                egui::pos2(boundary_x - s, cy + s),
+                                egui::pos2(boundary_x + s, cy - s),
+                            ],
                             egui::Stroke::new(1.5_f32, xf_color),
                         );
                         // Small overlapping fade triangles
@@ -14082,7 +17191,9 @@ impl TimelinePanel {
                             egui::pos2(boundary_x - tri_w, top_y + tri_h),
                         ];
                         painter.add(egui::Shape::convex_polygon(
-                            tri_out, egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
+                            tri_out,
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80),
+                            egui::Stroke::NONE,
                         ));
                         // Right fade-in triangle (filled)
                         let tri_in = vec![
@@ -14091,7 +17202,9 @@ impl TimelinePanel {
                             egui::pos2(boundary_x + tri_w, top_y + tri_h),
                         ];
                         painter.add(egui::Shape::convex_polygon(
-                            tri_in, egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80), egui::Stroke::NONE,
+                            tri_in,
+                            egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 80),
+                            egui::Stroke::NONE,
                         ));
                     }
                 }
@@ -14113,27 +17226,43 @@ impl TimelinePanel {
         for clip in clips {
             if let Some(ref anchor) = clip.magnetic_anchor {
                 if let Some(primary_idx) = state.sequence().primary_track_index() {
-                    let anchor_clip = state.sequence().tracks[primary_idx].clips.iter()
+                    let anchor_clip = state.sequence().tracks[primary_idx]
+                        .clips
+                        .iter()
                         .find(|c| c.id == anchor.anchor_clip_id);
                     if let Some(ac) = anchor_clip {
                         let anchor_x = content_rect.left()
-                            + (ac.timeline_in.to_secs_f64() as f32 + anchor.offset.to_secs_f64() as f32) * zoom
+                            + (ac.timeline_in.to_secs_f64() as f32
+                                + anchor.offset.to_secs_f64() as f32)
+                                * zoom
                             - scroll;
 
                         // Only draw if visible
-                        if anchor_x >= content_rect.left() - 10.0 && anchor_x <= content_rect.right() + 10.0 {
-                            let _clip_x = content_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                        if anchor_x >= content_rect.left() - 10.0
+                            && anchor_x <= content_rect.right() + 10.0
+                        {
+                            let _clip_x = content_rect.left()
+                                + clip.timeline_in.to_secs_f64() as f32 * zoom
+                                - scroll;
                             let clip_top = track_rect.top();
 
                             // Find primary track rect for the bottom of the line
-                            let primary_bottom = self.frame_cache.track_rects.iter()
+                            let primary_bottom = self
+                                .frame_cache
+                                .track_rects
+                                .iter()
                                 .find(|(idx, _, _)| *idx == primary_idx)
                                 .map(|(_, _, r)| r.bottom())
                                 .unwrap_or(track_rect.bottom());
 
                             let tt = theme();
                             let acc = tt.accent;
-                            let line_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 160);
+                            let line_color = egui::Color32::from_rgba_unmultiplied(
+                                acc.r(),
+                                acc.g(),
+                                acc.b(),
+                                160,
+                            );
 
                             // Dashed vertical line
                             let dash_len = 5.0_f32;
@@ -14180,39 +17309,59 @@ impl TimelinePanel {
                 || t.magnetic_role == klipp_timeline::TrackRole::ConnectedStoryline
         }) {
             for (ci, clip) in clips.iter().enumerate() {
-                if clip.kind.is_gap() { continue; }
+                if clip.kind.is_gap() {
+                    continue;
+                }
                 for (oi, other) in clips.iter().enumerate() {
-                    if ci >= oi { continue; }
-                    if other.kind.is_gap() { continue; }
+                    if ci >= oi {
+                        continue;
+                    }
+                    if other.kind.is_gap() {
+                        continue;
+                    }
                     // Check overlap
-                    if clip.timeline_in < other.timeline_out && clip.timeline_out > other.timeline_in {
-                        let overlap_start = if clip.timeline_in > other.timeline_in { clip.timeline_in } else { other.timeline_in };
-                        let overlap_end = if clip.timeline_out < other.timeline_out { clip.timeline_out } else { other.timeline_out };
-                        let ox = content_rect.left() + overlap_start.to_secs_f64() as f32 * zoom - scroll;
+                    if clip.timeline_in < other.timeline_out
+                        && clip.timeline_out > other.timeline_in
+                    {
+                        let overlap_start = if clip.timeline_in > other.timeline_in {
+                            clip.timeline_in
+                        } else {
+                            other.timeline_in
+                        };
+                        let overlap_end = if clip.timeline_out < other.timeline_out {
+                            clip.timeline_out
+                        } else {
+                            other.timeline_out
+                        };
+                        let ox = content_rect.left() + overlap_start.to_secs_f64() as f32 * zoom
+                            - scroll;
                         let ow = (overlap_end - overlap_start).to_secs_f64() as f32 * zoom;
                         let overlap_rect = egui::Rect::from_min_size(
                             egui::pos2(ox, track_rect.top() + 2.0),
                             egui::vec2(ow, track_rect.height() - 4.0),
                         );
-                        if overlap_rect.right() < content_rect.left() || overlap_rect.left() > content_rect.right() {
+                        if overlap_rect.right() < content_rect.left()
+                            || overlap_rect.left() > content_rect.right()
+                        {
                             continue;
                         }
                         // Amber striped overlay
                         let tt = theme();
                         let acc = tt.accent;
-                        let stripe_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80);
+                        let stripe_color =
+                            egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 80);
                         let stripe_spacing = 6.0_f32;
                         let clip_painter = painter.with_clip_rect(overlap_rect);
                         let mut sx = overlap_rect.min.x - overlap_rect.height();
                         while sx < overlap_rect.max.x {
                             let p1 = egui::pos2(sx, overlap_rect.max.y);
                             let p2 = egui::pos2(sx + overlap_rect.height(), overlap_rect.min.y);
-                            clip_painter.line_segment([p1, p2], egui::Stroke::new(1.5_f32, stripe_color));
+                            clip_painter
+                                .line_segment([p1, p2], egui::Stroke::new(1.5_f32, stripe_color));
                             sx += stripe_spacing;
                         }
                         // Amber border
-                        painter.rect_stroke(overlap_rect, 2.0,
-                            egui::Stroke::new(1.5_f32, acc));
+                        painter.rect_stroke(overlap_rect, 2.0, egui::Stroke::new(1.5_f32, acc));
                     }
                 }
             }
@@ -14291,7 +17440,9 @@ impl TimelinePanel {
         let galley1 = painter.layout_no_wrap(line1.clone(), font.clone(), text_color);
         let galley2 = painter.layout_no_wrap(line2.clone(), font.clone(), text_color);
         let galley3 = painter.layout_no_wrap(line3.clone(), font.clone(), text_color);
-        let max_w = galley1.rect.width()
+        let max_w = galley1
+            .rect
+            .width()
             .max(galley2.rect.width())
             .max(galley3.rect.width());
 
@@ -14301,13 +17452,12 @@ impl TimelinePanel {
         let panel_h = line_h * 3.0 + pad * 2.0;
 
         // Position: above the track, near the trim edge
-        let panel_x = (edge_x - panel_w / 2.0).clamp(content_rect.left(), content_rect.right() - panel_w);
+        let panel_x =
+            (edge_x - panel_w / 2.0).clamp(content_rect.left(), content_rect.right() - panel_w);
         let panel_y = track_rect.top() - panel_h - 4.0;
 
-        let panel_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_x, panel_y),
-            egui::vec2(panel_w, panel_h),
-        );
+        let panel_rect =
+            egui::Rect::from_min_size(egui::pos2(panel_x, panel_y), egui::vec2(panel_w, panel_h));
 
         painter.rect_filled(panel_rect, 4.0, bg_color);
         painter.rect_stroke(panel_rect, 4.0, egui::Stroke::new(1.0_f32, border_color));
@@ -14317,7 +17467,11 @@ impl TimelinePanel {
         let text_y = panel_rect.top() + pad;
         painter.galley(egui::pos2(text_x, text_y), galley1, text_color);
         painter.galley(egui::pos2(text_x, text_y + line_h), galley2, text_color);
-        painter.galley(egui::pos2(text_x, text_y + line_h * 2.0), galley3, text_color);
+        painter.galley(
+            egui::pos2(text_x, text_y + line_h * 2.0),
+            galley3,
+            text_color,
+        );
     }
 
     /// Edge-first hit-test: find the closest clip edge within TRIM_HANDLE_WIDTH.
@@ -14346,19 +17500,16 @@ impl TimelinePanel {
         let mut best: Option<(f32, egui::Rect, &klipp_timeline::Clip, TrimEdge)> = None;
 
         for clip in clips {
-            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+            let cr =
+                Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
 
             let dist_left = (pos.x - cr.left()).abs();
             let dist_right = (pos.x - cr.right()).abs();
 
-            if dist_left < TRIM_HANDLE_WIDTH
-                && (best.is_none() || dist_left < best.unwrap().0)
-            {
+            if dist_left < TRIM_HANDLE_WIDTH && (best.is_none() || dist_left < best.unwrap().0) {
                 best = Some((dist_left, cr, clip, TrimEdge::Left));
             }
-            if dist_right < TRIM_HANDLE_WIDTH
-                && (best.is_none() || dist_right < best.unwrap().0)
-            {
+            if dist_right < TRIM_HANDLE_WIDTH && (best.is_none() || dist_right < best.unwrap().0) {
                 best = Some((dist_right, cr, clip, TrimEdge::Right));
             }
         }
@@ -14380,7 +17531,8 @@ impl TimelinePanel {
         pos: egui::Pos2,
     ) -> Option<(egui::Rect, &'a klipp_timeline::Clip)> {
         for clip in clips.iter().rev() {
-            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+            let cr =
+                Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
             if cr.contains(pos) {
                 return Some((cr, clip));
             }
@@ -14401,17 +17553,31 @@ impl TimelinePanel {
         let btn_h = 16.0;
         let y = ruler_rect.top() + (RULER_HEIGHT - btn_h) / 2.0;
         let mut x = header_rect.left() + 2.0;
-        let painter = ui.painter().with_clip_rect(
-            ui.clip_rect().intersect(ui.max_rect()),
-        );
+        let painter = ui
+            .painter()
+            .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
 
         // Fit button
         let fit_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let fit_resp = ui.interact(fit_rect, ui.id().with("zoom_fit"), egui::Sense::click())
+        let fit_resp = ui
+            .interact(fit_rect, ui.id().with("zoom_fit"), egui::Sense::click())
             .on_hover_text("Fit timeline to window (Shift+Z)");
-        painter.rect_filled(fit_rect, 2.0, if fit_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
-        painter.text(fit_rect.center(), egui::Align2::CENTER_CENTER, "Fit",
-            egui::FontId::proportional(10.0), tt.text_primary);
+        painter.rect_filled(
+            fit_rect,
+            2.0,
+            if fit_resp.hovered() {
+                tt.bg_hover
+            } else {
+                tt.bg_raised
+            },
+        );
+        painter.text(
+            fit_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Fit",
+            egui::FontId::proportional(10.0),
+            tt.text_primary,
+        );
         if fit_resp.clicked() {
             cmds.push(AppCommand::ZoomTimelineToFit);
         }
@@ -14419,25 +17585,55 @@ impl TimelinePanel {
 
         // - button
         let minus_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let minus_resp = ui.interact(minus_rect, ui.id().with("zoom_minus"), egui::Sense::click())
+        let minus_resp = ui
+            .interact(minus_rect, ui.id().with("zoom_minus"), egui::Sense::click())
             .on_hover_text("Zoom out");
-        painter.rect_filled(minus_rect, 2.0, if minus_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
-        Icon::Minus.image(12.0).tint(tt.text_primary).paint_at(ui, minus_rect.shrink(2.0));
+        painter.rect_filled(
+            minus_rect,
+            2.0,
+            if minus_resp.hovered() {
+                tt.bg_hover
+            } else {
+                tt.bg_raised
+            },
+        );
+        Icon::Minus
+            .image(12.0)
+            .tint(tt.text_primary)
+            .paint_at(ui, minus_rect.shrink(2.0));
         if minus_resp.clicked() {
             let new_zoom = (state.timeline_zoom / 1.5).clamp(0.1, 2000.0);
-            cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
+            cmds.push(AppCommand::SetTimelineZoom {
+                zoom: new_zoom,
+                scroll_x: None,
+            });
         }
         x += btn_w + 2.0;
 
         // + button
         let plus_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(btn_w, btn_h));
-        let plus_resp = ui.interact(plus_rect, ui.id().with("zoom_plus"), egui::Sense::click())
+        let plus_resp = ui
+            .interact(plus_rect, ui.id().with("zoom_plus"), egui::Sense::click())
             .on_hover_text("Zoom in");
-        painter.rect_filled(plus_rect, 2.0, if plus_resp.hovered() { tt.bg_hover } else { tt.bg_raised });
-        Icon::Plus.image(12.0).tint(tt.text_primary).paint_at(ui, plus_rect.shrink(2.0));
+        painter.rect_filled(
+            plus_rect,
+            2.0,
+            if plus_resp.hovered() {
+                tt.bg_hover
+            } else {
+                tt.bg_raised
+            },
+        );
+        Icon::Plus
+            .image(12.0)
+            .tint(tt.text_primary)
+            .paint_at(ui, plus_rect.shrink(2.0));
         if plus_resp.clicked() {
             let new_zoom = (state.timeline_zoom * 1.5).clamp(0.1, 2000.0);
-            cmds.push(AppCommand::SetTimelineZoom { zoom: new_zoom, scroll_x: None });
+            cmds.push(AppCommand::SetTimelineZoom {
+                zoom: new_zoom,
+                scroll_x: None,
+            });
         }
     }
 
@@ -14469,10 +17665,8 @@ impl TimelinePanel {
                 break;
             }
 
-            let thumb_rect = egui::Rect::from_min_size(
-                egui::pos2(x, y),
-                egui::vec2(item_size, item_size - 8.0),
-            );
+            let thumb_rect =
+                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(item_size, item_size - 8.0));
 
             if let Some(tex) = state.thumbnail_textures.get(&item.id) {
                 painter.image(
@@ -14485,20 +17679,23 @@ impl TimelinePanel {
                 painter.rect_filled(thumb_rect, 2.0, tt.bg_raised);
             }
 
-            painter.rect_stroke(
-                thumb_rect,
-                2.0,
-                egui::Stroke::new(1.0_f32, tt.border_light),
-            );
+            painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, tt.border_light));
 
-            let resp = ui.interact(thumb_rect, ui.id().with(("pool_item", item.id.0)), egui::Sense::click_and_drag());
+            let resp = ui.interact(
+                thumb_rect,
+                ui.id().with(("pool_item", item.id.0)),
+                egui::Sense::click_and_drag(),
+            );
             if resp.clicked() {
                 // Single click: load in source monitor
                 cmds.push(AppCommand::LoadSourceMedia { media_id: item.id });
             }
             if resp.double_clicked() {
                 let on_new_tracks = ui.input(|i| i.modifiers.shift);
-                cmds.push(AppCommand::ImportMediaLinked { media_id: item.id, on_new_tracks });
+                cmds.push(AppCommand::ImportMediaLinked {
+                    media_id: item.id,
+                    on_new_tracks,
+                });
             }
             // Drag: start dragging media to a track
             if resp.drag_started() {
@@ -14535,15 +17732,22 @@ impl TimelinePanel {
         let x = header_rect.left() + 2.0;
 
         // Snap toggle
-        let snap_rect = egui::Rect::from_min_size(
-            egui::pos2(x, y_offset + 2.0),
-            egui::vec2(btn_w, btn_h),
-        );
+        let snap_rect =
+            egui::Rect::from_min_size(egui::pos2(x, y_offset + 2.0), egui::vec2(btn_w, btn_h));
         let snap_resp = ui.interact(snap_rect, ui.id().with("snap_toggle"), egui::Sense::click());
-        let snap_col = if state.snap.master { tt.marker_info } else { tt.bg_raised };
+        let snap_col = if state.snap.master {
+            tt.marker_info
+        } else {
+            tt.bg_raised
+        };
         painter.rect_filled(snap_rect, 2.0, snap_col);
-        painter.text(snap_rect.center(), egui::Align2::CENTER_CENTER, "Snap",
-            egui::FontId::proportional(10.0), tt.text_primary);
+        painter.text(
+            snap_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Snap",
+            egui::FontId::proportional(10.0),
+            tt.text_primary,
+        );
         if snap_resp.clicked() {
             cmds.push(AppCommand::SetSnapMaster(!state.snap.master));
         }
@@ -14553,11 +17757,24 @@ impl TimelinePanel {
             egui::pos2(x + btn_w + 2.0, y_offset + 2.0),
             egui::vec2(btn_w, btn_h),
         );
-        let ripple_resp = ui.interact(ripple_rect, ui.id().with("ripple_toggle"), egui::Sense::click());
-        let ripple_col = if state.ripple_enabled { tt.marker_info } else { tt.bg_raised };
+        let ripple_resp = ui.interact(
+            ripple_rect,
+            ui.id().with("ripple_toggle"),
+            egui::Sense::click(),
+        );
+        let ripple_col = if state.ripple_enabled {
+            tt.marker_info
+        } else {
+            tt.bg_raised
+        };
         painter.rect_filled(ripple_rect, 2.0, ripple_col);
-        painter.text(ripple_rect.center(), egui::Align2::CENTER_CENTER, "Ripple",
-            egui::FontId::proportional(10.0), tt.text_primary);
+        painter.text(
+            ripple_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Ripple",
+            egui::FontId::proportional(10.0),
+            tt.text_primary,
+        );
         if ripple_resp.clicked() {
             cmds.push(AppCommand::SetRippleEnabled(!state.ripple_enabled));
         }
@@ -14568,12 +17785,25 @@ impl TimelinePanel {
             egui::pos2(x + (btn_w + 2.0) * 2.0, y_offset + 2.0),
             egui::vec2(follow_w, btn_h),
         );
-        let follow_resp = ui.interact(follow_rect, ui.id().with("follow_toggle"), egui::Sense::click());
-        let follow_col = if state.playhead_follow != PlayheadFollow::Off { tt.marker_info } else { tt.bg_raised };
+        let follow_resp = ui.interact(
+            follow_rect,
+            ui.id().with("follow_toggle"),
+            egui::Sense::click(),
+        );
+        let follow_col = if state.playhead_follow != PlayheadFollow::Off {
+            tt.marker_info
+        } else {
+            tt.bg_raised
+        };
         painter.rect_filled(follow_rect, 2.0, follow_col);
         let follow_label = format!("Follow: {}", state.playhead_follow.label());
-        painter.text(follow_rect.center(), egui::Align2::CENTER_CENTER, follow_label,
-            egui::FontId::proportional(10.0), tt.text_primary);
+        painter.text(
+            follow_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            follow_label,
+            egui::FontId::proportional(10.0),
+            tt.text_primary,
+        );
         if follow_resp.clicked() {
             state.playhead_follow = state.playhead_follow.next();
         }
@@ -14585,11 +17815,24 @@ impl TimelinePanel {
             egui::pos2(x + (btn_w + 2.0) * 2.0 + follow_w + 4.0, y_offset + 2.0),
             egui::vec2(proxy_w, btn_h),
         );
-        let proxy_resp = ui.interact(proxy_rect, ui.id().with("proxy_toggle"), egui::Sense::click());
-        let proxy_col = if state.use_proxies { tt.accent_dim } else { tt.bg_raised };
+        let proxy_resp = ui.interact(
+            proxy_rect,
+            ui.id().with("proxy_toggle"),
+            egui::Sense::click(),
+        );
+        let proxy_col = if state.use_proxies {
+            tt.accent_dim
+        } else {
+            tt.bg_raised
+        };
         painter.rect_filled(proxy_rect, 2.0, proxy_col);
-        painter.text(proxy_rect.center(), egui::Align2::CENTER_CENTER, "Proxy",
-            egui::FontId::proportional(10.0), tt.text_primary);
+        painter.text(
+            proxy_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Proxy",
+            egui::FontId::proportional(10.0),
+            tt.text_primary,
+        );
         if proxy_resp.clicked() {
             cmds.push(AppCommand::SetUseProxies(!state.use_proxies));
         }
@@ -14602,17 +17845,31 @@ impl TimelinePanel {
         // work out which way round "Link audio" points.
         let patch_w = 48.0;
         let patch_rect = egui::Rect::from_min_size(
-            egui::pos2(x + (btn_w + 2.0) * 2.0 + follow_w + proxy_w + 8.0, y_offset + 2.0),
+            egui::pos2(
+                x + (btn_w + 2.0) * 2.0 + follow_w + proxy_w + 8.0,
+                y_offset + 2.0,
+            ),
             egui::vec2(patch_w, btn_h),
         );
-        let patch_resp =
-            ui.interact(patch_rect, ui.id().with("append_audio_toggle"), egui::Sense::click());
-        let patch_col = if state.append_brings_audio { tt.marker_info } else { tt.bg_raised };
+        let patch_resp = ui.interact(
+            patch_rect,
+            ui.id().with("append_audio_toggle"),
+            egui::Sense::click(),
+        );
+        let patch_col = if state.append_brings_audio {
+            tt.marker_info
+        } else {
+            tt.bg_raised
+        };
         painter.rect_filled(patch_rect, 2.0, patch_col);
         painter.text(
             patch_rect.center(),
             egui::Align2::CENTER_CENTER,
-            if state.append_brings_audio { "V+A" } else { "V only" },
+            if state.append_brings_audio {
+                "V+A"
+            } else {
+                "V only"
+            },
             egui::FontId::proportional(10.0),
             tt.text_primary,
         );
@@ -14626,12 +17883,7 @@ impl TimelinePanel {
         });
     }
 
-    fn draw_overview_bar(
-        &self,
-        painter: &egui::Painter,
-        rect: &egui::Rect,
-        state: &AppState,
-    ) {
+    fn draw_overview_bar(&self, painter: &egui::Painter, rect: &egui::Rect, state: &AppState) {
         let tt = theme();
         // Background
         painter.rect_filled(*rect, 0.0, tt.bg_void);
@@ -14689,7 +17941,11 @@ impl TimelinePanel {
                 // Brighter fill inside viewport, dimmer outside
                 let in_viewport = cx1 >= vp_x0 && cx0 <= vp_x1;
                 let color = if in_viewport {
-                    egui::Color32::from_rgb(r.saturating_add(20), g.saturating_add(20), b.saturating_add(20))
+                    egui::Color32::from_rgb(
+                        r.saturating_add(20),
+                        g.saturating_add(20),
+                        b.saturating_add(20),
+                    )
                 } else {
                     egui::Color32::from_rgb(r / 2, g / 2, b / 2)
                 };
@@ -14729,7 +17985,10 @@ impl TimelinePanel {
         painter.rect_stroke(
             vp_rect,
             0.0,
-            egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_premultiplied(tp.r(), tp.g(), tp.b(), 120)),
+            egui::Stroke::new(
+                1.5_f32,
+                egui::Color32::from_rgba_premultiplied(tp.r(), tp.g(), tp.b(), 120),
+            ),
         );
 
         // Draw playhead as thin red vertical line
@@ -14737,7 +17996,10 @@ impl TimelinePanel {
         let ph_x = rect.left() + playhead_secs * px_per_sec;
         if ph_x >= rect.left() && ph_x <= rect.right() {
             painter.line_segment(
-                [egui::pos2(ph_x, rect.top()), egui::pos2(ph_x, rect.bottom())],
+                [
+                    egui::pos2(ph_x, rect.top()),
+                    egui::pos2(ph_x, rect.bottom()),
+                ],
                 egui::Stroke::new(1.5_f32, tt.marker_error),
             );
         }
@@ -14745,12 +18007,7 @@ impl TimelinePanel {
         // (interaction handled in show() to avoid z-order conflicts)
     }
 
-    fn draw_ruler_ticks(
-        &self,
-        painter: &egui::Painter,
-        ruler_rect: &egui::Rect,
-        state: &AppState,
-    ) {
+    fn draw_ruler_ticks(&self, painter: &egui::Painter, ruler_rect: &egui::Rect, state: &AppState) {
         let tt = theme();
         let zoom = state.timeline_zoom;
         let scroll = state.timeline_scroll_x;
@@ -14765,19 +18022,45 @@ impl TimelinePanel {
         let min_label_interval_secs = secs_per_pixel * min_label_spacing_px;
 
         // Choose a "nice" major interval in seconds — covers frame-level to multi-hour
-        let major_interval = if min_label_interval_secs > 3600.0 { 3600.0 }  // 1h
-            else if min_label_interval_secs > 1800.0 { 1800.0 }  // 30m
-            else if min_label_interval_secs > 600.0 { 600.0 }    // 10m
-            else if min_label_interval_secs > 300.0 { 300.0 }    // 5m
-            else if min_label_interval_secs > 120.0 { 120.0 }    // 2m
-            else if min_label_interval_secs > 60.0 { 60.0 }      // 1m
-            else if min_label_interval_secs > 30.0 { 30.0 }
-            else if min_label_interval_secs > 10.0 { 10.0 }
-            else if min_label_interval_secs > 5.0 { 5.0 }
-            else if min_label_interval_secs > 2.0 { 2.0 }
-            else if min_label_interval_secs > 1.0 { 1.0 }
-            else if min_label_interval_secs > 0.5 { 0.5 }
-            else { 1.0 / fps }; // per-frame at extreme zoom
+        let major_interval = if min_label_interval_secs > 3600.0 {
+            3600.0
+        }
+        // 1h
+        else if min_label_interval_secs > 1800.0 {
+            1800.0
+        }
+        // 30m
+        else if min_label_interval_secs > 600.0 {
+            600.0
+        }
+        // 10m
+        else if min_label_interval_secs > 300.0 {
+            300.0
+        }
+        // 5m
+        else if min_label_interval_secs > 120.0 {
+            120.0
+        }
+        // 2m
+        else if min_label_interval_secs > 60.0 {
+            60.0
+        }
+        // 1m
+        else if min_label_interval_secs > 30.0 {
+            30.0
+        } else if min_label_interval_secs > 10.0 {
+            10.0
+        } else if min_label_interval_secs > 5.0 {
+            5.0
+        } else if min_label_interval_secs > 2.0 {
+            2.0
+        } else if min_label_interval_secs > 1.0 {
+            1.0
+        } else if min_label_interval_secs > 0.5 {
+            0.5
+        } else {
+            1.0 / fps
+        }; // per-frame at extreme zoom
 
         let start_secs = (scroll / zoom) - 1.0;
         let end_secs = (scroll + width) / zoom + 1.0;
@@ -14846,12 +18129,23 @@ impl TimelinePanel {
         }
 
         // Draw minor ticks (subdivisions between major ticks)
-        let minor_interval = if major_interval >= 600.0 { major_interval / 5.0 }   // 10m+ → 5 subdivisions
-            else if major_interval >= 60.0 { major_interval / 6.0 }   // 1m+ → 10s subdivisions
-            else if major_interval >= 10.0 { major_interval / 5.0 }
-            else if major_interval >= 2.0 { 1.0 }
-            else if major_interval >= 1.0 { 0.5 }
-            else { major_interval / 2.0 };
+        let minor_interval = if major_interval >= 600.0 {
+            major_interval / 5.0
+        }
+        // 10m+ → 5 subdivisions
+        else if major_interval >= 60.0 {
+            major_interval / 6.0
+        }
+        // 1m+ → 10s subdivisions
+        else if major_interval >= 10.0 {
+            major_interval / 5.0
+        } else if major_interval >= 2.0 {
+            1.0
+        } else if major_interval >= 1.0 {
+            0.5
+        } else {
+            major_interval / 2.0
+        };
 
         if minor_interval < major_interval {
             let mut t = (start_secs / minor_interval).floor() * minor_interval;
@@ -14909,8 +18203,14 @@ impl TimelinePanel {
     ) {
         if let Some(ref drag_vbh) = state.dragging_video_bezier_handle.clone() {
             if pointer_released || !pointer_down {
-                let drag_key = format!("kf:vtangent:{}:{:?}:{}", drag_vbh.clip_id.0, drag_vbh.param, drag_vbh.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_vbh.clip_id });
+                let drag_key = format!(
+                    "kf:vtangent:{}:{:?}:{}",
+                    drag_vbh.clip_id.0, drag_vbh.param, drag_vbh.keyframe_index
+                );
+                cmds.push(AppCommand::EndKeyframeDrag {
+                    key: drag_key,
+                    clip_id: drag_vbh.clip_id,
+                });
                 state.dragging_video_bezier_handle = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let zoom = state.timeline_zoom;
@@ -14918,10 +18218,17 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_vbh.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self
+                            .frame_cache
+                            .track_rects
+                            .iter()
+                            .find(|(idx, _, _)| *idx == ti)
+                        {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cx = content_left
+                                    + clip.timeline_in.to_secs_f64() as f32 * zoom
+                                    - scroll;
                                 let cw = clip.duration().to_secs_f64() as f32 * zoom;
                                 egui::Rect::from_min_size(
                                     egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
@@ -14931,30 +18238,64 @@ impl TimelinePanel {
                             let clip_dur_secs = clip.duration().to_secs_f64();
 
                             // Read keyframes for the dragged video parameter
-                            let vrb_opacity_static = clip.builtin_effects.iter()
-                                .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                .unwrap_or(1.0);
-                            let vrb_transform = clip.builtin_effects.iter()
+                            let vrb_opacity_static = clip
+                                .builtin_effects
+                                .iter()
                                 .find_map(|e| match e {
-                                    klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                        Some((*position_x, *position_y, *scale_x, *rotation)),
+                                    klipp_effects::BuiltinEffect::Opacity { value } => Some(*value),
+                                    _ => None,
+                                })
+                                .unwrap_or(1.0);
+                            let vrb_transform = clip
+                                .builtin_effects
+                                .iter()
+                                .find_map(|e| match e {
+                                    klipp_effects::BuiltinEffect::Transform {
+                                        position_x,
+                                        position_y,
+                                        scale_x,
+                                        rotation,
+                                        ..
+                                    } => Some((*position_x, *position_y, *scale_x, *rotation)),
                                     _ => None,
                                 })
                                 .unwrap_or((0.0, 0.0, 1.0, 0.0));
                             let (vrb_static_val, vrb_keyframes) = match drag_vbh.param {
-                                klipp_core::VideoParam::Opacity => (vrb_opacity_static, &clip.opacity_keyframes),
-                                klipp_core::VideoParam::PositionX => (vrb_transform.0, &clip.transform_pos_x_keyframes),
-                                klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
-                                klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
-                                klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
-                                klipp_core::VideoParam::TiltX => (crate::inspector::video_tab::get_transform(clip).rotation_x, &clip.transform_tilt_x_keyframes),
-                                klipp_core::VideoParam::TiltY => (crate::inspector::video_tab::get_transform(clip).rotation_y, &clip.transform_tilt_y_keyframes),
+                                klipp_core::VideoParam::Opacity => {
+                                    (vrb_opacity_static, &clip.opacity_keyframes)
+                                }
+                                klipp_core::VideoParam::PositionX => {
+                                    (vrb_transform.0, &clip.transform_pos_x_keyframes)
+                                }
+                                klipp_core::VideoParam::PositionY => {
+                                    (vrb_transform.1, &clip.transform_pos_y_keyframes)
+                                }
+                                klipp_core::VideoParam::Scale => {
+                                    (vrb_transform.2, &clip.transform_scale_keyframes)
+                                }
+                                klipp_core::VideoParam::Rotation => {
+                                    (vrb_transform.3, &clip.transform_rotation_keyframes)
+                                }
+                                klipp_core::VideoParam::TiltX => (
+                                    crate::inspector::video_tab::get_transform(clip).rotation_x,
+                                    &clip.transform_tilt_x_keyframes,
+                                ),
+                                klipp_core::VideoParam::TiltY => (
+                                    crate::inspector::video_tab::get_transform(clip).rotation_y,
+                                    &clip.transform_tilt_y_keyframes,
+                                ),
                                 klipp_core::VideoParam::MatteFeather => (
-                                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                                    clip.matte_source
+                                        .as_ref()
+                                        .map(|b| b.feather_px)
+                                        .unwrap_or(0.0),
                                     &clip.matte_feather_keyframes,
                                 ),
                                 klipp_core::VideoParam::MatteChoke => (
-                                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                                    clip.matte_source
+                                        .as_ref()
+                                        .map(|b| b.choke_px)
+                                        .unwrap_or(0.0),
                                     &clip.matte_choke_keyframes,
                                 ),
                             };
@@ -14963,8 +18304,12 @@ impl TimelinePanel {
                             let mut vrb_val_min = vrb_static_val;
                             let mut vrb_val_max = vrb_static_val;
                             for kf in vrb_keyframes.iter() {
-                                if kf.value < vrb_val_min { vrb_val_min = kf.value; }
-                                if kf.value > vrb_val_max { vrb_val_max = kf.value; }
+                                if kf.value < vrb_val_min {
+                                    vrb_val_min = kf.value;
+                                }
+                                if kf.value > vrb_val_max {
+                                    vrb_val_max = kf.value;
+                                }
                             }
                             let vrb_val_span = (vrb_val_max - vrb_val_min).max(0.01);
                             let vrb_padding = vrb_val_span * 0.2;
@@ -14973,14 +18318,22 @@ impl TimelinePanel {
 
                             if let Some(kf) = vrb_keyframes.get(drag_vbh.keyframe_index) {
                                 let kf_x = {
-                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    let frac = if clip_dur_secs > 0.0 {
+                                        (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
                                     clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
                                 };
                                 let kf_y = {
                                     let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
                                     clip_rect_approx.bottom() - norm * clip_rect_approx.height()
                                 };
-                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 {
+                                    clip_rect_approx.width() / clip_dur_secs as f32
+                                } else {
+                                    1.0
+                                };
                                 let value_scale = clip_rect_approx.height() / p_range;
 
                                 // Convert mouse position to tangent offset
@@ -15009,9 +18362,9 @@ impl TimelinePanel {
                                     (time_offset.min(0.0), value_offset)
                                 };
                                 let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
+                                let painter = ui
+                                    .painter()
+                                    .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -15038,8 +18391,14 @@ impl TimelinePanel {
     ) {
         if let Some(ref drag_bh) = state.dragging_bezier_handle.clone() {
             if pointer_released || !pointer_down {
-                let drag_key = format!("kf:tangent:{}:{:?}:{}", drag_bh.clip_id.0, drag_bh.param, drag_bh.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_bh.clip_id });
+                let drag_key = format!(
+                    "kf:tangent:{}:{:?}:{}",
+                    drag_bh.clip_id.0, drag_bh.param, drag_bh.keyframe_index
+                );
+                cmds.push(AppCommand::EndKeyframeDrag {
+                    key: drag_key,
+                    clip_id: drag_bh.clip_id,
+                });
                 state.dragging_bezier_handle = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let zoom = state.timeline_zoom;
@@ -15047,16 +18406,25 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_bh.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self
+                            .frame_cache
+                            .track_rects
+                            .iter()
+                            .find(|(idx, _, _)| *idx == ti)
+                        {
                             let content_left = track_rect.left();
-                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom
+                                - scroll;
                             let cw = clip.duration().to_secs_f64() as f32 * zoom;
                             let clip_rect_approx = if drag_bh.in_automation_lane {
                                 let lane_left = (cx).max(track_rect.left() + 28.0);
                                 let lane_right = (cx + cw).min(track_rect.right());
                                 egui::Rect::from_min_max(
                                     egui::pos2(lane_left, track_rect.bottom() + 1.0),
-                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) - 1.0),
+                                    egui::pos2(
+                                        lane_right.max(lane_left + 2.0),
+                                        track_rect.bottom() + automation_lane_height(track) - 1.0,
+                                    ),
                                 )
                             } else {
                                 egui::Rect::from_min_size(
@@ -15078,19 +18446,27 @@ impl TimelinePanel {
                             };
                             let (p_min, p_range) = match drag_bh.param {
                                 klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
-                                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
+                                klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32),
+                                klipp_core::AudioParam::Gain => (0.0_f32, 2.0_f32),
                             };
                             if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
                                 let kf_x = {
-                                    let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
+                                    let frac = if clip_dur_secs > 0.0 {
+                                        (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
                                     clip_rect_approx.left() + frac as f32 * clip_rect_approx.width()
                                 };
                                 let kf_y = {
                                     let norm = ((kf.value - p_min) / p_range).clamp(0.0, 1.0);
                                     clip_rect_approx.bottom() - norm * clip_rect_approx.height()
                                 };
-                                let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect_approx.width() / clip_dur_secs as f32 } else { 1.0 };
+                                let pixels_per_sec = if clip_dur_secs > 0.0 {
+                                    clip_rect_approx.width() / clip_dur_secs as f32
+                                } else {
+                                    1.0
+                                };
                                 let value_scale = clip_rect_approx.height() / p_range;
 
                                 // Convert mouse position to tangent offset
@@ -15121,9 +18497,9 @@ impl TimelinePanel {
                                     (time_offset.min(0.0), value_offset)
                                 };
                                 let tooltip = format!("dt:{:.3}s dv:{:.3}", dt, dv);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
+                                let painter = ui
+                                    .painter()
+                                    .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -15150,8 +18526,14 @@ impl TimelinePanel {
     ) {
         if let Some(ref drag_kf) = state.dragging_video_keyframe.clone() {
             if pointer_released || !pointer_down {
-                let drag_key = format!("kf:video:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+                let drag_key = format!(
+                    "kf:video:{}:{:?}:{}",
+                    drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index
+                );
+                cmds.push(AppCommand::EndKeyframeDrag {
+                    key: drag_key,
+                    clip_id: drag_kf.clip_id,
+                });
                 state.dragging_video_keyframe = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 let zoom = state.timeline_zoom;
@@ -15159,10 +18541,17 @@ impl TimelinePanel {
                 for (ti, track) in state.sequence().tracks.iter().enumerate() {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = effective_track_height(track);
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self
+                            .frame_cache
+                            .track_rects
+                            .iter()
+                            .find(|(idx, _, _)| *idx == ti)
+                        {
                             let content_left = track_rect.left();
                             let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                                let cx = content_left
+                                    + clip.timeline_in.to_secs_f64() as f32 * zoom
+                                    - scroll;
                                 let cw = clip.duration().to_secs_f64() as f32 * zoom;
                                 egui::Rect::from_min_size(
                                     egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
@@ -15171,33 +18560,60 @@ impl TimelinePanel {
                             };
                             let clip_dur_secs = clip.duration().to_secs_f64();
                             if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
-                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let frac = ((pos.x - clip_rect_approx.left())
+                                    / clip_rect_approx.width())
+                                .clamp(0.0, 1.0) as f64;
                                 let mut new_time = frac * clip_dur_secs;
 
                                 // Snap to notable positions
                                 let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
-                                let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
-                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
-                                        new_time = playhead_rel;
-                                    }
-                                if new_time < snap_thresh_secs { new_time = 0.0; }
-                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
+                                let playhead_rel =
+                                    state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
+                                if playhead_rel >= 0.0
+                                    && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs
+                                {
+                                    new_time = playhead_rel;
+                                }
+                                if new_time < snap_thresh_secs {
+                                    new_time = 0.0;
+                                }
+                                if (new_time - clip_dur_secs).abs() < snap_thresh_secs {
+                                    new_time = clip_dur_secs;
+                                }
 
                                 // Snap to other keyframes
                                 let keyframes = match drag_kf.param {
                                     klipp_core::VideoParam::Opacity => &clip.opacity_keyframes,
-                                    klipp_core::VideoParam::PositionX => &clip.transform_pos_x_keyframes,
-                                    klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
-                                    klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
-                                    klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
-                                    klipp_core::VideoParam::TiltX => &clip.transform_tilt_x_keyframes,
-                                    klipp_core::VideoParam::TiltY => &clip.transform_tilt_y_keyframes,
-                                    klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                    klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
+                                    klipp_core::VideoParam::PositionX => {
+                                        &clip.transform_pos_x_keyframes
+                                    }
+                                    klipp_core::VideoParam::PositionY => {
+                                        &clip.transform_pos_y_keyframes
+                                    }
+                                    klipp_core::VideoParam::Scale => {
+                                        &clip.transform_scale_keyframes
+                                    }
+                                    klipp_core::VideoParam::Rotation => {
+                                        &clip.transform_rotation_keyframes
+                                    }
+                                    klipp_core::VideoParam::TiltX => {
+                                        &clip.transform_tilt_x_keyframes
+                                    }
+                                    klipp_core::VideoParam::TiltY => {
+                                        &clip.transform_tilt_y_keyframes
+                                    }
+                                    klipp_core::VideoParam::MatteFeather => {
+                                        &clip.matte_feather_keyframes
+                                    }
+                                    klipp_core::VideoParam::MatteChoke => {
+                                        &clip.matte_choke_keyframes
+                                    }
                                 };
                                 for (ki, kf) in keyframes.iter().enumerate() {
-                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                    if ki != drag_kf.keyframe_index
+                                        && (kf.time_secs - new_time).abs() < snap_thresh_secs
+                                    {
                                         new_time = kf.time_secs;
                                         break;
                                     }
@@ -15205,16 +18621,33 @@ impl TimelinePanel {
 
                                 // Map Y to param value using auto-scaled range
                                 let base_val = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => {
-                                        clip.builtin_effects.iter()
-                                            .find_map(|e| match e { klipp_effects::BuiltinEffect::Opacity { value } => Some(*value), _ => None })
-                                            .unwrap_or(1.0)
-                                    }
+                                    klipp_core::VideoParam::Opacity => clip
+                                        .builtin_effects
+                                        .iter()
+                                        .find_map(|e| match e {
+                                            klipp_effects::BuiltinEffect::Opacity { value } => {
+                                                Some(*value)
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or(1.0),
                                     _ => {
-                                        let t = clip.builtin_effects.iter()
+                                        let t = clip
+                                            .builtin_effects
+                                            .iter()
                                             .find_map(|e| match e {
-                                                klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, .. } =>
-                                                    Some((*position_x, *position_y, *scale_x, *rotation)),
+                                                klipp_effects::BuiltinEffect::Transform {
+                                                    position_x,
+                                                    position_y,
+                                                    scale_x,
+                                                    rotation,
+                                                    ..
+                                                } => Some((
+                                                    *position_x,
+                                                    *position_y,
+                                                    *scale_x,
+                                                    *rotation,
+                                                )),
                                                 _ => None,
                                             })
                                             .unwrap_or((0.0, 0.0, 1.0, 0.0));
@@ -15223,12 +18656,26 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => t.1,
                                             klipp_core::VideoParam::Scale => t.2,
                                             klipp_core::VideoParam::Rotation => t.3,
-                                            klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
-                                            klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
+                                            klipp_core::VideoParam::TiltX => {
+                                                crate::inspector::video_tab::get_transform(clip)
+                                                    .rotation_x
+                                            }
+                                            klipp_core::VideoParam::TiltY => {
+                                                crate::inspector::video_tab::get_transform(clip)
+                                                    .rotation_y
+                                            }
                                             // Every parameter is named: this was an
                                             // unreachable!() that a matte keyframe could reach.
-                                            klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
-                                            klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                                            klipp_core::VideoParam::MatteFeather => clip
+                                                .matte_source
+                                                .as_ref()
+                                                .map(|b| b.feather_px)
+                                                .unwrap_or(0.0),
+                                            klipp_core::VideoParam::MatteChoke => clip
+                                                .matte_source
+                                                .as_ref()
+                                                .map(|b| b.choke_px)
+                                                .unwrap_or(0.0),
                                             klipp_core::VideoParam::Opacity => 1.0,
                                         }
                                     }
@@ -15236,15 +18683,21 @@ impl TimelinePanel {
                                 let mut val_min = base_val;
                                 let mut val_max = base_val;
                                 for kf in keyframes.iter() {
-                                    if kf.value < val_min { val_min = kf.value; }
-                                    if kf.value > val_max { val_max = kf.value; }
+                                    if kf.value < val_min {
+                                        val_min = kf.value;
+                                    }
+                                    if kf.value > val_max {
+                                        val_max = kf.value;
+                                    }
                                 }
                                 let val_span = (val_max - val_min).max(0.01);
                                 let padding = val_span * 0.2;
                                 let p_min = val_min - padding;
                                 let p_range = val_span + padding * 2.0;
 
-                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                let normalized = ((clip_rect_approx.bottom() - pos.y)
+                                    / clip_rect_approx.height())
+                                .clamp(0.0, 1.0);
                                 let new_value = p_min + normalized * p_range;
 
                                 cmds.push(AppCommand::MoveVideoKeyframe {
@@ -15257,21 +18710,37 @@ impl TimelinePanel {
 
                                 // Live value readout tooltip
                                 let value_text = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => format!("{:.0}%", new_value * 100.0),
-                                    klipp_core::VideoParam::PositionX => format!("X:{:.0}", new_value),
-                                    klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
+                                    klipp_core::VideoParam::Opacity => {
+                                        format!("{:.0}%", new_value * 100.0)
+                                    }
+                                    klipp_core::VideoParam::PositionX => {
+                                        format!("X:{:.0}", new_value)
+                                    }
+                                    klipp_core::VideoParam::PositionY => {
+                                        format!("Y:{:.0}", new_value)
+                                    }
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
-                                    klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
-                                    klipp_core::VideoParam::TiltX => format!("TX:{:.1}°", new_value),
-                                    klipp_core::VideoParam::TiltY => format!("TY:{:.1}°", new_value),
-                                    klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", new_value),
-                                    klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", new_value),
+                                    klipp_core::VideoParam::Rotation => {
+                                        format!("{:.1}°", new_value)
+                                    }
+                                    klipp_core::VideoParam::TiltX => {
+                                        format!("TX:{:.1}°", new_value)
+                                    }
+                                    klipp_core::VideoParam::TiltY => {
+                                        format!("TY:{:.1}°", new_value)
+                                    }
+                                    klipp_core::VideoParam::MatteFeather => {
+                                        format!("Fth:{:.1}px", new_value)
+                                    }
+                                    klipp_core::VideoParam::MatteChoke => {
+                                        format!("Chk:{:.1}px", new_value)
+                                    }
                                 };
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{} | {}", time_text, value_text);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
+                                let painter = ui
+                                    .painter()
+                                    .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                                 painter.text(
                                     egui::pos2(pos.x + 12.0, pos.y - 16.0),
                                     egui::Align2::LEFT_BOTTOM,
@@ -15299,8 +18768,14 @@ impl TimelinePanel {
         if let Some(ref drag_kf) = state.dragging_audio_keyframe.clone() {
             if pointer_released || !pointer_down {
                 // Release: send end-drag for undo coalescing, then clear drag state
-                let drag_key = format!("kf:audio:{}:{:?}:{}", drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index);
-                cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+                let drag_key = format!(
+                    "kf:audio:{}:{:?}:{}",
+                    drag_kf.clip_id.0, drag_kf.param, drag_kf.keyframe_index
+                );
+                cmds.push(AppCommand::EndKeyframeDrag {
+                    key: drag_key,
+                    clip_id: drag_kf.clip_id,
+                });
                 state.dragging_audio_keyframe = None;
             } else if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 // Find the clip's screen rect to map position back to time/value
@@ -15311,9 +18786,15 @@ impl TimelinePanel {
                     if let Some(clip) = track.find_clip(drag_kf.clip_id) {
                         let track_height = effective_track_height(track);
                         // Find track_rect from track_rects cache
-                        if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
+                        if let Some((_, _, track_rect)) = self
+                            .frame_cache
+                            .track_rects
+                            .iter()
+                            .find(|(idx, _, _)| *idx == ti)
+                        {
                             let content_left = track_rect.left(); // approximation — content_rect not available here
-                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom
+                                - scroll;
                             let cw = clip.duration().to_secs_f64() as f32 * zoom;
                             // Map drag against the surface the gesture
                             // started on. Lane sub-rect for lane drags
@@ -15324,7 +18805,10 @@ impl TimelinePanel {
                                 let lane_right = (cx + cw).min(track_rect.right());
                                 egui::Rect::from_min_max(
                                     egui::pos2(lane_left, track_rect.bottom() + 1.0),
-                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + automation_lane_height(track) - 1.0),
+                                    egui::pos2(
+                                        lane_right.max(lane_left + 2.0),
+                                        track_rect.bottom() + automation_lane_height(track) - 1.0,
+                                    ),
                                 )
                             } else {
                                 egui::Rect::from_min_size(
@@ -15334,7 +18818,9 @@ impl TimelinePanel {
                             };
                             let clip_dur_secs = clip.duration().to_secs_f64();
                             if clip_dur_secs > 0.0 && clip_rect_approx.width() > 0.0 {
-                                let frac = ((pos.x - clip_rect_approx.left()) / clip_rect_approx.width()).clamp(0.0, 1.0) as f64;
+                                let frac = ((pos.x - clip_rect_approx.left())
+                                    / clip_rect_approx.width())
+                                .clamp(0.0, 1.0) as f64;
                                 let mut new_time = frac * clip_dur_secs;
 
                                 // ── Snap keyframe to notable positions ──
@@ -15345,10 +18831,12 @@ impl TimelinePanel {
                                 let playhead_abs = state.playhead_smooth_secs;
                                 let clip_start_abs = clip.timeline_in.to_secs_f64();
                                 let playhead_rel = playhead_abs - clip_start_abs;
-                                if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
-                                    && (new_time - playhead_rel).abs() < snap_thresh_secs {
-                                        new_time = playhead_rel;
-                                    }
+                                if playhead_rel >= 0.0
+                                    && playhead_rel <= clip_dur_secs
+                                    && (new_time - playhead_rel).abs() < snap_thresh_secs
+                                {
+                                    new_time = playhead_rel;
+                                }
 
                                 // Snap to clip start boundary
                                 if new_time < snap_thresh_secs {
@@ -15366,13 +18854,17 @@ impl TimelinePanel {
                                     klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                 };
                                 for (ki, kf) in keyframes.iter().enumerate() {
-                                    if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                                    if ki != drag_kf.keyframe_index
+                                        && (kf.time_secs - new_time).abs() < snap_thresh_secs
+                                    {
                                         new_time = kf.time_secs;
                                         break;
                                     }
                                 }
 
-                                let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
+                                let normalized = ((clip_rect_approx.bottom() - pos.y)
+                                    / clip_rect_approx.height())
+                                .clamp(0.0, 1.0);
                                 // Fixed Y range per param — must match the
                                 // renderer in `draw_audio_rubber_band` so a
                                 // diamond ends up under the pointer after
@@ -15386,8 +18878,8 @@ impl TimelinePanel {
                                 // hit-test failed because pointer ≠ diamond.
                                 let (p_min, p_range) = match drag_kf.param {
                                     klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
-                                    klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Pan => (-1.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Gain => (0.0_f32, 2.0_f32),
                                 };
                                 let new_value = p_min + normalized * p_range;
                                 cmds.push(AppCommand::MoveAudioKeyframe {
@@ -15403,19 +18895,25 @@ impl TimelinePanel {
                                 // the user can correlate "the diamond is at
                                 // X%" with the labels they see drawn.
                                 let value_text = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_value * 100.0),
+                                    klipp_core::AudioParam::Volume => {
+                                        format!("{:.0}%", new_value * 100.0)
+                                    }
                                     klipp_core::AudioParam::Pan => {
-                                        if new_value.abs() < 0.01 { "C".to_string() }
-                                        else if new_value < 0.0 { format!("L{:.0}", -new_value * 100.0) }
-                                        else { format!("R{:.0}", new_value * 100.0) }
+                                        if new_value.abs() < 0.01 {
+                                            "C".to_string()
+                                        } else if new_value < 0.0 {
+                                            format!("L{:.0}", -new_value * 100.0)
+                                        } else {
+                                            format!("R{:.0}", new_value * 100.0)
+                                        }
                                     }
                                     klipp_core::AudioParam::Gain => format!("{:.2}x", new_value),
                                 };
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{}  {}", time_text, value_text);
-                                let painter = ui.painter().with_clip_rect(
-                                    ui.clip_rect().intersect(ui.max_rect()),
-                                );
+                                let painter = ui
+                                    .painter()
+                                    .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                                 let tooltip_pos = egui::pos2(pos.x + 12.0, pos.y - 18.0);
                                 let font = egui::FontId::proportional(10.0);
                                 let galley = painter.layout_no_wrap(
@@ -15477,7 +18975,10 @@ impl TimelinePanel {
                 "kf:audio_effect:{}:{}:{}:{}",
                 drag_kf.clip_id.0, drag_kf.effect_index, drag_kf.param_name, drag_kf.keyframe_index,
             );
-            cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+            cmds.push(AppCommand::EndKeyframeDrag {
+                key: drag_key,
+                clip_id: drag_kf.clip_id,
+            });
             state.dragging_audio_effect_keyframe = None;
             return;
         }
@@ -15492,9 +18993,18 @@ impl TimelinePanel {
         let key = format!("{}:{}", drag_kf.effect_index, drag_kf.param_name);
 
         for (ti, track) in state.sequence().tracks.iter().enumerate() {
-            let Some(clip) = track.find_clip(drag_kf.clip_id) else { continue };
+            let Some(clip) = track.find_clip(drag_kf.clip_id) else {
+                continue;
+            };
             let track_height = effective_track_height(track);
-            let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
+            let Some((_, _, track_rect)) = self
+                .frame_cache
+                .track_rects
+                .iter()
+                .find(|(idx, _, _)| *idx == ti)
+            else {
+                continue;
+            };
 
             let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
             let cw = clip.duration().to_secs_f64() as f32 * zoom;
@@ -15514,21 +19024,28 @@ impl TimelinePanel {
 
             // Snap to playhead
             let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
-            if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+            if playhead_rel >= 0.0
+                && playhead_rel <= clip_dur_secs
                 && (new_time - playhead_rel).abs() < snap_thresh_secs
             {
                 new_time = playhead_rel;
             }
 
             // Snap to clip start/end
-            if new_time < snap_thresh_secs { new_time = 0.0; }
-            if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
+            if new_time < snap_thresh_secs {
+                new_time = 0.0;
+            }
+            if (new_time - clip_dur_secs).abs() < snap_thresh_secs {
+                new_time = clip_dur_secs;
+            }
 
             // Snap to sibling kfs on the same track
             let empty: Vec<klipp_core::Keyframe> = Vec::new();
             let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
             for (ki, kf) in kfs_ref.iter().enumerate() {
-                if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                if ki != drag_kf.keyframe_index
+                    && (kf.time_secs - new_time).abs() < snap_thresh_secs
+                {
                     new_time = kf.time_secs;
                     break;
                 }
@@ -15536,8 +19053,15 @@ impl TimelinePanel {
 
             // Y-axis: same auto-scale as the draw fn so visual position
             // and stored value align.
-            let static_val = clip.audio_effects.get(drag_kf.effect_index)
-                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &drag_kf.param_name).map(|(_, v)| *v))
+            let static_val = clip
+                .audio_effects
+                .get(drag_kf.effect_index)
+                .and_then(|inst| {
+                    inst.params
+                        .iter()
+                        .find(|(k, _)| k == &drag_kf.param_name)
+                        .map(|(_, v)| *v)
+                })
                 .unwrap_or(match drag_kf.param_name.as_str() {
                     "__bypass" | "__wetdry" => 1.0,
                     _ => 0.0,
@@ -15545,8 +19069,12 @@ impl TimelinePanel {
             let mut v_min = static_val;
             let mut v_max = static_val;
             for kf in kfs_ref.iter() {
-                if kf.value < v_min { v_min = kf.value; }
-                if kf.value > v_max { v_max = kf.value; }
+                if kf.value < v_min {
+                    v_min = kf.value;
+                }
+                if kf.value > v_max {
+                    v_max = kf.value;
+                }
             }
             let v_span = (v_max - v_min).max(0.01);
             let v_pad = v_span * 0.2;
@@ -15566,7 +19094,9 @@ impl TimelinePanel {
 
             // Live readout tooltip
             let tooltip = format!("{:.2}s | {:.2}", new_time, new_value);
-            let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+            let painter = ui
+                .painter()
+                .with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             painter.text(
                 egui::pos2(pos.x + 12.0, pos.y - 16.0),
                 egui::Align2::LEFT_BOTTOM,
@@ -15613,9 +19143,18 @@ impl TimelinePanel {
         let key = format!("{}:{}", drag.effect_index, drag.param_name);
 
         for (ti, track) in state.sequence().tracks.iter().enumerate() {
-            let Some(clip) = track.find_clip(drag.clip_id) else { continue };
+            let Some(clip) = track.find_clip(drag.clip_id) else {
+                continue;
+            };
             let track_height = effective_track_height(track);
-            let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
+            let Some((_, _, track_rect)) = self
+                .frame_cache
+                .track_rects
+                .iter()
+                .find(|(idx, _, _)| *idx == ti)
+            else {
+                continue;
+            };
             let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
             let cw = clip.duration().to_secs_f64() as f32 * zoom;
             let clip_rect = egui::Rect::from_min_size(
@@ -15623,7 +19162,9 @@ impl TimelinePanel {
                 egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
             );
             let clip_dur_secs = clip.duration().to_secs_f64();
-            if clip_dur_secs <= 0.0 || clip_rect.width() <= 0.0 { break; }
+            if clip_dur_secs <= 0.0 || clip_rect.width() <= 0.0 {
+                break;
+            }
 
             let kfs = match clip.audio_effect_keyframes.get(&key) {
                 Some(v) => v,
@@ -15637,8 +19178,15 @@ impl TimelinePanel {
             // Map pointer back to (handle_t, handle_v) using the SAME
             // auto-Y-scale as the draw fn so the visual handle and
             // stored tangent line up.
-            let static_val = clip.audio_effects.get(drag.effect_index)
-                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &drag.param_name).map(|(_, v)| *v))
+            let static_val = clip
+                .audio_effects
+                .get(drag.effect_index)
+                .and_then(|inst| {
+                    inst.params
+                        .iter()
+                        .find(|(k, _)| k == &drag.param_name)
+                        .map(|(_, v)| *v)
+                })
                 .unwrap_or(match drag.param_name.as_str() {
                     "__bypass" | "__wetdry" => 1.0,
                     _ => 0.0,
@@ -15646,8 +19194,12 @@ impl TimelinePanel {
             let mut v_min = static_val;
             let mut v_max = static_val;
             for k in kfs.iter() {
-                if k.value < v_min { v_min = k.value; }
-                if k.value > v_max { v_max = k.value; }
+                if k.value < v_min {
+                    v_min = k.value;
+                }
+                if k.value > v_max {
+                    v_max = k.value;
+                }
             }
             let v_span = (v_max - v_min).max(0.01);
             let v_pad = v_span * 0.2;
@@ -15692,29 +19244,41 @@ impl TimelinePanel {
         if let Some(in_pt) = state.sequence().in_point {
             let x = content_rect.left() + in_pt.to_secs_f64() as f32 * zoom - scroll;
             if x >= content_rect.left() && x <= content_rect.right() {
-                crate::timeline::range_visuals::draw_guide_line(painter, x, tracks_start_y, content_rect.bottom(), &tt);
+                crate::timeline::range_visuals::draw_guide_line(
+                    painter,
+                    x,
+                    tracks_start_y,
+                    content_rect.bottom(),
+                    &tt,
+                );
             }
         }
         if let Some(out_pt) = state.sequence().out_point {
             let x = content_rect.left() + out_pt.to_secs_f64() as f32 * zoom - scroll;
             if x >= content_rect.left() && x <= content_rect.right() {
-                crate::timeline::range_visuals::draw_guide_line(painter, x, tracks_start_y, content_rect.bottom(), &tt);
+                crate::timeline::range_visuals::draw_guide_line(
+                    painter,
+                    x,
+                    tracks_start_y,
+                    content_rect.bottom(),
+                    &tt,
+                );
             }
         }
     }
 
-    fn handle_global_drag_cleanup(
-        &mut self,
-        ui: &mut egui::Ui,
-        state: &mut AppState,
-    ) {
+    fn handle_global_drag_cleanup(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
         let any_down = ui.input(|i| i.pointer.any_down());
         if !any_down
-            && matches!(&state.drag_drop.payload, Some(crate::drag_drop::DragPayload::Effect { .. })
-                | Some(crate::drag_drop::DragPayload::AudioEffect { .. })
-                | Some(crate::drag_drop::DragPayload::Transition { .. })) {
-                state.drag_drop.end();
-            }
+            && matches!(
+                &state.drag_drop.payload,
+                Some(crate::drag_drop::DragPayload::Effect { .. })
+                    | Some(crate::drag_drop::DragPayload::AudioEffect { .. })
+                    | Some(crate::drag_drop::DragPayload::Transition { .. })
+            )
+        {
+            state.drag_drop.end();
+        }
     }
 
     fn handle_rubber_band_release(
@@ -15731,7 +19295,9 @@ impl TimelinePanel {
                 // The clip's current values are post-drag — read them
                 // back so the single history entry has the correct
                 // (old → new) pair and autosave can finally fire once.
-                let snap = state.sequence().all_clips()
+                let snap = state
+                    .sequence()
+                    .all_clips()
                     .find(|c| c.id == clip_id)
                     .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs));
                 if let Some((g, v, p, fi, fo)) = snap {
@@ -15786,7 +19352,9 @@ pub(crate) fn find_matte_candidate_above(
     current_clip_id: klipp_core::ClipId,
 ) -> Option<(klipp_core::ClipId, klipp_timeline::ClipKind)> {
     let seq = state.sequence();
-    let current_clip = seq.tracks.iter()
+    let current_clip = seq
+        .tracks
+        .iter()
         .flat_map(|t| t.clips.iter())
         .find(|c| c.id == current_clip_id)?;
     let lo = current_clip.timeline_in;
@@ -15804,8 +19372,12 @@ pub(crate) fn find_matte_candidate_above(
             continue;
         }
         for c in &track.clips {
-            if c.id == current_clip_id { continue; }
-            if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { continue; }
+            if c.id == current_clip_id {
+                continue;
+            }
+            if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                continue;
+            }
             // Time-range overlap: `c.in < hi && c.out > lo`.
             if c.timeline_in < hi && c.timeline_out > lo {
                 return Some((c.id, c.kind.clone()));
@@ -15839,13 +19411,21 @@ fn format_shortfall_tooltip(
     let rate_f = rate.max(1) as f64;
     if ha.shortfall_a() > 0 {
         let ms = (ha.shortfall_a() as f64 / rate_f * 1000.0).round() as i64;
-        lines.push(format!("Clip A short by {} frames ({} ms)", ha.shortfall_a(), ms));
+        lines.push(format!(
+            "Clip A short by {} frames ({} ms)",
+            ha.shortfall_a(),
+            ms
+        ));
     } else if ha.clip_a_available.is_none() && ha.clip_a_needed > 0 {
         lines.push("Clip A: availability unknown".to_string());
     }
     if ha.shortfall_b() > 0 {
         let ms = (ha.shortfall_b() as f64 / rate_f * 1000.0).round() as i64;
-        lines.push(format!("Clip B short by {} frames ({} ms)", ha.shortfall_b(), ms));
+        lines.push(format!(
+            "Clip B short by {} frames ({} ms)",
+            ha.shortfall_b(),
+            ms
+        ));
     } else if ha.clip_b_available.is_none() && ha.clip_b_needed > 0 {
         lines.push("Clip B: availability unknown".to_string());
     }
@@ -16001,9 +19581,18 @@ mod tests {
 
     #[test]
     fn default_heights_by_kind() {
-        assert_eq!(effective_track_height(&make_video_track()), VIDEO_TRACK_HEIGHT);
-        assert_eq!(effective_track_height(&make_audio_track()), AUDIO_TRACK_HEIGHT);
-        assert_eq!(effective_track_height(&make_text_track()), TEXT_TRACK_HEIGHT);
+        assert_eq!(
+            effective_track_height(&make_video_track()),
+            VIDEO_TRACK_HEIGHT
+        );
+        assert_eq!(
+            effective_track_height(&make_audio_track()),
+            AUDIO_TRACK_HEIGHT
+        );
+        assert_eq!(
+            effective_track_height(&make_text_track()),
+            TEXT_TRACK_HEIGHT
+        );
     }
 
     #[test]
@@ -16232,8 +19821,10 @@ mod tests {
     #[test]
     fn tooltip_clip_a_short_only() {
         let ha = HandleAvailability {
-            clip_a_needed: 12, clip_a_available: Some(8),
-            clip_b_needed: 12, clip_b_available: Some(20),
+            clip_a_needed: 12,
+            clip_a_available: Some(8),
+            clip_b_needed: 12,
+            clip_b_available: Some(20),
         };
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A short by 4 frames (167 ms)"));
@@ -16243,8 +19834,10 @@ mod tests {
     #[test]
     fn tooltip_clip_b_short_only() {
         let ha = HandleAvailability {
-            clip_a_needed: 12, clip_a_available: Some(20),
-            clip_b_needed: 12, clip_b_available: Some(10),
+            clip_a_needed: 12,
+            clip_a_available: Some(20),
+            clip_b_needed: 12,
+            clip_b_available: Some(10),
         };
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(!s.contains("Clip A short"));
@@ -16254,8 +19847,10 @@ mod tests {
     #[test]
     fn tooltip_both_short() {
         let ha = HandleAvailability {
-            clip_a_needed: 12, clip_a_available: Some(8),
-            clip_b_needed: 12, clip_b_available: Some(6),
+            clip_a_needed: 12,
+            clip_a_available: Some(8),
+            clip_b_needed: 12,
+            clip_b_available: Some(6),
         };
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A short by 4 frames"));
@@ -16265,8 +19860,10 @@ mod tests {
     #[test]
     fn tooltip_a_unknown_b_short() {
         let ha = HandleAvailability {
-            clip_a_needed: 12, clip_a_available: None,
-            clip_b_needed: 12, clip_b_available: Some(8),
+            clip_a_needed: 12,
+            clip_a_available: None,
+            clip_b_needed: 12,
+            clip_b_available: Some(8),
         };
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A: availability unknown"));
@@ -16276,8 +19873,10 @@ mod tests {
     #[test]
     fn tooltip_both_unknown() {
         let ha = HandleAvailability {
-            clip_a_needed: 12, clip_a_available: None,
-            clip_b_needed: 12, clip_b_available: None,
+            clip_a_needed: 12,
+            clip_a_available: None,
+            clip_b_needed: 12,
+            clip_b_available: None,
         };
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A: availability unknown"));
@@ -16302,7 +19901,10 @@ mod tests {
     fn make_audio_clip(gain: f32, volume: f32, pan: f32, fi: f32, fo: f32) -> klipp_timeline::Clip {
         let mut c = klipp_timeline::Clip::media(
             klipp_core::MediaId::new(),
-            tc24(0), tc24(48), tc24(0), tc24(48),
+            tc24(0),
+            tc24(48),
+            tc24(0),
+            tc24(48),
         );
         c.gain = gain;
         c.volume = volume;
@@ -16349,8 +19951,7 @@ mod tests {
         let mut audio = make_audio_clip(0.1, 0.2, 0.3, 4.0, 5.0);
         audio.linked_clip_id = Some(linked_id);
 
-        let got = resolve_fade_drag_target_full(&seq, &audio)
-            .expect("linked clip exists in seq");
+        let got = resolve_fade_drag_target_full(&seq, &audio).expect("linked clip exists in seq");
         assert_eq!(got.0, 0.9, "gain should come from linked, not audio's own");
         assert_eq!(got.1, 0.8);
         assert_eq!(got.2, 0.0);
@@ -16396,9 +19997,9 @@ mod tests {
 
     #[test]
     fn slip_clamp_within_bounds_translates_rigidly() {
-        let orig_in = rt(48, 24);   // 2s
+        let orig_in = rt(48, 24); // 2s
         let orig_out = rt(120, 24); // 5s — width = 3s
-        let dt = rt(24, 24);        // +1s
+        let dt = rt(24, 24); // +1s
         let media = Some(rt(240, 24)); // 10s
 
         let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
@@ -16409,9 +20010,9 @@ mod tests {
 
     #[test]
     fn slip_clamp_negative_in_snaps_to_zero_and_shifts_out() {
-        let orig_in = rt(24, 24);  // 1s
+        let orig_in = rt(24, 24); // 1s
         let orig_out = rt(96, 24); // 4s — width = 3s
-        let dt = rt(-48, 24);      // -2s, would put in at -1s
+        let dt = rt(-48, 24); // -2s, would put in at -1s
         let media = Some(rt(240, 24)); // 10s — won't trigger out clamp
 
         let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
@@ -16422,14 +20023,17 @@ mod tests {
 
     #[test]
     fn slip_clamp_out_beyond_media_pulls_in_back() {
-        let orig_in = rt(48, 24);  // 2s
+        let orig_in = rt(48, 24); // 2s
         let orig_out = rt(168, 24); // 7s — width = 5s
-        let dt = rt(96, 24);       // +4s, would put out at 11s
+        let dt = rt(96, 24); // +4s, would put out at 11s
         let media = Some(rt(240, 24)); // 10s
 
         let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
         assert_eq!(no.value, 240, "out snaps to media end");
-        assert_eq!(ni.value, 120, "in pulled back by 1s overshoot — was 6s, now 5s");
+        assert_eq!(
+            ni.value, 120,
+            "in pulled back by 1s overshoot — was 6s, now 5s"
+        );
         assert_eq!(no.value - ni.value, 120, "width still 5s");
     }
 
@@ -16441,7 +20045,7 @@ mod tests {
         // catches it.
         let orig_in = rt(0, 24);
         let orig_out = rt(288, 24); // 12s — wider than media
-        let dt = rt(-24, 24);       // -1s, in goes to -1, out to 11
+        let dt = rt(-24, 24); // -1s, in goes to -1, out to 11
         let media = Some(rt(240, 24)); // 10s
 
         let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
@@ -16513,7 +20117,7 @@ mod tests {
         let orig_in = rt(48, 24);
         let orig_out = rt(96, 24);
         let dt = rt(12, 24);
-        let left = Some((rt(0, 24), rt(48, 24)));     // left_out can grow to 60 (>1)
+        let left = Some((rt(0, 24), rt(48, 24))); // left_out can grow to 60 (>1)
         let right = Some((rt(144, 24), rt(96, 24))); // right_in can grow to 108, still 36f gap
 
         let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, left, right);
@@ -16547,55 +20151,84 @@ mod tests {
 
     #[test]
     fn body_drag_gesture_select_no_modifier_is_move() {
-        assert_eq!(body_drag_gesture(Tool::Select, false, false), BodyDragGesture::Move);
+        assert_eq!(
+            body_drag_gesture(Tool::Select, false, false),
+            BodyDragGesture::Move
+        );
     }
 
     #[test]
     fn body_drag_gesture_select_alt_is_slip() {
-        assert_eq!(body_drag_gesture(Tool::Select, true, false), BodyDragGesture::Slip);
+        assert_eq!(
+            body_drag_gesture(Tool::Select, true, false),
+            BodyDragGesture::Slip
+        );
     }
 
     #[test]
     fn body_drag_gesture_select_alt_shift_is_slide() {
-        assert_eq!(body_drag_gesture(Tool::Select, true, true), BodyDragGesture::Slide);
+        assert_eq!(
+            body_drag_gesture(Tool::Select, true, true),
+            BodyDragGesture::Slide
+        );
     }
 
     #[test]
     fn body_drag_gesture_select_shift_only_is_none() {
         // Shift on Select without Alt has no body-drag meaning — the
         // multi-select click handler picks it up instead.
-        assert_eq!(body_drag_gesture(Tool::Select, false, true), BodyDragGesture::None);
+        assert_eq!(
+            body_drag_gesture(Tool::Select, false, true),
+            BodyDragGesture::None
+        );
     }
 
     #[test]
     fn body_drag_gesture_trim_no_modifier_is_slip() {
         // Trim has no MOVE — clip body = SLIP.
-        assert_eq!(body_drag_gesture(Tool::Trim, false, false), BodyDragGesture::Slip);
+        assert_eq!(
+            body_drag_gesture(Tool::Trim, false, false),
+            BodyDragGesture::Slip
+        );
     }
 
     #[test]
     fn body_drag_gesture_trim_shift_is_slide() {
-        assert_eq!(body_drag_gesture(Tool::Trim, false, true), BodyDragGesture::Slide);
+        assert_eq!(
+            body_drag_gesture(Tool::Trim, false, true),
+            BodyDragGesture::Slide
+        );
     }
 
     #[test]
     fn body_drag_gesture_trim_alt_is_slip() {
         // Alt is Select-only — Trim ignores it, so still SLIP (no-mod path).
-        assert_eq!(body_drag_gesture(Tool::Trim, true, false), BodyDragGesture::Slip);
+        assert_eq!(
+            body_drag_gesture(Tool::Trim, true, false),
+            BodyDragGesture::Slip
+        );
     }
 
     #[test]
     fn body_drag_gesture_blade_returns_none() {
         // Blade tool isn't a body-drag origin — no gesture starts.
-        assert_eq!(body_drag_gesture(Tool::Blade, false, false), BodyDragGesture::None);
-        assert_eq!(body_drag_gesture(Tool::Blade, true, true), BodyDragGesture::None);
+        assert_eq!(
+            body_drag_gesture(Tool::Blade, false, false),
+            BodyDragGesture::None
+        );
+        assert_eq!(
+            body_drag_gesture(Tool::Blade, true, true),
+            BodyDragGesture::None
+        );
     }
 
     fn make_video_clip_at(timeline_in: i64, timeline_out: i64) -> klipp_timeline::Clip {
         klipp_timeline::Clip::media(
             klipp_core::MediaId::new(),
-            tc24(timeline_in), tc24(timeline_out),
-            tc24(0), tc24(timeline_out - timeline_in),
+            tc24(timeline_in),
+            tc24(timeline_out),
+            tc24(0),
+            tc24(timeline_out - timeline_in),
         )
     }
 
@@ -16603,16 +20236,14 @@ mod tests {
     fn hit_test_clip_body_inside_clip_returns_it() {
         let panel = TimelinePanel::default();
         // Two clips, no overlap: [0..48f] and [60..108f] at 24 fps.
-        let clips = vec![
-            make_video_clip_at(0, 48),
-            make_video_clip_at(60, 108),
-        ];
+        let clips = vec![make_video_clip_at(0, 48), make_video_clip_at(60, 108)];
         let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
         let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
         // 100 px/sec zoom: 2s clip is 200px, 0.5s gap is 50px,
         // second clip is 200px starting at x=250.
         let pos_in_first = egui::pos2(50.0, 40.0);
-        let got = panel.hit_test_clip_body(&clips, &content, &track, 100.0, 0.0, 80.0, pos_in_first);
+        let got =
+            panel.hit_test_clip_body(&clips, &content, &track, 100.0, 0.0, 80.0, pos_in_first);
         assert!(got.is_some());
         assert_eq!(got.unwrap().1.id, clips[0].id);
     }
@@ -16620,10 +20251,7 @@ mod tests {
     #[test]
     fn hit_test_clip_body_in_gap_returns_none() {
         let panel = TimelinePanel::default();
-        let clips = vec![
-            make_video_clip_at(0, 48),
-            make_video_clip_at(60, 108),
-        ];
+        let clips = vec![make_video_clip_at(0, 48), make_video_clip_at(60, 108)];
         let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
         let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
         // Inside the 50px gap.
@@ -16637,10 +20265,7 @@ mod tests {
         let panel = TimelinePanel::default();
         // Two clips occupying the same span — `iter().rev()` priority
         // means the second clip in storage order wins on overlap.
-        let clips = vec![
-            make_video_clip_at(0, 48),
-            make_video_clip_at(0, 48),
-        ];
+        let clips = vec![make_video_clip_at(0, 48), make_video_clip_at(0, 48)];
         let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
         let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
         let pos = egui::pos2(50.0, 40.0);
@@ -16657,7 +20282,10 @@ mod tests {
         // No media duration — out is unchecked.
         let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, None);
         assert_eq!(ni.value, 0);
-        assert_eq!(no.value, 72, "no media bound, out shifts freely (with shortfall add-on)");
+        assert_eq!(
+            no.value, 72,
+            "no media bound, out shifts freely (with shortfall add-on)"
+        );
     }
 
     #[test]
@@ -16729,7 +20357,11 @@ fn resolve_compound_at_frac(
 
     // Step 4: nested compound — recurse one level. Build the local frac
     // within the nested clip's own duration, then descend.
-    if let ClipKind::Sequence { sequence_id: nested_id } = &inner_clip.kind {
+    if let ClipKind::Sequence {
+        sequence_id: nested_id,
+        ..
+    } = &inner_clip.kind
+    {
         let ic_in = inner_clip.timeline_in.to_secs_f64();
         let ic_out = inner_clip.timeline_out.to_secs_f64();
         let local_frac = if ic_out > ic_in {
@@ -16832,13 +20464,8 @@ fn draw_compound_filmstrip(
         let tile_center_x = (x0 + x1) * 0.5;
         let frac = ((tile_center_x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64;
 
-        let resolved = resolve_compound_at_frac(
-            compound,
-            sequence_id,
-            frac,
-            TrackKind::Video,
-            all_sequences,
-        );
+        let resolved =
+            resolve_compound_at_frac(compound, sequence_id, frac, TrackKind::Video, all_sequences);
 
         let (inner_media_id, inner_source_secs) = match resolved {
             Some(r) => r,
@@ -16890,7 +20517,11 @@ fn draw_compound_filmstrip(
                 } else {
                     let dl = (filmstrip[i - 1].0 - inner_source_secs).abs();
                     let dr = (filmstrip[i].0 - inner_source_secs).abs();
-                    if dl <= dr { i - 1 } else { i }
+                    if dl <= dr {
+                        i - 1
+                    } else {
+                        i
+                    }
                 }
             }
         };
@@ -16906,7 +20537,10 @@ fn draw_compound_filmstrip(
                     egui::pos2(x0, clip_rect.top()),
                     egui::pos2(x0, clip_rect.bottom()),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140)),
+                egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_premultiplied(0, 0, 0, 140),
+                ),
             );
         }
 
@@ -16959,7 +20593,10 @@ fn trigger_inner_filmstrips(
                 Some(m) => m,
                 None => continue,
             };
-            if thumbnail_cache.filmstrip(&media_id).is_some_and(|f| !f.is_empty()) {
+            if thumbnail_cache
+                .filmstrip(&media_id)
+                .is_some_and(|f| !f.is_empty())
+            {
                 continue;
             }
             if filmstrip_in_progress.contains(&media_id) {
@@ -16992,7 +20629,10 @@ mod compound_filmstrip_tests {
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
-            resolution: Resolution { width: 1920, height: 1080 },
+            resolution: Resolution {
+                width: 1920,
+                height: 1080,
+            },
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
@@ -17020,9 +20660,8 @@ mod compound_filmstrip_tests {
         let cid = child.id;
 
         let compound = Clip::sequence(cid, t(100), t(148));
-        let resolved = resolve_compound_at_frac(
-            &compound, cid, 0.0, TrackKind::Video, &[child.clone()]
-        );
+        let resolved =
+            resolve_compound_at_frac(&compound, cid, 0.0, TrackKind::Video, &[child.clone()]);
         let (mid, secs) = resolved.expect("frac=0 should resolve");
         assert_eq!(mid, mid0);
         assert!(secs.abs() < 1e-6, "source_in at start should be 0");
@@ -17044,9 +20683,8 @@ mod compound_filmstrip_tests {
         // frac 0.75 maps to inner-timeline 36/48 frames — squarely inside c1
         // ([24..48)). frac=1.0 lands on the excluded upper boundary, so we
         // pick a frac that's clearly inside the last clip.
-        let resolved = resolve_compound_at_frac(
-            &compound, cid, 0.75, TrackKind::Video, &[child.clone()]
-        );
+        let resolved =
+            resolve_compound_at_frac(&compound, cid, 0.75, TrackKind::Video, &[child.clone()]);
         let (mid, _) = resolved.expect("frac~last should resolve");
         assert_eq!(mid, mid1);
     }
@@ -17062,9 +20700,8 @@ mod compound_filmstrip_tests {
 
         let compound = Clip::sequence(cid, t(0), t(72));
         // frac = 0.5 → 36 frames into compound → 36 frames into child timeline → gap
-        let resolved = resolve_compound_at_frac(
-            &compound, cid, 0.5, TrackKind::Video, &[child.clone()]
-        );
+        let resolved =
+            resolve_compound_at_frac(&compound, cid, 0.5, TrackKind::Video, &[child.clone()]);
         assert!(resolved.is_none());
     }
 
@@ -17086,8 +20723,11 @@ mod compound_filmstrip_tests {
 
         let parent_compound = Clip::sequence(child_id, t(0), t(24));
         let resolved = resolve_compound_at_frac(
-            &parent_compound, child_id, 0.5, TrackKind::Video,
-            &[child.clone(), grandchild.clone()]
+            &parent_compound,
+            child_id,
+            0.5,
+            TrackKind::Video,
+            &[child.clone(), grandchild.clone()],
         );
         let (mid, _) = resolved.expect("nested compound should resolve");
         assert_eq!(mid, leaf_mid);
@@ -17097,9 +20737,7 @@ mod compound_filmstrip_tests {
     fn unknown_sequence_returns_none() {
         let bogus = SequenceId::new();
         let compound = Clip::sequence(bogus, t(0), t(24));
-        let resolved = resolve_compound_at_frac(
-            &compound, bogus, 0.5, TrackKind::Video, &[]
-        );
+        let resolved = resolve_compound_at_frac(&compound, bogus, 0.5, TrackKind::Video, &[]);
         assert!(resolved.is_none());
     }
 
@@ -17112,10 +20750,12 @@ mod compound_filmstrip_tests {
         let cid = child.id;
 
         let compound = Clip::sequence(cid, t(0), t(24));
-        let resolved = resolve_compound_at_frac(
-            &compound, cid, 0.5, TrackKind::Audio, &[child.clone()]
+        let resolved =
+            resolve_compound_at_frac(&compound, cid, 0.5, TrackKind::Audio, &[child.clone()]);
+        assert!(
+            resolved.is_none(),
+            "audio parent must skip video-only inner"
         );
-        assert!(resolved.is_none(), "audio parent must skip video-only inner");
     }
 }
 
@@ -17132,9 +20772,11 @@ mod bypass_strip_helper_tests {
 
     fn step(t: f64, v: f32) -> Keyframe {
         Keyframe {
-            time_secs: t, value: v,
+            time_secs: t,
+            value: v,
             interpolation: Interpolation::Step,
-            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
         }
     }
 
@@ -17165,8 +20807,10 @@ mod bypass_strip_helper_tests {
         // matches NLE convention.
         let kfs = [step(2.0, 0.0)];
         let s = bypass_envelope_summary(&kfs, 5.0);
-        assert!(s.contains("active 0.00s–2.00s"),
-            "implicit baseline must show as active 0–first_kf, got: {s}");
+        assert!(
+            s.contains("active 0.00s–2.00s"),
+            "implicit baseline must show as active 0–first_kf, got: {s}"
+        );
         assert!(s.contains("bypassed 2.00s–5.00s"));
     }
 
@@ -17191,16 +20835,20 @@ mod bypass_strip_helper_tests {
         assert!(s.contains("bypassed 1.00s–5.00s"));
         // 10s kf is past the clip end; "active" segment from 10..5 is
         // skipped (next_t <= t0).
-        assert!(!s.contains("10.00"),
-            "kf past clip end must not leak into the tooltip: {s}");
+        assert!(
+            !s.contains("10.00"),
+            "kf past clip end must not leak into the tooltip: {s}"
+        );
     }
 
     #[test]
     fn summary_uses_minutes_format_above_60_seconds() {
         let kfs = [step(75.0, 0.0)];
         let s = bypass_envelope_summary(&kfs, 120.0);
-        assert!(s.contains("1:15.00"),
-            "75s should render as 1:15.00, got: {s}");
+        assert!(
+            s.contains("1:15.00"),
+            "75s should render as 1:15.00, got: {s}"
+        );
         assert!(s.contains("2:00.00"));
     }
 
@@ -17289,28 +20937,40 @@ mod bypass_strip_helper_tests {
         // Effect 0 first (lower idx), with __bypass alphabetical first
         // (underscore sorts before letters in ASCII).
         match &list[3] {
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 assert_eq!(*effect_index, 0);
                 assert_eq!(param_name, "__bypass");
             }
             _ => panic!("expected EffectParam at idx 3, got {:?}", list[3]),
         }
         match &list[4] {
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 assert_eq!(*effect_index, 0);
                 assert_eq!(param_name, "threshold");
             }
             _ => panic!("expected EffectParam at idx 4, got {:?}", list[4]),
         }
         match &list[5] {
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 assert_eq!(*effect_index, 1);
                 assert_eq!(param_name, "__wetdry");
             }
             _ => panic!("expected EffectParam at idx 5, got {:?}", list[5]),
         }
         match &list[6] {
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 assert_eq!(*effect_index, 1);
                 assert_eq!(param_name, "gain");
             }
@@ -17326,13 +20986,16 @@ mod bypass_strip_helper_tests {
         use super::build_rubber_band_picker_list;
         let keys = vec![
             "no_colon".to_string(),
-            "abc:gain".to_string(),     // non-numeric index
-            "0:threshold".to_string(),  // valid
+            "abc:gain".to_string(),    // non-numeric index
+            "0:threshold".to_string(), // valid
         ];
         let list = build_rubber_band_picker_list(&keys);
         assert_eq!(list.len(), 4); // 3 clip + 1 valid effect
         match &list[3] {
-            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+            crate::state::RubberBandParam::EffectParam {
+                effect_index,
+                param_name,
+            } => {
                 assert_eq!(*effect_index, 0);
                 assert_eq!(param_name, "threshold");
             }
@@ -17373,8 +21036,10 @@ mod bypass_strip_helper_tests {
         // segment to prepend — the first kf IS the start.
         let kfs = [step(0.0, 0.0)];
         let s = bypass_envelope_summary(&kfs, 3.0);
-        assert!(!s.contains("active 0.00s–0.00s"),
-            "kf at t=0 must not produce a zero-width baseline segment");
+        assert!(
+            !s.contains("active 0.00s–0.00s"),
+            "kf at t=0 must not produce a zero-width baseline segment"
+        );
         assert!(s.contains("bypassed 0.00s–3.00s"));
     }
 }
@@ -17416,7 +21081,9 @@ mod find_matte_candidate_above_tests {
     /// sequence by media-id-equality. Each test pushes one clip onto
     /// each track so this reliably picks out the test's own clip.
     fn locate(seq: &Sequence, target: klipp_core::ClipId) -> Option<usize> {
-        seq.tracks.iter().enumerate()
+        seq.tracks
+            .iter()
+            .enumerate()
             .find(|(_, t)| t.clips.iter().any(|c| c.id == target))
             .map(|(i, _)| i)
     }
@@ -17434,19 +21101,26 @@ mod find_matte_candidate_above_tests {
         let source = media_clip(0, 24);
         let source_id = source.id;
         // Find which idx is V2 (top of panel = lower idx) and V1.
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
-            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
-            .map(|(i, _)| i).collect();
+        let video_indices: Vec<usize> = state.sequences[0]
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(video_indices.len(), 2);
         let v_top_idx = *video_indices.iter().min().unwrap(); // visually higher
         let v_bot_idx = *video_indices.iter().max().unwrap(); // visually lower
-        // Consumer on the LOWER track (higher idx); source above it
-        // (lower idx).
+                                                              // Consumer on the LOWER track (higher idx); source above it
+                                                              // (lower idx).
         state.sequences[0].tracks[v_bot_idx].clips.push(consumer);
         state.sequences[0].tracks[v_top_idx].clips.push(source);
 
         let cand = find_matte_candidate_above(&state, v_bot_idx, consumer_id);
-        assert!(cand.is_some(), "expected to find video source on the track visually above consumer");
+        assert!(
+            cand.is_some(),
+            "expected to find video source on the track visually above consumer"
+        );
         assert_eq!(cand.unwrap().0, source_id);
     }
 
@@ -17459,10 +21133,9 @@ mod find_matte_candidate_above_tests {
     fn title_on_text_track_is_found() {
         let mut state = AppState::default();
         // Insert a Text track at idx 0 (mirrors the title shortcut path).
-        state.sequences[0].tracks.insert(
-            0,
-            klipp_timeline::Track::new("Text 1", TrackKind::Text),
-        );
+        state.sequences[0]
+            .tracks
+            .insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
 
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
@@ -17470,18 +21143,27 @@ mod find_matte_candidate_above_tests {
         let title_id = title.id;
 
         let text_idx = 0usize;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1 track");
+        let v1_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Video))
+            .expect("V1 track");
         state.sequences[0].tracks[text_idx].clips.push(title);
         state.sequences[0].tracks[v1_idx].clips.push(consumer);
 
-        assert!(text_idx < v1_idx,
-            "fixture: Text track must be visually above (= lower idx) the consumer");
+        assert!(
+            text_idx < v1_idx,
+            "fixture: Text track must be visually above (= lower idx) the consumer"
+        );
 
         let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
-        let (cid, kind) = cand.expect("title on text track at idx 0 must be a valid matte candidate from V1 below");
+        let (cid, kind) = cand
+            .expect("title on text track at idx 0 must be a valid matte candidate from V1 below");
         assert_eq!(cid, title_id);
-        assert!(matches!(kind, ClipKind::Title(_)),
-            "candidate kind should be Title so the auto-channel heuristic picks Alpha");
+        assert!(
+            matches!(kind, ClipKind::Title(_)),
+            "candidate kind should be Title so the auto-channel heuristic picks Alpha"
+        );
     }
 
     /// Subtitle tracks accept the same widening — same rationale (own
@@ -17501,11 +21183,18 @@ mod find_matte_candidate_above_tests {
         let other_id = other.id;
 
         let sub_idx = 0usize;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let v1_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Video))
+            .expect("V1");
         state.sequences[0].tracks[sub_idx].clips.push(other);
         state.sequences[0].tracks[v1_idx].clips.push(consumer);
 
-        assert!(sub_idx < v1_idx, "fixture: subtitle must be visually above (= lower idx) the consumer");
+        assert!(
+            sub_idx < v1_idx,
+            "fixture: subtitle must be visually above (= lower idx) the consumer"
+        );
         let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
         let (cid, _) = cand.expect("clip on subtitle track must be a valid candidate");
         assert_eq!(cid, other_id);
@@ -17532,18 +21221,21 @@ mod find_matte_candidate_above_tests {
         state.sequences[0].add_video_track("V2".to_string());
         // Insert text track at idx 0 (= mirrors keyboard-shortcut
         // title path; matches user-reported layout).
-        state.sequences[0].tracks.insert(
-            0,
-            klipp_timeline::Track::new("Text 1", TrackKind::Text),
-        );
+        state.sequences[0]
+            .tracks
+            .insert(0, klipp_timeline::Track::new("Text 1", TrackKind::Text));
 
         let text_idx = 0usize;
-        let v2_idx = state.sequences[0].tracks.iter().position(|t|
-            matches!(t.kind, TrackKind::Video) && t.name == "Video 2"
-        ).expect("Video 2 track");
-        let v1_idx = state.sequences[0].tracks.iter().position(|t|
-            matches!(t.kind, TrackKind::Video) && t.name == "Video 1"
-        ).expect("Video 1 track");
+        let v2_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Video) && t.name == "Video 2")
+            .expect("Video 2 track");
+        let v1_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Video) && t.name == "Video 1")
+            .expect("Video 1 track");
 
         let title = title_clip(0, 24);
         let title_id = title.id;
@@ -17559,16 +21251,20 @@ mod find_matte_candidate_above_tests {
         // beyond V2 and the walk stops at the first overlap.
         let from_v1 = find_matte_candidate_above(&state, v1_idx, v1_clip_id)
             .expect("expected an overlap from V1's POV");
-        assert_eq!(from_v1.0, v2_clip_id,
-            "first overlap walking up from V1 is V2, not the title further up");
+        assert_eq!(
+            from_v1.0, v2_clip_id,
+            "first overlap walking up from V1 is V2, not the title further up"
+        );
 
         // Right-click V2 → walks past nothing else and finds the
         // title at idx 0. THIS is the canonical right-click for
         // video-in-text.
         let from_v2 = find_matte_candidate_above(&state, v2_idx, v2_clip_id)
             .expect("expected an overlap from V2's POV");
-        assert_eq!(from_v2.0, title_id,
-            "first overlap walking up from V2 is the title on the text track");
+        assert_eq!(
+            from_v2.0, title_id,
+            "first overlap walking up from V2 is the title on the text track"
+        );
     }
 
     /// Audio tracks are still excluded — they have no pixels. Place
@@ -17582,8 +21278,12 @@ mod find_matte_candidate_above_tests {
         // consumer (= audio at LOWER idx). Production never builds
         // this, but we test the kind-filter rejection directly.
         state.sequences[0].tracks.clear();
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("Audio above", TrackKind::Audio));
-        state.sequences[0].tracks.push(klipp_timeline::Track::new("V1", TrackKind::Video));
+        state.sequences[0]
+            .tracks
+            .push(klipp_timeline::Track::new("Audio above", TrackKind::Audio));
+        state.sequences[0]
+            .tracks
+            .push(klipp_timeline::Track::new("V1", TrackKind::Video));
         let consumer = media_clip(0, 24);
         let consumer_id = consumer.id;
         state.sequences[0].tracks[0].clips.push(media_clip(0, 24));
@@ -17605,17 +21305,23 @@ mod find_matte_candidate_above_tests {
         let mut adj = media_clip(0, 24);
         adj.kind = ClipKind::AdjustmentLayer;
 
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
-            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
-            .map(|(i, _)| i).collect();
-        let above_idx    = *video_indices.iter().min().unwrap(); // visually higher
+        let video_indices: Vec<usize> = state.sequences[0]
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i)
+            .collect();
+        let above_idx = *video_indices.iter().min().unwrap(); // visually higher
         let consumer_idx = *video_indices.iter().max().unwrap(); // visually lower
         state.sequences[0].tracks[above_idx].clips.push(adj);
         state.sequences[0].tracks[consumer_idx].clips.push(consumer);
 
         let cand = find_matte_candidate_above(&state, consumer_idx, consumer_id);
-        assert!(cand.is_none(),
-            "AdjustmentLayer above must not be a matte candidate");
+        assert!(
+            cand.is_none(),
+            "AdjustmentLayer above must not be a matte candidate"
+        );
     }
 
     /// A candidate that doesn't overlap the consumer in time is
@@ -17628,10 +21334,14 @@ mod find_matte_candidate_above_tests {
         let consumer_id = consumer.id;
         let far = media_clip(100, 148);
 
-        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
-            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
-            .map(|(i, _)| i).collect();
-        let above_idx    = *video_indices.iter().min().unwrap();
+        let video_indices: Vec<usize> = state.sequences[0]
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i)
+            .collect();
+        let above_idx = *video_indices.iter().min().unwrap();
         let consumer_idx = *video_indices.iter().max().unwrap();
         state.sequences[0].tracks[above_idx].clips.push(far);
         state.sequences[0].tracks[consumer_idx].clips.push(consumer);
@@ -17652,8 +21362,16 @@ mod find_matte_candidate_above_tests {
         let consumer_id = consumer.id;
         let title = title_clip(0, 24);
         let title_id = title.id;
-        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
-        let text_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Text)).expect("Text");
+        let v1_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Video))
+            .expect("V1");
+        let text_idx = state.sequences[0]
+            .tracks
+            .iter()
+            .position(|t| matches!(t.kind, TrackKind::Text))
+            .expect("Text");
         state.sequences[0].tracks[v1_idx].clips.push(consumer);
         state.sequences[0].tracks[text_idx].clips.push(title);
 
@@ -17661,8 +21379,15 @@ mod find_matte_candidate_above_tests {
         // about: source must exist; AdjustmentLayer rejected; no
         // self-ref; no cycle. There's NO track-kind check.
         let seq = &state.sequences[0];
-        let source = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == title_id);
-        assert!(source.is_some(), "title clip should be locatable in sequence");
+        let source = seq
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == title_id);
+        assert!(
+            source.is_some(),
+            "title clip should be locatable in sequence"
+        );
         let source = source.unwrap();
         assert!(!matches!(source.kind, ClipKind::AdjustmentLayer));
         assert_ne!(consumer_id, title_id);
@@ -17681,10 +21406,23 @@ mod find_matte_candidate_above_tests {
 mod snap_tests {
     use super::*;
 
-    fn make_targets_with_clip_edge(secs: f64, rate: u32) -> Vec<(f64, RationalTime, Option<ClipId>, klipp_core::SnapTargetKind)> {
+    fn make_targets_with_clip_edge(
+        secs: f64,
+        rate: u32,
+    ) -> Vec<(
+        f64,
+        RationalTime,
+        Option<ClipId>,
+        klipp_core::SnapTargetKind,
+    )> {
         // One clip-edge target at `secs` seconds. Owner is None so no
         // exclude_clip filter applies (callers pass an unrelated id).
-        vec![(secs, RationalTime::from_secs_f64(secs, rate), None, klipp_core::SnapTargetKind::ClipEdge)]
+        vec![(
+            secs,
+            RationalTime::from_secs_f64(secs, rate),
+            None,
+            klipp_core::SnapTargetKind::ClipEdge,
+        )]
     }
 
     #[test]
@@ -17692,7 +21430,14 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(1.0, 24);
         let edge = RationalTime::from_secs_f64(1.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            None,
         );
         let (_, _, kind) = result.expect("expected snap hit");
         assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge);
@@ -17706,7 +21451,14 @@ mod snap_tests {
         let targets: Vec<_> = Vec::new();
         let edge = RationalTime::from_secs_f64(2.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            Some(1.0),
+            24,
+            None,
         );
         let (_, _, kind) = result.expect("expected grid hit");
         assert_eq!(kind, klipp_core::SnapTargetKind::Grid);
@@ -17722,9 +21474,19 @@ mod snap_tests {
         // configured, but with None nothing snaps.
         let edge = RationalTime::from_secs_f64(2.05, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            None,
         );
-        assert!(result.is_none(), "Off (None grid_interval_secs) must produce no grid hit");
+        assert!(
+            result.is_none(),
+            "Off (None grid_interval_secs) must produce no grid hit"
+        );
     }
 
     // Pinned: existing snap targets win ties over the grid post-pass.
@@ -17743,11 +21505,21 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(2.0, 24);
         let edge = RationalTime::from_secs_f64(1.99, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            Some(1.0),
+            24,
+            None,
         );
         let (_, _, kind) = result.expect("expected snap hit");
-        assert_eq!(kind, klipp_core::SnapTargetKind::ClipEdge,
-            "tie must go to clip-edge, not grid");
+        assert_eq!(
+            kind,
+            klipp_core::SnapTargetKind::ClipEdge,
+            "tie must go to clip-edge, not grid"
+        );
     }
 
     #[test]
@@ -17757,9 +21529,19 @@ mod snap_tests {
         let targets: Vec<_> = Vec::new();
         let edge = RationalTime::from_secs_f64(2.5, 24);
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            Some(1.0),
+            24,
+            None,
         );
-        assert!(result.is_none(), "grid candidate outside threshold must not hit");
+        assert!(
+            result.is_none(),
+            "grid candidate outside threshold must not hit"
+        );
     }
 
     #[test]
@@ -17771,9 +21553,19 @@ mod snap_tests {
         let targets = make_targets_with_clip_edge(1.0, 24);
         let edge = RationalTime::from_secs_f64(1.0, 24);
         let result = TimelinePanel::find_snap_target(
-            false, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, None,
+            false,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            Some(1.0),
+            24,
+            None,
         );
-        assert!(result.is_none(), "snap_enabled=false must short-circuit even with grid configured");
+        assert!(
+            result.is_none(),
+            "snap_enabled=false must short-circuit even with grid configured"
+        );
     }
 
     // ── Per-target gating (commit 2) ──────────────────────────────────
@@ -17799,10 +21591,19 @@ mod snap_tests {
         let edge = RationalTime::from_secs_f64(1.05, 24);
         let cfg = cfg_all_off_except_master();
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            Some(&cfg),
         );
-        assert!(result.is_none(),
-            "clips=false in SnapConfig must suppress clip-edge matches");
+        assert!(
+            result.is_none(),
+            "clips=false in SnapConfig must suppress clip-edge matches"
+        );
     }
 
     // Pinned: with `grid` disabled in SnapConfig, the grid post-pass
@@ -17817,10 +21618,19 @@ mod snap_tests {
         // `grid: false` in cfg, but caller passes Some(1.0) for the
         // resolved interval — config must still suppress the match.
         let result = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), Some(1.0), 24, Some(&cfg),
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            Some(1.0),
+            24,
+            Some(&cfg),
         );
-        assert!(result.is_none(),
-            "grid=false in SnapConfig must skip the grid post-pass even when interval is Some");
+        assert!(
+            result.is_none(),
+            "grid=false in SnapConfig must skip the grid post-pass even when interval is Some"
+        );
     }
 
     // Pinned: master-off in SnapConfig short-circuits before any
@@ -17838,7 +21648,14 @@ mod snap_tests {
         let edge = RationalTime::from_secs_f64(1.05, 24);
         let cfg = klipp_core::SnapConfig::default(); // every per-target on
         let result = TimelinePanel::find_snap_target(
-            false, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+            false,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            Some(&cfg),
         );
         assert!(result.is_none());
     }
@@ -17852,10 +21669,24 @@ mod snap_tests {
         let edge = RationalTime::from_secs_f64(1.05, 24);
         let cfg = klipp_core::SnapConfig::default();
         let with_default = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, Some(&cfg),
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            Some(&cfg),
         );
         let without_config = TimelinePanel::find_snap_target(
-            true, 0.1, &targets, edge, ClipId::new(), None, 24, None,
+            true,
+            0.1,
+            &targets,
+            edge,
+            ClipId::new(),
+            None,
+            24,
+            None,
         );
         assert_eq!(
             with_default.map(|(_, _, k)| k),
@@ -17874,12 +21705,8 @@ mod snap_tests {
     #[test]
     fn alpha_is_full_when_no_current_snap() {
         let now = Instant::now();
-        let alpha = alpha_for_kind_change(
-            Some(klipp_core::SnapTargetKind::ClipEdge),
-            None,
-            now,
-            now,
-        );
+        let alpha =
+            alpha_for_kind_change(Some(klipp_core::SnapTargetKind::ClipEdge), None, now, now);
         assert!((alpha - 1.0).abs() < 1e-6);
     }
 
@@ -17897,8 +21724,10 @@ mod snap_tests {
             earlier,
             now,
         );
-        assert!((alpha - 1.0).abs() < 1e-6,
-            "same-kind transitions must stay at full alpha");
+        assert!(
+            (alpha - 1.0).abs() < 1e-6,
+            "same-kind transitions must stay at full alpha"
+        );
     }
 
     // Pinned: when kind changes, alpha eases linearly from 0 → 1
@@ -17915,8 +21744,11 @@ mod snap_tests {
             change_time,
             change_time,
         );
-        assert!(alpha_at_zero < 0.05,
-            "fade should start near zero immediately after a kind change, got {}", alpha_at_zero);
+        assert!(
+            alpha_at_zero < 0.05,
+            "fade should start near zero immediately after a kind change, got {}",
+            alpha_at_zero
+        );
 
         let half = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS / 2);
         let alpha_at_half = alpha_for_kind_change(
@@ -17925,8 +21757,11 @@ mod snap_tests {
             change_time,
             half,
         );
-        assert!((alpha_at_half - 0.5).abs() < 0.05,
-            "fade should be ~0.5 at half the duration, got {}", alpha_at_half);
+        assert!(
+            (alpha_at_half - 0.5).abs() < 0.05,
+            "fade should be ~0.5 at half the duration, got {}",
+            alpha_at_half
+        );
 
         let full = change_time + Duration::from_millis(SNAP_LEGEND_FADE_MS);
         let alpha_at_full = alpha_for_kind_change(
@@ -17935,8 +21770,11 @@ mod snap_tests {
             change_time,
             full,
         );
-        assert!((alpha_at_full - 1.0).abs() < 1e-6,
-            "fade should reach 1.0 at SNAP_LEGEND_FADE_MS, got {}", alpha_at_full);
+        assert!(
+            (alpha_at_full - 1.0).abs() < 1e-6,
+            "fade should reach 1.0 at SNAP_LEGEND_FADE_MS, got {}",
+            alpha_at_full
+        );
     }
 
     // Pinned: first-ever snap (prev_kind = None → current_kind = Some)
@@ -17951,8 +21789,11 @@ mod snap_tests {
             change_time,
             change_time,
         );
-        assert!(alpha < 0.05,
-            "first snap should be a kind change (None → Some), got alpha={}", alpha);
+        assert!(
+            alpha < 0.05,
+            "first snap should be a kind change (None → Some), got alpha={}",
+            alpha
+        );
     }
 
     // Pinned: alpha is clamped at 1.0 once the fade duration has
@@ -17967,7 +21808,11 @@ mod snap_tests {
             change_time,
             way_after,
         );
-        assert!((alpha - 1.0).abs() < 1e-6, "alpha must clamp at 1.0, got {}", alpha);
+        assert!(
+            (alpha - 1.0).abs() < 1e-6,
+            "alpha must clamp at 1.0, got {}",
+            alpha
+        );
     }
 
     // ── On-snap legend labels ─────────────────────────────────────────
@@ -18031,7 +21876,11 @@ mod snap_tests {
             0.0,
             &state,
         );
-        assert!(label.starts_with("Grid: "), "expected 'Grid: …', got {}", label);
+        assert!(
+            label.starts_with("Grid: "),
+            "expected 'Grid: …', got {}",
+            label
+        );
         assert!(label.contains("1 s"), "interval suffix missing: {}", label);
 
         state.grid_snap_interval = klipp_core::GridInterval::Frame;

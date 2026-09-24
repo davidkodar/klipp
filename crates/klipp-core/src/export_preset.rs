@@ -1,6 +1,6 @@
 use crate::events::{EncoderPreset, ExportAudioCodec, ExportFormat, ExportVideoCodec, RateControl};
-use crate::types::Resolution;
 use crate::time::Fps;
+use crate::types::Resolution;
 use serde::{Deserialize, Serialize};
 
 pub type PresetId = String;
@@ -80,7 +80,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                resolution: Some(Resolution {
+                    width: 1920,
+                    height: 1080,
+                }),
                 fps: None,
                 crf: 18,
                 preset: EncoderPreset::Medium,
@@ -99,7 +102,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H265,
-                resolution: Some(Resolution { width: 3840, height: 2160 }),
+                resolution: Some(Resolution {
+                    width: 3840,
+                    height: 2160,
+                }),
                 fps: None,
                 crf: 20,
                 preset: EncoderPreset::Medium,
@@ -118,7 +124,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                resolution: Some(Resolution {
+                    width: 1920,
+                    height: 1080,
+                }),
                 fps: None,
                 crf: 16,
                 preset: EncoderPreset::Medium,
@@ -137,7 +146,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1280, height: 720 }),
+                resolution: Some(Resolution {
+                    width: 1280,
+                    height: 720,
+                }),
                 fps: None,
                 crf: 23,
                 preset: EncoderPreset::Medium,
@@ -156,7 +168,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1080, height: 1080 }),
+                resolution: Some(Resolution {
+                    width: 1080,
+                    height: 1080,
+                }),
                 fps: None,
                 crf: 20,
                 preset: EncoderPreset::Medium,
@@ -175,7 +190,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1080, height: 1920 }),
+                resolution: Some(Resolution {
+                    width: 1080,
+                    height: 1920,
+                }),
                 fps: None,
                 crf: 20,
                 preset: EncoderPreset::Medium,
@@ -218,7 +236,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mov,
                 video_codec: ExportVideoCodec::DNxHD115,
-                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                resolution: Some(Resolution {
+                    width: 1920,
+                    height: 1080,
+                }),
                 fps: None,
                 crf: 0,
                 preset: EncoderPreset::default(),
@@ -239,7 +260,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H265,
-                resolution: Some(Resolution { width: 3840, height: 2160 }),
+                resolution: Some(Resolution {
+                    width: 3840,
+                    height: 2160,
+                }),
                 fps: None,
                 crf: 22,
                 preset: EncoderPreset::Medium,
@@ -337,7 +361,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Mp4,
                 video_codec: ExportVideoCodec::H264,
-                resolution: Some(Resolution { width: 1920, height: 1080 }),
+                resolution: Some(Resolution {
+                    width: 1920,
+                    height: 1080,
+                }),
                 fps: None,
                 crf: 18,
                 preset: EncoderPreset::Medium,
@@ -359,7 +386,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             settings: ExportPresetSettings {
                 format: ExportFormat::Gif,
                 video_codec: ExportVideoCodec::Gif,
-                resolution: Some(Resolution { width: 854, height: 480 }),
+                resolution: Some(Resolution {
+                    width: 854,
+                    height: 480,
+                }),
                 fps: Some(Fps::new(15, 1)),
                 crf: 0,
                 preset: EncoderPreset::Medium,
@@ -389,7 +419,10 @@ mod tests {
         // 480p / 15fps default — the social-media sweet spot. Pinned
         // here so an accidental tweak doesn't quietly bloat exported
         // file sizes.
-        let res = gif.settings.resolution.expect("GIF preset must pin resolution");
+        let res = gif
+            .settings
+            .resolution
+            .expect("GIF preset must pin resolution");
         assert_eq!(res.height, 480);
         let fps = gif.settings.fps.expect("GIF preset must pin fps");
         assert_eq!(fps.num, 15);
@@ -420,7 +453,10 @@ mod tests {
         // A preset that names a standard has to be able to meet it:
         // its loudness, and the true-peak ceiling that standard asks.
         let presets = builtin_presets();
-        let with_target: Vec<_> = presets.iter().filter(|p| p.settings.target_lufs.is_some()).collect();
+        let with_target: Vec<_> = presets
+            .iter()
+            .filter(|p| p.settings.target_lufs.is_some())
+            .collect();
         assert!(!with_target.is_empty(), "there should be delivery presets");
 
         for p in &with_target {
@@ -428,7 +464,11 @@ mod tests {
             let ceiling = p.settings.true_peak_dbtp.unwrap_or(-1.0);
             // ATSC A/85 (-24 LKFS) and Netflix want -2 dBTP; the others
             // the renderer's -1 already meets.
-            let wants = if (lufs - -24.0).abs() < 0.01 || p.name.contains("Netflix") { -2.0 } else { -1.0 };
+            let wants = if (lufs - -24.0).abs() < 0.01 || p.name.contains("Netflix") {
+                -2.0
+            } else {
+                -1.0
+            };
             assert!(
                 ceiling <= wants + 1e-6,
                 "preset \"{}\" targets {lufs} LUFS under a {ceiling} dBTP ceiling; its spec asks {wants}",
@@ -442,9 +482,16 @@ mod tests {
             );
         }
 
-        let r128 = presets.iter().find(|p| p.name.contains("R128")).expect("an R128 preset");
+        let r128 = presets
+            .iter()
+            .find(|p| p.name.contains("R128"))
+            .expect("an R128 preset");
         assert_eq!(r128.settings.target_lufs, Some(-23.0));
-        assert_eq!(r128.settings.audio_codec, ExportAudioCodec::Pcm24, "a master wants PCM");
+        assert_eq!(
+            r128.settings.audio_codec,
+            ExportAudioCodec::Pcm24,
+            "a master wants PCM"
+        );
     }
 
     #[test]

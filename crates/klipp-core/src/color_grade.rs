@@ -176,8 +176,7 @@ impl Default for LumaKeySettings {
 
 /// Which colour metric the difference-key uses to compare a live
 /// pixel against the clean plate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DifferenceKeyMatchSpace {
     /// Per-pixel `d = max(|R_live − R_plate|, |G_live − G_plate|,
     /// |B_live − B_plate|)` (Chebyshev / L∞ norm). Catches subjects
@@ -191,7 +190,6 @@ pub enum DifferenceKeyMatchSpace {
     /// brighter or darker than the background.
     Luminance,
 }
-
 
 /// Standalone difference-key matte producer. Compares each live-frame
 /// pixel against a clean-plate reference image loaded from disk;
@@ -294,7 +292,7 @@ pub enum MaskShape {
     Circle {
         center_x: f32, // normalized 0-1
         center_y: f32,
-        radius: f32,   // normalized to frame width
+        radius: f32, // normalized to frame width
     },
     Rectangle {
         center_x: f32,
@@ -411,8 +409,12 @@ impl MaskKeyframes {
     pub fn params_for_shape(shape: &MaskShape) -> &'static [&'static str] {
         match shape {
             MaskShape::Circle { .. } => &["center_x", "center_y", "radius", "feather", "opacity"],
-            MaskShape::Rectangle { .. } => &["center_x", "center_y", "width", "height", "rotation", "feather", "opacity"],
-            MaskShape::LinearGradient { .. } => &["start_x", "start_y", "end_x", "end_y", "feather", "opacity"],
+            MaskShape::Rectangle { .. } => &[
+                "center_x", "center_y", "width", "height", "rotation", "feather", "opacity",
+            ],
+            MaskShape::LinearGradient { .. } => {
+                &["start_x", "start_y", "end_x", "end_y", "feather", "opacity"]
+            }
             MaskShape::Bezier { .. } => &["feather", "opacity"],
         }
     }
@@ -422,9 +424,9 @@ impl MaskKeyframes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mask {
     pub shape: MaskShape,
-    pub feather: f32,   // 0-1, soft edge width
+    pub feather: f32, // 0-1, soft edge width
     pub invert: bool,
-    pub opacity: f32,   // 0-1
+    pub opacity: f32, // 0-1
     pub enabled: bool,
     #[serde(default)]
     pub keyframes: MaskKeyframes,
@@ -433,7 +435,11 @@ pub struct Mask {
 impl Default for Mask {
     fn default() -> Self {
         Self {
-            shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
+            shape: MaskShape::Circle {
+                center_x: 0.5,
+                center_y: 0.5,
+                radius: 0.2,
+            },
             feather: 0.1,
             invert: false,
             opacity: 1.0,
@@ -463,50 +469,104 @@ impl Mask {
 
         // Evaluate shape-specific parameters
         match &self.shape {
-            MaskShape::Circle { center_x, center_y, radius } => {
+            MaskShape::Circle {
+                center_x,
+                center_y,
+                radius,
+            } => {
                 let cx = if !self.keyframes.center_x.is_empty() {
                     keyframe::evaluate(&self.keyframes.center_x, time_secs, *center_x)
-                } else { *center_x };
+                } else {
+                    *center_x
+                };
                 let cy = if !self.keyframes.center_y.is_empty() {
                     keyframe::evaluate(&self.keyframes.center_y, time_secs, *center_y)
-                } else { *center_y };
+                } else {
+                    *center_y
+                };
                 let r = if !self.keyframes.radius.is_empty() {
                     keyframe::evaluate(&self.keyframes.radius, time_secs, *radius)
-                } else { *radius };
-                result.shape = MaskShape::Circle { center_x: cx, center_y: cy, radius: r };
+                } else {
+                    *radius
+                };
+                result.shape = MaskShape::Circle {
+                    center_x: cx,
+                    center_y: cy,
+                    radius: r,
+                };
             }
-            MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
+            MaskShape::Rectangle {
+                center_x,
+                center_y,
+                width,
+                height,
+                rotation,
+            } => {
                 let cx = if !self.keyframes.center_x.is_empty() {
                     keyframe::evaluate(&self.keyframes.center_x, time_secs, *center_x)
-                } else { *center_x };
+                } else {
+                    *center_x
+                };
                 let cy = if !self.keyframes.center_y.is_empty() {
                     keyframe::evaluate(&self.keyframes.center_y, time_secs, *center_y)
-                } else { *center_y };
+                } else {
+                    *center_y
+                };
                 let w = if !self.keyframes.width.is_empty() {
                     keyframe::evaluate(&self.keyframes.width, time_secs, *width)
-                } else { *width };
+                } else {
+                    *width
+                };
                 let h = if !self.keyframes.height.is_empty() {
                     keyframe::evaluate(&self.keyframes.height, time_secs, *height)
-                } else { *height };
+                } else {
+                    *height
+                };
                 let rot = if !self.keyframes.rotation.is_empty() {
                     keyframe::evaluate(&self.keyframes.rotation, time_secs, *rotation)
-                } else { *rotation };
-                result.shape = MaskShape::Rectangle { center_x: cx, center_y: cy, width: w, height: h, rotation: rot };
+                } else {
+                    *rotation
+                };
+                result.shape = MaskShape::Rectangle {
+                    center_x: cx,
+                    center_y: cy,
+                    width: w,
+                    height: h,
+                    rotation: rot,
+                };
             }
-            MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+            MaskShape::LinearGradient {
+                start_x,
+                start_y,
+                end_x,
+                end_y,
+            } => {
                 let sx = if !self.keyframes.start_x.is_empty() {
                     keyframe::evaluate(&self.keyframes.start_x, time_secs, *start_x)
-                } else { *start_x };
+                } else {
+                    *start_x
+                };
                 let sy = if !self.keyframes.start_y.is_empty() {
                     keyframe::evaluate(&self.keyframes.start_y, time_secs, *start_y)
-                } else { *start_y };
+                } else {
+                    *start_y
+                };
                 let ex = if !self.keyframes.end_x.is_empty() {
                     keyframe::evaluate(&self.keyframes.end_x, time_secs, *end_x)
-                } else { *end_x };
+                } else {
+                    *end_x
+                };
                 let ey = if !self.keyframes.end_y.is_empty() {
                     keyframe::evaluate(&self.keyframes.end_y, time_secs, *end_y)
-                } else { *end_y };
-                result.shape = MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey };
+                } else {
+                    *end_y
+                };
+                result.shape = MaskShape::LinearGradient {
+                    start_x: sx,
+                    start_y: sy,
+                    end_x: ex,
+                    end_y: ey,
+                };
             }
             MaskShape::Bezier { .. } => {
                 // Bezier point animation deferred — too complex for initial implementation
@@ -522,13 +582,23 @@ impl Mask {
             "feather" => Some(self.feather),
             "opacity" => Some(self.opacity),
             _ => match &self.shape {
-                MaskShape::Circle { center_x, center_y, radius } => match param {
+                MaskShape::Circle {
+                    center_x,
+                    center_y,
+                    radius,
+                } => match param {
                     "center_x" => Some(*center_x),
                     "center_y" => Some(*center_y),
                     "radius" => Some(*radius),
                     _ => None,
                 },
-                MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match param {
+                MaskShape::Rectangle {
+                    center_x,
+                    center_y,
+                    width,
+                    height,
+                    rotation,
+                } => match param {
                     "center_x" => Some(*center_x),
                     "center_y" => Some(*center_y),
                     "width" => Some(*width),
@@ -536,7 +606,12 @@ impl Mask {
                     "rotation" => Some(*rotation),
                     _ => None,
                 },
-                MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match param {
+                MaskShape::LinearGradient {
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                } => match param {
                     "start_x" => Some(*start_x),
                     "start_y" => Some(*start_y),
                     "end_x" => Some(*end_x),
@@ -544,7 +619,7 @@ impl Mask {
                     _ => None,
                 },
                 MaskShape::Bezier { .. } => None,
-            }
+            },
         }
     }
 }
@@ -572,7 +647,11 @@ impl MaskStack {
             return self.clone();
         }
         MaskStack {
-            masks: self.masks.iter().map(|m| m.evaluated_at(time_secs)).collect(),
+            masks: self
+                .masks
+                .iter()
+                .map(|m| m.evaluated_at(time_secs))
+                .collect(),
         }
     }
 }
@@ -646,7 +725,6 @@ impl HueSatCurves {
     }
 }
 
-
 /// Stored result of a colour-match analysis between a source frame
 /// (the input to the ColorMatch node) and a user-picked reference
 /// frame. The four scalar adjustments map directly to slots on the
@@ -670,7 +748,12 @@ pub struct ColorMatchSettings {
 
 impl Default for ColorMatchSettings {
     fn default() -> Self {
-        Self { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 }
+        Self {
+            exposure: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            saturation: 1.0,
+        }
     }
 }
 

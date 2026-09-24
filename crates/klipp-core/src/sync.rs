@@ -48,7 +48,11 @@ pub fn timecode_to_secs(tc: &str, fps: Fps) -> Option<f64> {
         return None;
     }
     let drop = tc.contains(';');
-    let parts: Vec<u64> = tc.split([':', ';', '.']).map(|p| p.trim().parse::<u64>()).collect::<Result<_, _>>().ok()?;
+    let parts: Vec<u64> = tc
+        .split([':', ';', '.'])
+        .map(|p| p.trim().parse::<u64>())
+        .collect::<Result<_, _>>()
+        .ok()?;
     let [h, m, s, f] = parts[..] else { return None };
     let rate = fps.as_f64();
     let nominal = rate.round() as u64;
@@ -127,7 +131,12 @@ pub fn frames_to_timecode(frames: i64, fps: Fps, drop: bool) -> (i64, i64, i64, 
 
     let f = n % nominal;
     let total_secs = n / nominal;
-    (total_secs / 3600, (total_secs / 60) % 60, total_secs % 60, f)
+    (
+        total_secs / 3600,
+        (total_secs / 60) % 60,
+        total_secs % 60,
+        f,
+    )
 }
 
 #[cfg(test)]
@@ -137,16 +146,30 @@ mod tests {
     #[test]
     fn a_timecode_reads_as_seconds_at_its_rate_and_drop_frame_stays_on_the_clock() {
         assert_eq!(timecode_to_secs("00:00:01:00", Fps::new(25, 1)), Some(1.0));
-        assert_eq!(timecode_to_secs("01:02:03:04", Fps::new(25, 1)), Some(3723.0 + 4.0 / 25.0));
-        assert_eq!(timecode_to_secs("00:00:10:05", Fps::new(24, 1)), Some(10.0 + 5.0 / 24.0));
+        assert_eq!(
+            timecode_to_secs("01:02:03:04", Fps::new(25, 1)),
+            Some(3723.0 + 4.0 / 25.0)
+        );
+        assert_eq!(
+            timecode_to_secs("00:00:10:05", Fps::new(24, 1)),
+            Some(10.0 + 5.0 / 24.0)
+        );
         // Non-drop 29.97 runs slow against the clock; drop-frame keeps up.
         let ndf = timecode_to_secs("01:00:00:00", Fps::new(30000, 1001)).unwrap();
         assert!((ndf - 3603.6).abs() < 0.01, "{ndf}");
         let df = timecode_to_secs("01:00:00;00", Fps::new(30000, 1001)).unwrap();
         assert!((df - 3600.0).abs() < 0.05, "{df}");
-        assert_eq!(timecode_to_secs("00:00:00:30", Fps::new(25, 1)), None, "frame 30 does not exist at 25");
+        assert_eq!(
+            timecode_to_secs("00:00:00:30", Fps::new(25, 1)),
+            None,
+            "frame 30 does not exist at 25"
+        );
         assert_eq!(timecode_to_secs("garbage", Fps::new(25, 1)), None);
-        let s = SyncedAudio { audio_media_id: MediaId::new(), offset_secs: 1.2345, method: SyncMethod::Timecode };
+        let s = SyncedAudio {
+            audio_media_id: MediaId::new(),
+            offset_secs: 1.2345,
+            method: SyncMethod::Timecode,
+        };
         assert_eq!(s.describe(), "+1.234 s by timecode");
     }
 
@@ -154,7 +177,13 @@ mod tests {
     fn drop_frame_only_exists_at_the_ntsc_rates() {
         assert_eq!(drop_frames_per_minute(Fps::new(30000, 1001)), 2);
         assert_eq!(drop_frames_per_minute(Fps::new(60000, 1001)), 4);
-        for r in [Fps::new(24, 1), Fps::new(25, 1), Fps::new(30, 1), Fps::new(50, 1), Fps::new(24000, 1001)] {
+        for r in [
+            Fps::new(24, 1),
+            Fps::new(25, 1),
+            Fps::new(30, 1),
+            Fps::new(50, 1),
+            Fps::new(24000, 1001),
+        ] {
             assert_eq!(drop_frames_per_minute(r), 0, "{r:?} has no drop-frame");
             assert!(!is_drop_frame_rate(r));
         }
@@ -178,7 +207,10 @@ mod tests {
         assert_eq!(frames_to_timecode(3600, ntsc60, true), (0, 1, 0, 4));
         assert_eq!(frames_to_timecode(35964, ntsc60, true), (0, 10, 0, 0));
         // A rate with nothing to drop ignores the request.
-        assert_eq!(frames_to_timecode(1500, Fps::new(25, 1), true), (0, 1, 0, 0));
+        assert_eq!(
+            frames_to_timecode(1500, Fps::new(25, 1), true),
+            (0, 1, 0, 0)
+        );
     }
 
     #[test]
@@ -186,7 +218,10 @@ mod tests {
         // The round trip is the real guard: `timecode_to_secs` was here
         // first and is the reference. Walking the minute boundaries
         // covers every skip and the tenth-minute exception nine times.
-        for (fps, nominal) in [(Fps::new(30000, 1001), 30i64), (Fps::new(60000, 1001), 60i64)] {
+        for (fps, nominal) in [
+            (Fps::new(30000, 1001), 30i64),
+            (Fps::new(60000, 1001), 60i64),
+        ] {
             for minute in 0..60 {
                 for offset in [0, 1, 2, 3] {
                     let frames = minute * nominal * 60 + offset;
@@ -195,7 +230,10 @@ mod tests {
                     let secs = timecode_to_secs(&tc, fps)
                         .unwrap_or_else(|| panic!("{tc} at {fps:?} should parse"));
                     let back = (secs * fps.as_f64()).round() as i64;
-                    assert_eq!(back, frames, "{tc} at {fps:?} came back as frame {back}, not {frames}");
+                    assert_eq!(
+                        back, frames,
+                        "{tc} at {fps:?} came back as frame {back}, not {frames}"
+                    );
                 }
             }
         }

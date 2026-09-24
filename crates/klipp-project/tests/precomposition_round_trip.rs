@@ -22,7 +22,10 @@ fn a_compound_and_a_precomposition_each_come_back_as_themselves() {
     let tc = |s: f64| Timecode::from_secs_f64(s, 24);
     let scene = Sequence::new_default();
     let mut outer = Sequence::new_default();
-    outer.tracks[0].clips = vec![Clip::sequence(scene.id, tc(0.0), tc(2.0)), Clip::precomposition(scene.id, tc(2.0), tc(4.0))];
+    outer.tracks[0].clips = vec![
+        Clip::sequence(scene.id, tc(0.0), tc(2.0)),
+        Clip::precomposition(scene.id, tc(2.0), tc(4.0)),
+    ];
     let (compound_id, precomp_id) = (outer.tracks[0].clips[0].id, outer.tracks[0].clips[1].id);
 
     save_project(&dir, &[outer, scene.clone()], &MediaPool::new()).unwrap();
@@ -30,15 +33,29 @@ fn a_compound_and_a_precomposition_each_come_back_as_themselves() {
     let clips = &sequences[0].tracks[0].clips;
     assert_eq!(clips.len(), 2);
     assert_eq!(clips[0].id, compound_id);
-    assert!(matches!(clips[0].kind, ClipKind::Sequence { sequence_id } if sequence_id == scene.id), "the compound is still a compound: {:?}", clips[0].kind);
+    assert!(
+        matches!(clips[0].kind, ClipKind::Sequence { sequence_id, .. } if sequence_id == scene.id),
+        "the compound is still a compound: {:?}",
+        clips[0].kind
+    );
     assert_eq!(clips[1].id, precomp_id);
-    assert!(matches!(clips[1].kind, ClipKind::Precomposition { sequence_id } if sequence_id == scene.id), "the precomposition is still one: {:?}", clips[1].kind);
+    assert!(
+        matches!(clips[1].kind, ClipKind::Precomposition { sequence_id, .. } if sequence_id == scene.id),
+        "the precomposition is still one: {:?}",
+        clips[1].kind
+    );
     assert_eq!(clips[1].timeline_in, tc(2.0));
     assert_eq!(clips[1].source_in, tc(0.0));
 
     let written = std::fs::read_to_string(dir.join("project.json")).unwrap();
-    assert!(written.contains("\"precomposition\""), "the kind is written by its own name");
-    assert!(written.contains("\"sequence\""), "and the compound by its old one");
+    assert!(
+        written.contains("\"precomposition\""),
+        "the kind is written by its own name"
+    );
+    assert!(
+        written.contains("\"sequence\""),
+        "and the compound by its old one"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -57,9 +74,20 @@ fn a_reader_from_before_the_kind_refuses_it_by_name() {
         AdjustmentLayer,
     }
     let precomp = serde_json::json!({ "type": "precomposition", "sequence_id": "2b1e5d7c-6d7a-4a3b-9d4e-0f1a2b3c4d5e" }).to_string();
-    let err = serde_json::from_str::<Before>(&precomp).unwrap_err().to_string();
-    assert!(err.contains("precomposition"), "the refusal names the kind: {err}");
+    let err = serde_json::from_str::<Before>(&precomp)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("precomposition"),
+        "the refusal names the kind: {err}"
+    );
 
     let compound = serde_json::json!({ "type": "sequence", "sequence_id": "2b1e5d7c-6d7a-4a3b-9d4e-0f1a2b3c4d5e" }).to_string();
-    assert!(matches!(serde_json::from_str::<Before>(&compound), Ok(Before::Sequence { .. })), "the compound still reads as before");
+    assert!(
+        matches!(
+            serde_json::from_str::<Before>(&compound),
+            Ok(Before::Sequence { .. })
+        ),
+        "the compound still reads as before"
+    );
 }

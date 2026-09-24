@@ -264,7 +264,12 @@ impl SourceColorspace {
         let primaries = resolve_primaries_or(primaries_raw, primaries_for_size(height));
         let matrix = resolve_matrix_or(matrix_raw, default_matrix(primaries, height));
         let transfer = resolve_transfer_or(transfer_raw, default_transfer(primaries));
-        Self { range, matrix, primaries, transfer }
+        Self {
+            range,
+            matrix,
+            primaries,
+            transfer,
+        }
     }
 
     /// Like [`Self::resolve`], but each per-frame tag that's
@@ -301,7 +306,10 @@ impl SourceColorspace {
     pub fn describe(&self) -> String {
         format!(
             "{} {} / {} primaries / {} transfer",
-            match self.range { ColorRange::Limited => "limited", ColorRange::Full => "full" },
+            match self.range {
+                ColorRange::Limited => "limited",
+                ColorRange::Full => "full",
+            },
             matrix_label(self.matrix),
             primaries_label(self.primaries),
             transfer_label(self.transfer),
@@ -436,18 +444,24 @@ fn resolve_matrix_or(raw: i32, fallback: ColorMatrix) -> ColorMatrix {
 fn default_matrix(primaries: ColorPrimaries, height: u32) -> ColorMatrix {
     match primaries {
         ColorPrimaries::Bt2020 => ColorMatrix::Bt2020Ncl,
-        ColorPrimaries::Bt601_525 | ColorPrimaries::Bt601_625
-        | ColorPrimaries::Bt470M | ColorPrimaries::Ebu3213 => ColorMatrix::Bt601,
+        ColorPrimaries::Bt601_525
+        | ColorPrimaries::Bt601_625
+        | ColorPrimaries::Bt470M
+        | ColorPrimaries::Ebu3213 => ColorMatrix::Bt601,
         // Camera-native gamuts come from log-encoded sources whose
         // YUV→RGB matrix is BT.709 in every Sony / ARRI / Canon
         // workflow we've seen — even when the gamut itself is wider.
         // The matrix decode happens *before* the inverse-OETF, so it
         // operates on display-encoded video samples regardless of
         // what gamut the linear values eventually live in.
-        ColorPrimaries::SGamut3Cine | ColorPrimaries::SGamut3
-        | ColorPrimaries::VGamut | ColorPrimaries::CanonCinemaGamut
-        | ColorPrimaries::AlexaWideGamut3 | ColorPrimaries::AlexaWideGamut4
-        | ColorPrimaries::RedWideGamut | ColorPrimaries::BmdWideGamut => ColorMatrix::Bt709,
+        ColorPrimaries::SGamut3Cine
+        | ColorPrimaries::SGamut3
+        | ColorPrimaries::VGamut
+        | ColorPrimaries::CanonCinemaGamut
+        | ColorPrimaries::AlexaWideGamut3
+        | ColorPrimaries::AlexaWideGamut4
+        | ColorPrimaries::RedWideGamut
+        | ColorPrimaries::BmdWideGamut => ColorMatrix::Bt709,
         _ if height >= 720 => ColorMatrix::Bt709,
         _ => ColorMatrix::Bt601,
     }
@@ -569,16 +583,25 @@ mod tests {
         // The fixed tag is `pc` (full range); everything else is
         // unspecified and must fall through to the UHD defaults.
         let cs = SourceColorspace::resolve(
-            AVCOL_RANGE_JPEG,        // pc / full
+            AVCOL_RANGE_JPEG, // pc / full
             AVCOL_SPC_UNSPECIFIED,
             AVCOL_PRI_UNSPECIFIED,
             AVCOL_TRC_UNSPECIFIED,
-            3840, 2160,
+            3840,
+            2160,
         );
         assert_eq!(cs.range, ColorRange::Full, "tagged full range");
         assert_eq!(cs.matrix, ColorMatrix::Bt709, "UHD heuristic → BT.709");
-        assert_eq!(cs.primaries, ColorPrimaries::Bt709, "UHD heuristic → BT.709 primaries");
-        assert_eq!(cs.transfer, ColorTransfer::Bt709, "fallback → BT.709 transfer");
+        assert_eq!(
+            cs.primaries,
+            ColorPrimaries::Bt709,
+            "UHD heuristic → BT.709 primaries"
+        );
+        assert_eq!(
+            cs.transfer,
+            ColorTransfer::Bt709,
+            "fallback → BT.709 transfer"
+        );
     }
 
     #[test]
@@ -588,7 +611,8 @@ mod tests {
             AVCOL_SPC_BT709,
             AVCOL_PRI_BT709,
             AVCOL_TRC_BT709,
-            1920, 1080,
+            1920,
+            1080,
         );
         assert_eq!(cs, SourceColorspace::BT709_LIMITED_SDR);
     }
@@ -600,7 +624,8 @@ mod tests {
             AVCOL_SPC_BT470BG,
             AVCOL_PRI_BT470BG,
             AVCOL_TRC_GAMMA28,
-            720, 576,
+            720,
+            576,
         );
         assert_eq!(cs.matrix, ColorMatrix::Bt601);
         assert_eq!(cs.primaries, ColorPrimaries::Bt601_625);
@@ -614,7 +639,8 @@ mod tests {
             AVCOL_SPC_SMPTE170M,
             AVCOL_PRI_SMPTE170M,
             AVCOL_TRC_SMPTE170M,
-            720, 480,
+            720,
+            480,
         );
         assert_eq!(cs.matrix, ColorMatrix::Bt601);
         assert_eq!(cs.primaries, ColorPrimaries::Bt601_525);
@@ -628,7 +654,8 @@ mod tests {
             AVCOL_SPC_BT2020_NCL,
             AVCOL_PRI_BT2020,
             AVCOL_TRC_SMPTE2084,
-            3840, 2160,
+            3840,
+            2160,
         );
         assert_eq!(cs.matrix, ColorMatrix::Bt2020Ncl);
         assert_eq!(cs.primaries, ColorPrimaries::Bt2020);
@@ -642,7 +669,8 @@ mod tests {
             AVCOL_SPC_BT2020_NCL,
             AVCOL_PRI_BT2020,
             AVCOL_TRC_ARIB_STD_B67,
-            3840, 2160,
+            3840,
+            2160,
         );
         assert_eq!(cs.transfer, ColorTransfer::Hlg);
     }
@@ -656,7 +684,8 @@ mod tests {
             AVCOL_SPC_BT709,
             AVCOL_PRI_BT709,
             AVCOL_TRC_IEC61966_2_1,
-            2560, 1440,
+            2560,
+            1440,
         );
         assert_eq!(cs.range, ColorRange::Full);
         assert_eq!(cs.transfer, ColorTransfer::Srgb);
@@ -672,7 +701,8 @@ mod tests {
             AVCOL_SPC_UNSPECIFIED,
             AVCOL_PRI_BT2020,
             AVCOL_TRC_UNSPECIFIED,
-            3840, 2160,
+            3840,
+            2160,
         );
         assert_eq!(cs.matrix, ColorMatrix::Bt2020Ncl);
         assert_eq!(cs.transfer, ColorTransfer::Bt2020_10);
@@ -685,7 +715,8 @@ mod tests {
             AVCOL_SPC_UNSPECIFIED,
             AVCOL_PRI_UNSPECIFIED,
             AVCOL_TRC_UNSPECIFIED,
-            1920, 1080,
+            1920,
+            1080,
         );
         assert_eq!(cs, SourceColorspace::BT709_LIMITED_SDR);
     }
@@ -705,11 +736,12 @@ mod tests {
         // full range (from baseline), with everything else also
         // pulled from the baseline since per-frame is unspecified.
         let baseline = SourceColorspace::resolve(
-            AVCOL_RANGE_JPEG,            // codecpar: pc / full
+            AVCOL_RANGE_JPEG, // codecpar: pc / full
             AVCOL_SPC_UNSPECIFIED,
             AVCOL_PRI_UNSPECIFIED,
             AVCOL_TRC_UNSPECIFIED,
-            3840, 2160,
+            3840,
+            2160,
         );
         // Per-frame: every tag unspecified (NVDEC stripped them).
         let merged = SourceColorspace::resolve_with_baseline(
@@ -719,9 +751,15 @@ mod tests {
             AVCOL_TRC_UNSPECIFIED,
             baseline,
         );
-        assert_eq!(merged.range, ColorRange::Full,
-                   "baseline's full-range tag must survive when per-frame is unspecified");
-        assert_eq!(merged, baseline, "all-unspecified per-frame tags → baseline");
+        assert_eq!(
+            merged.range,
+            ColorRange::Full,
+            "baseline's full-range tag must survive when per-frame is unspecified"
+        );
+        assert_eq!(
+            merged, baseline,
+            "all-unspecified per-frame tags → baseline"
+        );
     }
 
     #[test]

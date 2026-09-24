@@ -1,15 +1,15 @@
 use crate::format::*;
 use crate::path_util::{
-    resolve_media_path, read_to_string_capped, sanitize_fps, sanitize_resolution,
+    read_to_string_capped, resolve_media_path, sanitize_fps, sanitize_resolution,
     MAX_INPUT_FILE_BYTES,
 };
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaItemKind, MediaPool};
+use klipp_nodes::{NodeGraph, NodeId, NodeKind};
 use klipp_timeline::{
     Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitlePosition,
     TitleShadow, Track, TrackKind,
 };
-use klipp_nodes::{NodeGraph, NodeKind, NodeId};
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::{info, warn};
@@ -24,9 +24,15 @@ fn migrate_graph(graph: &mut NodeGraph) {
     // it to a Corrector graph would dump a stray Warper node before
     // the Output and pollute every newly-loaded project.
     let has_corrector = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
-    let has_legacy_chain = graph.nodes.iter().any(|n|
-        matches!(n.kind, NodeKind::Exposure | NodeKind::Contrast | NodeKind::ColorWheels | NodeKind::HueSatCurves)
-    );
+    let has_legacy_chain = graph.nodes.iter().any(|n| {
+        matches!(
+            n.kind,
+            NodeKind::Exposure
+                | NodeKind::Contrast
+                | NodeKind::ColorWheels
+                | NodeKind::HueSatCurves
+        )
+    });
     if has_corrector || !has_legacy_chain {
         return;
     }
@@ -46,7 +52,11 @@ fn migrate_graph(graph: &mut NodeGraph) {
             input_links: Vec::new(),
         };
         // Insert after HueSatCurves in the node list
-        if let Some(pos) = graph.nodes.iter().position(|n| n.kind == NodeKind::HueSatCurves) {
+        if let Some(pos) = graph
+            .nodes
+            .iter()
+            .position(|n| n.kind == NodeKind::HueSatCurves)
+        {
             graph.nodes.insert(pos + 1, node);
         } else {
             // Fallback: insert before Output
@@ -57,7 +67,12 @@ fn migrate_graph(graph: &mut NodeGraph) {
             }
         }
         // Wire it into the edge chain: find the edge from HueSat→next and splice in
-        if let Some(huesat_id) = graph.nodes.iter().find(|n| n.kind == NodeKind::HueSatCurves).map(|n| n.id) {
+        if let Some(huesat_id) = graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::HueSatCurves)
+            .map(|n| n.id)
+        {
             if let Some(edge_idx) = graph.edges.iter().position(|e| e.from_node == huesat_id) {
                 let old_target = graph.edges[edge_idx].to_node;
                 let old_port = graph.edges[edge_idx].to_port;
@@ -104,7 +119,10 @@ pub type LoadResult = (
 /// one that fails is the one named: an effect tag from a newer Klipp,
 /// or a value that is not an effect at all, refuses the load rather
 /// than costing the clip the effects around it.
-fn read_builtin_effects(value: &serde_json::Value, clip_id: &str) -> Result<Vec<klipp_effects::BuiltinEffect>, String> {
+fn read_builtin_effects(
+    value: &serde_json::Value,
+    clip_id: &str,
+) -> Result<Vec<klipp_effects::BuiltinEffect>, String> {
     let Some(items) = value.as_array() else {
         return Err(format!("clip {clip_id}: its effects are not a list; the project cannot be read as it was saved"));
     };
@@ -143,8 +161,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         }
     }
 
-    let project: ProjectJson = serde_json::from_value(value)
-        .map_err(|e| format!("Failed to deserialize project: {e}"))?;
+    let project: ProjectJson =
+        serde_json::from_value(value).map_err(|e| format!("Failed to deserialize project: {e}"))?;
 
     let manifest_str = read_to_string_capped(&manifest_path, MAX_INPUT_FILE_BYTES)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
@@ -165,7 +183,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             path,
             kind: MediaItemKind::File,
             filename: item_json.filename.clone(),
-            duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
+            duration: RationalTime {
+                value: item_json.duration_frames,
+                rate: item_json.duration_rate,
+            },
             fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
             resolution: sanitize_resolution(
                 item_json.resolution.width,
@@ -179,18 +200,34 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             audio_channels: item_json.audio_channels,
             offline,
             is_still: item_json.is_still,
-            proxy_path: item_json.proxy_path.as_ref().map(|p| {
-                resolve_media_path(dir, Path::new(p))
-            }),
+            proxy_path: item_json
+                .proxy_path
+                .as_ref()
+                .map(|p| resolve_media_path(dir, Path::new(p))),
             proxy_ready: item_json.proxy_ready,
-            default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
-            default_source_out: item_json.default_source_out.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
+            default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime {
+                value: tc.value,
+                rate: tc.rate,
+            }),
+            default_source_out: item_json
+                .default_source_out
+                .as_ref()
+                .map(|tc| RationalTime {
+                    value: tc.value,
+                    rate: tc.rate,
+                }),
             rating: item_json.rating,
             tags: item_json.tags.clone(),
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
-            bin_id: item_json.bin_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
-            parent_media_id: item_json.parent_media_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::MediaId)),
+            bin_id: item_json
+                .bin_id
+                .as_ref()
+                .and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
+            parent_media_id: item_json
+                .parent_media_id
+                .as_ref()
+                .and_then(|s| parse_uuid(s).ok().map(klipp_core::MediaId)),
             added_at: item_json.added_at.unwrap_or(0),
             fingerprint: None, // recomputed if needed
             file_modified_at: item_json.file_modified_at,
@@ -239,7 +276,9 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             media_pool.bins.push(klipp_media::Bin {
                 id: klipp_core::BinId(uuid),
                 name: bin_json.name.clone(),
-                parent_id: bin_json.parent_id.as_ref()
+                parent_id: bin_json
+                    .parent_id
+                    .as_ref()
                     .and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
             });
         }
@@ -248,7 +287,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     media_pool.smart_bins = manifest.smart_bins.clone();
 
     // Migration: if items have bin (String) but no bin_id, create bins and assign IDs
-    let items_needing_migration: Vec<(klipp_core::MediaId, String)> = media_pool.all()
+    let items_needing_migration: Vec<(klipp_core::MediaId, String)> = media_pool
+        .all()
         .filter(|m| m.bin.is_some() && m.bin_id.is_none())
         .map(|m| (m.id, m.bin.clone().unwrap()))
         .collect();
@@ -268,19 +308,30 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
                 if let Some(value) = &clip.builtin_effects {
                     read_builtin_effects(value, &clip.id)?;
                 }
-                if let Some(ClipKindJson::Title { title_data: Some(value), .. }) = &clip.kind {
+                if let Some(ClipKindJson::Title {
+                    title_data: Some(value),
+                    ..
+                }) = &clip.kind
+                {
                     // The legacy wrapper is permissive for old text DTOs, but a
                     // path payload must never bypass the path contract.
-                    if let Some(objects) = value.get("objects").and_then(serde_json::Value::as_array) {
+                    if let Some(objects) =
+                        value.get("objects").and_then(serde_json::Value::as_array)
+                    {
                         for object in objects {
                             if let Some(path) = object.pointer("/content/Shape/kind/Path") {
-                                let path: klipp_timeline::VectorPath = serde_json::from_value(path.clone()).map_err(|e| format!("invalid path: {e}"))?;
+                                let path: klipp_timeline::VectorPath =
+                                    serde_json::from_value(path.clone())
+                                        .map_err(|e| format!("invalid path: {e}"))?;
                                 path.validate()?;
                             }
                         }
                     }
                 }
-                if let Some(ClipKindJson::VectorTitle { title_data } | ClipKindJson::TitleV2 { title_data }) = &clip.kind {
+                if let Some(
+                    ClipKindJson::VectorTitle { title_data } | ClipKindJson::TitleV2 { title_data },
+                ) = &clip.kind
+                {
                     for object in &title_data.objects {
                         if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {
                             if let klipp_timeline::ShapeKind::Path(path) = &shape.kind {
@@ -294,7 +345,9 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     }
 
     // Reconstruct all sequences
-    let mut sequences: Vec<Sequence> = project.sequences.iter()
+    let mut sequences: Vec<Sequence> = project
+        .sequences
+        .iter()
         .filter_map(|seq_json| load_sequence_from_json(seq_json, dir).ok())
         .collect();
 
@@ -321,9 +374,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // Use color settings from the first sequence (global LUT is project-wide)
     let first = &project.sequences[0];
     let color_settings = crate::save::ColorSettings {
-        global_lut_path: first.global_lut_path.as_ref().map(|p| {
-            resolve_media_path(dir, Path::new(p))
-        }),
+        global_lut_path: first
+            .global_lut_path
+            .as_ref()
+            .map(|p| resolve_media_path(dir, Path::new(p))),
         global_lut_opacity: first.global_lut_opacity,
         global_lut_enabled: first.global_lut_enabled,
         track_header_width: first.track_header_width,
@@ -341,27 +395,33 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // map. Bad UUIDs / malformed `data` blobs are skipped with a
     // warning so a partly-corrupted assets section doesn't refuse
     // the whole project.
-    let mut title_assets: std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset> =
-        std::collections::HashMap::new();
+    let mut title_assets: std::collections::HashMap<
+        klipp_core::MediaId,
+        klipp_timeline::TitleAsset,
+    > = std::collections::HashMap::new();
     for entry in &project.title_assets {
         let id = match parse_uuid(&entry.id) {
             Ok(u) => klipp_core::MediaId(u),
             Err(e) => {
-                tracing::warn!("title_asset: skipping entry with bad id {:?}: {}", entry.id, e);
+                tracing::warn!(
+                    "title_asset: skipping entry with bad id {:?}: {}",
+                    entry.id,
+                    e
+                );
                 continue;
             }
         };
-        let mut data: klipp_timeline::TitleData =
-            match serde_json::from_value(entry.data.clone()) {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!(
-                        "title_asset {:?}: skipping (bad data field): {}",
-                        entry.id, e
-                    );
-                    continue;
-                }
-            };
+        let mut data: klipp_timeline::TitleData = match serde_json::from_value(entry.data.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    "title_asset {:?}: skipping (bad data field): {}",
+                    entry.id,
+                    e
+                );
+                continue;
+            }
+        };
         // An asset is a title like any other: its layers' stacks are
         // made explicit and the old text-box fields hoisted, once.
         let fx = data.migrate_fx();
@@ -397,8 +457,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     ))
 }
 
-
-fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Result<Sequence, String> {
+fn load_sequence_from_json(
+    seq_json: &SequenceJson,
+    project_dir: &Path,
+) -> Result<Sequence, String> {
     // Refuse an effect this reader does not know, by name, before any
     // clip is built. The effects are stored as one tagged array; read as
     // a whole and swallowed, one unknown tag — a project written by a
@@ -693,10 +755,18 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
     // every reload had been silently taking away. A file that says a
     // track is Free is left Free.
     if seq_json.tracks.iter().all(|t| t.magnetic_role.is_none()) {
-        if let Some(v) = sequence.tracks.iter_mut().find(|t| t.kind == TrackKind::Video) {
+        if let Some(v) = sequence
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Video)
+        {
             v.magnetic_role = klipp_timeline::TrackRole::Primary;
         }
-        if let Some(a) = sequence.tracks.iter_mut().find(|t| t.kind == TrackKind::Audio) {
+        if let Some(a) = sequence
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Audio)
+        {
             a.magnetic_role = klipp_timeline::TrackRole::Connected;
         }
     }
@@ -725,12 +795,14 @@ fn resolve_title_paths(td: &mut klipp_timeline::TitleData, project_dir: &Path) {
             klipp_timeline::TitleObjectContent::TextBox(tb) => {
                 if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
                     *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
-                        .to_string_lossy().to_string();
+                        .to_string_lossy()
+                        .to_string();
                 }
             }
             klipp_timeline::TitleObjectContent::Image(img) => {
                 img.path = crate::path_util::resolve_media_path(project_dir, Path::new(&img.path))
-                    .to_string_lossy().to_string();
+                    .to_string_lossy()
+                    .to_string();
             }
             klipp_timeline::TitleObjectContent::Shape(_) => {}
         }
@@ -742,7 +814,11 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     // New format: `kind` field is present
     if let Some(kind_json) = &c.kind {
         return match kind_json {
-            ClipKindJson::VectorTitle {title_data} => { let mut td=title_data.clone();resolve_title_paths(&mut td,project_dir);ClipKind::Title(td) },
+            ClipKindJson::VectorTitle { title_data } => {
+                let mut td = title_data.clone();
+                resolve_title_paths(&mut td, project_dir);
+                ClipKind::Title(td)
+            }
             ClipKindJson::TitleV2 { title_data } => {
                 let mut td = title_data.clone();
                 resolve_title_paths(&mut td, project_dir);
@@ -796,7 +872,9 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                             resolve_title_paths(&mut td, project_dir);
                             return ClipKind::Title(td);
                         }
-                        Err(e) => warn!("title_data could not be read, using the flat title fields: {e}"),
+                        Err(e) => {
+                            warn!("title_data could not be read, using the flat title fields: {e}")
+                        }
                     }
                 }
                 let align = match alignment.as_str() {
@@ -810,8 +888,8 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     "BoldItalic" => FontStyle::BoldItalic,
                     _ => FontStyle::Regular,
                 };
-                let bg: TitleBackground = serde_json::from_value(background.clone())
-                    .unwrap_or(TitleBackground::None);
+                let bg: TitleBackground =
+                    serde_json::from_value(background.clone()).unwrap_or(TitleBackground::None);
                 // Drop-shadow stack migration: prefer the new
                 // `shadows` array; fall back to wrapping the legacy
                 // single `shadow` field as a one-element vec when
@@ -827,8 +905,10 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                         legacy.into_iter().collect()
                     }
                 };
-                let ol: Option<klipp_timeline::TextOutline> = serde_json::from_value(outline.clone()).ok().flatten();
-                let ols: Vec<klipp_timeline::TextOutline> = serde_json::from_value(outlines.clone()).unwrap_or_default();
+                let ol: Option<klipp_timeline::TextOutline> =
+                    serde_json::from_value(outline.clone()).ok().flatten();
+                let ols: Vec<klipp_timeline::TextOutline> =
+                    serde_json::from_value(outlines.clone()).unwrap_or_default();
                 // Glow stack migration: prefer `glows` array; fall
                 // back to wrapping legacy `glow` as a one-element vec.
                 let glow_vec: Vec<klipp_timeline::TextGlow> = {
@@ -842,7 +922,8 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                         legacy.into_iter().collect()
                     }
                 };
-                let gr: Option<klipp_timeline::TextGradient> = serde_json::from_value(gradient.clone()).ok().flatten();
+                let gr: Option<klipp_timeline::TextGradient> =
+                    serde_json::from_value(gradient.clone()).ok().flatten();
                 // Inner shadow stack migration: prefer `inner_shadows`
                 // array; fall back to wrapping legacy `inner_shadow`.
                 let inner_shadow_vec: Vec<klipp_timeline::InnerShadow> = {
@@ -856,12 +937,20 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                         legacy.into_iter().collect()
                     }
                 };
-                let pf: Option<klipp_timeline::TextPattern> = serde_json::from_value(pattern_fill.clone()).ok().flatten();
-                let ext: Option<klipp_timeline::TextExtrusion> = serde_json::from_value(extrusion.clone()).ok().flatten();
-                let tp: Option<klipp_timeline::TextPath> = serde_json::from_value(text_path.clone()).ok().flatten();
-                let ca: Option<klipp_timeline::CharAnimation> = serde_json::from_value(char_animation.clone()).ok().flatten();
-                let mb: Option<klipp_timeline::MotionBlur> = serde_json::from_value(motion_blur.clone()).ok().flatten();
-                let sr: Vec<klipp_timeline::StyleRun> = serde_json::from_value(style_runs.clone()).unwrap_or_default();
+                let pf: Option<klipp_timeline::TextPattern> =
+                    serde_json::from_value(pattern_fill.clone()).ok().flatten();
+                let ext: Option<klipp_timeline::TextExtrusion> =
+                    serde_json::from_value(extrusion.clone()).ok().flatten();
+                let tp: Option<klipp_timeline::TextPath> =
+                    serde_json::from_value(text_path.clone()).ok().flatten();
+                let ca: Option<klipp_timeline::CharAnimation> =
+                    serde_json::from_value(char_animation.clone())
+                        .ok()
+                        .flatten();
+                let mb: Option<klipp_timeline::MotionBlur> =
+                    serde_json::from_value(motion_blur.clone()).ok().flatten();
+                let sr: Vec<klipp_timeline::StyleRun> =
+                    serde_json::from_value(style_runs.clone()).unwrap_or_default();
                 // Build a TextBox from the legacy flat JSON fields,
                 // then wrap it in a TitleData with one TextBox object.
                 // The legacy single-outline `outline` field is folded
@@ -916,16 +1005,20 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                             serde_json::from_value(texture_fill.clone()).ok().flatten();
                         if let Some(mut tf) = from_new {
                             if let Some(p) = tf.file_path_mut() {
-                                *p = crate::path_util::resolve_media_path(project_dir, Path::new(&p))
-                                    .to_string_lossy()
-                                    .to_string();
+                                *p = crate::path_util::resolve_media_path(
+                                    project_dir,
+                                    Path::new(&p),
+                                )
+                                .to_string_lossy()
+                                .to_string();
                             }
                             Some(tf)
                         } else {
                             texture_fill_path.as_ref().map(|p| {
-                                let resolved = crate::path_util::resolve_media_path(project_dir, Path::new(p))
-                                    .to_string_lossy()
-                                    .to_string();
+                                let resolved =
+                                    crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                                        .to_string_lossy()
+                                        .to_string();
                                 klipp_timeline::TextureFill::from_legacy_path(resolved, true)
                             })
                         }
@@ -959,11 +1052,13 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 let sid = parse_uuid(sequence_id)
                     .map(klipp_core::SequenceId)
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
-                ClipKind::Sequence { sequence_id: sid }
+                ClipKind::Sequence {
+                    sequence_id: sid,
+                    template_instance: None,
+                }
             }
             ClipKindJson::Generator { data } => {
-                let gen_data = serde_json::from_value(data.clone())
-                    .unwrap_or_default();
+                let gen_data = serde_json::from_value(data.clone()).unwrap_or_default();
                 ClipKind::Generator(gen_data)
             }
             ClipKindJson::AdjustmentLayer => ClipKind::AdjustmentLayer,
@@ -971,7 +1066,10 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 let sid = parse_uuid(sequence_id)
                     .map(klipp_core::SequenceId)
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
-                ClipKind::Precomposition { sequence_id: sid }
+                ClipKind::Precomposition {
+                    sequence_id: sid,
+                    template_instance: None,
+                }
             }
         };
     }
@@ -985,7 +1083,10 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     }
 
     // Fallback — should not happen
-    warn!("Clip {} has neither 'kind' nor 'media_id' — using default", c.id);
+    warn!(
+        "Clip {} has neither 'kind' nor 'media_id' — using default",
+        c.id
+    );
     ClipKind::default()
 }
 
@@ -1018,7 +1119,9 @@ fn load_matte_binding(j: &crate::format::MatteBindingJson) -> Option<klipp_timel
 /// handled by `TransformLinkTarget`'s own deserialization (a
 /// non-uuid string fails the `Clip(ClipId)` arm of the untagged
 /// enum and the file load surfaces the error there).
-fn load_transform_link(j: &crate::format::TransformLinkJson) -> Option<klipp_timeline::TransformLink> {
+fn load_transform_link(
+    j: &crate::format::TransformLinkJson,
+) -> Option<klipp_timeline::TransformLink> {
     Some(klipp_timeline::TransformLink {
         target: j.target,
         mode: j.mode,
@@ -1047,7 +1150,9 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") { continue; }
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
         match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
             Ok(text) => match serde_json::from_str::<Look>(&text) {
                 Ok(look) => out.push(look),

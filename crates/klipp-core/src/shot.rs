@@ -60,7 +60,11 @@ impl ShotMetadata {
         if let Some(mm) = self.focal_length_mm {
             parts.push(format!("{} mm", trim_float(mm)));
         }
-        if parts.is_empty() { None } else { Some(parts.join(" \u{00B7} ")) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" \u{00B7} "))
+        }
     }
 
     /// Take from `other` every field this one lacks, and all its tags.
@@ -138,25 +142,49 @@ mod tests {
         assert_eq!(epoch_to_civil(1_710_498_600), (2024, 3, 15, 10, 30));
         for secs in [951_782_400u64, 1_000_000_000, 1_704_067_199, 4_102_444_800] {
             let (y, m, d, h, mi) = epoch_to_civil(secs);
-            assert_eq!(civil_to_epoch(y, m, d, h, mi, (secs % 60) as u32), Some(secs));
+            assert_eq!(
+                civil_to_epoch(y, m, d, h, mi, (secs % 60) as u32),
+                Some(secs)
+            );
         }
     }
 
     #[test]
     fn the_exposure_reads_on_one_line_from_what_is_known() {
-        let mut shot = ShotMetadata { iso: Some(800), shutter: Some("1/50".into()), aperture: Some(2.8), focal_length_mm: Some(24.0), ..Default::default() };
-        assert_eq!(shot.exposure_summary().as_deref(), Some("ISO 800 \u{00B7} 1/50 \u{00B7} f/2.8 \u{00B7} 24 mm"));
+        let mut shot = ShotMetadata {
+            iso: Some(800),
+            shutter: Some("1/50".into()),
+            aperture: Some(2.8),
+            focal_length_mm: Some(24.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            shot.exposure_summary().as_deref(),
+            Some("ISO 800 \u{00B7} 1/50 \u{00B7} f/2.8 \u{00B7} 24 mm")
+        );
         shot.iso = None;
         shot.focal_length_mm = None;
-        assert_eq!(shot.exposure_summary().as_deref(), Some("1/50 \u{00B7} f/2.8"));
+        assert_eq!(
+            shot.exposure_summary().as_deref(),
+            Some("1/50 \u{00B7} f/2.8")
+        );
         assert_eq!(ShotMetadata::default().exposure_summary(), None);
         assert!(ShotMetadata::default().is_empty());
     }
 
     #[test]
     fn a_later_source_fills_only_what_is_missing() {
-        let mut shot = ShotMetadata { iso: Some(100), tags: vec![("format:a".into(), "1".into())], ..Default::default() };
-        shot.fill_missing_from(ShotMetadata { iso: Some(800), lens: Some("50mm".into()), tags: vec![("exif:b".into(), "2".into())], ..Default::default() });
+        let mut shot = ShotMetadata {
+            iso: Some(100),
+            tags: vec![("format:a".into(), "1".into())],
+            ..Default::default()
+        };
+        shot.fill_missing_from(ShotMetadata {
+            iso: Some(800),
+            lens: Some("50mm".into()),
+            tags: vec![("exif:b".into(), "2".into())],
+            ..Default::default()
+        });
         assert_eq!(shot.iso, Some(100));
         assert_eq!(shot.lens.as_deref(), Some("50mm"));
         assert_eq!(shot.tags.len(), 2);

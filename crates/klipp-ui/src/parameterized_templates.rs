@@ -69,7 +69,8 @@ pub struct TemplateManifest {
 /// composition can be built, previewed and saved through the same app path as
 /// a user template.
 pub fn builtin_manifests() -> &'static [TemplateManifest] {
-    static CATALOGUE: std::sync::LazyLock<Vec<TemplateManifest>> = std::sync::LazyLock::new(catalogue);
+    static CATALOGUE: std::sync::LazyLock<Vec<TemplateManifest>> =
+        std::sync::LazyLock::new(catalogue);
     &CATALOGUE
 }
 
@@ -231,18 +232,9 @@ fn manifest(
     }
 }
 
-/// Values that can be exposed in the first template version.  These map
-/// directly to controls the inspector can render without knowing the template
-/// implementation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value")]
-pub enum TemplateValue {
-    Text(String),
-    Color([f32; 4]),
-    Number(f64),
-    Bool(bool),
-    Enum(String),
-}
+/// Shared with persisted timeline instances so templates can be edited by the
+/// UI without making the timeline depend on this crate.
+pub use klipp_core::TemplateValue;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NumberRange {
@@ -643,18 +635,109 @@ fn eased(keys: &[(f64, f32, Easing)]) -> Vec<klipp_core::Keyframe> {
     out
 }
 
-/// An inserted template instance. Only overrides are stored; default values
-/// remain owned by the template so updating a template can be handled
-/// explicitly instead of silently duplicating its whole composition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TemplateInstance {
-    pub template_id: Uuid,
-    #[serde(default)]
-    pub overrides: BTreeMap<String, TemplateValue>,
+/// An inserted template instance. The data lives in core so it can be stored
+/// on a timeline clip; these helpers keep catalogue validation in the UI.
+pub use klipp_core::TemplateInstance;
+
+/// Resolve exposed values onto an ordinary title.  Bindings are deliberately
+/// explicit and typed: an unknown object or property is an error instead of a
+/// silently broken card.
+pub fn resolve_bindings(
+    title: &mut TitleData,
+    template: &CompositionTemplate,
+    instance: &TemplateInstance,
+) -> Result<(), String> {
+    for binding in &template.bindings {
+        let value = instance
+            .value(template, &binding.parameter)
+            .ok_or_else(|| format!("missing value for '{}'", binding.parameter))?;
+        let (object, path) = binding
+            .property
+            .strip_prefix("object:")
+            .and_then(|rest| rest.split_once('.'))
+            .ok_or_else(|| format!("invalid binding path '{}'", binding.property))?;
+        let object_id: u32 = object
+            .parse()
+            .map_err(|_| format!("invalid object id '{object}'"))?;
+        let target = title
+            .objects
+            .get_mut(object_id as usize)
+            .ok_or_else(|| format!("binding object {object_id} does not exist"))?;
+        match (path, value) {
+            ("text", TemplateValue::Text(text)) => match &mut target.content {
+                TitleObjectContent::TextBox(box_) => box_.text = text.clone(),
+                _ => return Err(format!("object {object_id} is not text")),
+            },
+            ("fill_and_glow", TemplateValue::Color(color)) => {
+                let rgba = [
+                    (color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                    (color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                    (color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                    (color[3].clamp(0.0, 1.0) * 255.0) as u8,
+                ];
+                match &mut target.content {
+                    TitleObjectContent::Shape(shape) => shape.fill = Some(rgba),
+                    _ => return Err(format!("object {object_id} is not a shape")),
+                }
+                if let Some(glow) = target.fx_mut().glows.first_mut() {
+                    glow.color = rgba;
+                }
+            }
+            ("motion.enter.duration_secs", TemplateValue::Number(seconds)) => {
+                let motion = target
+                    .fx_mut()
+                    .motion
+                    .enter
+                    .as_mut()
+                    .ok_or_else(|| format!("object {object_id} has no entrance motion"))?;
+                motion.duration_secs = *seconds as f32;
+            }
+            ("motion.enter.direction", TemplateValue::Enum(direction)) => {
+                let motion = target
+                    .fx_mut()
+                    .motion
+                    .enter
+                    .as_mut()
+                    .ok_or_else(|| format!("object {object_id} has no entrance motion"))?;
+                motion.kind = match direction.as_str() {
+                    "left" => MotionKind::SlideRight,
+                    "right" => MotionKind::SlideLeft,
+                    "up" => MotionKind::Rise,
+                    "down" => MotionKind::Drop,
+                    other => return Err(format!("unknown entry direction '{other}'")),
+                };
+            }
+            ("float.keyframes", TemplateValue::Number(amount)) => {
+                let keyframes = &mut target.transform.center_y_keyframes;
+                for key in keyframes {
+                    key.value = key.value.max(0.0) + *amount as f32 * 0.01;
+                }
+            }
+            (property, value) => {
+                return Err(format!("value {:?} cannot bind to '{}'", value, property));
+            }
+        }
+    }
+    Ok(())
 }
 
-impl TemplateInstance {
-    pub fn set(
+trait TemplateInstanceExt {
+    #[allow(dead_code)]
+    fn set(
+        &mut self,
+        template: &CompositionTemplate,
+        name: &str,
+        value: TemplateValue,
+    ) -> Result<(), String>;
+    fn value<'a>(
+        &'a self,
+        template: &'a CompositionTemplate,
+        name: &str,
+    ) -> Option<&'a TemplateValue>;
+}
+
+impl TemplateInstanceExt for TemplateInstance {
+    fn set(
         &mut self,
         template: &CompositionTemplate,
         name: &str,
@@ -669,7 +752,7 @@ impl TemplateInstance {
         Ok(())
     }
 
-    pub fn value<'a>(
+    fn value<'a>(
         &'a self,
         template: &'a CompositionTemplate,
         name: &str,
@@ -711,7 +794,12 @@ impl CompositionTemplateStore {
                         // One id is one template: a second file carrying
                         // it is a copy, and saving would rewrite the
                         // first while dropping both from the list.
-                        if entries.iter().any(|(_, existing): &(PathBuf, CompositionTemplate)| existing.id == template.id) {
+                        if entries
+                            .iter()
+                            .any(|(_, existing): &(PathBuf, CompositionTemplate)| {
+                                existing.id == template.id
+                            })
+                        {
                             tracing::warn!("Skipping template '{}': its id is already loaded from another file", path.display());
                         } else {
                             entries.push((path, template));
@@ -793,6 +881,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resolver_applies_terminal_overrides_to_materialized_title() {
+        let mut title = terminal_card_composition();
+        let template_id = Uuid::new_v4();
+        let template = terminal_card_template(template_id);
+        let instance = TemplateInstance {
+            template_id,
+            overrides: BTreeMap::from([
+                (
+                    "command_text".into(),
+                    TemplateValue::Text("xytx --launch".into()),
+                ),
+                ("typing_speed".into(), TemplateValue::Number(0.8)),
+            ]),
+            media_slots: BTreeMap::new(),
+        };
+        resolve_bindings(&mut title, &template, &instance).unwrap();
+        match &title.objects[1].content {
+            TitleObjectContent::TextBox(text) => assert_eq!(text.text, "xytx --launch"),
+            _ => panic!("terminal command is not a text layer"),
+        }
+        assert_eq!(
+            title.objects[1].fx().motion.enter.unwrap().duration_secs,
+            0.8
+        );
+    }
+
+    #[test]
     fn instance_uses_defaults_and_validates_overrides() {
         let mut template = CompositionTemplate::new("Terminal card", Uuid::new_v4());
         template.parameters.insert(
@@ -820,6 +935,7 @@ mod tests {
         let mut instance = TemplateInstance {
             template_id: template.id,
             overrides: BTreeMap::new(),
+            media_slots: BTreeMap::new(),
         };
         assert_eq!(
             instance.value(&template, "text"),
@@ -895,18 +1011,38 @@ mod tests {
         let keys = &title.objects[0].transform.center_x_keyframes;
         assert!(keys.len() >= 4);
         for pair in keys.windows(2) {
-            assert_eq!(pair[0].interpolation, klipp_core::Interpolation::Bezier, "each segment is eased");
-            assert!(pair[0].tangent_out.0 > 0.0 || pair[1].tangent_in.0 < 0.0, "with real handles");
+            assert_eq!(
+                pair[0].interpolation,
+                klipp_core::Interpolation::Bezier,
+                "each segment is eased"
+            );
+            assert!(
+                pair[0].tangent_out.0 > 0.0 || pair[1].tangent_in.0 < 0.0,
+                "with real handles"
+            );
         }
-        assert_eq!(keys[0].tangent_in, (0.0, 0.0), "nothing precedes the first key");
+        assert_eq!(
+            keys[0].tangent_in,
+            (0.0, 0.0),
+            "nothing precedes the first key"
+        );
     }
 
     /// A number that JSON cannot carry is refused before it is saved.
     #[test]
     fn a_non_finite_number_is_refused() {
-        let parameter = TemplateParameter { label: "Speed".into(), default: TemplateValue::Number(0.5), range: None, choices: vec![] };
-        assert!(parameter.validate(&TemplateValue::Number(f64::NAN)).is_err());
-        assert!(parameter.validate(&TemplateValue::Number(f64::INFINITY)).is_err());
+        let parameter = TemplateParameter {
+            label: "Speed".into(),
+            default: TemplateValue::Number(0.5),
+            range: None,
+            choices: vec![],
+        };
+        assert!(parameter
+            .validate(&TemplateValue::Number(f64::NAN))
+            .is_err());
+        assert!(parameter
+            .validate(&TemplateValue::Number(f64::INFINITY))
+            .is_err());
         assert!(parameter.validate(&TemplateValue::Number(0.25)).is_ok());
     }
 
@@ -915,21 +1051,39 @@ mod tests {
     #[test]
     fn the_command_types_on_character_by_character() {
         let title = terminal_card_composition();
-        let enter = title.objects[1].fx().motion.enter.as_ref().expect("an entrance");
+        let enter = title.objects[1]
+            .fx()
+            .motion
+            .enter
+            .as_ref()
+            .expect("an entrance");
         assert_eq!(enter.stagger, StaggerUnit::Char);
         let chars = "$ find invoice.pdf".chars().count() as f32;
-        assert!((enter.stagger_secs * chars - 0.34).abs() < 1e-5, "{}", enter.stagger_secs);
+        assert!(
+            (enter.stagger_secs * chars - 0.34).abs() < 1e-5,
+            "{}",
+            enter.stagger_secs
+        );
     }
 
     /// Two templates that share a name are two files.
     #[test]
     fn a_second_template_with_the_same_name_gets_its_own_file() {
-        let dir = std::env::temp_dir().join(format!("klipp_templates_{}_{}", std::process::id(), line!()));
+        let dir = std::env::temp_dir().join(format!(
+            "klipp_templates_{}_{}",
+            std::process::id(),
+            line!()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = CompositionTemplateStore::load(Some(dir.clone()));
-        store.save(CompositionTemplate::new("Card", Uuid::new_v4())).unwrap();
-        store.save(CompositionTemplate::new("Card", Uuid::new_v4())).unwrap();
-        let paths: std::collections::BTreeSet<_> = store.entries.iter().map(|(p, _)| p.clone()).collect();
+        store
+            .save(CompositionTemplate::new("Card", Uuid::new_v4()))
+            .unwrap();
+        store
+            .save(CompositionTemplate::new("Card", Uuid::new_v4()))
+            .unwrap();
+        let paths: std::collections::BTreeSet<_> =
+            store.entries.iter().map(|(p, _)| p.clone()).collect();
         assert_eq!(paths.len(), 2, "{paths:?}");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
         let reloaded = CompositionTemplateStore::load(Some(dir.clone()));

@@ -60,7 +60,12 @@ pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence 
 /// scenes inside it are resolved, so a scene inside a scene is named
 /// under the instance-scoped id of the clip that holds it: the same
 /// leaf reached through two instances of a middle scene is two leaves.
-fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, namespace: Option<ClipId>) -> Sequence {
+fn flatten_within(
+    seq: &Sequence,
+    all_sequences: &[Sequence],
+    ancestors: &mut Vec<SequenceId>,
+    namespace: Option<ClipId>,
+) -> Sequence {
     ancestors.push(seq.id);
     let mut flat = seq.clone();
     flat.tracks = seq
@@ -81,9 +86,13 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
     for track in &mut flat.tracks {
         let carrier = Controls::of(track);
         for clip in &mut track.clips {
-            if let ClipKind::Precomposition { sequence_id } = clip.kind {
+            if let ClipKind::Precomposition { sequence_id, .. } = clip.kind {
                 // A clip that is off is off: no scene, no sound.
-                clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
+                clip.precomp = if clip.enabled {
+                    resolve_precomposition(clip, sequence_id, all_sequences, ancestors)
+                } else {
+                    None
+                };
                 if let Some(scene) = &clip.precomp {
                     sound.extend(scene_sound(clip, scene, &carrier));
                 }
@@ -116,7 +125,12 @@ pub fn resolve_precomposition(
         return None;
     }
     let inner = all_sequences.iter().find(|s| s.id == sequence_id)?;
-    Some(Arc::new(flatten_within(inner, all_sequences, ancestors, Some(clip.id))))
+    Some(Arc::new(flatten_within(
+        inner,
+        all_sequences,
+        ancestors,
+        Some(clip.id),
+    )))
 }
 
 /// A track's say over the sound on it.
@@ -129,7 +143,12 @@ struct Controls {
 
 impl Controls {
     fn of(track: &Track) -> Self {
-        Self { muted: track.muted, solo: track.solo, volume: track.volume, pan: track.pan }
+        Self {
+            muted: track.muted,
+            solo: track.solo,
+            volume: track.volume,
+            pan: track.pan,
+        }
     }
 }
 
@@ -156,9 +175,19 @@ impl Controls {
 /// what it needs and points at nothing.
 fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> {
     let rate = clip.timeline_in.rate;
-    let (t_in, s_in, s_out) = (clip.timeline_in.to_secs_f64(), clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+    let (t_in, s_in, s_out) = (
+        clip.timeline_in.to_secs_f64(),
+        clip.source_in.to_secs_f64(),
+        clip.source_out.to_secs_f64(),
+    );
     let any_solo = scene.tracks.iter().any(|t| t.solo);
-    let find = |id: ClipId| scene.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
+    let find = |id: ClipId| {
+        scene
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == id)
+    };
     let mut out = Vec::new();
     for track in &scene.tracks {
         let clips: Vec<Clip> = track
@@ -168,11 +197,14 @@ fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> 
             .filter(|c| {
                 !(track.kind == TrackKind::Video
                     && c.linked_clip_id.is_some_and(|lid| {
-                        scene.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|p| p.id == lid))
+                        scene.tracks.iter().any(|t| {
+                            t.kind == TrackKind::Audio && t.clips.iter().any(|p| p.id == lid)
+                        })
                     }))
             })
             .filter_map(|c| {
-                let mut sliced = slice_inner_clip_to_compound(c, t_in, s_in, s_out, clip.speed, rate)?;
+                let mut sliced =
+                    slice_inner_clip_to_compound(c, t_in, s_in, s_out, clip.speed, rate)?;
                 if let Some(picture) = c.linked_clip_id.and_then(find).filter(|p| p.id != c.id) {
                     take_sound_settings(&mut sliced, picture);
                 }
@@ -188,7 +220,10 @@ fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> 
         if clips.is_empty() {
             continue;
         }
-        let mut t = Track::new(&format!("{} · {}", scene.name, track.name), TrackKind::Audio);
+        let mut t = Track::new(
+            &format!("{} · {}", scene.name, track.name),
+            TrackKind::Audio,
+        );
         t.clips = clips;
         t.muted = track.muted || carrier.muted || (any_solo && !track.solo);
         t.solo = carrier.solo;
@@ -228,7 +263,11 @@ fn shift_sound_automation(clip: &mut Clip, head: f64, speed: f64) {
         return;
     }
     let speed = if speed.abs() < 1e-9 { 1.0 } else { speed };
-    for keys in [&mut clip.volume_keyframes, &mut clip.gain_keyframes, &mut clip.pan_keyframes] {
+    for keys in [
+        &mut clip.volume_keyframes,
+        &mut clip.gain_keyframes,
+        &mut clip.pan_keyframes,
+    ] {
         for k in keys.iter_mut() {
             k.time_secs = (k.time_secs - head) / speed;
         }
@@ -254,17 +293,26 @@ fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
             if let Some(link) = &mut c.transform_link {
                 match &mut link.target {
                     crate::TransformLinkTarget::Clip(id) => *id = renamed(*id),
-                    crate::TransformLinkTarget::Tracker { clip_id, .. } => *clip_id = renamed(*clip_id),
+                    crate::TransformLinkTarget::Tracker { clip_id, .. } => {
+                        *clip_id = renamed(*clip_id)
+                    }
                 }
             }
             if let Some(m) = &mut c.matte_source {
                 m.source_clip_id = renamed(m.source_clip_id);
             }
             for e in &mut c.builtin_effects {
-                if let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
+                if let klipp_effects::BuiltinEffect::Transform {
+                    focal_ref: Some(f), ..
+                } = e
+                {
                     match f {
-                        klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
-                        klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
+                        klipp_effects::FocalRef::Glyph { title_clip_id, .. } => {
+                            *title_clip_id = renamed(ClipId(*title_clip_id)).0
+                        }
+                        klipp_effects::FocalRef::Tracker { clip_id, .. } => {
+                            *clip_id = renamed(ClipId(*clip_id)).0
+                        }
                     }
                 }
             }
@@ -300,7 +348,7 @@ fn flatten_track(track: &Track, all_sequences: &[Sequence], depth: u8) -> Track 
         .clips
         .iter()
         .flat_map(|clip| {
-            if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 if depth < MAX_COMPOUND_DEPTH {
                     return flatten_clip_for_track(
                         clip,
@@ -343,7 +391,13 @@ pub fn flatten_clip_for_track(
     parent_kind: TrackKind,
     depth: u8,
 ) -> Vec<Clip> {
-    flatten_clip_inner(compound, sequence_id, all_sequences, Some(parent_kind), depth)
+    flatten_clip_inner(
+        compound,
+        sequence_id,
+        all_sequences,
+        Some(parent_kind),
+        depth,
+    )
 }
 
 fn flatten_clip_inner(
@@ -397,6 +451,7 @@ fn flatten_clip_inner(
             // remapped against the new compound bounds.
             if let ClipKind::Sequence {
                 sequence_id: nested_id,
+                ..
             } = &sliced.kind
             {
                 if depth + 1 < MAX_COMPOUND_DEPTH {
@@ -448,12 +503,14 @@ pub fn slice_inner_clip_to_compound(
     let visible_out = ic_out.min(compound_source_out_secs);
 
     // Defensive: avoid divide-by-zero if speed is somehow 0 or negative.
-    let speed = if compound_speed.abs() < 1e-9 { 1.0 } else { compound_speed };
+    let speed = if compound_speed.abs() < 1e-9 {
+        1.0
+    } else {
+        compound_speed
+    };
 
-    let parent_in =
-        compound_timeline_in_secs + (visible_in - compound_source_in_secs) / speed;
-    let parent_out =
-        compound_timeline_in_secs + (visible_out - compound_source_in_secs) / speed;
+    let parent_in = compound_timeline_in_secs + (visible_in - compound_source_in_secs) / speed;
+    let parent_out = compound_timeline_in_secs + (visible_out - compound_source_in_secs) / speed;
 
     let source_in_offset = visible_in - ic_in;
     let inner_source_in_secs = inner.source_in.to_secs_f64() + source_in_offset;
@@ -481,7 +538,10 @@ mod tests {
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
-            resolution: Resolution { width: 1920, height: 1080 },
+            resolution: Resolution {
+                width: 1920,
+                height: 1080,
+            },
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
@@ -504,8 +564,8 @@ mod tests {
     fn flatten_two_media_clips_in_compound() {
         let mut child = make_seq("child");
         let mut child_track = Track::new("V1", TrackKind::Video);
-        child_track.clips.push(media_clip(0, 24, 0, 24));   // 0..1s
-        child_track.clips.push(media_clip(24, 48, 0, 24));  // 1..2s
+        child_track.clips.push(media_clip(0, 24, 0, 24)); // 0..1s
+        child_track.clips.push(media_clip(24, 48, 0, 24)); // 1..2s
         child.tracks.push(child_track);
         let child_id = child.id;
 
@@ -733,14 +793,13 @@ mod tests {
         let child_id = child.id;
 
         let compound = Clip::sequence(child_id, t(0), t(24));
-        let leaves = flatten_clip_for_track(
-            &compound,
-            child_id,
-            &[child.clone()],
-            TrackKind::Audio,
-            0,
+        let leaves =
+            flatten_clip_for_track(&compound, child_id, &[child.clone()], TrackKind::Audio, 0);
+        assert_eq!(
+            leaves.len(),
+            1,
+            "audio parent track must yield only audio inner clips"
         );
-        assert_eq!(leaves.len(), 1, "audio parent track must yield only audio inner clips");
     }
 
     #[test]
@@ -755,14 +814,13 @@ mod tests {
         let child_id = child.id;
 
         let compound = Clip::sequence(child_id, t(0), t(24));
-        let leaves = flatten_clip_for_track(
-            &compound,
-            child_id,
-            &[child.clone()],
-            TrackKind::Video,
-            0,
+        let leaves =
+            flatten_clip_for_track(&compound, child_id, &[child.clone()], TrackKind::Video, 0);
+        assert_eq!(
+            leaves.len(),
+            1,
+            "video parent track must yield only video inner clips"
         );
-        assert_eq!(leaves.len(), 1, "video parent track must yield only video inner clips");
     }
 
     /// A precomposition is the one nested kind flattening leaves alone:
@@ -784,10 +842,22 @@ mod tests {
 
         let flat = flatten_sequence(&parent, &[parent.clone(), child.clone()]);
         let clips = &flat.tracks[0].clips;
-        assert_eq!(clips.len(), 2, "one precomposition kept, one compound expanded to its one clip");
-        assert!(matches!(clips[0].kind, ClipKind::Precomposition { sequence_id } if sequence_id == child.id));
-        assert_eq!(clips[0].id, precomp_id, "the precomposition keeps its own identity");
-        assert!(matches!(clips[1].kind, ClipKind::Media { .. }), "the compound is flattened as before");
+        assert_eq!(
+            clips.len(),
+            2,
+            "one precomposition kept, one compound expanded to its one clip"
+        );
+        assert!(
+            matches!(clips[0].kind, ClipKind::Precomposition { sequence_id, .. } if sequence_id == child.id)
+        );
+        assert_eq!(
+            clips[0].id, precomp_id,
+            "the precomposition keeps its own identity"
+        );
+        assert!(
+            matches!(clips[1].kind, ClipKind::Media { .. }),
+            "the compound is flattened as before"
+        );
     }
 
     /// A scene laid in twice is two sets of clips: each instance's ids
@@ -813,19 +883,39 @@ mod tests {
         parent.tracks = vec![a, b];
 
         let flat = flatten_sequence(&parent, &[parent.clone(), scene.clone()]);
-        let instances: Vec<&Sequence> = flat.tracks[..2].iter().map(|t| t.clips[0].precomp.as_deref().expect("resolved")).collect();
-        let ids = |s: &Sequence| -> Vec<ClipId> { s.tracks[0].clips.iter().map(|c| c.id).collect() };
-        assert_ne!(ids(instances[0]), ids(instances[1]), "two instances, two sets of ids");
-        assert!(!ids(instances[0]).contains(&anchor_id) && !ids(instances[0]).contains(&follower_id), "neither is the scene's own");
+        let instances: Vec<&Sequence> = flat.tracks[..2]
+            .iter()
+            .map(|t| t.clips[0].precomp.as_deref().expect("resolved"))
+            .collect();
+        let ids =
+            |s: &Sequence| -> Vec<ClipId> { s.tracks[0].clips.iter().map(|c| c.id).collect() };
+        assert_ne!(
+            ids(instances[0]),
+            ids(instances[1]),
+            "two instances, two sets of ids"
+        );
+        assert!(
+            !ids(instances[0]).contains(&anchor_id) && !ids(instances[0]).contains(&follower_id),
+            "neither is the scene's own"
+        );
         for inst in &instances {
-            let [anchor, follower] = inst.tracks[0].clips.as_slice() else { panic!("two clips") };
+            let [anchor, follower] = inst.tracks[0].clips.as_slice() else {
+                panic!("two clips")
+            };
             assert!(
                 matches!(follower.transform_link.as_ref().map(|l| &l.target), Some(crate::TransformLinkTarget::Clip(id)) if *id == anchor.id),
                 "the link follows the anchor of its own instance",
             );
         }
-        assert_eq!(scene.tracks[0].clips[0].id, anchor_id, "the scene keeps its ids");
-        assert_eq!(instance_id(flat.tracks[0].clips[0].id, anchor_id), instances[0].tracks[0].clips[0].id, "and an instance id is derived, not drawn");
+        assert_eq!(
+            scene.tracks[0].clips[0].id, anchor_id,
+            "the scene keeps its ids"
+        );
+        assert_eq!(
+            instance_id(flat.tracks[0].clips[0].id, anchor_id),
+            instances[0].tracks[0].clips[0].id,
+            "and an instance id is derived, not drawn"
+        );
     }
 
     /// A scene's sound reaches the mix once per source, at the
@@ -849,13 +939,25 @@ mod tests {
         parent.tracks.push(p);
 
         let flat = flatten_sequence(&parent, &[parent.clone(), scene.clone()]);
-        let sound = flat.tracks.iter().find(|t| t.precomposition_sound).expect("a sound track");
+        let sound = flat
+            .tracks
+            .iter()
+            .find(|t| t.precomposition_sound)
+            .expect("a sound track");
         assert_eq!(sound.kind, TrackKind::Audio);
-        assert_eq!(sound.clips.len(), 1, "the linked pair sounds once, through its audio half");
+        assert_eq!(
+            sound.clips.len(),
+            1,
+            "the linked pair sounds once, through its audio half"
+        );
         let instance = flat.tracks[0].clips[0].precomp.as_ref().unwrap();
         let audio_half = &instance.tracks[1].clips[0];
         assert_eq!(sound.clips[0].id, audio_half.id, "at the instance's id");
-        assert_eq!(sound.clips[0].timeline_out, t(24), "sliced to the precomposition's window");
+        assert_eq!(
+            sound.clips[0].timeline_out,
+            t(24),
+            "sliced to the precomposition's window"
+        );
     }
 
     /// A scene that contains itself, at any remove, is refused where the
@@ -869,13 +971,23 @@ mod tests {
         a.tracks.push(at);
         let mut bt = Track::new("V1", TrackKind::Video);
         bt.clips.push(Clip::precomposition(a.id, t(0), t(24)));
-        bt.clips.push(Clip::precomposition(SequenceId::new(), t(24), t(48)));
+        bt.clips
+            .push(Clip::precomposition(SequenceId::new(), t(24), t(48)));
         b.tracks.push(bt);
 
         let flat = flatten_sequence(&a, &[a.clone(), b.clone()]);
-        let b_in_a = flat.tracks[0].clips[0].precomp.as_ref().expect("b resolves inside a");
-        assert!(b_in_a.tracks[0].clips[0].precomp.is_none(), "a inside b inside a is refused");
-        assert!(b_in_a.tracks[0].clips[1].precomp.is_none(), "a scene that does not exist resolves to nothing");
+        let b_in_a = flat.tracks[0].clips[0]
+            .precomp
+            .as_ref()
+            .expect("b resolves inside a");
+        assert!(
+            b_in_a.tracks[0].clips[0].precomp.is_none(),
+            "a inside b inside a is refused"
+        );
+        assert!(
+            b_in_a.tracks[0].clips[1].precomp.is_none(),
+            "a scene that does not exist resolves to nothing"
+        );
     }
 
     #[test]
@@ -945,14 +1057,23 @@ mod tests {
         // Inner clip on inner timeline at [12..36], source [0..24].
         let inner = media_clip(12, 36, 0, 24);
         let sliced = slice_inner_clip_to_compound(
-            &inner, /*parent_in*/ 100.0 / 24.0,
-            /*src_in*/ 0.0, /*src_out*/ 48.0 / 24.0,
-            1.0, 24,
+            &inner,
+            /*parent_in*/ 100.0 / 24.0,
+            /*src_in*/ 0.0,
+            /*src_out*/ 48.0 / 24.0,
+            1.0,
+            24,
         )
         .expect("inside window should slice");
         // visible_in=12/24, visible_out=36/24 → parent_in=100/24+12/24, parent_out=100/24+36/24
-        assert!(approx_eq(sliced.timeline_in.to_secs_f64(), (100.0 + 12.0) / 24.0));
-        assert!(approx_eq(sliced.timeline_out.to_secs_f64(), (100.0 + 36.0) / 24.0));
+        assert!(approx_eq(
+            sliced.timeline_in.to_secs_f64(),
+            (100.0 + 12.0) / 24.0
+        ));
+        assert!(approx_eq(
+            sliced.timeline_out.to_secs_f64(),
+            (100.0 + 36.0) / 24.0
+        ));
         assert!(approx_eq(sliced.source_in.to_secs_f64(), 0.0));
         assert!(approx_eq(sliced.source_out.to_secs_f64(), 24.0 / 24.0));
         assert!(approx_eq(sliced.speed, 1.0));
@@ -962,9 +1083,7 @@ mod tests {
     fn slice_inner_outside_left_returns_none() {
         // Inner clip at inner timeline [0..24]; compound source window [48..72].
         let inner = media_clip(0, 24, 0, 24);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 0.0, 48.0 / 24.0, 72.0 / 24.0, 1.0, 24,
-        );
+        let sliced = slice_inner_clip_to_compound(&inner, 0.0, 48.0 / 24.0, 72.0 / 24.0, 1.0, 24);
         assert!(sliced.is_none());
     }
 
@@ -972,9 +1091,7 @@ mod tests {
     fn slice_inner_outside_right_returns_none() {
         // Inner clip at inner timeline [72..96]; compound source window [0..48].
         let inner = media_clip(72, 96, 0, 24);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 0.0, 0.0, 48.0 / 24.0, 1.0, 24,
-        );
+        let sliced = slice_inner_clip_to_compound(&inner, 0.0, 0.0, 48.0 / 24.0, 1.0, 24);
         assert!(sliced.is_none());
     }
 
@@ -984,10 +1101,8 @@ mod tests {
         // Visible window: [12..48]; left-clipped by 12.
         // source_in advances from 0 to 12 (in inner-timeline secs == source secs).
         let inner = media_clip(0, 48, 0, 48);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 0.0, 12.0 / 24.0, 48.0 / 24.0, 1.0, 24,
-        )
-        .expect("partial overlap should slice");
+        let sliced = slice_inner_clip_to_compound(&inner, 0.0, 12.0 / 24.0, 48.0 / 24.0, 1.0, 24)
+            .expect("partial overlap should slice");
         assert!(approx_eq(sliced.source_in.to_secs_f64(), 12.0 / 24.0));
         assert!(approx_eq(sliced.source_out.to_secs_f64(), 48.0 / 24.0));
         // parent_in starts at 0 (the trim starts at the compound's left edge)
@@ -999,10 +1114,8 @@ mod tests {
         // Inner [0..48] with source [0..48]. Compound source window [0..36].
         // Visible window: [0..36]; right-clipped by 12.
         let inner = media_clip(0, 48, 0, 48);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 0.0, 0.0, 36.0 / 24.0, 1.0, 24,
-        )
-        .expect("partial overlap should slice");
+        let sliced = slice_inner_clip_to_compound(&inner, 0.0, 0.0, 36.0 / 24.0, 1.0, 24)
+            .expect("partial overlap should slice");
         assert!(approx_eq(sliced.source_in.to_secs_f64(), 0.0));
         assert!(approx_eq(sliced.source_out.to_secs_f64(), 36.0 / 24.0));
     }
@@ -1012,10 +1125,8 @@ mod tests {
         // Inner [0..24] with source [0..24]. Compound source window [0..24].
         // Compound speed 2.0 → parent_out = parent_in + 24/2 = parent_in + 12.
         let inner = media_clip(0, 24, 0, 24);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 0.0, 0.0, 24.0 / 24.0, 2.0, 24,
-        )
-        .expect("speed=2 should still slice");
+        let sliced = slice_inner_clip_to_compound(&inner, 0.0, 0.0, 24.0 / 24.0, 2.0, 24)
+            .expect("speed=2 should still slice");
         // parent timeline duration is half the inner-timeline window (24/2=12 frames=0.5s)
         assert!(approx_eq(
             sliced.timeline_out.to_secs_f64() - sliced.timeline_in.to_secs_f64(),
@@ -1032,14 +1143,15 @@ mod tests {
     fn slice_compound_speed_one_matches_old_additive_math() {
         // Regression: speed=1.0 must match the old additive flatten math.
         let inner = media_clip(12, 36, 0, 24);
-        let sliced = slice_inner_clip_to_compound(
-            &inner, 100.0 / 24.0, 0.0, 48.0 / 24.0, 1.0, 24,
-        )
-        .expect("speed=1 should slice");
+        let sliced = slice_inner_clip_to_compound(&inner, 100.0 / 24.0, 0.0, 48.0 / 24.0, 1.0, 24)
+            .expect("speed=1 should slice");
         let parent_in_secs = 100.0 / 24.0 + 12.0 / 24.0;
         let parent_out_secs = 100.0 / 24.0 + 36.0 / 24.0;
         assert!(approx_eq(sliced.timeline_in.to_secs_f64(), parent_in_secs));
-        assert!(approx_eq(sliced.timeline_out.to_secs_f64(), parent_out_secs));
+        assert!(approx_eq(
+            sliced.timeline_out.to_secs_f64(),
+            parent_out_secs
+        ));
         assert!(approx_eq(sliced.speed, 1.0));
     }
 }

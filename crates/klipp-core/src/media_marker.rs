@@ -40,18 +40,35 @@ pub struct MediaMarker {
 
 impl Default for MediaMarker {
     fn default() -> Self {
-        Self { secs: 0.0, duration_secs: 0.0, name: String::new(), kind: MediaMarkerKind::Note }
+        Self {
+            secs: 0.0,
+            duration_secs: 0.0,
+            name: String::new(),
+            kind: MediaMarkerKind::Note,
+        }
     }
 }
 
 impl MediaMarker {
     pub fn note(secs: f64) -> Self {
-        Self { secs, ..Default::default() }
+        Self {
+            secs,
+            ..Default::default()
+        }
     }
 
     pub fn range(kind: MediaMarkerKind, from_secs: f64, to_secs: f64) -> Self {
-        let (a, b) = if to_secs < from_secs { (to_secs, from_secs) } else { (from_secs, to_secs) };
-        Self { secs: a, duration_secs: b - a, name: String::new(), kind }
+        let (a, b) = if to_secs < from_secs {
+            (to_secs, from_secs)
+        } else {
+            (from_secs, to_secs)
+        };
+        Self {
+            secs: a,
+            duration_secs: b - a,
+            name: String::new(),
+            kind,
+        }
     }
 
     pub fn is_range(&self) -> bool {

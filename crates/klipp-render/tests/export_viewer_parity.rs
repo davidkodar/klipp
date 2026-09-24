@@ -32,19 +32,34 @@ struct TestClip {
 
 fn base_clip(kind: klipp_timeline::ClipKind) -> klipp_timeline::Clip {
     let tc = |f| RationalTime::from_frames(f, 25);
-    klipp_timeline::Clip { kind, source_in: tc(0), source_out: tc(FRAMES as i64), ..klipp_timeline::Clip::gap(tc(0), tc(FRAMES as i64)) }
+    klipp_timeline::Clip {
+        kind,
+        source_in: tc(0),
+        source_out: tc(FRAMES as i64),
+        ..klipp_timeline::Clip::gap(tc(0), tc(FRAMES as i64))
+    }
 }
 
 fn media(path: PathBuf, log_format: Option<LogFormat>) -> TestClip {
     let id = MediaId::new();
     TestClip {
         clip: base_clip(klipp_timeline::ClipKind::Media { media_id: id }),
-        media: Some((id, MediaFile { path, log_format, source_rotation: 0 })),
+        media: Some((
+            id,
+            MediaFile {
+                path,
+                log_format,
+                source_rotation: 0,
+            },
+        )),
     }
 }
 
 fn generated(data: GeneratorData) -> TestClip {
-    TestClip { clip: base_clip(klipp_timeline::ClipKind::Generator(data)), media: None }
+    TestClip {
+        clip: base_clip(klipp_timeline::ClipKind::Generator(data)),
+        media: None,
+    }
 }
 
 impl TestClip {
@@ -63,7 +78,11 @@ fn export_with(c: TestClip, out: &Path, codec: ExportVideoCodec) {
     v.media.extend(c.media);
     export_video(v, out, |s| {
         s.video_codec = codec;
-        s.format = if codec == ExportVideoCodec::H264 { ExportFormat::Mp4 } else { ExportFormat::Mov };
+        s.format = if codec == ExportVideoCodec::H264 {
+            ExportFormat::Mp4
+        } else {
+            ExportFormat::Mov
+        };
     });
 }
 
@@ -71,7 +90,10 @@ fn export_with(c: TestClip, out: &Path, codec: ExportVideoCodec) {
 fn timeline(tracks: Vec<Vec<klipp_timeline::Clip>>) -> VideoTimeline {
     let mut v = VideoTimeline::default();
     v.sequence.fps = Fps::new(25, 1);
-    v.sequence.resolution = Resolution { width: W, height: H };
+    v.sequence.resolution = Resolution {
+        width: W,
+        height: H,
+    };
     for clips in tracks {
         let mut t = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
         t.clips = clips;
@@ -84,26 +106,57 @@ fn timeline(tracks: Vec<Vec<klipp_timeline::Clip>>) -> VideoTimeline {
 /// "match viewer", adjusted by `tweak`.
 fn export_video(video: VideoTimeline, out: &Path, tweak: impl FnOnce(&mut ExportSettings)) {
     let snapshot = SequenceSnapshot {
-        fps: 25.0, fps_num: 25, fps_den: 1, width: W, height: H, sample_rate: 48000,
-        duration_frames: FRAMES, export_range: None, video,
-        audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
+        fps: 25.0,
+        fps_num: 25,
+        fps_den: 1,
+        width: W,
+        height: H,
+        sample_rate: 48000,
+        duration_frames: FRAMES,
+        export_range: None,
+        video,
+        audio_tracks: vec![],
+        global_lut_path: None,
+        subtitle_tracks: vec![],
+        chapters: vec![],
         pan_law: Default::default(),
         working_colorspace: WorkingColorspace::Rec709Linear,
     };
     let mut settings = ExportSettings {
         pan_law: Default::default(),
-        output_path: out.to_path_buf(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H264,
-        resolution: None, fps: None, crf: 1, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
-        audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
-        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
-        bit_depth: 0, hdr_mode: HdrMode::Sdr, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
+        output_path: out.to_path_buf(),
+        format: ExportFormat::Mp4,
+        video_codec: ExportVideoCodec::H264,
+        resolution: None,
+        fps: None,
+        crf: 1,
+        preset: EncoderPreset::Fast,
+        audio_codec: ExportAudioCodec::Copy,
+        audio_bitrate_kbps: None,
+        video_bitrate_kbps: None,
+        rate_control: RateControl::Crf,
+        burn_in_subtitles: false,
+        embed_subtitles: false,
+        target_lufs: None,
+        true_peak_dbtp: None,
+        embed_chapters: false,
+        bit_depth: 0,
+        hdr_mode: HdrMode::Sdr,
+        tone_map_op: ToneMapOp::Hable,
+        odt: OdtChoice::MatchViewer,
         mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };
     tweak(&mut settings);
     ExportJob {
-        id: uuid::Uuid::new_v4(), output_path: out.to_path_buf(), settings, snapshot,
-        cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
-        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        id: uuid::Uuid::new_v4(),
+        output_path: out.to_path_buf(),
+        settings,
+        snapshot,
+        cancel: Arc::new(AtomicBool::new(false)),
+        progress: Arc::new(AtomicU64::new(0)),
+        hw_info: Default::default(),
+        render_stage: Default::default(),
+        loudness_result: Default::default(),
         total_frames: FRAMES,
     }
     .run()
@@ -119,7 +172,11 @@ fn decode_709(path: &Path) -> Vec<u8> {
         .args(["-nostdin", "-v", "error", "-i"]).arg(path)
         .args(["-frames:v", "1", "-vf", "scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd+full_chroma_int,format=rgb24", "-f", "rawvideo", "-"])
         .output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     out.stdout
 }
 
@@ -140,7 +197,10 @@ fn px(rgb: &[u8], x: u32, y: u32) -> [i32; 3] {
 }
 
 fn ffmpeg_ok() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Lossless SMPTE HD bars, BT.709 limited, tagged — the reference an
@@ -148,21 +208,53 @@ fn ffmpeg_ok() -> bool {
 fn bars_source() -> Option<PathBuf> {
     static SRC: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     SRC.get_or_init(|| {
-        if !ffmpeg_ok() { return None; }
+        if !ffmpeg_ok() {
+            return None;
+        }
         let out = tmp("bars_src.mkv");
         let ok = std::process::Command::new("ffmpeg")
-            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=25",
-                   "-t", "0.4", "-vf", "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709",
-                   "-c:v", "ffv1", "-pix_fmt", "yuv420p"])
-            .arg(&out).status().ok()?.success();
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "smptehdbars=size=1920x1080:rate=25",
+                "-t",
+                "0.4",
+                "-vf",
+                "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709",
+                "-c:v",
+                "ffv1",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
         ok.then_some(out)
-    }).clone()
+    })
+    .clone()
 }
 
 fn probe(path: &Path, entries: &str) -> String {
     let out = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v", "-show_entries", entries, "-of", "default=nw=1"])
-        .arg(path).output().unwrap();
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v",
+            "-show_entries",
+            entries,
+            "-of",
+            "default=nw=1",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -186,16 +278,27 @@ fn ungraded_sdr_export_reproduces_the_source() {
     for gy in 1..27 {
         for gx in 1..48 {
             let (x, y) = (gx * W / 48, gy * H / 27);
-            if !flat(x, y) { continue; }
+            if !flat(x, y) {
+                continue;
+            }
             sampled += 1;
             let (p, q) = (px(&a, x, y), px(&b, x, y));
             let d = (0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap();
-            if d > worst { worst = d; eprintln!("  ({x},{y}) source {p:?} export {q:?} diff {d}"); }
+            if d > worst {
+                worst = d;
+                eprintln!("  ({x},{y}) source {p:?} export {q:?} diff {d}");
+            }
         }
     }
     eprintln!("SDR bars, no grade: worst {worst} over {sampled} flat samples");
-    assert!(sampled > 100, "too few flat samples ({sampled}) to mean anything");
-    assert!(worst <= 5, "ungraded export differs from its source by {worst} levels");
+    assert!(
+        sampled > 100,
+        "too few flat samples ({sampled}) to mean anything"
+    );
+    assert!(
+        worst <= 5,
+        "ungraded export differs from its source by {worst} levels"
+    );
 }
 
 /// Generated pixels (solid colours here; titles take the same route) play
@@ -203,14 +306,28 @@ fn ungraded_sdr_export_reproduces_the_source() {
 /// file is tagged with.
 #[test]
 fn generated_colours_play_back_as_given() {
-    if !ffmpeg_ok() { return; }
-    for colour in [[200u8, 40, 40, 255], [40, 180, 60, 255], [50, 60, 200, 255], [128, 128, 128, 255]] {
-        let out = tmp(&format!("solid_{}_{}_{}.mp4", colour[0], colour[1], colour[2]));
+    if !ffmpeg_ok() {
+        return;
+    }
+    for colour in [
+        [200u8, 40, 40, 255],
+        [40, 180, 60, 255],
+        [50, 60, 200, 255],
+        [128, 128, 128, 255],
+    ] {
+        let out = tmp(&format!(
+            "solid_{}_{}_{}.mp4",
+            colour[0], colour[1], colour[2]
+        ));
         export(generated(GeneratorData::SolidColor { color: colour }), &out);
         let got = px(&decode_709(&out), W / 2, H / 2);
         eprintln!("solid {:?}: export decodes as {got:?}", &colour[..3]);
         for c in 0..3 {
-            assert!((got[c] - colour[c] as i32).abs() <= 3, "{:?} played back as {got:?}", &colour[..3]);
+            assert!(
+                (got[c] - colour[c] as i32).abs() <= 3,
+                "{:?} played back as {got:?}",
+                &colour[..3]
+            );
         }
     }
 }
@@ -218,13 +335,32 @@ fn generated_colours_play_back_as_given() {
 /// Every Y'CbCr export declares its range and colour, not only H.264/H.265.
 #[test]
 fn exports_are_fully_tagged() {
-    if !ffmpeg_ok() { return; }
-    for (codec, name) in [(ExportVideoCodec::H264, "tags.mp4"), (ExportVideoCodec::ProRes422HQ, "tags.mov")] {
+    if !ffmpeg_ok() {
+        return;
+    }
+    for (codec, name) in [
+        (ExportVideoCodec::H264, "tags.mp4"),
+        (ExportVideoCodec::ProRes422HQ, "tags.mov"),
+    ] {
         let out = tmp(name);
-        export_with(generated(GeneratorData::SolidColor { color: [90, 120, 150, 255] }), &out, codec);
-        let tags = probe(&out, "stream=color_range,color_space,color_transfer,color_primaries");
+        export_with(
+            generated(GeneratorData::SolidColor {
+                color: [90, 120, 150, 255],
+            }),
+            &out,
+            codec,
+        );
+        let tags = probe(
+            &out,
+            "stream=color_range,color_space,color_transfer,color_primaries",
+        );
         eprintln!("{codec:?}: {}", tags.replace('\n', " "));
-        for want in ["color_range=tv", "color_space=bt709", "color_transfer=bt709", "color_primaries=bt709"] {
+        for want in [
+            "color_range=tv",
+            "color_space=bt709",
+            "color_transfer=bt709",
+            "color_primaries=bt709",
+        ] {
             assert!(tags.contains(want), "{codec:?} export lacks {want}: {tags}");
         }
     }
@@ -244,7 +380,11 @@ fn filmic(x: f64) -> f64 {
 }
 
 fn srgb8(linear: f64) -> i32 {
-    let v = if linear <= 0.0031308 { 12.92 * linear } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 };
+    let v = if linear <= 0.0031308 {
+        12.92 * linear
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
     (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
@@ -258,7 +398,11 @@ fn slog3_to_linear(code: f64) -> f64 {
 
 fn pq_code(nits: f64) -> u16 {
     let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
-    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let (c1, c2, c3) = (
+        3424.0 / 4096.0,
+        2413.0 / 4096.0 * 32.0,
+        2392.0 / 4096.0 * 32.0,
+    );
     let y = (nits / 10000.0f64).powf(m1);
     (64.0 + ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2) * 876.0).round() as u16
 }
@@ -266,47 +410,120 @@ fn pq_code(nits: f64) -> u16 {
 /// A lossless 10-bit 4:2:2 clip of four vertical luma bands, neutral
 /// chroma. FFV1 decodes in software, like ProRes.
 fn band_clip(name: &str, bands: [u16; 4], tags: &[&str]) -> Option<PathBuf> {
-    if !ffmpeg_ok() { return None; }
+    if !ffmpeg_ok() {
+        return None;
+    }
     let raw = tmp(&format!("{name}.yuv"));
     let out = tmp(&format!("{name}.mkv"));
     let mut bytes = Vec::with_capacity((W * H * 4) as usize * 3);
     for _ in 0..3 {
         for _ in 0..H {
-            for x in 0..W { bytes.extend_from_slice(&bands[(x / BAND) as usize].to_le_bytes()); }
+            for x in 0..W {
+                bytes.extend_from_slice(&bands[(x / BAND) as usize].to_le_bytes());
+            }
         }
-        for _ in 0..(W / 2) * H * 2 { bytes.extend_from_slice(&512u16.to_le_bytes()); }
+        for _ in 0..(W / 2) * H * 2 {
+            bytes.extend_from_slice(&512u16.to_le_bytes());
+        }
     }
     std::fs::write(&raw, bytes).ok()?;
     let size = format!("{W}x{H}");
-    let mut args: Vec<&str> = vec!["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", "25"];
+    let mut args: Vec<&str> = vec![
+        "-nostdin",
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv422p10le",
+        "-s",
+        &size,
+        "-r",
+        "25",
+    ];
     args.extend_from_slice(tags);
-    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "ffv1", "-pix_fmt", "yuv422p10le"]);
+    args.extend_from_slice(&[
+        "-i",
+        raw.to_str()?,
+        "-c:v",
+        "ffv1",
+        "-pix_fmt",
+        "yuv422p10le",
+    ]);
     args.extend_from_slice(tags);
     args.push(out.to_str()?);
-    let ok = std::process::Command::new("ffmpeg").args(&args).status().ok()?.success();
+    let ok = std::process::Command::new("ffmpeg")
+        .args(&args)
+        .status()
+        .ok()?
+        .success();
     let _ = std::fs::remove_file(&raw);
     ok.then_some(out)
 }
 
 const SLOG3: [u16; 4] = [95, 420, 598, 1000];
-const TAGS_709: &[&str] = &["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+const TAGS_709: &[&str] = &[
+    "-color_range",
+    "tv",
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+];
 
 fn exposure_graph(stops: f32) -> klipp_nodes::NodeGraph {
     use klipp_nodes::*;
     let node = |kind, params| Node {
-        id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params,
-        keyframes: Default::default(), output_link: None, input_links: vec![],
+        id: NodeId::new_v4(),
+        kind,
+        label: format!("{kind:?}"),
+        enabled: true,
+        params,
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: vec![],
     };
     let p = NodeParams {
         exposure: Some(stops),
         ..Default::default()
     };
-    let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, p), node(NodeKind::Output, NodeParams::default())];
-    let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
-    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+    let nodes = vec![
+        node(NodeKind::Source, NodeParams::default()),
+        node(NodeKind::Exposure, p),
+        node(NodeKind::Output, NodeParams::default()),
+    ];
+    let edges = (0..2)
+        .map(|i| Edge {
+            from_node: nodes[i].id,
+            from_port: 0,
+            to_node: nodes[i + 1].id,
+            to_port: 0,
+        })
+        .collect();
+    let node_positions = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            (
+                n.id,
+                NodePos {
+                    x: i as f32 * 100.0,
+                    y: 0.0,
+                },
+            )
+        })
+        .collect();
     NodeGraph {
-        output_node_id: nodes[2].id, nodes, edges, node_positions,
-        working_space_override: None, frames: vec![], sticky_notes: vec![],
+        output_node_id: nodes[2].id,
+        nodes,
+        edges,
+        node_positions,
+        working_space_override: None,
+        frames: vec![],
+        sticky_notes: vec![],
     }
 }
 
@@ -316,7 +533,10 @@ fn check_bands(out: &Path, label: &str, want: [i32; 4]) {
         let got = px(&rgb, band as u32 * BAND + BAND / 2, H / 2);
         eprintln!("{label} band {band}: export {got:?}, viewer {w}");
         for c in got {
-            assert!((c - w).abs() <= 2, "{label} band {band}: export {got:?}, the viewer shows {w}");
+            assert!(
+                (c - w).abs() <= 2,
+                "{label} band {band}: export {got:?}, the viewer shows {w}"
+            );
         }
     }
 }
@@ -327,10 +547,16 @@ fn check_bands(out: &Path, label: &str, want: [i32; 4]) {
 /// white 208 came out 145).
 #[test]
 fn ungraded_slog3_export_matches_the_viewer() {
-    let Some(src) = band_clip("slog3_ungraded", SLOG3, TAGS_709) else { return };
+    let Some(src) = band_clip("slog3_ungraded", SLOG3, TAGS_709) else {
+        return;
+    };
     let out = tmp("slog3_ungraded.mp4");
     export(media(src, Some(LogFormat::SLog3)), &out);
-    check_bands(&out, "S-Log3 ungraded", SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.723171))));
+    check_bands(
+        &out,
+        "S-Log3 ungraded",
+        SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.723171))),
+    );
 }
 
 /// The grade runs on scene-linear light, before the tone map, as in the
@@ -339,10 +565,19 @@ fn ungraded_slog3_export_matches_the_viewer() {
 /// preview, which has already clipped it to white, would give mid-grey.
 #[test]
 fn graded_slog3_is_graded_in_scene_linear() {
-    let Some(src) = band_clip("slog3_graded", SLOG3, TAGS_709) else { return };
+    let Some(src) = band_clip("slog3_graded", SLOG3, TAGS_709) else {
+        return;
+    };
     let out = tmp("slog3_graded.mp4");
-    export(media(src, Some(LogFormat::SLog3)).graded(exposure_graph(-2.0)), &out);
-    check_bands(&out, "S-Log3 -2 stops", SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.25 * 0.723171))));
+    export(
+        media(src, Some(LogFormat::SLog3)).graded(exposure_graph(-2.0)),
+        &out,
+    );
+    check_bands(
+        &out,
+        "S-Log3 -2 stops",
+        SLOG3.map(|c| srgb8(filmic(slog3_to_linear(c as f64) * 0.25 * 0.723171))),
+    );
 }
 
 /// PQ needs no log format: the file's tags say what it is.
@@ -350,18 +585,37 @@ fn graded_slog3_is_graded_in_scene_linear() {
 fn ungraded_pq_export_matches_the_viewer() {
     let nits = [1.0, 100.0, 1000.0, 4000.0];
     let codes = nits.map(pq_code);
-    let tags = ["-color_range", "tv", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084"];
-    let Some(src) = band_clip("pq", codes, &tags) else { return };
+    let tags = [
+        "-color_range",
+        "tv",
+        "-colorspace",
+        "bt2020nc",
+        "-color_primaries",
+        "bt2020",
+        "-color_trc",
+        "smpte2084",
+    ];
+    let Some(src) = band_clip("pq", codes, &tags) else {
+        return;
+    };
     let out = tmp("pq_ungraded.mp4");
     export(media(src, None), &out);
     // Scene-linear from the codes actually written (rounded), 1.0 = 100 nits.
     let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
-    let (c1, c2, c3) = (3424.0 / 4096.0, 2413.0 / 4096.0 * 32.0, 2392.0 / 4096.0 * 32.0);
+    let (c1, c2, c3) = (
+        3424.0 / 4096.0,
+        2413.0 / 4096.0 * 32.0,
+        2392.0 / 4096.0 * 32.0,
+    );
     let scene = |code: u16| {
         let p = ((code as f64 - 64.0) / 876.0).powf(1.0 / m2);
         100.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
     };
-    check_bands(&out, "PQ ungraded", codes.map(|c| srgb8(filmic(scene(c) * 0.18))));
+    check_bands(
+        &out,
+        "PQ ungraded",
+        codes.map(|c| srgb8(filmic(scene(c) * 0.18))),
+    );
 }
 
 // ── The shared renderer's rules, in exported files ──────────────────────
@@ -369,7 +623,9 @@ fn ungraded_pq_export_matches_the_viewer() {
 fn solid(rgb: [u8; 3], from: i64, to: i64) -> klipp_timeline::Clip {
     let tc = |f| RationalTime::from_frames(f, 25);
     klipp_timeline::Clip {
-        kind: klipp_timeline::ClipKind::Generator(GeneratorData::SolidColor { color: [rgb[0], rgb[1], rgb[2], 255] }),
+        kind: klipp_timeline::ClipKind::Generator(GeneratorData::SolidColor {
+            color: [rgb[0], rgb[1], rgb[2], 255],
+        }),
         source_in: tc(0),
         source_out: tc(to - from),
         ..klipp_timeline::Clip::gap(tc(from), tc(to))
@@ -382,13 +638,21 @@ fn decode_frame_709(path: &Path, n: u32, w: u32, h: u32) -> Vec<u8> {
         .args(["-nostdin", "-v", "error", "-i"]).arg(path)
         .args(["-vf", &format!("select=eq(n\\,{n}),scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd+full_chroma_int,format=rgb24"), "-frames:v", "1", "-f", "rawvideo", "-"])
         .output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(out.stdout.len(), (w * h * 3) as usize);
     out.stdout
 }
 
 fn srgb8_of_linear(v: f64) -> i32 {
-    let e = if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let e = if v <= 0.0031308 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
     (e.clamp(0.0, 1.0) * 255.0).round() as i32
 }
 
@@ -397,8 +661,13 @@ fn srgb8_of_linear(v: f64) -> i32 {
 /// sRGB-byte composite gives.
 #[test]
 fn stacked_tracks_mix_in_linear_light() {
-    if !ffmpeg_ok() { return; }
-    let mut v = timeline(vec![vec![solid([0, 0, 255], 0, FRAMES as i64)], vec![solid([255, 0, 0], 0, FRAMES as i64)]]);
+    if !ffmpeg_ok() {
+        return;
+    }
+    let mut v = timeline(vec![
+        vec![solid([0, 0, 255], 0, FRAMES as i64)],
+        vec![solid([255, 0, 0], 0, FRAMES as i64)],
+    ]);
     v.sequence.tracks[0].opacity = 0.5;
     let out = tmp("stacked.mp4");
     export_video(v, &out, |_| {});
@@ -406,7 +675,10 @@ fn stacked_tracks_mix_in_linear_light() {
     let half = srgb8_of_linear(0.5);
     eprintln!("blue at half over red: export {got:?}, want [{half}, 0, {half}]");
     for (c, want) in got.iter().zip([half, 0, half]) {
-        assert!((c - want).abs() <= 2, "export {got:?}, want [{half}, 0, {half}]");
+        assert!(
+            (c - want).abs() <= 2,
+            "export {got:?}, want [{half}, 0, {half}]"
+        );
     }
 }
 
@@ -417,14 +689,20 @@ fn stacked_tracks_mix_in_linear_light() {
 /// viewer's timeline goes through.
 #[test]
 fn a_precomposition_exports_as_the_composed_scene_faded_once() {
-    if !ffmpeg_ok() { return; }
+    if !ffmpeg_ok() {
+        return;
+    }
     let mut red = solid([255, 0, 0], 0, FRAMES as i64);
     klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
     let scene = timeline(vec![vec![red], vec![solid([0, 255, 0], 0, FRAMES as i64)]]).sequence;
-    let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition {
+        sequence_id: scene.id,
+        template_instance: None,
+    });
     klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
     let mut v = timeline(vec![vec![pre]]);
-    v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
+    v.sequence =
+        klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
     let out = tmp("precomp_faded.mp4");
     export_video(v, &out, |_| {});
     let got = px(&decode_709(&out), W / 2, H / 2);
@@ -444,10 +722,14 @@ fn a_precomposition_of_media_reproduces_its_source() {
     let Some(src) = bars_source() else { return };
     let m = media(src.clone(), None);
     let scene = timeline(vec![vec![m.clip]]).sequence;
-    let pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    let pre = base_clip(klipp_timeline::ClipKind::Precomposition {
+        sequence_id: scene.id,
+        template_instance: None,
+    });
     let mut v = timeline(vec![vec![pre]]);
     v.media.extend(m.media);
-    v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
+    v.sequence =
+        klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
     let out = tmp("precomp_bars.mp4");
     export_video(v, &out, |_| {});
     let (a, b) = (decode_709(&src), decode_709(&out));
@@ -459,22 +741,32 @@ fn a_precomposition_of_media_reproduces_its_source() {
     for gy in 1..27 {
         for gx in 1..48 {
             let (x, y) = (gx * W / 48, gy * H / 27);
-            if !flat(x, y) { continue; }
+            if !flat(x, y) {
+                continue;
+            }
             sampled += 1;
             let (p, q) = (px(&a, x, y), px(&b, x, y));
             worst = worst.max((0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap());
         }
     }
     eprintln!("bars through a precomposition: worst {worst} over {sampled} flat samples");
-    assert!(sampled > 100, "too few flat samples ({sampled}) to mean anything");
-    assert!(worst <= 5, "the precomposition's export differs from the source by {worst} levels");
+    assert!(
+        sampled > 100,
+        "too few flat samples ({sampled}) to mean anything"
+    );
+    assert!(
+        worst <= 5,
+        "the precomposition's export differs from the source by {worst} levels"
+    );
 }
 
 /// A dissolve's midpoint is half of each clip in linear light, in the
 /// exported file too.
 #[test]
 fn a_dissolve_exports_as_a_linear_mix() {
-    if !ffmpeg_ok() { return; }
+    if !ffmpeg_ok() {
+        return;
+    }
     // 5 frames: red 0-2, blue 2-5, a 2-frame dissolve centred on the cut.
     let a = solid([255, 0, 0], 0, 2);
     let b = solid([0, 0, 255], 2, FRAMES as i64);
@@ -496,7 +788,10 @@ fn a_dissolve_exports_as_a_linear_mix() {
     let half = srgb8_of_linear(0.5);
     eprintln!("dissolve midpoint: export {got:?}, want [{half}, 0, {half}]");
     for (c, want) in got.iter().zip([half, 0, half]) {
-        assert!((c - want).abs() <= 2, "export {got:?}, want [{half}, 0, {half}]");
+        assert!(
+            (c - want).abs() <= 2,
+            "export {got:?}, want [{half}, 0, {half}]"
+        );
     }
 }
 
@@ -505,7 +800,9 @@ fn a_dissolve_exports_as_a_linear_mix() {
 /// frame at 8 bits and only padded it into a 10-bit container.
 #[test]
 fn a_10_bit_export_keeps_10_bit_levels() {
-    if !ffmpeg_ok() { return; }
+    if !ffmpeg_ok() {
+        return;
+    }
     // A full-width 10-bit ramp across the legal luma range.
     let raw = tmp("ramp10.yuv");
     let src = tmp("ramp10.mkv");
@@ -517,28 +814,81 @@ fn a_10_bit_export_keeps_10_bit_levels() {
             }
         }
         // Two 4:2:2 chroma planes, neutral.
-        for _ in 0..(W / 2) * H * 2 { bytes.extend_from_slice(&512u16.to_le_bytes()); }
+        for _ in 0..(W / 2) * H * 2 {
+            bytes.extend_from_slice(&512u16.to_le_bytes());
+        }
     }
     std::fs::write(&raw, bytes).unwrap();
-    let tags = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+    let tags = [
+        "-color_range",
+        "tv",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+    ];
     let size = format!("{W}x{H}");
     let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", "25"])
-        .args(tags).arg("-i").arg(&raw).args(["-c:v", "ffv1", "-pix_fmt", "yuv422p10le"]).args(tags).arg(&src)
-        .status().unwrap().success();
+        .args([
+            "-nostdin",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv422p10le",
+            "-s",
+            &size,
+            "-r",
+            "25",
+        ])
+        .args(tags)
+        .arg("-i")
+        .arg(&raw)
+        .args(["-c:v", "ffv1", "-pix_fmt", "yuv422p10le"])
+        .args(tags)
+        .arg(&src)
+        .status()
+        .unwrap()
+        .success();
     assert!(ok);
     let out = tmp("ramp10_export.mov");
     export_with(media(src, None), &out, ExportVideoCodec::ProRes422HQ);
     let dec = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-i"]).arg(&out)
-        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
-        .output().unwrap();
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(&out)
+        .args([
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv422p10le",
+            "-",
+        ])
+        .output()
+        .unwrap();
     let row = H / 2;
     let levels: std::collections::BTreeSet<u16> = (0..W)
-        .map(|x| u16::from_le_bytes([dec.stdout[((row * W + x) * 2) as usize], dec.stdout[((row * W + x) * 2 + 1) as usize]]))
+        .map(|x| {
+            u16::from_le_bytes([
+                dec.stdout[((row * W + x) * 2) as usize],
+                dec.stdout[((row * W + x) * 2 + 1) as usize],
+            ])
+        })
         .collect();
-    eprintln!("10-bit ramp: {} distinct luma levels across {W} px", levels.len());
-    assert!(levels.len() > 600, "only {} levels: 8-bit data in a 10-bit file", levels.len());
+    eprintln!(
+        "10-bit ramp: {} distinct luma levels across {W} px",
+        levels.len()
+    );
+    assert!(
+        levels.len() > 600,
+        "only {} levels: 8-bit data in a 10-bit file",
+        levels.len()
+    );
 }
 
 /// An export at another aspect is letterboxed, not stretched: a 16:9
@@ -546,15 +896,36 @@ fn a_10_bit_export_keeps_10_bit_levels() {
 /// black above and below.
 #[test]
 fn another_aspect_is_letterboxed() {
-    if !ffmpeg_ok() { return; }
+    if !ffmpeg_ok() {
+        return;
+    }
     let out = tmp("letterbox.mp4");
-    export_video(timeline(vec![vec![solid([255, 255, 255], 0, FRAMES as i64)]]), &out, |s| {
-        s.resolution = Some(Resolution { width: 1080, height: 1080 });
-    });
+    export_video(
+        timeline(vec![vec![solid([255, 255, 255], 0, FRAMES as i64)]]),
+        &out,
+        |s| {
+            s.resolution = Some(Resolution {
+                width: 1080,
+                height: 1080,
+            });
+        },
+    );
     let rgb = decode_frame_709(&out, 0, 1080, 1080);
     let at = |x: u32, y: u32| rgb[((y * 1080 + x) * 3) as usize] as i32;
     // 1920x1080 fits 1080 wide as 1080x608 (even): bars of 236 px.
-    assert!(at(540, 100) < 5, "top bar should be black: {}", at(540, 100));
-    assert!(at(540, 980) < 5, "bottom bar should be black: {}", at(540, 980));
-    assert!(at(540, 540) > 250, "picture should be white: {}", at(540, 540));
+    assert!(
+        at(540, 100) < 5,
+        "top bar should be black: {}",
+        at(540, 100)
+    );
+    assert!(
+        at(540, 980) < 5,
+        "bottom bar should be black: {}",
+        at(540, 980)
+    );
+    assert!(
+        at(540, 540) > 250,
+        "picture should be white: {}",
+        at(540, 540)
+    );
 }

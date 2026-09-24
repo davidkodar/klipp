@@ -77,7 +77,10 @@ mod tests {
 
     #[test]
     fn default_is_rec709_linear() {
-        assert_eq!(WorkingColorspace::default(), WorkingColorspace::Rec709Linear);
+        assert_eq!(
+            WorkingColorspace::default(),
+            WorkingColorspace::Rec709Linear
+        );
     }
 
     #[test]
@@ -85,7 +88,10 @@ mod tests {
         // Cheap guard against an accidental enum dedupe via macro.
         assert_ne!(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
         assert_ne!(WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear);
-        assert_ne!(WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear);
+        assert_ne!(
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::Bt2020Linear
+        );
     }
 
     #[test]
@@ -114,7 +120,10 @@ mod tests {
         // A corrupted atomic or FFI value must not produce a
         // wider-gamut surprise — the safe fallback is the default.
         for tag in [3u8, 7, 42, 255] {
-            assert_eq!(WorkingColorspace::from_u8(tag), WorkingColorspace::Rec709Linear);
+            assert_eq!(
+                WorkingColorspace::from_u8(tag),
+                WorkingColorspace::Rec709Linear
+            );
         }
     }
 

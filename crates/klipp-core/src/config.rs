@@ -135,7 +135,13 @@ pub struct ChannelMask {
 }
 
 impl Default for ChannelMask {
-    fn default() -> Self { Self { r: true, g: true, b: true } }
+    fn default() -> Self {
+        Self {
+            r: true,
+            g: true,
+            b: true,
+        }
+    }
 }
 
 impl ChannelMask {
@@ -143,10 +149,20 @@ impl ChannelMask {
     /// (R alone when every channel is off), so a trace is always drawn.
     pub fn to_components(&self) -> u8 {
         let mut m = 0u8;
-        if self.r { m |= 1; }
-        if self.g { m |= 2; }
-        if self.b { m |= 4; }
-        if m == 0 { 1 } else { m }
+        if self.r {
+            m |= 1;
+        }
+        if self.g {
+            m |= 2;
+        }
+        if self.b {
+            m |= 4;
+        }
+        if m == 0 {
+            1
+        } else {
+            m
+        }
     }
 }
 
@@ -309,7 +325,11 @@ mod pan_law_tests {
     #[test]
     fn the_default_law_is_unity_at_centre() {
         let (l, r) = PanLaw::default().gains(0.0);
-        assert_eq!((l, r), (1.0, 1.0), "a centred stereo track is not attenuated");
+        assert_eq!(
+            (l, r),
+            (1.0, 1.0),
+            "a centred stereo track is not attenuated"
+        );
     }
 
     /// And the equal-power laws are not, by design — they hold perceived
@@ -326,7 +346,10 @@ mod pan_law_tests {
             (PanLaw::Minus6dB, 0.0),
         ] {
             let (l, r) = law.gains(0.0);
-            assert!((l - r).abs() < 1e-6, "{law:?}: centre is not balanced ({l} vs {r})");
+            assert!(
+                (l - r).abs() < 1e-6,
+                "{law:?}: centre is not balanced ({l} vs {r})"
+            );
             assert!(
                 (db(l) - want_db).abs() < 0.05,
                 "{law:?}: centre is {:.2} dB, expected {want_db:.2}",
@@ -360,8 +383,14 @@ mod pan_law_tests {
         for law in [PanLaw::Linear, PanLaw::ConstantPower, PanLaw::Minus6dB] {
             for pan in [-4.0, 4.0, f32::INFINITY, f32::NEG_INFINITY] {
                 let (l, r) = law.gains(pan);
-                assert!(l >= 0.0 && r >= 0.0, "{law:?} at {pan}: negative gain {l}/{r}");
-                assert!(l <= 1.0 && r <= 1.0, "{law:?} at {pan}: gain above unity {l}/{r}");
+                assert!(
+                    l >= 0.0 && r >= 0.0,
+                    "{law:?} at {pan}: negative gain {l}/{r}"
+                );
+                assert!(
+                    l <= 1.0 && r <= 1.0,
+                    "{law:?} at {pan}: gain above unity {l}/{r}"
+                );
             }
         }
     }

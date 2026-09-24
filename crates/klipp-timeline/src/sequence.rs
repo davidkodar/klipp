@@ -1,6 +1,9 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{AudioEffectInstance, ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{
+    AudioEffectInstance, ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId,
+    RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -125,7 +128,10 @@ pub struct Camera {
     pub shutter_deg: f32,
     /// How many instants across the open shutter are blended. More is
     /// smoother and slower.
-    #[serde(default = "default_shutter_samples", skip_serializing_if = "is_default_shutter_samples")]
+    #[serde(
+        default = "default_shutter_samples",
+        skip_serializing_if = "is_default_shutter_samples"
+    )]
     pub shutter_samples: u8,
 }
 
@@ -157,7 +163,9 @@ impl Default for Camera {
 impl Camera {
     /// Whether there is nothing to save: no move and no shutter.
     pub fn is_default(&self) -> bool {
-        self.is_still() && self.shutter_deg == 0.0 && self.shutter_samples == default_shutter_samples()
+        self.is_still()
+            && self.shutter_deg == 0.0
+            && self.shutter_samples == default_shutter_samples()
     }
 
     /// Whether the camera does not move: nothing to resolve.
@@ -185,7 +193,10 @@ impl Sequence {
 
     /// How positions on this sequence are shown and read back.
     pub fn timecode_display(&self) -> klipp_core::TimecodeDisplay {
-        klipp_core::TimecodeDisplay { fps: self.fps, drop: self.drop_frame }
+        klipp_core::TimecodeDisplay {
+            fps: self.fps,
+            drop: self.drop_frame,
+        }
     }
 
     pub fn new_default() -> Self {
@@ -231,7 +242,10 @@ impl Sequence {
     /// User-customized names (e.g., "B-Roll", "Interview") are left unchanged.
     pub fn renumber_tracks(&mut self) {
         // Video: bottom-up (reverse order among video tracks)
-        let video_indices: Vec<usize> = self.tracks.iter().enumerate()
+        let video_indices: Vec<usize> = self
+            .tracks
+            .iter()
+            .enumerate()
             .filter(|(_, t)| t.kind == TrackKind::Video)
             .map(|(i, _)| i)
             .collect();
@@ -270,13 +284,16 @@ impl Sequence {
     /// (the engine's `current_track_index`). All other unmuted video/text/subtitle
     /// tracks are returned as overlays.
     pub fn overlay_video_tracks(&self, primary_track_idx: usize) -> Vec<(usize, &Track)> {
-        self.tracks.iter().enumerate()
+        self.tracks
+            .iter()
+            .enumerate()
             .filter(|(i, t)| {
-                !t.muted && match t.kind {
-                    TrackKind::Text | TrackKind::Subtitle => true,
-                    TrackKind::Video => *i != primary_track_idx,
-                    _ => false,
-                }
+                !t.muted
+                    && match t.kind {
+                        TrackKind::Text | TrackKind::Subtitle => true,
+                        TrackKind::Video => *i != primary_track_idx,
+                        _ => false,
+                    }
             })
             .collect()
     }
@@ -309,7 +326,9 @@ impl Sequence {
     pub fn add_text_track(&mut self, name: String) -> TrackId {
         let track = Track::new(&name, TrackKind::Text);
         let id = track.id;
-        let insert_pos = self.tracks.iter()
+        let insert_pos = self
+            .tracks
+            .iter()
             .position(|t| t.kind == TrackKind::Audio)
             .unwrap_or(self.tracks.len());
         self.tracks.insert(insert_pos, track);
@@ -326,7 +345,10 @@ impl Sequence {
 
     /// Remove a track. Returns Err if track has clips.
     pub fn remove_track(&mut self, track_id: TrackId) -> Result<(), &'static str> {
-        let pos = self.tracks.iter().position(|t| t.id == track_id)
+        let pos = self
+            .tracks
+            .iter()
+            .position(|t| t.id == track_id)
             .ok_or("track not found")?;
         if !self.tracks[pos].clips.is_empty() {
             return Err("track has clips");
@@ -338,7 +360,10 @@ impl Sequence {
     /// Remove a track including all its clips.
     /// Also clears linked_clip_id on clips in other tracks that pointed to removed clips.
     pub fn remove_track_with_clips(&mut self, track_id: TrackId) -> Result<(), &'static str> {
-        let pos = self.tracks.iter().position(|t| t.id == track_id)
+        let pos = self
+            .tracks
+            .iter()
+            .position(|t| t.id == track_id)
             .ok_or("track not found")?;
         // Collect IDs of clips being removed so we can unlink them
         let removed_ids: Vec<ClipId> = self.tracks[pos].clips.iter().map(|c| c.id).collect();
@@ -378,17 +403,23 @@ impl Sequence {
 
     /// Find the index of the Primary track. Returns None if no primary track set.
     pub fn primary_track_index(&self) -> Option<usize> {
-        self.tracks.iter().position(|t| t.magnetic_role == TrackRole::Primary)
+        self.tracks
+            .iter()
+            .position(|t| t.magnetic_role == TrackRole::Primary)
     }
 
     /// Find the single Primary track.
     pub fn primary_track(&self) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.magnetic_role == TrackRole::Primary)
+        self.tracks
+            .iter()
+            .find(|t| t.magnetic_role == TrackRole::Primary)
     }
 
     /// Find the single Primary track mutably.
     pub fn primary_track_mut(&mut self) -> Option<&mut Track> {
-        self.tracks.iter_mut().find(|t| t.magnetic_role == TrackRole::Primary)
+        self.tracks
+            .iter_mut()
+            .find(|t| t.magnetic_role == TrackRole::Primary)
     }
 
     /// Find a clip by id across all tracks. Returns (track_index, clip_index).
@@ -509,7 +540,15 @@ impl Sequence {
         }
 
         // Validate + capture partner state when both have partners.
-        let mut partners_info: Option<(ClipId, RationalTime, RationalTime, ClipId, RationalTime, RationalTime, usize)> = None;
+        let mut partners_info: Option<(
+            ClipId,
+            RationalTime,
+            RationalTime,
+            ClipId,
+            RationalTime,
+            RationalTime,
+            usize,
+        )> = None;
         if let (Some(la_id), Some(lb_id)) = (a_linked, b_linked) {
             let mut la = None;
             let mut lb = None;
@@ -527,7 +566,9 @@ impl Sequence {
                 }
             }
             match (la, lb, la_track, lb_track) {
-                (Some((la_in, la_out)), Some((lb_in, lb_out)), Some(lat), Some(lbt)) if lat == lbt => {
+                (Some((la_in, la_out)), Some((lb_in, lb_out)), Some(lat), Some(lbt))
+                    if lat == lbt =>
+                {
                     if self.tracks[lat].locked {
                         return Err("Swap: linked-partner track is locked");
                     }
@@ -543,9 +584,15 @@ impl Sequence {
                         return Err("Swap: linked partners must also be adjacent");
                     }
                     let left_primary_partner = if left_id == clip_a { la_id } else { lb_id };
-                    let l_left_id = if la_in.to_secs_f64() <= lb_in.to_secs_f64() { la_id } else { lb_id };
+                    let l_left_id = if la_in.to_secs_f64() <= lb_in.to_secs_f64() {
+                        la_id
+                    } else {
+                        lb_id
+                    };
                     if left_primary_partner != l_left_id {
-                        return Err("Swap: linked partners must be in the same order as the primaries");
+                        return Err(
+                            "Swap: linked partners must be in the same order as the primaries",
+                        );
                     }
                     partners_info = Some((la_id, la_in, la_out, lb_id, lb_in, lb_out, lat));
                 }
@@ -591,37 +638,40 @@ impl Sequence {
         track.sort_clips();
 
         // Apply linked-partner swap.
-        let linked_partners = if let Some((la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old, lat)) = partners_info {
-            let (l_left_id, l_left_in, l_left_out, l_right_id, _l_right_in, l_right_out) =
-                if la_in_old.to_secs_f64() <= lb_in_old.to_secs_f64() {
-                    (la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old)
-                } else {
-                    (lb_id, lb_in_old, lb_out_old, la_id, la_in_old, la_out_old)
-                };
-            let l_left_dur = l_left_out - l_left_in;
-            let l_right_dur = l_right_out - l_left_out;
-            let new_l_right_in = l_left_in;
-            let new_l_right_out = l_left_in + l_right_dur;
-            let new_l_left_in = new_l_right_out;
-            let new_l_left_out = new_l_left_in + l_left_dur;
-            let partner_track = &mut self.tracks[lat];
-            for clip in partner_track.clips.iter_mut() {
-                if clip.id == l_left_id {
-                    clip.timeline_in = new_l_left_in;
-                    clip.timeline_out = new_l_left_out;
-                } else if clip.id == l_right_id {
-                    clip.timeline_in = new_l_right_in;
-                    clip.timeline_out = new_l_right_out;
+        let linked_partners =
+            if let Some((la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old, lat)) =
+                partners_info
+            {
+                let (l_left_id, l_left_in, l_left_out, l_right_id, _l_right_in, l_right_out) =
+                    if la_in_old.to_secs_f64() <= lb_in_old.to_secs_f64() {
+                        (la_id, la_in_old, la_out_old, lb_id, lb_in_old, lb_out_old)
+                    } else {
+                        (lb_id, lb_in_old, lb_out_old, la_id, la_in_old, la_out_old)
+                    };
+                let l_left_dur = l_left_out - l_left_in;
+                let l_right_dur = l_right_out - l_left_out;
+                let new_l_right_in = l_left_in;
+                let new_l_right_out = l_left_in + l_right_dur;
+                let new_l_left_in = new_l_right_out;
+                let new_l_left_out = new_l_left_in + l_left_dur;
+                let partner_track = &mut self.tracks[lat];
+                for clip in partner_track.clips.iter_mut() {
+                    if clip.id == l_left_id {
+                        clip.timeline_in = new_l_left_in;
+                        clip.timeline_out = new_l_left_out;
+                    } else if clip.id == l_right_id {
+                        clip.timeline_in = new_l_right_in;
+                        clip.timeline_out = new_l_right_out;
+                    }
                 }
-            }
-            partner_track.sort_clips();
-            Some(SwappedPartners {
-                a_partner: (la_id, la_in_old, la_out_old),
-                b_partner: (lb_id, lb_in_old, lb_out_old),
-            })
-        } else {
-            None
-        };
+                partner_track.sort_clips();
+                Some(SwappedPartners {
+                    a_partner: (la_id, la_in_old, la_out_old),
+                    b_partner: (lb_id, lb_in_old, lb_out_old),
+                })
+            } else {
+                None
+            };
 
         // Map captured originals back to the user's clip_a / clip_b
         // identity, regardless of which one ended up "left".
@@ -661,7 +711,6 @@ pub struct SwappedPartners {
 }
 
 impl Sequence {
-
     /// Iterator over all clips in all tracks.
     pub fn all_clips(&self) -> impl Iterator<Item = &Clip> {
         self.tracks.iter().flat_map(|t| t.clips.iter())
@@ -700,9 +749,15 @@ impl Sequence {
         };
         // Find the highest existing number for this kind to avoid name collisions
         // after track deletion (e.g., deleting "Video 2" from [1,2,3] then adding → "Video 4").
-        let highest = self.tracks.iter()
+        let highest = self
+            .tracks
+            .iter()
             .filter(|t| t.kind == kind)
-            .filter_map(|t| t.name.strip_prefix(prefix).and_then(|s| s.trim().parse::<u32>().ok()))
+            .filter_map(|t| {
+                t.name
+                    .strip_prefix(prefix)
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+            })
             .max()
             .unwrap_or(0);
         format!("{} {}", prefix, highest + 1)
@@ -773,12 +828,24 @@ pub struct Track {
     pub automation_lane_height: Option<f32>,
 }
 
-fn default_opacity() -> f32 { 1.0 }
-fn default_volume() -> f32 { 1.0 }
-fn default_true() -> bool { true }
-fn default_clip_volume() -> f32 { 1.0 }
-fn default_speed() -> f64 { 1.0 }
-fn default_enabled() -> bool { true }
+fn default_opacity() -> f32 {
+    1.0
+}
+fn default_volume() -> f32 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_clip_volume() -> f32 {
+    1.0
+}
+fn default_speed() -> f64 {
+    1.0
+}
+fn default_enabled() -> bool {
+    true
+}
 
 impl Track {
     pub fn new(name: &str, kind: TrackKind) -> Self {
@@ -812,7 +879,10 @@ impl Track {
             .clips
             .last()
             .map(|c| c.timeline_out)
-            .unwrap_or(Timecode { value: 0, rate: source_duration.rate });
+            .unwrap_or(Timecode {
+                value: 0,
+                rate: source_duration.rate,
+            });
         // Rescale to source rate for frame-accurate timeline arithmetic
         let timeline_in = if timeline_in.rate != source_duration.rate {
             timeline_in.rescale_to(source_duration.rate)
@@ -826,7 +896,10 @@ impl Track {
             kind: ClipKind::Media { media_id },
             timeline_in,
             timeline_out,
-            source_in: Timecode { value: 0, rate: source_duration.rate },
+            source_in: Timecode {
+                value: 0,
+                rate: source_duration.rate,
+            },
             source_out: source_duration,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
@@ -936,7 +1009,9 @@ impl Track {
         self.clips
             .iter()
             .enumerate()
-            .filter(|(_, c)| &c.timeline_out <= tc || (&c.timeline_in <= tc && tc < &c.timeline_out))
+            .filter(|(_, c)| {
+                &c.timeline_out <= tc || (&c.timeline_in <= tc && tc < &c.timeline_out)
+            })
             .max_by_key(|(_, c)| c.timeline_out)
     }
 
@@ -953,7 +1028,12 @@ impl Track {
     }
 
     /// Ripple trim left edge: adjust source_in/timeline_in and shift downstream clips.
-    pub fn ripple_trim_left(&mut self, clip_id: ClipId, new_source_in: Timecode, new_timeline_in: Timecode) {
+    pub fn ripple_trim_left(
+        &mut self,
+        clip_id: ClipId,
+        new_source_in: Timecode,
+        new_timeline_in: Timecode,
+    ) {
         let pos = match self.clips.iter().position(|c| c.id == clip_id) {
             Some(p) => p,
             None => return,
@@ -972,7 +1052,12 @@ impl Track {
     }
 
     /// Ripple trim right edge: adjust source_out/timeline_out and shift downstream clips.
-    pub fn ripple_trim_right(&mut self, clip_id: ClipId, new_source_out: Timecode, new_timeline_out: Timecode) {
+    pub fn ripple_trim_right(
+        &mut self,
+        clip_id: ClipId,
+        new_source_out: Timecode,
+        new_timeline_out: Timecode,
+    ) {
         let pos = match self.clips.iter().position(|c| c.id == clip_id) {
             Some(p) => p,
             None => return,
@@ -994,7 +1079,10 @@ impl Track {
     /// belongs to the tool, not to the split.
     pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let clip = self.clips.iter().find(|c| c.id == clip_id)?;
-        let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
+        let one_frame = Timecode {
+            value: 1,
+            rate: clip.timeline_in.rate,
+        };
         if cut_at <= clip.timeline_in + one_frame || cut_at >= clip.timeline_out - one_frame {
             return None;
         }
@@ -1438,7 +1526,10 @@ impl TransformLink {
     /// `new` (Absolute mode, all four inherit flags on).
     pub fn new_tracker(clip_id: ClipId, point_index: u32) -> Self {
         Self {
-            target: TransformLinkTarget::Tracker { clip_id, point_index },
+            target: TransformLinkTarget::Tracker {
+                clip_id,
+                point_index,
+            },
             mode: LinkMode::default(),
             inherit_scale: true,
             inherit_position: true,
@@ -1540,7 +1631,9 @@ fn is_default_depth(d: &f32) -> bool {
     (*d - 1.0).abs() < 1e-6
 }
 
-fn default_blend_mode() -> klipp_core::BlendMode { klipp_core::BlendMode::Normal }
+fn default_blend_mode() -> klipp_core::BlendMode {
+    klipp_core::BlendMode::Normal
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clip {
@@ -1787,7 +1880,8 @@ impl Clip {
         if self.speed_keyframes.is_empty() {
             self.speed
         } else {
-            klipp_core::keyframe::evaluate(&self.speed_keyframes, clip_time_secs, self.speed as f32) as f64
+            klipp_core::keyframe::evaluate(&self.speed_keyframes, clip_time_secs, self.speed as f32)
+                as f64
         }
     }
 
@@ -1795,7 +1889,12 @@ impl Clip {
     /// the source-time offset that a constant-speed clip would reach in the
     /// same interval. Uses `dt = 1/fps` Riemann sum clamped to [0.1, 16.0].
     pub fn speed_integral(&self, timeline_elapsed_secs: f64, fps: f64) -> f64 {
-        speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
+        speed_integral_keyframes(
+            &self.speed_keyframes,
+            timeline_elapsed_secs,
+            fps,
+            self.speed,
+        )
     }
 
     /// Map a sequence time (timeline-space) to the corresponding source
@@ -1809,11 +1908,7 @@ impl Clip {
     /// in both directions for monotonic speed curves; the round-trip
     /// drift is bounded by the integration step (~1 frame at the
     /// project framerate).
-    pub fn source_time_for_sequence_time(
-        &self,
-        seq_time: Timecode,
-        fps: f64,
-    ) -> Option<Timecode> {
+    pub fn source_time_for_sequence_time(&self, seq_time: Timecode, fps: f64) -> Option<Timecode> {
         if seq_time < self.timeline_in || seq_time >= self.timeline_out {
             return None;
         }
@@ -1866,7 +1961,10 @@ impl Clip {
         if format == klipp_core::LogFormat::Srgb {
             return;
         }
-        if let Some(node) = self.node_graph.nodes.iter_mut()
+        if let Some(node) = self
+            .node_graph
+            .nodes
+            .iter_mut()
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
             node.params.log_format = Some(format);
@@ -1875,7 +1973,10 @@ impl Clip {
         // No IDT — splice one in after the Source node. We need the
         // existing Source → next-node edge so we can re-route it
         // through the new IDT.
-        let source_id = match self.node_graph.nodes.iter()
+        let source_id = match self
+            .node_graph
+            .nodes
+            .iter()
             .find(|n| n.kind == klipp_nodes::NodeKind::Source)
             .map(|n| n.id)
         {
@@ -1913,19 +2014,27 @@ impl Clip {
         // reads top-to-bottom in the expected order. Position it
         // halfway between Source and the next node so the V2 editor
         // doesn't draw it on top of an existing node.
-        let source_idx = self.node_graph.nodes.iter()
+        let source_idx = self
+            .node_graph
+            .nodes
+            .iter()
             .position(|n| n.id == source_id)
             .unwrap_or(0);
         self.node_graph.nodes.insert(source_idx + 1, idt_node);
         // Position the new node 110 px right of Source — same step
         // size the default graph layout uses.
-        let source_pos = self.node_graph.node_positions
+        let source_pos = self
+            .node_graph
+            .node_positions
             .get(&source_id)
             .copied()
             .unwrap_or(klipp_nodes::NodePos { x: 0.0, y: 0.0 });
         self.node_graph.node_positions.insert(
             new_idt_id,
-            klipp_nodes::NodePos { x: source_pos.x + 110.0, y: source_pos.y },
+            klipp_nodes::NodePos {
+                x: source_pos.x + 110.0,
+                y: source_pos.y,
+            },
         );
     }
 
@@ -1942,7 +2051,10 @@ impl Clip {
             kind: ClipKind::Gap,
             timeline_in,
             timeline_out,
-            source_in: Timecode { value: 0, rate: timeline_in.rate },
+            source_in: Timecode {
+                value: 0,
+                rate: timeline_in.rate,
+            },
             source_out: timeline_out - timeline_in,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
@@ -2083,7 +2195,13 @@ impl Clip {
         timeline_in: Timecode,
         timeline_out: Timecode,
     ) -> Self {
-        Self { kind: ClipKind::Sequence { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+        Self {
+            kind: ClipKind::Sequence {
+                sequence_id,
+                template_instance: None,
+            },
+            ..Self::nested(sequence_id, timeline_in, timeline_out)
+        }
     }
 
     /// Create a precomposition of `sequence_id` with the given timeline
@@ -2093,7 +2211,13 @@ impl Clip {
         timeline_in: Timecode,
         timeline_out: Timecode,
     ) -> Self {
-        Self { kind: ClipKind::Precomposition { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+        Self {
+            kind: ClipKind::Precomposition {
+                sequence_id,
+                template_instance: None,
+            },
+            ..Self::nested(sequence_id, timeline_in, timeline_out)
+        }
     }
 
     /// What a compound clip and a precomposition share: a source range
@@ -2107,10 +2231,16 @@ impl Clip {
         let dur = timeline_out - timeline_in;
         Self {
             id: ClipId::new(),
-            kind: ClipKind::Sequence { sequence_id },
+            kind: ClipKind::Sequence {
+                sequence_id,
+                template_instance: None,
+            },
             timeline_in,
             timeline_out,
-            source_in: Timecode { value: 0, rate: timeline_in.rate },
+            source_in: Timecode {
+                value: 0,
+                rate: timeline_in.rate,
+            },
             source_out: dur,
             node_graph: klipp_nodes::NodeGraph::default(),
             effects: Vec::new(),
@@ -2229,7 +2359,8 @@ pub fn speed_integral_keyframes(
     let tail_start = full_steps as f64 * dt;
     let tail_len = (timeline_elapsed_secs - tail_start).max(0.0);
     if tail_len > 0.0 {
-        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let spd =
+            speed_at_keyframes(keyframes, tail_start, default_speed).clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * tail_len;
     }
     source_offset
@@ -2262,7 +2393,8 @@ pub fn effective_timeline_duration_for_keyframes(
     let mut source_offset = 0.0f64;
     let mut timeline_t = 0.0f64;
     while source_offset < source_duration_secs && timeline_t < safety_cap {
-        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let spd =
+            speed_at_keyframes(keyframes, timeline_t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
         let step_source = spd * dt;
         if source_offset + step_source >= source_duration_secs {
             // Partial final step: only use the fraction needed to hit the target.
@@ -2288,7 +2420,13 @@ mod tests {
     }
 
     fn make_clip(timeline_in: i64, timeline_out: i64, src_in: i64, src_out: i64) -> Clip {
-        Clip::media(MediaId::new(), tc(timeline_in), tc(timeline_out), tc(src_in), tc(src_out))
+        Clip::media(
+            MediaId::new(),
+            tc(timeline_in),
+            tc(timeline_out),
+            tc(src_in),
+            tc(src_out),
+        )
     }
 
     fn make_track(clips: Vec<Clip>) -> Track {
@@ -2386,7 +2524,10 @@ mod tests {
         // ClipId is a tuple-newtype around Uuid; serde serialises
         // it as a bare uuid string in JSON.
         let expected = format!("\"{}\"", target.0);
-        assert_eq!(json, expected, "Clip variant must serialise as bare uuid string");
+        assert_eq!(
+            json, expected,
+            "Clip variant must serialise as bare uuid string"
+        );
     }
 
     #[test]
@@ -2395,12 +2536,18 @@ mod tests {
         // (no legacy form exists); it serialises as the natural
         // untagged-struct shape.
         let clip_id = ClipId::new();
-        let t = TransformLinkTarget::Tracker { clip_id, point_index: 7 };
+        let t = TransformLinkTarget::Tracker {
+            clip_id,
+            point_index: 7,
+        };
         let json = serde_json::to_string(&t).expect("serialise");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_object(), "Tracker variant serialises as object");
         assert_eq!(parsed["point_index"].as_u64(), Some(7));
-        assert_eq!(parsed["clip_id"].as_str(), Some(clip_id.0.to_string().as_str()));
+        assert_eq!(
+            parsed["clip_id"].as_str(),
+            Some(clip_id.0.to_string().as_str())
+        );
     }
 
     #[test]
@@ -2421,12 +2568,15 @@ mod tests {
     #[test]
     fn transform_link_target_tracker_object_loads_as_tracker_variant() {
         let clip_id = ClipId::new();
-        let json = format!(
-            r#"{{"clip_id":"{}","point_index":3}}"#,
-            clip_id.0,
-        );
+        let json = format!(r#"{{"clip_id":"{}","point_index":3}}"#, clip_id.0,);
         let back: TransformLinkTarget = serde_json::from_str(&json).expect("tracker object loads");
-        assert_eq!(back, TransformLinkTarget::Tracker { clip_id, point_index: 3 });
+        assert_eq!(
+            back,
+            TransformLinkTarget::Tracker {
+                clip_id,
+                point_index: 3
+            }
+        );
     }
 
     #[test]
@@ -2441,7 +2591,10 @@ mod tests {
     #[test]
     fn transform_link_target_round_trip_tracker_variant() {
         let clip_id = ClipId::new();
-        let t = TransformLinkTarget::Tracker { clip_id, point_index: 12 };
+        let t = TransformLinkTarget::Tracker {
+            clip_id,
+            point_index: 12,
+        };
         let json = serde_json::to_string(&t).expect("serialise");
         let back: TransformLinkTarget = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back, t, "round-trip stable for Tracker variant");
@@ -2699,10 +2852,8 @@ mod tests {
             vec![mk(0.25, 0.5), mk(0.75, 0.7), mk(1.5, 0.9)],
         );
         // Bypass kf on the second-half side only (at 1.25s = 0.25s into clip_b).
-        c0.audio_effect_keyframes.insert(
-            "0:__bypass".to_string(),
-            vec![mk(1.25, 1.0)],
-        );
+        c0.audio_effect_keyframes
+            .insert("0:__bypass".to_string(), vec![mk(1.25, 1.0)]);
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
 
@@ -2711,25 +2862,41 @@ mod tests {
         assert_eq!(track.clips.len(), 2);
 
         // clip_a: keeps the first two `gain` kfs, no bypass kf.
-        let a_gain = track.clips[0].audio_effect_keyframes.get("0:gain")
+        let a_gain = track.clips[0]
+            .audio_effect_keyframes
+            .get("0:gain")
             .expect("clip_a must keep the gain track");
         assert_eq!(a_gain.len(), 2, "clip_a gets the two pre-cut kfs");
         assert!((a_gain[0].time_secs - 0.25).abs() < 1e-9);
         assert!((a_gain[1].time_secs - 0.75).abs() < 1e-9);
-        assert!(!track.clips[0].audio_effect_keyframes.contains_key("0:__bypass"),
-            "clip_a must not carry the bypass kf (it sits past the cut)");
+        assert!(
+            !track.clips[0]
+                .audio_effect_keyframes
+                .contains_key("0:__bypass"),
+            "clip_a must not carry the bypass kf (it sits past the cut)"
+        );
 
         // clip_b: the third gain kf, with time shifted back by 1.0s
         // (the cut point), and the bypass kf shifted likewise.
-        let b_gain = track.clips[1].audio_effect_keyframes.get("0:gain")
+        let b_gain = track.clips[1]
+            .audio_effect_keyframes
+            .get("0:gain")
             .expect("clip_b must inherit the post-cut gain kf");
         assert_eq!(b_gain.len(), 1);
-        assert!((b_gain[0].time_secs - 0.5).abs() < 1e-9,
-            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}", b_gain[0].time_secs);
-        let b_bypass = track.clips[1].audio_effect_keyframes.get("0:__bypass")
+        assert!(
+            (b_gain[0].time_secs - 0.5).abs() < 1e-9,
+            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}",
+            b_gain[0].time_secs
+        );
+        let b_bypass = track.clips[1]
+            .audio_effect_keyframes
+            .get("0:__bypass")
             .expect("clip_b must carry the bypass kf");
-        assert!((b_bypass[0].time_secs - 0.25).abs() < 1e-9,
-            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}", b_bypass[0].time_secs);
+        assert!(
+            (b_bypass[0].time_secs - 0.25).abs() < 1e-9,
+            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}",
+            b_bypass[0].time_secs
+        );
     }
 
     #[test]
@@ -2903,7 +3070,7 @@ mod tests {
 
     #[test]
     fn slide_clamped_by_neighbor_minimum_duration() {
-        let left = make_clip(0, 24, 0, 48);  // 48-frame source
+        let left = make_clip(0, 24, 0, 48); // 48-frame source
         let _center = make_clip(24, 48, 0, 24);
         let right = make_clip(48, 72, 0, 48); // 48-frame source
 
@@ -2912,7 +3079,7 @@ mod tests {
         // Slide right: limited by right neighbor's minimum duration
         let delta = tc(30);
         let max_right = right.duration() - min_dur; // 23
-        // Slide left: limited by left neighbor's minimum duration
+                                                    // Slide left: limited by left neighbor's minimum duration
         let max_left = left.duration() - min_dur; // 23
 
         let clamped = delta.min(max_right).min(max_left);
@@ -2996,7 +3163,10 @@ mod tests {
         let src = speed_integral_keyframes(&kfs, 10.0, 60.0, 1.0);
         // Expected: SPEED_MIN * 10.0
         let expected = SPEED_MIN * 10.0;
-        assert!((src - expected).abs() < 1e-6, "expected {expected}, got {src}");
+        assert!(
+            (src - expected).abs() < 1e-6,
+            "expected {expected}, got {src}"
+        );
     }
 
     #[test]
@@ -3005,7 +3175,10 @@ mod tests {
         let kfs = vec![kf(0.0, 999.0), kf(10.0, 999.0)];
         let src = speed_integral_keyframes(&kfs, 1.0, 60.0, 1.0);
         let expected = SPEED_MAX * 1.0;
-        assert!((src - expected).abs() < 1e-6, "expected {expected}, got {src}");
+        assert!(
+            (src - expected).abs() < 1e-6,
+            "expected {expected}, got {src}"
+        );
     }
 
     #[test]
@@ -3027,7 +3200,10 @@ mod tests {
         let source_dur = 12.0;
         let t = effective_timeline_duration_for_keyframes(&kfs, source_dur, 60.0, 1.0);
         let back = speed_integral_keyframes(&kfs, t, 60.0, 1.0);
-        assert!((back - source_dur).abs() < 0.05, "roundtrip {source_dur} → t={t} → src={back}");
+        assert!(
+            (back - source_dur).abs() < 0.05,
+            "roundtrip {source_dur} → t={t} → src={back}"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -3125,7 +3301,11 @@ mod tests {
         let src = clip.source_time_for_sequence_time(tc(36), 24.0).unwrap();
         assert_eq!(tc_to_frames(src), 34, "2×: seq frame 36 → src frame 34");
         let back = clip.sequence_time_for_source_time(src, 24.0).unwrap();
-        assert_eq!(tc_to_frames(back), 36, "2× round-trip preserves seq frame 36");
+        assert_eq!(
+            tc_to_frames(back),
+            36,
+            "2× round-trip preserves seq frame 36"
+        );
     }
 
     #[test]
@@ -3138,7 +3318,11 @@ mod tests {
         let src = clip.source_time_for_sequence_time(tc(48), 24.0).unwrap();
         assert_eq!(tc_to_frames(src), 12, "0.5×: seq frame 48 → src frame 12");
         let back = clip.sequence_time_for_source_time(src, 24.0).unwrap();
-        assert_eq!(tc_to_frames(back), 48, "0.5× round-trip preserves seq frame 48");
+        assert_eq!(
+            tc_to_frames(back),
+            48,
+            "0.5× round-trip preserves seq frame 48"
+        );
     }
 
     #[test]
@@ -3147,16 +3331,26 @@ mod tests {
         // caller relies on this to skip non-matching tracks instead of
         // wrapping silently to a clamped value.
         let clip = make_clip(24, 72, 0, 48);
-        assert!(clip.source_time_for_sequence_time(tc(0), 24.0).is_none(),
-            "before timeline_in must be None");
-        assert!(clip.source_time_for_sequence_time(tc(72), 24.0).is_none(),
-            "at timeline_out (exclusive) must be None");
-        assert!(clip.source_time_for_sequence_time(tc(120), 24.0).is_none(),
-            "after timeline_out must be None");
-        assert!(clip.sequence_time_for_source_time(tc(48), 24.0).is_none(),
-            "at source_out (exclusive) must be None");
-        assert!(clip.sequence_time_for_source_time(tc(60), 24.0).is_none(),
-            "after source_out must be None");
+        assert!(
+            clip.source_time_for_sequence_time(tc(0), 24.0).is_none(),
+            "before timeline_in must be None"
+        );
+        assert!(
+            clip.source_time_for_sequence_time(tc(72), 24.0).is_none(),
+            "at timeline_out (exclusive) must be None"
+        );
+        assert!(
+            clip.source_time_for_sequence_time(tc(120), 24.0).is_none(),
+            "after timeline_out must be None"
+        );
+        assert!(
+            clip.sequence_time_for_source_time(tc(48), 24.0).is_none(),
+            "at source_out (exclusive) must be None"
+        );
+        assert!(
+            clip.sequence_time_for_source_time(tc(60), 24.0).is_none(),
+            "after source_out must be None"
+        );
     }
 
     #[test]
@@ -3167,16 +3361,20 @@ mod tests {
         let mut clip = make_clip(0, 48, 0, 48);
         clip.speed_keyframes = vec![kf(0.0, 0.5), kf(2.0, 2.0)];
         for seq_frame in [6, 12, 24, 36] {
-            let src = clip.source_time_for_sequence_time(tc(seq_frame), 24.0)
+            let src = clip
+                .source_time_for_sequence_time(tc(seq_frame), 24.0)
                 .expect("in-range");
-            let back = clip.sequence_time_for_source_time(src, 24.0)
+            let back = clip
+                .sequence_time_for_source_time(src, 24.0)
                 .expect("inverse in-range");
             let drift = (tc_to_frames(back) - seq_frame).abs();
             assert!(
                 drift <= 1,
                 "seq frame {seq_frame} drifted by {drift} frames in round-trip \
                  ({} → {} → {})",
-                seq_frame, tc_to_frames(src), tc_to_frames(back),
+                seq_frame,
+                tc_to_frames(src),
+                tc_to_frames(back),
             );
         }
     }

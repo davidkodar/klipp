@@ -295,7 +295,10 @@ impl ParamId {
             ParamId::Volume => "volume".into(),
             ParamId::Pan => "pan".into(),
             ParamId::Gain => "gain".into(),
-            ParamId::Effect { effect_index, param_name } => {
+            ParamId::Effect {
+                effect_index,
+                param_name,
+            } => {
                 format!("effect:{}:{}", effect_index, param_name)
             }
         }

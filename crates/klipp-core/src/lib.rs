@@ -35,56 +35,79 @@ pub mod color_ids;
 pub mod colorspace;
 pub mod config;
 pub mod events;
+pub mod export_preset;
+pub mod field;
 pub mod generator;
 pub mod gpu_vendor;
-pub mod keyframe;
-pub mod title_effect_keys;
-pub mod title_motion;
-pub mod export_preset;
 pub mod id;
+pub mod keyframe;
+pub mod logging;
 pub mod media_extensions;
+pub mod media_marker;
 pub mod modifier;
 pub mod modifier_math;
 pub mod ofx_value;
-pub mod snap;
 pub mod shot;
-pub mod logging;
-pub mod field;
 pub mod smart_bin;
-pub mod sync;
-pub mod media_marker;
+pub mod snap;
 pub mod span;
 pub mod startup_timer;
+pub mod sync;
 pub mod time;
+pub mod title_effect_keys;
+pub mod title_motion;
 pub mod transition_registry;
 pub mod types;
 pub mod working_colorspace;
 
-pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, DifferenceKeyMatchSpace, DifferenceKeySettings, FilmGrainSettings, HueSatCurves, LayerMixerInput, LumaKeySettings, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings, SoftClipSettings};
+pub use color_grade::{
+    ColorMatchSettings, ColorWarperParams, CurveSet, DifferenceKeyMatchSpace,
+    DifferenceKeySettings, FilmGrainSettings, HueSatCurves, LayerMixerInput, LumaKeySettings, Mask,
+    MaskKeyframes, MaskShape, MaskStack, QualifierSettings, SoftClipSettings,
+};
 pub use colorspace::{ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace};
-pub use keyframe::{Interpolation, Keyframe, TitlePositionAxis};
-pub use events::{AppCommand, AppEvent, AudioParam, CameraParam, ChapterSnapshot, ControlShared, ExportStatus, ProjectStatus, DEFAULT_MASTERING_PEAK_NITS, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, HdrMonitor, MASTERING_PEAK_CHOICES, MASTERING_PEAK_RANGE, MarkerColor, MarkerKind, MediaLoadedPayload, OdtChoice, ParamChange, RateControl, SdrTransfer, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
-pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
-pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
-pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
-pub use modifier::{EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform, evaluate_param};
-pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
-pub use ofx_value::OfxValue;
-pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, FocalRef, FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode, TrackPoint, TransitionAlignment, TransitionUserParams};
-pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{
     ChannelMask, GpuPreference, HistogramDisplayMode, HistogramLevels, HistogramSettings,
-    LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeSettings,
-    ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
+    LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality, ScopeSettings,
+    VectorscopeSettings, WaveformParadeSettings,
 };
-pub use gpu_vendor::GpuVendor;
-pub use working_colorspace::WorkingColorspace;
-pub use shot::ShotMetadata;
-pub use logging::ClipLog;
+pub use events::{
+    AppCommand, AppEvent, AudioParam, CameraParam, ChapterSnapshot, ControlShared, EncoderPreset,
+    ExportAudioCodec, ExportFormat, ExportSettings, ExportStatus, ExportVideoCodec, HdrMode,
+    HdrMonitor, MarkerColor, MarkerKind, MediaLoadedPayload, OdtChoice, ParamChange, ProjectStatus,
+    RateControl, SdrTransfer, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode,
+    DEFAULT_MASTERING_PEAK_NITS, MASTERING_PEAK_CHOICES, MASTERING_PEAK_RANGE,
+};
+pub use export_preset::{
+    builtin_presets, ExportPreset, ExportPresetSettings, PresetId, ProxyResolution,
+};
 pub use field::Field;
-pub use smart_bin::{RuleOp, SmartBin, SmartRule};
-pub use sync::{timecode_to_secs, SyncMethod, SyncedAudio};
+pub use gpu_vendor::GpuVendor;
+pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
+pub use keyframe::{Interpolation, Keyframe, TitlePositionAxis};
+pub use logging::ClipLog;
 pub use media_marker::{MediaMarker, MediaMarkerKind};
+pub use modifier::{
+    evaluate_param, EvalContext, Modifier, ModifierBlend, ModifierStack, ParamId, Waveform,
+};
+pub use ofx_value::OfxValue;
+pub use shot::ShotMetadata;
+pub use smart_bin::{RuleOp, SmartBin, SmartRule};
+pub use snap::{GridInterval, SnapConfig, SnapTargetKind};
 pub use span::ClipSpan;
+pub use sync::{timecode_to_secs, SyncMethod, SyncedAudio};
+pub use time::{Fps, RationalTime, TimeRange, Timecode, TimecodeDisplay};
+pub use transition_registry::{
+    spec_for_kind, spec_for_kind_id, spec_for_string_key, TransitionKind, TransitionSpec,
+    TRANSITION_SPECS,
+};
+pub use types::{
+    AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSpace, FadeCurve, FocalRef,
+    FourPointGradient, GeneratorData, LogFormat, PixelFormat, Resolution, TimerFormat, TimerMode,
+    TrackPoint, TransitionAlignment, TransitionUserParams,
+};
+pub use working_colorspace::WorkingColorspace;
 
+pub mod template;
 pub mod vector_path;
+pub use template::{TemplateInstance, TemplateValue};

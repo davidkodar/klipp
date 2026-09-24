@@ -31,15 +31,33 @@ static BUILD: OnceLock<BuildInfo> = OnceLock::new();
 impl BuildInfo {
     /// The build of this process's executable, with what its build script
     /// recorded.
-    pub fn of_this_process(version: &'static str, commit: &'static str, dirty: bool, profile: &'static str) -> Self {
+    pub fn of_this_process(
+        version: &'static str,
+        commit: &'static str,
+        dirty: bool,
+        profile: &'static str,
+    ) -> Self {
         let exe = std::env::current_exe().ok();
         let built_at = exe.as_deref().and_then(modified_secs);
-        Self { version, commit, dirty, profile, exe, built_at }
+        Self {
+            version,
+            commit,
+            dirty,
+            profile,
+            exe,
+            built_at,
+        }
     }
 
     /// `0.1.0 36466b08 release`, with `-dirty` after the commit when it was.
     pub fn label(&self) -> String {
-        format!("{} {}{} {}", self.version, self.commit, if self.dirty { "-dirty" } else { "" }, self.profile)
+        format!(
+            "{} {}{} {}",
+            self.version,
+            self.commit,
+            if self.dirty { "-dirty" } else { "" },
+            self.profile
+        )
     }
 
     /// Whether the executable on disk has been rebuilt since this process
@@ -54,7 +72,10 @@ impl BuildInfo {
 
 fn modified_secs(path: &Path) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    modified.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 /// Record this process's build. The first call wins.
@@ -89,7 +110,12 @@ pub fn format_utc(secs: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC", rem / 3_600, rem / 60 % 60, rem % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rem / 3_600,
+        rem / 60 % 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
@@ -105,7 +131,14 @@ mod tests {
 
     #[test]
     fn a_build_labels_its_commit() {
-        let build = BuildInfo { version: "0.1.0", commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None };
+        let build = BuildInfo {
+            version: "0.1.0",
+            commit: "36466b08",
+            dirty: true,
+            profile: "release",
+            exe: None,
+            built_at: None,
+        };
         assert_eq!(build.label(), "0.1.0 36466b08-dirty release");
         assert!(!build.newer_build_on_disk(), "no executable, nothing newer");
     }

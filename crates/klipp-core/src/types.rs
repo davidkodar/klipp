@@ -8,11 +8,17 @@ pub struct Resolution {
 
 impl Resolution {
     pub fn hd_1080() -> Self {
-        Self { width: 1920, height: 1080 }
+        Self {
+            width: 1920,
+            height: 1080,
+        }
     }
 
     pub fn uhd_4k() -> Self {
-        Self { width: 3840, height: 2160 }
+        Self {
+            width: 3840,
+            height: 2160,
+        }
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -124,7 +130,11 @@ impl LogFormat {
     /// camera log; `cs` unchanged otherwise.
     pub fn apply_to(self, cs: crate::SourceColorspace) -> crate::SourceColorspace {
         match self.camera_colourspace() {
-            Some((transfer, primaries)) => crate::SourceColorspace { transfer, primaries, ..cs },
+            Some((transfer, primaries)) => crate::SourceColorspace {
+                transfer,
+                primaries,
+                ..cs
+            },
             None => cs,
         }
     }
@@ -173,11 +183,11 @@ pub use klipp_effects::FocalRef;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChannelConfig {
     #[default]
-    Default,       // Use source as-is (stereo stays stereo, mono gets centered)
-    MonoDownmix,   // Sum L+R, halve amplitude, output to both channels
-    SwapLR,        // Swap left and right channels
-    Surround51,    // 5.1 output: L, R, C, LFE, Ls, Rs
-    Surround71,    // 7.1 output: L, R, C, LFE, Ls, Rs, Lb, Rb
+    Default, // Use source as-is (stereo stays stereo, mono gets centered)
+    MonoDownmix, // Sum L+R, halve amplitude, output to both channels
+    SwapLR,      // Swap left and right channels
+    Surround51,  // 5.1 output: L, R, C, LFE, Ls, Rs
+    Surround71,  // 7.1 output: L, R, C, LFE, Ls, Rs, Lb, Rb
 }
 
 /// Audio fade curve shape.
@@ -357,8 +367,12 @@ pub struct AudioEffectInstance {
     pub params: Vec<(String, f32)>,
 }
 
-fn default_audio_fx_enabled() -> bool { true }
-fn default_audio_fx_wet_dry() -> f32 { 1.0 }
+fn default_audio_fx_enabled() -> bool {
+    true
+}
+fn default_audio_fx_wet_dry() -> f32 {
+    1.0
+}
 
 /// Where a transition sits relative to the cut between its two clips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -455,11 +469,22 @@ pub enum GeneratorData {
     SolidColor { color: [u8; 4] },
     /// A background that lives: the gradient's angle turns slowly and
     /// a soft light drifts across it.
-    LivingGradient { a: [u8; 4], b: [u8; 4], angle_deg: f32, drift_deg_per_sec: f32, glow: f32 },
+    LivingGradient {
+        a: [u8; 4],
+        b: [u8; 4],
+        angle_deg: f32,
+        drift_deg_per_sec: f32,
+        glow: f32,
+    },
     /// Film grain on a colour: a texture plate for behind titles.
     /// `amount` 0..1, `size_px` the grain size at 1080p, `speed` in
     /// new grain frames per second.
-    Grain { color: [u8; 4], amount: f32, size_px: f32, speed: f32 },
+    Grain {
+        color: [u8; 4],
+        amount: f32,
+        size_px: f32,
+        speed: f32,
+    },
     /// A labelled card standing in for a shot that is not cut yet.
     Placeholder { label: String, color: [u8; 4] },
     /// Two-point linear gradient (`top` → `bottom` along
@@ -560,11 +585,15 @@ pub enum GeneratorData {
     },
 }
 
-fn default_fill() -> bool { true }
+fn default_fill() -> bool {
+    true
+}
 
 impl Default for GeneratorData {
     fn default() -> Self {
-        GeneratorData::SolidColor { color: [0, 0, 0, 255] }
+        GeneratorData::SolidColor {
+            color: [0, 0, 0, 255],
+        }
     }
 }
 
@@ -576,14 +605,32 @@ mod log_format_tests {
     /// transform again. Camera logs are the ones the decoder needs told.
     #[test]
     fn no_format_needs_the_node_and_camera_logs_need_the_decoder() {
-        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG,
-                  LogFormat::SLog3, LogFormat::LogC3, LogFormat::VLog, LogFormat::AppleLog] {
+        for f in [
+            LogFormat::Srgb,
+            LogFormat::Linear,
+            LogFormat::PQ,
+            LogFormat::HLG,
+            LogFormat::SLog3,
+            LogFormat::LogC3,
+            LogFormat::VLog,
+            LogFormat::AppleLog,
+        ] {
             assert!(!f.needs_input_transform(), "{f:?}");
         }
-        for f in [LogFormat::Srgb, LogFormat::Linear, LogFormat::PQ, LogFormat::HLG] {
+        for f in [
+            LogFormat::Srgb,
+            LogFormat::Linear,
+            LogFormat::PQ,
+            LogFormat::HLG,
+        ] {
             assert!(!f.needs_camera_decode(), "{f:?}");
         }
-        for f in [LogFormat::SLog3, LogFormat::LogC4, LogFormat::VLog, LogFormat::AppleLog] {
+        for f in [
+            LogFormat::SLog3,
+            LogFormat::LogC4,
+            LogFormat::VLog,
+            LogFormat::AppleLog,
+        ] {
             assert!(f.needs_camera_decode(), "{f:?}");
         }
     }
@@ -617,7 +664,11 @@ mod fade_curve_tests {
             for i in 0..=1000 {
                 let g = c.gain(i as f64 / 1000.0);
                 assert!(g >= last - 1e-12, "{c:?} dips at t={}", i as f64 / 1000.0);
-                assert!((0.0..=1.0).contains(&g), "{c:?} leaves 0..1 at t={}", i as f64 / 1000.0);
+                assert!(
+                    (0.0..=1.0).contains(&g),
+                    "{c:?} leaves 0..1 at t={}",
+                    i as f64 / 1000.0
+                );
                 last = g;
             }
         }
@@ -674,16 +725,12 @@ mod fade_curve_tests {
             let t = i as f64 / 100.0;
             assert!((FadeCurve::Linear.gain(t) - t).abs() < 1e-12);
             assert!((FadeCurve::Exponential.gain(t) - t * t).abs() < 1e-12);
-            assert!(
-                (FadeCurve::Logarithmic.gain(t) - (1.0 - (1.0 - t) * (1.0 - t))).abs() < 1e-12
-            );
+            assert!((FadeCurve::Logarithmic.gain(t) - (1.0 - (1.0 - t) * (1.0 - t))).abs() < 1e-12);
             assert!((FadeCurve::SCurve.gain(t) - t * t * (3.0 - 2.0 * t)).abs() < 1e-12);
             // The timeline drew the S-curve as `3t² - 2t³`, which is the
             // same polynomial factored differently. Pinned so the two
             // spellings cannot drift back apart.
-            assert!(
-                (FadeCurve::SCurve.gain(t) - (3.0 * t * t - 2.0 * t * t * t)).abs() < 1e-12
-            );
+            assert!((FadeCurve::SCurve.gain(t) - (3.0 * t * t - 2.0 * t * t * t)).abs() < 1e-12);
         }
     }
 

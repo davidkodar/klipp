@@ -54,14 +54,25 @@ pub fn upsert_keyframe(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32) {
 
 /// As [`upsert_keyframe`], with a default interpolation for newly inserted keys.
 /// Existing keys keep their curve shape, including when editing Step parameters.
-pub fn upsert_keyframe_with_interpolation(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32, default: Interpolation) {
-    if let Some(key) = kfs.iter_mut().find(|k| (k.time_secs - time_secs).abs() < KEYFRAME_TIME_EPSILON) {
+pub fn upsert_keyframe_with_interpolation(
+    kfs: &mut Vec<Keyframe>,
+    time_secs: f64,
+    value: f32,
+    default: Interpolation,
+) {
+    if let Some(key) = kfs
+        .iter_mut()
+        .find(|k| (k.time_secs - time_secs).abs() < KEYFRAME_TIME_EPSILON)
+    {
         key.value = value;
         return;
     }
     kfs.push(Keyframe {
-        time_secs, value, interpolation: default,
-        tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+        time_secs,
+        value,
+        interpolation: default,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
     });
     kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
 }
@@ -205,8 +216,8 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
                     // if so, use the simple linear-t evaluation (no Newton-Raphson needed).
                     let tx_out = a.tangent_out.0;
                     let tx_in = b.tangent_in.0;
-                    let has_time_tangents = duration.abs() > 1e-9
-                        && (tx_out.abs() > 1e-9 || tx_in.abs() > 1e-9);
+                    let has_time_tangents =
+                        duration.abs() > 1e-9 && (tx_out.abs() > 1e-9 || tx_in.abs() > 1e-9);
 
                     if !has_time_tangents {
                         // Simple cubic Bezier with linear t
@@ -234,15 +245,11 @@ pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {
                         // Derivative X'(u) = 3(1-u)^2 x1 + 6(1-u)u(x2-x1) + 3u^2(1-x2)
                         let bezier_x = |u: f64| -> f64 {
                             let mu = 1.0 - u;
-                            3.0 * mu * mu * u * x1
-                                + 3.0 * mu * u * u * x2
-                                + u * u * u
+                            3.0 * mu * mu * u * x1 + 3.0 * mu * u * u * x2 + u * u * u
                         };
                         let bezier_x_deriv = |u: f64| -> f64 {
                             let mu = 1.0 - u;
-                            3.0 * mu * mu * x1
-                                + 6.0 * mu * u * (x2 - x1)
-                                + 3.0 * u * u * (1.0 - x2)
+                            3.0 * mu * mu * x1 + 6.0 * mu * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2)
                         };
 
                         // Newton-Raphson: find u where bezier_x(u) = t_target
@@ -427,7 +434,10 @@ mod tests {
             kf_linear(2.0, 50.0),
         ];
         let v = evaluate(&kfs, 0.5, -1.0);
-        assert!((v - 50.0).abs() < 0.01, "first segment mid: expected ~50.0, got {v}");
+        assert!(
+            (v - 50.0).abs() < 0.01,
+            "first segment mid: expected ~50.0, got {v}"
+        );
     }
 
     #[test]
@@ -438,7 +448,10 @@ mod tests {
             kf_linear(2.0, 50.0),
         ];
         let v = evaluate(&kfs, 1.5, -1.0);
-        assert!((v - 75.0).abs() < 0.01, "second segment mid: expected ~75.0, got {v}");
+        assert!(
+            (v - 75.0).abs() < 0.01,
+            "second segment mid: expected ~75.0, got {v}"
+        );
     }
 
     #[test]
@@ -449,7 +462,10 @@ mod tests {
             kf_linear(2.0, 50.0),
         ];
         let v = evaluate(&kfs, 1.0, -1.0);
-        assert!((v - 100.0).abs() < 0.01, "at middle kf: expected ~100.0, got {v}");
+        assert!(
+            (v - 100.0).abs() < 0.01,
+            "at middle kf: expected ~100.0, got {v}"
+        );
     }
 
     // ---- 8. Bezier interpolation ----
@@ -469,14 +485,11 @@ mod tests {
     #[test]
     fn bezier_with_time_tangents_smooth_curve() {
         // Ease-in-out curve with time handles
-        let kfs = [
-            kf_bezier(0.0, 0.0, (0.3, 0.0), (0.0, 0.0)),
-            {
-                let mut k = kf_bezier(1.0, 100.0, (0.0, 0.0), (-0.3, 0.0));
-                k.interpolation = Interpolation::Linear; // irrelevant, first kf drives
-                k
-            },
-        ];
+        let kfs = [kf_bezier(0.0, 0.0, (0.3, 0.0), (0.0, 0.0)), {
+            let mut k = kf_bezier(1.0, 100.0, (0.0, 0.0), (-0.3, 0.0));
+            k.interpolation = Interpolation::Linear; // irrelevant, first kf drives
+            k
+        }];
         let v = evaluate(&kfs, 0.5, -1.0);
         assert!(v > 30.0 && v < 70.0, "bezier mid: expected 30..70, got {v}");
         assert!((evaluate(&kfs, 0.0, -1.0) - 0.0).abs() < 0.01);
@@ -494,7 +507,10 @@ mod tests {
             kf_bezier(1.0, 100.0, (0.0, 0.0), (0.0, -80.0)),
         ];
         let v = evaluate(&kfs, 0.5, -1.0);
-        assert!((v - 50.0).abs() < 1.0, "bezier value tangents mid: expected ~50, got {v}");
+        assert!(
+            (v - 50.0).abs() < 1.0,
+            "bezier value tangents mid: expected ~50, got {v}"
+        );
     }
 
     #[test]
@@ -600,13 +616,19 @@ mod tests {
 
     #[test]
     fn keyframe_sort_with_nan_time_does_not_panic() {
-        let mut kfs = [kf_linear(2.0, 0.0),
+        let mut kfs = [
+            kf_linear(2.0, 0.0),
             kf_linear(f64::NAN, 0.0),
             kf_linear(0.5, 0.0),
-            kf_linear(1.0, 0.0)];
+            kf_linear(1.0, 0.0),
+        ];
         // Same closure as the sort sites in klipp-ui/src/app.rs. The
         // assertion is implicit: control reaches the line below.
-        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+        kfs.sort_by(|a, b| {
+            a.time_secs
+                .partial_cmp(&b.time_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         assert_eq!(kfs.len(), 4, "sort must preserve length");
     }
 
@@ -614,12 +636,7 @@ mod tests {
     fn tuple_sort_by_first_f64_with_nan_does_not_panic() {
         // Mirrors clip.multicam_cuts (Vec<(f64, u8)>) and the PCM regions
         // sort in app.rs — same NaN-safe closure on the first tuple field.
-        let mut cuts: Vec<(f64, u8)> = vec![
-            (2.0, 1),
-            (f64::NAN, 2),
-            (0.5, 3),
-            (1.0, 4),
-        ];
+        let mut cuts: Vec<(f64, u8)> = vec![(2.0, 1), (f64::NAN, 2), (0.5, 3), (1.0, 4)];
         cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         assert_eq!(cuts.len(), 4);
     }
@@ -629,17 +646,21 @@ mod tests {
         // Sanity: when no NaN is present the closure DOES sort
         // ascending, so the rest of the codebase's reliance on the
         // sort's correctness in the normal case is preserved.
-        let mut kfs = [kf_linear(3.0, 0.0),
+        let mut kfs = [
+            kf_linear(3.0, 0.0),
             kf_linear(1.0, 0.0),
             kf_linear(2.5, 0.0),
-            kf_linear(0.5, 0.0)];
-        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+            kf_linear(0.5, 0.0),
+        ];
+        kfs.sort_by(|a, b| {
+            a.time_secs
+                .partial_cmp(&b.time_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let times: Vec<f64> = kfs.iter().map(|k| k.time_secs).collect();
         assert_eq!(times, vec![0.5, 1.0, 2.5, 3.0]);
     }
 }
-
-
 
 #[cfg(test)]
 mod ease_tests {
@@ -657,14 +678,37 @@ mod ease_tests {
     fn each_ease_has_the_shape_its_name_says() {
         let mid = |e| evaluate(&track(e), 1.0, 0.0);
         assert!((mid(Ease::Linear) - 50.0).abs() < 1e-3);
-        assert!(mid(Ease::In) < 40.0, "in is still slow halfway: {}", mid(Ease::In));
-        assert!(mid(Ease::Out) > 60.0, "out is nearly there halfway: {}", mid(Ease::Out));
-        assert!((mid(Ease::InOut) - 50.0).abs() < 1.0, "in_out is symmetric: {}", mid(Ease::InOut));
-        assert!(evaluate(&track(Ease::ExpoOut), 0.4, 0.0) > 70.0, "expo_out arrives fast");
-        let peak = (1..40).map(|i| evaluate(&track(Ease::BackOut), i as f64 * 0.05, 0.0)).fold(0.0f32, f32::max);
+        assert!(
+            mid(Ease::In) < 40.0,
+            "in is still slow halfway: {}",
+            mid(Ease::In)
+        );
+        assert!(
+            mid(Ease::Out) > 60.0,
+            "out is nearly there halfway: {}",
+            mid(Ease::Out)
+        );
+        assert!(
+            (mid(Ease::InOut) - 50.0).abs() < 1.0,
+            "in_out is symmetric: {}",
+            mid(Ease::InOut)
+        );
+        assert!(
+            evaluate(&track(Ease::ExpoOut), 0.4, 0.0) > 70.0,
+            "expo_out arrives fast"
+        );
+        let peak = (1..40)
+            .map(|i| evaluate(&track(Ease::BackOut), i as f64 * 0.05, 0.0))
+            .fold(0.0f32, f32::max);
         assert!(peak > 100.5, "back_out goes past and settles: {peak}");
         // Every ease still starts and ends where the keyframes are.
-        for e in [Ease::In, Ease::Out, Ease::InOut, Ease::ExpoOut, Ease::BackOut] {
+        for e in [
+            Ease::In,
+            Ease::Out,
+            Ease::InOut,
+            Ease::ExpoOut,
+            Ease::BackOut,
+        ] {
             assert!((evaluate(&track(e), 0.0, 0.0)).abs() < 1e-3);
             assert!((evaluate(&track(e), 2.0, 0.0) - 100.0).abs() < 1e-3);
         }
@@ -739,5 +783,4 @@ mod precision_tests {
         upsert_keyframe(&mut keys, 2.0, 0.5);
         assert_eq!(keys[2].interpolation, Interpolation::Linear);
     }
-
 }

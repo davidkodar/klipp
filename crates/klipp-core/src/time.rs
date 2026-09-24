@@ -28,11 +28,17 @@ impl Fps {
     }
 
     pub fn ntsc_23976() -> Self {
-        Self { num: 24000, den: 1001 }
+        Self {
+            num: 24000,
+            den: 1001,
+        }
     }
 
     pub fn ntsc_29970() -> Self {
-        Self { num: 30000, den: 1001 }
+        Self {
+            num: 30000,
+            den: 1001,
+        }
     }
 
     pub fn film_24() -> Self {
@@ -67,11 +73,17 @@ impl RationalTime {
 
     /// Absolute value — preserves rate, negates negative values.
     pub fn abs(self) -> Self {
-        Self { value: self.value.abs(), rate: self.rate }
+        Self {
+            value: self.value.abs(),
+            rate: self.rate,
+        }
     }
 
     pub fn from_frames(frames: i64, rate: u32) -> Self {
-        Self { value: frames, rate }
+        Self {
+            value: frames,
+            rate,
+        }
     }
 
     pub fn from_secs_f64(secs: f64, rate: u32) -> Self {
@@ -306,7 +318,10 @@ mod timecode_display_tests {
     use super::*;
 
     fn ntsc() -> TimecodeDisplay {
-        TimecodeDisplay { fps: Fps::new(30000, 1001), drop: true }
+        TimecodeDisplay {
+            fps: Fps::new(30000, 1001),
+            drop: true,
+        }
     }
 
     #[test]
@@ -314,7 +329,10 @@ mod timecode_display_tests {
         let d = ntsc();
         // Frame 107_892 is the canonical hour in drop-frame; counted
         // non-drop the same frame reads 00:59:56:12.
-        let hour = RationalTime { value: 107_892 * 1001, rate: 30_000 };
+        let hour = RationalTime {
+            value: 107_892 * 1001,
+            rate: 30_000,
+        };
         assert_eq!(d.position(hour), "01:00:00;00");
         let ndf = TimecodeDisplay { drop: false, ..d };
         assert_eq!(ndf.position(hour), "00:59:56:12");
@@ -326,18 +344,30 @@ mod timecode_display_tests {
         // at 29.97 whichever way the sequence counts, and drop-frame has
         // nothing to say about a length.
         let d = ntsc();
-        let two_secs = RationalTime { value: 60 * 1001, rate: 30_000 };
+        let two_secs = RationalTime {
+            value: 60 * 1001,
+            rate: 30_000,
+        };
         assert_eq!(d.duration(two_secs), "00:00:02:00");
         // An hour of frames is an hour of frames, not the clock's hour.
-        let hour_of_frames = RationalTime { value: 107_892 * 1001, rate: 30_000 };
+        let hour_of_frames = RationalTime {
+            value: 107_892 * 1001,
+            rate: 30_000,
+        };
         assert_eq!(d.duration(hour_of_frames), "00:59:56:12");
     }
 
     #[test]
     fn drop_frame_is_ignored_at_a_rate_that_has_none() {
-        let d = TimecodeDisplay { fps: Fps::new(25, 1), drop: true };
+        let d = TimecodeDisplay {
+            fps: Fps::new(25, 1),
+            drop: true,
+        };
         assert!(!d.is_drop(), "25 has nothing to drop");
-        let t = RationalTime { value: 25 * 60, rate: 25 };
+        let t = RationalTime {
+            value: 25 * 60,
+            rate: 25,
+        };
         assert_eq!(d.position(t), "00:01:00:00");
     }
 
@@ -345,11 +375,19 @@ mod timecode_display_tests {
     fn what_is_shown_can_be_typed_back() {
         let d = ntsc();
         for frames in [0i64, 1799, 1800, 17_982, 107_892] {
-            let t = RationalTime { value: frames * 1001, rate: 30_000 };
+            let t = RationalTime {
+                value: frames * 1001,
+                rate: 30_000,
+            };
             let shown = d.position(t);
-            let back = d.parse(&shown).unwrap_or_else(|| panic!("{shown} should parse"));
+            let back = d
+                .parse(&shown)
+                .unwrap_or_else(|| panic!("{shown} should parse"));
             let back_frames = (back.to_secs_f64() * d.fps.as_f64()).round() as i64;
-            assert_eq!(back_frames, frames, "{shown} came back as frame {back_frames}");
+            assert_eq!(
+                back_frames, frames,
+                "{shown} came back as frame {back_frames}"
+            );
         }
     }
 
@@ -367,7 +405,10 @@ mod timecode_display_tests {
     fn a_semicolon_is_honoured_on_a_non_drop_sequence() {
         // Pasted off a camera report: it says what it is, and is read
         // that way rather than being silently recounted.
-        let ndf = TimecodeDisplay { fps: Fps::new(30000, 1001), drop: false };
+        let ndf = TimecodeDisplay {
+            fps: Fps::new(30000, 1001),
+            drop: false,
+        };
         let df = ndf.parse("01:00:00;00").expect("semicolon");
         let plain = ndf.parse("01:00:00:00").expect("colon");
         assert_ne!(df, plain);

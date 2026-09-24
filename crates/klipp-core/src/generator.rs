@@ -22,13 +22,35 @@ pub fn render_generator_f16(
     total_secs: f64,
 ) -> Vec<u32> {
     match data {
-        GeneratorData::Gradient { top, bottom, angle_deg, four_point: None } => {
-            render_gradient_f16(*top, *bottom, *angle_deg, width, height)
-        }
-        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
-            render_living_gradient_f16(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
-        }
-        _ => srgb_u8_to_f16(&render_generator(data, width, height, elapsed_secs, total_secs)),
+        GeneratorData::Gradient {
+            top,
+            bottom,
+            angle_deg,
+            four_point: None,
+        } => render_gradient_f16(*top, *bottom, *angle_deg, width, height),
+        GeneratorData::LivingGradient {
+            a,
+            b,
+            angle_deg,
+            drift_deg_per_sec,
+            glow,
+        } => render_living_gradient_f16(
+            *a,
+            *b,
+            *angle_deg,
+            *drift_deg_per_sec,
+            *glow,
+            width,
+            height,
+            elapsed_secs,
+        ),
+        _ => srgb_u8_to_f16(&render_generator(
+            data,
+            width,
+            height,
+            elapsed_secs,
+            total_secs,
+        )),
     }
 }
 
@@ -41,14 +63,45 @@ pub fn render_generator(
 ) -> Vec<u8> {
     match data {
         GeneratorData::SolidColor { color } => render_solid_color(*color, width, height),
-        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
-            render_living_gradient(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
+        GeneratorData::LivingGradient {
+            a,
+            b,
+            angle_deg,
+            drift_deg_per_sec,
+            glow,
+        } => render_living_gradient(
+            *a,
+            *b,
+            *angle_deg,
+            *drift_deg_per_sec,
+            *glow,
+            width,
+            height,
+            elapsed_secs,
+        ),
+        GeneratorData::Grain {
+            color,
+            amount,
+            size_px,
+            speed,
+        } => render_grain(
+            *color,
+            *amount,
+            *size_px,
+            *speed,
+            width,
+            height,
+            elapsed_secs,
+        ),
+        GeneratorData::Placeholder { color, .. } => {
+            render_placeholder_backdrop(*color, width, height)
         }
-        GeneratorData::Grain { color, amount, size_px, speed } => {
-            render_grain(*color, *amount, *size_px, *speed, width, height, elapsed_secs)
-        }
-        GeneratorData::Placeholder { color, .. } => render_placeholder_backdrop(*color, width, height),
-        GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
+        GeneratorData::Gradient {
+            top,
+            bottom,
+            angle_deg,
+            four_point,
+        } => {
             if let Some(corners) = four_point {
                 render_four_point_gradient(*corners, width, height)
             } else {
@@ -58,10 +111,25 @@ pub fn render_generator(
         GeneratorData::ColorBars => render_color_bars(width, height),
         GeneratorData::ColorBars100 => render_color_bars_100(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
-        GeneratorData::Timer { mode, initial_seconds, format, text_color, background_color } => {
-            render_timer(width, height, elapsed_secs, *mode, *initial_seconds, *format, *text_color, *background_color)
-        }
-        GeneratorData::Slate { background_color, .. } => {
+        GeneratorData::Timer {
+            mode,
+            initial_seconds,
+            format,
+            text_color,
+            background_color,
+        } => render_timer(
+            width,
+            height,
+            elapsed_secs,
+            *mode,
+            *initial_seconds,
+            *format,
+            *text_color,
+            *background_color,
+        ),
+        GeneratorData::Slate {
+            background_color, ..
+        } => {
             // klipp-core can't render text. The engine intercepts Slate
             // before this dispatch and routes through klipp-title's
             // TitleRenderer; this fallback is only hit when render_generator
@@ -70,12 +138,27 @@ pub fn render_generator(
             render_solid_color(*background_color, width, height)
         }
         GeneratorData::StillFrame { png_path, .. } => render_still_frame(png_path, width, height),
-        GeneratorData::Polygon { sides, color, outline_width_px, fill } => {
-            render_polygon(*sides, *color, *outline_width_px, *fill, width, height)
-        }
-        GeneratorData::Star { points, inner_radius_pct, color, outline_width_px, fill } => {
-            render_star(*points, *inner_radius_pct, *color, *outline_width_px, *fill, width, height)
-        }
+        GeneratorData::Polygon {
+            sides,
+            color,
+            outline_width_px,
+            fill,
+        } => render_polygon(*sides, *color, *outline_width_px, *fill, width, height),
+        GeneratorData::Star {
+            points,
+            inner_radius_pct,
+            color,
+            outline_width_px,
+            fill,
+        } => render_star(
+            *points,
+            *inner_radius_pct,
+            *color,
+            *outline_width_px,
+            *fill,
+            width,
+            height,
+        ),
     }
 }
 
@@ -83,18 +166,12 @@ pub fn render_generator(
 /// inscribed in a circle of radius `radius_px`. Vertices are ordered
 /// clockwise starting at the top (12 o'clock). Pulled out so the
 /// star renderer can reuse it on a 2N-vertex alternating path.
-fn polygon_vertices(
-    n: usize,
-    cx: f32,
-    cy: f32,
-    radius_px: f32,
-) -> Vec<(f32, f32)> {
+fn polygon_vertices(n: usize, cx: f32, cy: f32, radius_px: f32) -> Vec<(f32, f32)> {
     let mut verts = Vec::with_capacity(n);
     for i in 0..n {
         // -π/2 puts vertex 0 at the top; positive angle goes clockwise
         // because our y-axis is inverted (image coordinates).
-        let theta = -std::f32::consts::FRAC_PI_2
-            + (i as f32) * std::f32::consts::TAU / (n as f32);
+        let theta = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::TAU / (n as f32);
         verts.push((cx + radius_px * theta.cos(), cy + radius_px * theta.sin()));
     }
     verts
@@ -102,19 +179,13 @@ fn polygon_vertices(
 
 /// Same shape but alternating between an outer and an inner radius —
 /// produces a 2N-vertex star polygon.
-fn star_vertices(
-    points: usize,
-    cx: f32,
-    cy: f32,
-    outer: f32,
-    inner: f32,
-) -> Vec<(f32, f32)> {
+fn star_vertices(points: usize, cx: f32, cy: f32, outer: f32, inner: f32) -> Vec<(f32, f32)> {
     let total = points * 2;
     let mut verts = Vec::with_capacity(total);
     for i in 0..total {
         let r = if i % 2 == 0 { outer } else { inner };
-        let theta = -std::f32::consts::FRAC_PI_2
-            + (i as f32) * std::f32::consts::TAU / (total as f32);
+        let theta =
+            -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::TAU / (total as f32);
         verts.push((cx + r * theta.cos(), cy + r * theta.sin()));
     }
     verts
@@ -128,7 +199,9 @@ fn star_vertices(
 fn point_in_polygon(verts: &[(f32, f32)], px: f32, py: f32) -> bool {
     let mut inside = false;
     let n = verts.len();
-    if n < 3 { return false; }
+    if n < 3 {
+        return false;
+    }
     let mut j = n - 1;
     for i in 0..n {
         let (xi, yi) = verts[i];
@@ -183,7 +256,9 @@ fn rasterise_polygon(
     let pixel_count = (width as usize) * (height as usize);
     let mut buf = vec![0u8; pixel_count * 4];
     let n = verts.len();
-    if n < 3 { return buf; }
+    if n < 3 {
+        return buf;
+    }
     let stroke_half = outline_width_px.max(0.0) * 0.5;
     let stroke_thresh2 = stroke_half * stroke_half;
     let needs_stroke = stroke_half > 0.0;
@@ -202,11 +277,11 @@ fn rasterise_polygon(
                 let mut j = n - 1;
                 for i in 0..n {
                     let d2 = point_to_segment_dist2(
-                        px, py,
-                        verts[j].0, verts[j].1,
-                        verts[i].0, verts[i].1,
+                        px, py, verts[j].0, verts[j].1, verts[i].0, verts[i].1,
                     );
-                    if d2 < min_d2 { min_d2 = d2; }
+                    if d2 < min_d2 {
+                        min_d2 = d2;
+                    }
                     j = i;
                 }
                 if min_d2 <= stroke_thresh2 {
@@ -291,7 +366,8 @@ pub fn render_still_frame(png_path: &std::path::Path, width: u32, height: u32) -
 /// Render a solid color frame.
 /// A small integer hash to a value in -1..1, stable per (x, y, frame).
 fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
-    let mut h = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ frame.wrapping_mul(0xcb1a_b31f);
+    let mut h =
+        x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ frame.wrapping_mul(0xcb1a_b31f);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2c1b_3c6d);
     h ^= h >> 12;
@@ -309,7 +385,11 @@ fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
 /// float way lands on the values the u8 way would have decoded to.
 #[inline]
 fn srgb_to_linear(v: f32) -> f32 {
-    if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 /// Eight-bit sRGB RGBA widened to linear-light f32 RGBA — what the
@@ -453,7 +533,14 @@ pub fn srgb_f16_to_linear_f32(packed: &[u32]) -> Vec<f32> {
 /// and none is lost; it just takes the same road as the rest.
 pub fn srgb_u8_to_f16(rgba: &[u8]) -> Vec<u32> {
     rgba.chunks_exact(4)
-        .flat_map(|p| pack_f16([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]))
+        .flat_map(|p| {
+            pack_f16([
+                p[0] as f32 / 255.0,
+                p[1] as f32 / 255.0,
+                p[2] as f32 / 255.0,
+                p[3] as f32 / 255.0,
+            ])
+        })
         .collect()
 }
 
@@ -498,7 +585,15 @@ pub fn render_living_gradient(
 
 /// Film grain over a colour: monochrome noise of `size_px` grains (at
 /// 1080p), `amount` deep, refreshed `speed` times a second.
-pub fn render_grain(color: [u8; 4], amount: f32, size_px: f32, speed: f32, width: u32, height: u32, elapsed_secs: f64) -> Vec<u8> {
+pub fn render_grain(
+    color: [u8; 4],
+    amount: f32,
+    size_px: f32,
+    speed: f32,
+    width: u32,
+    height: u32,
+    elapsed_secs: f64,
+) -> Vec<u8> {
     let mut buf = render_solid_color(color, width, height);
     let scale = (height as f32 / 1080.0).max(0.1);
     let cell = (size_px * scale).max(1.0);
@@ -604,11 +699,7 @@ pub fn render_gradient(
 /// the four colours; the body interpolates linearly along both axes
 /// (horizontal first, then vertical between the resulting top/bottom
 /// rows), which is the standard cinematic 4-corner colour wash.
-pub fn render_four_point_gradient(
-    corners: FourPointGradient,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
+pub fn render_four_point_gradient(corners: FourPointGradient, width: u32, height: u32) -> Vec<u8> {
     let pixel_count = (width as usize) * (height as usize);
     let mut buf = vec![0u8; pixel_count * 4];
     let w_div = (width.saturating_sub(1)).max(1) as f32;
@@ -663,14 +754,9 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 #[inline]
 fn dither_at(x: u32, y: u32) -> f32 {
     const BAYER: [u8; 64] = [
-        0, 32, 8, 40, 2, 34, 10, 42,
-        48, 16, 56, 24, 50, 18, 58, 26,
-        12, 44, 4, 36, 14, 46, 6, 38,
-        60, 28, 52, 20, 62, 30, 54, 22,
-        3, 35, 11, 43, 1, 33, 9, 41,
-        51, 19, 59, 27, 49, 17, 57, 25,
-        15, 47, 7, 39, 13, 45, 5, 37,
-        63, 31, 55, 23, 61, 29, 53, 21,
+        0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38,
+        60, 28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57,
+        25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
     ];
     (BAYER[((y % 8) * 8 + (x % 8)) as usize] as f32 + 0.5) / 64.0 - 0.5
 }
@@ -712,8 +798,7 @@ fn render_color_bars_at_intensity(width: u32, height: u32, intensity: u8) -> Vec
     let mut buf = Vec::with_capacity(pixel_count * 4);
     for _y in 0..height {
         for x in 0..width {
-            let bar_idx =
-                ((x as u64 * bars.len() as u64) / width.max(1) as u64) as usize;
+            let bar_idx = ((x as u64 * bars.len() as u64) / width.max(1) as u64) as usize;
             let color = bars[bar_idx.min(bars.len() - 1)];
             buf.extend_from_slice(&color);
         }
@@ -723,12 +808,7 @@ fn render_color_bars_at_intensity(width: u32, height: u32, intensity: u8) -> Vec
 
 /// Render a countdown frame: white number on black background.
 /// Shows seconds remaining, counting down from total_secs.
-pub fn render_countdown(
-    width: u32,
-    height: u32,
-    elapsed_secs: f64,
-    total_secs: f64,
-) -> Vec<u8> {
+pub fn render_countdown(width: u32, height: u32, elapsed_secs: f64, total_secs: f64) -> Vec<u8> {
     let seconds_remaining = ((total_secs - elapsed_secs).ceil() as i64).max(1);
     let digit = format!("{}", seconds_remaining);
 
@@ -799,13 +879,13 @@ fn draw_seven_segment_color(
 
     // Segment rectangles: [top, top-right, bottom-right, bottom, bottom-left, top-left, middle]
     let rects: [(u32, u32, u32, u32); 7] = [
-        (x, y, w, thickness),                                       // top
-        (x + w - thickness, y, thickness, half_h),                  // top-right
-        (x + w - thickness, y + half_h, thickness, h - half_h),     // bottom-right
-        (x, y + h - thickness, w, thickness),                       // bottom
-        (x, y + half_h, thickness, h - half_h),                     // bottom-left
-        (x, y, thickness, half_h),                                  // top-left
-        (x, y + half_h - thickness / 2, w, thickness),              // middle
+        (x, y, w, thickness),                                   // top
+        (x + w - thickness, y, thickness, half_h),              // top-right
+        (x + w - thickness, y + half_h, thickness, h - half_h), // bottom-right
+        (x, y + h - thickness, w, thickness),                   // bottom
+        (x, y + half_h, thickness, h - half_h),                 // bottom-left
+        (x, y, thickness, half_h),                              // top-left
+        (x, y + half_h - thickness / 2, w, thickness),          // middle
     ];
 
     for (i, &(rx, ry, rw, rh)) in rects.iter().enumerate() {
@@ -901,8 +981,12 @@ pub fn render_timer(
                 // Two square dots, vertically stacked at 1/3 and 2/3 of digit_h.
                 let dot_y_top = start_y + digit_h / 3 - dot_size / 2;
                 let dot_y_bot = start_y + (digit_h * 2) / 3 - dot_size / 2;
-                draw_solid_rect(&mut buf, width, cx, dot_y_top, dot_size, dot_size, text_color);
-                draw_solid_rect(&mut buf, width, cx, dot_y_bot, dot_size, dot_size, text_color);
+                draw_solid_rect(
+                    &mut buf, width, cx, dot_y_top, dot_size, dot_size, text_color,
+                );
+                draw_solid_rect(
+                    &mut buf, width, cx, dot_y_bot, dot_size, dot_size, text_color,
+                );
                 cx += separator_w + spacing;
             }
             '.' => {
@@ -913,7 +997,9 @@ pub fn render_timer(
             }
             d if d.is_ascii_digit() => {
                 let segments = digit_segments(d);
-                draw_seven_segment_color(&mut buf, width, cx, start_y, digit_w, digit_h, segments, text_color);
+                draw_seven_segment_color(
+                    &mut buf, width, cx, start_y, digit_w, digit_h, segments, text_color,
+                );
                 cx += digit_w + spacing;
             }
             _ => {
@@ -927,15 +1013,7 @@ pub fn render_timer(
 
 /// Fill an axis-aligned rectangle in `color`. Bounds-checked per row
 /// and per pixel — same defensive shape as `draw_seven_segment_color`.
-fn draw_solid_rect(
-    buf: &mut [u8],
-    buf_width: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    color: [u8; 4],
-) {
+fn draw_solid_rect(buf: &mut [u8], buf_width: u32, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
     for py in y..(y + h) {
         let row_start = (py as usize) * (buf_width as usize) * 4;
         for px in x..(x + w) {
@@ -975,7 +1053,10 @@ mod tests {
                     worst = worst.max((got[c] * 255.0 - b[c] as f32).abs());
                 }
             }
-            assert!(worst <= 1.5, "angle {angle}: f16 and byte gradients differ by {worst} code values");
+            assert!(
+                worst <= 1.5,
+                "angle {angle}: f16 and byte gradients differ by {worst} code values"
+            );
         }
     }
 
@@ -991,7 +1072,11 @@ mod tests {
             let blue = half::f16::from_bits((ba & 0xFFFF) as u16).to_f32();
             seen.insert((blue * 255.0 * 64.0) as i64);
         }
-        assert!(seen.len() > 200, "a half-float ramp down 512 rows should be near-continuous, got {} levels", seen.len());
+        assert!(
+            seen.len() > 200,
+            "a half-float ramp down 512 rows should be near-continuous, got {} levels",
+            seen.len()
+        );
     }
 
     use super::*;
@@ -1096,7 +1181,7 @@ mod tests {
         assert_eq!(buf.len(), 7 * 10 * 4);
         // Each pixel should be one bar color
         assert_eq!(&buf[0..4], &[191, 191, 191, 255]); // x=0: white
-        assert_eq!(&buf[24..28], &[0, 0, 191, 255]);   // x=6: blue
+        assert_eq!(&buf[24..28], &[0, 0, 191, 255]); // x=6: blue
     }
 
     #[test]
@@ -1130,11 +1215,27 @@ mod tests {
         assert_eq!(render_color_bars_100(640, 480).len(), expected);
         assert_eq!(render_countdown(640, 480, 2.0, 10.0).len(), expected);
         assert_eq!(
-            render_timer(640, 480, 0.0, TimerMode::CountUp, 0.0, TimerFormat::MmSs, [255; 4], [0; 4]).len(),
+            render_timer(
+                640,
+                480,
+                0.0,
+                TimerMode::CountUp,
+                0.0,
+                TimerFormat::MmSs,
+                [255; 4],
+                [0; 4]
+            )
+            .len(),
             expected,
         );
-        assert_eq!(render_polygon(6, [255, 0, 0, 255], 0.0, true, 640, 480).len(), expected);
-        assert_eq!(render_star(5, 0.4, [255, 255, 0, 255], 0.0, true, 640, 480).len(), expected);
+        assert_eq!(
+            render_polygon(6, [255, 0, 0, 255], 0.0, true, 640, 480).len(),
+            expected
+        );
+        assert_eq!(
+            render_star(5, 0.4, [255, 255, 0, 255], 0.0, true, 640, 480).len(),
+            expected
+        );
     }
 
     #[test]
@@ -1167,7 +1268,11 @@ mod tests {
         // drawn; the centre stays transparent.
         let buf = render_polygon(6, [255, 0, 0, 255], 2.0, false, 64, 64);
         let centre_idx = (32 * 64 + 32) * 4;
-        assert_eq!(buf[centre_idx + 3], 0, "centre should be transparent in outline-only mode");
+        assert_eq!(
+            buf[centre_idx + 3],
+            0,
+            "centre should be transparent in outline-only mode"
+        );
     }
 
     #[test]
@@ -1198,7 +1303,11 @@ mod tests {
             assert_eq!(buf.len(), 32 * 32 * 4);
             // Centre pixel filled (means a triangle was drawn).
             let centre_idx = (16 * 32 + 16) * 4;
-            assert_eq!(buf[centre_idx + 3], 255, "sides={bad} should fall back to a triangle");
+            assert_eq!(
+                buf[centre_idx + 3],
+                255,
+                "sides={bad} should fall back to a triangle"
+            );
         }
     }
 
@@ -1291,10 +1400,14 @@ mod tests {
     fn timer_count_up_advances_with_elapsed() {
         // Count-up at 5 s elapsed with initial=10 → display = 15 s.
         let buf = render_timer(
-            640, 480, 5.0,
-            TimerMode::CountUp, 10.0,
+            640,
+            480,
+            5.0,
+            TimerMode::CountUp,
+            10.0,
             TimerFormat::Seconds,
-            [255; 4], [0; 4],
+            [255; 4],
+            [0; 4],
         );
         assert_eq!(buf.len(), 640 * 480 * 4);
         // Just confirm it didn't panic + produced the expected size.
@@ -1307,10 +1420,14 @@ mod tests {
         // Count-down with initial=10 elapsed=20 → display would be -10 s,
         // clamps to 0. Render must not panic.
         let buf = render_timer(
-            640, 480, 20.0,
-            TimerMode::CountDown, 10.0,
+            640,
+            480,
+            20.0,
+            TimerMode::CountDown,
+            10.0,
             TimerFormat::MmSs,
-            [255; 4], [0; 4],
+            [255; 4],
+            [0; 4],
         );
         assert_eq!(buf.len(), 640 * 480 * 4);
     }
@@ -1321,10 +1438,14 @@ mod tests {
         // background colour. Use a distinctive dark blue.
         let bg = [10u8, 20, 80, 255];
         let buf = render_timer(
-            64, 48, 0.0,
-            TimerMode::CountUp, 0.0,
+            64,
+            48,
+            0.0,
+            TimerMode::CountUp,
+            0.0,
             TimerFormat::MmSs,
-            [255; 4], bg,
+            [255; 4],
+            bg,
         );
         // Top-left corner — well outside the centred digit glyph area.
         assert_eq!(&buf[0..4], &bg);
@@ -1347,7 +1468,10 @@ mod living_generators_tests {
 
     fn luma_mean(px: &[u8]) -> f32 {
         let n = (px.len() / 4) as f32;
-        px.chunks_exact(4).map(|p| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32).sum::<f32>() / n
+        px.chunks_exact(4)
+            .map(|p| 0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32)
+            .sum::<f32>()
+            / n
     }
 
     #[test]
@@ -1355,18 +1479,54 @@ mod living_generators_tests {
         let a = render_grain([100, 100, 100, 255], 0.5, 1.0, 24.0, 64, 36, 0.0);
         let b = render_grain([100, 100, 100, 255], 0.5, 1.0, 24.0, 64, 36, 0.5);
         assert_ne!(a, b, "a new grain frame each tick");
-        assert!((luma_mean(&a) - 100.0).abs() < 6.0, "grain averages to the colour");
+        assert!(
+            (luma_mean(&a) - 100.0).abs() < 6.0,
+            "grain averages to the colour"
+        );
         let flat = render_grain([100, 100, 100, 255], 0.0, 1.0, 24.0, 64, 36, 0.0);
-        assert!(flat.chunks_exact(4).all(|p| p[0] == 100), "no amount, no grain");
+        assert!(
+            flat.chunks_exact(4).all(|p| p[0] == 100),
+            "no amount, no grain"
+        );
     }
 
     #[test]
     fn a_living_gradient_moves_and_its_light_brightens() {
-        let t0 = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 10.0, 0.0, 64, 36, 0.0);
-        let t1 = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 10.0, 0.0, 64, 36, 2.0);
+        let t0 = render_living_gradient(
+            [0, 0, 80, 255],
+            [80, 0, 40, 255],
+            0.0,
+            10.0,
+            0.0,
+            64,
+            36,
+            0.0,
+        );
+        let t1 = render_living_gradient(
+            [0, 0, 80, 255],
+            [80, 0, 40, 255],
+            0.0,
+            10.0,
+            0.0,
+            64,
+            36,
+            2.0,
+        );
         assert_ne!(t0, t1, "the angle drifts");
-        let lit = render_living_gradient([0, 0, 80, 255], [80, 0, 40, 255], 0.0, 0.0, 0.6, 64, 36, 0.0);
-        assert!(luma_mean(&lit) > luma_mean(&t0), "the light adds to the picture");
+        let lit = render_living_gradient(
+            [0, 0, 80, 255],
+            [80, 0, 40, 255],
+            0.0,
+            0.0,
+            0.6,
+            64,
+            36,
+            0.0,
+        );
+        assert!(
+            luma_mean(&lit) > luma_mean(&t0),
+            "the light adds to the picture"
+        );
     }
 
     #[test]

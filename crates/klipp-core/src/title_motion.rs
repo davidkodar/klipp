@@ -28,13 +28,25 @@ impl Easing {
             Easing::Linear => t,
             Easing::OutCubic => 1.0 - (1.0 - t).powi(3),
             Easing::OutQuint => 1.0 - (1.0 - t).powi(5),
-            Easing::OutExpo => if t >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * t) },
+            Easing::OutExpo => {
+                if t >= 1.0 {
+                    1.0
+                } else {
+                    1.0 - 2f32.powf(-10.0 * t)
+                }
+            }
             Easing::OutBack => {
                 let c1 = 1.70158;
                 let c3 = c1 + 1.0;
                 1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
             }
-            Easing::InOutCubic => if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 },
+            Easing::InOutCubic => {
+                if t < 0.5 {
+                    4.0 * t * t * t
+                } else {
+                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                }
+            }
             Easing::InCubic => t * t * t,
             Easing::OutBounce => {
                 let (n1, d1) = (7.5625, 2.75);
@@ -55,8 +67,14 @@ impl Easing {
     }
 
     pub const ALL: [Easing; 8] = [
-        Easing::Linear, Easing::OutCubic, Easing::OutQuint, Easing::OutExpo,
-        Easing::OutBack, Easing::OutBounce, Easing::InOutCubic, Easing::InCubic,
+        Easing::Linear,
+        Easing::OutCubic,
+        Easing::OutQuint,
+        Easing::OutExpo,
+        Easing::OutBack,
+        Easing::OutBounce,
+        Easing::InOutCubic,
+        Easing::InCubic,
     ];
 
     pub fn label(self) -> &'static str {
@@ -103,8 +121,16 @@ pub enum MotionKind {
 
 impl MotionKind {
     pub const ALL: [MotionKind; 11] = [
-        MotionKind::Fade, MotionKind::Rise, MotionKind::Drop, MotionKind::SlideLeft, MotionKind::SlideRight,
-        MotionKind::ScaleUp, MotionKind::ScaleDown, MotionKind::Blur, MotionKind::MaskRise, MotionKind::MaskDrop,
+        MotionKind::Fade,
+        MotionKind::Rise,
+        MotionKind::Drop,
+        MotionKind::SlideLeft,
+        MotionKind::SlideRight,
+        MotionKind::ScaleUp,
+        MotionKind::ScaleDown,
+        MotionKind::Blur,
+        MotionKind::MaskRise,
+        MotionKind::MaskDrop,
         MotionKind::Typewriter,
     ];
 
@@ -136,7 +162,12 @@ pub enum StaggerUnit {
 }
 
 impl StaggerUnit {
-    pub const ALL: [StaggerUnit; 4] = [StaggerUnit::None, StaggerUnit::Line, StaggerUnit::Word, StaggerUnit::Char];
+    pub const ALL: [StaggerUnit; 4] = [
+        StaggerUnit::None,
+        StaggerUnit::Line,
+        StaggerUnit::Word,
+        StaggerUnit::Char,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -181,13 +212,32 @@ impl Default for Motion {
 
 impl Motion {
     pub fn new(kind: MotionKind) -> Self {
-        Self { kind, ..Default::default() }
+        Self {
+            kind,
+            ..Default::default()
+        }
     }
-    pub fn duration(mut self, secs: f32) -> Self { self.duration_secs = secs; self }
-    pub fn delay(mut self, secs: f32) -> Self { self.delay_secs = secs; self }
-    pub fn easing(mut self, easing: Easing) -> Self { self.easing = easing; self }
-    pub fn stagger(mut self, unit: StaggerUnit, secs: f32) -> Self { self.stagger = unit; self.stagger_secs = secs; self }
-    pub fn distance(mut self, fraction: f32) -> Self { self.distance = fraction; self }
+    pub fn duration(mut self, secs: f32) -> Self {
+        self.duration_secs = secs;
+        self
+    }
+    pub fn delay(mut self, secs: f32) -> Self {
+        self.delay_secs = secs;
+        self
+    }
+    pub fn easing(mut self, easing: Easing) -> Self {
+        self.easing = easing;
+        self
+    }
+    pub fn stagger(mut self, unit: StaggerUnit, secs: f32) -> Self {
+        self.stagger = unit;
+        self.stagger_secs = secs;
+        self
+    }
+    pub fn distance(mut self, fraction: f32) -> Self {
+        self.distance = fraction;
+        self
+    }
 
     /// The pose of a unit at eased progress `p` (0 = fully away, 1 =
     /// resting): (alpha, dx, dy, scale, blur sigma, clip to rest box).
@@ -223,17 +273,24 @@ impl TitleMotion {
         self.enter.is_some() || self.exit.is_some()
     }
     pub fn enter(m: Motion) -> Self {
-        Self { enter: Some(m), exit: None }
+        Self {
+            enter: Some(m),
+            exit: None,
+        }
     }
     pub fn both(enter: Motion, exit: Motion) -> Self {
-        Self { enter: Some(enter), exit: Some(exit) }
+        Self {
+            enter: Some(enter),
+            exit: Some(exit),
+        }
     }
     /// The eased progress of unit `unit` at `t` seconds into a clip of
     /// `window` seconds (unknown window: no exit). 1 = resting.
     pub fn progress(&self, t: f32, window: Option<f32>, unit: usize) -> (f32, f32) {
         let enter = match self.enter {
             Some(m) => {
-                let local = (t - m.delay_secs - unit as f32 * m.stagger_secs) / m.duration_secs.max(0.001);
+                let local =
+                    (t - m.delay_secs - unit as f32 * m.stagger_secs) / m.duration_secs.max(0.001);
                 m.easing.apply(local)
             }
             None => 1.0,
@@ -241,7 +298,8 @@ impl TitleMotion {
         let exit = match (self.exit, window) {
             (Some(m), Some(w)) => {
                 let remaining = w - t;
-                let local = (remaining - m.delay_secs - unit as f32 * m.stagger_secs) / m.duration_secs.max(0.001);
+                let local = (remaining - m.delay_secs - unit as f32 * m.stagger_secs)
+                    / m.duration_secs.max(0.001);
                 m.easing.apply(local)
             }
             _ => 1.0,
@@ -249,8 +307,6 @@ impl TitleMotion {
         (enter, exit)
     }
 }
-
-
 
 // ─── Loops: what a layer keeps doing while it is on screen ───────────
 
@@ -286,30 +342,74 @@ pub enum TitleLoop {
     /// The fill hue rotates once per `1 / rate_hz` seconds.
     ColorCycle { rate_hz: f32 },
     /// The fill swings between two colours.
-    ColorBlend { color_a: [u8; 4], color_b: [u8; 4], rate_hz: f32 },
+    ColorBlend {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        rate_hz: f32,
+    },
     /// Credits roll: the layer travels through the frame. A speed of
     /// zero fits the whole travel to the clip.
-    Scroll { direction: ScrollDirection, speed_px_per_sec: f32 },
+    Scroll {
+        direction: ScrollDirection,
+        speed_px_per_sec: f32,
+    },
     /// Ticker: the layer travels across the frame. `repeat` starts it
     /// again as soon as it has left.
-    Crawl { direction: CrawlDirection, speed_px_per_sec: f32, repeat: bool },
+    Crawl {
+        direction: CrawlDirection,
+        speed_px_per_sec: f32,
+        repeat: bool,
+    },
     /// The text becomes a number counting from `from` to `to`.
-    Counter { from: f64, to: f64, duration_secs: f32, decimals: u8 },
+    Counter {
+        from: f64,
+        to: f64,
+        duration_secs: f32,
+        decimals: u8,
+    },
 }
 
 impl TitleLoop {
     /// One of each, with sensible values, for pickers.
     pub fn catalogue() -> Vec<TitleLoop> {
         vec![
-            TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 },
-            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false },
-            TitleLoop::Blink { rate_hz: 2.0, duty: 0.5 },
-            TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
-            TitleLoop::Shake { amplitude: 0.05, rate_hz: 12.0 },
-            TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
+            TitleLoop::Scroll {
+                direction: ScrollDirection::Up,
+                speed_px_per_sec: 0.0,
+            },
+            TitleLoop::Crawl {
+                direction: CrawlDirection::Left,
+                speed_px_per_sec: 0.0,
+                repeat: false,
+            },
+            TitleLoop::Blink {
+                rate_hz: 2.0,
+                duty: 0.5,
+            },
+            TitleLoop::Pulse {
+                rate_hz: 1.0,
+                min_opacity: 0.4,
+            },
+            TitleLoop::Shake {
+                amplitude: 0.05,
+                rate_hz: 12.0,
+            },
+            TitleLoop::Wave {
+                amplitude: 0.12,
+                rate_hz: 1.0,
+            },
             TitleLoop::ColorCycle { rate_hz: 0.25 },
-            TitleLoop::ColorBlend { color_a: [255, 255, 255, 255], color_b: [255, 200, 0, 255], rate_hz: 0.5 },
-            TitleLoop::Counter { from: 0.0, to: 100.0, duration_secs: 3.0, decimals: 0 },
+            TitleLoop::ColorBlend {
+                color_a: [255, 255, 255, 255],
+                color_b: [255, 200, 0, 255],
+                rate_hz: 0.5,
+            },
+            TitleLoop::Counter {
+                from: 0.0,
+                to: 100.0,
+                duration_secs: 3.0,
+                decimals: 0,
+            },
         ]
     }
 
@@ -351,7 +451,14 @@ pub struct LoopPose {
 
 impl Default for LoopPose {
     fn default() -> Self {
-        Self { opacity: 1.0, dx: 0.0, dy: 0.0, wave: None, color: None, text: None }
+        Self {
+            opacity: 1.0,
+            dx: 0.0,
+            dy: 0.0,
+            wave: None,
+            color: None,
+            text: None,
+        }
     }
 }
 
@@ -378,12 +485,20 @@ fn travel(offset: f32, speed: f32, t: f32, window: Option<f32>, repeat: bool) ->
     if repeat {
         return offset - full * ((t / span).rem_euclid(1.0));
     }
-    let pad = if span <= clip { (clip - span) * 0.5 } else { 0.0 };
+    let pad = if span <= clip {
+        (clip - span) * 0.5
+    } else {
+        0.0
+    };
     offset - speed * (t - pad).clamp(0.0, span)
 }
 
 fn rgba_to_hsv(c: [u8; 4]) -> (f32, f32, f32) {
-    let (r, g, b) = (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0);
+    let (r, g, b) = (
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -413,12 +528,23 @@ fn hsv_to_rgba(h: f32, s: f32, v: f32, a: u8) -> [u8; 4] {
         _ => (c, 0.0, x),
     };
     let m = v - c;
-    [((r + m) * 255.0).round() as u8, ((g + m) * 255.0).round() as u8, ((b + m) * 255.0).round() as u8, a]
+    [
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8,
+        a,
+    ]
 }
 
 /// Evaluate a layer's loops at `t` seconds into a clip of `window`
 /// seconds. `base_color` is the layer's resting fill.
-pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeometry, base_color: [u8; 4]) -> LoopPose {
+pub fn eval_loops(
+    loops: &[TitleLoop],
+    t: f32,
+    window: Option<f32>,
+    geo: LoopGeometry,
+    base_color: [u8; 4],
+) -> LoopPose {
     let mut pose = LoopPose::default();
     for l in loops {
         match l {
@@ -428,7 +554,10 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
                     pose.opacity = 0.0;
                 }
             }
-            TitleLoop::Pulse { rate_hz, min_opacity } => {
+            TitleLoop::Pulse {
+                rate_hz,
+                min_opacity,
+            } => {
                 let s = 0.5 + 0.5 * (t * rate_hz * std::f32::consts::TAU).sin();
                 let min = min_opacity.clamp(0.0, 1.0);
                 pose.opacity *= min + (1.0 - min) * s;
@@ -447,28 +576,55 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
                 let hue = (t * rate_hz * 360.0).rem_euclid(360.0);
                 pose.color = Some(hsv_to_rgba(hue, sat.max(0.6), val.max(0.8), base_color[3]));
             }
-            TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
+            TitleLoop::ColorBlend {
+                color_a,
+                color_b,
+                rate_hz,
+            } => {
                 let mix = 0.5 + 0.5 * (t * rate_hz * std::f32::consts::TAU).sin();
                 let mut c = [0u8; 4];
                 for i in 0..4 {
-                    c[i] = (color_a[i] as f32 + (color_b[i] as f32 - color_a[i] as f32) * mix).round() as u8;
+                    c[i] = (color_a[i] as f32 + (color_b[i] as f32 - color_a[i] as f32) * mix)
+                        .round() as u8;
                 }
                 pose.color = Some(c);
             }
             // The travel runs from just past one edge to just past the
             // other, so the text is on its way in from the first frame.
-            TitleLoop::Scroll { direction, speed_px_per_sec } => {
+            TitleLoop::Scroll {
+                direction,
+                speed_px_per_sec,
+            } => {
                 let offset = (geo.frame_h + geo.text_h) * 0.5 + geo.frame_h * 0.02;
                 let y = travel(offset, *speed_px_per_sec, t, window, false);
-                pose.dy += match direction { ScrollDirection::Up => y, ScrollDirection::Down => -y };
+                pose.dy += match direction {
+                    ScrollDirection::Up => y,
+                    ScrollDirection::Down => -y,
+                };
             }
-            TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
+            TitleLoop::Crawl {
+                direction,
+                speed_px_per_sec,
+                repeat,
+            } => {
                 let offset = (geo.frame_w + geo.text_w) * 0.5 + geo.frame_w * 0.02;
                 let x = travel(offset, *speed_px_per_sec, t, window, *repeat);
-                pose.dx += match direction { CrawlDirection::Left => x, CrawlDirection::Right => -x };
+                pose.dx += match direction {
+                    CrawlDirection::Left => x,
+                    CrawlDirection::Right => -x,
+                };
             }
-            TitleLoop::Counter { from, to, duration_secs, decimals } => {
-                let p = if *duration_secs <= 0.0 { 1.0 } else { (t / duration_secs).clamp(0.0, 1.0) as f64 };
+            TitleLoop::Counter {
+                from,
+                to,
+                duration_secs,
+                decimals,
+            } => {
+                let p = if *duration_secs <= 0.0 {
+                    1.0
+                } else {
+                    (t / duration_secs).clamp(0.0, 1.0) as f64
+                };
                 let v = from + (to - from) * p;
                 pose.text = Some(format_counter_value(v, *decimals));
             }
@@ -488,25 +644,41 @@ mod loop_tests {
     use super::*;
 
     fn geo() -> LoopGeometry {
-        LoopGeometry { frame_w: 1920.0, frame_h: 1080.0, text_w: 400.0, text_h: 80.0, font_px: 72.0 }
+        LoopGeometry {
+            frame_w: 1920.0,
+            frame_h: 1080.0,
+            text_w: 400.0,
+            text_h: 80.0,
+            font_px: 72.0,
+        }
     }
 
     #[test]
     fn a_scroll_with_no_speed_fits_the_clip() {
-        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }];
+        let loops = [TitleLoop::Scroll {
+            direction: ScrollDirection::Up,
+            speed_px_per_sec: 0.0,
+        }];
         let start = eval_loops(&loops, 0.0, Some(4.0), geo(), [255; 4]);
         let end = eval_loops(&loops, 4.0, Some(4.0), geo(), [255; 4]);
         // At the start the text's top edge sits just below the frame;
         // at the end its bottom edge sits just above it.
         let g = geo();
         let just_past = (g.frame_h + g.text_h) * 0.5;
-        assert!(start.dy > just_past && start.dy < just_past + g.frame_h * 0.05, "{}", start.dy);
+        assert!(
+            start.dy > just_past && start.dy < just_past + g.frame_h * 0.05,
+            "{}",
+            start.dy
+        );
         assert!((start.dy + end.dy).abs() < 0.01, "{} {}", start.dy, end.dy);
     }
 
     #[test]
     fn a_blink_is_off_for_the_rest_of_its_period() {
-        let loops = [TitleLoop::Blink { rate_hz: 1.0, duty: 0.5 }];
+        let loops = [TitleLoop::Blink {
+            rate_hz: 1.0,
+            duty: 0.5,
+        }];
         assert_eq!(eval_loops(&loops, 0.25, None, geo(), [255; 4]).opacity, 1.0);
         assert_eq!(eval_loops(&loops, 0.75, None, geo(), [255; 4]).opacity, 0.0);
     }
@@ -514,12 +686,28 @@ mod loop_tests {
     #[test]
     fn loops_stack() {
         let loops = [
-            TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.0 },
-            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 100.0, repeat: false },
-            TitleLoop::Counter { from: 0.0, to: 10.0, duration_secs: 2.0, decimals: 1 },
+            TitleLoop::Pulse {
+                rate_hz: 1.0,
+                min_opacity: 0.0,
+            },
+            TitleLoop::Crawl {
+                direction: CrawlDirection::Left,
+                speed_px_per_sec: 100.0,
+                repeat: false,
+            },
+            TitleLoop::Counter {
+                from: 0.0,
+                to: 10.0,
+                duration_secs: 2.0,
+                decimals: 1,
+            },
         ];
         let p = eval_loops(&loops, 1.0, Some(10.0), geo(), [255; 4]);
-        assert!((p.opacity - 0.5).abs() < 0.01, "pulse at a full period sits mid-swell: {}", p.opacity);
+        assert!(
+            (p.opacity - 0.5).abs() < 0.01,
+            "pulse at a full period sits mid-swell: {}",
+            p.opacity
+        );
         assert!(p.dx.abs() > 0.0);
         assert_eq!(p.text.as_deref(), Some("5.0"));
     }
@@ -527,8 +715,12 @@ mod loop_tests {
     #[test]
     fn the_hue_cycle_keeps_the_alpha_and_moves_the_colour() {
         let loops = [TitleLoop::ColorCycle { rate_hz: 1.0 }];
-        let a = eval_loops(&loops, 0.0, None, geo(), [255, 0, 0, 200]).color.unwrap();
-        let b = eval_loops(&loops, 0.33, None, geo(), [255, 0, 0, 200]).color.unwrap();
+        let a = eval_loops(&loops, 0.0, None, geo(), [255, 0, 0, 200])
+            .color
+            .unwrap();
+        let b = eval_loops(&loops, 0.33, None, geo(), [255, 0, 0, 200])
+            .color
+            .unwrap();
         assert_eq!(a[3], 200);
         assert_ne!(a, b);
     }

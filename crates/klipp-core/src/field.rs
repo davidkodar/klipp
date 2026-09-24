@@ -63,38 +63,121 @@ pub enum Field {
 
 impl Field {
     pub const ALL: [Field; 35] = [
-        Field::Name, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Rating,
-        Field::ColourLabel, Field::Tags, Field::Camera, Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate,
-        Field::DateAdded, Field::Scene, Field::Shot, Field::Take, Field::Keywords, Field::Description, Field::Comments,
-        Field::GoodTake, Field::Kind, Field::Offline, Field::Favourite, Field::Rejected, Field::Markers, Field::ScreenText,
-        Field::FocalLength, Field::Iso, Field::Aperture, Field::Shutter, Field::WhiteBalance, Field::Gamma,
+        Field::Name,
+        Field::Duration,
+        Field::Resolution,
+        Field::Fps,
+        Field::Codec,
+        Field::FileSize,
+        Field::Rating,
+        Field::ColourLabel,
+        Field::Tags,
+        Field::Camera,
+        Field::Lens,
+        Field::Timecode,
+        Field::Reel,
+        Field::ShootDate,
+        Field::DateAdded,
+        Field::Scene,
+        Field::Shot,
+        Field::Take,
+        Field::Keywords,
+        Field::Description,
+        Field::Comments,
+        Field::GoodTake,
+        Field::Kind,
+        Field::Offline,
+        Field::Favourite,
+        Field::Rejected,
+        Field::Markers,
+        Field::ScreenText,
+        Field::FocalLength,
+        Field::Iso,
+        Field::Aperture,
+        Field::Shutter,
+        Field::WhiteBalance,
+        Field::Gamma,
         Field::ColourGamut,
     ];
 
     /// The fields the list view can show as columns; the name is always
     /// the first column and is not among them.
     pub const COLUMNS: [Field; 32] = [
-        Field::Rating, Field::Duration, Field::Resolution, Field::Fps, Field::Codec, Field::FileSize, Field::Camera,
-        Field::Lens, Field::Timecode, Field::Reel, Field::ShootDate, Field::DateAdded, Field::Scene, Field::Shot,
-        Field::Take, Field::Keywords, Field::Description, Field::Comments, Field::GoodTake, Field::ColourLabel, Field::Tags,
-        Field::Favourite, Field::Rejected, Field::Markers, Field::ScreenText,
-        Field::FocalLength, Field::Iso, Field::Aperture, Field::Shutter, Field::WhiteBalance, Field::Gamma,
+        Field::Rating,
+        Field::Duration,
+        Field::Resolution,
+        Field::Fps,
+        Field::Codec,
+        Field::FileSize,
+        Field::Camera,
+        Field::Lens,
+        Field::Timecode,
+        Field::Reel,
+        Field::ShootDate,
+        Field::DateAdded,
+        Field::Scene,
+        Field::Shot,
+        Field::Take,
+        Field::Keywords,
+        Field::Description,
+        Field::Comments,
+        Field::GoodTake,
+        Field::ColourLabel,
+        Field::Tags,
+        Field::Favourite,
+        Field::Rejected,
+        Field::Markers,
+        Field::ScreenText,
+        Field::FocalLength,
+        Field::Iso,
+        Field::Aperture,
+        Field::Shutter,
+        Field::WhiteBalance,
+        Field::Gamma,
         Field::ColourGamut,
     ];
 
     /// The columns a fresh list shows.
     pub const DEFAULT_COLUMNS: [Field; 9] = [
-        Field::Rating, Field::Duration, Field::Fps, Field::Codec, Field::FileSize, Field::Camera, Field::Timecode, Field::Scene, Field::Take,
+        Field::Rating,
+        Field::Duration,
+        Field::Fps,
+        Field::Codec,
+        Field::FileSize,
+        Field::Camera,
+        Field::Timecode,
+        Field::Scene,
+        Field::Take,
     ];
 
     /// The fields the browser sorts by.
     pub const SORTABLE: [Field; 25] = [
-        Field::Name, Field::DateAdded, Field::ShootDate, Field::Duration, Field::Rating, Field::Codec, Field::FileSize,
-        Field::Resolution, Field::Fps, Field::Camera, Field::Lens, Field::Timecode, Field::Reel, Field::Scene, Field::Shot,
-        Field::Take, Field::Keywords, Field::Kind,
+        Field::Name,
+        Field::DateAdded,
+        Field::ShootDate,
+        Field::Duration,
+        Field::Rating,
+        Field::Codec,
+        Field::FileSize,
+        Field::Resolution,
+        Field::Fps,
+        Field::Camera,
+        Field::Lens,
+        Field::Timecode,
+        Field::Reel,
+        Field::Scene,
+        Field::Shot,
+        Field::Take,
+        Field::Keywords,
+        Field::Kind,
         // Sorting by gamma or gamut gathers the log material together,
         // which is how a colourist finds what needs an input transform.
-        Field::FocalLength, Field::Iso, Field::Aperture, Field::Shutter, Field::WhiteBalance, Field::Gamma,
+        Field::FocalLength,
+        Field::Iso,
+        Field::Aperture,
+        Field::Shutter,
+        Field::WhiteBalance,
+        Field::Gamma,
         Field::ColourGamut,
     ];
 
@@ -142,10 +225,23 @@ impl Field {
     pub fn column_width(self) -> f32 {
         match self {
             Field::Rating => 48.0,
-            Field::Duration | Field::Fps | Field::Take | Field::GoodTake | Field::Offline | Field::Kind | Field::Favourite | Field::Rejected | Field::Markers => 54.0,
+            Field::Duration
+            | Field::Fps
+            | Field::Take
+            | Field::GoodTake
+            | Field::Offline
+            | Field::Kind
+            | Field::Favourite
+            | Field::Rejected
+            | Field::Markers => 54.0,
             Field::Iso | Field::Aperture | Field::FocalLength => 62.0,
             Field::Shutter | Field::WhiteBalance | Field::Gamma | Field::ColourGamut => 78.0,
-            Field::Codec | Field::FileSize | Field::Scene | Field::Shot | Field::Reel | Field::ColourLabel => 64.0,
+            Field::Codec
+            | Field::FileSize
+            | Field::Scene
+            | Field::Shot
+            | Field::Reel
+            | Field::ColourLabel => 64.0,
             Field::Resolution | Field::Timecode => 84.0,
             Field::ShootDate | Field::DateAdded => 110.0,
             Field::Camera | Field::Lens | Field::Tags | Field::Keywords | Field::Name => 140.0,
@@ -155,7 +251,17 @@ impl Field {
 
     /// Whether the editor writes this field (it is in the clip log).
     pub fn is_logged(self) -> bool {
-        matches!(self, Field::Scene | Field::Shot | Field::Take | Field::Keywords | Field::Description | Field::Comments | Field::GoodTake | Field::Reel)
+        matches!(
+            self,
+            Field::Scene
+                | Field::Shot
+                | Field::Take
+                | Field::Keywords
+                | Field::Description
+                | Field::Comments
+                | Field::GoodTake
+                | Field::Reel
+        )
     }
 
     /// Whether the field holds a date, compared as one by a smart bin.
@@ -165,7 +271,10 @@ impl Field {
 
     /// Whether the field is a yes or no.
     pub fn is_flag(self) -> bool {
-        matches!(self, Field::GoodTake | Field::Offline | Field::Favourite | Field::Rejected)
+        matches!(
+            self,
+            Field::GoodTake | Field::Offline | Field::Favourite | Field::Rejected
+        )
     }
 
     /// Whether the field is a quantity the camera measured, so a rule

@@ -122,7 +122,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CrossDissolve",
         display_name: "Cross Dissolve",
         short_label: "Dissolve",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WipeLeft,
@@ -130,7 +136,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "WipeLeft",
         display_name: "Wipe Left",
         short_label: "Wipe L",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WipeRight,
@@ -138,7 +150,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "WipeRight",
         display_name: "Wipe Right",
         short_label: "Wipe R",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WipeUp,
@@ -146,7 +164,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "WipeUp",
         display_name: "Wipe Up",
         short_label: "Wipe U",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WipeDown,
@@ -154,7 +178,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "WipeDown",
         display_name: "Wipe Down",
         short_label: "Wipe D",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::DipToBlack,
@@ -162,7 +192,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "DipToBlack",
         display_name: "Dip to Black",
         short_label: "Dip Blk",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [0.0, 0.0, 0.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::DipToWhite,
@@ -170,7 +206,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "DipToWhite",
         display_name: "Dip to White",
         short_label: "Dip Wht",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::PushLeft,
@@ -178,7 +220,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "PushLeft",
         display_name: "Push Left",
         short_label: "Push L",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::FilmDissolve,
@@ -186,7 +234,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "FilmDissolve",
         display_name: "Film Dissolve",
         short_label: "Film",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BlurDissolve,
@@ -194,7 +248,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BlurDissolve",
         display_name: "Blur Dissolve",
         short_label: "Blur",
-        default_params: TransitionUserParams { param0: 32.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 32.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Flash,
@@ -202,7 +262,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Flash",
         display_name: "Flash",
         short_label: "Flash",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.5,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Spin,
@@ -210,7 +276,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Spin",
         display_name: "Spin",
         short_label: "Spin",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.3, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.3,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::LightLeak,
@@ -218,7 +290,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "LightLeak",
         display_name: "Light Leak",
         short_label: "Leak",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 0.706, 0.235, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 0.706, 0.235, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::LuminanceDissolve,
@@ -226,7 +304,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "LuminanceDissolve",
         display_name: "Luminance Dissolve",
         short_label: "Luma",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CircleWipeIn,
@@ -234,7 +318,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CircleWipeIn",
         display_name: "Circle Wipe In",
         short_label: "Circle In",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.5,
+            param2: 0.5,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CircleWipeOut,
@@ -242,7 +332,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CircleWipeOut",
         display_name: "Circle Wipe Out",
         short_label: "Circle Out",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.5,
+            param2: 0.5,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ClockWipe,
@@ -250,7 +346,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ClockWipe",
         display_name: "Clock Wipe",
         short_label: "Clock",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BarnDoorOpen,
@@ -258,7 +360,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BarnDoorOpen",
         display_name: "Barn Door Open",
         short_label: "Barn Opn",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BarnDoorClose,
@@ -266,7 +374,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BarnDoorClose",
         display_name: "Barn Door Close",
         short_label: "Barn Cls",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Pixelate,
@@ -274,7 +388,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Pixelate",
         display_name: "Pixelate",
         short_label: "Pixel",
-        default_params: TransitionUserParams { param0: 32.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 32.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Ripple,
@@ -282,7 +402,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Ripple",
         display_name: "Ripple",
         short_label: "Ripple",
-        default_params: TransitionUserParams { param0: 20.0, param1: 8.0, param2: 1.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 20.0,
+            param1: 8.0,
+            param2: 1.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::PageTurn,
@@ -290,7 +416,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "PageTurn",
         display_name: "Page Turn",
         short_label: "Page",
-        default_params: TransitionUserParams { param0: 0.6, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.6,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::PageTurnReverse,
@@ -298,7 +430,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "PageTurnReverse",
         display_name: "Page Turn Reverse",
         short_label: "Page R",
-        default_params: TransitionUserParams { param0: 0.6, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.6,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ChromaticAberration,
@@ -306,7 +444,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ChromaticAberration",
         display_name: "Chromatic Aberration",
         short_label: "Chroma",
-        default_params: TransitionUserParams { param0: 20.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 20.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::FilmBurn,
@@ -314,7 +458,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "FilmBurn",
         display_name: "Film Burn",
         short_label: "Burn",
-        default_params: TransitionUserParams { param0: 0.8, param1: 1.0, param2: 0.4, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.8,
+            param1: 1.0,
+            param2: 0.4,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::StarWipe,
@@ -322,7 +472,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "StarWipe",
         display_name: "Star Wipe",
         short_label: "Star",
-        default_params: TransitionUserParams { param0: 1.0, param1: 5.0, param2: 0.4, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 5.0,
+            param2: 0.4,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SplitWipeHorizontal,
@@ -330,7 +486,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SplitWipeHorizontal",
         display_name: "Split Wipe H",
         short_label: "Split H",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SplitWipeVertical,
@@ -338,7 +500,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SplitWipeVertical",
         display_name: "Split Wipe V",
         short_label: "Split V",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::VenetianBlindHorizontal,
@@ -346,7 +514,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "VenetianBlindHorizontal",
         display_name: "Venetian Blind H",
         short_label: "Blind H",
-        default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 8.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::VenetianBlindVertical,
@@ -354,7 +528,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "VenetianBlindVertical",
         display_name: "Venetian Blind V",
         short_label: "Blind V",
-        default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 8.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CheckerboardWipe,
@@ -362,7 +542,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CheckerboardWipe",
         display_name: "Checkerboard Wipe",
         short_label: "Check",
-        default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 8.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::DiagonalWipeTLBR,
@@ -370,7 +556,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "DiagonalWipeTLBR",
         display_name: "Diagonal TL-BR",
         short_label: "Diag \\",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::DiagonalWipeTRBL,
@@ -378,7 +570,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "DiagonalWipeTRBL",
         display_name: "Diagonal TR-BL",
         short_label: "Diag /",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BoxWipeIn,
@@ -386,7 +584,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BoxWipeIn",
         display_name: "Box Wipe In",
         short_label: "Box In",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BoxWipeOut,
@@ -394,7 +598,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BoxWipeOut",
         display_name: "Box Wipe Out",
         short_label: "Box Out",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SlideLeft,
@@ -402,7 +612,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SlideLeft",
         display_name: "Slide Left",
         short_label: "Slide L",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SlideRight,
@@ -410,7 +626,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SlideRight",
         display_name: "Slide Right",
         short_label: "Slide R",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SlideUp,
@@ -418,7 +640,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SlideUp",
         display_name: "Slide Up",
         short_label: "Slide U",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SlideDown,
@@ -426,7 +654,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SlideDown",
         display_name: "Slide Down",
         short_label: "Slide D",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CoverLeft,
@@ -434,7 +668,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CoverLeft",
         display_name: "Cover Left",
         short_label: "Cover L",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CoverRight,
@@ -442,7 +682,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CoverRight",
         display_name: "Cover Right",
         short_label: "Cover R",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::UncoverLeft,
@@ -450,7 +696,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "UncoverLeft",
         display_name: "Uncover Left",
         short_label: "Uncvr L",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::UncoverRight,
@@ -458,7 +710,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "UncoverRight",
         display_name: "Uncover Right",
         short_label: "Uncvr R",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SqueezeH,
@@ -466,7 +724,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SqueezeH",
         display_name: "Squeeze H",
         short_label: "Sqz H",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::SqueezeV,
@@ -474,7 +738,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "SqueezeV",
         display_name: "Squeeze V",
         short_label: "Sqz V",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::AdditiveDissolve,
@@ -482,7 +752,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "AdditiveDissolve",
         display_name: "Additive Dissolve",
         short_label: "Add Dis",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::FadeToColor,
@@ -490,7 +766,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "FadeToColor",
         display_name: "Fade to Color",
         short_label: "Fade Clr",
-        default_params: TransitionUserParams { param0: 0.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [0.0, 0.0, 0.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::GlitchDissolve,
@@ -498,7 +780,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "GlitchDissolve",
         display_name: "Glitch Dissolve",
         short_label: "Glitch",
-        default_params: TransitionUserParams { param0: 1.0, param1: 16.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 16.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Desaturate,
@@ -506,7 +794,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Desaturate",
         display_name: "Desaturate",
         short_label: "Desat",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::NegativeFlash,
@@ -514,7 +808,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "NegativeFlash",
         display_name: "Negative Flash",
         short_label: "Neg",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.5,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Sepia,
@@ -522,7 +822,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Sepia",
         display_name: "Sepia",
         short_label: "Sepia",
-        default_params: TransitionUserParams { param0: 1.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 1.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ColorizeFlash,
@@ -530,7 +836,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ColorizeFlash",
         display_name: "Colorize Flash",
         short_label: "Colorize",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.5, param2: 0.0, param3: 0.0, color: [0.0, 0.8, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.5,
+            param2: 0.0,
+            param3: 0.0,
+            color: [0.0, 0.8, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::HueRotate,
@@ -538,7 +850,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "HueRotate",
         display_name: "Hue Rotate",
         short_label: "Hue Rot",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Swirl,
@@ -546,7 +864,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Swirl",
         display_name: "Swirl",
         short_label: "Swirl",
-        default_params: TransitionUserParams { param0: 90.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 90.0,
+            param1: 1.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WaveDistortion,
@@ -554,7 +878,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "WaveDistortion",
         display_name: "Wave Distortion",
         short_label: "Wave",
-        default_params: TransitionUserParams { param0: 20.0, param1: 4.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 20.0,
+            param1: 4.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::StaticTV,
@@ -562,7 +892,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "StaticTV",
         display_name: "Static TV",
         short_label: "Static",
-        default_params: TransitionUserParams { param0: 1.0, param1: 2.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 2.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::VHSTracking,
@@ -570,7 +906,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "VHSTracking",
         display_name: "VHS Tracking",
         short_label: "VHS",
-        default_params: TransitionUserParams { param0: 1.0, param1: 6.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 6.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::GlitchRGBSplit,
@@ -578,7 +920,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "GlitchRGBSplit",
         display_name: "Glitch RGB Split",
         short_label: "RGB Spl",
-        default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 8.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ProjectorFlicker,
@@ -586,7 +934,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ProjectorFlicker",
         display_name: "Projector Flicker",
         short_label: "Flicker",
-        default_params: TransitionUserParams { param0: 1.0, param1: 8.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 8.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::Halation,
@@ -594,7 +948,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "Halation",
         display_name: "Halation",
         short_label: "Halat",
-        default_params: TransitionUserParams { param0: 0.3, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 0.4, 0.1, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.3,
+            param1: 1.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 0.4, 0.1, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::AnamorphicFlare,
@@ -602,7 +962,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "AnamorphicFlare",
         display_name: "Anamorphic Flare",
         short_label: "Flare",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.15, param2: 0.0, param3: 0.0, color: [0.4, 0.7, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.15,
+            param2: 0.0,
+            param3: 0.0,
+            color: [0.4, 0.7, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::DreamSequence,
@@ -610,7 +976,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "DreamSequence",
         display_name: "Dream Sequence",
         short_label: "Dream",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.8, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.8,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::BokehDissolve,
@@ -618,7 +990,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "BokehDissolve",
         display_name: "Bokeh Dissolve",
         short_label: "Bokeh",
-        default_params: TransitionUserParams { param0: 1.0, param1: 0.6, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.0,
+            param1: 0.6,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ZoomInDissolve,
@@ -626,7 +1004,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ZoomInDissolve",
         display_name: "Zoom In Dissolve",
         short_label: "Zoom In",
-        default_params: TransitionUserParams { param0: 1.3, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.3,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::ZoomOutDissolve,
@@ -634,7 +1018,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "ZoomOutDissolve",
         display_name: "Zoom Out Dissolve",
         short_label: "Zoom Out",
-        default_params: TransitionUserParams { param0: 1.3, param1: 0.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.3,
+            param1: 0.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::CrossZoom,
@@ -642,7 +1032,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         string_key: "CrossZoom",
         display_name: "Cross Zoom",
         short_label: "X Zoom",
-        default_params: TransitionUserParams { param0: 1.4, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 1.4,
+            param1: 1.0,
+            param2: 0.0,
+            param3: 0.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
     TransitionSpec {
         kind: TransitionKind::WaterDrop,
@@ -652,7 +1048,13 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         short_label: "Drop",
         // ring width (fraction of the half diagonal), refraction px at
         // the crest, trailing ripples, crest highlight.
-        default_params: TransitionUserParams { param0: 0.14, param1: 26.0, param2: 3.0, param3: 0.35, color: [1.0, 1.0, 1.0, 1.0] },
+        default_params: TransitionUserParams {
+            param0: 0.14,
+            param1: 26.0,
+            param2: 3.0,
+            param3: 0.35,
+            color: [1.0, 1.0, 1.0, 1.0],
+        },
     },
 ];
 
@@ -912,7 +1314,9 @@ mod tests {
             TransitionKind::StarWipe => check(TransitionKind::StarWipe),
             TransitionKind::SplitWipeHorizontal => check(TransitionKind::SplitWipeHorizontal),
             TransitionKind::SplitWipeVertical => check(TransitionKind::SplitWipeVertical),
-            TransitionKind::VenetianBlindHorizontal => check(TransitionKind::VenetianBlindHorizontal),
+            TransitionKind::VenetianBlindHorizontal => {
+                check(TransitionKind::VenetianBlindHorizontal)
+            }
             TransitionKind::VenetianBlindVertical => check(TransitionKind::VenetianBlindVertical),
             TransitionKind::CheckerboardWipe => check(TransitionKind::CheckerboardWipe),
             TransitionKind::DiagonalWipeTLBR => check(TransitionKind::DiagonalWipeTLBR),
@@ -1025,8 +1429,10 @@ mod tests {
         // Confirm no spec uses this id.
         let in_registry = TRANSITION_SPECS.iter().any(|s| s.kind_id == unused);
         if !in_registry {
-            assert!(spec_for_kind_id(unused).is_none(),
-                "unknown kind_id must return None, never panic or fall back silently");
+            assert!(
+                spec_for_kind_id(unused).is_none(),
+                "unknown kind_id must return None, never panic or fall back silently"
+            );
         }
     }
 }

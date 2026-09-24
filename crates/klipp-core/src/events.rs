@@ -241,7 +241,9 @@ impl OdtChoice {
     pub const fn fits(self, delivery: HdrMode) -> bool {
         match delivery {
             HdrMode::Sdr => !self.is_pq(),
-            HdrMode::Pq => matches!(self, OdtChoice::MatchViewer | OdtChoice::Unknown) || self.is_pq(),
+            HdrMode::Pq => {
+                matches!(self, OdtChoice::MatchViewer | OdtChoice::Unknown) || self.is_pq()
+            }
             HdrMode::Hlg => matches!(self, OdtChoice::MatchViewer | OdtChoice::Unknown),
         }
     }
@@ -405,7 +407,11 @@ impl ExportSettings {
     /// transform writes PQ pixels whatever `hdr_mode` says, so it is a PQ
     /// delivery and is tagged as one.
     pub fn delivery(&self) -> HdrMode {
-        if self.odt.is_pq() { HdrMode::Pq } else { self.hdr_mode }
+        if self.odt.is_pq() {
+            HdrMode::Pq
+        } else {
+            self.hdr_mode
+        }
     }
 
     /// Whether the picture is rendered for HDR — scene-referred clips keep
@@ -615,9 +621,7 @@ impl ExportVideoCodec {
     /// than on the delivery.
     pub fn hint_at_depth(&self, bit_depth: u8) -> &'static str {
         match (self, bit_depth) {
-            (Self::H264, 10) => {
-                "CPU only at 10-bit — High 10 profile, limited playback support"
-            }
+            (Self::H264, 10) => "CPU only at 10-bit — High 10 profile, limited playback support",
             _ => self.hint(),
         }
     }
@@ -642,8 +646,7 @@ impl ExportVideoCodec {
         match self {
             Self::H264 => Some(HdrAdvice {
                 headline: "H.264 is a poor fit for HDR",
-                detail:
-                    "10-bit H.264 is High 10 profile: no GPU encodes it and most \
+                detail: "10-bit H.264 is High 10 profile: no GPU encodes it and most \
                      players and TVs cannot decode it, so the file is slow to write \
                      and may not play as HDR. H.265 delivers the same HLG or PQ \
                      picture, encodes on the GPU, and is what HDR10 is specified on.",
@@ -686,7 +689,11 @@ impl ExportVideoCodec {
     pub fn requires_mov(&self) -> bool {
         matches!(
             self,
-            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145
+            Self::ProRes422
+                | Self::ProRes422HQ
+                | Self::ProRes4444
+                | Self::DNxHD115
+                | Self::DNxHD145
         )
     }
 
@@ -832,7 +839,6 @@ pub enum ClipDrop {
     EndOfTimeline,
 }
 
-
 /// Which of the sequence camera's values a key belongs to.
 ///
 /// The camera keeps one keyframe list per value rather than one list of
@@ -878,23 +884,46 @@ pub enum AppCommand {
     /// Move the playhead by this many *frames* (±1 steps one frame). Not
     /// timecode ticks: at 29.97 fps a frame is 1001 of those.
     SeekRelative(i64),
-    SetPlayheadFromTimecode { input: String },
-    RequestWhiteBalanceSample { nx: f32, ny: f32 },
-    RequestQualifierSample { nx: f32, ny: f32 },
-    BeginTitleEdit { clip_id: ClipId },
+    SetPlayheadFromTimecode {
+        input: String,
+    },
+    RequestWhiteBalanceSample {
+        nx: f32,
+        ny: f32,
+    },
+    RequestQualifierSample {
+        nx: f32,
+        ny: f32,
+    },
+    BeginTitleEdit {
+        clip_id: ClipId,
+    },
     EndTitleEdit,
 
     // Media
-    LoadMediaFile { path: PathBuf, media_id: MediaId },
-    ImportMedia { path: PathBuf },
+    LoadMediaFile {
+        path: PathBuf,
+        media_id: MediaId,
+    },
+    ImportMedia {
+        path: PathBuf,
+    },
     /// Import a file and, once it has loaded, drop it on the timeline
     /// at the chosen place. The Audio Library uses this so a downloaded
     /// track can go straight to the playhead or the end of the timeline.
-    ImportMediaTo { path: PathBuf, drop: ClipDrop },
+    ImportMediaTo {
+        path: PathBuf,
+        drop: ClipDrop,
+    },
     /// Place an already-imported pool item on the timeline.
-    PlaceMedia { media_id: MediaId, drop: ClipDrop },
+    PlaceMedia {
+        media_id: MediaId,
+        drop: ClipDrop,
+    },
     /// Recursively import all media files from a directory.
-    ImportMediaFolder { directory: PathBuf },
+    ImportMediaFolder {
+        directory: PathBuf,
+    },
 
     // Loop
     ToggleLoopPlayback,
@@ -915,13 +944,21 @@ pub enum AppCommand {
     // Timeline
     SetPlayhead(Timecode),
     SetSpeed(f64),
-    AppendClip { media_id: MediaId },
-    AppendClipToTrack { media_id: MediaId, track_index: usize },
+    AppendClip {
+        media_id: MediaId,
+    },
+    AppendClipToTrack {
+        media_id: MediaId,
+        track_index: usize,
+    },
     /// Several media items dropped on a track together: appended end to
     /// end in the order given (the browser's order), each with its linked
     /// audio, as one undo step. Items that cannot go on the track's kind
     /// are skipped and counted in a toast.
-    AppendMediaBatchToTrack { media_ids: Vec<MediaId>, track_index: usize },
+    AppendMediaBatchToTrack {
+        media_ids: Vec<MediaId>,
+        track_index: usize,
+    },
     /// Insert an existing audio media item as a clip at a specific
     /// timeline position. Building block for opt-in audio
     /// sweetener layers (hyperzoom whoosh today; transition
@@ -939,12 +976,24 @@ pub enum AppCommand {
         track_index: Option<usize>,
         timeline_in: Timecode,
     },
-    RemoveClip { clip_id: ClipId },
+    RemoveClip {
+        clip_id: ClipId,
+    },
     /// Give an existing video clip the audio of its own media file,
     /// linked, spanning exactly what the clip spans.
-    AttachLinkedAudio { clip_id: ClipId },
-    MoveClip { clip_id: ClipId, new_timeline_in: Timecode },
-    MoveClipToTrack { clip_id: ClipId, new_timeline_in: Timecode, from_track: usize, to_track: usize },
+    AttachLinkedAudio {
+        clip_id: ClipId,
+    },
+    MoveClip {
+        clip_id: ClipId,
+        new_timeline_in: Timecode,
+    },
+    MoveClipToTrack {
+        clip_id: ClipId,
+        new_timeline_in: Timecode,
+        from_track: usize,
+        to_track: usize,
+    },
     /// Exchange two adjacent clips on the same track, preserving the
     /// total span. Validation rejects: cross-track pairs, non-adjacent
     /// clips (>1 frame gap), pairs sharing the same group, and
@@ -952,7 +1001,10 @@ pub enum AppCommand {
     /// other doesn't). When both clips have linked partners that are
     /// themselves adjacent on the partner track, those partners swap
     /// in lock-step. Single ctrl+z reverses everything.
-    SwapAdjacentClips { clip_a: ClipId, clip_b: ClipId },
+    SwapAdjacentClips {
+        clip_a: ClipId,
+        clip_b: ClipId,
+    },
     TrimClip {
         clip_id: ClipId,
         old_source_in: Timecode,
@@ -993,13 +1045,19 @@ pub enum AppCommand {
     /// project starts from a clean slate. Sent by the UI on new/close project.
     ResetEngine,
     SaveProject,
-    SaveProjectAs { path: PathBuf },
-    OpenProject { path: PathBuf },
+    SaveProjectAs {
+        path: PathBuf,
+    },
+    OpenProject {
+        path: PathBuf,
+    },
     /// Open `path` as it is, with no dialog: not the unsaved-changes
     /// question (the caller has settled that) and not the autosave
     /// recovery offer. For the control socket, where nobody is there to
     /// answer one.
-    OpenProjectNow { path: PathBuf },
+    OpenProjectNow {
+        path: PathBuf,
+    },
     CreateProject {
         name: String,
         location: PathBuf,
@@ -1009,29 +1067,67 @@ pub enum AppCommand {
         height: u32,
         sequence_name: String,
     },
-    RemoveRecentProject { path: PathBuf },
-    DeleteProject { path: PathBuf },
-    RenameProjectOnDisk { old_path: PathBuf, new_name: String },
+    RemoveRecentProject {
+        path: PathBuf,
+    },
+    DeleteProject {
+        path: PathBuf,
+    },
+    RenameProjectOnDisk {
+        old_path: PathBuf,
+        new_name: String,
+    },
     /// Set project thumbnail from the current viewer frame.
     SetProjectThumbnailFromViewer,
     /// Set project thumbnail from an external image file.
-    SetProjectThumbnailFromFile { path: PathBuf },
+    SetProjectThumbnailFromFile {
+        path: PathBuf,
+    },
 
     // Sequences
-    AddSequence { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
-    DuplicateSequence { sequence_idx: usize, new_name: String },
-    SetActiveSequence { sequence_idx: usize },
-    RenameSequence { sequence_idx: usize, new_name: String },
-    DeleteSequence { sequence_idx: usize },
-    ReorderSequences { from_idx: usize, to_idx: usize },
+    AddSequence {
+        name: String,
+        fps_num: u32,
+        fps_den: u32,
+        width: u32,
+        height: u32,
+    },
+    DuplicateSequence {
+        sequence_idx: usize,
+        new_name: String,
+    },
+    SetActiveSequence {
+        sequence_idx: usize,
+    },
+    RenameSequence {
+        sequence_idx: usize,
+        new_name: String,
+    },
+    DeleteSequence {
+        sequence_idx: usize,
+    },
+    ReorderSequences {
+        from_idx: usize,
+        to_idx: usize,
+    },
     /// Change a sequence's frame size. Goes through the undo history because
     /// changing the canvas reshapes how every clip composites.
-    SetSequenceResolution { sequence_idx: usize, width: u32, height: u32 },
+    SetSequenceResolution {
+        sequence_idx: usize,
+        width: u32,
+        height: u32,
+    },
     /// Change a sequence's frame rate. Affects timecode display, render, and
     /// new-clip rate inheritance. Undoable for the same reason as resolution.
-    SetSequenceFps { sequence_idx: usize, fps_num: u32, fps_den: u32 },
+    SetSequenceFps {
+        sequence_idx: usize,
+        fps_num: u32,
+        fps_den: u32,
+    },
     /// UI: open the "Sequence Settings…" modal for the given sequence.
-    OpenSequenceSettings { sequence_idx: usize },
+    OpenSequenceSettings {
+        sequence_idx: usize,
+    },
     /// Re-trigger audio conform (PCM + peaks) for every media item in the
     /// pool that has audio. Used by the "Clear" buttons in the cache prefs
     /// tab so deleting on-disk caches also kicks off regeneration instead of
@@ -1045,7 +1141,10 @@ pub enum AppCommand {
     RegenerateSkimTranscodesForAll,
 
     // Workspace
-    CreateWorkspace { path: PathBuf, name: String },
+    CreateWorkspace {
+        path: PathBuf,
+        name: String,
+    },
 
     // Edit
     Undo,
@@ -1059,47 +1158,87 @@ pub enum AppCommand {
 
     // Export
     ShowExportDialog,
-    ExportSequence { settings: ExportSettings },
+    ExportSequence {
+        settings: ExportSettings,
+    },
     CancelExport,
     /// Delete a user-defined export preset by id.
-    DeleteExportPreset { preset_id: String },
+    DeleteExportPreset {
+        preset_id: String,
+    },
     /// Rename a user-defined export preset.
-    RenameExportPreset { preset_id: String, new_name: String },
+    RenameExportPreset {
+        preset_id: String,
+        new_name: String,
+    },
     /// Clone an existing preset (user or built-in) into a new
     /// user-preset entry with "(copy)" appended to the name.
-    DuplicateExportPreset { preset_id: String },
+    DuplicateExportPreset {
+        preset_id: String,
+    },
 
     // Clip properties dialog (#47)
     /// Open the Clip Properties modal focused on the given media item.
-    OpenClipProperties { media_id: MediaId },
+    OpenClipProperties {
+        media_id: MediaId,
+    },
 
     // Software jog wheel (#38, scoped — HID support is deferred)
     /// Step the playhead by N frames (positive = forward, negative =
     /// backward). Emitted by the transport-bar jog wheel widget.
-    JogFrames { frames: i32 },
+    JogFrames {
+        frames: i32,
+    },
 
     // Workspace layout presets (#39)
     /// Apply one of the 5 built-in workspace layouts by index into
     /// `builtin_workspace_layouts()`. Writes visibility flags + sizes.
-    ApplyBuiltinWorkspaceLayout { index: usize },
+    ApplyBuiltinWorkspaceLayout {
+        index: usize,
+    },
     /// Apply a user-saved workspace layout by its `name`.
-    ApplyCustomWorkspaceLayout { name: String },
+    ApplyCustomWorkspaceLayout {
+        name: String,
+    },
     /// Remove a user-saved workspace layout by name (built-ins are never
     /// removable — checked in the handler).
-    DeleteWorkspaceLayout { name: String },
+    DeleteWorkspaceLayout {
+        name: String,
+    },
     /// Rename a user-saved workspace layout. No-op if `new_name` is empty
     /// or if a layout with that name already exists.
-    RenameWorkspaceLayout { old_name: String, new_name: String },
+    RenameWorkspaceLayout {
+        old_name: String,
+        new_name: String,
+    },
 
     // Compositing
-    SetTrackOpacity { track_index: usize, opacity: f32 },
-    SetTrackVisibility { track_index: usize, visible: bool },
+    SetTrackOpacity {
+        track_index: usize,
+        opacity: f32,
+    },
+    SetTrackVisibility {
+        track_index: usize,
+        visible: bool,
+    },
 
     // Audio mixing
-    SetTrackVolume { track_index: usize, volume: f32 },
-    SetTrackMute { track_index: usize, muted: bool },
-    SetTrackSolo { track_index: usize, solo: bool },
-    SetTrackPan { track_index: usize, pan: f32 },
+    SetTrackVolume {
+        track_index: usize,
+        volume: f32,
+    },
+    SetTrackMute {
+        track_index: usize,
+        muted: bool,
+    },
+    SetTrackSolo {
+        track_index: usize,
+        solo: bool,
+    },
+    SetTrackPan {
+        track_index: usize,
+        pan: f32,
+    },
     SetMasterVolume(f32),
     SetMasterMute(bool),
     /// Reset the BS.1770-4 LUFS meter in the mix thread.
@@ -1114,13 +1253,25 @@ pub enum AppCommand {
     SetVideoRubberBandParam(VideoParam),
 
     // Editing
-    BladeClip { track_index: usize, clip_id: ClipId, cut_at: RationalTime },
-    CutClip { clip_id: ClipId },
-    CopyClip { clip_id: ClipId },
+    BladeClip {
+        track_index: usize,
+        clip_id: ClipId,
+        cut_at: RationalTime,
+    },
+    CutClip {
+        clip_id: ClipId,
+    },
+    CopyClip {
+        clip_id: ClipId,
+    },
     PasteClip,
-    DuplicateClip { clip_id: ClipId },
+    DuplicateClip {
+        clip_id: ClipId,
+    },
     /// Copy attributes from a clip for later paste-attributes.
-    CopyAttributes { clip_id: ClipId },
+    CopyAttributes {
+        clip_id: ClipId,
+    },
     /// Paste previously copied attributes onto the selected clip(s).
     PasteAttributes {
         effects: bool,
@@ -1130,9 +1281,15 @@ pub enum AppCommand {
         speed: bool,
     },
     /// Toggle a clip's enabled state (disabled clips are dimmed and skipped in render).
-    SetClipEnabled { clip_id: ClipId, enabled: bool },
+    SetClipEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Solo a clip — mute all other clips on the same track.
-    SetClipSolo { clip_id: ClipId, solo: bool },
+    SetClipSolo {
+        clip_id: ClipId,
+        solo: bool,
+    },
     SelectAllClips,
     /// Select all clips that start after the playhead.
     SelectClipsForward,
@@ -1145,21 +1302,29 @@ pub enum AppCommand {
     /// the media bin as a still MediaItem. No file dialog.
     ExtractFrameToBin,
     /// Import SRT/VTT subtitle file onto a subtitle track.
-    ImportSubtitles { path: PathBuf },
+    ImportSubtitles {
+        path: PathBuf,
+    },
     /// Import a Kdenlive MLT XML project as a new sequence.
     /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
     /// are logged to a `<name>.import_warnings.txt` file alongside the source.
-    ImportKdenlive { path: PathBuf },
+    ImportKdenlive {
+        path: PathBuf,
+    },
     /// Parse an OpenTimelineIO `.otio` JSON file and import its timeline as
     /// a new Sequence. Unsupported features (transitions, effects, nested
     /// stacks) are logged to a `<name>.import_warnings.txt` file alongside
     /// the source.
-    ImportOtio { path: PathBuf },
+    ImportOtio {
+        path: PathBuf,
+    },
     /// Parse a Final Cut Pro XML (`.fcpxml`) file and import its timeline as
     /// a new Sequence. Unsupported features (effects, transitions, compound
     /// clips, multicam, roles, connected clips) are logged to a
     /// `<name>.import_warnings.txt` file alongside the source.
-    ImportFcpxml { path: PathBuf },
+    ImportFcpxml {
+        path: PathBuf,
+    },
     /// Copy the current project and all referenced media into a new
     /// self-contained directory at `dest_dir`. Source project is untouched.
     /// Runs on a background thread — see `ConsolidateDone` for completion.
@@ -1176,19 +1341,32 @@ pub enum AppCommand {
     /// Create a new empty subtitle clip at the given timeline position on
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).
     /// Used by the subtitle editor panel's "Add at playhead" button.
-    AddSubtitleAtPlayhead { timeline_in: Timecode, duration_frames: u32 },
+    AddSubtitleAtPlayhead {
+        timeline_in: Timecode,
+        duration_frames: u32,
+    },
     /// Export subtitles from subtitle tracks as SRT.
-    ExportSubtitles { path: PathBuf },
+    ExportSubtitles {
+        path: PathBuf,
+    },
     /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.
-    ExportFcpxml { path: PathBuf },
+    ExportFcpxml {
+        path: PathBuf,
+    },
     /// Export sequence as MLT XML (.kdenlive) for Kdenlive interchange (cuts-only v1).
-    ExportKdenlive { path: PathBuf },
+    ExportKdenlive {
+        path: PathBuf,
+    },
     /// Export sequence as CMX 3600 EDL for broad NLE interchange.
-    ExportEdl { path: PathBuf },
+    ExportEdl {
+        path: PathBuf,
+    },
     /// Export sequence markers as YouTube-compatible chapter text
     /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
     /// the first marker is after the start).
-    ExportYouTubeChapters { path: PathBuf },
+    ExportYouTubeChapters {
+        path: PathBuf,
+    },
     /// Open the export dialog with the range pre-set to "Selected
     /// clips" mode. Dispatched by the timeline clip-context-menu
     /// "Export This Clip…" entry and the matching palette command —
@@ -1206,18 +1384,27 @@ pub enum AppCommand {
     /// and `timeline_out` clamp by the same delta so no orphan
     /// timeline space appears. No-op when `new_media_id` already
     /// backs the clip.
-    ReplaceClipMedia { clip_id: ClipId, new_media_id: MediaId },
+    ReplaceClipMedia {
+        clip_id: ClipId,
+        new_media_id: MediaId,
+    },
     /// Generate a headless bash render script that calls ffmpeg to render
     /// the current sequence. Cuts only — effects/grades/transitions are NOT
     /// serialized. The script includes a prominent WARNING comment advising
     /// users to Ctrl+E for full-quality export.
-    GenerateRenderScript { path: PathBuf },
+    GenerateRenderScript {
+        path: PathBuf,
+    },
     /// Create a compound clip (nested sequence) from selected clips.
-    CreateCompoundClip { name: String },
+    CreateCompoundClip {
+        name: String,
+    },
     /// Create a multicam clip from clips on different tracks at the playhead.
     CreateMulticamClip,
     /// Switch multicam angle (1-indexed).
-    SwitchMulticamAngle { angle: usize },
+    SwitchMulticamAngle {
+        angle: usize,
+    },
     /// Set the audio mixer's pan law.
     SetPanLaw(crate::config::PanLaw),
     /// Zoom timeline to fit all clips.
@@ -1232,34 +1419,55 @@ pub enum AppCommand {
     /// `FitTimelineToWindow` for zoom-button / fit-button call sites.
     ZoomTimelineToFit,
     /// Apply a motion preset (Ken Burns / PiP) to selected clip.
-    ApplyMotionPreset { clip_id: ClipId, preset: String },
+    ApplyMotionPreset {
+        clip_id: ClipId,
+        preset: String,
+    },
     /// Create an adjustment layer at the playhead on the top video track.
     CreateAdjustmentLayer,
     /// Create a generator clip on a video track at the playhead.
-    CreateGeneratorClip { track_index: Option<usize>, data: crate::GeneratorData },
+    CreateGeneratorClip {
+        track_index: Option<usize>,
+        data: crate::GeneratorData,
+    },
     /// Update a generator clip's data (color, gradient, etc.).
-    UpdateGeneratorData { clip_id: ClipId, data: crate::GeneratorData },
+    UpdateGeneratorData {
+        clip_id: ClipId,
+        data: crate::GeneratorData,
+    },
     /// Capture the current viewer frame and insert a freeze-frame generator
     /// clip at the playhead. Blades any clip under the playhead so the freeze
     /// lands cleanly between the two halves.
-    InsertFreezeFrame { duration_secs: f64 },
+    InsertFreezeFrame {
+        duration_secs: f64,
+    },
     /// Open (drill into) a compound clip for editing.
-    OpenCompoundClip { clip_id: ClipId },
+    OpenCompoundClip {
+        clip_id: ClipId,
+    },
     /// Navigate back from a nested sequence to the parent.
     CloseCompoundClip,
     /// Decompose a compound clip — replace it on the parent timeline with the
     /// inner sequence's clips at their original positions, then delete the
     /// now-orphaned inner sequence. Inverse of `CreateCompoundClip`.
-    DecomposeCompoundClip { clip_id: ClipId },
+    DecomposeCompoundClip {
+        clip_id: ClipId,
+    },
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.
     PrevEditPoint,
     /// Close the gap (empty space) at the playhead on a given track, or the nearest gap.
-    CloseGap { track_index: usize, gap_start: RationalTime, gap_end: RationalTime },
+    CloseGap {
+        track_index: usize,
+        gap_start: RationalTime,
+        gap_end: RationalTime,
+    },
 
     // Source monitor
-    LoadSourceMedia { media_id: MediaId },
+    LoadSourceMedia {
+        media_id: MediaId,
+    },
     SetSourceInPoint(RationalTime),
     SetSourceOutPoint(RationalTime),
     InsertSourceAtPlayhead,
@@ -1283,12 +1491,16 @@ pub enum AppCommand {
     /// instead of a dialog. The dialog lets the user confirm before
     /// any network call; on confirm the download runs on a worker
     /// thread with progress + cancel UI.
-    OpenModelDownloadDialog { model_id: String },
+    OpenModelDownloadDialog {
+        model_id: String,
+    },
 
     /// Open the AI Tools panel pre-selected on the given task. If the
     /// panel is already open, this just switches the active task.
     /// Surfaces the model picker + run/cancel controls.
-    ShowAiToolsPanel { task: AiToolsTaskTag },
+    ShowAiToolsPanel {
+        task: AiToolsTaskTag,
+    },
     /// Run the active AI Tools task on the current frame using the
     /// currently-selected model. No-op (toast) when no task is active
     /// or no model is selected.
@@ -1302,7 +1514,9 @@ pub enum AppCommand {
     /// Pick a specific model (by its `assets/models.toml` id) for the
     /// currently active task. The handler validates the model is
     /// compatible with the active task type before applying.
-    SelectAiToolsModel { model_id: String },
+    SelectAiToolsModel {
+        model_id: String,
+    },
 
     /// Reverse Match Frame — source → program. Given the source
     /// viewer's currently-loaded media + playhead, find the next
@@ -1317,7 +1531,10 @@ pub enum AppCommand {
     /// MediaItem inherits codec/fps/resolution from the parent, reuses the
     /// parent's path, and carries its own default_source_in/out matching the
     /// zone. `name: None` → auto-generated as "{parent_stem}_sub{N}".
-    CreateSubclipFromZone { source_media_id: MediaId, name: Option<String> },
+    CreateSubclipFromZone {
+        source_media_id: MediaId,
+        name: Option<String>,
+    },
 
     // Sequence markers
     SetSequenceInPoint(RationalTime),
@@ -1326,8 +1543,12 @@ pub enum AppCommand {
     ClearSequenceOutPoint,
 
     // Proxy
-    GenerateProxy { media_id: MediaId },
-    CancelProxy { media_id: MediaId },
+    GenerateProxy {
+        media_id: MediaId,
+    },
+    CancelProxy {
+        media_id: MediaId,
+    },
     SetUseProxies(bool),
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
     /// Enable or disable the smart render cache.
@@ -1337,7 +1558,9 @@ pub enum AppCommand {
     /// Cache Manager (feature #78): clear a single cache category by wiping
     /// its directory then recreating the empty folder so later writes don't
     /// fail. Followed by an implicit refresh of the cache-manager snapshot.
-    ClearCacheCategory { path: PathBuf },
+    ClearCacheCategory {
+        path: PathBuf,
+    },
     /// Re-scan all cache categories and update `AppState::cache_categories`.
     RefreshCacheManager,
     /// Open the Cache Manager modal. Dispatched from Preferences → Proxy.
@@ -1367,7 +1590,9 @@ pub enum AppCommand {
     /// the new disabled set to disk. Existing AudioEffectInstance
     /// entries on saved clips continue to work; the disable only
     /// blocks the plugin from the browser / "+ Add Effect" picker.
-    ToggleAudioPluginDisabled { unique_id: u64 },
+    ToggleAudioPluginDisabled {
+        unique_id: u64,
+    },
     /// Re-enable every disabled audio plugin in one shot. Issued from
     /// the Audio Plugins dialog's "Clear all disabled" footer button
     /// (with a confirmation prompt rendered there). Persists the
@@ -1387,29 +1612,56 @@ pub enum AppCommand {
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,
     /// Relink a specific offline media item to a new path.
-    RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    RelinkMedia {
+        media_id: MediaId,
+        new_path: PathBuf,
+    },
     /// Transcribe one clip now — the media browser's "Transcribe Clip"
     /// right-click action. Runs speech-to-text on this item even when
     /// automatic transcription is switched off in preferences.
-    TranscribeClip { media_id: MediaId },
+    TranscribeClip {
+        media_id: MediaId,
+    },
     /// Read these items' files again for what the camera recorded about
     /// the shot (timecode, reel, exposure, sidecar, every tag), keeping
     /// what the user said about them.
-    RefreshMediaMetadata { media_ids: Vec<MediaId> },
+    RefreshMediaMetadata {
+        media_ids: Vec<MediaId>,
+    },
     /// Write the pool's metadata as a sheet, CSV or ALE.
-    ExportMetadataSheet { path: PathBuf, ale: bool },
+    ExportMetadataSheet {
+        path: PathBuf,
+        ale: bool,
+    },
     /// Read a sheet, CSV or ALE, into the clips it names.
-    ImportMetadataSheet { path: PathBuf },
+    ImportMetadataSheet {
+        path: PathBuf,
+    },
     /// Relink all offline media by searching a directory recursively.
-    RelinkAllFromDirectory { directory: PathBuf },
+    RelinkAllFromDirectory {
+        directory: PathBuf,
+    },
     /// Show the media relink dialog.
     ShowRelinkDialog,
-    AddMediaTag { media_id: MediaId, tag: String },
-    RemoveMediaTag { media_id: MediaId, tag_index: usize },
+    AddMediaTag {
+        media_id: MediaId,
+        tag: String,
+    },
+    RemoveMediaTag {
+        media_id: MediaId,
+        tag_index: usize,
+    },
 
     // Node graph (color grading)
-    AddNode { clip_id: ClipId, kind: String, position: (f32, f32) },
-    RemoveNode { clip_id: ClipId, node_id: uuid::Uuid },
+    AddNode {
+        clip_id: ClipId,
+        kind: String,
+        position: (f32, f32),
+    },
+    RemoveNode {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
     /// Collapse a multi-node selection into a single Compound node.
     /// The Compound's `params.compound_subgraph` captures the selected
     /// nodes + their internal edges (wrapped with synthetic Source +
@@ -1451,58 +1703,133 @@ pub enum AppCommand {
     /// Overwrite the currently-active grade version with the
     /// clip's live `node_graph`. For "I tweaked V1, save my
     /// changes into V1" workflows. No-op when no version is active.
-    UpdateActiveGradeVersion { clip_id: ClipId },
-    ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
-    DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
+    UpdateActiveGradeVersion {
+        clip_id: ClipId,
+    },
+    ConnectNodes {
+        clip_id: ClipId,
+        from: uuid::Uuid,
+        from_port: u8,
+        to: uuid::Uuid,
+        to_port: u8,
+    },
+    DisconnectEdge {
+        clip_id: ClipId,
+        to: uuid::Uuid,
+        to_port: u8,
+    },
     /// Wireless-link sender label on a node's primary output. `None`
     /// clears it.
-    SetNodeOutputLink { clip_id: ClipId, node_id: uuid::Uuid, label: Option<String> },
+    SetNodeOutputLink {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        label: Option<String>,
+    },
     /// Wireless-link receiver label on a node's input port. `None`
     /// clears it — the port falls back to normal wired-edge
     /// resolution.
-    SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
-    MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
-    ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    SetNodeInputLink {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        port: u8,
+        label: Option<String>,
+    },
+    MoveNode {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        delta_x: f32,
+        delta_y: f32,
+    },
+    ToggleNodeEnabled {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
     /// Auto-layout the clip's node graph — recompute every node's
     /// position using a hierarchical layered layout. Pushed as a
     /// single undoable batch (one entry on the history stack
     /// reverts every position with one Ctrl+Z).
-    AutoLayoutNodeGraph { clip_id: ClipId },
+    AutoLayoutNodeGraph {
+        clip_id: ClipId,
+    },
     /// Create a new lightweight frame around the given node ids.
     /// Frame id is allocated by the handler. Members must already
     /// exist in the clip's graph; missing ids are silently dropped.
     /// A frame with zero members after filtering is not created.
-    CreateNodeFrame { clip_id: ClipId, node_ids: Vec<uuid::Uuid>, label: String, color_rgba: u32 },
+    CreateNodeFrame {
+        clip_id: ClipId,
+        node_ids: Vec<uuid::Uuid>,
+        label: String,
+        color_rgba: u32,
+    },
     /// Rename a frame. No-op if the id doesn't exist.
-    RenameNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, label: String },
+    RenameNodeFrame {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+        label: String,
+    },
     /// Set a frame's multi-line description. Empty string clears.
-    SetNodeFrameDescription { clip_id: ClipId, frame_id: uuid::Uuid, description: String },
+    SetNodeFrameDescription {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+        description: String,
+    },
     /// Create a free-floating sticky note at the given graph
     /// position. The handler allocates the id; width defaults to
     /// 200 graph-px; text starts empty (the user double-clicks to
     /// edit). Single source of truth for sticky-note creation
     /// across the right-click "Add note here" entry and any
     /// future palette / shortcut surfaces.
-    CreateStickyNote { clip_id: ClipId, x: f32, y: f32 },
+    CreateStickyNote {
+        clip_id: ClipId,
+        x: f32,
+        y: f32,
+    },
     /// Replace the multi-line text of the named sticky note.
     /// No-op if the id doesn't exist.
-    SetStickyNoteText { clip_id: ClipId, sticky_id: uuid::Uuid, text: String },
+    SetStickyNoteText {
+        clip_id: ClipId,
+        sticky_id: uuid::Uuid,
+        text: String,
+    },
     /// Move a sticky note by (delta_x, delta_y) in graph pixels.
     /// Mirrors MoveNode's incremental-delta shape so live drags
     /// can stream tick deltas without total-position drift.
-    MoveStickyNote { clip_id: ClipId, sticky_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
+    MoveStickyNote {
+        clip_id: ClipId,
+        sticky_id: uuid::Uuid,
+        delta_x: f32,
+        delta_y: f32,
+    },
     /// Delete a sticky note. No-op if the id doesn't exist.
-    DeleteStickyNote { clip_id: ClipId, sticky_id: uuid::Uuid },
+    DeleteStickyNote {
+        clip_id: ClipId,
+        sticky_id: uuid::Uuid,
+    },
     /// Recolour a frame.
-    RecolorNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, color_rgba: u32 },
+    RecolorNodeFrame {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+        color_rgba: u32,
+    },
     /// Drop the frame. Member nodes stay where they are; only the
     /// visual rectangle goes away.
-    DeleteNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid },
+    DeleteNodeFrame {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+    },
     /// Add a single node to an existing frame's membership set.
-    AddToNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, node_id: uuid::Uuid },
+    AddToNodeFrame {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+        node_id: uuid::Uuid,
+    },
     /// Remove a single node from an existing frame's membership.
     /// Frame is pruned if this leaves it with zero members.
-    RemoveFromNodeFrame { clip_id: ClipId, frame_id: uuid::Uuid, node_id: uuid::Uuid },
+    RemoveFromNodeFrame {
+        clip_id: ClipId,
+        frame_id: uuid::Uuid,
+        node_id: uuid::Uuid,
+    },
     /// Set the node-graph "solo" target — the engine renders the
     /// graph normally but returns the soloed node's output as the
     /// final image, so the user can preview any mid-chain node as
@@ -1510,56 +1837,85 @@ pub enum AppCommand {
     /// normal Output-node-input result. Single global slot (one
     /// active clip at a time); auto-inactive when the soloed id
     /// doesn't exist in the current clip's graph.
-    SetNodeSolo { node_id: Option<uuid::Uuid> },
+    SetNodeSolo {
+        node_id: Option<uuid::Uuid>,
+    },
     /// Set node-graph view bookmark slot `slot` (0..8 corresponding
     /// to hotkeys 1..9) to the panel's current pan + zoom. Routed to
     /// the panel directly in the dispatcher because the bookmark
     /// state lives on the panel, not on the project / engine /
     /// clip — it's a navigation aid, not a property of the grade.
-    SetNodeViewBookmark { slot: u8 },
+    SetNodeViewBookmark {
+        slot: u8,
+    },
     /// Jump the node-graph canvas to view bookmark slot `slot`. No-op
     /// when the slot is empty (the panel emits its in-canvas toast in
     /// that case so the user knows the binding registered).
-    JumpNodeViewBookmark { slot: u8 },
+    JumpNodeViewBookmark {
+        slot: u8,
+    },
     /// Copy the currently-selected color nodes (from `selected_node_ids`)
     /// into AppState's grade-node clipboard. Emits a toast with the count;
     /// no-op + toast when the selection is empty. Edges between copied
     /// nodes are not preserved.
-    CopyColorNodes { clip_id: ClipId },
+    CopyColorNodes {
+        clip_id: ClipId,
+    },
     /// Paste the grade-node clipboard into `clip_id`'s node graph. Each
     /// pasted node receives a freshly-allocated `NodeId` so collisions
     /// with existing nodes — or with a previous paste — are impossible.
     /// No-op + toast when the clipboard is empty.
-    PasteColorNodes { clip_id: ClipId },
-    RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
-    SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
+    PasteColorNodes {
+        clip_id: ClipId,
+    },
+    RenameNode {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        label: String,
+    },
+    SetScopeTapNode {
+        clip_id: ClipId,
+        node_id: Option<uuid::Uuid>,
+    },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
-    SetScopeRenderMode { mode: u8 },
+    SetScopeRenderMode {
+        mode: u8,
+    },
     /// Set the union of scope modes the UI currently needs rendered per tick.
     /// Sum of (main dock active mode) + (every floating-window pane mode).
     /// The engine renders every mode in this set on each scope tick and writes
     /// the results into `FrameBuffer::scope_textures` keyed by mode.
     /// Sent on UI-side change only (e.g. opening the floating window, adding a
     /// pane, switching a pane's mode) — not every frame.
-    SetActiveScopeModes { modes: std::collections::BTreeSet<u8> },
+    SetActiveScopeModes {
+        modes: std::collections::BTreeSet<u8>,
+    },
     /// The physical pixel size each video scope mode is shown at: the
     /// largest pane showing it. The engine draws its GPU scopes at this
     /// size, so a scope is never a small image stretched to fill its pane.
     /// A mode missing from the map is drawn at the default size. Sent on
     /// change only.
-    SetScopeSizes { sizes: std::collections::BTreeMap<u8, (u32, u32)> },
+    SetScopeSizes {
+        sizes: std::collections::BTreeMap<u8, (u32, u32)>,
+    },
     /// Push the scope settings (quality, channels, envelope, vectorscope
     /// window, histogram layout) to the engine. Sent on a UI-side change
     /// only, not every frame.
-    SetScopeSettings { settings: crate::config::ScopeSettings },
+    SetScopeSettings {
+        settings: crate::config::ScopeSettings,
+    },
     /// Push the scope bloom toggle to the engine. When enabled the engine
     /// runs a threshold + Gaussian + additive composite on the rendered
     /// waveform/parade scope textures so dense traces glow. Sent on
     /// UI-side change only.
-    SetScopeBloom { enabled: bool },
+    SetScopeBloom {
+        enabled: bool,
+    },
     /// Whether the GPU waveform and parade measure a low-passed copy of
     /// the picture. Sent on UI-side change only.
-    SetScopeLowPass { enabled: bool },
+    SetScopeLowPass {
+        enabled: bool,
+    },
     /// Tell the engine whether the scope panel is actually visible
     /// in the UI. The engine uses this to skip the per-frame
     /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —
@@ -1571,50 +1927,108 @@ pub enum AppCommand {
     /// Draw the scopes of an arbitrary sRGB RGBA frame (a media-browser
     /// hover skim, a timeline scrub) into `frame_buffer.scope_textures`,
     /// the way the playback pipeline draws them.
-    RenderScopesForFrame { rgba: Vec<u8>, width: u32, height: u32 },
+    RenderScopesForFrame {
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
     /// Draw the scopes of an sRGB RGBA frame into `frame_buffer.
     /// snapshot_scope_textures`, a store separate from the live scopes, so
     /// an off-screen reader (the agent's `scope` tool) can measure any
     /// frame without disturbing what the viewer's scopes show. `modes` are
     /// 0 waveform, 1 parade, 2 vectorscope, 3 histogram.
-    RenderScopeSnapshot { modes: Vec<u8>, rgba: Vec<u8>, width: u32, height: u32 },
-    SetNodeParam { clip_id: ClipId, node_id: uuid::Uuid, param: String, value: f32 },
+    RenderScopeSnapshot {
+        modes: Vec<u8>,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
+    SetNodeParam {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+        value: f32,
+    },
     /// Called when the user starts dragging a color-grading parameter
     /// (color wheel, sat/bri slider, scrubby slider, etc.). Snapshots the
     /// current node graph so the gesture can be committed as one undo entry.
-    BeginNodeParamEdit { clip_id: ClipId },
+    BeginNodeParamEdit {
+        clip_id: ClipId,
+    },
     /// Called when the user releases a color-grading parameter drag. Commits
     /// the snapshot taken at the matching BeginNodeParamEdit as a single
     /// `SetNodeGraph` history entry covering the whole gesture.
-    EndNodeParamEdit { clip_id: ClipId },
-    SetNodeCurves { clip_id: ClipId, node_id: uuid::Uuid, curves: crate::color_grade::CurveSet },
-    SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
-    SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
-    SetNodeLumaKey { clip_id: ClipId, node_id: uuid::Uuid, luma_key: crate::color_grade::LumaKeySettings },
+    EndNodeParamEdit {
+        clip_id: ClipId,
+    },
+    SetNodeCurves {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        curves: crate::color_grade::CurveSet,
+    },
+    SetNodeHueSatCurves {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        huesat: crate::color_grade::HueSatCurves,
+    },
+    SetNodeQualifier {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        qualifier: crate::color_grade::QualifierSettings,
+    },
+    SetNodeLumaKey {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        luma_key: crate::color_grade::LumaKeySettings,
+    },
     /// Replace the full `DifferenceKeySettings` on a DifferenceKey
     /// node — used by inspector slider drags + checkbox toggles.
     /// The plate-only file-picker path goes through
     /// `SetNodeDifferenceKeyPlate` instead so its delta is small
     /// enough to ride a single undo step without bundling the
     /// whole grade.
-    SetNodeDifferenceKey { clip_id: ClipId, node_id: uuid::Uuid, difference_key: crate::color_grade::DifferenceKeySettings },
+    SetNodeDifferenceKey {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        difference_key: crate::color_grade::DifferenceKeySettings,
+    },
     /// Point a DifferenceKey node at a new clean-plate image (or
     /// clear it). Mirrors `SetExternalMattePath`'s shape — separate
     /// command so the file picker dispatches a small delta and the
     /// "Clear" button doesn't have to round-trip the entire
     /// settings struct.
-    SetNodeDifferenceKeyPlate { clip_id: ClipId, node_id: uuid::Uuid, plate_path: Option<std::path::PathBuf> },
-    SetNodeSoftClip { clip_id: ClipId, node_id: uuid::Uuid, soft_clip: crate::color_grade::SoftClipSettings },
-    SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
+    SetNodeDifferenceKeyPlate {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        plate_path: Option<std::path::PathBuf>,
+    },
+    SetNodeSoftClip {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        soft_clip: crate::color_grade::SoftClipSettings,
+    },
+    SetNodeMasks {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        masks: crate::color_grade::MaskStack,
+    },
     /// Store a computed colour-match result on a ColorMatch node. The
     /// UI runs `klipp_color::match_colors(source, reference)` against
     /// the reference frame the user captured, then dispatches this
     /// command with the resulting four-scalar `ColorMatchSettings`.
     /// The node's executor then applies the adjustments via the
     /// unified grade shader.
-    SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
+    SetNodeColorMatch {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        settings: crate::color_grade::ColorMatchSettings,
+    },
     /// Point an ExternalMatte node at a new image file.
-    SetExternalMattePath { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    SetExternalMattePath {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        path: Option<std::path::PathBuf>,
+    },
     /// Tell the engine which nodes the V2 canvas currently has
     /// visible — the executor captures a downsampled thumbnail of
     /// each of them on the paused / post-seek re-grade so the canvas
@@ -1622,7 +2036,10 @@ pub enum AppCommand {
     /// Sent when the viewport's node set changes (pan / zoom / add /
     /// remove). Playback path skips capture entirely to avoid the N
     /// extra GPU readbacks per frame.
-    SetVisibleNodeThumbs { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    SetVisibleNodeThumbs {
+        clip_id: ClipId,
+        node_ids: Vec<uuid::Uuid>,
+    },
     /// Render per-node thumbnails by running the clip's node graph on a
     /// caller-supplied pre-grade source bitmap (typically the filmstrip
     /// tile nearest the playhead). Used by the V2 canvas to populate
@@ -1641,11 +2058,20 @@ pub enum AppCommand {
     /// Change which channel of the ExternalMatte image becomes the
     /// matte signal (Alpha / Luminance / Red / Green / Blue) and
     /// whether the output is inverted.
-    SetExternalMatteChannel { clip_id: ClipId, node_id: uuid::Uuid, channel: u8, invert: bool },
+    SetExternalMatteChannel {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        channel: u8,
+        invert: bool,
+    },
     /// Set how a `CombineMattes` node combines its two inputs. `op` is
     /// the discriminant index into `MatteCombineOp::ALL`, same shape as
     /// `SetExternalMatteChannel` above.
-    SetMatteCombineOp { clip_id: ClipId, node_id: uuid::Uuid, op: u8 },
+    SetMatteCombineOp {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        op: u8,
+    },
     /// Update one input slot on a `LayerMixer` node (port = index into
     /// `LayerMixerParams.inputs`). The handler grows the params Vec as
     /// needed so a fresh slot can be set without an explicit AddPort
@@ -1666,20 +2092,30 @@ pub enum AppCommand {
     /// reference. Replaces any previously captured reference. The
     /// handler decodes a mid-clip thumbnail so the user doesn't have
     /// to scrub the playhead onto the clip first.
-    UseClipAsColorMatchReference { clip_id: ClipId },
+    UseClipAsColorMatchReference {
+        clip_id: ClipId,
+    },
     /// Run `match_colors` against the clip's mid-frame and the current
     /// colour reference, ensuring a ColorMatch node exists on the
     /// clip's graph and writing the resulting settings to it. No-op
     /// with a toast if no reference has been captured.
-    MatchClipToColorReference { clip_id: ClipId },
+    MatchClipToColorReference {
+        clip_id: ClipId,
+    },
     /// Lazy-create a Mask node (if absent) on the clip's graph and
     /// append a new shape to its mask stack. Used by the Color
     /// workspace "+ Add Mask" control so users who don't open the
     /// node canvas can still land a mask directly.
-    AddMaskShape { clip_id: ClipId, shape: crate::color_grade::MaskShape },
+    AddMaskShape {
+        clip_id: ClipId,
+        shape: crate::color_grade::MaskShape,
+    },
     /// Remove mask at `mask_index` from the first Mask node on the
     /// clip's graph. No-op if index out of range.
-    RemoveMaskShape { clip_id: ClipId, mask_index: usize },
+    RemoveMaskShape {
+        clip_id: ClipId,
+        mask_index: usize,
+    },
     /// Route inspector focus to the mask-editor view. Fired when the
     /// user interacts with a mask on the Program viewer (click a
     /// handle / grab to move) — without this the Edit-workspace user
@@ -1693,18 +2129,67 @@ pub enum AppCommand {
     /// at the playhead, then store the result on the named ColorMatch
     /// node via `SetNodeColorMatch`. No-op (with toast) when no
     /// reference has been captured yet.
-    ApplyColorMatch { clip_id: ClipId, node_id: uuid::Uuid },
+    ApplyColorMatch {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
     /// Add or update a keyframe on a mask parameter.
-    AddMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, value: f32 },
+    AddMaskKeyframe {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        mask_index: usize,
+        param: String,
+        time_secs: f64,
+        value: f32,
+    },
     /// Remove a mask keyframe at a specific time.
-    RemoveMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64 },
+    RemoveMaskKeyframe {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        mask_index: usize,
+        param: String,
+        time_secs: f64,
+    },
     /// Clear all keyframes for a mask parameter.
-    ClearMaskKeyframes { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String },
-    AddKeyframe { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, value: f32 },
-    RemoveKeyframe { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64 },
-    ClearKeyframes { clip_id: ClipId, node_id: uuid::Uuid, param: String },
-    SetKeyframeInterpolation { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, interpolation: crate::keyframe::Interpolation },
-    SetKeyframeTangents { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, tangent_in: (f64, f32), tangent_out: (f64, f32) },
+    ClearMaskKeyframes {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        mask_index: usize,
+        param: String,
+    },
+    AddKeyframe {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveKeyframe {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+        time_secs: f64,
+    },
+    ClearKeyframes {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+    },
+    SetKeyframeInterpolation {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+        time_secs: f64,
+        interpolation: crate::keyframe::Interpolation,
+    },
+    SetKeyframeTangents {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        param: String,
+        time_secs: f64,
+        tangent_in: (f64, f32),
+        tangent_out: (f64, f32),
+    },
     /// Trigger a grade refresh without changing any params (used after bulk preset apply).
     RefreshGrade,
     ToggleColorPanel,
@@ -1746,7 +2231,10 @@ pub enum AppCommand {
     /// is set; the inspector renders the latest as a small grayscale
     /// preview in the COMPOSITING section.
     SetInspectorMattePreviewTarget(Option<ClipId>),
-    SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
+    SetClipLogFormat {
+        clip_id: ClipId,
+        log_format: crate::types::LogFormat,
+    },
     /// How some media decodes has changed (its camera log format). Frames
     /// decoded before the change are stale — the engine's frame cache, its
     /// pre-grade snapshot and whatever the decoders read ahead — so the
@@ -1755,10 +2243,14 @@ pub enum AppCommand {
     /// carries the format.
     MediaDecodeChanged,
     /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
-    AutoWhiteBalance { clip_id: ClipId },
+    AutoWhiteBalance {
+        clip_id: ClipId,
+    },
 
     // Global LUT
-    LoadGlobalLut { path: PathBuf },
+    LoadGlobalLut {
+        path: PathBuf,
+    },
     ClearGlobalLut,
     SetGlobalLutOpacity(f32),
     SetGlobalLutEnabled(bool),
@@ -1768,22 +2260,66 @@ pub enum AppCommand {
     SetSdrTransfer(SdrTransfer),
 
     // Effects (OFX)
-    AddEffect { clip_id: ClipId, plugin_name: String },
-    RemoveEffect { clip_id: ClipId, effect_index: usize },
-    SetEffectEnabled { clip_id: ClipId, effect_index: usize, enabled: bool },
-    ReorderEffect { clip_id: ClipId, from_index: usize, to_index: usize },
-    SetEffectParam { clip_id: ClipId, effect_index: usize, param_name: String, value: crate::OfxValue },
+    AddEffect {
+        clip_id: ClipId,
+        plugin_name: String,
+    },
+    RemoveEffect {
+        clip_id: ClipId,
+        effect_index: usize,
+    },
+    SetEffectEnabled {
+        clip_id: ClipId,
+        effect_index: usize,
+        enabled: bool,
+    },
+    ReorderEffect {
+        clip_id: ClipId,
+        from_index: usize,
+        to_index: usize,
+    },
+    SetEffectParam {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        value: crate::OfxValue,
+    },
 
     // Built-in effects
-    AddBuiltinEffect { clip_id: ClipId, effect: klipp_effects::BuiltinEffect },
-    RemoveBuiltinEffect { clip_id: ClipId, index: usize },
-    ToggleBuiltinEffectEnabled { clip_id: ClipId, index: usize },
-    UpdateBuiltinEffect { clip_id: ClipId, index: usize, effect: klipp_effects::BuiltinEffect },
-    ReorderBuiltinEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+    AddBuiltinEffect {
+        clip_id: ClipId,
+        effect: klipp_effects::BuiltinEffect,
+    },
+    RemoveBuiltinEffect {
+        clip_id: ClipId,
+        index: usize,
+    },
+    ToggleBuiltinEffectEnabled {
+        clip_id: ClipId,
+        index: usize,
+    },
+    UpdateBuiltinEffect {
+        clip_id: ClipId,
+        index: usize,
+        effect: klipp_effects::BuiltinEffect,
+    },
+    ReorderBuiltinEffect {
+        clip_id: ClipId,
+        from_index: usize,
+        to_index: usize,
+    },
 
     // Effect presets
-    SaveBuiltinEffectPreset { name: String, description: String, effect_key: String, effect: klipp_effects::BuiltinEffect },
-    DeleteBuiltinEffectPreset { effect_key: String, name: String },
+    SaveBuiltinEffectPreset {
+        name: String,
+        description: String,
+        effect_key: String,
+        effect: klipp_effects::BuiltinEffect,
+    },
+    DeleteBuiltinEffectPreset {
+        effect_key: String,
+        name: String,
+    },
 
     // Render Queue
     ShowRenderQueue,
@@ -1865,53 +2401,120 @@ pub enum AppCommand {
     ExtractEdit,
 
     // Transitions
-    AddTransition { track_index: usize, clip_a_id: ClipId, clip_b_id: ClipId, kind_id: u8, duration_frames: u32 },
-    RemoveTransition { track_index: usize, transition_id: crate::id::TransitionId },
-    SetTransitionDuration { track_index: usize, transition_id: crate::id::TransitionId, duration_frames: u32 },
-    SetTransitionKind { track_index: usize, transition_id: crate::id::TransitionId, kind_id: u8 },
-    SetTransitionParam { track_index: usize, transition_id: crate::id::TransitionId, user_params: crate::types::TransitionUserParams },
-    SetTransitionAlignment { track_index: usize, transition_id: crate::id::TransitionId, alignment: crate::types::TransitionAlignment },
+    AddTransition {
+        track_index: usize,
+        clip_a_id: ClipId,
+        clip_b_id: ClipId,
+        kind_id: u8,
+        duration_frames: u32,
+    },
+    RemoveTransition {
+        track_index: usize,
+        transition_id: crate::id::TransitionId,
+    },
+    SetTransitionDuration {
+        track_index: usize,
+        transition_id: crate::id::TransitionId,
+        duration_frames: u32,
+    },
+    SetTransitionKind {
+        track_index: usize,
+        transition_id: crate::id::TransitionId,
+        kind_id: u8,
+    },
+    SetTransitionParam {
+        track_index: usize,
+        transition_id: crate::id::TransitionId,
+        user_params: crate::types::TransitionUserParams,
+    },
+    SetTransitionAlignment {
+        track_index: usize,
+        transition_id: crate::id::TransitionId,
+        alignment: crate::types::TransitionAlignment,
+    },
 
     // Title clips
-    CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },
+    CreateTitleClip {
+        track_index: usize,
+        timeline_in: Timecode,
+        duration_frames: u32,
+    },
     /// The one-gesture add: a fresh title on a free text track at the
     /// playhead (five seconds), or over the whole of `over_clip`. The
     /// clip is selected, the inspector opens on its text, the playhead
     /// parks where the title is at rest.
-    AddTitleAtPlayhead { over_clip: Option<ClipId> },
+    AddTitleAtPlayhead {
+        over_clip: Option<ClipId>,
+    },
     /// Insert a saved composition template as a precomposition clip at the
     /// current playhead. The app resolves the template metadata and records
     /// the resulting clip through the normal edit history.
-    InsertCompositionTemplate { template_id: uuid::Uuid },
+    InsertCompositionTemplate {
+        template_id: uuid::Uuid,
+    },
     /// Open the dialog that saves a title clip as a user template in
     /// the Titles browser.
-    SaveTitleTemplate { clip_id: ClipId },
+    SaveTitleTemplate {
+        clip_id: ClipId,
+    },
     /// Add an image layer (a logo, a still) to a title. The layer's
     /// box takes the picture's aspect at a third of the frame width.
-    AddTitleImageObject { clip_id: ClipId, path: String },
+    AddTitleImageObject {
+        clip_id: ClipId,
+        path: String,
+    },
     /// Point an image layer at another file.
-    SetTitleImagePath { clip_id: ClipId, object_id: u32, path: String },
+    SetTitleImagePath {
+        clip_id: ClipId,
+        object_id: u32,
+        path: String,
+    },
     /// 0 = fit, 1 = fill, 2 = stretch.
-    SetTitleImageFit { clip_id: ClipId, object_id: u32, fit: u8 },
+    SetTitleImageFit {
+        clip_id: ClipId,
+        object_id: u32,
+        fit: u8,
+    },
     /// Promote an existing title clip to a reusable Project Asset.
     /// Reads the clip's `TitleData`, builds a `TitleAsset` keyed by a
     /// fresh `MediaId`, inserts a synthetic `MediaItem` into the pool
     /// (so it shows up in the Media tab), stores the asset in the
     /// project's `title_assets` map, and links the source clip to it.
     /// All future edits to any linked clip propagate via the asset.
-    CreateTitleAsset { source_clip_id: ClipId },
+    CreateTitleAsset {
+        source_clip_id: ClipId,
+    },
     /// Detach a clip from its linked Project Asset. The clip's inline
     /// `TitleData` is kept (already in sync), `linked_title_asset_id`
     /// is cleared, and edits to this clip stop affecting the asset
     /// (and vice versa).
-    DetachTitleAsset { clip_id: ClipId },
+    DetachTitleAsset {
+        clip_id: ClipId,
+    },
     /// Rename a Project Asset (the user-facing label in the Media tab
     /// and the Inspector banner). The `MediaId` stays stable so all
     /// linked instances remain linked.
-    RenameTitleAsset { asset_id: MediaId, new_name: String },
-    UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
-    SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
-    SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
+    RenameTitleAsset {
+        asset_id: MediaId,
+        new_name: String,
+    },
+    UpdateTitleData {
+        clip_id: ClipId,
+        text: String,
+        font_size: f32,
+        font_name: String,
+        font_style: u8,
+        color: [u8; 4],
+    },
+    SetTitleAlignment {
+        clip_id: ClipId,
+        alignment: u8,
+    }, // 0=Left, 1=Center, 2=Right
+    SetTitlePosition {
+        clip_id: ClipId,
+        x: f32,
+        y: f32,
+    },
     /// Replace one Title-object's transform wholesale. Used by the
     /// on-canvas editor (drag-to-move, drag handle-resize, drag
     /// rotation handle). The transform fields are normalised
@@ -1929,46 +2532,103 @@ pub enum AppCommand {
     },
     /// Select a Title-object on the on-canvas editor. `object_id`
     /// = `None` deselects (reverts to clip-level transform handles).
-    SelectTitleObject { clip_id: ClipId, object_id: Option<u32> },
+    SelectTitleObject {
+        clip_id: ClipId,
+        object_id: Option<u32>,
+    },
     /// Add a new object to the title's object stack. `kind`:
     /// 0 = TextBox (default styling, "New Text" placeholder),
     /// 1 = Shape (rectangle filling the centre of the frame).
     /// The new object is appended at the top of the stack and
     /// becomes the selected object so the user can immediately
     /// drag / edit it.
-    AddTitleObject { clip_id: ClipId, kind: u8 },
+    AddTitleObject {
+        clip_id: ClipId,
+        kind: u8,
+    },
     /// Remove an object from a title. Selection clears if the
     /// removed object was the active one.
-    DeleteTitleObject { clip_id: ClipId, object_id: u32 },
+    DeleteTitleObject {
+        clip_id: ClipId,
+        object_id: u32,
+    },
     /// Toggle the eye-icon visibility flag on an object.
-    SetTitleObjectVisible { clip_id: ClipId, object_id: u32, visible: bool },
+    SetTitleObjectVisible {
+        clip_id: ClipId,
+        object_id: u32,
+        visible: bool,
+    },
     /// Toggle the lock flag on an object — locked objects are
     /// skipped on canvas hit-test and resist on-canvas drag, but
     /// remain editable from the Inspector.
-    SetTitleObjectLocked { clip_id: ClipId, object_id: u32, locked: bool },
+    SetTitleObjectLocked {
+        clip_id: ClipId,
+        object_id: u32,
+        locked: bool,
+    },
     /// Set the per-object opacity (0..1). Multiplies into the
     /// alpha of every pixel this object contributes during the
     /// title's compose pass; independent from clip-level fades.
-    SetTitleObjectOpacity { clip_id: ClipId, object_id: u32, opacity: f32 },
+    SetTitleObjectOpacity {
+        clip_id: ClipId,
+        object_id: u32,
+        opacity: f32,
+    },
     /// Rename the layer-list label for an object.
-    RenameTitleObject { clip_id: ClipId, object_id: u32, name: String },
+    RenameTitleObject {
+        clip_id: ClipId,
+        object_id: u32,
+        name: String,
+    },
     /// Reorder objects in the stack. `new_order` is the full list
     /// of object ids in the new back→front order; ids missing from
     /// the list are left at the end in their existing relative order
     /// (defensive against partial-update races).
-    ReorderTitleObjects { clip_id: ClipId, new_order: Vec<u32> },
+    ReorderTitleObjects {
+        clip_id: ClipId,
+        new_order: Vec<u32>,
+    },
     /// Per-shape style mutations. Each command targets one Shape
     /// object inside a Title clip, identified by its object id.
     /// Used by the Inspector when a Shape layer is selected.
-    TitlePathError { message: String },
-    BeginTitlePathDrag { clip_id: ClipId },
-    EndTitlePathDrag { clip_id: ClipId },
-    SetTitleVectorPath { clip_id: ClipId, object_id: u32, path: crate::vector_path::VectorPath },
-    SetTitleShapeFill { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]> },
-    SetTitleShapeStroke { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]>, width: f32 },
-    SetTitleShapeCornerRadius { clip_id: ClipId, object_id: u32, radius: f32 },
+    TitlePathError {
+        message: String,
+    },
+    BeginTitlePathDrag {
+        clip_id: ClipId,
+    },
+    EndTitlePathDrag {
+        clip_id: ClipId,
+    },
+    SetTitleVectorPath {
+        clip_id: ClipId,
+        object_id: u32,
+        path: crate::vector_path::VectorPath,
+    },
+    SetTitleShapeFill {
+        clip_id: ClipId,
+        object_id: u32,
+        color: Option<[u8; 4]>,
+    },
+    SetTitleShapeStroke {
+        clip_id: ClipId,
+        object_id: u32,
+        color: Option<[u8; 4]>,
+        width: f32,
+    },
+    SetTitleShapeCornerRadius {
+        clip_id: ClipId,
+        object_id: u32,
+        radius: f32,
+    },
     /// Fit a backing shape to a text layer, with padding in 1080p pixels.
-    SetTitleShapeFit { clip_id: ClipId, object_id: u32, target_id: Option<u32>, padding_x: f32, padding_y: f32 },
+    SetTitleShapeFit {
+        clip_id: ClipId,
+        object_id: u32,
+        target_id: Option<u32>,
+        padding_x: f32,
+        padding_y: f32,
+    },
 
     /// Inline text edit: replace the text of a specific TextBox
     /// object (identified by id) with a new value. Used by the
@@ -1976,7 +2636,11 @@ pub enum AppCommand {
     /// style — those flow through the existing `UpdateTitleData`
     /// or per-property commands so they stay separable from the
     /// keystroke-by-keystroke text mutation.
-    SetTitleObjectText { clip_id: ClipId, object_id: u32, text: String },
+    SetTitleObjectText {
+        clip_id: ClipId,
+        object_id: u32,
+        text: String,
+    },
     /// Same as SetTitleObjectTransform but also updates the primary
     /// TextBox's font_size — used by the corner-handle drag where
     /// the pro-NLE convention is "scale the font, not just the box".
@@ -1992,13 +2656,27 @@ pub enum AppCommand {
         anchor_y: f32,
         font_size: f32,
     },
-    SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
-    SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    SetTitleBackground {
+        clip_id: ClipId,
+        bg_kind: u8,
+        color: [u8; 4],
+    }, // 0=None, 1=Color, 2=FullFrame
+    SetTitleShadow {
+        clip_id: ClipId,
+        enabled: bool,
+        color: [u8; 4],
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+    },
     /// Replace the entire drop-shadow stack. Each tuple is
     /// (color_rgba, offset_x, offset_y, blur). Existing per-index
     /// keyframe vecs are preserved in place when the new vec is at
     /// least as long; trimmed slots lose their keyframes.
-    SetTitleShadows { clip_id: ClipId, shadows: Vec<([u8; 4], f32, f32, f32)> },
+    SetTitleShadows {
+        clip_id: ClipId,
+        shadows: Vec<([u8; 4], f32, f32, f32)>,
+    },
     /// Set the static fields on a single shadow layer at `index`,
     /// preserving its keyframe vecs. Used by the per-row inspector
     /// path so other layers' keyframes survive an inline edit.
@@ -2013,14 +2691,31 @@ pub enum AppCommand {
     },
     /// Soft-disable the secondary drop-shadow stack (`shadows[1..]`).
     /// Primary shadow (index 0) is unaffected.
-    SetTitleShadowStackEnabled { clip_id: ClipId, enabled: bool },
+    SetTitleShadowStackEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Set text outline. `None` = disable.
-    SetTitleOutline { clip_id: ClipId, enabled: bool, color: [u8; 4], width: f32 },
+    SetTitleOutline {
+        clip_id: ClipId,
+        enabled: bool,
+        color: [u8; 4],
+        width: f32,
+    },
     /// Set text glow. `enabled=false` = disable.
-    SetTitleGlow { clip_id: ClipId, enabled: bool, color: [u8; 4], radius: f32, intensity: f32 },
+    SetTitleGlow {
+        clip_id: ClipId,
+        enabled: bool,
+        color: [u8; 4],
+        radius: f32,
+        intensity: f32,
+    },
     /// Replace the entire glow stack. Each tuple is
     /// (color_rgba, radius, intensity).
-    SetTitleGlows { clip_id: ClipId, glows: Vec<([u8; 4], f32, f32)> },
+    SetTitleGlows {
+        clip_id: ClipId,
+        glows: Vec<([u8; 4], f32, f32)>,
+    },
     /// Set the static fields on a single glow layer at `index`,
     /// preserving its keyframe vecs.
     SetTitleGlowLayer {
@@ -2032,12 +2727,23 @@ pub enum AppCommand {
         intensity: f32,
     },
     /// Soft-disable for the secondary glow stack.
-    SetTitleGlowStackEnabled { clip_id: ClipId, enabled: bool },
+    SetTitleGlowStackEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Set gradient fill. `enabled=false` = disable, uses solid color instead.
-    SetTitleGradient { clip_id: ClipId, enabled: bool, top_color: [u8; 4], bottom_color: [u8; 4] },
+    SetTitleGradient {
+        clip_id: ClipId,
+        enabled: bool,
+        top_color: [u8; 4],
+        bottom_color: [u8; 4],
+    },
     /// Set multiple outline layers (replaces single outline).
     /// Each tuple is (color_rgba, width_px).
-    SetTitleOutlines { clip_id: ClipId, outlines: Vec<([u8; 4], f32)> },
+    SetTitleOutlines {
+        clip_id: ClipId,
+        outlines: Vec<([u8; 4], f32)>,
+    },
     /// Set the static fields on a single outline layer at `index`,
     /// preserving its `width_keyframes`. Used by the per-row keyframe-
     /// aware scrubby in the Outline Layers stack — when no keyframes
@@ -2054,12 +2760,25 @@ pub enum AppCommand {
     /// Soft-disable the secondary outline stack (`outlines[1..]`).
     /// Primary outline (index 0) is unaffected. The renderer skips
     /// stacked layers when `enabled=false` but the data is preserved.
-    SetTitleOutlineStackEnabled { clip_id: ClipId, enabled: bool },
+    SetTitleOutlineStackEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Set inner shadow. `enabled=false` = disable.
-    SetTitleInnerShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    SetTitleInnerShadow {
+        clip_id: ClipId,
+        enabled: bool,
+        color: [u8; 4],
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+    },
     /// Replace the entire inner-shadow stack. Each tuple is
     /// (color_rgba, offset_x, offset_y, blur). Mirrors SetTitleShadows.
-    SetTitleInnerShadows { clip_id: ClipId, shadows: Vec<([u8; 4], f32, f32, f32)> },
+    SetTitleInnerShadows {
+        clip_id: ClipId,
+        shadows: Vec<([u8; 4], f32, f32, f32)>,
+    },
     /// Set the static fields on a single inner-shadow layer at `index`,
     /// preserving its keyframe vecs.
     SetTitleInnerShadowLayer {
@@ -2072,26 +2791,56 @@ pub enum AppCommand {
         blur: f32,
     },
     /// Soft-disable for the secondary inner-shadow stack.
-    SetTitleInnerShadowStackEnabled { clip_id: ClipId, enabled: bool },
+    SetTitleInnerShadowStackEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Set pattern fill. pattern_kind: 0=None, 1=HStripes, 2=VStripes, 3=Checker, 4=Diagonal
-    SetTitlePattern { clip_id: ClipId, pattern_kind: u8, color_a: [u8; 4], color_b: [u8; 4], size: f32 },
+    SetTitlePattern {
+        clip_id: ClipId,
+        pattern_kind: u8,
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        size: f32,
+    },
     /// Set per-character tracking (extra spacing in px).
-    SetTitleTracking { clip_id: ClipId, tracking: f32 },
+    SetTitleTracking {
+        clip_id: ClipId,
+        tracking: f32,
+    },
     /// The entrance and exit motion of the targeted text layer.
-    SetTitleMotion { clip_id: ClipId, motion: crate::title_motion::TitleMotion },
+    SetTitleMotion {
+        clip_id: ClipId,
+        motion: crate::title_motion::TitleMotion,
+    },
     /// Set write-on reveal progress (0.0-1.0).
-    SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
+    SetTitleWriteOn {
+        clip_id: ClipId,
+        write_on: f32,
+    },
     /// Set line spacing multiplier.
-    SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
+    SetTitleLineSpacing {
+        clip_id: ClipId,
+        line_spacing: f32,
+    },
     /// Toggle text underline rendering.
-    SetTitleUnderline { clip_id: ClipId, underline: bool },
+    SetTitleUnderline {
+        clip_id: ClipId,
+        underline: bool,
+    },
     /// Toggle text strikethrough rendering.
-    SetTitleStrikethrough { clip_id: ClipId, strikethrough: bool },
+    SetTitleStrikethrough {
+        clip_id: ClipId,
+        strikethrough: bool,
+    },
     /// Soft-disable for the Pattern Fill subcard. `pattern_fill` is an
     /// `Option<TextPattern>` enum without a place to add a struct-level
     /// `enabled` flag, so the toggle bit lives in `tb.pattern_fill_enabled`
     /// alongside the data. Disabling preserves the chosen pattern.
-    SetTitlePatternEnabled { clip_id: ClipId, enabled: bool },
+    SetTitlePatternEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Apply a named style preset to the selected TextBox layer. The
     /// preset is *flattened* into the underlying fields (colour, glow,
     /// outline, shadow, chromatic aberration, glitch, …) — there is no
@@ -2099,55 +2848,108 @@ pub enum AppCommand {
     /// dropdown is a one-shot quick-style picker rather than a slot.
     /// Preset ids are kept in a single registry inside the inspector
     /// so the handler can match on them; see PRESET_REGISTRY.
-    ApplyTitlePreset { clip_id: ClipId, preset_id: u8 },
+    ApplyTitlePreset {
+        clip_id: ClipId,
+        preset_id: u8,
+    },
     /// Soft-disable for the Texture Fill subcard. `texture_fill_path` is
     /// `Option<String>`; the toggle bit is `tb.texture_fill_enabled`.
     /// Disabling preserves the path so the user's selection survives.
-    SetTitleTextureEnabled { clip_id: ClipId, enabled: bool },
+    SetTitleTextureEnabled {
+        clip_id: ClipId,
+        enabled: bool,
+    },
     /// Set the pre-layout case transform applied to the text body.
     /// `case_kind`: 0 = None, 1 = Uppercase, 2 = Lowercase, 3 = SmallCaps.
-    SetTitleCaseTransform { clip_id: ClipId, case_kind: u8 },
+    SetTitleCaseTransform {
+        clip_id: ClipId,
+        case_kind: u8,
+    },
     /// Vertical baseline shift in 1080p reference pixels (positive
     /// shifts text DOWN). Resolution-stable: scales with frame height
     /// at render time.
-    SetTitleBaselineShift { clip_id: ClipId, shift_px: f32 },
+    SetTitleBaselineShift {
+        clip_id: ClipId,
+        shift_px: f32,
+    },
     /// Drop-cap scale factor for the first character. `0.0` = off,
     /// `>= 1.0` = enlarge first char by this factor (3.0 = three-line
     /// drop initial). Body text continues at the same baseline.
-    SetTitleDropCap { clip_id: ClipId, scale: f32 },
+    SetTitleDropCap {
+        clip_id: ClipId,
+        scale: f32,
+    },
     /// Chromatic aberration in 1080p reference pixels. `0.0` = off.
-    SetTitleChromaticAberration { clip_id: ClipId, offset_px: f32 },
+    SetTitleChromaticAberration {
+        clip_id: ClipId,
+        offset_px: f32,
+    },
     /// Glitch intensity 0..1 (random horizontal slice displacement).
     /// `0.0` = off; `1.0` = max chaos.
-    SetTitleGlitch { clip_id: ClipId, intensity: f32 },
+    SetTitleGlitch {
+        clip_id: ClipId,
+        intensity: f32,
+    },
     /// One-click "neon" preset: rewrites the textbox with a bright
     /// fill, a strong outer glow tinted to match, and a thin dark
     /// outline so the text reads against any background. The
     /// `accent_color` is the neon hue; saturation and value are
     /// pinned for legibility regardless of what the user picks.
-    SetTitleNeonPreset { clip_id: ClipId, accent_color: [u8; 4] },
+    SetTitleNeonPreset {
+        clip_id: ClipId,
+        accent_color: [u8; 4],
+    },
     /// Number of columns to flow body text into (1 = single column).
-    SetTitleColumns { clip_id: ClipId, columns: u8 },
+    SetTitleColumns {
+        clip_id: ClipId,
+        columns: u8,
+    },
     /// Toggle vertical (CJK-style) character stacking.
-    SetTitleVerticalLayout { clip_id: ClipId, vertical: bool },
+    SetTitleVerticalLayout {
+        clip_id: ClipId,
+        vertical: bool,
+    },
     /// Set text direction (0 = Ltr, 1 = Rtl).
-    SetTitleDirection { clip_id: ClipId, direction: u8 },
+    SetTitleDirection {
+        clip_id: ClipId,
+        direction: u8,
+    },
     /// Set 3D text extrusion. `enabled=false` = disable.
-    SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
+    SetTitleExtrusion {
+        clip_id: ClipId,
+        enabled: bool,
+        depth: f32,
+        angle: f32,
+        face_color: [u8; 4],
+        side_color: [u8; 4],
+        lighting: f32,
+    },
     /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.
     /// For Arc: p1=radius, p2=start_angle, p3=sweep
     /// For Circle: p1=radius
     /// For Wave: p1=amplitude, p2=frequency, p3=phase
-    SetTitleTextPath { clip_id: ClipId, path_kind: u8, p1: f32, p2: f32, p3: f32 },
+    SetTitleTextPath {
+        clip_id: ClipId,
+        path_kind: u8,
+        p1: f32,
+        p2: f32,
+        p3: f32,
+    },
     /// Set per-character animation. entrance: 0=None, 1=FadeIn, 2=SlideUp, 3=SlideDown, 4=ScaleUp.
     /// Set enabled=false to disable entirely.
     /// Set image texture fill path. `path: None` = disable texture fill.
-    SetTitleTextureFill { clip_id: ClipId, path: Option<String> },
+    SetTitleTextureFill {
+        clip_id: ClipId,
+        path: Option<String>,
+    },
     /// Switch the texture source to one of the bundled procedural
     /// presets. preset_id maps to TexturePresetId (0=PaperGrain,
     /// 1=Scanlines, 2=DiagonalHatch, 3=GradientSweep). The other
     /// TextureFill params (scale / offset / etc.) are preserved.
-    SetTitleTexturePreset { clip_id: ClipId, preset_id: u8 },
+    SetTitleTexturePreset {
+        clip_id: ClipId,
+        preset_id: u8,
+    },
     /// Set every transform / blend param on the texture fill in one
     /// command. tile_mode is u8 (0=Stretch, 1=Tile, 2=Fit, 3=Cover).
     /// Source field is preserved; this command never changes the
@@ -2163,7 +2965,12 @@ pub enum AppCommand {
         tint: [u8; 4],
     },
     /// Set motion blur. `enabled=false` = disable.
-    SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
+    SetTitleMotionBlur {
+        clip_id: ClipId,
+        enabled: bool,
+        shutter_angle: f32,
+        samples: u8,
+    },
     /// Apply a style property to a character range (rich text style runs).
     /// `property`: "font_size", "color", "font_style", "tracking", "baseline_offset"
     /// `value`: JSON-encoded value for the property.
@@ -2175,14 +2982,21 @@ pub enum AppCommand {
         value: String,
     },
     /// Clear all style runs — reset to uniform base style.
-    ClearTitleStyleRuns { clip_id: ClipId },
+    ClearTitleStyleRuns {
+        clip_id: ClipId,
+    },
     /// Update the title animation fade duration stored in AppState.
-    SetTitleFadeDuration { duration: f32 },
+    SetTitleFadeDuration {
+        duration: f32,
+    },
     ClearTitleOverlay,
     /// Replace the loops of the primary text layer: what it keeps
     /// doing while on screen (blink, pulse, shake, wave, colour
     /// cycle, scroll, crawl, counter).
-    SetTitleLoops { clip_id: ClipId, loops: Vec<crate::title_motion::TitleLoop> },
+    SetTitleLoops {
+        clip_id: ClipId,
+        loops: Vec<crate::title_motion::TitleLoop>,
+    },
 
     // Linked clips
     ImportMediaLinked {
@@ -2192,71 +3006,136 @@ pub enum AppCommand {
         /// `false`, append onto V1/A1 (the FCP-style default).
         on_new_tracks: bool,
     },
-    UnlinkClip { clip_id: ClipId },
-    LinkClips { clip_a: ClipId, clip_b: ClipId },
+    UnlinkClip {
+        clip_id: ClipId,
+    },
+    LinkClips {
+        clip_a: ClipId,
+        clip_b: ClipId,
+    },
 
     // Markers
-    AddMarker { position: Timecode, label: String, color: MarkerColor },
-    RemoveMarker { marker_id: MarkerId },
-    UpdateMarkerLabel { marker_id: MarkerId, label: String },
-    UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },
-    UpdateMarkerComment { marker_id: MarkerId, comment: String },
-    UpdateMarkerKind { marker_id: MarkerId, kind: MarkerKind },
+    AddMarker {
+        position: Timecode,
+        label: String,
+        color: MarkerColor,
+    },
+    RemoveMarker {
+        marker_id: MarkerId,
+    },
+    UpdateMarkerLabel {
+        marker_id: MarkerId,
+        label: String,
+    },
+    UpdateMarkerColor {
+        marker_id: MarkerId,
+        color: MarkerColor,
+    },
+    UpdateMarkerComment {
+        marker_id: MarkerId,
+        comment: String,
+    },
+    UpdateMarkerKind {
+        marker_id: MarkerId,
+        kind: MarkerKind,
+    },
     /// Set a sequence marker's range duration. `None` converts the marker
     /// back to a point marker; `Some(dur)` promotes it to a range spanning
     /// `position..position + dur`.
-    SetMarkerDuration { marker_id: MarkerId, duration: Option<Timecode> },
-    JumpToMarker { marker_id: MarkerId },
+    SetMarkerDuration {
+        marker_id: MarkerId,
+        duration: Option<Timecode>,
+    },
+    JumpToMarker {
+        marker_id: MarkerId,
+    },
 
     // Per-clip markers
-    AddClipMarker { clip_id: ClipId, time_secs: f64, name: String, color: MarkerColor },
-    RemoveClipMarker { clip_id: ClipId, index: usize },
+    AddClipMarker {
+        clip_id: ClipId,
+        time_secs: f64,
+        name: String,
+        color: MarkerColor,
+    },
+    RemoveClipMarker {
+        clip_id: ClipId,
+        index: usize,
+    },
 
     // Dynamic tracks
     AddVideoTrack,
     AddAudioTrack,
     /// Add a new subtitle track with an explicit name.
     /// Used by the subtitle-editor "+ Add Subtitle Track" and multi-file import.
-    AddSubtitleTrack { name: String },
+    AddSubtitleTrack {
+        name: String,
+    },
     /// Sync auto_create_tracks preference to AppState.
     SyncAutoCreateTracks(bool),
     /// Insert a new track of the same kind above the given track index.
-    AddTrackAbove { track_index: usize },
+    AddTrackAbove {
+        track_index: usize,
+    },
     /// Insert a new track of the same kind below the given track index.
-    AddTrackBelow { track_index: usize },
-    RemoveTrack { track_id: TrackId },
-    RenameTrack { track_id: TrackId, name: String },
+    AddTrackBelow {
+        track_index: usize,
+    },
+    RemoveTrack {
+        track_id: TrackId,
+    },
+    RenameTrack {
+        track_id: TrackId,
+        name: String,
+    },
     /// Reset the per-track waveform amplitude zoom back to 1.0 (#50).
-    ResetWaveformZoom { track_id: TrackId },
+    ResetWaveformZoom {
+        track_id: TrackId,
+    },
 
     // Audio sync (#61)
     /// Mark a clip as the reference for future `AlignToAudioReference` calls.
-    SetAudioReference { clip_id: ClipId },
+    SetAudioReference {
+        clip_id: ClipId,
+    },
     /// Cross-correlate the given clip's audio with the current reference clip
     /// and shift its timeline position to align them.
-    AlignToAudioReference { clip_id: ClipId },
+    AlignToAudioReference {
+        clip_id: ClipId,
+    },
     /// F-160 — bin-scoped variants of the two above. The handler resolves
     /// `media_id` to the first timeline clip using that media and
     /// forwards to `SetAudioReference` / `AlignToAudioReference`. If no
     /// clip uses this media, emits a toast and no-ops.
-    SetAudioReferenceByMedia { media_id: MediaId },
-    AlignToAudioReferenceByMedia { media_id: MediaId },
+    SetAudioReferenceByMedia {
+        media_id: MediaId,
+    },
+    AlignToAudioReferenceByMedia {
+        media_id: MediaId,
+    },
 
     // Audio recording (#60)
     /// Arm / un-arm a track for recording. Only one track is armed at a time
     /// for the MVP — arming track X un-arms all others.
-    ArmTrack { track_id: TrackId, armed: bool },
+    ArmTrack {
+        track_id: TrackId,
+        armed: bool,
+    },
     /// Toggle the per-track expandable automation lane on the audio track at
     /// `track_idx`. The lane shows the active rubber-band param's curve at
     /// full lane height — DaVinci Fairlight / Premiere "Show Track Keyframes"
     /// style. Currently-collapsed → opens with the global rubber-band param;
     /// already-open → collapses. State persists with the project file.
-    ToggleAudioAutomationLane { track_idx: usize },
+    ToggleAudioAutomationLane {
+        track_idx: usize,
+    },
     /// Switch the param shown in a track's automation lane without
     /// closing it. Used by the lane's right-click param picker so
     /// users can flip between Volume / Pan / Gain without first
     /// collapsing the lane and changing the global rubber-band pill.
-    SetAudioAutomationLaneParam { track_idx: usize, param: AudioParam },
+    SetAudioAutomationLaneParam {
+        track_idx: usize,
+        param: AudioParam,
+    },
     /// Begin capturing audio from the configured input device into a WAV file
     /// in the proxy cache. Does nothing if no track is armed.
     StartRecording,
@@ -2264,82 +3143,157 @@ pub enum AppCommand {
     StopRecording,
 
     // Media pool management
-    RemoveFromPool { media_id: MediaId },
-    ConfirmRemoveFromPool { media_id: MediaId },
-    SetMediaRating { media_id: MediaId, rating: u8 },
+    RemoveFromPool {
+        media_id: MediaId,
+    },
+    ConfirmRemoveFromPool {
+        media_id: MediaId,
+    },
+    SetMediaRating {
+        media_id: MediaId,
+        rating: u8,
+    },
     /// What the editor logged about a clip: scene, shot, take,
     /// description, comments, keywords, good take, reel.
-    SetMediaLog { media_id: MediaId, log: crate::ClipLog },
+    SetMediaLog {
+        media_id: MediaId,
+        log: crate::ClipLog,
+    },
     /// A note, favourite stretch or rejected one on a pool clip.
-    AddMediaMarker { media_id: MediaId, marker: crate::MediaMarker },
-    RemoveMediaMarker { media_id: MediaId, index: usize },
-    RenameMediaMarker { media_id: MediaId, index: usize, name: String },
+    AddMediaMarker {
+        media_id: MediaId,
+        marker: crate::MediaMarker,
+    },
+    RemoveMediaMarker {
+        media_id: MediaId,
+        index: usize,
+    },
+    RenameMediaMarker {
+        media_id: MediaId,
+        index: usize,
+        name: String,
+    },
     /// Pair a camera clip with a separate recording: by timecode when
     /// both carry one, by the sound otherwise.
-    SyncMediaPair { video_id: MediaId, audio_id: MediaId },
+    SyncMediaPair {
+        video_id: MediaId,
+        audio_id: MediaId,
+    },
     /// Undo the pairing; the clip goes back to its own sound.
-    ClearSyncedAudio { video_id: MediaId },
+    ClearSyncedAudio {
+        video_id: MediaId,
+    },
 
-    SetMediaTags { media_id: MediaId, tags: Vec<String> },
-    RevealInFileManager { path: PathBuf },
+    SetMediaTags {
+        media_id: MediaId,
+        tags: Vec<String>,
+    },
+    RevealInFileManager {
+        path: PathBuf,
+    },
     /// Open a media clip in an external application (GIMP / Krita / Audacity / etc).
     /// The app is chosen from `ExternalToolsPrefs` based on media type and falls
     /// back to `xdg-open` when the configured field is empty.
-    OpenInExternalApp { media_id: MediaId },
-    RevealMediaInBrowser { media_id: MediaId },
-    SetMediaColorLabel { media_id: MediaId, label: u8 },
+    OpenInExternalApp {
+        media_id: MediaId,
+    },
+    RevealMediaInBrowser {
+        media_id: MediaId,
+    },
+    SetMediaColorLabel {
+        media_id: MediaId,
+        label: u8,
+    },
     DeleteUnusedMedia,
     ConfirmDeleteUnusedMedia,
     /// Export despite offline media (user confirmed from warning dialog).
-    ForceExportSequence { settings: Box<ExportSettings> },
+    ForceExportSequence {
+        settings: Box<ExportSettings>,
+    },
     /// Bypasses the source-overwrite guard. Sent by the warning
     /// dialog's "Overwrite Anyway" button when the user explicitly
     /// confirms they want to write the export to the same path as
     /// a clip in the project's media pool.
-    ForceExportSequenceOverwrite { settings: Box<ExportSettings> },
+    ForceExportSequenceOverwrite {
+        settings: Box<ExportSettings>,
+    },
 
     // Bins
-    CreateBin { name: String },
+    CreateBin {
+        name: String,
+    },
     /// Save a smart bin: a new one, or the one with this id over again.
-    SaveSmartBin { bin: crate::SmartBin },
-    DeleteSmartBin { id: String },
+    SaveSmartBin {
+        bin: crate::SmartBin,
+    },
+    DeleteSmartBin {
+        id: String,
+    },
     /// Create a child bin inside an existing bin.
-    CreateSubBin { parent_id: BinId, name: String },
+    CreateSubBin {
+        parent_id: BinId,
+        name: String,
+    },
     /// Import a detected image sequence as a single video clip.
     ImportImageSequence {
-        pattern: String,   // ffmpeg pattern e.g. "/path/frame_%04d.png"
+        pattern: String, // ffmpeg pattern e.g. "/path/frame_%04d.png"
         start_frame: u32,
         frame_count: u32,
         fps: f64,
     },
-    DeleteBin { name: String },
-    MoveItemToBin { media_id: MediaId, bin: Option<String> },
-    RenameBin { old_name: String, new_name: String },
+    DeleteBin {
+        name: String,
+    },
+    MoveItemToBin {
+        media_id: MediaId,
+        bin: Option<String>,
+    },
+    RenameBin {
+        old_name: String,
+        new_name: String,
+    },
     /// Rename a single MediaItem — updates `MediaItem.filename` only. The
     /// source file on disk (`MediaItem.path`) is never touched.
-    RenameMediaItem { media_id: MediaId, new_filename: String },
+    RenameMediaItem {
+        media_id: MediaId,
+        new_filename: String,
+    },
     /// Apply a set of filename changes atomically as one undo step. The UI
     /// computes `(id, new_filename)` pairs from the preview; the handler
     /// snapshots the old names from the current pool to build the undo
     /// record.
-    BatchRenameMediaItems { changes: Vec<(MediaId, String)> },
+    BatchRenameMediaItems {
+        changes: Vec<(MediaId, String)>,
+    },
     /// Open the batch-rename modal seeded with the given media ids.
     /// Dispatched from the bin context menus where `AppState` is not
     /// directly accessible.
-    OpenBatchRenameDialog { media_ids: Vec<MediaId> },
+    OpenBatchRenameDialog {
+        media_ids: Vec<MediaId>,
+    },
 
     // Browser skimming
-    StartSkimTranscode { media_id: MediaId },
+    StartSkimTranscode {
+        media_id: MediaId,
+    },
     /// Force-regenerate skim transcode (deletes existing cache first).
-    RegenerateSkimTranscode { media_id: MediaId },
+    RegenerateSkimTranscode {
+        media_id: MediaId,
+    },
     /// Force-regenerate filmstrip thumbnails (deletes existing cache first).
-    RegenerateFilmstrip { media_id: MediaId },
+    RegenerateFilmstrip {
+        media_id: MediaId,
+    },
     /// Decode a single skim frame at `time_secs` for `media_id`. `target`
     /// selects which viewer the resulting frame is destined for so the
     /// upload path can route it correctly: timeline scrub / filmstrip
     /// hover = `Program`; media-browser bin hover = `Source`. The
     /// returned `BrowserSkimFrameReady` event carries the same target.
-    BrowserSkimFrame { media_id: MediaId, time_secs: f64, target: ViewerMode },
+    BrowserSkimFrame {
+        media_id: MediaId,
+        time_secs: f64,
+        target: ViewerMode,
+    },
 
     // Browser audio skimming
     /// Begin an audio skim session for a media item (mouse enters skimmable clip).
@@ -2398,26 +3352,58 @@ pub enum AppCommand {
     ShowPreferences,
 
     // Track locking
-    SetTrackLocked { track_id: TrackId, locked: bool },
+    SetTrackLocked {
+        track_id: TrackId,
+        locked: bool,
+    },
 
     /// Set (or clear) a track's custom pixel height. `None` restores the
     /// kind's default height. Height is clamped to (32.0, 300.0).
-    SetTrackCustomHeight { track_id: TrackId, height: Option<f32> },
+    SetTrackCustomHeight {
+        track_id: TrackId,
+        height: Option<f32>,
+    },
     /// Set the per-track automation-lane height. `None` resets to the
     /// default lane height. Mirrors `SetTrackCustomHeight` for the
     /// clip area.
-    SetTrackAutomationLaneHeight { track_id: TrackId, height: Option<f32> },
+    SetTrackAutomationLaneHeight {
+        track_id: TrackId,
+        height: Option<f32>,
+    },
 
     // Clip grouping
-    GroupClips { clip_ids: Vec<ClipId> },
-    UngroupClips { group_id: GroupId },
-    UngroupClip { clip_id: ClipId },
+    GroupClips {
+        clip_ids: Vec<ClipId>,
+    },
+    UngroupClips {
+        group_id: GroupId,
+    },
+    UngroupClip {
+        clip_id: ClipId,
+    },
 
     // Parameter modifiers (behaviors)
-    AddModifier { clip_id: ClipId, param: ParamId, modifier: Modifier },
-    RemoveModifier { clip_id: ClipId, param: ParamId, modifier_index: usize },
-    UpdateModifier { clip_id: ClipId, param: ParamId, modifier_index: usize, modifier: Modifier },
-    ToggleModifier { clip_id: ClipId, param: ParamId, modifier_index: usize },
+    AddModifier {
+        clip_id: ClipId,
+        param: ParamId,
+        modifier: Modifier,
+    },
+    RemoveModifier {
+        clip_id: ClipId,
+        param: ParamId,
+        modifier_index: usize,
+    },
+    UpdateModifier {
+        clip_id: ClipId,
+        param: ParamId,
+        modifier_index: usize,
+        modifier: Modifier,
+    },
+    ToggleModifier {
+        clip_id: ClipId,
+        param: ParamId,
+        modifier_index: usize,
+    },
 
     // Application
     Quit,
@@ -2425,19 +3411,76 @@ pub enum AppCommand {
     // Audio keyframes
     /// Inspector edit selecting each linked clip's nearest key in the displayed frame.
     /// Exact curve/agent mutations continue to use Add/RemoveAudioKeyframe.
-    EditAudioKeyframeAtFrame { clip_id: ClipId, param: AudioParam, time_secs: f64, value: Option<f32> },
-    AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
-    RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
-    MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },
-    SetAudioKeyframeInterpolation { clip_id: ClipId, param: AudioParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
-    SetAudioKeyframeTangent { clip_id: ClipId, param: AudioParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    EditAudioKeyframeAtFrame {
+        clip_id: ClipId,
+        param: AudioParam,
+        time_secs: f64,
+        value: Option<f32>,
+    },
+    AddAudioKeyframe {
+        clip_id: ClipId,
+        param: AudioParam,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveAudioKeyframe {
+        clip_id: ClipId,
+        param: AudioParam,
+        time_secs: f64,
+    },
+    MoveAudioKeyframe {
+        clip_id: ClipId,
+        param: AudioParam,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetAudioKeyframeInterpolation {
+        clip_id: ClipId,
+        param: AudioParam,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
+    SetAudioKeyframeTangent {
+        clip_id: ClipId,
+        param: AudioParam,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
 
     // Video keyframes
-    AddVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64, value: f32 },
-    RemoveVideoKeyframe { clip_id: ClipId, param: VideoParam, time_secs: f64 },
-    MoveVideoKeyframe { clip_id: ClipId, param: VideoParam, index: usize, new_time_secs: f64, new_value: f32 },
-    SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
-    SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    AddVideoKeyframe {
+        clip_id: ClipId,
+        param: VideoParam,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveVideoKeyframe {
+        clip_id: ClipId,
+        param: VideoParam,
+        time_secs: f64,
+    },
+    MoveVideoKeyframe {
+        clip_id: ClipId,
+        param: VideoParam,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetVideoKeyframeInterpolation {
+        clip_id: ClipId,
+        param: VideoParam,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
+    SetVideoKeyframeTangent {
+        clip_id: ClipId,
+        param: VideoParam,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
 
     // Per-effect title keyframes — animate any keyframable param on
     // any TitleObject's effect (TextGlow radius/intensity today, more
@@ -2524,102 +3567,268 @@ pub enum AppCommand {
     },
 
     // Keyframe clipboard operations
-    CopyAudioKeyframes { clip_id: ClipId, param: AudioParam },
-    CopyVideoKeyframes { clip_id: ClipId, param: VideoParam },
-    PasteAudioKeyframes { clip_id: ClipId, param: AudioParam },
-    PasteVideoKeyframes { clip_id: ClipId, param: VideoParam },
+    CopyAudioKeyframes {
+        clip_id: ClipId,
+        param: AudioParam,
+    },
+    CopyVideoKeyframes {
+        clip_id: ClipId,
+        param: VideoParam,
+    },
+    PasteAudioKeyframes {
+        clip_id: ClipId,
+        param: AudioParam,
+    },
+    PasteVideoKeyframes {
+        clip_id: ClipId,
+        param: VideoParam,
+    },
 
     // Reverse keyframes
-    ReverseAudioKeyframes { clip_id: ClipId, param: AudioParam },
-    ReverseVideoKeyframes { clip_id: ClipId, param: VideoParam },
+    ReverseAudioKeyframes {
+        clip_id: ClipId,
+        param: AudioParam,
+    },
+    ReverseVideoKeyframes {
+        clip_id: ClipId,
+        param: VideoParam,
+    },
 
     // Effect keyframes
-    AddEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
-    RemoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
-    MoveEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
-    SetEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    AddEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        time_secs: f64,
+    },
+    MoveEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetEffectKeyframeInterpolation {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
 
     // Clip role
-    SetClipRole { clip_id: ClipId, role: crate::ClipRole },
+    SetClipRole {
+        clip_id: ClipId,
+        role: crate::ClipRole,
+    },
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
-    SetClipDepth { clip_id: ClipId, depth: f32 },
+    SetClipDepth {
+        clip_id: ClipId,
+        depth: f32,
+    },
     /// The sequence camera's shutter: motion blur on everything that moves.
     /// `shutter_deg` 0 is off. Undoable.
-    SetSequenceShutter { sequence_idx: usize, shutter_deg: f32, samples: u8 },
+    SetSequenceShutter {
+        sequence_idx: usize,
+        shutter_deg: f32,
+        samples: u8,
+    },
 
     /// One of the sequence camera's moving values, keyed at a moment.
     /// Where it looks, how far in, and its roll — the move itself,
     /// which until now could only be set through the `camera` op over
     /// the control socket. Undoable, as one camera snapshot.
-    SetSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64, value: f32 },
+    SetSequenceCameraKey {
+        sequence_idx: usize,
+        param: CameraParam,
+        time_secs: f64,
+        value: f32,
+    },
     /// The key at that moment, taken away again. Undoable.
-    RemoveSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64 },
+    RemoveSequenceCameraKey {
+        sequence_idx: usize,
+        param: CameraParam,
+        time_secs: f64,
+    },
     /// A key in one of the camera's lists carried to another moment and
     /// value, named by its index in that list: what a drag on the
     /// sequence lane or in the curve editor emits every frame. Undoable
     /// as one camera snapshot, unless a `BeginSequenceCameraDrag` is
     /// open, in which case the drag's end records the one entry.
-    MoveSequenceCameraKey { sequence_idx: usize, param: CameraParam, index: usize, new_time_secs: f64, new_value: f32 },
+    MoveSequenceCameraKey {
+        sequence_idx: usize,
+        param: CameraParam,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
     /// How the curve leaves a camera key: the interpolation of the key
     /// at `index` and, as the clip keyframe commands do, of the key
     /// before it, so the segment either side of the diamond takes the
     /// shape. Undoable.
-    SetSequenceCameraKeyInterpolation { sequence_idx: usize, param: CameraParam, index: usize, interpolation: crate::keyframe::Interpolation },
+    SetSequenceCameraKeyInterpolation {
+        sequence_idx: usize,
+        param: CameraParam,
+        index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
     /// A camera key's Bezier handles, either or both. Undoable as a
     /// camera snapshot, or folded into an open drag.
-    SetSequenceCameraKeyTangent { sequence_idx: usize, param: CameraParam, index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    SetSequenceCameraKeyTangent {
+        sequence_idx: usize,
+        param: CameraParam,
+        index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
     /// The move into the camera key at `index` given a named ease, the
     /// same curves the `camera` op writes. Undoable.
-    EaseSequenceCameraKey { sequence_idx: usize, param: CameraParam, index: usize, ease: crate::keyframe::Ease },
+    EaseSequenceCameraKey {
+        sequence_idx: usize,
+        param: CameraParam,
+        index: usize,
+        ease: crate::keyframe::Ease,
+    },
     /// A drag on the camera's keys has begun: the camera is snapshotted
     /// once, and the moves and handle edits until the matching end
     /// collapse into one undo entry.
-    BeginSequenceCameraDrag { sequence_idx: usize },
+    BeginSequenceCameraDrag {
+        sequence_idx: usize,
+    },
     /// The drag has ended; one entry from the snapshot to the camera as
     /// it now is, or none if nothing changed.
-    EndSequenceCameraDrag { sequence_idx: usize },
+    EndSequenceCameraDrag {
+        sequence_idx: usize,
+    },
 
     // Clip speed
-    SetClipSpeed { clip_id: ClipId, speed: f64 },
+    SetClipSpeed {
+        clip_id: ClipId,
+        speed: f64,
+    },
 
     // Speed keyframes (variable speed ramp)
     /// Add a speed keyframe to a clip at the given time.
-    AddSpeedKeyframe { clip_id: ClipId, time_secs: f64, speed: f64 },
+    AddSpeedKeyframe {
+        clip_id: ClipId,
+        time_secs: f64,
+        speed: f64,
+    },
     /// Remove a speed keyframe by index.
-    RemoveSpeedKeyframe { clip_id: ClipId, index: usize },
+    RemoveSpeedKeyframe {
+        clip_id: ClipId,
+        index: usize,
+    },
     /// Update an existing speed keyframe's time and value.
-    UpdateSpeedKeyframe { clip_id: ClipId, index: usize, time_secs: f64, speed: f64 },
+    UpdateSpeedKeyframe {
+        clip_id: ClipId,
+        index: usize,
+        time_secs: f64,
+        speed: f64,
+    },
     /// Replace all speed keyframes (used by presets).
-    SetSpeedKeyframes { clip_id: ClipId, keyframes: Vec<crate::Keyframe> },
+    SetSpeedKeyframes {
+        clip_id: ClipId,
+        keyframes: Vec<crate::Keyframe>,
+    },
     /// Begin drag for speed keyframe undo coalescing.
-    BeginSpeedKeyframeDrag { key: String, clip_id: ClipId },
+    BeginSpeedKeyframeDrag {
+        key: String,
+        clip_id: ClipId,
+    },
     /// End drag for speed keyframe undo coalescing.
-    EndSpeedKeyframeDrag { key: String, clip_id: ClipId },
+    EndSpeedKeyframeDrag {
+        key: String,
+        clip_id: ClipId,
+    },
 
     // Source rotation override (0, 90, 180, 270 degrees)
-    SetSourceRotation { clip_id: ClipId, degrees: i32 },
+    SetSourceRotation {
+        clip_id: ClipId,
+        degrees: i32,
+    },
 
     // Clip audio
     UpdateClipAudio {
-        clip_id: ClipId, gain: f32, volume: f32, pan: f32, fade_in_secs: f32, fade_out_secs: f32,
-        fade_in_curve: crate::types::FadeCurve, fade_out_curve: crate::types::FadeCurve,
+        clip_id: ClipId,
+        gain: f32,
+        volume: f32,
+        pan: f32,
+        fade_in_secs: f32,
+        fade_out_secs: f32,
+        fade_in_curve: crate::types::FadeCurve,
+        fade_out_curve: crate::types::FadeCurve,
         channel_config: crate::types::ChannelConfig,
     },
-    BeginAudioDrag { key: String, clip_id: ClipId, old_gain: f32, old_volume: f32, old_pan: f32, old_fade_in: f32, old_fade_out: f32 },
-    EndAudioDrag { key: String, clip_id: ClipId, new_gain: f32, new_volume: f32, new_pan: f32, new_fade_in: f32, new_fade_out: f32 },
+    BeginAudioDrag {
+        key: String,
+        clip_id: ClipId,
+        old_gain: f32,
+        old_volume: f32,
+        old_pan: f32,
+        old_fade_in: f32,
+        old_fade_out: f32,
+    },
+    EndAudioDrag {
+        key: String,
+        clip_id: ClipId,
+        new_gain: f32,
+        new_volume: f32,
+        new_pan: f32,
+        new_fade_in: f32,
+        new_fade_out: f32,
+    },
 
     // Scale keyframe timing
-    ScaleAudioKeyframeTiming { clip_id: ClipId, param: AudioParam, factor: f64 },
-    ScaleVideoKeyframeTiming { clip_id: ClipId, param: VideoParam, factor: f64 },
+    ScaleAudioKeyframeTiming {
+        clip_id: ClipId,
+        param: AudioParam,
+        factor: f64,
+    },
+    ScaleVideoKeyframeTiming {
+        clip_id: ClipId,
+        param: VideoParam,
+        factor: f64,
+    },
 
     // Insert keyframe bump pattern
-    InsertAudioKeyframeBump { clip_id: ClipId, param: AudioParam, center_time: f64, bump_value: f32, base_value: f32, duration_secs: f64, ramp_secs: f64 },
-    InsertVideoKeyframeBump { clip_id: ClipId, param: VideoParam, center_time: f64, bump_value: f32, base_value: f32, duration_secs: f64, ramp_secs: f64 },
+    InsertAudioKeyframeBump {
+        clip_id: ClipId,
+        param: AudioParam,
+        center_time: f64,
+        bump_value: f32,
+        base_value: f32,
+        duration_secs: f64,
+        ramp_secs: f64,
+    },
+    InsertVideoKeyframeBump {
+        clip_id: ClipId,
+        param: VideoParam,
+        center_time: f64,
+        bump_value: f32,
+        base_value: f32,
+        duration_secs: f64,
+        ramp_secs: f64,
+    },
 
     // Undo coalescing — drag gesture signals for keyframe moves/tangents
-    BeginKeyframeDrag { key: String, clip_id: ClipId },
-    EndKeyframeDrag { key: String, clip_id: ClipId },
+    BeginKeyframeDrag {
+        key: String,
+        clip_id: ClipId,
+    },
+    EndKeyframeDrag {
+        key: String,
+        clip_id: ClipId,
+    },
 
     // Ken Burns presets
     ApplyKenBurns {
@@ -2631,8 +3840,13 @@ pub enum AppCommand {
         end_pos_x: f32,
         end_pos_y: f32,
     },
-    ClearTransformKeyframes { clip_id: ClipId },
-    ClearVideoParamKeyframes { clip_id: ClipId, param: VideoParam },
+    ClearTransformKeyframes {
+        clip_id: ClipId,
+    },
+    ClearVideoParamKeyframes {
+        clip_id: ClipId,
+        param: VideoParam,
+    },
 
     /// Bake the current grade chain of `clip_id` to a 3D LUT and write it
     /// to `output_path` as Adobe .cube format. `lut_size` is the cube edge
@@ -2667,8 +3881,12 @@ pub enum AppCommand {
     },
 
     // Magnetic timeline ops
-    RippleTrimHead { clip_id: ClipId },
-    RippleTrimTail { clip_id: ClipId },
+    RippleTrimHead {
+        clip_id: ClipId,
+    },
+    RippleTrimTail {
+        clip_id: ClipId,
+    },
     InsertGapAtPlayhead,
     /// Insert a silence / gap clip on a specific track at the playhead.
     /// Distinct from `InsertGapAtPlayhead` (which routes through the
@@ -2676,7 +3894,10 @@ pub enum AppCommand {
     /// "Insert N seconds of silence on this audio track" workflows
     /// where the user has a specific track in mind and a non-default
     /// duration. Subsequent clips on the target track ripple right.
-    InsertGapOnTrack { track_idx: usize, duration_secs: f64 },
+    InsertGapOnTrack {
+        track_idx: usize,
+        duration_secs: f64,
+    },
     /// Q — trim the OUT edge of the clip whose OUT is at or before the playhead
     /// to the playhead position. Picks target by proximity; no selection required.
     TrimOutToPlayhead,
@@ -2685,12 +3906,34 @@ pub enum AppCommand {
     TrimInToPlayhead,
 
     // Audio DSP effects
-    AddAudioEffect { clip_id: ClipId, effect_type: String },
-    RemoveAudioEffect { clip_id: ClipId, effect_index: usize },
-    UpdateAudioEffectParam { clip_id: ClipId, effect_index: usize, param_name: String, value: f32 },
-    ToggleAudioEffect { clip_id: ClipId, effect_index: usize },
-    SetAudioEffectWetDry { clip_id: ClipId, effect_index: usize, wet_dry: f32 },
-    ReorderAudioEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+    AddAudioEffect {
+        clip_id: ClipId,
+        effect_type: String,
+    },
+    RemoveAudioEffect {
+        clip_id: ClipId,
+        effect_index: usize,
+    },
+    UpdateAudioEffectParam {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        value: f32,
+    },
+    ToggleAudioEffect {
+        clip_id: ClipId,
+        effect_index: usize,
+    },
+    SetAudioEffectWetDry {
+        clip_id: ClipId,
+        effect_index: usize,
+        wet_dry: f32,
+    },
+    ReorderAudioEffect {
+        clip_id: ClipId,
+        from_index: usize,
+        to_index: usize,
+    },
 
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {
@@ -2707,29 +3950,51 @@ pub enum AppCommand {
     },
 
     // Video stabilization
-    AnalyzeStabilization { clip_id: ClipId },
-    CancelStabilization { clip_id: ClipId },
+    AnalyzeStabilization {
+        clip_id: ClipId,
+    },
+    CancelStabilization {
+        clip_id: ClipId,
+    },
     /// Measure a clip's per-frame light, for the Deflicker effect.
-    AnalyzeDeflicker { clip_id: ClipId },
-    CancelDeflicker { clip_id: ClipId },
+    AnalyzeDeflicker {
+        clip_id: ClipId,
+    },
+    CancelDeflicker {
+        clip_id: ClipId,
+    },
     /// Rebuild the deflicker gains after the window slider moved. The
     /// measurement is unchanged; only the smoothing over it is.
-    RegainDeflicker { clip_id: ClipId },
+    RegainDeflicker {
+        clip_id: ClipId,
+    },
 
     // Scene (shot-boundary) detection
-    DetectScenes { clip_id: ClipId },
-    CancelSceneDetect { clip_id: ClipId },
+    DetectScenes {
+        clip_id: ClipId,
+    },
+    CancelSceneDetect {
+        clip_id: ClipId,
+    },
     /// Razor-split a clip at every scene marker it carries, atomically.
     /// Undo restores the original single clip in one step.
-    SplitAtSceneMarkers { clip_id: ClipId },
+    SplitAtSceneMarkers {
+        clip_id: ClipId,
+    },
     /// Re-run smoothing on existing stabilization_data with the current smoothing
     /// slider value. Cheap (microseconds) — no decode, just gaussian over the
     /// already-baked trajectory. Used for live slider updates.
-    ResmoothStabilization { clip_id: ClipId },
+    ResmoothStabilization {
+        clip_id: ClipId,
+    },
 
     // Point tracking
     /// Add a new track point to a clip at the given normalized position.
-    AddTrackPoint { clip_id: ClipId, x: f64, y: f64 },
+    AddTrackPoint {
+        clip_id: ClipId,
+        x: f64,
+        y: f64,
+    },
     /// One-shot "track this mask region" workflow: takes the mask's
     /// current centre (evaluated at the playhead), spawns a track
     /// point there, kicks off analysis, and on completion auto-links
@@ -2737,52 +4002,101 @@ pub enum AppCommand {
     /// Closes the 3-step Place / Analyze / Link dance into a single
     /// gesture for the common case "I want this mask to follow the
     /// thing under it".
-    TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    TrackMaskRegion {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        mask_index: usize,
+    },
     /// Remove the tracker bound to this mask plus the mask's centre
     /// keyframes — gives the user a clean "untrack" gesture without
     /// leaving an orphan tracker behind. No-op when no tracker is
     /// linked to the mask.
-    RemoveMaskTracking { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    RemoveMaskTracking {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        mask_index: usize,
+    },
     /// Remove a track point by index.
-    RemoveTrackPoint { clip_id: ClipId, index: usize },
+    RemoveTrackPoint {
+        clip_id: ClipId,
+        index: usize,
+    },
     /// Analyze a track point (forward and backward from current frame).
-    AnalyzeTrackPoint { clip_id: ClipId, point_index: usize },
+    AnalyzeTrackPoint {
+        clip_id: ClipId,
+        point_index: usize,
+    },
     /// Cancel track analysis.
-    CancelTrackAnalysis { clip_id: ClipId },
+    CancelTrackAnalysis {
+        clip_id: ClipId,
+    },
     /// Toggle tracking placement mode.
     ToggleTrackingMode,
     /// Generate keyframes from track point data to a target parameter.
-    GenerateKeyframesFromTrack { clip_id: ClipId, point_index: usize, target: TrackTarget },
+    GenerateKeyframesFromTrack {
+        clip_id: ClipId,
+        point_index: usize,
+        target: TrackTarget,
+    },
 
     // Grade versioning
     /// Save the current node_graph as a new named grade version.
-    SaveGradeVersion { clip_id: ClipId, name: String },
+    SaveGradeVersion {
+        clip_id: ClipId,
+        name: String,
+    },
     /// Switch to a different grade version by index.
-    SwitchGradeVersion { clip_id: ClipId, version_index: usize },
+    SwitchGradeVersion {
+        clip_id: ClipId,
+        version_index: usize,
+    },
     /// Delete a grade version by index.
-    DeleteGradeVersion { clip_id: ClipId, version_index: usize },
+    DeleteGradeVersion {
+        clip_id: ClipId,
+        version_index: usize,
+    },
     /// Rename a grade version.
-    RenameGradeVersion { clip_id: ClipId, version_index: usize, name: String },
+    RenameGradeVersion {
+        clip_id: ClipId,
+        version_index: usize,
+        name: String,
+    },
 
     // Looks (project-wide reusable colour grades)
     /// Snapshot the selected clip's node graph as a new project-level
     /// Look. The handler reads the clip's current graph; this command
     /// just supplies the user-facing name.
-    SaveLook { name: String },
+    SaveLook {
+        name: String,
+    },
     /// Apply a saved Look to one or more target clips. The Look's
     /// node graph replaces each target's `node_graph` (with fresh
     /// node IDs via `remap_ids`).
-    ApplyLook { look_id: uuid::Uuid, clip_ids: Vec<ClipId> },
-    DeleteLook { look_id: uuid::Uuid },
-    RenameLook { look_id: uuid::Uuid, new_name: String },
+    ApplyLook {
+        look_id: uuid::Uuid,
+        clip_ids: Vec<ClipId>,
+    },
+    DeleteLook {
+        look_id: uuid::Uuid,
+    },
+    RenameLook {
+        look_id: uuid::Uuid,
+        new_name: String,
+    },
 
     // Grade stills (reference frame comparison)
     /// Capture the current viewer frame as a grade reference still.
-    CaptureGradeStill { name: String },
+    CaptureGradeStill {
+        name: String,
+    },
     /// Delete a saved grade still by index.
-    DeleteGradeStill { index: usize },
+    DeleteGradeStill {
+        index: usize,
+    },
     /// Set the active grade still for comparison.
-    SetActiveGradeStill { index: Option<usize> },
+    SetActiveGradeStill {
+        index: Option<usize>,
+    },
     /// Toggle split-view comparison with the active grade still.
     ToggleGradeStillCompare,
 
@@ -2820,10 +4134,34 @@ pub enum AppCommand {
     // convention as the chain: any descriptor name routes to that
     // param's track; the reserved `__bypass` name routes to the
     // slot's bypass-keyframe track and `__wetdry` to wet/dry.
-    AddAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
-    RemoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
-    MoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
-    SetAudioEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    AddAudioEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveAudioEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        time_secs: f64,
+    },
+    MoveAudioEffectKeyframe {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetAudioEffectKeyframeInterpolation {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
     /// Bezier tangent edit on an audio EFFECT keyframe. Either side
     /// can be left None to keep its current value (matches the
     /// SetAudioKeyframeTangent contract).
@@ -2838,15 +4176,27 @@ pub enum AppCommand {
     /// Copy a single audio-effect param's keyframe vec into the
     /// clipboard so the user can paste it onto another (clip, effect,
     /// param). Mirrors `CopyAudioKeyframes` for clip-level params.
-    CopyAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    CopyAudioEffectKeyframes {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+    },
     /// Paste the keyframe clipboard into a target audio-effect param.
     /// Time-scales the kfs to the target clip's duration if it differs
     /// from the source clip's recorded duration (matches
     /// `PasteAudioKeyframes`).
-    PasteAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    PasteAudioEffectKeyframes {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+    },
     /// Reverse the keyframe order on an audio-effect param track —
     /// mirrors the kf times around the midpoint of the track's range.
-    ReverseAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    ReverseAudioEffectKeyframes {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+    },
     /// Scale every kf time on an audio-effect param track by a
     /// constant factor. `factor < 1.0` compresses the envelope
     /// (faster), `factor > 1.0` stretches it (slower).
@@ -2875,11 +4225,17 @@ pub enum AppCommand {
     /// / SetAudioEffectWetDry calls during the drag skip their history
     /// push so a single drag becomes one undo step (and one ops_since_save
     /// bump, not 60+/second of autosave triggers).
-    BeginAudioChainDrag { drag_key: String, clip_id: ClipId },
+    BeginAudioChainDrag {
+        drag_key: String,
+        clip_id: ClipId,
+    },
     /// Drag-coalesce envelope end: snapshot the clip's audio chain
     /// state after the drag and commit a single EditAudioChain entry
     /// covering the entire gesture.
-    EndAudioChainDrag { drag_key: String, clip_id: ClipId },
+    EndAudioChainDrag {
+        drag_key: String,
+        clip_id: ClipId,
+    },
 
     // ── Track matte / blend mode ───────────────────────────────────
     //
@@ -2891,10 +4247,12 @@ pub enum AppCommand {
     // dependency on `klipp-nodes` (where `MatteChannel` lives). The
     // handler maps via the `matte_channel_from_u8` helper. Same
     // pattern as `SetExternalMatteChannel`.
-
     /// Set a clip's compositor blend mode (Normal, Multiply, Screen, …).
     /// `mode` is the discriminant index into `BlendMode::ALL`.
-    SetClipBlendMode { clip_id: ClipId, mode: crate::types::BlendMode },
+    SetClipBlendMode {
+        clip_id: ClipId,
+        mode: crate::types::BlendMode,
+    },
 
     /// Bind another clip as this clip's track matte. The render path
     /// resolves `source_clip_id`'s rendered RGBA at the same timeline
@@ -2927,7 +4285,9 @@ pub enum AppCommand {
     /// `consumed_as_matte` was set only because of this binding, clear
     /// that too so the source returns to the visible composite. The
     /// handler walks the sequence to check for other consumers.
-    ClearClipMatte { clip_id: ClipId },
+    ClearClipMatte {
+        clip_id: ClipId,
+    },
 
     /// Inherit `clip_id`'s transform from `target` per the supplied
     /// composition rule and per-axis flags. `mode` is 0 = Absolute
@@ -2980,7 +4340,9 @@ pub enum AppCommand {
 
     /// Remove a clip's `transform_link`. Idempotent — a clip with no
     /// link is left as-is.
-    ClearClipTransformLink { clip_id: ClipId },
+    ClearClipTransformLink {
+        clip_id: ClipId,
+    },
 
     /// Apply a hyperzoom transition between `source_clip_id` (typically
     /// a title clip the camera flies *into*) and a target clip (the
@@ -3158,7 +4520,10 @@ pub enum AppCommand {
     /// clip. Default behaviour when bound via `SetClipMatte` is `true`;
     /// pros can flip this to keep the matte source visible for
     /// debugging or unusual creative effects.
-    SetClipConsumedAsMatte { clip_id: ClipId, consumed: bool },
+    SetClipConsumedAsMatte {
+        clip_id: ClipId,
+        consumed: bool,
+    },
 
     /// Phase 4B — Configure or update the clip's stencil mode. The
     /// clip's pixels become a mask that multiplies the alpha of every
@@ -3176,7 +4541,9 @@ pub enum AppCommand {
 
     /// Phase 4B — clear stencil mode on a clip; the clip returns to
     /// visible composite participation.
-    ClearClipStencil { clip_id: ClipId },
+    ClearClipStencil {
+        clip_id: ClipId,
+    },
 
     /// Phase 5 — single-shot dispatch for the "Use clip above as matte"
     /// gesture so the command palette can offer it without
@@ -3185,23 +4552,33 @@ pub enum AppCommand {
     /// then runs the same `SetClipMatte` flow as the right-click menu.
     /// Toasts when no candidate exists rather than silently no-oping.
     /// `channel` is the same wire format as `SetClipMatte`.
-    UseClipAboveAsMatte { clip_id: ClipId, channel: u8 },
+    UseClipAboveAsMatte {
+        clip_id: ClipId,
+        channel: u8,
+    },
 
     /// Phase 5 — toggle stencil mode on a clip. Flips between
     /// `SetClipStencil` (luma channel default) and `ClearClipStencil`
     /// based on current state. Lets the command palette expose a single
     /// idempotent entry instead of two.
-    ToggleClipStencil { clip_id: ClipId },
+    ToggleClipStencil {
+        clip_id: ClipId,
+    },
 
     /// Import a file with explicit control over automatic analysis.
-    ImportMediaWithAnalysis { path: PathBuf, analyze: bool },
+    ImportMediaWithAnalysis {
+        path: PathBuf,
+        analyze: bool,
+    },
 
     /// Write the active sequence as an OpenTimelineIO `.otio` file.
     ///
     /// Appended here rather than beside `ExportFcpxml` and `ExportEdl`
     /// because parallel lanes share this enum and appends merge where
     /// insertions in the middle conflict.
-    ExportOtio { path: PathBuf },
+    ExportOtio {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3402,33 +4779,71 @@ pub enum AppEvent {
     FrameReady,
 
     // Multi-clip
-    ClipAppended { clip_id: ClipId },
-    ClipRemoved { clip_id: ClipId },
-    ClipMoved { clip_id: ClipId, new_timeline_in: Timecode },
-    ClipTrimmed { clip_id: ClipId },
+    ClipAppended {
+        clip_id: ClipId,
+    },
+    ClipRemoved {
+        clip_id: ClipId,
+    },
+    ClipMoved {
+        clip_id: ClipId,
+        new_timeline_in: Timecode,
+    },
+    ClipTrimmed {
+        clip_id: ClipId,
+    },
     ClipSelected(Option<ClipId>),
 
     // Project
-    ProjectSaved { path: PathBuf },
-    ProjectLoaded { path: PathBuf },
-    ProjectError { message: String },
+    ProjectSaved {
+        path: PathBuf,
+    },
+    ProjectLoaded {
+        path: PathBuf,
+    },
+    ProjectError {
+        message: String,
+    },
 
     // Export
-    ExportProgress { percent: f32, time_secs: f64 },
-    ExportComplete { path: PathBuf },
-    ExportError { message: String },
+    ExportProgress {
+        percent: f32,
+        time_secs: f64,
+    },
+    ExportComplete {
+        path: PathBuf,
+    },
+    ExportError {
+        message: String,
+    },
 
     // Source monitor
     SourceFrameReady,
-    SourceMediaLoaded { media_id: MediaId, duration: Timecode },
+    SourceMediaLoaded {
+        media_id: MediaId,
+        duration: Timecode,
+    },
 
     // Proxy
-    ProxyGenerationStarted { media_id: MediaId },
-    ProxyGenerationComplete { media_id: MediaId, path: PathBuf },
-    ProxyGenerationFailed { media_id: MediaId, error: String },
+    ProxyGenerationStarted {
+        media_id: MediaId,
+    },
+    ProxyGenerationComplete {
+        media_id: MediaId,
+        path: PathBuf,
+    },
+    ProxyGenerationFailed {
+        media_id: MediaId,
+        error: String,
+    },
 
     // Thumbnails
-    ThumbnailReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
+    ThumbnailReady {
+        media_id: MediaId,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
 
     /// Phase 4C — track-matte preview thumbnail. Engine emits a tiny
     /// grayscale RGBA snapshot of the resolved mask for whichever clip
@@ -3443,46 +4858,121 @@ pub enum AppEvent {
     },
 
     // Audio conforming
-    AudioConformStarted { media_id: MediaId },
-    AudioConformComplete { media_id: MediaId },
-    AudioConformFailed { media_id: MediaId, error: String },
+    AudioConformStarted {
+        media_id: MediaId,
+    },
+    AudioConformComplete {
+        media_id: MediaId,
+    },
+    AudioConformFailed {
+        media_id: MediaId,
+        error: String,
+    },
 
     // Audio metering
-    TrackPeakLevels { track_index: usize, left: f32, right: f32 },
-    MasterPeakLevels { left: f32, right: f32 },
+    TrackPeakLevels {
+        track_index: usize,
+        left: f32,
+        right: f32,
+    },
+    MasterPeakLevels {
+        left: f32,
+        right: f32,
+    },
     /// BS.1770-4 loudness meter readings from the mix thread.
-    LufsReadings { momentary: f32, short_term: f32, integrated: f32, loudness_range: f32, true_peak_dbfs: f32 },
+    LufsReadings {
+        momentary: f32,
+        short_term: f32,
+        integrated: f32,
+        loudness_range: f32,
+        true_peak_dbfs: f32,
+    },
 
     // Performance stats
     /// `hw_decode` is `None` when no video decoder is currently open —
     /// the overlay shows "—" instead of guessing SW/NVDEC.
-    EngineStats { dropped_frames: u64, hw_decode: Option<bool> },
+    EngineStats {
+        dropped_frames: u64,
+        hw_decode: Option<bool>,
+    },
 
     // Skim transcode
-    SkimTranscodeProgress { media_id: MediaId, progress: f32 },
-    SkimTranscodeComplete { media_id: MediaId, path: PathBuf },
-    SkimTranscodeFailed { media_id: MediaId, path: PathBuf, error: String },
+    SkimTranscodeProgress {
+        media_id: MediaId,
+        progress: f32,
+    },
+    SkimTranscodeComplete {
+        media_id: MediaId,
+        path: PathBuf,
+    },
+    SkimTranscodeFailed {
+        media_id: MediaId,
+        path: PathBuf,
+        error: String,
+    },
 
     // Browser skim frame
-    BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32, target: ViewerMode },
+    BrowserSkimFrameReady {
+        media_id: MediaId,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+        target: ViewerMode,
+    },
 
     // Video stabilization
-    StabilizationProgress { clip_id: ClipId, progress: f32 },
-    DeflickerProgress { clip_id: ClipId, progress: f32 },
-    DeflickerComplete { clip_id: ClipId },
-    DeflickerFailed { clip_id: ClipId, error: String },
-    StabilizationComplete { clip_id: ClipId },
-    StabilizationFailed { clip_id: ClipId, error: String },
+    StabilizationProgress {
+        clip_id: ClipId,
+        progress: f32,
+    },
+    DeflickerProgress {
+        clip_id: ClipId,
+        progress: f32,
+    },
+    DeflickerComplete {
+        clip_id: ClipId,
+    },
+    DeflickerFailed {
+        clip_id: ClipId,
+        error: String,
+    },
+    StabilizationComplete {
+        clip_id: ClipId,
+    },
+    StabilizationFailed {
+        clip_id: ClipId,
+        error: String,
+    },
 
     // Scene (shot-boundary) detection
-    SceneDetectProgress { clip_id: ClipId, progress: f32 },
-    SceneDetectComplete { clip_id: ClipId, cut_times: Vec<f64> },
-    SceneDetectFailed { clip_id: ClipId, error: String },
+    SceneDetectProgress {
+        clip_id: ClipId,
+        progress: f32,
+    },
+    SceneDetectComplete {
+        clip_id: ClipId,
+        cut_times: Vec<f64>,
+    },
+    SceneDetectFailed {
+        clip_id: ClipId,
+        error: String,
+    },
 
     // Point tracking
-    TrackingProgress { clip_id: ClipId, progress: f32 },
-    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize },
-    TrackingFailed { clip_id: ClipId, error: String },
+    TrackingProgress {
+        clip_id: ClipId,
+        progress: f32,
+    },
+    TrackingComplete {
+        clip_id: ClipId,
+        point_index: usize,
+        positions: Vec<(f64, f64)>,
+        start_frame: usize,
+    },
+    TrackingFailed {
+        clip_id: ClipId,
+        error: String,
+    },
 
     // Audio sync (#61)
     /// Background cross-correlation finished. `offset_samples` at 48 kHz —
@@ -3492,21 +4982,33 @@ pub enum AppEvent {
     /// (read on the UI thread, shipped to the worker, and echoed back so the
     /// completion handler has it without another lookup).
     /// A pool pair was synced (see `AppCommand::SyncMediaPair`).
-    MediaSyncComplete { video_id: MediaId, sync: crate::SyncedAudio },
-    MediaSyncFailed { video_id: MediaId, error: String },
+    MediaSyncComplete {
+        video_id: MediaId,
+        sync: crate::SyncedAudio,
+    },
+    MediaSyncFailed {
+        video_id: MediaId,
+        error: String,
+    },
     AudioSyncComplete {
         clip_id: ClipId,
         offset_samples: i64,
         ref_timeline_in_secs: f64,
     },
-    AudioSyncFailed { clip_id: ClipId, error: String },
+    AudioSyncFailed {
+        clip_id: ClipId,
+        error: String,
+    },
 }
 
 /// Target for generating keyframes from tracked point data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TrackTarget {
     /// Generate position keyframes for a mask's center.
-    MaskCenter { node_id: uuid::Uuid, mask_index: usize },
+    MaskCenter {
+        node_id: uuid::Uuid,
+        mask_index: usize,
+    },
     /// Generate transform position keyframes.
     TransformPosition,
 }
@@ -3724,23 +5226,41 @@ mod delivery_tests {
     /// PQ regardless, and renders its own HDR from the SDR master.
     #[test]
     fn delivery_follows_the_hdr_setting_and_the_pq_transforms() {
-        let with = |hdr_mode, odt| ExportSettings { hdr_mode, odt, ..Default::default() };
+        let with = |hdr_mode, odt| ExportSettings {
+            hdr_mode,
+            odt,
+            ..Default::default()
+        };
         let s = with(HdrMode::Sdr, OdtChoice::MatchViewer);
         assert_eq!((s.delivery(), s.renders_hdr()), (HdrMode::Sdr, false));
         let s = with(HdrMode::Pq, OdtChoice::MatchViewer);
-        assert_eq!((s.delivery(), s.renders_hdr(), s.hdr_peak_nits()), (HdrMode::Pq, true, 1000.0));
+        assert_eq!(
+            (s.delivery(), s.renders_hdr(), s.hdr_peak_nits()),
+            (HdrMode::Pq, true, 1000.0)
+        );
         let s = with(HdrMode::Hlg, OdtChoice::MatchViewer);
         assert_eq!((s.delivery(), s.renders_hdr()), (HdrMode::Hlg, true));
         let s = with(HdrMode::Sdr, OdtChoice::Rec2100Pq4000);
-        assert_eq!((s.delivery(), s.renders_hdr(), s.hdr_peak_nits()), (HdrMode::Pq, false, 4000.0));
+        assert_eq!(
+            (s.delivery(), s.renders_hdr(), s.hdr_peak_nits()),
+            (HdrMode::Pq, false, 4000.0)
+        );
     }
 
     #[test]
     fn output_transforms_fit_their_deliveries() {
         for odt in OdtChoice::ALL {
             assert_eq!(odt.fits(HdrMode::Sdr), !odt.is_pq(), "{odt:?}");
-            assert_eq!(odt.fits(HdrMode::Hlg), odt == OdtChoice::MatchViewer, "{odt:?}");
-            assert_eq!(odt.fits(HdrMode::Pq), odt == OdtChoice::MatchViewer || odt.is_pq(), "{odt:?}");
+            assert_eq!(
+                odt.fits(HdrMode::Hlg),
+                odt == OdtChoice::MatchViewer,
+                "{odt:?}"
+            );
+            assert_eq!(
+                odt.fits(HdrMode::Pq),
+                odt == OdtChoice::MatchViewer || odt.is_pq(),
+                "{odt:?}"
+            );
         }
     }
 }
@@ -3768,7 +5288,11 @@ mod hdr_advice_tests {
     #[test]
     fn sdr_is_never_advised_against() {
         for c in CODECS {
-            assert_eq!(c.hdr_advice(HdrMode::Sdr), None, "{c:?} advised against for SDR");
+            assert_eq!(
+                c.hdr_advice(HdrMode::Sdr),
+                None,
+                "{c:?} advised against for SDR"
+            );
         }
     }
 
@@ -3778,7 +5302,9 @@ mod hdr_advice_tests {
     #[test]
     fn h264_hdr_suggests_h265() {
         for mode in [HdrMode::Hlg, HdrMode::Pq] {
-            let a = ExportVideoCodec::H264.hdr_advice(mode).expect("H.264 HDR needs advice");
+            let a = ExportVideoCodec::H264
+                .hdr_advice(mode)
+                .expect("H.264 HDR needs advice");
             assert_eq!(a.suggest, Some(ExportVideoCodec::H265), "{mode:?}");
         }
     }
@@ -3809,7 +5335,9 @@ mod hdr_advice_tests {
     fn a_suggestion_lands_somewhere_clean() {
         for c in CODECS {
             for mode in [HdrMode::Hlg, HdrMode::Pq] {
-                let Some(a) = c.hdr_advice(mode) else { continue };
+                let Some(a) = c.hdr_advice(mode) else {
+                    continue;
+                };
                 let Some(to) = a.suggest else { continue };
                 assert_ne!(to, c, "{c:?} suggests itself for {mode:?}");
                 assert_eq!(
@@ -3839,10 +5367,16 @@ mod hdr_advice_tests {
             );
             let advice = c.hdr_advice(HdrMode::Pq);
             if !ten_bit_capable {
-                assert!(advice.is_some(), "{c:?} cannot carry HDR and the dialog is not told");
+                assert!(
+                    advice.is_some(),
+                    "{c:?} cannot carry HDR and the dialog is not told"
+                );
             }
             if let Some(a) = advice {
-                assert!(!a.headline.is_empty() && !a.detail.is_empty(), "{c:?} has empty advice");
+                assert!(
+                    !a.headline.is_empty() && !a.detail.is_empty(),
+                    "{c:?} has empty advice"
+                );
             }
         }
     }
@@ -3859,9 +5393,16 @@ mod codec_hint_tests {
     fn the_h264_hint_stops_claiming_gpu_at_ten_bits() {
         let eight = ExportVideoCodec::H264.hint_at_depth(0);
         let ten = ExportVideoCodec::H264.hint_at_depth(10);
-        assert_eq!(eight, ExportVideoCodec::H264.hint(), "8-bit H.264 should keep its hint");
+        assert_eq!(
+            eight,
+            ExportVideoCodec::H264.hint(),
+            "8-bit H.264 should keep its hint"
+        );
         assert_ne!(ten, eight, "10-bit H.264 shows the same hint as 8-bit");
-        assert!(!ten.contains("GPU") && !ten.contains('\u{26A1}'), "still claims GPU: {ten}");
+        assert!(
+            !ten.contains("GPU") && !ten.contains('\u{26A1}'),
+            "still claims GPU: {ten}"
+        );
         assert!(!ten.contains("universal"), "still claims universal: {ten}");
     }
 
@@ -3917,7 +5458,9 @@ pub struct ProjectStatus {
 
 impl ControlShared {
     pub fn bump_revision(&self) -> u64 {
-        self.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
     }
 
     pub fn revision(&self) -> u64 {

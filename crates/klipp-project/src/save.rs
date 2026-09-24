@@ -41,7 +41,15 @@ pub fn save_project(
     sequences: &[Sequence],
     media_pool: &MediaPool,
 ) -> Result<(), String> {
-    save_project_with_color(dir, sequences, media_pool, &ColorSettings::default(), None, None, "")
+    save_project_with_color(
+        dir,
+        sequences,
+        media_pool,
+        &ColorSettings::default(),
+        None,
+        None,
+        "",
+    )
 }
 
 pub fn save_project_with_color(
@@ -53,7 +61,18 @@ pub fn save_project_with_color(
     created_at: Option<&str>,
     notes: &str,
 ) -> Result<(), String> {
-    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5, None, None)
+    save_project_with_color_and_backups(
+        dir,
+        sequences,
+        media_pool,
+        color,
+        active_sequence_id,
+        created_at,
+        notes,
+        5,
+        None,
+        None,
+    )
 }
 
 /// Save with configurable backup count and optional view state
@@ -74,9 +93,16 @@ pub fn save_project_with_color_and_backups(
     timeline_scroll_x: Option<f32>,
 ) -> Result<(), String> {
     save_project_full(
-        dir, sequences, media_pool, color,
-        active_sequence_id, created_at, notes, backup_count,
-        timeline_zoom, timeline_scroll_x,
+        dir,
+        sequences,
+        media_pool,
+        color,
+        active_sequence_id,
+        created_at,
+        notes,
+        backup_count,
+        timeline_zoom,
+        timeline_scroll_x,
         &std::collections::HashMap::new(),
     )
 }
@@ -123,8 +149,15 @@ pub fn save_project_full(
         klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         saved_at: Some(now),
         created_at: created_at.map(|s| s.to_string()),
-        platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
-        sequences: sequences.iter().map(|s| sequence_to_json(s, color, dir)).collect(),
+        platform: Some(format!(
+            "{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+        sequences: sequences
+            .iter()
+            .map(|s| sequence_to_json(s, color, dir))
+            .collect(),
         active_sequence_id: active_sequence_id.map(|s| s.to_string()),
         notes: notes.to_string(),
         timeline_zoom,
@@ -148,34 +181,53 @@ pub fn save_project_full(
     // Build media/manifest.json — store paths relative to project dir
     let manifest = MediaManifestJson {
         version: "1.0.0".to_string(),
-        items: media_pool.all().map(|item| media_item_to_json(item, dir)).collect(),
-        bins: media_pool.bins.iter().map(|b| BinJson {
-            id: b.id.to_string(),
-            name: b.name.clone(),
-            parent_id: b.parent_id.map(|p| p.to_string()),
-        }).collect(),
+        items: media_pool
+            .all()
+            .map(|item| media_item_to_json(item, dir))
+            .collect(),
+        bins: media_pool
+            .bins
+            .iter()
+            .map(|b| BinJson {
+                id: b.id.to_string(),
+                name: b.name.clone(),
+                parent_id: b.parent_id.map(|p| p.to_string()),
+            })
+            .collect(),
         smart_bins: media_pool.smart_bins.clone(),
     };
 
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
-    atomic_write(&dir.join("media").join("manifest.json"), manifest_json.as_bytes())
-        .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
+    atomic_write(
+        &dir.join("media").join("manifest.json"),
+        manifest_json.as_bytes(),
+    )
+    .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
 
     info!("Project saved to {:?}", dir);
     Ok(())
 }
 
 fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
-    TimecodeJson { value: tc.value, rate: tc.rate }
+    TimecodeJson {
+        value: tc.value,
+        rate: tc.rate,
+    }
 }
 
 fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -> SequenceJson {
     SequenceJson {
         id: seq.id.to_string(),
         name: seq.name.clone(),
-        fps: FpsJson { num: seq.fps.num, den: seq.fps.den },
-        resolution: ResolutionJson { width: seq.resolution.width, height: seq.resolution.height },
+        fps: FpsJson {
+            num: seq.fps.num,
+            den: seq.fps.den,
+        },
+        resolution: ResolutionJson {
+            width: seq.resolution.width,
+            height: seq.resolution.height,
+        },
         in_point: seq.in_point.as_ref().map(timecode_to_json),
         out_point: seq.out_point.as_ref().map(timecode_to_json),
         global_lut_path: color.global_lut_path.as_ref().map(|p| {
@@ -192,9 +244,14 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         edit_plan: seq.edit_plan.clone(),
         camera: seq.camera.clone(),
         drop_frame: Some(seq.drop_frame),
-        last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
-        markers: seq.markers.iter().map(|m| {
-            MarkerJson {
+        last_playhead: seq.last_playhead.map(|rt| TimecodeJson {
+            value: rt.value,
+            rate: rt.rate,
+        }),
+        markers: seq
+            .markers
+            .iter()
+            .map(|m| MarkerJson {
                 id: m.id.to_string(),
                 position: timecode_to_json(&m.position),
                 label: m.label.clone(),
@@ -202,10 +259,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 duration: m.duration.as_ref().map(timecode_to_json),
                 comment: m.comment.clone(),
                 kind: format!("{:?}", m.kind),
-            }
-        }).collect(),
-        tracks: seq.tracks.iter().map(|t| {
-            TrackJson {
+            })
+            .collect(),
+        tracks: seq
+            .tracks
+            .iter()
+            .map(|t| TrackJson {
                 id: t.id.to_string(),
                 name: t.name.clone(),
                 kind: match t.kind {
@@ -230,8 +289,10 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 automation_lane_height: t.automation_lane_height,
                 magnetic_role: Some(t.magnetic_role.clone()),
                 storyline_anchor: t.storyline_anchor.clone(),
-                transitions: t.transitions.iter().map(|tr| {
-                    TransitionJson {
+                transitions: t
+                    .transitions
+                    .iter()
+                    .map(|tr| TransitionJson {
                         id: tr.id.to_string(),
                         kind: format!("{:?}", tr.kind),
                         duration: timecode_to_json(&tr.duration),
@@ -239,10 +300,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         clip_b_id: tr.clip_b_id.to_string(),
                         user_params: tr.user_params,
                         alignment: tr.alignment,
-                    }
-                }).collect(),
-                clips: t.clips.iter().map(|c| {
-                    ClipJson {
+                    })
+                    .collect(),
+                clips: t
+                    .clips
+                    .iter()
+                    .map(|c| ClipJson {
                         id: c.id.to_string(),
                         media_id: c.media_id().map(|mid| mid.to_string()),
                         kind: Some(clip_kind_to_json(&c.kind, project_dir)),
@@ -264,49 +327,165 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
                         group_id: c.group_id.map(|id| id.to_string()),
-                        gain: if (c.gain - 1.0).abs() > f32::EPSILON { Some(c.gain) } else { None },
-                        volume: if (c.volume - 1.0).abs() > f32::EPSILON { Some(c.volume) } else { None },
-                        pan: if c.pan.abs() > f32::EPSILON { Some(c.pan) } else { None },
-                        fade_in_secs: if c.fade_in_secs.abs() > f32::EPSILON { Some(c.fade_in_secs) } else { None },
-                        fade_out_secs: if c.fade_out_secs.abs() > f32::EPSILON { Some(c.fade_out_secs) } else { None },
-                        fade_in_curve: if c.fade_in_curve != klipp_timeline::FadeCurve::Linear { Some(c.fade_in_curve) } else { None },
-                        fade_out_curve: if c.fade_out_curve != klipp_timeline::FadeCurve::Linear { Some(c.fade_out_curve) } else { None },
-                        channel_config: if c.channel_config != klipp_timeline::ChannelConfig::Default { Some(c.channel_config) } else { None },
-                        volume_keyframes: if c.volume_keyframes.is_empty() { None } else { Some(c.volume_keyframes.clone()) },
-                        pan_keyframes: if c.pan_keyframes.is_empty() { None } else { Some(c.pan_keyframes.clone()) },
-                        gain_keyframes: if c.gain_keyframes.is_empty() { None } else { Some(c.gain_keyframes.clone()) },
-                        opacity_keyframes: if c.opacity_keyframes.is_empty() { None } else { Some(c.opacity_keyframes.clone()) },
-                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() { None } else { Some(c.transform_pos_x_keyframes.clone()) },
-                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
-                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
-                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
-                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty()).then(|| c.transform_tilt_x_keyframes.clone()),
-                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty()).then(|| c.transform_tilt_y_keyframes.clone()),
-                        matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
-                        matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
-                        clip_markers: if c.clip_markers.is_empty() { None } else {
-                            Some(c.clip_markers.iter().map(|m| crate::format::ClipMarkerJson {
-                                time_secs: m.time_secs,
-                                name: m.name.clone(),
-                                color: format!("{:?}", m.color),
-                                comment: m.comment.clone(),
-                            }).collect())
+                        gain: if (c.gain - 1.0).abs() > f32::EPSILON {
+                            Some(c.gain)
+                        } else {
+                            None
                         },
-                        effect_keyframes: if c.effect_keyframes.is_empty() { None } else { Some(c.effect_keyframes.clone()) },
-                        role: if c.role == klipp_core::ClipRole::default() { None } else { Some(c.role) },
+                        volume: if (c.volume - 1.0).abs() > f32::EPSILON {
+                            Some(c.volume)
+                        } else {
+                            None
+                        },
+                        pan: if c.pan.abs() > f32::EPSILON {
+                            Some(c.pan)
+                        } else {
+                            None
+                        },
+                        fade_in_secs: if c.fade_in_secs.abs() > f32::EPSILON {
+                            Some(c.fade_in_secs)
+                        } else {
+                            None
+                        },
+                        fade_out_secs: if c.fade_out_secs.abs() > f32::EPSILON {
+                            Some(c.fade_out_secs)
+                        } else {
+                            None
+                        },
+                        fade_in_curve: if c.fade_in_curve != klipp_timeline::FadeCurve::Linear {
+                            Some(c.fade_in_curve)
+                        } else {
+                            None
+                        },
+                        fade_out_curve: if c.fade_out_curve != klipp_timeline::FadeCurve::Linear {
+                            Some(c.fade_out_curve)
+                        } else {
+                            None
+                        },
+                        channel_config: if c.channel_config
+                            != klipp_timeline::ChannelConfig::Default
+                        {
+                            Some(c.channel_config)
+                        } else {
+                            None
+                        },
+                        volume_keyframes: if c.volume_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.volume_keyframes.clone())
+                        },
+                        pan_keyframes: if c.pan_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.pan_keyframes.clone())
+                        },
+                        gain_keyframes: if c.gain_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.gain_keyframes.clone())
+                        },
+                        opacity_keyframes: if c.opacity_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.opacity_keyframes.clone())
+                        },
+                        transform_pos_x_keyframes: if c.transform_pos_x_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.transform_pos_x_keyframes.clone())
+                        },
+                        transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.transform_pos_y_keyframes.clone())
+                        },
+                        transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.transform_scale_keyframes.clone())
+                        },
+                        transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.transform_rotation_keyframes.clone())
+                        },
+                        transform_tilt_x_keyframes: (!c.transform_tilt_x_keyframes.is_empty())
+                            .then(|| c.transform_tilt_x_keyframes.clone()),
+                        transform_tilt_y_keyframes: (!c.transform_tilt_y_keyframes.is_empty())
+                            .then(|| c.transform_tilt_y_keyframes.clone()),
+                        matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.matte_feather_keyframes.clone())
+                        },
+                        matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.matte_choke_keyframes.clone())
+                        },
+                        clip_markers: if c.clip_markers.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                c.clip_markers
+                                    .iter()
+                                    .map(|m| crate::format::ClipMarkerJson {
+                                        time_secs: m.time_secs,
+                                        name: m.name.clone(),
+                                        color: format!("{:?}", m.color),
+                                        comment: m.comment.clone(),
+                                    })
+                                    .collect(),
+                            )
+                        },
+                        effect_keyframes: if c.effect_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.effect_keyframes.clone())
+                        },
+                        role: if c.role == klipp_core::ClipRole::default() {
+                            None
+                        } else {
+                            Some(c.role)
+                        },
                         param_modifiers: if c.param_modifiers.is_empty() {
                             None
                         } else {
-                            Some(c.param_modifiers.iter().map(|(k, v)| (k.to_key(), v.clone())).collect())
+                            Some(
+                                c.param_modifiers
+                                    .iter()
+                                    .map(|(k, v)| (k.to_key(), v.clone()))
+                                    .collect(),
+                            )
                         },
-                        speed: if (c.speed - 1.0).abs() < f64::EPSILON { None } else { Some(c.speed) },
-                        speed_keyframes: if c.speed_keyframes.is_empty() { None } else { Some(c.speed_keyframes.clone()) },
-                        source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
+                        speed: if (c.speed - 1.0).abs() < f64::EPSILON {
+                            None
+                        } else {
+                            Some(c.speed)
+                        },
+                        speed_keyframes: if c.speed_keyframes.is_empty() {
+                            None
+                        } else {
+                            Some(c.speed_keyframes.clone())
+                        },
+                        source_rotation: if c.source_rotation == 0 {
+                            None
+                        } else {
+                            Some(c.source_rotation)
+                        },
                         enabled: if c.enabled { None } else { Some(false) },
-                        audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
+                        audio_effects: if c.audio_effects.is_empty() {
+                            None
+                        } else {
+                            Some(c.audio_effects.clone())
+                        },
                         audio_effect_keyframes: c.audio_effect_keyframes.clone(),
                         multicam_group: c.multicam_group.map(|g| g.to_string()),
-                        multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
+                        multicam_angle: if c.multicam_angle == 0 {
+                            None
+                        } else {
+                            Some(c.multicam_angle)
+                        },
                         multicam_cuts: c.multicam_cuts.clone(),
                         solo: if c.solo { Some(true) } else { None },
                         blend_mode: if matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
@@ -315,38 +494,52 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             Some(c.blend_mode)
                         },
                         depth: ((c.depth - 1.0).abs() > 1e-6).then_some(c.depth),
-                        matte_source: c.matte_source.as_ref().map(|m| crate::format::MatteBindingJson {
-                            source_clip_id: m.source_clip_id.0.to_string(),
-                            channel: m.channel,
-                            invert: m.invert,
-                            feather_px: m.feather_px,
-                            choke_px: m.choke_px,
+                        matte_source: c.matte_source.as_ref().map(|m| {
+                            crate::format::MatteBindingJson {
+                                source_clip_id: m.source_clip_id.0.to_string(),
+                                channel: m.channel,
+                                invert: m.invert,
+                                feather_px: m.feather_px,
+                                choke_px: m.choke_px,
+                            }
                         }),
-                        matte_stencil: c.matte_stencil.as_ref().map(|s| crate::format::StencilSettingsJson {
-                            channel: s.channel,
-                            invert: s.invert,
-                            feather_px: s.feather_px,
-                            choke_px: s.choke_px,
+                        matte_stencil: c.matte_stencil.as_ref().map(|s| {
+                            crate::format::StencilSettingsJson {
+                                channel: s.channel,
+                                invert: s.invert,
+                                feather_px: s.feather_px,
+                                choke_px: s.choke_px,
+                            }
                         }),
-                        consumed_as_matte: if c.consumed_as_matte { Some(true) } else { None },
-                        transform_link: c.transform_link.as_ref().map(|tl| crate::format::TransformLinkJson {
-                            target: tl.target,
-                            mode: tl.mode,
-                            inherit_scale: tl.inherit_scale,
-                            inherit_position: tl.inherit_position,
-                            inherit_rotation: tl.inherit_rotation,
-                            inherit_anchor: tl.inherit_anchor,
+                        consumed_as_matte: if c.consumed_as_matte {
+                            Some(true)
+                        } else {
+                            None
+                        },
+                        transform_link: c.transform_link.as_ref().map(|tl| {
+                            crate::format::TransformLinkJson {
+                                target: tl.target,
+                                mode: tl.mode,
+                                inherit_scale: tl.inherit_scale,
+                                inherit_position: tl.inherit_position,
+                                inherit_rotation: tl.inherit_rotation,
+                                inherit_anchor: tl.inherit_anchor,
+                            }
                         }),
-                        grade_versions: c.grade_versions.iter().map(|gv| GradeVersionJson {
-                            name: gv.name.clone(),
-                            node_graph: gv.node_graph.clone(),
-                        }).collect(),
+                        grade_versions: c
+                            .grade_versions
+                            .iter()
+                            .map(|gv| GradeVersionJson {
+                                name: gv.name.clone(),
+                                node_graph: gv.node_graph.clone(),
+                            })
+                            .collect(),
                         active_grade_version: c.active_grade_version,
                         track_points: c.track_points.clone(),
-                    }
-                }).collect(),
-            }
-        }).collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -354,22 +547,28 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
     EffectJson {
         plugin_name: effect.plugin_name.clone(),
         enabled: effect.enabled,
-        param_values: effect.param_values.iter().map(|(k, v): (&String, &klipp_plugin::OfxValue)| {
-            let json_val = match v {
-                klipp_plugin::OfxValue::Double(d) => OfxValueJson::Double(*d),
-                klipp_plugin::OfxValue::Double2(a, b) => OfxValueJson::Double2([*a, *b]),
-                klipp_plugin::OfxValue::Double3(a, b, c) => OfxValueJson::Double3([*a, *b, *c]),
-                klipp_plugin::OfxValue::Int(i) => OfxValueJson::Int(*i),
-                klipp_plugin::OfxValue::Int2(a, b) => OfxValueJson::Int2([*a, *b]),
-                klipp_plugin::OfxValue::Int3(a, b, c) => OfxValueJson::Int3([*a, *b, *c]),
-                klipp_plugin::OfxValue::Bool(b) => OfxValueJson::Bool(*b),
-                klipp_plugin::OfxValue::Choice(c) => OfxValueJson::Choice(*c),
-                klipp_plugin::OfxValue::String(s) => OfxValueJson::String(s.clone()),
-                klipp_plugin::OfxValue::Rgba(r, g, b, a) => OfxValueJson::Rgba([*r, *g, *b, *a]),
-                klipp_plugin::OfxValue::Rgb(r, g, b) => OfxValueJson::Rgb([*r, *g, *b]),
-            };
-            (k.clone(), json_val)
-        }).collect(),
+        param_values: effect
+            .param_values
+            .iter()
+            .map(|(k, v): (&String, &klipp_plugin::OfxValue)| {
+                let json_val = match v {
+                    klipp_plugin::OfxValue::Double(d) => OfxValueJson::Double(*d),
+                    klipp_plugin::OfxValue::Double2(a, b) => OfxValueJson::Double2([*a, *b]),
+                    klipp_plugin::OfxValue::Double3(a, b, c) => OfxValueJson::Double3([*a, *b, *c]),
+                    klipp_plugin::OfxValue::Int(i) => OfxValueJson::Int(*i),
+                    klipp_plugin::OfxValue::Int2(a, b) => OfxValueJson::Int2([*a, *b]),
+                    klipp_plugin::OfxValue::Int3(a, b, c) => OfxValueJson::Int3([*a, *b, *c]),
+                    klipp_plugin::OfxValue::Bool(b) => OfxValueJson::Bool(*b),
+                    klipp_plugin::OfxValue::Choice(c) => OfxValueJson::Choice(*c),
+                    klipp_plugin::OfxValue::String(s) => OfxValueJson::String(s.clone()),
+                    klipp_plugin::OfxValue::Rgba(r, g, b, a) => {
+                        OfxValueJson::Rgba([*r, *g, *b, *a])
+                    }
+                    klipp_plugin::OfxValue::Rgb(r, g, b) => OfxValueJson::Rgb([*r, *g, *b]),
+                };
+                (k.clone(), json_val)
+            })
+            .collect(),
     }
 }
 
@@ -377,17 +576,24 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
 /// to the project directory, the way the flat fields have always stored
 /// it, so a project that is moved still finds its textures. The
 /// in-memory data keeps its absolute paths.
-fn title_data_for_file(data: &klipp_timeline::TitleData, project_dir: &Path) -> klipp_timeline::TitleData {
+fn title_data_for_file(
+    data: &klipp_timeline::TitleData,
+    project_dir: &Path,
+) -> klipp_timeline::TitleData {
     let mut copy = data.clone();
     for obj in &mut copy.objects {
         match &mut obj.content {
             klipp_timeline::TitleObjectContent::TextBox(tb) => {
                 if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
-                    *p = to_project_relative(project_dir, Path::new(p)).to_string_lossy().to_string();
+                    *p = to_project_relative(project_dir, Path::new(p))
+                        .to_string_lossy()
+                        .to_string();
                 }
             }
             klipp_timeline::TitleObjectContent::Image(img) => {
-                img.path = to_project_relative(project_dir, Path::new(&img.path)).to_string_lossy().to_string();
+                img.path = to_project_relative(project_dir, Path::new(&img.path))
+                    .to_string_lossy()
+                    .to_string();
             }
             klipp_timeline::TitleObjectContent::Shape(_) => {}
         }
@@ -493,14 +699,14 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             }
         }
         ClipKind::Gap => ClipKindJson::Gap,
-        ClipKind::Sequence { sequence_id } => ClipKindJson::Sequence {
+        ClipKind::Sequence { sequence_id, .. } => ClipKindJson::Sequence {
             sequence_id: sequence_id.to_string(),
         },
         ClipKind::Generator(data) => ClipKindJson::Generator {
             data: serde_json::to_value(data).unwrap_or_default(),
         },
         ClipKind::AdjustmentLayer => ClipKindJson::AdjustmentLayer,
-        ClipKind::Precomposition { sequence_id } => ClipKindJson::Precomposition {
+        ClipKind::Precomposition { sequence_id, .. } => ClipKindJson::Precomposition {
             sequence_id: sequence_id.to_string(),
         },
     }
@@ -518,16 +724,37 @@ pub fn iso8601_now() -> String {
     let mut y = 1970i64;
     let mut d = days as i64;
     loop {
-        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if d < dy { break; }
+        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if d < dy {
+            break;
+        }
         d -= dy;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 0usize;
     for md in &mdays {
-        if d < *md { break; }
+        if d < *md {
+            break;
+        }
         d -= md;
         mo += 1;
     }
@@ -543,8 +770,14 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         filename: item.filename.clone(),
         duration_frames: item.duration.value,
         duration_rate: item.duration.rate,
-        fps: FpsJson { num: item.fps.num, den: item.fps.den },
-        resolution: ResolutionJson { width: item.resolution.width, height: item.resolution.height },
+        fps: FpsJson {
+            num: item.fps.num,
+            den: item.fps.den,
+        },
+        resolution: ResolutionJson {
+            width: item.resolution.width,
+            height: item.resolution.height,
+        },
         video_codec: item.video_codec.clone(),
         audio_codec: item.audio_codec.clone(),
         has_audio: item.has_audio,
@@ -566,12 +799,20 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         bin: item.bin.clone(),
         bin_id: item.bin_id.map(|id| id.to_string()),
         parent_media_id: item.parent_media_id.map(|id| id.to_string()),
-        added_at: if item.added_at > 0 { Some(item.added_at) } else { None },
+        added_at: if item.added_at > 0 {
+            Some(item.added_at)
+        } else {
+            None
+        },
         file_modified_at: item.file_modified_at,
         media_created_at: item.media_created_at,
         color_label: item.color_label.to_u8(),
         colour_space: item.colour_space.to_u8(),
-        source_rotation: if item.source_rotation == 0 { None } else { Some(item.source_rotation) },
+        source_rotation: if item.source_rotation == 0 {
+            None
+        } else {
+            Some(item.source_rotation)
+        },
         camera_make: item.camera_make.clone(),
         camera_model: item.camera_model.clone(),
         encoder: item.encoder.clone(),
@@ -624,8 +865,7 @@ pub fn save_looks(dir: &Path, looks: &[Look]) -> Result<(), String> {
         }
         return Ok(());
     }
-    std::fs::create_dir_all(&looks_dir)
-        .map_err(|e| format!("Failed to create looks dir: {e}"))?;
+    std::fs::create_dir_all(&looks_dir).map_err(|e| format!("Failed to create looks dir: {e}"))?;
     for look in looks {
         let json = serde_json::to_string_pretty(look)
             .map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
@@ -642,10 +882,14 @@ pub fn save_looks(dir: &Path, looks: &[Look]) -> Result<(), String> {
 /// Looks shouldn't reappear after the next save just because their
 /// file lingers on disk.
 fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
-    let Ok(entries) = std::fs::read_dir(looks_dir) else { return };
+    let Ok(entries) = std::fs::read_dir(looks_dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_none_or(|e| e != "json") { continue; }
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s,
             None => continue,
