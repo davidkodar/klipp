@@ -7552,6 +7552,25 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    let changed = if let Some((ti, ci)) = seq.find_clip(*clip_id) {
+                        if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut seq.tracks[ti].clips[ci].kind {
+                            let old = template_instance.clone();
+                            template_instance.overrides.insert(parameter.clone(), value.clone());
+                            Some((old, template_instance.clone()))
+                        } else { None }
+                    } else { None };
+                    if let Some((old, new)) = changed.filter(|(old, new)| old != new) {
+                        let cid = *clip_id;
+                        self.state.active_history_mut().push(crate::history::HistoryEntry {
+                            command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, old: Box::new(old), new: Box::new(new) },
+                        });
+                        self.sync_sequence_to_engine();
+                        self.state.dirty = true;
+                    }
+                    true
+                }
                 AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
                     if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
                         let old = seq.camera.clone();

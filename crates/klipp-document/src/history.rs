@@ -163,6 +163,8 @@ pub enum EditCommand {
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
+    /// Replace the persisted values of an inserted composition template.
+    SetTemplateInstance { clip_id: ClipId, old: Box<klipp_core::TemplateInstance>, new: Box<klipp_core::TemplateInstance> },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,
@@ -654,6 +656,7 @@ impl EditCommand {
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
+            EditCommand::SetTemplateInstance { .. } => "Template Parameter",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",
             EditCommand::LegacyRemoveClip { .. } | EditCommand::LegacyRippleRemove { .. } => "Remove Clip",

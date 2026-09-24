@@ -79,6 +79,13 @@ impl DocumentView<'_> {
                     c.depth = *old;
                 }
             }
+            EditCommand::SetTemplateInstance { clip_id, old, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut c.kind {
+                        *template_instance = (**old).clone();
+                    }
+                }
+            }
             EditCommand::SetSequenceFormat { old, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.resolution = old.0;
@@ -660,6 +667,13 @@ impl DocumentView<'_> {
             EditCommand::SetClipDepth { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.depth = *new;
+                }
+            }
+            EditCommand::SetTemplateInstance { clip_id, new, .. } => {
+                if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
+                    if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut c.kind {
+                        *template_instance = (**new).clone();
+                    }
                 }
             }
             EditCommand::SetSequenceFormat { new, .. } => {

@@ -156,6 +156,12 @@ impl NewInspectorPanel {
             ui.advance_cursor_after_rect(banner_rect);
         }
 
+        if let Some((_, clip)) = clip_info {
+            if matches!(clip.kind, klipp_timeline::ClipKind::TemplatePrecomposition { .. }) {
+                show_template_controls(ui, state, theme, clip, &mut cmds);
+            }
+        }
+
         // ── Tab bar ──
         let is_title_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Title(_)));
         let is_generator_clip = clip_info.as_ref().is_some_and(|(_, c)| matches!(c.kind, klipp_timeline::ClipKind::Generator(_)));
@@ -383,6 +389,54 @@ impl NewInspectorPanel {
             }
         }
         cmds
+    }
+}
+
+fn show_template_controls(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+    clip: &klipp_timeline::Clip,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &clip.kind else { return };
+    let Some(template) = state.composition_templates.templates().find(|template| template.id == template_instance.template_id) else { return };
+    ui.heading(egui::RichText::new("TEMPLATE").color(theme.text_primary).size(12.0));
+    ui.add_space(4.0);
+    for (name, parameter) in &template.parameters {
+        let mut value = template_instance.overrides.get(name).cloned().unwrap_or_else(|| parameter.default.clone());
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label(&parameter.label);
+            match &mut value {
+                crate::parameterized_templates::TemplateValue::Text(text) => {
+                    changed = ui.text_edit_singleline(text).changed();
+                }
+                crate::parameterized_templates::TemplateValue::Number(number) => {
+                    let mut drag = egui::DragValue::new(number).speed(0.01);
+                    if let Some(range) = &parameter.range {
+                        if let (Some(min), Some(max)) = (range.min, range.max) { drag = drag.range(min..=max); }
+                    }
+                    changed = ui.add(drag).changed();
+                }
+                crate::parameterized_templates::TemplateValue::Bool(enabled) => {
+                    changed = ui.checkbox(enabled, "").changed();
+                }
+                crate::parameterized_templates::TemplateValue::Enum(choice) => {
+                    egui::ComboBox::from_id_salt((clip.id, name))
+                        .selected_text(choice.clone())
+                        .show_ui(ui, |ui| {
+                            for option in &parameter.choices { changed |= ui.selectable_value(choice, option.clone(), option).changed(); }
+                        });
+                }
+                crate::parameterized_templates::TemplateValue::Color(color) => {
+                    changed = ui.color_edit_button_rgba_unmultiplied(color).changed();
+                }
+            }
+        });
+        if changed {
+            cmds.push(AppCommand::SetTemplateOverride { clip_id: clip.id, parameter: name.clone(), value });
+        }
     }
 }
 
