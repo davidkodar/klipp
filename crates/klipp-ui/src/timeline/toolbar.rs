@@ -6,8 +6,9 @@ use klipp_timeline::magnetic::EditMode;
 
 /// The timeline's own toolbar: everything that changes how an edit on
 /// the timeline behaves lives here and nowhere else. Left to right:
-/// the edit tools, the insert / overwrite mode, snap and skimming, the
-/// marker button; on the right the zoom.
+/// the edit tools, the insert / overwrite mode, snap and skimming, and the
+/// marker button. When clips are selected, a stable contextual action group
+/// is inserted before the zoom controls; the persistent controls never move.
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, kb: &crate::keybindings::KeyBindings) {
     let btn = crate::theme::control::REGULAR;
     ui.horizontal_centered(|ui| {
@@ -132,6 +133,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             cmds.push(AppCommand::AddTitleAtPlayhead { over_clip: None });
         }
 
+        // ── Contextual clip actions ──
+        // Keep this group empty when there is no selection so the toolbar
+        // stays quiet. Once a clip is selected, expose the high-frequency
+        // timeline operations that otherwise require a shortcut or menu.
+        show_context_actions(ui, state, theme, cmds);
+
         // ── Zoom (right-aligned): [−] [slider] [+] [Fit] ──
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
@@ -154,6 +161,114 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             ui.label(egui::RichText::new("\u{2212}").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         });
     });
+}
+
+fn show_context_actions(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    theme: &KlippTheme,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let ids = selected_clip_ids(state);
+    if ids.is_empty() {
+        return;
+    }
+
+    separator(ui, theme);
+    let action_btn = |ui: &mut egui::Ui, label: &str, tip: &str| {
+        let resp = ui.add(
+            egui::Button::new(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION))
+                .min_size(egui::vec2(42.0, crate::theme::control::COMPACT)),
+        );
+        styled_tooltip(&resp, theme, tip, None);
+        resp
+    };
+
+    // These operations are valid for any selected clip type.
+    if ids.len() == 1 {
+        let id = ids[0];
+        if let Some((track_index, clip)) = find_clip(state, id) {
+            let playhead_inside = state.playhead > clip.timeline_in && state.playhead < clip.timeline_out;
+            let split = ui
+                .add_enabled(
+                    playhead_inside,
+                    egui::Button::new(egui::RichText::new("Split").size(crate::theme::type_scale::CAPTION))
+                        .min_size(egui::vec2(42.0, crate::theme::control::COMPACT)),
+                );
+            styled_tooltip(&split, theme, "Split the selected clip at the playhead", None);
+            if split.clicked() {
+                cmds.push(AppCommand::BladeClip {
+                    track_index,
+                    clip_id: id,
+                    cut_at: state.playhead,
+                });
+            }
+
+            let trim_in = action_btn(ui, "Trim in", "Ripple-trim the selected clip's head to the playhead");
+            if trim_in.clicked() {
+                cmds.push(AppCommand::RippleTrimHead { clip_id: id });
+            }
+            let trim_out = action_btn(ui, "Trim out", "Ripple-trim the selected clip's tail to the playhead");
+            if trim_out.clicked() {
+                cmds.push(AppCommand::RippleTrimTail { clip_id: id });
+            }
+
+            let delete = action_btn(ui, "Delete", "Delete the selected clip");
+            if delete.clicked() {
+                cmds.push(AppCommand::RemoveClip { clip_id: id });
+            }
+
+            if clip.linked_clip_id.is_some() {
+                let unlink = action_btn(ui, "Unlink", "Unlink the selected audio/video pair");
+                if unlink.clicked() {
+                    cmds.push(AppCommand::UnlinkClip { clip_id: id });
+                }
+            }
+        }
+    } else {
+        let delete = action_btn(ui, "Delete", "Delete all selected clips");
+        if delete.clicked() {
+            for id in &ids {
+                cmds.push(AppCommand::RemoveClip { clip_id: *id });
+            }
+        }
+
+        if ids.len() == 2 {
+            let link = action_btn(ui, "Link", "Link the two selected clips as an audio/video pair");
+            if link.clicked() {
+                cmds.push(AppCommand::LinkClips {
+                    clip_a: ids[0],
+                    clip_b: ids[1],
+                });
+            }
+        }
+    }
+}
+
+fn selected_clip_ids(state: &AppState) -> Vec<klipp_core::ClipId> {
+    let mut ids = state.selected_clips.clone();
+    if ids.is_empty() {
+        if let Some(id) = state.selected_clip {
+            ids.push(id);
+        }
+    } else if let Some(id) = state.selected_clip {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+fn find_clip(
+    state: &AppState,
+    clip_id: klipp_core::ClipId,
+) -> Option<(usize, &klipp_timeline::Clip)> {
+    state
+        .sequence()
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(track_index, track)| track.find_clip(clip_id).map(|clip| (track_index, clip)))
 }
 
 /// A square glyph button: a tinted field and the accent on the glyph
