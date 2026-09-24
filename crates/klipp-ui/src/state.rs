@@ -181,6 +181,16 @@ pub struct ViewerTransformDrag {
     pub drag_start_pos: egui::Pos2,
 }
 
+/// A corner-pin handle being dragged in the viewer: which corner, and
+/// the four as they were when the drag last wrote them.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewerCornerPinDrag {
+    pub clip_id: klipp_core::ClipId,
+    pub effect_index: usize,
+    pub corner: usize,
+    pub corners: [[f32; 2]; 4],
+}
+
 /// Which part of a Title-object's bounding box is being dragged.
 /// Used by the on-canvas title object editor; mirrors the standard
 /// 8-handle bounding box from pro NLEs (corner = font scale,
@@ -2344,6 +2354,8 @@ pub struct AppState {
     // Viewer transform controls
     /// Active drag on a viewer transform handle
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
+    /// A corner-pin handle drag in the viewer.
+    pub viewer_corner_pin_drag: Option<ViewerCornerPinDrag>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
     /// Currently selected object inside a Title clip. The first
@@ -3893,6 +3905,7 @@ impl Default for AppState {
             proxy_status_message: None,
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
+            viewer_corner_pin_drag: None,
             show_transform_controls: true,
             selected_title_object: None,
             title_object_drag: None,

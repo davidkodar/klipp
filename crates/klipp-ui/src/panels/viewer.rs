@@ -1736,6 +1736,7 @@ impl ViewerPanel {
             && !state.has_modal_open()
         {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
+            self.draw_corner_pin_handles(ui, state, image_rect, cmds);
         }
 
         // ── On-canvas Title-object editor ──
@@ -4483,6 +4484,107 @@ impl ViewerPanel {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The corner pin's four handles: the quadrilateral the picture is
+    /// pinned to, drawn over the frame, each corner draggable. Only for
+    /// a selected clip that carries a pin; the pin itself is added from
+    /// the inspector. The corners are shown as they are at the playhead,
+    /// keys included; a drag rewrites the corner and, where that corner
+    /// is keyed, keys it at the playhead, as the inspector's rows do.
+    /// The drag is bracketed under the key the effect handlers coalesce
+    /// on, so it is one undo entry however far the handle went. The
+    /// handles are in the frame before the clip's transform, where the
+    /// pin runs.
+    fn draw_corner_pin_handles(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        use klipp_effects::corner_pin::{corners, with_corners, PARAMS};
+        let Some(clip_id) = state.selected_clip else { return };
+        let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
+        let Some(effect_index) = clip.builtin_effects.iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
+        let Some(base) = corners(&clip.builtin_effects[effect_index]) else { return };
+        let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+        let keys_of = |name: &str| clip.effect_keyframes.get(&format!("{effect_index}:{name}")).filter(|k| !k.is_empty());
+        let mut shown = base;
+        for (corner, names) in shown.iter_mut().zip(PARAMS) {
+            for axis in 0..2 {
+                if let Some(keys) = keys_of(names[axis]) {
+                    corner[axis] = klipp_core::keyframe::evaluate(keys, clip_time, corner[axis]);
+                }
+            }
+        }
+        let old_effect = clip.builtin_effects[effect_index].clone();
+        let keyed: [[bool; 2]; 4] = std::array::from_fn(|i| [keys_of(PARAMS[i][0]).is_some(), keys_of(PARAMS[i][1]).is_some()]);
+
+        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, shown[i][0], shown[i][1]));
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        // White on black, as the transform gizmo's handles are: visible
+        // over any picture, and not mistaken for the picture.
+        let (fill, edge) = (egui::Color32::WHITE, egui::Color32::BLACK);
+        let hit_radius = 10.0;
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= hit_radius);
+        let hot = state.viewer_corner_pin_drag.map(|d| d.corner).or_else(|| pointer_pos.and_then(hit));
+
+        painter.add(egui::Shape::closed_line(screen.to_vec(), egui::Stroke::new(1.0_f32, fill)));
+        for (i, s) in screen.iter().enumerate() {
+            let half = if hot == Some(i) { 5.0 } else { 4.0 };
+            let rect = egui::Rect::from_center_size(*s, egui::vec2(half * 2.0, half * 2.0));
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, edge));
+        }
+
+        let drag_key = format!("{:?}:builtin:{}", clip_id, effect_index);
+        let pressed = ui.input(|i| i.pointer.primary_pressed());
+        let down = ui.input(|i| i.pointer.primary_down());
+        let released = ui.input(|i| i.pointer.primary_released());
+        if let Some(drag) = state.viewer_corner_pin_drag.take() {
+            if drag.clip_id != clip_id || drag.effect_index != effect_index {
+                // The clip or the effect changed under the drag: let it go.
+            } else if released {
+                cmds.push(AppCommand::EndEffectDrag {
+                    key: drag_key,
+                    clip_id,
+                    effect_index,
+                    new_effect: with_corners(drag.corners),
+                });
+            } else if down {
+                if let Some(p) = pointer_pos {
+                    let (nx, ny) = viewer_screen_to_norm(image_rect, p);
+                    let mut next = drag.corners;
+                    next[drag.corner] = [nx.clamp(-2.0, 3.0), ny.clamp(-2.0, 3.0)];
+                    cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: with_corners(next) });
+                    for axis in 0..2 {
+                        if keyed[drag.corner][axis] {
+                            cmds.push(AppCommand::AddEffectKeyframe {
+                                clip_id,
+                                effect_index,
+                                param_name: PARAMS[drag.corner][axis].to_string(),
+                                time_secs: clip_time,
+                                value: next[drag.corner][axis],
+                            });
+                        }
+                    }
+                    state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag { corners: next, ..drag });
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    ui.ctx().request_repaint();
+                }
+            }
+        } else if let Some(p) = pointer_pos {
+            if pressed && state.viewer_transform_drag.is_none() {
+                if let Some(corner) = hit(p) {
+                    cmds.push(AppCommand::BeginEffectDrag { key: drag_key, clip_id, effect_index, old_effect });
+                    state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag { clip_id, effect_index, corner, corners: shown });
+                }
+            } else if hit(p).is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
         }
     }

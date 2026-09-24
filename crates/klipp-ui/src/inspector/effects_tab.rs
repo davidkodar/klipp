@@ -722,6 +722,7 @@ fn show_preset_selectors(
                 spill_method: klipp_effects::SpillMethod::ChannelClamp,
                 spill_strength: 0.6,
             }),
+            ("Corner Pin", klipp_effects::corner_pin::still()),
         ];
         for (label, effect) in &effects {
             if ui.small_button(*label).clicked() {
@@ -1124,6 +1125,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::Sharpen { .. } => Cow::Borrowed("Sharpen"),
         klipp_effects::BuiltinEffect::Crop { .. } => Cow::Borrowed("Crop"),
         klipp_effects::BuiltinEffect::Transform { .. } => Cow::Borrowed("Transform"),
+        klipp_effects::BuiltinEffect::CornerPin { .. } => Cow::Borrowed("Corner Pin"),
         klipp_effects::BuiltinEffect::ChromaKey { .. } => Cow::Borrowed("Chroma Key"),
         klipp_effects::BuiltinEffect::Bloom { .. } => Cow::Borrowed("Bloom"),
         klipp_effects::BuiltinEffect::Glow { .. } => Cow::Borrowed("Glow"),
@@ -1201,6 +1203,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             key_color: [0, 255, 0], tolerance: 0.2, soft_edge: 0.1,
             spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
         },
+        BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
         BuiltinEffect::Bloom { .. } => BuiltinEffect::Bloom {
             threshold: 0.7, radius: 20.0, intensity: 0.5,
         },
@@ -1698,6 +1701,25 @@ fn show_builtin_effect_params(
             track_scrubby!("", r, *anchor_x);
             let r = scrubby_param_row(ui, "Anchor Y", anchor_y, 0.0..=1.0, 0.5, 0.005, 3, "", None);
             track_scrubby!("", r, *anchor_y);
+        }
+        klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl } => {
+            // Eight rows, one per coordinate, each keyed under its own
+            // name; the viewer's handles drag the same four corners.
+            let labels = ["Top Left", "Top Right", "Bottom Right", "Bottom Left"];
+            for ((corner, names), (label, still)) in [tl, tr, br, bl]
+                .into_iter()
+                .zip(klipp_effects::corner_pin::PARAMS)
+                .zip(labels.iter().zip(klipp_effects::corner_pin::STILL))
+            {
+                for axis in 0..2 {
+                    let name = names[axis];
+                    corner[axis] = eval_effect_kf(clip, effect_index, name, clip_time_secs, corner[axis], keyframe_tolerance);
+                    let ks = Some(effect_keyframe_state(clip, effect_index, name, clip_time_secs, keyframe_tolerance));
+                    let row = format!("{label} {}", if axis == 0 { "X" } else { "Y" });
+                    let r = scrubby_param_row(ui, &row, &mut corner[axis], -1.0..=2.0, still[axis], 0.002, 3, "", ks);
+                    track_scrubby!(name, r, corner[axis]);
+                }
+            }
         }
         klipp_effects::BuiltinEffect::ChromaKey { key_color, tolerance, soft_edge, spill_method, spill_strength } => {
             // Color picker stays as-is (not a scrubby candidate)

@@ -146,6 +146,7 @@ pub struct GpuEffectsPipeline {
     sharpen_pipeline: wgpu::ComputePipeline,
     crop_pipeline: wgpu::ComputePipeline,
     transform_pipeline: wgpu::ComputePipeline,
+    corner_pin_pipeline: wgpu::ComputePipeline,
     chroma_key_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — light effects
     bloom_threshold_pipeline: wgpu::ComputePipeline,
@@ -776,6 +777,7 @@ impl GpuEffectsPipeline {
         let sharpen_pipeline = create_pipeline(&device, &pipeline_layout, "sharpen", SHADER_SHARPEN);
         let crop_pipeline = create_pipeline(&device, &pipeline_layout, "crop", SHADER_CROP);
         let transform_pipeline = create_pipeline(&device, &pipeline_layout, "transform", SHADER_TRANSFORM);
+        let corner_pin_pipeline = create_pipeline(&device, &pipeline_layout, "corner_pin", SHADER_CORNER_PIN);
         let chroma_key_pipeline = create_pipeline(&device, &pipeline_layout, "chroma_key", SHADER_CHROMA_KEY);
         let bloom_threshold_pipeline = create_pipeline(&device, &pipeline_layout, "bloom_threshold", SHADER_BLOOM_THRESHOLD);
         // Bloom/glow blend uses 4-binding layout (input, bright/blurred, output, params) — same as transitions
@@ -1328,6 +1330,7 @@ impl GpuEffectsPipeline {
             sharpen_pipeline,
             crop_pipeline,
             transform_pipeline,
+            corner_pin_pipeline,
             chroma_key_pipeline,
             bloom_threshold_pipeline,
             bloom_blend_pipeline,
@@ -5956,6 +5959,19 @@ impl GpuEffectsPipeline {
                     self.dispatch(&self.transform_pipeline, input, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::CornerPin { tl, tr, br, bl } => {
+                    let corners = [*tl, *tr, *br, *bl];
+                    if crate::corner_pin::is_still(&corners) {
+                        continue;
+                    }
+                    // No quadrilateral: nothing is drawn. The shader
+                    // reads a zero denominator everywhere as "behind
+                    // the eye" and writes transparent.
+                    let inv = crate::corner_pin::inverse_map(width, height, &corners).unwrap_or([0.0; 9]);
+                    self.write_params(&CornerPinParams { width, height, inv, _pad: 0 });
+                    self.dispatch(&self.corner_pin_pipeline, input, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::ChromaKey {
                     key_color,
                     tolerance,
@@ -7680,6 +7696,17 @@ struct TransformParams {
     _pad: [u32; 3],
 }
 
+/// The corner pin's inverse map, nine coefficients row-major, from
+/// `corner_pin::inverse_map`: the same numbers the CPU samples with.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CornerPinParams {
+    width: u32,
+    height: u32,
+    inv: [f32; 9],
+    _pad: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ChromaKeyParams {
@@ -9245,6 +9272,78 @@ fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
 // colour). Storage buffers are now linear-f32, so we re-encode to
 // sRGB inside the shader for the YCbCr distance test, then write back
 // the (possibly alpha-faded) linear pixel.
+/// The picture resampled through the corner pin's inverse map: each
+/// output pixel finds the picture pixel that lands on it and reads it
+/// bilinearly; outside the picture, and behind the eye (a denominator
+/// at or below zero), it is transparent. Mirrors the CPU arm in
+/// `cpu.rs`, coefficient for coefficient.
+const SHADER_CORNER_PIN: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    h0: f32,
+    h1: f32,
+    h2: f32,
+    h3: f32,
+    h4: f32,
+    h5: f32,
+    h6: f32,
+    h7: f32,
+    h8: f32,
+    _pad0: u32,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let y = idx / params.width;
+    let x = idx % params.width;
+    if y >= params.height { return; }
+
+    let fx0 = f32(x);
+    let fy0 = f32(y);
+    let w = params.h6 * fx0 + params.h7 * fy0 + params.h8;
+    if w <= 1e-6 {
+        output[idx] = pack(vec4<f32>(0.0));
+        return;
+    }
+    let sx = (params.h0 * fx0 + params.h1 * fy0 + params.h2) / w;
+    let sy = (params.h3 * fx0 + params.h4 * fy0 + params.h5) / w;
+
+    let x0 = i32(floor(sx));
+    let y0 = i32(floor(sy));
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
+    let fx = sx - f32(x0);
+    let fy = sy - f32(y0);
+
+    let p00 = sample_pixel(x0, y0);
+    let p10 = sample_pixel(x1, y0);
+    let p01 = sample_pixel(x0, y1);
+    let p11 = sample_pixel(x1, y1);
+
+    let top = mix(p00, p10, fx);
+    let bot = mix(p01, p11, fx);
+    output[idx] = pack(mix(top, bot, fy));
+}
+
+fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
+    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) {
+        return vec4<f32>(0.0);
+    }
+    let src_idx = u32(y) * params.width + u32(x);
+    return unpack(input[src_idx]);
+}
+"
+);
+
 const SHADER_CHROMA_KEY: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -16103,6 +16202,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SHARPEN", SHADER_SHARPEN),
         ("SHADER_CROP", SHADER_CROP),
         ("SHADER_TRANSFORM", SHADER_TRANSFORM),
+        ("SHADER_CORNER_PIN", SHADER_CORNER_PIN),
         ("SHADER_CHROMA_KEY", SHADER_CHROMA_KEY),
         ("SHADER_LINEAR_TO_DISPLAY_U8", SHADER_LINEAR_TO_DISPLAY_U8),
         ("SHADER_HDR_NIT_MAP", SHADER_HDR_NIT_MAP),
