@@ -1770,7 +1770,7 @@ impl TitleRenderer {
             None
         };
         let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty()));
-        let any_char_anim = any_path_motion || (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
+        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -1847,7 +1847,7 @@ impl TitleRenderer {
             }
         });
 
-        let any_render_time_override = any_char_anim
+        let any_render_time_override = any_path_motion || any_char_anim
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes
@@ -1966,7 +1966,7 @@ impl TitleRenderer {
         // position keyframes evaluate against this time inside
         // `render_inner`, and per-effect keyframes (e.g. TextGlow
         // radius/intensity) sample inside `compose`.
-        let time_arg = if any_char_anim
+        let time_arg = if any_path_motion || any_char_anim
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes

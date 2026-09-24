@@ -16688,6 +16688,25 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::TitlePathError { message } => { self.state.toast.show(message.clone()); true }
+            AppCommand::BeginTitlePathDrag { clip_id } => {
+                if let Some(data) = self.snapshot_title(*clip_id) {
+                    self.state.active_history_mut().begin_drag(format!("path:{}",clip_id.0), crate::history::HistoryEntry {
+                        command: crate::history::EditCommand::EditTitle {clip_id:*clip_id, description:"Edit Vector Path",old_data:data.clone(),new_data:data},
+                    });
+                }
+                true
+            }
+            AppCommand::EndTitlePathDrag { clip_id } => {
+                if self.state.active_history().is_dragging(&format!("path:{}",clip_id.0)) {
+                    if let Some(data) = self.snapshot_title(*clip_id) {
+                        self.state.active_history_mut().end_drag(crate::history::HistoryEntry {
+                            command: crate::history::EditCommand::EditTitle {clip_id:*clip_id,description:"Edit Vector Path",old_data:data.clone(),new_data:data},
+                        });
+                    }
+                }
+                true
+            }
             AppCommand::SetTitleVectorPath { clip_id, object_id, path } => {
                 if let Err(e) = path.validate() {
                     self.state.toast.show(e);
@@ -16711,7 +16730,9 @@ impl KlippApp {
                     }
                 }
                 if changed {
-                    if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Vector Path", old); }
+                    if !self.state.active_history().is_dragging(&format!("path:{}",clip_id.0)) {
+                        if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Vector Path", old); }
+                    }
                     self.render_title_to_viewer(*clip_id);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);

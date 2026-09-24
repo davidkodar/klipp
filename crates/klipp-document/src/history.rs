@@ -1037,6 +1037,8 @@ fn title_diff_is_text_only(
 /// For EditClipAudio: takes old_* from old_entry, new_* from new_entry.
 fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryEntry {
     let command = match (&old_entry.command, &new_entry.command) {
+        (EditCommand::EditTitle {clip_id, description, old_data, ..}, EditCommand::EditTitle {new_data, ..}) => EditCommand::EditTitle {clip_id:*clip_id, description, old_data:old_data.clone(), new_data:new_data.clone()},
+
         (
             EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. },
             EditCommand::EditBuiltinEffect { new_effect, .. },

@@ -26,6 +26,7 @@ pub(super) fn show(
     let mut pose = selected.map_or_else(|| path.at(time), |i| path.keyframes[i].pose.clone());
     let mut changed = false;
     let mut direct = false;
+    let mut end_drag = false;
     ui.label("Editable path · drag points or handles");
     ui.horizontal(|ui| {
         if ui
@@ -39,7 +40,7 @@ pub(super) fn show(
             if let Some(i) = selected {
                 next.keyframes.remove(i);
             } else if let Err(e) = next.key(time, pose.clone()) {
-                ui.label(e);
+                cmds.push(AppCommand::TitlePathError { message: e });
             }
             direct = true;
         }
@@ -70,6 +71,7 @@ pub(super) fn show(
     };
     ui.painter()
         .rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::GRAY));
+    let total_vertices: usize = pose.contours.iter().map(|c| c.vertices.len()).sum();
     for (ci, c) in pose.contours.iter_mut().enumerate() {
         let n = if c.closed {
             c.vertices.len()
@@ -113,6 +115,10 @@ pub(super) fn show(
                         egui::Color32::YELLOW
                     },
                 );
+                if response.drag_started() {
+                    cmds.push(AppCommand::BeginTitlePathDrag { clip_id });
+                }
+                end_drag |= response.drag_stopped();
                 if response.dragged() {
                     let d = ui.input(|i| i.pointer.delta());
                     p[0] = (p[0] + d.x / rect.width()).clamp(-4.0, 5.0);
@@ -126,7 +132,9 @@ pub(super) fn show(
             |ui| {
                 ui.add_enabled_ui(path.keyframes.is_empty(), |ui| {
                     changed |= ui.checkbox(&mut c.closed, "Closed").changed();
-                    if c.vertices.len() < 256 && ui.button("Add vertex").clicked() {
+                    if total_vertices < klipp_core::vector_path::MAX_PATH_VERTICES
+                        && ui.button("Add vertex").clicked()
+                    {
                         let point = [0.5, 0.5];
                         c.vertices.push(klipp_timeline::PathVertex {
                             point,
@@ -156,7 +164,10 @@ pub(super) fn show(
         );
     }
     ui.add_enabled_ui(path.keyframes.is_empty(), |ui| {
-        if pose.contours.len() < 16 && ui.button("Add contour").clicked() {
+        if pose.contours.len() < klipp_core::vector_path::MAX_PATH_CONTOURS
+            && total_vertices + 4 <= klipp_core::vector_path::MAX_PATH_VERTICES
+            && ui.button("Add contour").clicked()
+        {
             pose.contours
                 .push(VectorPath::default().pose.contours.remove(0));
             changed = true;
@@ -175,7 +186,7 @@ pub(super) fn show(
                 .map_err(|e| e.to_string())
                 .and_then(|s| std::fs::write(file, s).map_err(|e| e.to_string()))
             {
-                ui.label(e);
+                cmds.push(AppCommand::TitlePathError { message: e });
             }
         }
     }
@@ -208,7 +219,7 @@ pub(super) fn show(
                     direct = true;
                 }
                 Err(e) => {
-                    ui.label(e);
+                    cmds.push(AppCommand::TitlePathError { message: e });
                 }
             }
         }
@@ -217,7 +228,7 @@ pub(super) fn show(
         if path.keyframes.is_empty() {
             next.pose = pose;
         } else if let Err(e) = next.key(key_time, pose) {
-            ui.label(e);
+            cmds.push(AppCommand::TitlePathError { message: e });
             return;
         }
     }
@@ -229,9 +240,12 @@ pub(super) fn show(
                 path: next,
             }),
             Err(e) => {
-                ui.label(e);
+                cmds.push(AppCommand::TitlePathError { message: e });
             }
         }
+    }
+    if end_drag {
+        cmds.push(AppCommand::EndTitlePathDrag { clip_id });
     }
 }
 

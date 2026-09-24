@@ -81,3 +81,13 @@ fn agent_paths_share_the_model_and_undo_without_losing_text() {
         Some(&old)
     );
 }
+
+#[test]
+fn a_path_drag_is_one_undo_with_original_and_final_title() {
+    use klipp_document::history::{CommandHistory,EditCommand,HistoryEntry};
+    let clip_id=klipp_core::ClipId::new();let old=klipp_timeline::TitleData::default();let mut new=old.clone();new.objects.clear();
+    let entry=|data:klipp_timeline::TitleData|HistoryEntry{command:EditCommand::EditTitle{clip_id,description:"Edit Vector Path",old_data:data.clone(),new_data:data}};
+    let mut h=CommandHistory::new();h.begin_drag("path".into(),entry(old.clone()));h.end_drag(entry(new.clone()));
+    assert_eq!(h.undo_count(),1);
+    assert!(matches!(&h.undo_entries()[0].command,EditCommand::EditTitle{old_data,new_data,..} if *old_data==old && *new_data==new));
+}

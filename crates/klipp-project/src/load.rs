@@ -240,6 +240,18 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     for sequence in &project.sequences {
         for track in &sequence.tracks {
             for clip in &track.clips {
+                if let Some(ClipKindJson::Title { title_data: Some(value), .. }) = &clip.kind {
+                    // The legacy wrapper is permissive for old text DTOs, but a
+                    // path payload must never bypass the path contract.
+                    if let Some(objects) = value.get("objects").and_then(serde_json::Value::as_array) {
+                        for object in objects {
+                            if let Some(path) = object.pointer("/content/Shape/kind/Path") {
+                                let path: klipp_timeline::VectorPath = serde_json::from_value(path.clone()).map_err(|e| format!("invalid path: {e}"))?;
+                                path.validate()?;
+                            }
+                        }
+                    }
+                }
                 if let Some(ClipKindJson::VectorTitle { title_data }) = &clip.kind {
                     for object in &title_data.objects {
                         if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {

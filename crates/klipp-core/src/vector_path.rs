@@ -3,6 +3,13 @@
 use crate::title_motion::Easing;
 use serde::{Deserialize, Serialize};
 
+pub const MAX_PATH_VERTICES: usize = 256;
+pub const MAX_PATH_CONTOURS: usize = 16;
+pub const MAX_PATH_KEYS: usize = 256;
+fn linear_easing() -> Easing {
+    Easing::Linear
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PathVertex {
@@ -33,7 +40,7 @@ pub struct PathKeyframe {
     pub time_secs: f64,
     pub pose: PathPose,
     /// Easing from this key to the next; topology never changes between keys.
-    #[serde(default)]
+    #[serde(default = "linear_easing")]
     pub easing: Easing,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,7 +76,7 @@ impl Default for VectorPath {
 }
 impl VectorPath {
     pub fn validate(&self) -> Result<(), String> {
-        if self.keyframes.len() > 256 {
+        if self.keyframes.len() > MAX_PATH_KEYS {
             return Err("a path supports at most 256 morph keys".into());
         }
         self.pose.validate()?;
@@ -108,8 +115,7 @@ impl VectorPath {
         }
         let t = a
             .easing
-            .apply(((time - a.time_secs) / (b.time_secs - a.time_secs)) as f32)
-            .clamp(0.0, 1.0);
+            .apply(((time - a.time_secs) / (b.time_secs - a.time_secs)) as f32);
         a.pose.interpolate(&b.pose, t)
     }
     /// Key insertion preserves existing easing; topology changes require clearing keys.
@@ -146,11 +152,11 @@ impl PathPose {
                 .all(|(a, b)| a.closed == b.closed && a.vertices.len() == b.vertices.len())
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.contours.is_empty() || self.contours.len() > 16 {
+        if self.contours.is_empty() || self.contours.len() > MAX_PATH_CONTOURS {
             return Err("a path needs 1..16 contours".into());
         }
         let count: usize = self.contours.iter().map(|c| c.vertices.len()).sum();
-        if count > 256 || self.contours.iter().any(|c| c.vertices.len() < 2) {
+        if count > MAX_PATH_VERTICES || self.contours.iter().any(|c| c.vertices.len() < 2) {
             return Err("contours need at least two vertices, at most 256 total".into());
         }
         if self
@@ -189,10 +195,10 @@ impl PathPose {
             }
         }
         for i in 0..4 {
-            out.fill[i] = lerp(self.fill[i], b.fill[i]);
-            out.stroke[i] = lerp(self.stroke[i], b.stroke[i]);
+            out.fill[i] = lerp(self.fill[i], b.fill[i]).clamp(0.0, 1.0);
+            out.stroke[i] = lerp(self.stroke[i], b.stroke[i]).clamp(0.0, 1.0);
         }
-        out.stroke_width = lerp(self.stroke_width, b.stroke_width);
+        out.stroke_width = lerp(self.stroke_width, b.stroke_width).clamp(0.0, 200.0);
         out
     }
 }
@@ -200,6 +206,12 @@ impl PathPose {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overshoot_moves_geometry_but_keeps_paint_valid() {
+        let mut p=VectorPath::default();let mut end=p.pose.clone();end.contours[0].vertices[0].point=[0.5,0.5];end.fill=[1.0;4];
+        p.key(0.0,p.pose.clone()).unwrap();p.key(1.0,end).unwrap();p.keyframes[0].easing=Easing::OutBack;
+        let pose=p.at(0.7);assert!(pose.contours[0].vertices[0].point[0]>0.5);assert!(pose.fill.iter().all(|v|(0.0..=1.0).contains(v)));
+    }
     #[test]
     fn morphs_points_handles_and_paint_with_explicit_correspondence() {
         let mut p = VectorPath::default();

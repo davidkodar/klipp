@@ -80,11 +80,41 @@ pub(crate) fn paint(
     width: u32,
     height: u32,
 ) {
-    if pose.validate().is_err() || width == 0 || height == 0 {
+    if width == 0 || height == 0 {
         return;
     }
-    let contours = contours(pose, transform, width, height);
+    let mut contours = contours(pose, transform, width, height);
     let half = pose.stroke_width * height as f32 / 1080.0 * 0.5;
+    // Bound all coverage and blending to the visible geometry.
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for p in contours.iter().flat_map(|(_, p)| p) {
+        for axis in 0..2 {
+            if !p[axis].is_finite() {
+                return;
+            }
+            lo[axis] = lo[axis].min(p[axis]);
+            hi[axis] = hi[axis].max(p[axis]);
+        }
+    }
+    let pad = if pose.stroke[3] > 0.0 {
+        half + 1.0
+    } else {
+        1.0
+    };
+    let x0 = (lo[0] - pad).floor().clamp(0.0, width as f32) as u32;
+    let y0 = (lo[1] - pad).floor().clamp(0.0, height as f32) as u32;
+    let x1 = (hi[0] + pad).ceil().clamp(0.0, width as f32) as u32;
+    let y1 = (hi[1] + pad).ceil().clamp(0.0, height as f32) as u32;
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let frame_width = width;
+    let (width, height) = (x1 - x0, y1 - y0);
+    for p in contours.iter_mut().flat_map(|(_, p)| p) {
+        p[0] -= x0 as f32;
+        p[1] -= y0 as f32;
+    }
     let count = width as usize * height as usize;
     let mut fill = vec![0u8; count];
     let mut stroke = vec![0u8; count];
@@ -114,29 +144,7 @@ pub(crate) fn paint(
         }
     }
     if half > 0.0 && pose.stroke[3] > 0.0 {
-        for (_, points) in &contours {
-            for seg in points.windows(2) {
-                let (a, b) = (seg[0], seg[1]);
-                let x0 = ((a[0].min(b[0]) - half) * 2.0 - 0.5).ceil().max(0.0) as u32;
-                let x1 = ((a[0].max(b[0]) + half) * 2.0 - 0.5)
-                    .ceil()
-                    .clamp(0.0, (width * 2) as f32) as u32;
-                let y0 = ((a[1].min(b[1]) - half) * 2.0 - 0.5).ceil().max(0.0) as u32;
-                let y1 = ((a[1].max(b[1]) + half) * 2.0 - 0.5)
-                    .ceil()
-                    .clamp(0.0, (height * 2) as f32) as u32;
-                for sy in y0..y1 {
-                    for sx in x0..x1 {
-                        if distance([(sx as f32 + 0.5) * 0.5, (sy as f32 + 0.5) * 0.5], a, b)
-                            <= half
-                        {
-                            stroke[((sy / 2) * width + sx / 2) as usize] |=
-                                1 << ((sy % 2) * 2 + sx % 2);
-                        }
-                    }
-                }
-            }
-        }
+        stroke = stroke_coverage(&contours, width, height, half);
     }
     for (i, (f, s)) in fill.into_iter().zip(stroke).enumerate() {
         let fa = f.count_ones() as f32 * 0.25 * pose.fill[3];
@@ -150,7 +158,101 @@ pub(crate) fn paint(
                     .round() as u8;
             }
             src[3] = (alpha * 255.0).round() as u8;
-            super::over_blend_chunk(&mut buf[i * 4..i * 4 + 4], &src);
+            let target = ((y0 as usize + i / width as usize) * frame_width as usize
+                + x0 as usize
+                + i % width as usize)
+                * 4;
+            super::over_blend_chunk(&mut buf[target..target + 4], &src);
+        }
+    }
+}
+
+/// Scan-convert the union of round-capped segments. Each scanline merges
+/// analytic capsule intervals before filling coverage, so overlapping wide
+/// segment boxes do not each visit every covered sample.
+fn stroke_coverage(contours: &[(bool, Vec<[f32; 2]>)], w: u32, h: u32, r: f32) -> Vec<u8> {
+    let mut rows = vec![Vec::<(f32, f32)>::new(); (h * 2) as usize];
+    for (_, points) in contours {
+        for seg in points.windows(2) {
+            let (a, b) = (seg[0], seg[1]);
+            let dx = b[0] - a[0];
+            let dy = b[1] - a[1];
+            let len = dx.hypot(dy);
+            let (nx, ny) = if len > 1e-6 {
+                (-dy / len * r, dx / len * r)
+            } else {
+                (0.0, 0.0)
+            };
+            let corners = [
+                [a[0] + nx, a[1] + ny],
+                [b[0] + nx, b[1] + ny],
+                [b[0] - nx, b[1] - ny],
+                [a[0] - nx, a[1] - ny],
+            ];
+            let y0 = ((a[1].min(b[1]) - r) * 2.0 - 0.5)
+                .ceil()
+                .clamp(0.0, (h * 2) as f32) as usize;
+            let y1 = ((a[1].max(b[1]) + r) * 2.0 - 0.5)
+                .ceil()
+                .clamp(0.0, (h * 2) as f32) as usize;
+            for (sy, row) in rows.iter_mut().enumerate().take(y1).skip(y0) {
+                let y = (sy as f32 + 0.5) * 0.5;
+                let mut lo = f32::INFINITY;
+                let mut hi = f32::NEG_INFINITY;
+                for c in [a, b] {
+                    let d = y - c[1];
+                    if d.abs() <= r {
+                        let x = (r * r - d * d).max(0.0).sqrt();
+                        lo = lo.min(c[0] - x);
+                        hi = hi.max(c[0] + x);
+                    }
+                }
+                for i in 0..4 {
+                    let p = corners[i];
+                    let q = corners[(i + 1) % 4];
+                    if (p[1] > y) != (q[1] > y) {
+                        let x = p[0] + (y - p[1]) * (q[0] - p[0]) / (q[1] - p[1]);
+                        lo = lo.min(x);
+                        hi = hi.max(x);
+                    }
+                }
+                if lo <= hi {
+                    row.push((lo, hi));
+                }
+            }
+        }
+    }
+    let mut out = vec![0u8; (w * h) as usize];
+    for (sy, row) in rows.iter_mut().enumerate() {
+        row.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = 0u32;
+        for (lo, hi) in row {
+            let start = ((*lo * 2.0 - 0.5).ceil().clamp(0.0, (w * 2) as f32) as u32).max(end);
+            let stop = (*hi * 2.0 - 0.5).ceil().clamp(0.0, (w * 2) as f32) as u32;
+            for sx in start..stop {
+                out[(sy / 2 * w as usize) + sx as usize / 2] |=
+                    1 << ((sy % 2) * 2 + sx as usize % 2);
+            }
+            end = end.max(stop);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scanline_capsules_match_distance_coverage_including_a_dot() {
+        for points in [vec![[8.3,9.1],[30.4,18.2],[12.1,23.6]],vec![[20.3,20.7],[20.3,20.7]]] {
+            let mask=stroke_coverage(&[(false,points.clone())],40,40,4.2);
+            for y in 0..40 {for x in 0..40 {let mut bits=0;
+                for sy in 0..2 {for sx in 0..2 {
+                    let p=[x as f32+(sx as f32+0.5)*0.5,y as f32+(sy as f32+0.5)*0.5];
+                    if points.windows(2).any(|s|distance(p,s[0],s[1])<=4.2) {bits|=1<<(sy*2+sx);}
+                }}
+                assert_eq!(mask[y*40+x],bits,"pixel {x},{y}");
+            }}
         }
     }
 }

@@ -41,8 +41,11 @@ fn path_titles_round_trip_with_an_explicit_unsupported_reader_tag() {
         std::fs::write(std::path::Path::new(&output).join("project.json"), &text).unwrap();
     }
     let broken = text.replacen("\"closed\": true", "\"closed\": false", 1);
-    std::fs::write(dir.join("project.json"), broken).unwrap();
+    std::fs::write(dir.join("project.json"), &broken).unwrap();
     let error = klipp_project::load_project(&dir).unwrap_err();
     assert!(error.contains("topology mismatch"), "{error}");
+    let legacy = broken.replace("\"type\": \"vector_title\"", "\"type\": \"title\", \"text\": \"\"");
+    std::fs::write(dir.join("project.json"), legacy).unwrap();
+    assert!(klipp_project::load_project(&dir).unwrap_err().contains("topology mismatch"));
     std::fs::remove_dir_all(dir).unwrap();
 }
