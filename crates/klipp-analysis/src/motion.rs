@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "motion";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Motion {
@@ -54,7 +54,8 @@ impl Motion {
     }
 }
 
-fn mean_of(values: impl Iterator<Item = f32>) -> Option<f32> {
+/// Mean of measured samples, accumulated in f64.
+pub fn mean_of(values: impl Iterator<Item = f32>) -> Option<f32> {
     let (sum, count) = values.fold((0.0f64, 0usize), |(sum, count), v| (sum + v as f64, count + 1));
     (count > 0).then(|| (sum / count as f64) as f32)
 }
@@ -80,6 +81,17 @@ pub fn class_for(mean_ydif: f32) -> &'static str {
 /// `metadata=print` output: `frame:N pts:.. pts_time:T` lines followed
 /// by `lavfi.signalstats.YDIF=V`, into per-second means.
 pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
+    // Container duration can round before the last video PTS. Allow one
+    // observed frame interval (median of the last 16 valid deltas before
+    // the declared end), capped at 100 ms. This supports variable-rate
+    // input without admitting an arbitrary late/corrupt timestamp.
+    let times = crate::videopass::parse_pts_times(text);
+    let mut deltas: Vec<f64> = times.windows(2).filter_map(|w| {
+        let d = w[1] - w[0];
+        (w[0].is_finite() && w[0] >= 0.0 && w[1] <= duration_secs && d > 0.0 && d.is_finite()).then_some(d)
+    }).rev().take(16).collect();
+    deltas.sort_by(f64::total_cmp);
+    let tail_slack = deltas.get(deltas.len()/2).copied().unwrap_or(0.0).min(0.1);
     let seconds = duration_secs.ceil().max(1.0) as usize;
     let mut sums = vec![0.0f32; seconds];
     let mut counts = vec![0u32; seconds];
@@ -89,7 +101,7 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
             t = line[i + "pts_time:".len()..].trim().parse().ok();
         } else if let Some(v) = line.strip_prefix("lavfi.signalstats.YDIF=") {
             if let (Some(t), Ok(v)) = (t, v.trim().parse::<f32>()) {
-                if !t.is_finite() || t < 0.0 || t >= duration_secs || !valid_sample(v) {
+                if !t.is_finite() || t < 0.0 || t > duration_secs + tail_slack + 1e-9 || !valid_sample(v) {
                     continue;
                 }
                 let s = (t.floor() as usize).min(seconds - 1);
@@ -125,6 +137,16 @@ impl crate::Analyser for MotionAnalyser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tail_samples_allow_one_observed_frame_but_not_arbitrary_late_data() {
+        let text = "frame:0 pts_time:4.94\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.96\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.98\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.00\nlavfi.signalstats.YDIF=10\nframe:4 pts_time:5.02\nlavfi.signalstats.YDIF=14\nframe:5 pts_time:5.50\nlavfi.signalstats.YDIF=255\n";
+        let m = parse_metadata(text, 5.0);
+        assert_eq!(m.per_second[4], Some(6.0));
+        assert!(m.per_second[..4].iter().all(Option::is_none));
+        let variable = "frame:0 pts_time:4.85\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.9\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.97\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.04\nlavfi.signalstats.YDIF=10\n";
+        assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(4.0));
+    }
 
     #[test]
     fn per_second_means_and_classes() {

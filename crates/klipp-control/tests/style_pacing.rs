@@ -177,9 +177,20 @@ fn response_text_distinguishes_absent_empty_and_cut_excluded_analysis() {
             serde_json::Value::Null, klipp_control::StylePacingInput { shots: &shots, motion, sheet: None });
         assert_eq!(response["pacing_evidence"]["motion_evidence"], expected);
         assert!(response["text"].as_str().unwrap().contains(&format!("within-shot luma change — {text}")));
-        if motion.is_none() {
+        if matches!(expected, "unavailable" | "no_valid_samples") {
             assert!(response["next"].as_str().unwrap().contains("Re-analyse"));
-            assert!(response["guidance"].as_str().unwrap().contains("missing or outdated"));
+            assert!(response["guidance"].as_str().unwrap().contains("Re-analyse"));
         }
     }
+}
+
+#[test]
+fn slow_detection_survives_a_removed_fast_duplicate() {
+    let shots = Shots::from_passes(5.0, vec![2.0], vec![2.5,3.0]);
+    assert_eq!(shots.boundaries, vec![2.0,3.0]);
+    assert_eq!(shots.slow_boundaries, vec![3.0]);
+    let motion = measured(vec![1.0,1.0,99.0,99.0,1.0]);
+    let evidence = klipp_control::style_pacing_evidence(&shots,Some(&motion),None);
+    assert_eq!(evidence["within_shot_mean_ydif"],1.0);
+    assert_eq!(evidence["within_shot_sample_seconds"],3);
 }

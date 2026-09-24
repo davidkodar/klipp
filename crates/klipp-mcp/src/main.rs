@@ -1179,7 +1179,7 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",
-             "Find shots across every analysed media item: by framing (close-up, medium \
+             "Motion filters require decoded measurements; missing bins do not count as static. Find shots across every analysed media item: by framing (close-up, medium \
               close-up, medium, wide, very wide, inset — a small figure in a corner, a face \
               cam over a screen — or no people; B-roll wants no people), at least so many people, an \
               object the detector named (cat, car, cup…), motion (static, gentle, \

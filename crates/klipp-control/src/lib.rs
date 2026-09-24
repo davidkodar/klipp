@@ -743,11 +743,32 @@ pub fn style_cut_summary(shots: &[(f64, f64)], boundaries: &[f64], duration: f64
 /// Evidence about development inside detected shots, separate from cut cadence.
 /// Luma differences and freeze detection measure change, not the meaning of an
 /// animation, and must not be converted into a universal shot-length recipe.
+#[derive(serde::Serialize)]
+struct PacingEvidence {
+    within_shot_mean_ydif: Option<f32>,
+    within_shot_sample_seconds: usize,
+    valid_sample_seconds: usize,
+    cut_exclusion: &'static str,
+    within_shot_motion_class: Option<&'static str>,
+    motion_evidence: &'static str,
+    detected_holds: Option<Vec<serde_json::Value>>,
+    hold_evidence: &'static str,
+    guidance: String,
+}
+
 pub fn style_pacing_evidence(
     shots: &klipp_analysis::shots::Shots,
     motion: Option<&klipp_analysis::motion::Motion>,
     sheet: Option<&klipp_analysis::beatsheet::BeatSheet>,
 ) -> serde_json::Value {
+    serde_json::to_value(pacing_evidence(shots, motion, sheet)).expect("finite pacing evidence")
+}
+
+fn pacing_evidence(
+    shots: &klipp_analysis::shots::Shots,
+    motion: Option<&klipp_analysis::motion::Motion>,
+    sheet: Option<&klipp_analysis::beatsheet::BeatSheet>,
+) -> PacingEvidence {
     // Preserve actual detector provenance. An exact beat-aligned fast cut
     // excludes only its own bin. Widen only known slow-only detections.
     let mut excluded = std::collections::HashSet::new();
@@ -763,7 +784,7 @@ pub fn style_pacing_evidence(
             }
         }
     }
-    let within_mean = (!samples.is_empty()).then(|| samples.iter().sum::<f32>() / samples.len() as f32);
+    let within_mean = klipp_analysis::motion::mean_of(samples.iter().copied());
     let holds = sheet.map(|s| s.segments.iter()
         .filter(|s| s.kind == "idle")
         .map(|s| serde_json::json!({"start_secs": s.start_secs, "end_secs": s.end_secs}))
@@ -787,17 +808,17 @@ pub fn style_pacing_evidence(
         guidance.push_str("Detected settled intervals are inspection candidates, not prescribed hold lengths. ");
     }
     guidance.push_str("Luma differences can include gradual transitions beyond the detector timing window. Luma differences and freeze detection do not identify semantic events or distinguish motion graphics from camera or subject movement. ");
-    serde_json::json!({
-        "within_shot_mean_ydif": within_mean,
-        "within_shot_sample_seconds": samples.len(),
-        "valid_sample_seconds": valid,
-        "cut_exclusion": "boundary bins plus up to 0.5 s before known slow-only detections",
-        "within_shot_motion_class": motion_class,
-        "motion_evidence": motion_evidence,
-        "detected_holds": holds,
-        "hold_evidence": match sheet { None => "unavailable", Some(s) if s.has_freeze => "detected", Some(_) => "no_settled_intervals_detected" },
-        "guidance": guidance,
-    })
+    PacingEvidence {
+        within_shot_mean_ydif: within_mean,
+        within_shot_sample_seconds: samples.len(),
+        valid_sample_seconds: valid,
+        cut_exclusion: "boundary bins plus up to 0.5 s before known slow-only detections",
+        within_shot_motion_class: motion_class,
+        motion_evidence,
+        detected_holds: holds,
+        hold_evidence: match sheet { None => "unavailable", Some(s) if s.has_freeze => "detected", Some(_) => "no_settled_intervals_detected" },
+        guidance,
+    }
 }
 
 /// Analysis inputs used to derive both the motion summary and pacing evidence.
@@ -818,7 +839,7 @@ pub fn style_profile_response(
     look: serde_json::Value,
     analysis: StylePacingInput<'_>,
 ) -> serde_json::Value {
-    let pacing = style_pacing_evidence(analysis.shots, analysis.motion, analysis.sheet);
+    let pacing = pacing_evidence(analysis.shots, analysis.motion, analysis.sheet);
     let motion = analysis.motion.and_then(klipp_analysis::motion::Motion::overall_mean).map(|mean| json!({
         "class": klipp_analysis::motion::class_for(mean), "mean": mean,
         "scope": "whole_file_including_cuts",
@@ -826,7 +847,7 @@ pub fn style_profile_response(
     // Guidance: turn the numbers into how to build the same feel.
     let pace = cuts["pace"].as_str().unwrap_or("medium");
     let mean_shot = cuts["mean_shot_secs"].as_f64().unwrap_or(0.0);
-    let mut guide = pacing["guidance"].as_str().unwrap_or_default().to_string();
+    let mut guide = pacing.guidance.clone();
     if beats.confidence > 0.3 {
         let onb = cuts["cut_on_beat_ratio"].as_f64().unwrap_or(0.0);
         if onb > 0.4 {
@@ -848,9 +869,9 @@ pub fn style_profile_response(
         if beats.confidence > 0.3 { format!("; {:.0} BPM", beats.bpm) } else { String::new() },
         look.get("summary").and_then(|v| v.as_str()).unwrap_or("not measured"),
         motion.as_ref().and_then(|m| m.get("class")).and_then(|v| v.as_str()).unwrap_or("unknown"),
-        pacing["within_shot_motion_class"].as_str().unwrap_or(match pacing["motion_evidence"].as_str() {
-            Some("no_valid_samples") => "no decoded samples",
-            Some("excluded_by_cuts") => "excluded by cuts",
+        pacing.within_shot_motion_class.unwrap_or(match pacing.motion_evidence {
+            "no_valid_samples" => "no decoded samples",
+            "excluded_by_cuts" => "excluded by cuts",
             _ => "unavailable",
         }),
     );
@@ -862,7 +883,7 @@ pub fn style_profile_response(
         "motion": motion,
         "guidance": guide,
         "pacing_evidence": pacing,
-        "next": if analysis.motion.is_none() { "Re-analyse the reference to populate missing or outdated motion analysis, then request style_profile again." } else { "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music." },
+        "next": if matches!(pacing.motion_evidence, "unavailable" | "no_valid_samples") { "Re-analyse the reference to populate missing or outdated motion analysis, then request style_profile again." } else { "Inspect changes inside the detected shots, including reveals, movement and settled intervals. Choose cut and animation timings from that review; compare accents with the beat and grade toward the measured look using your own footage and music." },
     })
 }
 

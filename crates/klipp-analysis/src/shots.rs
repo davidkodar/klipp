@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "shots";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// Scene-change score above which a frame starts a new shot; ffmpeg's
 /// `scene` is 0 to 1, and 0.3 is the customary threshold.
@@ -55,8 +55,10 @@ impl Shots {
     /// treated as precise; only a slow-only detection gains uncertainty.
     pub fn from_passes(duration_secs: f64, fast: Vec<f64>, slow: Vec<f64>) -> Self {
         let fast = Self::from_boundaries(duration_secs, fast).boundaries;
-        let slow = Self::from_boundaries(duration_secs, slow).boundaries;
+        // Match raw slow detections first: pre-coalescing can discard a
+        // real cut through a duplicate that is itself removed by fast.
         let slow_boundaries: Vec<f64> = slow.into_iter().filter(|t| {
+            if !t.is_finite() || *t <= 0.0 || *t >= duration_secs { return false; }
             let i = fast.partition_point(|f| *f < *t);
             !fast.get(i).is_some_and(|f| (*f - *t).abs() < 0.6)
                 && !(i > 0 && (fast[i - 1] - *t).abs() < 0.6)
@@ -65,7 +67,7 @@ impl Shots {
         boundaries.extend(&slow_boundaries);
         boundaries.sort_by(f64::total_cmp);
         let mut result = Self::from_boundaries(duration_secs, boundaries);
-        result.slow_boundaries = slow_boundaries;
+        result.slow_boundaries = result.boundaries.iter().copied().filter(|t| slow_boundaries.contains(t)).collect();
         result
     }
 
