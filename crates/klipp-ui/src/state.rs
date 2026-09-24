@@ -1165,6 +1165,11 @@ pub struct AppState {
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
     pub timeline_scroll_y: f32,
+    /// Transient vertical scale applied by Fit so a tall track stack can
+    /// fit the visible timeline without changing the user's track heights.
+    pub timeline_track_scale: f32,
+    /// Visible height available to timeline tracks, refreshed by the panel.
+    pub last_timeline_tracks_height: f32,
     /// (track_idx, pointer_y_at_drag_start, original_height) — set while a track resize is in progress.
     pub timeline_resizing_track: Option<(usize, f32, f32)>,
     /// Per-track pre-collapse height memory for double-click collapse/expand toggle.
@@ -3438,6 +3443,8 @@ impl Default for AppState {
             timeline_zoom: 50.0,
             timeline_scroll_x: 0.0,
             timeline_scroll_y: 0.0,
+            timeline_track_scale: 1.0,
+            last_timeline_tracks_height: 600.0,
             timeline_resizing_track: None,
             timeline_track_pre_collapse: std::collections::HashMap::new(),
             playhead_follow: PlayheadFollow::default(),
