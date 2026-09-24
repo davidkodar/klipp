@@ -258,11 +258,19 @@ pub struct RenderStats {
 
 /// One entry of the stack [`Renderer::render`] composites.
 pub struct ActiveLayer<'a> {
-    /// Index into `Sequence::tracks`.
+    /// Index into `Sequence::tracks` — of the sequence the clips live in,
+    /// which for a precomposition's inner layers is the scene, not the
+    /// sequence asked about.
     pub track: usize,
     /// The clip shown, or a transition's outgoing and incoming clips.
     pub clips: Vec<&'a Clip>,
     pub transition: bool,
+    /// The time the clips are shown at, in their own sequence: the time
+    /// asked for, or, inside a precomposition, that time carried through
+    /// the precomposition's source window.
+    pub at: Timecode,
+    /// Their sequence's frame rate, for reading their source time.
+    pub fps: f64,
 }
 
 /// What a render at `time` stacks, bottom first: every clip whose frame
@@ -270,14 +278,33 @@ pub struct ActiveLayer<'a> {
 /// which media to have ready, and a caller whether a frame is a single
 /// plain clip.
 pub fn active_layers(seq: &Sequence, time: Timecode) -> Vec<ActiveLayer<'_>> {
-    stack(seq, time)
-        .into_iter()
-        .map(|(track, _, item)| ActiveLayer {
-            track,
-            transition: matches!(item, TrackItem::Transition { .. }),
-            clips: item.clips(),
-        })
-        .collect()
+    let fps = seq.fps.as_f64();
+    let mut out = Vec::new();
+    for (track, _, item) in stack(seq, time) {
+        let clips = item.clips();
+        // A precomposition in play has its scene in play: the scene's
+        // own layers follow, at the scene's time, so a source knows to
+        // have their media ready too. They are layers of their own
+        // rather than clips of this one, so a caller asking "is this
+        // frame a single plain clip" hears no.
+        let mut inner = Vec::new();
+        for c in &clips {
+            if let Some(scene) = &c.precomp {
+                inner.extend(active_layers(scene, precomposition_time(c, scene, time, fps)));
+            }
+        }
+        out.push(ActiveLayer { track, transition: matches!(item, TrackItem::Transition { .. }), clips, at: time, fps });
+        out.extend(inner);
+    }
+    out
+}
+
+/// The moment of `scene` a precomposition clip shows at `time`: the
+/// clip's source time, as any clip's is read, at the scene's rate. Time
+/// before the scene's start — a transition running into the clip's
+/// handle — shows its first frame, as a media clip shows its nearest.
+pub fn precomposition_time(clip: &Clip, scene: &Sequence, time: Timecode, fps: f64) -> Timecode {
+    Timecode::from_secs_f64(source_secs(clip, time, fps).max(0.0), scene.fps.rate())
 }
 
 /// A copy of `seq` holding only what a render at `time` reads: the clips
@@ -428,6 +455,11 @@ pub struct Renderer {
     /// The clips the GPU stack had to render on the CPU, so the log says
     /// so once per clip and not per frame.
     cpu_layers_said: std::collections::HashSet<ClipId>,
+    /// How many precompositions deep the render is: a scene inside a
+    /// scene is rendered by the same renderer, and a scene that is its
+    /// own ancestor is refused at resolution, so this only bounds a
+    /// chain that is merely long.
+    nesting: u8,
     /// Whether the GPU stack had begun a frame when it declined it: the
     /// frame is then rendered twice, once here and once by the caller.
     stack_work_started: bool,
@@ -503,6 +535,7 @@ impl Renderer {
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
+            nesting: 0,
             stack_work_started: false,
             gpu_export_declined_after_work: false,
             global_lut: None,
@@ -1845,10 +1878,16 @@ impl Renderer {
                 (GradeInput::Cpu(Arc::new(linear)), None)
             }
             ClipKind::Gap | ClipKind::Sequence { .. } | ClipKind::AdjustmentLayer => return None,
-            // Composed on its own surface by the change that follows this
-            // one. Until then it is an explicit kind that draws nothing —
-            // never a compound flattened into the wrong picture.
-            ClipKind::Precomposition { .. } => return None,
+            // The scene, composed on a surface of its own, is this clip's
+            // source: from here on it is graded, transformed, faded and
+            // blurred once, as one picture. Unresolved — the scene is
+            // missing, or contains itself — it draws nothing.
+            ClipKind::Precomposition { .. } => {
+                let scene = clip.precomp.clone()?;
+                let at = precomposition_time(clip, &scene, time, fps);
+                let surface = self.render_scene(&scene, at, width, height, src)?;
+                (GradeInput::Cpu(Arc::new(surface)), None)
+            }
         };
 
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
@@ -1925,6 +1964,29 @@ impl Renderer {
         let linear = self.title_linear_at(clip, td, t, width, height);
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height);
         self.ofx(clip, graded, t, width, height, None)
+    }
+
+    /// A precomposition's scene at `at`, on a transparent surface: its
+    /// tracks, camera, masks and shutter resolve here, in the working
+    /// space, with nothing of the outer render's applied to them. The
+    /// per-render state the outer stack has in hand — its shutter map,
+    /// its global LUT, what it is inspecting — is set aside for the
+    /// scene's render and restored after, so a scene neither inherits
+    /// nor disturbs it. `None` past the nesting bound.
+    fn render_scene(&mut self, scene: &Sequence, at: Timecode, width: u32, height: u32, src: &mut dyn FrameSource) -> Option<Vec<f32>> {
+        if self.nesting >= klipp_timeline::flatten::MAX_COMPOUND_DEPTH {
+            return None;
+        }
+        self.nesting += 1;
+        let shutter = std::mem::take(&mut self.shutter);
+        let lut = self.global_lut.take();
+        let inspect = std::mem::take(&mut self.inspect);
+        let surface = self.render_stack(scene, at, width, height, src, RenderOptions { keep_alpha: true, hdr_peak_nits: self.hdr_peak });
+        self.inspect = inspect;
+        self.global_lut = lut;
+        self.shutter = shutter;
+        self.nesting -= 1;
+        Some(surface)
     }
 
     /// sRGB-authored pixels — a title, a generator, an OFX plugin's

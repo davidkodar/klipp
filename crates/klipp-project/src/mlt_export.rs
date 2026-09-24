@@ -469,6 +469,7 @@ mod tests {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 

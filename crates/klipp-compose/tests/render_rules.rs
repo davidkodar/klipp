@@ -1013,6 +1013,133 @@ fn a_shut_shutter_keeps_the_blur_a_title_enters_with() {
     assert_shut_shutter_is_identity("blur entrance", &shot(None), &shot(Some(0.0)));
 }
 
+/// A precomposition is its scene composed first and treated as one
+/// picture after. Here the scene is green under half-transparent red —
+/// (0.5, 0.5, 0) composed — and the precomposition is faded to half:
+/// the parent's opacity lands once, on the composed picture. Flattened
+/// as a compound, each child would be faded on its own over the parent's
+/// background and the red would read against black rather than green.
+#[test]
+fn a_precomposition_is_composed_before_the_parent_fades_it() {
+    let mut red = solid([255, 0, 0], 0.0, 4.0);
+    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
+    let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
+    let outer = sequence(vec![vec![pre]]);
+    let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+    for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
+        assert_px(&format!("the composed scene at half, run {i}"), px(img, 16, 9), [0.25, 0.25, 0.0], 2e-3);
+    }
+}
+
+/// The parent's transform moves the composed picture, once: scaled to
+/// half, the scene is a half-size picture of itself in the middle of
+/// the frame with nothing around it.
+#[test]
+fn a_precomposition_is_transformed_as_one_picture() {
+    let mut red = solid([255, 0, 0], 0.0, 4.0);
+    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    let scene = sequence(vec![vec![red], vec![solid([0, 255, 0], 0.0, 4.0)]]);
+    let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    pre.builtin_effects = vec![BuiltinEffect::Transform {
+        position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
+        anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+    }];
+    let outer = sequence(vec![vec![pre]]);
+    let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+    for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
+        assert_px(&format!("the scene, in the middle, run {i}"), px(img, 16, 9), [0.5, 0.5, 0.0], 2e-3);
+        assert_px(&format!("nothing at the corner, run {i}"), px(img, 1, 1), [0.0, 0.0, 0.0], 1e-3);
+        let lit = img.chunks_exact(4).filter(|p| p[1] > 0.1).count();
+        let quarter = (W * H / 4) as usize;
+        assert!((lit as i64 - quarter as i64).unsigned_abs() as usize <= quarter / 6, "a quarter of the frame is scene: {lit} of {}", W * H);
+    }
+}
+
+/// A scene's camera looks at the scene: it magnifies what is inside the
+/// precomposition and nothing outside it. A small card that its scene's
+/// camera zooms in on twice fills four times the area it would.
+#[test]
+fn a_scenes_camera_looks_at_the_scene_not_the_parent() {
+    let card = || {
+        let mut c = solid([0, 255, 0], 0.0, 4.0);
+        c.builtin_effects = vec![BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0, scale_x: 0.25, scale_y: 0.25, rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+        }];
+        c
+    };
+    let lit_area = |zoom: Option<f32>| {
+        let mut scene = sequence(vec![vec![card()]]);
+        if let Some(z) = zoom {
+            klipp_core::keyframe::upsert_keyframe(&mut scene.camera.zoom_keyframes, 0.0, z);
+        }
+        let outer = sequence(vec![vec![Clip::precomposition(scene.id, tc(0.0), tc(4.0))]]);
+        let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+        render(&flat, 1.0, &mut Flat::default()).map(|img| img.chunks_exact(4).filter(|p| p[1] > 0.1).count())
+    };
+    let (plain, zoomed) = (lit_area(None), lit_area(Some(2.0)));
+    for i in 0..2 {
+        assert!(plain[i] > 0, "the card is on screen at all, run {i}");
+        let want = plain[i] * 4;
+        assert!((zoomed[i] as i64 - want as i64).unsigned_abs() as usize <= want / 5, "zoomed twice in the scene, the card covers four times the area: {} against {}, run {i}", zoomed[i], plain[i]);
+    }
+}
+
+/// The same scene laid in twice at once, offset in time, is two sets of
+/// clips to a frame source: two ids, two source times. With one set, a
+/// single decoder would serve both instances the same frame.
+#[test]
+fn a_scene_laid_in_twice_asks_for_its_media_twice() {
+    let scene = sequence(vec![vec![media(0.0, 6.0)]]);
+    let first = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    let mut second = Clip::precomposition(scene.id, tc(0.0), tc(4.0));
+    second.source_in = tc(1.0);
+    second.source_out = tc(5.0);
+    let outer = sequence(vec![vec![first], vec![second]]);
+    let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+    let layers = active_layers(&flat, tc(1.0));
+    let mut wanted: Vec<(ClipId, f64)> = layers
+        .iter()
+        .flat_map(|l| l.clips.iter().map(move |c| (c, l.at, l.fps)))
+        .filter(|(c, _, _)| matches!(c.kind, ClipKind::Media { .. }))
+        .map(|(c, at, fps)| (c.id, klipp_compose::render::source_secs(c, at, fps)))
+        .collect();
+    wanted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    assert_eq!(wanted.len(), 2, "two instances, two media clips in play: {wanted:?}");
+    assert_ne!(wanted[0].0, wanted[1].0, "under two ids");
+    assert!((wanted[0].1 - 1.0).abs() < 1e-6 && (wanted[1].1 - 2.0).abs() < 1e-6, "each at its own source time: {wanted:?}");
+
+    // And a source keyed by id is asked for both.
+    let mut src = Flat::default();
+    for (id, secs) in &wanted {
+        let v = *secs as f32 / 4.0;
+        src.0.insert(*id, Box::new(move || SourcePixels::Linear(Arc::new([v, v, v, 1.0].repeat((W * H) as usize)))));
+    }
+    for (i, img) in render(&flat, 1.0, &mut src).iter().enumerate() {
+        assert_px(&format!("the top instance, a second further in, run {i}"), px(img, 16, 9), [0.25, 0.25, 0.25], 2e-3);
+    }
+}
+
+/// A scene that contains itself renders nothing where the loop closes,
+/// and the render returns.
+#[test]
+fn a_scene_that_contains_itself_renders_nothing_and_returns() {
+    let mut a = Sequence::new_default();
+    let mut b = Sequence::new_default();
+    let mut at = Track::new("V1", TrackKind::Video);
+    at.clips = vec![Clip::precomposition(b.id, tc(0.0), tc(4.0))];
+    a.tracks = vec![at];
+    let mut bt = Track::new("V1", TrackKind::Video);
+    bt.clips = vec![Clip::precomposition(a.id, tc(0.0), tc(4.0))];
+    b.tracks = vec![bt];
+    let flat = klipp_timeline::flatten::flatten_sequence(&a, &[a.clone(), b.clone()]);
+    for (i, img) in render(&flat, 1.0, &mut Flat::default()).iter().enumerate() {
+        assert_px(&format!("nothing, run {i}"), px(img, 16, 9), [0.0, 0.0, 0.0], 1e-6);
+    }
+}
+
 /// The viewer's fast path lays a title sprite over the presented bytes
 /// in display space. Where the text is solid or absent that is the full
 /// composite to the bit; only an anti-aliased edge may differ a little.

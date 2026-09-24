@@ -219,6 +219,7 @@ fn show_bin_media_video(
         stabilization_data: None,
         smoothed_trajectory: None,
         track_points: Vec::new(),
+        precomp: None,
     };
     // is_timeline = false → no Speed Ramp, no amber banner
     show_clip_video(ui, theme, state, &temp_clip, cmds, 0.0, false);

@@ -1,7 +1,7 @@
 use crate::error::RenderError;
 use klipp_core::{ExportSettings, Keyframe, RationalTime};
 use klipp_media::MediaPool;
-use klipp_timeline::{ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -359,6 +359,13 @@ impl SequenceSnapshot {
         // subtitle tracks render into the picture only when burning in
         // (the user can still export sidecar SRT/VTT).
         let mut timeline = klipp_timeline::flatten::flatten_sequence(seq, all_sequences);
+        // A precomposition's sound, wherever the precomposition sits:
+        // the runtime tracks flattening made for it, the scene's and the
+        // containing track's controls already composed into them — the
+        // one path that sound takes, so the viewer and the export agree.
+        for track in timeline.tracks.iter().filter(|t| t.precomposition_sound) {
+            audio_tracks.push(snapshot_audio_track(track, &timeline, all_sequences, media_pool, fps, 0)?);
+        }
         if !burn_in {
             for t in &mut timeline.tracks {
                 if matches!(t.kind, TrackKind::Text | TrackKind::Subtitle) {
@@ -367,8 +374,21 @@ impl SequenceSnapshot {
             }
         }
         let mut media = HashMap::new();
-        for clip in timeline.tracks.iter().flat_map(|t| &t.clips) {
+        // A precomposition's scene is rendered from its own clips, so
+        // their media is the export's media too, however deep the scene.
+        fn each_clip<'a>(tracks: &'a [Track], out: &mut Vec<&'a Clip>) {
+            for clip in tracks.iter().flat_map(|t| &t.clips) {
+                out.push(clip);
+                if let Some(scene) = &clip.precomp {
+                    each_clip(&scene.tracks, out);
+                }
+            }
+        }
+        let mut clips = Vec::new();
+        each_clip(&timeline.tracks, &mut clips);
+        for clip in clips {
             if let ClipKind::Media { media_id } = &clip.kind {
+                let media_id: &klipp_core::MediaId = media_id;
                 let item = media_pool
                     .get(media_id)
                     .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
@@ -521,9 +541,10 @@ fn snapshot_audio_track(
     let mut clips = Vec::new();
     for clip in &track.clips {
         if !clip.enabled { continue; }
-        // Sound has no surface to be isolated on: a precomposition's
-        // audio is flattened into the mix exactly as a compound's is.
-        if let ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } = &clip.kind {
+        // A precomposition's sound is not taken here: flattening puts
+        // it on runtime tracks of its own, with the scene's controls,
+        // and the snapshot takes those below — once.
+        if let ClipKind::Sequence { sequence_id } = &clip.kind {
             if depth < MAX_COMPOUND_DEPTH {
                 flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
                 continue;

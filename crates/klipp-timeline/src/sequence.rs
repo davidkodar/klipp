@@ -742,6 +742,13 @@ pub struct Track {
     /// Stored height before collapse, so double-click can restore it.
     #[serde(skip)]
     pub pre_collapse_height: Option<f32>,
+    /// A runtime track carrying a precomposition's sound, made by
+    /// flattening and never saved: the scene's audio-bearing clips on the
+    /// precomposition's window, with the scene track's and the containing
+    /// track's controls composed into this one's. The exporter takes a
+    /// precomposition's sound from these and nowhere else.
+    #[serde(skip)]
+    pub precomposition_sound: bool,
     /// Source file (for subtitle tracks imported from SRT/VTT/ASS/SSA).
     /// Set when a track is created via subtitle file import; displayed in
     /// the subtitle editor as a "Source: foo.srt" label.
@@ -792,6 +799,7 @@ impl Track {
             storyline_anchor: None,
             custom_height: None,
             pre_collapse_height: None,
+            precomposition_sound: false,
             source_file: None,
             record_armed: false,
             automation_lane_visible: None,
@@ -875,6 +883,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         });
         clip_id
     }
@@ -1136,6 +1145,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -1199,6 +1209,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         };
 
         self.clips.remove(pos);
@@ -1731,6 +1742,13 @@ pub struct Clip {
     /// Tracked points for motion tracking.
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
+    /// A precomposition's scene, resolved for rendering: the inner
+    /// sequence with its compounds flattened, its own precompositions
+    /// resolved, and every clip re-identified for this instance. Set by
+    /// [`crate::flatten::flatten_sequence`], never saved — the file holds
+    /// the `sequence_id` and nothing else.
+    #[serde(skip)]
+    pub precomp: Option<std::sync::Arc<Sequence>>,
 }
 
 impl Clip {
@@ -1981,6 +1999,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 
@@ -2054,6 +2073,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 
@@ -2147,6 +2167,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 }

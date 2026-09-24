@@ -137,17 +137,18 @@ impl PlaybackEngine {
         let wants: Vec<Want> = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let primary = if self.v1_decoder.is_some() { self.v1_clip_id(&seq) } else { None };
-            let fps = seq.fps.as_f64();
+            // A layer's clips are read at the layer's own time and rate:
+            // inside a precomposition those are the scene's, not ours.
             klipp_compose::active_layers(&seq, time)
                 .iter()
-                .flat_map(|l| l.clips.iter())
-                .filter(|c| Some(c.id) != primary)
-                .filter_map(|c| {
+                .flat_map(|l| l.clips.iter().map(move |c| (c, l.at, l.fps)))
+                .filter(|(c, _, _)| Some(c.id) != primary)
+                .filter_map(|(c, at, fps)| {
                     Some(Want {
                         clip: c.id,
                         media: c.media_id()?,
                         rotation: c.source_rotation,
-                        source_secs: klipp_compose::render::source_secs(c, time, fps),
+                        source_secs: klipp_compose::render::source_secs(c, at, fps),
                     })
                 })
                 .collect()
