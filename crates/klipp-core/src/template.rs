@@ -15,6 +15,11 @@ pub enum TemplateValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateInstance {
     pub template_id: Uuid,
+    /// Resolved parameter-to-property paths copied from the template
+    /// definition at insertion time. Keeping this with the instance lets the
+    /// renderer apply values without depending on the UI catalogue.
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub overrides: BTreeMap<String, TemplateValue>,
     #[serde(default)]

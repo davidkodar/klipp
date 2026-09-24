@@ -38,6 +38,53 @@ use klipp_core::{ClipId, RationalTime, SequenceId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::TemplateInstance) {
+    for track in &mut sequence.tracks {
+        for clip in &mut track.clips {
+            let ClipKind::Title(title) = &mut clip.kind else { continue };
+            for (parameter, property) in &instance.bindings {
+                let Some(value) = instance.overrides.get(parameter) else { continue };
+                let Some((object, path)) = property.strip_prefix("object:").and_then(|p| p.split_once('.')) else { continue };
+                let Ok(index) = object.parse::<usize>() else { continue };
+                let Some(target) = title.objects.get_mut(index) else { continue };
+                match (path, value) {
+                    ("text", klipp_core::TemplateValue::Text(text)) => {
+                        if let crate::TitleObjectContent::TextBox(box_) = &mut target.content { box_.text = text.clone(); }
+                    }
+                    ("fill_and_glow", klipp_core::TemplateValue::Color(color)) => {
+                        let rgba = [
+                            (color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                            (color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                            (color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                            (color[3].clamp(0.0, 1.0) * 255.0) as u8,
+                        ];
+                        if let crate::TitleObjectContent::Shape(shape) = &mut target.content { shape.fill = Some(rgba); }
+                        if let Some(glow) = target.fx_mut().glows.first_mut() { glow.color = rgba; }
+                    }
+                    ("motion.enter.duration_secs", klipp_core::TemplateValue::Number(seconds)) => {
+                        if let Some(motion) = target.fx_mut().motion.enter.as_mut() { motion.duration_secs = *seconds as f32; }
+                    }
+                    ("motion.enter.direction", klipp_core::TemplateValue::Enum(direction)) => {
+                        if let Some(motion) = target.fx_mut().motion.enter.as_mut() {
+                            motion.kind = match direction.as_str() {
+                                "left" => crate::MotionKind::SlideRight,
+                                "right" => crate::MotionKind::SlideLeft,
+                                "up" => crate::MotionKind::Rise,
+                                "down" => crate::MotionKind::Drop,
+                                _ => motion.kind,
+                            };
+                        }
+                    }
+                    ("float.keyframes", klipp_core::TemplateValue::Number(amount)) => {
+                        for key in &mut target.transform.center_y_keyframes { key.value += *amount as f32 * 0.01; }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Maximum nesting depth for compound clips. Beyond this depth the
 /// recursion stops and no further clips are produced.
 pub const MAX_COMPOUND_DEPTH: u8 = 8;
@@ -115,8 +162,11 @@ pub fn resolve_precomposition(
     if ancestors.contains(&sequence_id) || ancestors.len() >= MAX_COMPOUND_DEPTH as usize {
         return None;
     }
-    let inner = all_sequences.iter().find(|s| s.id == sequence_id)?;
-    Some(Arc::new(flatten_within(inner, all_sequences, ancestors, Some(clip.id))))
+    let mut inner = all_sequences.iter().find(|s| s.id == sequence_id)?.clone();
+    if let ClipKind::Precomposition { template_instance: Some(instance), .. } = &clip.kind {
+        apply_template_instance(&mut inner, instance);
+    }
+    Some(Arc::new(flatten_within(&inner, all_sequences, ancestors, Some(clip.id))))
 }
 
 /// A track's say over the sound on it.
@@ -474,6 +524,7 @@ mod tests {
     use super::*;
     use crate::{Sequence, Track, TrackKind};
     use klipp_core::{Fps, MediaId, RationalTime, Resolution, SequenceId};
+    use std::collections::BTreeMap;
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
@@ -491,6 +542,36 @@ mod tests {
             brief: None,
             edit_plan: None,
         }
+    }
+
+    #[test]
+    fn precomposition_applies_persisted_template_override_before_render() {
+        let mut inner = make_seq("template");
+        let mut title_track = Track::new("V1", TrackKind::Video);
+        let mut clip = Clip::gap(t(0), t(24));
+        clip.kind = ClipKind::Title(crate::TitleData::single_text(crate::TextBox { text: "default".into(), ..Default::default() }));
+        title_track.clips.push(clip);
+        inner.tracks.push(title_track);
+        let mut outer = make_seq("outer");
+        let mut pre = Clip::precomposition(inner.id, t(0), t(24));
+        pre.kind = ClipKind::Precomposition {
+            sequence_id: inner.id,
+            template_instance: Some(klipp_core::TemplateInstance {
+                template_id: uuid::Uuid::new_v4(),
+                bindings: BTreeMap::from([("command".into(), "object:0.text".into())]),
+                overrides: BTreeMap::from([("command".into(), klipp_core::TemplateValue::Text("resolved".into()))]),
+                media_slots: BTreeMap::new(),
+            }),
+        };
+        let pre_id = pre.id;
+        outer.tracks.push(Track::new("V1", TrackKind::Video));
+        outer.tracks[0].clips.push(pre);
+        let flat = flatten_sequence(&outer, &[outer.clone(), inner.clone()]);
+        let resolved = flat.tracks[0].clips.iter().find(|c| c.id == pre_id).and_then(|c| c.precomp.as_ref()).unwrap();
+        let title_clip = resolved.tracks.iter().flat_map(|track| &track.clips).find(|clip| matches!(clip.kind, ClipKind::Title(_))).unwrap();
+        let ClipKind::Title(data) = &title_clip.kind else { panic!("expected title") };
+        let crate::TitleObjectContent::TextBox(text) = &data.objects[0].content else { panic!("expected text") };
+        assert_eq!(text.text, "resolved");
     }
 
     fn t(frames: i64) -> RationalTime {

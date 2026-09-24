@@ -887,6 +887,7 @@ mod tests {
         let template = terminal_card_template(template_id);
         let instance = TemplateInstance {
             template_id,
+            bindings: BTreeMap::new(),
             overrides: BTreeMap::from([
                 (
                     "command_text".into(),
@@ -934,6 +935,7 @@ mod tests {
         template.validate().unwrap();
         let mut instance = TemplateInstance {
             template_id: template.id,
+            bindings: BTreeMap::new(),
             overrides: BTreeMap::new(),
             media_slots: BTreeMap::new(),
         };

@@ -76,6 +76,7 @@ fn a_template_instance_survives_project_round_trip() {
         sequence_id: scene.id,
         template_instance: Some(TemplateInstance {
             template_id,
+            bindings: BTreeMap::from([("command_text".into(), "object:1.text".into())]),
             overrides: BTreeMap::from([(
                 "command_text".into(),
                 TemplateValue::Text("xytx --launch".into()),
