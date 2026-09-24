@@ -7,6 +7,7 @@ pub mod sequence_tabs;
 pub mod time_utils;
 pub mod range_visuals;
 pub mod grid_snap;
+pub mod camera_lane;
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -125,9 +126,16 @@ impl NewTimelinePanel {
         let scroll_x = state.timeline_scroll_x;
         let duration_secs = state.sequence_duration().to_secs_f64();
 
+        // The camera's lane sits under the ruler, above the tracks, when shown.
+        let lane_h = camera_lane::height(state);
+        let lane_rect = egui::Rect::from_min_size(
+            egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h),
+            egui::vec2(timeline_content_rect.width(), lane_h),
+        );
+
         // Compute tracks_rect early — needed by both range visuals and clip delegation
         let tracks_rect = egui::Rect::from_min_max(
-            egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h),
+            egui::pos2(timeline_content_rect.min.x, timeline_content_rect.min.y + ruler_h + lane_h),
             timeline_content_rect.max,
         );
 
@@ -414,12 +422,22 @@ impl NewTimelinePanel {
                 snap_secs, state.timecode_display(), theme,
             );
         }
+        if lane_h > 0.0 {
+            crate::ui_util::allocate_clipped_ui(ui, lane_rect, |ui| {
+                camera_lane::show(ui, state, theme, lane_rect, pps, scroll_x, &mut cmds);
+            });
+        }
+
         // allocate_clipped_ui sets clip_rect = tracks_rect, preventing the old
         // timeline panel from bleeding into the inspector or status bar.
         crate::ui_util::allocate_clipped_ui(ui, tracks_rect, |ui| {
             let old_cmds = old_timeline.show(ui, state);
             cmds.extend(old_cmds);
         });
+
+        // The menu on a camera key, opened on the lane or in the curve
+        // editor, is drawn here once a frame.
+        camera_lane::show_key_menu(ui, state, &mut cmds);
 
         cmds
     }

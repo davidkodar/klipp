@@ -32,14 +32,25 @@ pub fn show(
         egui::FontId::monospace(10.0),
         theme.text_dim,
     );
+    super::camera_lane::header_toggle(ui, state, theme, spacer_rect);
+
+    // ── The camera lane's cell, under the spacer, when the lane is shown ──
+    let lane_h = super::camera_lane::height(state);
+    if lane_h > 0.0 {
+        let lane_cell = egui::Rect::from_min_size(
+            egui::pos2(header_rect.min.x, spacer_rect.max.y),
+            egui::vec2(header_rect.width(), lane_h),
+        );
+        super::camera_lane::draw_header(ui, theme, lane_cell);
+    }
 
     let mut cmds = Vec::new();
 
     // ── Track headers ──
     // Apply the same vertical scroll offset the clip area uses so rows stay aligned.
     let scroll_y = state.timeline_scroll_y;
-    let mut y = header_rect.min.y + ruler_h - scroll_y;
-    let visible_top = header_rect.min.y + ruler_h;
+    let mut y = header_rect.min.y + ruler_h + lane_h - scroll_y;
+    let visible_top = header_rect.min.y + ruler_h + lane_h;
     let visible_bottom = header_rect.max.y;
     let mut toggle_mute: Option<usize> = None;
     let mut toggle_lock: Option<usize> = None;

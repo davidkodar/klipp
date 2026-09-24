@@ -1,8 +1,9 @@
 use super::title_curve::{self, TitleCurveParam};
-use crate::state::{AppState, KeyframeParamKind, SelectedKeyframe, KeyframeContextMenu};
+use crate::state::{AppState, CameraKeyMenu, CameraKeyRef, DraggingCameraKey, KeyframeParamKind, SelectedKeyframe, KeyframeContextMenu};
 use crate::theme::KlippTheme;
+use crate::timeline::camera_lane;
 use egui::{pos2, vec2, Color32, Rect, Stroke};
-use klipp_core::{AppCommand, AudioParam, VideoParam, Keyframe};
+use klipp_core::{AppCommand, AudioParam, CameraParam, VideoParam, Keyframe};
 use klipp_timeline::TrackKind;
 
 /// Which parameter the curve editor displays.
@@ -20,6 +21,9 @@ pub enum CurveParam {
     /// "{effect_index}:{param_name}". Reserved param names: "__bypass"
     /// and "__wetdry".
     AudioEffect(String),
+    /// One of the sequence camera's moving values: the sequence's own
+    /// curve, over the sequence's time, shown when no clip is selected.
+    Camera(CameraParam),
 }
 
 impl CurveParam {
@@ -58,6 +62,7 @@ impl CurveParam {
                     format!("Audio FX: {key}")
                 }
             }
+            CurveParam::Camera(p) => format!("Camera {}", p.label()),
         }
     }
 
@@ -90,6 +95,39 @@ impl CurveParam {
                     _ => (-30.0, 30.0, 0.0),
                 }
             }
+            CurveParam::Camera(CameraParam::X | CameraParam::Y) => (0.0, 1.0, 0.5),
+            CurveParam::Camera(CameraParam::Zoom) => (0.25, 4.0, 1.0),
+            CurveParam::Camera(CameraParam::Roll) => (-180.0, 180.0, 0.0),
+        }
+    }
+}
+
+/// What the editor's time axis is: a clip's own time, or the sequence's
+/// when no clip is selected and the camera's curves are what is shown.
+#[derive(Debug, Clone, PartialEq)]
+enum CurveScope {
+    Clip { id: klipp_core::ClipId, duration: f64, name: String, kind: TrackKind },
+    Sequence { duration: f64 },
+}
+
+impl CurveScope {
+    fn duration(&self) -> f64 {
+        match self {
+            CurveScope::Clip { duration, .. } | CurveScope::Sequence { duration } => *duration,
+        }
+    }
+
+    fn clip_id(&self) -> Option<klipp_core::ClipId> {
+        match self {
+            CurveScope::Clip { id, .. } => Some(*id),
+            CurveScope::Sequence { .. } => None,
+        }
+    }
+
+    fn kind(&self) -> TrackKind {
+        match self {
+            CurveScope::Clip { kind, .. } => *kind,
+            CurveScope::Sequence { .. } => TrackKind::Video,
         }
     }
 }
@@ -182,8 +220,8 @@ impl CurveEditorPanel {
             Stroke::new(0.5_f32, theme.border),
         );
 
-        // Find selected clip and its track kind
-        let clip_info = self.find_selected_clip(state);
+        // What is being edited: the selected clip, or the sequence camera.
+        let scope = self.scope(state);
 
         // Header content
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(header_rect), |ui| {
@@ -201,19 +239,29 @@ impl CurveEditorPanel {
                 ui.separator();
                 ui.add_space(4.0);
 
-                // Clip name
-                if let Some((_, ref name, _)) = clip_info {
-                    ui.label(
-                        egui::RichText::new(name.as_str())
-                            .size(11.0)
-                            .color(theme.text_primary),
-                    );
-                } else {
-                    ui.label(
-                        egui::RichText::new("No clip selected")
-                            .size(11.0)
-                            .color(theme.text_dim),
-                    );
+                // Clip name, or the sequence's camera
+                match &scope {
+                    Some(CurveScope::Clip { name, .. }) => {
+                        ui.label(
+                            egui::RichText::new(name.as_str())
+                                .size(11.0)
+                                .color(theme.text_primary),
+                        );
+                    }
+                    Some(CurveScope::Sequence { .. }) => {
+                        ui.label(
+                            egui::RichText::new("Sequence camera")
+                                .size(11.0)
+                                .color(theme.text_primary),
+                        );
+                    }
+                    None => {
+                        ui.label(
+                            egui::RichText::new("No clip selected")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -240,7 +288,7 @@ impl CurveEditorPanel {
                 ).clicked() {
                     self.fit_to_content(
                         &graph_rect,
-                        clip_info.as_ref().map(|(dur, _, _)| *dur).unwrap_or(1.0),
+                        scope.as_ref().map(CurveScope::duration).unwrap_or(1.0),
                     );
                 }
             });
@@ -251,7 +299,7 @@ impl CurveEditorPanel {
         }
 
         // Get clip data
-        let Some((clip_duration, _clip_name, track_kind)) = clip_info else {
+        let Some(scope) = scope else {
             // Draw empty state
             ui.painter().text(
                 graph_rect.center(),
@@ -263,7 +311,9 @@ impl CurveEditorPanel {
             return cmds;
         };
 
-        let clip_id = state.selected_clip.unwrap();
+        let clip_duration = scope.duration();
+        let track_kind = scope.kind();
+        let clip_id = scope.clip_id();
         let (v_min, v_max, v_default) = self.param.range();
         let v_range = v_max - v_min;
 
@@ -292,10 +342,16 @@ impl CurveEditorPanel {
         );
 
         // ── Draw keyframe diamonds + handles ──
-        let diamond_cmds = self.draw_keyframes_and_interact(
-            ui, state, &graph_rect, &graph_response, &keyframes,
-            clip_id, clip_duration, v_min, v_range, v_default, track_kind, theme,
-        );
+        let diamond_cmds = match (&self.param, clip_id) {
+            (CurveParam::Camera(param), _) => self.interact_camera_keys(
+                ui, state, &graph_rect, &graph_response, &keyframes, *param, clip_duration, v_min, v_range, theme,
+            ),
+            (_, Some(clip_id)) => self.draw_keyframes_and_interact(
+                ui, state, &graph_rect, &graph_response, &keyframes,
+                clip_id, clip_duration, v_min, v_range, v_default, track_kind, theme,
+            ),
+            (_, None) => Vec::new(),
+        };
         cmds.extend(diamond_cmds);
 
         // ── Double-click to add keyframe ──
@@ -306,53 +362,61 @@ impl CurveEditorPanel {
                     let v = self.y_to_value(pos.y, &graph_rect, v_min, v_range);
                     let t = t.clamp(0.0, clip_duration);
                     let v = v.clamp(v_min, v_max);
-                    match &self.param {
-                        CurveParam::Title { object_id, param } => cmds.push(param.add(clip_id, *object_id, t, v)),
-                        CurveParam::Audio(p) => {
-                            cmds.push(AppCommand::AddAudioKeyframe {
-                                clip_id,
-                                param: *p,
-                                time_secs: t,
-                                value: v,
-                            });
-                        }
-                        CurveParam::Video(p) => {
-                            cmds.push(AppCommand::AddVideoKeyframe {
-                                clip_id,
-                                param: *p,
-                                time_secs: t,
-                                value: v,
-                            });
-                        }
-                        CurveParam::Speed => {
-                            // Speed keyframes: directly modify clip
-                            // (no dedicated AppCommand yet — add inline)
-                        }
-                        CurveParam::Effect(key) => {
-                            if let Some((idx_str, param_name)) = key.split_once(':') {
-                                if let Ok(effect_index) = idx_str.parse::<usize>() {
-                                    cmds.push(AppCommand::AddEffectKeyframe {
-                                        clip_id,
-                                        effect_index,
-                                        param_name: param_name.to_string(),
-                                        time_secs: t,
-                                        value: v,
-                                    });
+                    // The curve editor is exact: a key goes where the
+                    // pointer is, not to the nearest frame.
+                    if let CurveParam::Camera(param) = &self.param {
+                        cmds.push(AppCommand::SetSequenceCameraKey { sequence_idx: state.active_sequence_idx, param: *param, time_secs: t, value: v });
+                        state.selected_camera_key = Some(CameraKeyRef { param: *param, time_secs: t });
+                    } else if let Some(clip_id) = clip_id {
+                        match &self.param {
+                            CurveParam::Title { object_id, param } => cmds.push(param.add(clip_id, *object_id, t, v)),
+                            CurveParam::Audio(p) => {
+                                cmds.push(AppCommand::AddAudioKeyframe {
+                                    clip_id,
+                                    param: *p,
+                                    time_secs: t,
+                                    value: v,
+                                });
+                            }
+                            CurveParam::Video(p) => {
+                                cmds.push(AppCommand::AddVideoKeyframe {
+                                    clip_id,
+                                    param: *p,
+                                    time_secs: t,
+                                    value: v,
+                                });
+                            }
+                            CurveParam::Speed => {
+                                // Speed keyframes: directly modify clip
+                                // (no dedicated AppCommand yet — add inline)
+                            }
+                            CurveParam::Effect(key) => {
+                                if let Some((idx_str, param_name)) = key.split_once(':') {
+                                    if let Ok(effect_index) = idx_str.parse::<usize>() {
+                                        cmds.push(AppCommand::AddEffectKeyframe {
+                                            clip_id,
+                                            effect_index,
+                                            param_name: param_name.to_string(),
+                                            time_secs: t,
+                                            value: v,
+                                        });
+                                    }
                                 }
                             }
-                        }
-                        CurveParam::AudioEffect(key) => {
-                            if let Some((idx_str, param_name)) = key.split_once(':') {
-                                if let Ok(effect_index) = idx_str.parse::<usize>() {
-                                    cmds.push(AppCommand::AddAudioEffectKeyframe {
-                                        clip_id,
-                                        effect_index,
-                                        param_name: param_name.to_string(),
-                                        time_secs: t,
-                                        value: v,
-                                    });
+                            CurveParam::AudioEffect(key) => {
+                                if let Some((idx_str, param_name)) = key.split_once(':') {
+                                    if let Ok(effect_index) = idx_str.parse::<usize>() {
+                                        cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                            clip_id,
+                                            effect_index,
+                                            param_name: param_name.to_string(),
+                                            time_secs: t,
+                                            value: v,
+                                        });
+                                    }
                                 }
                             }
+                            CurveParam::Camera(_) => {}
                         }
                     }
                 }
@@ -384,8 +448,18 @@ impl CurveEditorPanel {
         cmds
     }
 
-    /// Sync the curve param from the rubber band params in state.
+    /// Sync the curve param from the rubber band params in state — or,
+    /// with no clip selected, from the camera key selected on the lane.
     pub fn sync_param_from_state(&mut self, state: &AppState) {
+        if state.selected_clip.is_none() {
+            if let Some(key) = state.selected_camera_key {
+                if self.param != CurveParam::Camera(key.param) {
+                    self.param = CurveParam::Camera(key.param);
+                    self.drag = None;
+                }
+            }
+            return;
+        }
         if let Some(clip_id) = state.selected_clip {
             let seq = &state.sequences[state.active_sequence_idx];
             if let Some((ti, _ci)) = seq.find_clip(clip_id) {
@@ -411,6 +485,22 @@ impl CurveEditorPanel {
         }
     }
 
+    /// The selected clip, or the sequence when none is selected and the
+    /// camera is in view: its lane shown, a key on it, or one of its
+    /// curves already chosen here.
+    fn scope(&self, state: &AppState) -> Option<CurveScope> {
+        if let Some((duration, name, kind)) = self.find_selected_clip(state) {
+            return Some(CurveScope::Clip { id: state.selected_clip?, duration, name, kind });
+        }
+        let camera_in_view = state.show_camera_lane
+            || camera_lane::has_keys(&state.sequence().camera)
+            || matches!(self.param, CurveParam::Camera(_));
+        if state.selected_clip.is_none() && camera_in_view {
+            return Some(CurveScope::Sequence { duration: state.sequence_duration().to_secs_f64() });
+        }
+        None
+    }
+
     fn find_selected_clip(&self, state: &AppState) -> Option<(f64, String, TrackKind)> {
         let clip_id = state.selected_clip?;
         let seq = &state.sequences[state.active_sequence_idx];
@@ -430,8 +520,12 @@ impl CurveEditorPanel {
         Some((duration, name, track_kind))
     }
 
-    fn get_keyframes(&self, state: &AppState, clip_id: klipp_core::ClipId) -> Vec<Keyframe> {
+    fn get_keyframes(&self, state: &AppState, clip_id: Option<klipp_core::ClipId>) -> Vec<Keyframe> {
         let seq = &state.sequences[state.active_sequence_idx];
+        if let CurveParam::Camera(param) = &self.param {
+            return camera_lane::keys(&seq.camera, *param).to_vec();
+        }
+        let Some(clip_id) = clip_id else { return Vec::new() };
         for track in &seq.tracks {
             if let Some(clip) = track.find_clip(clip_id) {
                 return match &self.param {
@@ -451,6 +545,7 @@ impl CurveEditorPanel {
                     CurveParam::Speed => clip.speed_keyframes.clone(),
                     CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
                     CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),
+                    CurveParam::Camera(_) => Vec::new(),
                 };
             }
         }
@@ -458,6 +553,25 @@ impl CurveEditorPanel {
     }
 
     fn param_selector(&mut self, ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
+        if state.selected_clip.is_none() {
+            // The sequence's own curves: the camera's four.
+            let params: Vec<CurveParam> = camera_lane::PARAMS.iter().map(|p| CurveParam::Camera(*p)).collect();
+            if !params.contains(&self.param) {
+                self.param = params[0].clone();
+                self.drag = None;
+                self.needs_fit = true;
+            }
+            for p in &params {
+                let active = self.param == *p;
+                let CurveParam::Camera(camera_param) = p else { continue };
+                let text = egui::RichText::new(camera_param.label()).size(10.0);
+                let text = if active { text.color(camera_lane::colour(*camera_param, theme)) } else { text.color(theme.text_dim) };
+                if ui.selectable_label(active, text).clicked() {
+                    self.param = p.clone();
+                }
+            }
+            return;
+        }
         if let Some(clip) = state.selected_clip.and_then(|cid| state.sequence().all_clips().find(|c| c.id == cid)) {
             if let klipp_timeline::ClipKind::Title(title) = &clip.kind {
                 let mut object_id = match &self.param {
@@ -734,19 +848,23 @@ impl CurveEditorPanel {
         ui: &mut egui::Ui,
         state: &AppState,
         graph_rect: &Rect,
-        clip_id: klipp_core::ClipId,
+        clip_id: Option<klipp_core::ClipId>,
         clip_duration: f64,
         theme: &KlippTheme,
     ) {
-        let seq = &state.sequences[state.active_sequence_idx];
-        let Some((ti, ci)) = seq.find_clip(clip_id) else { return };
-        let clip = &seq.tracks[ti].clips[ci];
-        let clip_start_secs = clip.timeline_in.to_secs_f64();
         let playhead_secs = state.playhead_smooth_secs;
-        let clip_relative = playhead_secs - clip_start_secs;
+        // A clip's time starts where the clip does; the sequence's at zero.
+        let relative = match clip_id {
+            Some(clip_id) => {
+                let seq = &state.sequences[state.active_sequence_idx];
+                let Some((ti, ci)) = seq.find_clip(clip_id) else { return };
+                playhead_secs - seq.tracks[ti].clips[ci].timeline_in.to_secs_f64()
+            }
+            None => playhead_secs,
+        };
 
-        if clip_relative >= 0.0 && clip_relative <= clip_duration {
-            let x = self.time_to_x(clip_relative, graph_rect, clip_duration);
+        if relative >= 0.0 && relative <= clip_duration {
+            let x = self.time_to_x(relative, graph_rect, clip_duration);
             if x >= graph_rect.left() && x <= graph_rect.right() {
                 ui.painter().line_segment(
                     [pos2(x, graph_rect.top()), pos2(x, graph_rect.bottom())],
@@ -856,8 +974,6 @@ impl CurveEditorPanel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         let painter = ui.painter();
-        let diamond_size = 5.0;
-        let handle_radius = 3.5;
         let (p_v_min, p_v_max, _) = self.param.range();
 
         // Draw tangent handles for selected keyframe
@@ -869,59 +985,7 @@ impl CurveEditorPanel {
             }
         });
 
-        for (i, kf) in keyframes.iter().enumerate() {
-            let x = self.time_to_x(kf.time_secs, graph_rect, clip_duration);
-            let y = self.value_to_y(kf.value, graph_rect, v_min, v_range);
-            let center = pos2(x, y);
-
-            if x < graph_rect.left() - 20.0 || x > graph_rect.right() + 20.0 {
-                continue;
-            }
-
-            // Draw bezier tangent handles if this keyframe is selected
-            if Some(i) == selected_kf_idx {
-                let handle_color = theme.marker_info;
-                let handle_stroke = Stroke::new(1.0_f32, handle_color);
-
-                // In-tangent
-                if kf.tangent_in != (0.0, 0.0) || kf.interpolation == klipp_core::keyframe::Interpolation::Bezier {
-                    let hx = self.time_to_x(kf.time_secs + kf.tangent_in.0, graph_rect, clip_duration);
-                    let hy = self.value_to_y(kf.value + kf.tangent_in.1, graph_rect, v_min, v_range);
-                    let handle_pos = pos2(hx, hy);
-                    painter.line_segment([center, handle_pos], handle_stroke);
-                    painter.circle_filled(handle_pos, handle_radius, handle_color);
-                }
-
-                // Out-tangent
-                if kf.tangent_out != (0.0, 0.0) || kf.interpolation == klipp_core::keyframe::Interpolation::Bezier {
-                    let hx = self.time_to_x(kf.time_secs + kf.tangent_out.0, graph_rect, clip_duration);
-                    let hy = self.value_to_y(kf.value + kf.tangent_out.1, graph_rect, v_min, v_range);
-                    let handle_pos = pos2(hx, hy);
-                    painter.line_segment([center, handle_pos], handle_stroke);
-                    painter.circle_filled(handle_pos, handle_radius, handle_color);
-                }
-            }
-
-            // Draw diamond
-            let is_selected = Some(i) == selected_kf_idx;
-            let diamond_color = if is_selected {
-                theme.text_primary
-            } else {
-                theme.accent
-            };
-
-            let diamond = vec![
-                pos2(x, y - diamond_size),
-                pos2(x + diamond_size, y),
-                pos2(x, y + diamond_size),
-                pos2(x - diamond_size, y),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                diamond,
-                diamond_color,
-                Stroke::new(0.8_f32, theme.border),
-            ));
-        }
+        self.draw_diamonds(painter, graph_rect, keyframes, selected_kf_idx, clip_duration, v_min, v_range, theme.accent, theme);
 
         // ── Interaction: click to select, drag to move ──
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
@@ -1067,7 +1131,8 @@ impl CurveEditorPanel {
                                     }
                                     CurveParam::Speed
                                     | CurveParam::Effect(_)
-                                    | CurveParam::AudioEffect(_) => {
+                                    | CurveParam::AudioEffect(_)
+                                    | CurveParam::Camera(_) => {
                                         // Speed/effect keyframe move not yet wired to commands
                                     }
                                 }
@@ -1105,7 +1170,8 @@ impl CurveEditorPanel {
                                     CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out)),
                                     CurveParam::Speed
                                     | CurveParam::Effect(_)
-                                    | CurveParam::AudioEffect(_) => {
+                                    | CurveParam::AudioEffect(_)
+                                    | CurveParam::Camera(_) => {
                                         // Tangent editing not yet wired for speed/effects
                                     }
                                 }
@@ -1127,6 +1193,178 @@ impl CurveEditorPanel {
         cmds
     }
 
+    /// The diamonds, and the selected one's Bezier handles, for any
+    /// list of keys on the graph: a clip's in the accent, the camera's
+    /// in its row's colour.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_diamonds(
+        &self,
+        painter: &egui::Painter,
+        graph_rect: &Rect,
+        keyframes: &[Keyframe],
+        selected_kf_idx: Option<usize>,
+        clip_duration: f64,
+        v_min: f32,
+        v_range: f32,
+        tint: Color32,
+        theme: &KlippTheme,
+    ) {
+        let diamond_size = 5.0;
+        let handle_radius = 3.5;
+        for (i, kf) in keyframes.iter().enumerate() {
+            let x = self.time_to_x(kf.time_secs, graph_rect, clip_duration);
+            let y = self.value_to_y(kf.value, graph_rect, v_min, v_range);
+            let center = pos2(x, y);
+
+            if x < graph_rect.left() - 20.0 || x > graph_rect.right() + 20.0 {
+                continue;
+            }
+
+            // Draw bezier tangent handles if this keyframe is selected
+            if Some(i) == selected_kf_idx {
+                let handle_color = theme.marker_info;
+                let handle_stroke = Stroke::new(1.0_f32, handle_color);
+
+                // In-tangent
+                if kf.tangent_in != (0.0, 0.0) || kf.interpolation == klipp_core::keyframe::Interpolation::Bezier {
+                    let hx = self.time_to_x(kf.time_secs + kf.tangent_in.0, graph_rect, clip_duration);
+                    let hy = self.value_to_y(kf.value + kf.tangent_in.1, graph_rect, v_min, v_range);
+                    let handle_pos = pos2(hx, hy);
+                    painter.line_segment([center, handle_pos], handle_stroke);
+                    painter.circle_filled(handle_pos, handle_radius, handle_color);
+                }
+
+                // Out-tangent
+                if kf.tangent_out != (0.0, 0.0) || kf.interpolation == klipp_core::keyframe::Interpolation::Bezier {
+                    let hx = self.time_to_x(kf.time_secs + kf.tangent_out.0, graph_rect, clip_duration);
+                    let hy = self.value_to_y(kf.value + kf.tangent_out.1, graph_rect, v_min, v_range);
+                    let handle_pos = pos2(hx, hy);
+                    painter.line_segment([center, handle_pos], handle_stroke);
+                    painter.circle_filled(handle_pos, handle_radius, handle_color);
+                }
+            }
+
+            // Draw diamond
+            let is_selected = Some(i) == selected_kf_idx;
+            let diamond_color = if is_selected {
+                theme.text_primary
+            } else {
+                tint
+            };
+
+            let diamond = vec![
+                pos2(x, y - diamond_size),
+                pos2(x + diamond_size, y),
+                pos2(x, y + diamond_size),
+                pos2(x - diamond_size, y),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                diamond,
+                diamond_color,
+                Stroke::new(0.8_f32, theme.border),
+            ));
+        }
+    }
+
+    /// The sequence camera's keys on one list, in the editor: selected,
+    /// dragged in time and value, and given handles, through the camera
+    /// commands, named by their stored moment as on the lane. A drag is
+    /// bracketed so undo takes all of it back in one step.
+    #[allow(clippy::too_many_arguments)]
+    fn interact_camera_keys(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        graph_rect: &Rect,
+        response: &egui::Response,
+        keyframes: &[Keyframe],
+        param: CameraParam,
+        duration: f64,
+        v_min: f32,
+        v_range: f32,
+        theme: &KlippTheme,
+    ) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+        let sequence_idx = state.active_sequence_idx;
+        let (p_v_min, p_v_max, _) = self.param.range();
+        let selected = state
+            .selected_camera_key
+            .filter(|k| k.param == param)
+            .and_then(|k| camera_lane::index_at(keyframes, k.time_secs));
+        self.draw_diamonds(ui.painter(), graph_rect, keyframes, selected, duration, v_min, v_range, camera_lane::colour(param, theme), theme);
+
+        let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+        let at = |t: f64, v: f32| pos2(self.time_to_x(t, graph_rect, duration), self.value_to_y(v, graph_rect, v_min, v_range));
+        let hit = |pos: egui::Pos2| keyframes.iter().position(|kf| at(kf.time_secs, kf.value).distance(pos) < 10.0);
+        let hit_handle = |pos: egui::Pos2, kf: &Keyframe| -> Option<bool> {
+            if at(kf.time_secs + kf.tangent_in.0, kf.value + kf.tangent_in.1).distance(pos) < 8.0 {
+                Some(false)
+            } else if at(kf.time_secs + kf.tangent_out.0, kf.value + kf.tangent_out.1).distance(pos) < 8.0 {
+                Some(true)
+            } else {
+                None
+            }
+        };
+        let key_ref = |i: usize| CameraKeyRef { param, time_secs: keyframes[i].time_secs };
+
+        if response.clicked() {
+            if let Some(pos) = pointer_pos {
+                state.selected_camera_key = hit(pos).map(key_ref);
+            }
+        }
+        if response.secondary_clicked() {
+            if let Some(pos) = pointer_pos {
+                if let Some(i) = hit(pos) {
+                    let key = key_ref(i);
+                    state.selected_camera_key = Some(key);
+                    state.camera_key_menu = Some(CameraKeyMenu { key, screen_pos: pos });
+                }
+            }
+        }
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            if let Some(pos) = pointer_pos {
+                let alt = ui.ctx().input(|i| i.modifiers.alt);
+                let on_handle = selected.and_then(|i| hit_handle(pos, &keyframes[i]).map(|h| (i, Some(h))));
+                let start = on_handle.or_else(|| if alt { None } else { hit(pos).map(|i| (i, None)) });
+                if let Some((i, handle)) = start {
+                    let key = key_ref(i);
+                    state.selected_camera_key = Some(key);
+                    state.dragging_camera_key = Some(DraggingCameraKey { key, handle });
+                    cmds.push(AppCommand::BeginSequenceCameraDrag { sequence_idx });
+                }
+            }
+        }
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if let (Some(drag), Some(pos)) = (state.dragging_camera_key, pointer_pos) {
+                if drag.key.param == param {
+                    if let Some(index) = camera_lane::index_at(keyframes, drag.key.time_secs) {
+                        let kf = &keyframes[index];
+                        match drag.handle {
+                            None => {
+                                let new_time_secs = self.x_to_time(pos.x, graph_rect, duration).clamp(0.0, duration.max(0.0));
+                                let new_value = self.y_to_value(pos.y, graph_rect, v_min, v_range).clamp(p_v_min, p_v_max);
+                                cmds.push(AppCommand::MoveSequenceCameraKey { sequence_idx, param, index, new_time_secs, new_value });
+                                let moved = CameraKeyRef { param, time_secs: new_time_secs };
+                                state.dragging_camera_key = Some(DraggingCameraKey { key: moved, handle: None });
+                                state.selected_camera_key = Some(moved);
+                            }
+                            Some(is_out) => {
+                                let dt = self.x_to_time(pos.x, graph_rect, duration) - kf.time_secs;
+                                let dv = self.y_to_value(pos.y, graph_rect, v_min, v_range) - kf.value;
+                                let (tangent_in, tangent_out) = if is_out { (None, Some((dt, dv))) } else { (Some((dt, dv)), None) };
+                                cmds.push(AppCommand::SetSequenceCameraKeyTangent { sequence_idx, param, index, tangent_in, tangent_out });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if response.drag_stopped() && state.dragging_camera_key.take().is_some() {
+            cmds.push(AppCommand::EndSequenceCameraDrag { sequence_idx });
+        }
+        cmds
+    }
+
     fn param_to_kind(&self) -> KeyframeParamKind {
         match &self.param {
             CurveParam::Title { object_id, param } => KeyframeParamKind::Title { object_id: *object_id, param: param.clone() },
@@ -1143,7 +1381,7 @@ impl CurveEditorPanel {
                 }
                 KeyframeParamKind::Video(VideoParam::Opacity)
             }
-            CurveParam::Speed | CurveParam::Effect(_) => {
+            CurveParam::Speed | CurveParam::Effect(_) | CurveParam::Camera(_) => {
                 KeyframeParamKind::Video(VideoParam::Opacity) // fallback
             }
         }

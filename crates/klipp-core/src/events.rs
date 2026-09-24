@@ -2551,6 +2551,30 @@ pub enum AppCommand {
     SetSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64, value: f32 },
     /// The key at that moment, taken away again. Undoable.
     RemoveSequenceCameraKey { sequence_idx: usize, param: CameraParam, time_secs: f64 },
+    /// A key in one of the camera's lists carried to another moment and
+    /// value, named by its index in that list: what a drag on the
+    /// sequence lane or in the curve editor emits every frame. Undoable
+    /// as one camera snapshot, unless a `BeginSequenceCameraDrag` is
+    /// open, in which case the drag's end records the one entry.
+    MoveSequenceCameraKey { sequence_idx: usize, param: CameraParam, index: usize, new_time_secs: f64, new_value: f32 },
+    /// How the curve leaves a camera key: the interpolation of the key
+    /// at `index` and, as the clip keyframe commands do, of the key
+    /// before it, so the segment either side of the diamond takes the
+    /// shape. Undoable.
+    SetSequenceCameraKeyInterpolation { sequence_idx: usize, param: CameraParam, index: usize, interpolation: crate::keyframe::Interpolation },
+    /// A camera key's Bezier handles, either or both. Undoable as a
+    /// camera snapshot, or folded into an open drag.
+    SetSequenceCameraKeyTangent { sequence_idx: usize, param: CameraParam, index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
+    /// The move into the camera key at `index` given a named ease, the
+    /// same curves the `camera` op writes. Undoable.
+    EaseSequenceCameraKey { sequence_idx: usize, param: CameraParam, index: usize, ease: crate::keyframe::Ease },
+    /// A drag on the camera's keys has begun: the camera is snapshotted
+    /// once, and the moves and handle edits until the matching end
+    /// collapse into one undo entry.
+    BeginSequenceCameraDrag { sequence_idx: usize },
+    /// The drag has ended; one entry from the snapshot to the camera as
+    /// it now is, or none if nothing changed.
+    EndSequenceCameraDrag { sequence_idx: usize },
 
     // Clip speed
     SetClipSpeed { clip_id: ClipId, speed: f64 },

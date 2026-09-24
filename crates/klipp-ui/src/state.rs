@@ -413,6 +413,33 @@ pub struct SelectedKeyframe {
     pub keyframe_index: usize,
 }
 
+/// One of the sequence camera's keys, named by the list it is in and
+/// the moment it is stored at rather than by its index: a drag re-sorts
+/// the list every frame, and a moment survives that where an index
+/// does not. The lane and the curve editor share this selection; it
+/// belongs to no clip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraKeyRef {
+    pub param: klipp_core::CameraParam,
+    pub time_secs: f64,
+}
+
+/// The right-click menu on a camera key, wherever it was opened.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraKeyMenu {
+    pub key: CameraKeyRef,
+    pub screen_pos: egui::Pos2,
+}
+
+/// A drag of a camera key or of one of its Bezier handles, in progress.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DraggingCameraKey {
+    pub key: CameraKeyRef,
+    /// `None` drags the key itself; `Some(true)` its out-handle,
+    /// `Some(false)` its in-handle.
+    pub handle: Option<bool>,
+}
+
 /// State during an active range handle drag or ruler range drag.
 #[derive(Debug, Clone)]
 pub struct RangeDragState {
@@ -2265,6 +2292,17 @@ pub struct AppState {
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
+    /// The sequence camera's key that is selected, on the lane or in
+    /// the curve editor. Separate from `selected_keyframe`, which is
+    /// a clip's.
+    pub selected_camera_key: Option<CameraKeyRef>,
+    /// The right-click menu on a camera key.
+    pub camera_key_menu: Option<CameraKeyMenu>,
+    /// A camera key being dragged on the lane or in the curve editor.
+    pub dragging_camera_key: Option<DraggingCameraKey>,
+    /// Whether the camera's lane is shown under the ruler. Toggled from
+    /// the track header column; off until asked for.
+    pub show_camera_lane: bool,
     /// What the audio rubber band displays — clip-level Volume/Pan/Gain
     /// or a per-effect keyframable param.
     pub rubber_band_param: RubberBandParam,
@@ -3835,6 +3873,10 @@ impl Default for AppState {
             automation_lane_param_menu: None,
             keyframe_clipboard: None,
             selected_keyframe: None,
+            selected_camera_key: None,
+            camera_key_menu: None,
+            dragging_camera_key: None,
+            show_camera_lane: false,
             rubber_band_param: RubberBandParam::default(),
             video_rubber_band_param: VideoParam::Opacity,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
