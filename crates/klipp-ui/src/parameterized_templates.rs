@@ -363,6 +363,31 @@ impl CompositionTemplate {
     }
 }
 
+/// Build a starter template from a composition. The first text object becomes
+/// an exposed `text` parameter; more elaborate parameter authoring remains a
+/// later slice, while the saved composition is already reusable and editable.
+pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, name: impl Into<String>) -> CompositionTemplate {
+    let mut template = CompositionTemplate::new(name, sequence.id.0);
+    if let Some(title) = sequence.tracks.iter().flat_map(|track| &track.clips).find_map(|clip| match &clip.kind {
+        klipp_timeline::ClipKind::Title(title) => Some(title),
+        _ => None,
+    }) {
+        if let Some((index, text)) = title.objects.iter().enumerate().find_map(|(index, object)| match &object.content {
+            klipp_timeline::TitleObjectContent::TextBox(text) => Some((index, text.text.clone())),
+            _ => None,
+        }) {
+            template.parameters.insert("text".into(), TemplateParameter {
+                label: "Text".into(),
+                default: TemplateValue::Text(text),
+                range: None,
+                choices: Vec::new(),
+            });
+            template.bindings.push(TemplateBinding { parameter: "text".into(), property: format!("object:{index}.text") });
+        }
+    }
+    template
+}
+
 /// The bundled terminal card used by the Lunel-style launch-film workflow.
 ///
 /// This is deliberately ordinary title content: a dark rounded panel, a
