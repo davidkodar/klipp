@@ -189,7 +189,7 @@ impl MediaAnalysis {
         if let Some(m) = &self.motion {
             let _ = writeln!(out, "Motion: {} overall (mean {:.1}, p95 {:.1} on ffmpeg's YDIF scale); per second: {}",
                 crate::motion::class_for(m.mean), m.mean, m.p95,
-                m.per_second.iter().take(120).map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(" "));
+                m.per_second.iter().take(120).map(|v| if crate::motion::valid_sample(*v) { format!("{v:.0}") } else { "?".into() }).collect::<Vec<_>>().join(" "));
         }
         if let Some(bs) = &self.beatsheet {
             out.push_str(&bs.summary());
