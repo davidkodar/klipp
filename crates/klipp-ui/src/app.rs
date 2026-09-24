@@ -15606,6 +15606,7 @@ impl KlippApp {
                     self.state.toast.show("The template's composition is missing");
                     return true;
                 };
+                let template_sequence = self.state.sequences.iter().find(|candidate| candidate.id == sequence_id).cloned();
                 if self.state.sequences[sequence_idx].id == sequence_id {
                     self.state.toast.show("A template cannot be inserted into its own composition");
                     return true;
@@ -15636,13 +15637,28 @@ impl KlippApp {
                 // A template is composed in isolation and placed as one
                 // picture: a precomposition, not a flattened compound.
                 let mut clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
-                clip.kind = klipp_timeline::ClipKind::Precomposition {
+                let bindings = template
+                    .bindings
+                    .iter()
+                    .map(|binding| (binding.parameter.clone(), binding.property.clone()))
+                    .collect();
+                let instance = crate::parameterized_templates::TemplateInstance {
+                    template_id: *template_id,
+                    bindings,
+                    overrides: std::collections::BTreeMap::new(),
+                    media_slots: std::collections::BTreeMap::new(),
+                };
+                let Some(template_sequence) = template_sequence.as_ref() else {
+                    self.state.toast.show("Template composition is missing");
+                    return false;
+                };
+                if let Err(error) = klipp_timeline::flatten::validate_template_instance(&instance, template_sequence) {
+                    self.state.toast.show(format!("Template cannot be inserted: {error}"));
+                    return false;
+                }
+                clip.kind = klipp_timeline::ClipKind::TemplatePrecomposition {
                     sequence_id,
-                    template_instance: Some(crate::parameterized_templates::TemplateInstance {
-                        template_id: *template_id,
-                        overrides: std::collections::BTreeMap::new(),
-                        media_slots: std::collections::BTreeMap::new(),
-                    }),
+                    template_instance: instance,
                 };
                 let clip_id = clip.id;
                 seq.tracks[track_index].clips.push(clip.clone());

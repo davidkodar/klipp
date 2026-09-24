@@ -2083,7 +2083,7 @@ impl Clip {
         timeline_in: Timecode,
         timeline_out: Timecode,
     ) -> Self {
-        Self { kind: ClipKind::Sequence { sequence_id, template_instance: None }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+        Self { kind: ClipKind::Sequence { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
     }
 
     /// Create a precomposition of `sequence_id` with the given timeline
@@ -2093,7 +2093,7 @@ impl Clip {
         timeline_in: Timecode,
         timeline_out: Timecode,
     ) -> Self {
-        Self { kind: ClipKind::Precomposition { sequence_id, template_instance: None }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
+        Self { kind: ClipKind::Precomposition { sequence_id }, ..Self::nested(sequence_id, timeline_in, timeline_out) }
     }
 
     /// What a compound clip and a precomposition share: a source range
@@ -2107,7 +2107,7 @@ impl Clip {
         let dur = timeline_out - timeline_in;
         Self {
             id: ClipId::new(),
-            kind: ClipKind::Sequence { sequence_id, template_instance: None },
+            kind: ClipKind::Sequence { sequence_id },
             timeline_in,
             timeline_out,
             source_in: Timecode { value: 0, rate: timeline_in.rate },

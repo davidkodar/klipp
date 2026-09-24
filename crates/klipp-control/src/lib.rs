@@ -331,6 +331,7 @@ fn timeline_text(
                 klipp_timeline::ClipKind::Gap => "gap".to_string(),
                 klipp_timeline::ClipKind::Sequence { .. } => "nested sequence".to_string(),
                 klipp_timeline::ClipKind::Precomposition { .. } => "precomposition".to_string(),
+                klipp_timeline::ClipKind::TemplatePrecomposition { .. } => "template precomposition".to_string(),
             };
             let mut line = format!("  [{}]  {what}", range(c.timeline_in, c.timeline_out));
             if !c.enabled {
@@ -1554,6 +1555,7 @@ fn clip_kind_name(c: &klipp_timeline::Clip) -> &'static str {
         klipp_timeline::ClipKind::Gap => "gap",
         klipp_timeline::ClipKind::Sequence { .. } => "sequence",
         klipp_timeline::ClipKind::Precomposition { .. } => "precomposition",
+        klipp_timeline::ClipKind::TemplatePrecomposition { .. } => "template_precomposition",
     }
 }
 

@@ -1882,7 +1882,7 @@ impl Renderer {
             // source: from here on it is graded, transformed, faded and
             // blurred once, as one picture. Unresolved — the scene is
             // missing, or contains itself — it draws nothing.
-            ClipKind::Precomposition { .. } => {
+            ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. } => {
                 let scene = clip.precomp.clone()?;
                 let at = precomposition_time(clip, &scene, time, fps);
                 let surface = self.render_scene(&scene, at, width, height, src)?;

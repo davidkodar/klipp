@@ -955,11 +955,11 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 ClipKind::Title(td)
             }
             ClipKindJson::Gap => ClipKind::Gap,
-            ClipKindJson::Sequence { sequence_id, template_instance } => {
+            ClipKindJson::Sequence { sequence_id } => {
                 let sid = parse_uuid(sequence_id)
                     .map(klipp_core::SequenceId)
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
-                ClipKind::Sequence { sequence_id: sid, template_instance: template_instance.clone() }
+                ClipKind::Sequence { sequence_id: sid }
             }
             ClipKindJson::Generator { data } => {
                 let gen_data = serde_json::from_value(data.clone())
@@ -967,11 +967,17 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 ClipKind::Generator(gen_data)
             }
             ClipKindJson::AdjustmentLayer => ClipKind::AdjustmentLayer,
-            ClipKindJson::Precomposition { sequence_id, template_instance } => {
+            ClipKindJson::Precomposition { sequence_id } => {
                 let sid = parse_uuid(sequence_id)
                     .map(klipp_core::SequenceId)
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
-                ClipKind::Precomposition { sequence_id: sid, template_instance: template_instance.clone() }
+                ClipKind::Precomposition { sequence_id: sid }
+            }
+            ClipKindJson::TemplatePrecomposition { sequence_id, template_instance } => {
+                let sid = parse_uuid(sequence_id)
+                    .map(klipp_core::SequenceId)
+                    .unwrap_or_else(|_| klipp_core::SequenceId::new());
+                ClipKind::TemplatePrecomposition { sequence_id: sid, template_instance: template_instance.clone() }
             }
         };
     }

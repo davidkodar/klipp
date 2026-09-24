@@ -77,8 +77,6 @@ pub enum ClipKind {
     /// A nested sequence (compound clip) — references another sequence by ID.
     Sequence {
         sequence_id: klipp_core::SequenceId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        template_instance: Option<klipp_core::TemplateInstance>,
     },
     /// A procedurally-generated frame source (solid color, gradient, bars, countdown).
     Generator(GeneratorData),
@@ -99,8 +97,13 @@ pub enum ClipKind {
     /// instance, so one scene can be laid in twice.
     Precomposition {
         sequence_id: klipp_core::SequenceId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        template_instance: Option<klipp_core::TemplateInstance>,
+    },
+    /// A precomposition carrying editable template data. This separate tag
+    /// makes older readers refuse the file instead of silently dropping the
+    /// instance and rendering a different card.
+    TemplatePrecomposition {
+        sequence_id: klipp_core::SequenceId,
+        template_instance: klipp_core::TemplateInstance,
     },
 }
 
@@ -121,7 +124,8 @@ impl ClipKind {
             | ClipKind::Title(_)
             | ClipKind::Generator(_)
             | ClipKind::Sequence { .. }
-            | ClipKind::Precomposition { .. } => true,
+            | ClipKind::Precomposition { .. }
+            | ClipKind::TemplatePrecomposition { .. } => true,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
     }
@@ -132,7 +136,7 @@ impl ClipKind {
     pub fn needs_decoder(&self) -> bool {
         match self {
             // A precomposition's inner media is decoded like a compound's.
-            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } => true,
+            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. } => true,
             ClipKind::Title(_) | ClipKind::Generator(_) => false,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
@@ -2465,8 +2469,8 @@ mod tests {
         assert!(ClipKind::Media { media_id: MediaId::new() }.is_playable());
         assert!(ClipKind::Title(TitleData::default()).is_playable());
         assert!(ClipKind::Generator(GeneratorData::default()).is_playable());
-        assert!(ClipKind::Sequence { sequence_id: SequenceId::new(), template_instance: None }.is_playable());
-        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new(), template_instance: None }.is_playable());
+        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.is_playable());
+        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.is_playable());
         assert!(!ClipKind::Gap.is_playable());
         assert!(!ClipKind::AdjustmentLayer.is_playable());
     }
@@ -2474,8 +2478,8 @@ mod tests {
     #[test]
     fn clip_kind_decoder_need() {
         assert!(ClipKind::Media { media_id: MediaId::new() }.needs_decoder());
-        assert!(ClipKind::Sequence { sequence_id: SequenceId::new(), template_instance: None }.needs_decoder());
-        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new(), template_instance: None }.needs_decoder());
+        assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.needs_decoder());
+        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.needs_decoder());
         assert!(!ClipKind::Title(TitleData::default()).needs_decoder());
         assert!(!ClipKind::Generator(GeneratorData::default()).needs_decoder());
     }
