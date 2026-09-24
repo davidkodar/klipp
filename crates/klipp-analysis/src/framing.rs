@@ -13,7 +13,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "framing";
-pub const VERSION: u32 = 5;
+// Invalidate results derived from the previous shot-boundary selection.
+pub const VERSION: u32 = 7;
 
 /// The face detector, when downloaded: a face box with landmarks per
 /// face on every sampled frame.

@@ -1179,7 +1179,7 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",
-             "Find shots across every analysed media item: by framing (close-up, medium \
+             "Motion filters require decoded measurements; missing bins do not count as static. Find shots across every analysed media item: by framing (close-up, medium \
               close-up, medium, wide, very wide, inset — a small figure in a corner, a face \
               cam over a screen — or no people; B-roll wants no people), at least so many people, an \
               object the detector named (cat, car, cup…), motion (static, gentle, \
@@ -1588,7 +1588,9 @@ fn tool_definitions() -> Vec<Value> {
               same feel from other footage: its cut cadence (how many shots, how long, how many \
               per minute, and whether it cuts on the beat), its tempo, its look measured off the \
               picture through the scopes (blacks, whites, contrast, saturation, warmth), and its \
-              motion. It reads only — it copies nothing. Match the feel with your own footage \
+              motion and detected holds. Cut cadence is not animation pacing: inspect changes \
+              within shots before choosing hold lengths. Motion statistics do not identify \
+              semantic animation events. It reads only. Match the feel with your own footage \
               and your own or licensed music, never the reference's track. The reference must be \
               imported and analysed first.",
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),

@@ -1088,3 +1088,54 @@ fn native_generators_preview_without_edits_and_apply_as_one_undo_batch() {
         other => panic!("expected bottom-track creation and generator, got {other:?}"),
     }
 }
+
+#[test]
+fn media_analysis_returns_null_for_undecoded_bins_and_ignores_old_sentinel_cache() {
+    let mut h = harness();
+    struct CacheGuard { previous: Option<std::ffi::OsString>, path: std::path::PathBuf }
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(old) => std::env::set_var("XDG_CACHE_HOME", old),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+    let cache = CacheGuard {
+        previous: std::env::var_os("XDG_CACHE_HOME"),
+        path: std::env::temp_dir().join(format!("klipp-motion-cache-test-{}", klipp_core::MediaId::new().0)),
+    };
+    std::fs::create_dir_all(&cache.path).unwrap();
+    std::env::set_var("XDG_CACHE_HOME", &cache.path);
+    let path = cache.path.join("synthetic.mkv");
+    std::fs::write(&path, b"cache identity fixture; no decoding requested").unwrap();
+    let key = klipp_analysis::store::key_for(&path).unwrap();
+    let item = klipp_media::MediaItem::synthetic_for_test(path, None);
+    let id = h.media_pool.write().unwrap_or_else(|e| e.into_inner()).add(item);
+    for (version, bins) in [(1, json!([9.0,0.0,0.0])), (2, json!([9.0,-1.0,-1.0]))] {
+        klipp_analysis::store::save(&key, "motion", version, &json!({"duration_secs":3.0,"per_second":bins,"mean":3.0,"p95":9.0})).unwrap();
+        let old = h.ok(json!({"method":"media_analysis","media_id":id.0.to_string()}));
+        assert!(old["motion"].is_null(), "v{version} must require re-analysis");
+    }
+    // One frame of 90 in the first second reads 3.0 at the reference
+    // cadence: "gentle", so the measured shot cannot match the static
+    // query below and only the unknown seconds are in question.
+    let motion = klipp_analysis::motion::parse_metadata("frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=90\n", 3.0);
+    klipp_analysis::store::save(&key, "motion", klipp_analysis::motion::VERSION, &serde_json::to_value(motion).unwrap()).unwrap();
+    let response = h.ok(json!({"method": "media_analysis", "media_id": id.0.to_string()}));
+    let expected = 3.0_f32 as f64;
+    assert!((response["motion"]["per_second"][0].as_f64().unwrap() - expected).abs() < 1e-6);
+    assert!(response["motion"]["per_second"][1].is_null());
+    assert!(response["motion"]["per_second"][2].is_null());
+    assert!((response["motion"]["mean"].as_f64().unwrap() - expected).abs() < 1e-6);
+    let shots = klipp_analysis::shots::Shots::from_boundaries(3.0, vec![1.0]);
+    klipp_analysis::store::save(&key, "shots", klipp_analysis::shots::VERSION, &serde_json::to_value(shots).unwrap()).unwrap();
+    let unknown = h.ok(json!({"method":"find_shots","motion":"static"}));
+    assert!(!unknown["hits"].as_array().unwrap().iter().any(|v| v["media_id"] == id.0.to_string()), "unknown second must not match static");
+    let measured = klipp_analysis::motion::Motion::from_samples(3.0,vec![Some(9.0),Some(0.0),Some(0.0)]);
+    klipp_analysis::store::save(&key,"motion",klipp_analysis::motion::VERSION,&serde_json::to_value(measured).unwrap()).unwrap();
+    let known = h.ok(json!({"method":"find_shots","motion":"static"}));
+    assert!(known["hits"].as_array().unwrap().iter().any(|v|v["media_id"]==id.0.to_string() && v["start_secs"]==1.0));
+
+}
