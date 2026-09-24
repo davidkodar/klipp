@@ -81,7 +81,7 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
     for track in &mut flat.tracks {
         let carrier = Controls::of(track);
         for clip in &mut track.clips {
-            if let ClipKind::Precomposition { sequence_id } = clip.kind {
+            if let ClipKind::Precomposition { sequence_id, .. } = clip.kind {
                 // A clip that is off is off: no scene, no sound.
                 clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
                 if let Some(scene) = &clip.precomp {
@@ -300,7 +300,7 @@ fn flatten_track(track: &Track, all_sequences: &[Sequence], depth: u8) -> Track 
         .clips
         .iter()
         .flat_map(|clip| {
-            if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 if depth < MAX_COMPOUND_DEPTH {
                     return flatten_clip_for_track(
                         clip,
@@ -397,6 +397,7 @@ fn flatten_clip_inner(
             // remapped against the new compound bounds.
             if let ClipKind::Sequence {
                 sequence_id: nested_id,
+                ..
             } = &sliced.kind
             {
                 if depth + 1 < MAX_COMPOUND_DEPTH {
@@ -785,7 +786,7 @@ mod tests {
         let flat = flatten_sequence(&parent, &[parent.clone(), child.clone()]);
         let clips = &flat.tracks[0].clips;
         assert_eq!(clips.len(), 2, "one precomposition kept, one compound expanded to its one clip");
-        assert!(matches!(clips[0].kind, ClipKind::Precomposition { sequence_id } if sequence_id == child.id));
+        assert!(matches!(clips[0].kind, ClipKind::Precomposition { sequence_id, .. } if sequence_id == child.id));
         assert_eq!(clips[0].id, precomp_id, "the precomposition keeps its own identity");
         assert!(matches!(clips[1].kind, ClipKind::Media { .. }), "the compound is flattened as before");
     }

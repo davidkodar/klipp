@@ -493,15 +493,17 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             }
         }
         ClipKind::Gap => ClipKindJson::Gap,
-        ClipKind::Sequence { sequence_id } => ClipKindJson::Sequence {
+        ClipKind::Sequence { sequence_id, template_instance } => ClipKindJson::Sequence {
             sequence_id: sequence_id.to_string(),
+            template_instance: template_instance.clone(),
         },
         ClipKind::Generator(data) => ClipKindJson::Generator {
             data: serde_json::to_value(data).unwrap_or_default(),
         },
         ClipKind::AdjustmentLayer => ClipKindJson::AdjustmentLayer,
-        ClipKind::Precomposition { sequence_id } => ClipKindJson::Precomposition {
+        ClipKind::Precomposition { sequence_id, template_instance } => ClipKindJson::Precomposition {
             sequence_id: sequence_id.to_string(),
+            template_instance: template_instance.clone(),
         },
     }
 }

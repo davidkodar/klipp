@@ -6005,7 +6005,7 @@ impl TimelinePanel {
             clip_source_in_secs,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let compound = if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            let compound = if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 Some(*sequence_id)
             } else { None };
             (
@@ -7039,7 +7039,7 @@ impl TimelinePanel {
             // Compound clip: resolve inner media per tile and stitch together
             // a strip from those inner clips' filmstrips. Keeps the existing
             // per-MediaId cache; no new storage.
-            if let ClipKind::Sequence { sequence_id } = &clip.kind {
+            if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                 draw_compound_filmstrip(
                     painter,
                     strip_rect,
@@ -16729,7 +16729,7 @@ fn resolve_compound_at_frac(
 
     // Step 4: nested compound — recurse one level. Build the local frac
     // within the nested clip's own duration, then descend.
-    if let ClipKind::Sequence { sequence_id: nested_id } = &inner_clip.kind {
+    if let ClipKind::Sequence { sequence_id: nested_id, .. } = &inner_clip.kind {
         let ic_in = inner_clip.timeline_in.to_secs_f64();
         let ic_out = inner_clip.timeline_out.to_secs_f64();
         let local_frac = if ic_out > ic_in {

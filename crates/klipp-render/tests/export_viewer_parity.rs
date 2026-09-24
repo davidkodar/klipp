@@ -421,7 +421,7 @@ fn a_precomposition_exports_as_the_composed_scene_faded_once() {
     let mut red = solid([255, 0, 0], 0, FRAMES as i64);
     klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
     let scene = timeline(vec![vec![red], vec![solid([0, 255, 0], 0, FRAMES as i64)]]).sequence;
-    let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id, template_instance: None });
     klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
     let mut v = timeline(vec![vec![pre]]);
     v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
@@ -444,7 +444,7 @@ fn a_precomposition_of_media_reproduces_its_source() {
     let Some(src) = bars_source() else { return };
     let m = media(src.clone(), None);
     let scene = timeline(vec![vec![m.clip]]).sequence;
-    let pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    let pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id, template_instance: None });
     let mut v = timeline(vec![vec![pre]]);
     v.media.extend(m.media);
     v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);

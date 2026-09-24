@@ -88,3 +88,5 @@ pub use media_marker::{MediaMarker, MediaMarkerKind};
 pub use span::ClipSpan;
 
 pub mod vector_path;
+pub mod template;
+pub use template::{TemplateInstance, TemplateValue};
