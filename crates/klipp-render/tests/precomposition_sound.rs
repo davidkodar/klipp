@@ -219,3 +219,62 @@ fn a_precompositions_sound_is_mixed_down_from_where_the_scene_puts_it() {
     let f72 = mix.get_frame_audio(72);
     assert!((secs_of(f72[0]) - 3.0).abs() < 0.0005, "frame 72 is scene second {:.4}, not 3.0", secs_of(f72[0]));
 }
+
+/// A linked pair's sound settings live on the picture, and the picture
+/// stays inside the scene where the mixer cannot see it. The sound clip
+/// that reaches the mix carries them instead — level, pan, fades and
+/// automation — through one instance and through a scene inside a
+/// scene, exactly as the scene played them on its own.
+#[test]
+fn a_linked_pictures_sound_settings_come_out_with_its_sound() {
+    let mut pool = MediaPool::new();
+    let mut item = MediaItem::synthetic_for_test("/tmp/precomposition-linked.wav".into(), None);
+    item.has_audio = true;
+    item.duration = tc(4.0);
+    let id = pool.add(item);
+    let mut scene = Sequence::new_default();
+    scene.name = "Scene".into();
+    let mut v = Track::new("picture", TrackKind::Video);
+    v.append_clip(id, tc(4.0));
+    let mut a = Track::new("sound", TrackKind::Audio);
+    a.append_clip(id, tc(4.0));
+    v.clips[0].linked_clip_id = Some(a.clips[0].id);
+    a.clips[0].linked_clip_id = Some(v.clips[0].id);
+    v.clips[0].volume = 0.25;
+    v.clips[0].pan = -0.5;
+    v.clips[0].fade_in_secs = 0.3;
+    klipp_core::keyframe::upsert_keyframe(&mut v.clips[0].volume_keyframes, 1.0, 0.25);
+    klipp_core::keyframe::upsert_keyframe(&mut v.clips[0].volume_keyframes, 3.0, 1.0);
+    scene.tracks = vec![v, a];
+
+    let shapes = |snap: &SequenceSnapshot| -> Vec<(f32, f32, f32, Vec<(f64, f32)>)> {
+        snap.audio_tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .map(|c| (c.shape.volume, c.shape.pan, c.shape.fade_in_secs, c.shape.volume_keyframes.iter().map(|k| (k.time_secs, k.value)).collect()))
+            .collect()
+    };
+    let direct = shapes(&SequenceSnapshot::from_sequence(&scene, &pool, &ExportSettings::default(), None, false, WorkingColorspace::Rec709Linear).unwrap());
+    assert_eq!(direct.len(), 1, "the pair sounds once on its own");
+    assert_eq!(direct[0].0, 0.25, "with the picture's level");
+
+    // Laid in whole, the same settings reach the mix.
+    let whole = shapes(&snapshot(&laid_in(&scene), &[laid_in(&scene), scene.clone()], &pool));
+    assert_eq!(whole, direct, "the precomposition plays the pair as the scene did");
+
+    // Laid in from a second into the scene, the automation moves with
+    // the start: the key at scene second 1 is now at clip second 0.
+    let mut o = Sequence::new_default();
+    let mut pre = Clip::precomposition(scene.id, tc(0.0), tc(3.0));
+    pre.source_in = tc(1.0);
+    pre.source_out = tc(4.0);
+    o.tracks[0].clips = vec![pre];
+    let trimmed = shapes(&snapshot(&o, &[o.clone(), scene.clone()], &pool));
+    assert_eq!(trimmed[0].3, vec![(0.0, 0.25), (2.0, 1.0)], "automation keeps its place in the scene: {:?}", trimmed[0].3);
+
+    // And through a scene inside a scene.
+    let middle = laid_in(&scene);
+    let root = laid_in(&middle);
+    let nested = shapes(&snapshot(&root, &[root.clone(), middle.clone(), scene.clone()], &pool));
+    assert_eq!(nested, direct, "two levels down, still the picture's settings");
+}

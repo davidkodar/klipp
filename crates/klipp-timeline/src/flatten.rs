@@ -147,11 +147,18 @@ impl Controls {
 /// runtime tracks come through here like any other, composed once more.
 ///
 /// A video clip whose audio half sits on an audio track of the scene
-/// sounds through that half, as it does in the scene.
+/// sounds through that half, as it does in the scene — and with the
+/// picture's sound settings, as it does in the scene: a linked pair's
+/// volume, pan, fades and automation live on the picture, and the
+/// picture stays inside the instance where the mixer cannot see it. So
+/// the settings are written onto the sound clip here, while the picture
+/// is still in hand, and the link is dropped: the runtime clip carries
+/// what it needs and points at nothing.
 fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> {
     let rate = clip.timeline_in.rate;
     let (t_in, s_in, s_out) = (clip.timeline_in.to_secs_f64(), clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
     let any_solo = scene.tracks.iter().any(|t| t.solo);
+    let find = |id: ClipId| scene.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
     let mut out = Vec::new();
     for track in &scene.tracks {
         let clips: Vec<Clip> = track
@@ -164,7 +171,19 @@ fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> 
                         scene.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|p| p.id == lid))
                     }))
             })
-            .filter_map(|c| slice_inner_clip_to_compound(c, t_in, s_in, s_out, clip.speed, rate))
+            .filter_map(|c| {
+                let mut sliced = slice_inner_clip_to_compound(c, t_in, s_in, s_out, clip.speed, rate)?;
+                if let Some(picture) = c.linked_clip_id.and_then(find).filter(|p| p.id != c.id) {
+                    take_sound_settings(&mut sliced, picture);
+                }
+                sliced.linked_clip_id = None;
+                // What the slice trimmed off the head, in the clip's own
+                // seconds: automation is written from the clip's start,
+                // and the start moved.
+                let head = sliced.source_in.to_secs_f64() - c.source_in.to_secs_f64();
+                shift_sound_automation(&mut sliced, head, clip.speed);
+                Some(sliced)
+            })
             .collect();
         if clips.is_empty() {
             continue;
@@ -179,6 +198,41 @@ fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> 
         out.push(t);
     }
     out
+}
+
+/// `clip` plays with `picture`'s sound settings — the ones the mixer
+/// reads from a linked pair's picture: the levels, the fades, the
+/// channel layout, and the automation and modifiers on them.
+fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
+    clip.volume = picture.volume;
+    clip.gain = picture.gain;
+    clip.pan = picture.pan;
+    clip.fade_in_secs = picture.fade_in_secs;
+    clip.fade_out_secs = picture.fade_out_secs;
+    clip.fade_in_curve = picture.fade_in_curve;
+    clip.fade_out_curve = picture.fade_out_curve;
+    clip.channel_config = picture.channel_config;
+    clip.volume_keyframes = picture.volume_keyframes.clone();
+    clip.gain_keyframes = picture.gain_keyframes.clone();
+    clip.pan_keyframes = picture.pan_keyframes.clone();
+    clip.param_modifiers = picture.param_modifiers.clone();
+}
+
+/// Sound automation is written in seconds from the clip's start; a slice
+/// that trimmed `head` seconds off the start, played at `speed`, moves
+/// every key earlier by that head and closer together by that speed, so
+/// the level at any moment of the scene is the level at that moment of
+/// the parent. A key now before the start still anchors the value there.
+fn shift_sound_automation(clip: &mut Clip, head: f64, speed: f64) {
+    if head.abs() < 1e-9 && (speed - 1.0).abs() < 1e-9 {
+        return;
+    }
+    let speed = if speed.abs() < 1e-9 { 1.0 } else { speed };
+    for keys in [&mut clip.volume_keyframes, &mut clip.gain_keyframes, &mut clip.pan_keyframes] {
+        for k in keys.iter_mut() {
+            k.time_secs = (k.time_secs - head) / speed;
+        }
+    }
 }
 
 /// The id a scene's clip has inside one instance of the scene: a name
