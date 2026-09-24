@@ -1143,6 +1143,36 @@ fn a_scene_that_contains_itself_renders_nothing_and_returns() {
     }
 }
 
+/// A card that is a shape, not words, smears along its path when its
+/// stack carries a motion blur: the compositor reads the blur from the
+/// layer that has it, whatever the layer is. Measured as the moving
+/// card is, by partly-covered pixels across its edges.
+#[test]
+fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
+    let shot = |blur: Option<klipp_timeline::MotionBlur>| {
+        let mut td = klipp_timeline::TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None };
+        let mut xf = klipp_timeline::default_text_transform();
+        xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
+        let id = td.add_object(
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), stroke: None, fit: None }),
+            xf,
+        );
+        td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: blur, ..Default::default() });
+        let mut card = clip(ClipKind::Title(td), 0.0, 2.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
+        klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 48.0);
+        let seq = sequence(vec![vec![card]]);
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(false);
+        r.render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default())
+    };
+    let soft = |img: &[f32]| (0..W).filter(|&x| (0.05..0.95).contains(&img[((9 * W + x) * 4) as usize])).count();
+    let sharp = shot(None);
+    let smeared = shot(Some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 }));
+    assert!(soft(&sharp) <= 2, "no blur, sharp edges: {}", soft(&sharp));
+    assert!(soft(&smeared) >= 6, "blurred, both edges smeared: {}", soft(&smeared));
+}
+
 /// The viewer's fast path lays a title sprite over the presented bytes
 /// in display space. Where the text is solid or absent that is the full
 /// composite to the bit; only an anti-aliased edge may differ a little.
