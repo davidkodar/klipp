@@ -87,12 +87,12 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
     // Empty bins between two decoded frames are held pictures and therefore
     // measured zero; leading/trailing gaps remain unknown.
     // Accept the existing final bin even when video outlasts container duration;
-    // one sampling interval beyond its edge covers timestamp rounding only.
-    let tail_slack = 1.0 / 30.0;
+    // the allowance is measured from the decoded timestamps, never assumed.
     let seconds = duration_secs.ceil().max(1.0) as usize;
-    let mut sums = vec![0.0f32; seconds];
-    let mut counts = vec![0u32; seconds];
+    let mut sums = vec![0.0f64; seconds];
+    let mut weights = vec![0.0f64; seconds];
     let mut decoded_times = Vec::new();
+    let mut samples = Vec::new();
     let mut t: Option<f64> = None;
     for line in text.lines() {
         if let Some(i) = line.find("pts_time:") {
@@ -102,19 +102,61 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
             }
         } else if let Some(v) = line.strip_prefix("lavfi.signalstats.YDIF=") {
             if let (Some(t), Ok(v)) = (t, v.trim().parse::<f32>()) {
-                if !t.is_finite() || t < 0.0 || t > duration_secs.ceil() + tail_slack + 1e-9 || !valid_sample(v) {
+                if !t.is_finite() || t < 0.0 || !valid_sample(v) {
                     continue;
                 }
-                let s = (t.floor() as usize).min(seconds - 1);
-                sums[s] += v;
-                counts[s] += 1;
+                samples.push((t, v));
             }
         }
     }
     decoded_times.sort_by(f64::total_cmp);
     decoded_times.dedup_by(|a, b| a == b);
+    let mut intervals: Vec<f64> = decoded_times
+        .windows(2)
+        .filter_map(|pair| {
+            let d = pair[1] - pair[0];
+            (d.is_finite() && d > 0.0).then_some(d)
+        })
+        .collect();
+    intervals.sort_by(f64::total_cmp);
+    let observed_interval = intervals
+        .get(intervals.len() / 2)
+        .copied()
+        .unwrap_or(0.1)
+        .clamp(1e-6, 0.1);
+    let tail_limit = duration_secs.ceil() + observed_interval + 1e-9;
+    for (time, value) in samples {
+        if time > tail_limit {
+            continue;
+        }
+        let next = decoded_times
+            .iter()
+            .find(|candidate| **candidate > time)
+            .copied()
+            .unwrap_or(time + observed_interval);
+        let tail_sample = time >= seconds as f64;
+        let start = if tail_sample { (seconds - 1) as f64 } else { time };
+        // A decoded sample describes the next native frame interval. Never
+        // let one YDIF value span a missing-frame gap: the gap is the held
+        // picture and is filled as zero below.
+        let end = if tail_sample {
+            (seconds as f64).min(start + observed_interval)
+        } else {
+            next.min(time + observed_interval).min(seconds as f64)
+        };
+        if end <= start {
+            continue;
+        }
+        let first = start.floor() as usize;
+        let last = ((end - 1e-12).floor() as usize).min(seconds - 1);
+        for second in first..=last {
+            let overlap = (end.min(second as f64 + 1.0) - start.max(second as f64)).max(0.0);
+            sums[second] += value as f64 * overlap;
+            weights[second] += overlap;
+        }
+    }
     for second in 0..seconds {
-        if counts[second] != 0 {
+        if weights[second] > 0.0 {
             continue;
         }
         let start = second as f64;
@@ -122,10 +164,14 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
         let bracketed = decoded_times.iter().any(|time| *time <= start)
             && decoded_times.iter().any(|time| *time >= end);
         if bracketed {
-            counts[second] = 1;
+            weights[second] = 1.0;
         }
     }
-    let per_second = sums.iter().zip(&counts).map(|(s, c)| (*c > 0).then(|| s / *c as f32)).collect();
+    let per_second = sums
+        .iter()
+        .zip(&weights)
+        .map(|(sum, weight)| (*weight > 0.0).then(|| (*sum / *weight) as f32))
+        .collect();
     Motion::from_samples(duration_secs, per_second)
 }
 
@@ -165,7 +211,7 @@ mod tests {
         assert_eq!(m.per_second[4], Some(6.0));
         assert!(m.per_second[..4].iter().all(Option::is_none));
         let variable = "frame:0 pts_time:4.85\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.9\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.97\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.03\nlavfi.signalstats.YDIF=10\n";
-        assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(4.0));
+        assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(4.4));
     }
 
     #[test]
