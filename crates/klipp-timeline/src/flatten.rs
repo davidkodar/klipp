@@ -38,14 +38,31 @@ use klipp_core::{ClipId, RationalTime, SequenceId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::TemplateInstance) {
+fn binding_parts(property: &str) -> Result<(usize, &str), String> {
+    let Some((object, path)) = property.strip_prefix("object:").and_then(|p| p.split_once('.')) else {
+        return Err(format!("template binding '{property}' must use object:<index>.<property>"));
+    };
+    let index = object.parse::<usize>().map_err(|_| format!("template binding '{property}' has an invalid object index"))?;
+    Ok((index, path))
+}
+
+/// Validate the binding grammar once, at insertion, so flattening cannot
+/// silently reinterpret a saved template instance.
+pub fn validate_template_instance(instance: &klipp_core::TemplateInstance) -> Result<(), String> {
+    for (parameter, property) in &instance.bindings {
+        binding_parts(property).map_err(|e| format!("parameter '{parameter}': {e}"))?;
+    }
+    Ok(())
+}
+
+fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::TemplateInstance) -> Result<(), String> {
+    validate_template_instance(instance)?;
     for track in &mut sequence.tracks {
         for clip in &mut track.clips {
             let ClipKind::Title(title) = &mut clip.kind else { continue };
             for (parameter, property) in &instance.bindings {
                 let Some(value) = instance.overrides.get(parameter) else { continue };
-                let Some((object, path)) = property.strip_prefix("object:").and_then(|p| p.split_once('.')) else { continue };
-                let Ok(index) = object.parse::<usize>() else { continue };
+                let Ok((index, path)) = binding_parts(property) else { continue };
                 let Some(target) = title.objects.get_mut(index) else { continue };
                 match (path, value) {
                     ("text", klipp_core::TemplateValue::Text(text)) => {
@@ -78,11 +95,12 @@ fn apply_template_instance(sequence: &mut Sequence, instance: &klipp_core::Templ
                     ("float.keyframes", klipp_core::TemplateValue::Number(amount)) => {
                         for key in &mut target.transform.center_y_keyframes { key.value += *amount as f32 * 0.01; }
                     }
-                    _ => {}
+                    _ => return Err(format!("unsupported value for template binding '{parameter}' at '{property}'")),
                 }
             }
         }
     }
+    Ok(())
 }
 
 /// Maximum nesting depth for compound clips. Beyond this depth the
@@ -128,7 +146,7 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
     for track in &mut flat.tracks {
         let carrier = Controls::of(track);
         for clip in &mut track.clips {
-            if let ClipKind::Precomposition { sequence_id, .. } = clip.kind {
+            if let ClipKind::Precomposition { sequence_id, .. } | ClipKind::TemplatePrecomposition { sequence_id, .. } = clip.kind {
                 // A clip that is off is off: no scene, no sound.
                 clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
                 if let Some(scene) = &clip.precomp {
@@ -163,8 +181,12 @@ pub fn resolve_precomposition(
         return None;
     }
     let mut inner = all_sequences.iter().find(|s| s.id == sequence_id)?.clone();
-    if let ClipKind::Precomposition { template_instance: Some(instance), .. } = &clip.kind {
-        apply_template_instance(&mut inner, instance);
+    match &clip.kind {
+        ClipKind::Precomposition { template_instance: Some(instance), .. }
+        | ClipKind::TemplatePrecomposition { template_instance: instance, .. } => {
+            let _ = apply_template_instance(&mut inner, instance);
+        }
+        _ => {}
     }
     Some(Arc::new(flatten_within(&inner, all_sequences, ancestors, Some(clip.id))))
 }
@@ -554,14 +576,14 @@ mod tests {
         inner.tracks.push(title_track);
         let mut outer = make_seq("outer");
         let mut pre = Clip::precomposition(inner.id, t(0), t(24));
-        pre.kind = ClipKind::Precomposition {
+        pre.kind = ClipKind::TemplatePrecomposition {
             sequence_id: inner.id,
-            template_instance: Some(klipp_core::TemplateInstance {
+            template_instance: klipp_core::TemplateInstance {
                 template_id: uuid::Uuid::new_v4(),
                 bindings: BTreeMap::from([("command".into(), "object:0.text".into())]),
                 overrides: BTreeMap::from([("command".into(), klipp_core::TemplateValue::Text("resolved".into()))]),
                 media_slots: BTreeMap::new(),
-            }),
+            },
         };
         let pre_id = pre.id;
         outer.tracks.push(Track::new("V1", TrackKind::Video));

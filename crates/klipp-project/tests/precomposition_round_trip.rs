@@ -63,6 +63,14 @@ fn a_reader_from_before_the_kind_refuses_it_by_name() {
 
     let compound = serde_json::json!({ "type": "sequence", "sequence_id": "2b1e5d7c-6d7a-4a3b-9d4e-0f1a2b3c4d5e" }).to_string();
     assert!(matches!(serde_json::from_str::<Before>(&compound), Ok(Before::Sequence { .. })), "the compound still reads as before");
+
+    let template_precomp = serde_json::json!({
+        "type": "template_precomposition",
+        "sequence_id": "2b1e5d7c-6d7a-4a3b-9d4e-0f1a2b3c4d5e",
+        "template_instance": { "template_id": "2b1e5d7c-6d7a-4a3b-9d4e-0f1a2b3c4d5e", "overrides": {}, "media_slots": {} }
+    }).to_string();
+    let err = serde_json::from_str::<Before>(&template_precomp).unwrap_err().to_string();
+    assert!(err.contains("template_precomposition"), "the old reader refuses the live template kind by name: {err}");
 }
 
 #[test]
@@ -72,9 +80,9 @@ fn a_template_instance_survives_project_round_trip() {
     let scene = Sequence::new_default();
     let template_id = uuid::Uuid::new_v4();
     let mut clip = Clip::precomposition(scene.id, tc(0.0), tc(2.0));
-    clip.kind = ClipKind::Precomposition {
+    clip.kind = ClipKind::TemplatePrecomposition {
         sequence_id: scene.id,
-        template_instance: Some(TemplateInstance {
+        template_instance: TemplateInstance {
             template_id,
             bindings: BTreeMap::from([("command_text".into(), "object:1.text".into())]),
             overrides: BTreeMap::from([(
@@ -82,14 +90,14 @@ fn a_template_instance_survives_project_round_trip() {
                 TemplateValue::Text("xytx --launch".into()),
             )]),
             media_slots: BTreeMap::new(),
-        }),
+        },
     };
     let mut outer = Sequence::new_default();
     outer.tracks[0].clips = vec![clip];
     save_project(&dir, &[outer, scene], &MediaPool::new()).unwrap();
     let (sequences, ..) = load_project(&dir).unwrap();
-    let ClipKind::Precomposition {
-        template_instance: Some(instance),
+    let ClipKind::TemplatePrecomposition {
+        template_instance: instance,
         ..
     } = &sequences[0].tracks[0].clips[0].kind
     else {

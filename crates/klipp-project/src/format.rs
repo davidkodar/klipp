@@ -567,6 +567,12 @@ pub enum ClipKindJson {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         template_instance: Option<klipp_core::TemplateInstance>,
     },
+    /// A precomposition with a live template instance. Appended so readers
+    /// that predate template runtime resolution refuse it by tag.
+    TemplatePrecomposition {
+        sequence_id: String,
+        template_instance: klipp_core::TemplateInstance,
+    },
     /// Explicit feature tag: older readers must refuse editable path titles.
     VectorTitle { title_data: klipp_timeline::TitleData },
     /// A title whose layers carry motion or effect stacks of their own

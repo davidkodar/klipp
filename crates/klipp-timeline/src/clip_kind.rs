@@ -102,6 +102,13 @@ pub enum ClipKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         template_instance: Option<klipp_core::TemplateInstance>,
     },
+    /// A precomposition carrying editable template data. This separate tag
+    /// makes older readers refuse the file instead of silently dropping the
+    /// instance and rendering a different card.
+    TemplatePrecomposition {
+        sequence_id: klipp_core::SequenceId,
+        template_instance: klipp_core::TemplateInstance,
+    },
 }
 
 // GeneratorData is defined in klipp-core and re-exported here for convenience.
@@ -121,7 +128,8 @@ impl ClipKind {
             | ClipKind::Title(_)
             | ClipKind::Generator(_)
             | ClipKind::Sequence { .. }
-            | ClipKind::Precomposition { .. } => true,
+            | ClipKind::Precomposition { .. }
+            | ClipKind::TemplatePrecomposition { .. } => true,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
     }
@@ -132,7 +140,7 @@ impl ClipKind {
     pub fn needs_decoder(&self) -> bool {
         match self {
             // A precomposition's inner media is decoded like a compound's.
-            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } => true,
+            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } | ClipKind::TemplatePrecomposition { .. } => true,
             ClipKind::Title(_) | ClipKind::Generator(_) => false,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }

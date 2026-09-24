@@ -973,6 +973,12 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     .unwrap_or_else(|_| klipp_core::SequenceId::new());
                 ClipKind::Precomposition { sequence_id: sid, template_instance: template_instance.clone() }
             }
+            ClipKindJson::TemplatePrecomposition { sequence_id, template_instance } => {
+                let sid = parse_uuid(sequence_id)
+                    .map(klipp_core::SequenceId)
+                    .unwrap_or_else(|_| klipp_core::SequenceId::new());
+                ClipKind::TemplatePrecomposition { sequence_id: sid, template_instance: template_instance.clone() }
+            }
         };
     }
 

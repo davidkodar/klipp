@@ -505,6 +505,10 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             sequence_id: sequence_id.to_string(),
             template_instance: template_instance.clone(),
         },
+        ClipKind::TemplatePrecomposition { sequence_id, template_instance } => ClipKindJson::TemplatePrecomposition {
+            sequence_id: sequence_id.to_string(),
+            template_instance: template_instance.clone(),
+        },
     }
 }
 

@@ -358,6 +358,7 @@ fn describe(kind: &ClipKind) -> String {
         ClipKind::AdjustmentLayer => "an adjustment layer".to_string(),
         ClipKind::Sequence { .. } => "a compound clip".to_string(),
         ClipKind::Precomposition { .. } => "a precomposition".to_string(),
+        ClipKind::TemplatePrecomposition { .. } => "a template precomposition".to_string(),
         ClipKind::Media { .. } | ClipKind::Gap => "a clip".to_string(),
     }
 }

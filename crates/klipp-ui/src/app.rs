@@ -15641,14 +15641,19 @@ impl KlippApp {
                     .iter()
                     .map(|binding| (binding.parameter.clone(), binding.property.clone()))
                     .collect();
-                clip.kind = klipp_timeline::ClipKind::Precomposition {
+                let instance = crate::parameterized_templates::TemplateInstance {
+                    template_id: *template_id,
+                    bindings,
+                    overrides: std::collections::BTreeMap::new(),
+                    media_slots: std::collections::BTreeMap::new(),
+                };
+                if let Err(error) = klipp_timeline::flatten::validate_template_instance(&instance) {
+                    self.state.toast.show(format!("Template cannot be inserted: {error}"));
+                    return false;
+                }
+                clip.kind = klipp_timeline::ClipKind::TemplatePrecomposition {
                     sequence_id,
-                    template_instance: Some(crate::parameterized_templates::TemplateInstance {
-                        template_id: *template_id,
-                        bindings,
-                        overrides: std::collections::BTreeMap::new(),
-                        media_slots: std::collections::BTreeMap::new(),
-                    }),
+                    template_instance: instance,
                 };
                 let clip_id = clip.id;
                 seq.tracks[track_index].clips.push(clip.clone());
