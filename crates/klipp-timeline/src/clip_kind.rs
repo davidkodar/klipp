@@ -1394,8 +1394,14 @@ impl TitleData {
             .and_then(|tb| tb.texture_fill.as_ref())
             .and_then(|t| t.file_path().map(|s| s.to_string()))
     }
+    /// The motion blur the compositor applies to the title: the primary
+    /// text's, else the first layer's that has one — a shape or picture
+    /// moving as one smears as one.
     pub fn motion_blur(&self) -> Option<MotionBlur> {
-        self.primary_fx().motion_blur.clone()
+        self.primary_fx()
+            .motion_blur
+            .clone()
+            .or_else(|| self.objects.iter().find_map(|o| o.fx().motion_blur.clone()))
     }
     pub fn underline(&self) -> bool {
         self.primary_text().is_some_and(|tb| tb.underline)

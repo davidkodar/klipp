@@ -32,7 +32,7 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::TitleObject;
+use klipp_timeline::{LayerFx, TitleObject};
 use klipp_timeline::{
     FontStyle, ImageFit, ImageLayer, ObjectTransform, Shape, ShapeKind, StyleRun,
     TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
@@ -1303,138 +1303,23 @@ impl TitleRenderer {
 
         // Determine if GPU acceleration should be used (> 250K pixels in mask)
         let use_gpu = gpu.is_some() && (mask_w * mask_h > 250_000);
-        // We need to use a mutable ref conditionally — wrap in Option
         let mut gpu = gpu;
-
-        // Helper closures that dispatch to GPU or CPU
-        let do_blur = |mask: &[u8], mw: usize, mh: usize, radius: f32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>| -> Vec<u8> {
-            if use_gpu {
-                if let Some(ref mut g) = gpu {
-                    return g.blur(mask, mw as u32, mh as u32, radius);
-                }
-            }
-            blur_alpha(mask, mw, mh, radius)
-        };
-
-        let do_dilate = |mask: &[u8], mw: usize, mh: usize, radius: f32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>| -> Vec<u8> {
-            if use_gpu {
-                if let Some(ref mut g) = gpu {
-                    return g.dilate(mask, mw as u32, mh as u32, radius);
-                }
-            }
-            dilate_alpha(mask, mw, mh, radius)
-        };
 
         // ── Render effects back-to-front ──
 
-        // 1. Outer glow stack — render largest-radius first so the
-        // tighter glows read on top. Secondary layers (index >= 1) are
-        // gated by `glow_stack_enabled`. radius/intensity may animate
-        // via per-element keyframes.
+        // 1–3. What the stack puts behind the face: glows, shadows,
+        // outlines. Stroke draw-on clips the outlines horizontally to a
+        // left-anchored fraction of the text bounds; at 1.0 every pixel
+        // passes.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let fx = title.primary_fx();
-            let mut active_glows: Vec<(f32, f32, &klipp_timeline::TextGlow)> = fx
-                .glows
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| g.enabled)
-                .filter(|(i, _)| *i == 0 || fx.glow_stack_enabled)
-                .map(|(_, g)| (g.evaluated_radius(t), g.evaluated_intensity(t), g))
-                .collect();
-            // Largest radius first (rendered behind smaller ones).
-            active_glows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            for (radius, intensity, glow) in &active_glows {
-                let blurred = do_blur(alpha_mask, mask_w, mask_h, *radius * scale, &mut gpu);
-                draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, *intensity);
-            }
-        }
-
-        // 2. Drop shadow stack — render back-to-front (highest index
-        // first) so the lowest index reads as nearest the text.
-        // shadows[0] is the primary; shadows[1..] are gated by
-        // `shadow_stack_enabled` so the user can hide the secondary
-        // layers without dropping data. Per-element keyframes evaluate
-        // through the same evaluator the legacy single-shadow used.
-        {
-            let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let fx = title.primary_fx();
-            for (i, shadow) in fx.shadows.iter().enumerate().rev() {
-                if !shadow.enabled {
-                    continue;
-                }
-                if i >= 1 && !fx.shadow_stack_enabled {
-                    continue;
-                }
-                let off_x = shadow.evaluated_offset_x(t);
-                let off_y = shadow.evaluated_offset_y(t);
-                let blur = shadow.evaluated_blur(t);
-                let sox = (off_x * scale).round() as i32;
-                let soy = (off_y * scale).round() as i32;
-
-                if blur > 0.0 {
-                    let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
-                    let blurred = do_blur(&offset_mask, mask_w, mask_h, blur * scale, &mut gpu);
-                    draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
-                } else {
-                    let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
-                    draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
-                }
-            }
-        }
-
-        // 3. Outline/stroke — multiple layers (widest first) then legacy single.
-        // width may animate via per-stack-element keyframes, so we
-        // collect evaluated widths up front and sort on those.
-        {
-            let t_secs = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let mut all_outlines: Vec<(f32, &klipp_timeline::TextOutline)> = Vec::new();
-            // Index 0 is the primary outline (always drawn when its
-            // own `enabled` is true). Index >= 1 is the secondary
-            // stack, gated by `outline_stack_enabled` so the user
-            // can hide the whole stack without dropping the data.
-            let fx = title.primary_fx();
-            for (i, ol) in fx.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
-                if i >= 1 && !fx.outline_stack_enabled {
-                    continue;
-                }
-                all_outlines.push((ol.evaluated_width(t_secs), ol));
-            }
-            // Legacy single-outline support is gone — outline data
-            // lives entirely in the object's stack now.
-            all_outlines.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-            // Stroke draw-on: clip the rendered outline horizontally
-            // to a left-anchored fraction of the text bounds. When
-            // `outline_write_on >= 1.0` the cutoff exceeds the text
-            // right edge and every pixel passes — branch-free fast
-            // path. Below 1.0, pixels with global x past the cutoff
-            // are zeroed before draw_mask_to_buf.
             let outline_progress = tb.outline_write_on.clamp(0.0, 1.0);
             let outline_cutoff_x = if outline_progress >= 1.0 {
                 i32::MAX
             } else {
                 (layout.text_left + (layout.text_right - layout.text_left) * outline_progress).floor() as i32
             };
-
-            for (eff_width, outline) in &all_outlines {
-                let dilated = do_dilate(alpha_mask, mask_w, mask_h, *eff_width * scale, &mut gpu);
-                let mut outline_mask = vec![0u8; mask_w * mask_h];
-                for i in 0..outline_mask.len() {
-                    outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
-                }
-                if outline_progress < 1.0 {
-                    for my in 0..mask_h {
-                        for mx in 0..mask_w {
-                            let global_x = (mask_x0 + mx) as i32;
-                            if global_x >= outline_cutoff_x {
-                                outline_mask[my * mask_w + mx] = 0;
-                            }
-                        }
-                    }
-                }
-                draw_mask_to_buf(&mut buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
-            }
+            stack_behind(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, outline_cutoff_x, use_gpu, &mut gpu);
         }
 
         // 4. 3D Text Extrusion (rendered before face text, after outlines)
@@ -1492,43 +1377,98 @@ impl TitleRenderer {
             }
         }
 
-        // 6. Inner shadow stack — rendered front-to-back so the
-        // lowest index reads as nearest the surface. Secondary layers
-        // (index >= 1) are gated by `inner_shadow_stack_enabled`.
+        // 6. What the stack puts inside the face: inner shadows.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let fx = title.primary_fx();
-            for (i, inner) in fx.inner_shadows.iter().enumerate().rev() {
-                if !inner.enabled {
-                    continue;
-                }
-                if i >= 1 && !fx.inner_shadow_stack_enabled {
-                    continue;
-                }
-                let off_x = inner.evaluated_offset_x(t);
-                let off_y = inner.evaluated_offset_y(t);
-                let blur = inner.evaluated_blur(t);
-                let sox = (off_x * scale).round() as i32;
-                let soy = (off_y * scale).round() as i32;
-                let mut inverted = vec![0u8; mask_w * mask_h];
-                for j in 0..inverted.len() {
-                    inverted[j] = 255u8.saturating_sub(alpha_mask[j]);
-                }
-                let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
-                let shadow_mask = if blur > 0.0 {
-                    do_blur(&offset_inv, mask_w, mask_h, blur * scale, &mut gpu)
-                } else {
-                    offset_inv
-                };
-                let mut inner_mask = vec![0u8; mask_w * mask_h];
-                for j in 0..inner_mask.len() {
-                    inner_mask[j] = ((shadow_mask[j] as u16 * alpha_mask[j] as u16) / 255) as u8;
-                }
-                draw_mask_to_buf(&mut buf, &inner_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &inner.color, 1.0);
-            }
+            stack_inside(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, use_gpu, &mut gpu);
         }
 
         to_bytes(&buf)
+    }
+
+    /// A shape's or a picture's layer with its stack and its motion on
+    /// it: what `compose` does for the glyphs, done for any coverage.
+    /// The stack is drawn around and inside the layer's own pixels;
+    /// then the entrance, the exit and the loops pose the dressed layer
+    /// as one — faded, moved, scaled about its centre, softened, or
+    /// shown within its resting rows — with the layer's own height as
+    /// the unit a motion's `distance` is in, as a text's font size is.
+    /// With no time, the layer is at rest and only the stack applies.
+    #[allow(clippy::too_many_arguments)]
+    fn dress_layer(
+        &mut self,
+        layer: Vec<u8>,
+        fx: &LayerFx,
+        width: u32,
+        height: u32,
+        time_secs: Option<f32>,
+        window: Option<f32>,
+        gpu: &mut Option<&mut dyn AlphaMaskProcessor>,
+    ) -> Vec<u8> {
+        use klipp_core::title_motion::{eval_loops, LoopGeometry};
+        let (w, h) = (width as usize, height as usize);
+        let Some((x0, y0, x1, y1)) = layer_bounds(&layer, width, height) else { return layer };
+        let scale = height as f32 / 1080.0;
+
+        // The pose, on the numbers: entrance and exit combined, then
+        // the loops on top. (alpha, dx, dy, scale, blur sigma, clip)
+        let mut pose = (1.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, false);
+        if let Some(t) = time_secs {
+            let unit_px = (y1 - y0) as f32;
+            let motion = whole_layer_motion(&fx.motion);
+            if motion.is_active() {
+                let (pe, px) = motion.progress(t, window, 0);
+                let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+                let a = motion.enter.map(|m| m.pose(pe, unit_px)).unwrap_or(rest);
+                let b = motion.exit.map(|m| m.pose(px, unit_px)).unwrap_or(rest);
+                pose = (a.0 * b.0, a.1 + b.1, a.2 + b.2, a.3 * b.3, a.4.max(b.4), a.5 || b.5);
+            }
+            if !fx.loops.is_empty() {
+                let geo = LoopGeometry { frame_w: w as f32, frame_h: h as f32, text_w: (x1 - x0) as f32, text_h: unit_px, font_px: unit_px };
+                let lp = eval_loops(&fx.loops, t, window, geo, [255, 255, 255, 255]);
+                pose.0 *= lp.opacity;
+                pose.1 += lp.dx;
+                pose.2 += lp.dy;
+            }
+        }
+
+        // The stack, around and inside the layer's own coverage.
+        let mut layer = layer;
+        if stack_draws(fx) {
+            let pad = stack_reach(fx, scale);
+            let (mx0, my0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
+            let (mx1, my1) = ((x1 + pad).min(w), (y1 + pad).min(h));
+            let (mw, mh) = (mx1 - mx0, my1 - my0);
+            let mut mask = vec![0u8; mw * mh];
+            for my in 0..mh {
+                for mx in 0..mw {
+                    mask[my * mw + mx] = layer[((my0 + my) * w + mx0 + mx) * 4 + 3];
+                }
+            }
+            let use_gpu = gpu.is_some() && mw * mh > 250_000;
+            let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
+            let mut buf = vec![0f32; w * h * 4];
+            stack_behind(&mut buf, &mask, mw, mh, mx0, my0, w, h, fx, scale, t, i32::MAX, use_gpu, gpu);
+            for (i, px) in layer.chunks_exact(4).enumerate() {
+                if px[3] > 0 {
+                    blend_pixel(&mut buf, i * 4, &[px[0], px[1], px[2], px[3]]);
+                }
+            }
+            stack_inside(&mut buf, &mask, mw, mh, mx0, my0, w, h, fx, scale, t, use_gpu, gpu);
+            layer = to_bytes(&buf);
+        }
+
+        // Then the pose, on the dressed layer.
+        if pose.4 > 0.5 {
+            blur_rgba(&mut layer, width, height, pose.4);
+        }
+        let at_rest = (pose.0 - 1.0).abs() < 1e-6 && pose.1.abs() < 0.5 && pose.2.abs() < 0.5 && (pose.3 - 1.0).abs() < 1e-6 && !pose.5;
+        if !at_rest {
+            let anchor = ((x0 + x1) as f32 * 0.5, (y0 + y1) as f32 * 0.5);
+            let rows = if pose.5 { (y0 as u32, y1 as u32) } else { (0, height) };
+            layer = pose_sprite(&layer, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, rows);
+        }
+        layer
     }
 
     /// Render a `TitleData` to an RGBA buffer of `width x height` pixels (backward compat).
@@ -1676,7 +1616,8 @@ impl TitleRenderer {
         // window; at rest the render is the resting one and cacheable.
         let window = self.motion_window;
         let motion_live = |o: &TitleObject| -> bool {
-            let TitleObjectContent::TextBox(tb) = &o.content else { return false };
+            // A shape or a picture moves as one: no stagger, one unit.
+            let text = match &o.content { TitleObjectContent::TextBox(tb) => tb.text.as_str(), _ => "" };
             let fx = o.fx();
             // How long a motion runs: its own time, plus the stagger of
             // its last unit — and only when it staggers. The stagger time
@@ -1687,9 +1628,9 @@ impl TitleRenderer {
             let units = |m: &klipp_timeline::Motion| -> f32 {
                 match m.stagger {
                     klipp_timeline::StaggerUnit::None => 0.0,
-                    klipp_timeline::StaggerUnit::Line => tb.text.lines().count().max(1) as f32,
-                    klipp_timeline::StaggerUnit::Word => tb.text.split_whitespace().count().max(1) as f32,
-                    klipp_timeline::StaggerUnit::Char => tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Line => text.lines().count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Word => text.split_whitespace().count().max(1) as f32,
+                    klipp_timeline::StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count().max(1) as f32,
                 }
             };
             let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + units(m) * m.stagger_secs + 0.05;
@@ -1830,7 +1771,13 @@ impl TitleRenderer {
         });
         let any_outline_keyframes = title.objects.iter().any(|o| o.fx().outlines.iter().any(|ol| !ol.width_keyframes.is_empty()));
 
-        let any_render_time_override = any_path_motion || any_char_anim
+        // A shape or a picture with a live entrance, exit or loop is
+        // posed on its own layer at raster time, so its frame is its
+        // time's and the resting render cannot stand in for it.
+        let any_dressed_motion = title.objects.iter().any(|o| {
+            o.visible && !matches!(o.content, TitleObjectContent::TextBox(_)) && (motion_live(o) || !o.fx().loops.is_empty())
+        });
+        let any_render_time_override = any_path_motion || any_char_anim || any_dressed_motion
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes
@@ -1949,19 +1896,9 @@ impl TitleRenderer {
         // position keyframes evaluate against this time inside
         // `render_inner`, and per-effect keyframes (e.g. TextGlow
         // radius/intensity) sample inside `compose`.
-        let time_arg = if any_path_motion || any_char_anim
-            || any_glitch_active
-            || any_position_keyframes
-            || any_glow_keyframes
-            || any_shadow_keyframes
-            || any_inner_shadow_keyframes
-            || any_extrusion_keyframes
-            || any_outline_keyframes
-        {
-            Some(time_secs)
-        } else {
-            None
-        };
+        // The one decision, made once above: a frame that depends on
+        // its time is rastered at its time.
+        let time_arg = any_render_time_override.then_some(time_secs);
         let out = self.render_inner(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
         self.last_rows = alpha_rows(&out, width, height);
@@ -1986,6 +1923,8 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: Option<f32>,
     ) -> Vec<u8> {
+        // The clip's length, for a layer's exit and loops.
+        let window = self.motion_window;
         // The GPU alpha-mask processor is consumable: we use it for
         // the first TextBox layer (the most common case is one text
         // object per title — credits, lower-third title, single-line
@@ -2071,7 +2010,17 @@ impl TitleRenderer {
                         let Some(fitted) = self.resolved_shape_fit(title, fit, width, height, time_secs) else { continue };
                         effective_transform = fitted;
                     }
-                    if (obj.opacity - 1.0).abs() < 0.001 {
+                    let fx = obj.fx();
+                    if !fx.is_default() {
+                        // The layer, then its stack and its pose on it.
+                        let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), None);
+                        let mut layer = self.dress_layer(layer, fx, width, height, time_secs, window, &mut None);
+                        if (obj.opacity - 1.0).abs() >= 0.001 {
+                            scale_layer_alpha(&mut layer, obj.opacity);
+                        }
+                        over_blend(&mut buf, &layer);
+                    } else if (obj.opacity - 1.0).abs() < 0.001 {
                         paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
                     } else {
                         // Render the shape into a fresh transparent
@@ -2088,6 +2037,9 @@ impl TitleRenderer {
                     if let Some(decoded) = self.decoded_image(img) {
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
                         paint_image_layer(&mut layer, &decoded, img.fit, &effective_transform, width, height);
+                        if !obj.fx().is_default() {
+                            layer = self.dress_layer(layer, obj.fx(), width, height, time_secs, window, &mut None);
+                        }
                         if (obj.opacity - 1.0).abs() >= 0.001 {
                             scale_layer_alpha(&mut layer, obj.opacity);
                         }
@@ -4260,6 +4212,284 @@ fn rasterize_to_mask_motion(
 
 /// Draw an alpha mask onto an RGBA buffer using a given color and intensity.
 #[allow(clippy::too_many_arguments)]
+/// A mask blurred by `radius`: on the GPU when a processor is in hand
+/// and the mask is large enough to be worth the trip, else on the CPU.
+fn mask_blur(mask: &[u8], mw: usize, mh: usize, radius: f32, use_gpu: bool, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Vec<u8> {
+    if use_gpu {
+        if let Some(g) = gpu.as_deref_mut() {
+            return g.blur(mask, mw as u32, mh as u32, radius);
+        }
+    }
+    blur_alpha(mask, mw, mh, radius)
+}
+
+/// A mask grown by `radius`, on the GPU or the CPU as [`mask_blur`].
+fn mask_dilate(mask: &[u8], mw: usize, mh: usize, radius: f32, use_gpu: bool, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Vec<u8> {
+    if use_gpu {
+        if let Some(g) = gpu.as_deref_mut() {
+            return g.dilate(mask, mw as u32, mh as u32, radius);
+        }
+    }
+    dilate_alpha(mask, mw, mh, radius)
+}
+
+/// What a layer's stack puts behind its face, drawn from the layer's
+/// coverage `mask` into `buf`, back to front: the glows, largest radius
+/// first; the drop shadows, highest index first; the outlines, widest
+/// first. Secondary layers of each stack are gated by the stack's
+/// enabled flag; the primary by its own. The mask is any layer's — the
+/// glyphs of a text, the fill of a shape, the pixels of a picture — so
+/// the stacks are the same stacks whatever carries them.
+/// `outline_cutoff_x` clips the outlines at a frame x (a text's stroke
+/// draw-on); `i32::MAX` lets every pixel pass.
+#[allow(clippy::too_many_arguments)]
+fn stack_behind(
+    buf: &mut [f32],
+    mask: &[u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    w: usize,
+    h: usize,
+    fx: &LayerFx,
+    scale: f32,
+    t: f64,
+    outline_cutoff_x: i32,
+    use_gpu: bool,
+    gpu: &mut Option<&mut dyn AlphaMaskProcessor>,
+) {
+    // 1. Outer glow stack — largest radius first so the tighter glows
+    // read on top. radius/intensity may animate via keyframes.
+    let mut active_glows: Vec<(f32, f32, &klipp_timeline::TextGlow)> = fx
+        .glows
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.enabled)
+        .filter(|(i, _)| *i == 0 || fx.glow_stack_enabled)
+        .map(|(_, g)| (g.evaluated_radius(t), g.evaluated_intensity(t), g))
+        .collect();
+    active_glows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (radius, intensity, glow) in &active_glows {
+        let blurred = mask_blur(mask, mask_w, mask_h, *radius * scale, use_gpu, gpu);
+        draw_mask_to_buf(buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, *intensity);
+    }
+
+    // 2. Drop shadow stack — back to front (highest index first) so the
+    // lowest index reads as nearest the face.
+    for (i, shadow) in fx.shadows.iter().enumerate().rev() {
+        if !shadow.enabled || (i >= 1 && !fx.shadow_stack_enabled) {
+            continue;
+        }
+        let sox = (shadow.evaluated_offset_x(t) * scale).round() as i32;
+        let soy = (shadow.evaluated_offset_y(t) * scale).round() as i32;
+        let blur = shadow.evaluated_blur(t);
+        let offset_mask = offset_alpha(mask, mask_w, mask_h, sox, soy);
+        if blur > 0.0 {
+            let blurred = mask_blur(&offset_mask, mask_w, mask_h, blur * scale, use_gpu, gpu);
+            draw_mask_to_buf(buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+        } else {
+            draw_mask_to_buf(buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+        }
+    }
+
+    // 3. Outlines — widest first. Width may animate, so the evaluated
+    // widths are collected up front and sorted on.
+    let mut all_outlines: Vec<(f32, &klipp_timeline::TextOutline)> = fx
+        .outlines
+        .iter()
+        .enumerate()
+        .filter(|(i, o)| o.enabled && (*i == 0 || fx.outline_stack_enabled))
+        .map(|(_, o)| (o.evaluated_width(t), o))
+        .collect();
+    all_outlines.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (eff_width, outline) in &all_outlines {
+        let dilated = mask_dilate(mask, mask_w, mask_h, *eff_width * scale, use_gpu, gpu);
+        let mut outline_mask: Vec<u8> = dilated.iter().zip(mask).map(|(d, m)| d.saturating_sub(*m)).collect();
+        if outline_cutoff_x != i32::MAX {
+            for my in 0..mask_h {
+                for mx in 0..mask_w {
+                    if (mask_x0 + mx) as i32 >= outline_cutoff_x {
+                        outline_mask[my * mask_w + mx] = 0;
+                    }
+                }
+            }
+        }
+        draw_mask_to_buf(buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
+    }
+}
+
+/// What a layer's stack puts inside its face: the inner shadows, front
+/// to back so the lowest index reads as nearest the surface. Drawn over
+/// the face, within its coverage only.
+#[allow(clippy::too_many_arguments)]
+fn stack_inside(
+    buf: &mut [f32],
+    mask: &[u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    w: usize,
+    h: usize,
+    fx: &LayerFx,
+    scale: f32,
+    t: f64,
+    use_gpu: bool,
+    gpu: &mut Option<&mut dyn AlphaMaskProcessor>,
+) {
+    for (i, inner) in fx.inner_shadows.iter().enumerate().rev() {
+        if !inner.enabled || (i >= 1 && !fx.inner_shadow_stack_enabled) {
+            continue;
+        }
+        let sox = (inner.evaluated_offset_x(t) * scale).round() as i32;
+        let soy = (inner.evaluated_offset_y(t) * scale).round() as i32;
+        let blur = inner.evaluated_blur(t);
+        let inverted: Vec<u8> = mask.iter().map(|m| 255u8.saturating_sub(*m)).collect();
+        let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
+        let shadow_mask = if blur > 0.0 { mask_blur(&offset_inv, mask_w, mask_h, blur * scale, use_gpu, gpu) } else { offset_inv };
+        let inner_mask: Vec<u8> = shadow_mask.iter().zip(mask).map(|(s, m)| ((*s as u16 * *m as u16) / 255) as u8).collect();
+        draw_mask_to_buf(buf, &inner_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &inner.color, 1.0);
+    }
+}
+
+/// Whether a stack draws anything around or inside its layer.
+fn stack_draws(fx: &LayerFx) -> bool {
+    fx.glows.iter().enumerate().any(|(i, g)| g.enabled && (i == 0 || fx.glow_stack_enabled))
+        || fx.shadows.iter().enumerate().any(|(i, s)| s.enabled && (i == 0 || fx.shadow_stack_enabled))
+        || fx.outlines.iter().enumerate().any(|(i, o)| o.enabled && (i == 0 || fx.outline_stack_enabled))
+        || fx.inner_shadows.iter().enumerate().any(|(i, s)| s.enabled && (i == 0 || fx.inner_shadow_stack_enabled))
+}
+
+/// How far, in frame pixels, a stack reaches beyond its layer's
+/// coverage at worst: the widest glow, the farthest shadow with its
+/// blur, the widest outline — the padding a working mask needs.
+fn stack_reach(fx: &LayerFx, scale: f32) -> usize {
+    let worst = |v: f32, keys: &[klipp_core::Keyframe]| keys.iter().map(|k| k.value).fold(v, f32::max);
+    let mut reach = 0.0f32;
+    for g in fx.glows.iter().filter(|g| g.enabled) {
+        reach = reach.max(worst(g.radius, &g.radius_keyframes) * 3.0);
+    }
+    for s in fx.shadows.iter().filter(|s| s.enabled) {
+        let ox = worst(s.offset_x.abs(), &s.offset_x_keyframes);
+        let oy = worst(s.offset_y.abs(), &s.offset_y_keyframes);
+        reach = reach.max(ox.max(oy) + worst(s.blur, &s.blur_keyframes) * 3.0);
+    }
+    for o in fx.outlines.iter().filter(|o| o.enabled) {
+        reach = reach.max(worst(o.width, &o.width_keyframes));
+    }
+    (reach * scale).ceil().max(1.0) as usize
+}
+
+/// The rows and columns of a frame-sized RGBA8 layer that carry any
+/// alpha, as `(x0, y0, x1, y1)` with exclusive ends; `None` for an empty
+/// layer.
+fn layer_bounds(layer: &[u8], width: u32, height: u32) -> Option<(usize, usize, usize, usize)> {
+    let (y0, y1) = alpha_rows(layer, width, height);
+    if y1 <= y0 {
+        return None;
+    }
+    let (x0, x1) = alpha_cols(layer, width, height, (y0, y1));
+    (x1 > x0).then_some((x0 as usize, y0 as usize, x1 as usize, y1 as usize))
+}
+
+/// A frame-sized RGBA8 layer softened by a Gaussian of `sigma` pixels:
+/// three box passes each way over premultiplied colour, so a blurred
+/// edge does not darken toward the colour of nothing. The soft-in a
+/// `Blur` entrance asks of a shape or a picture.
+fn blur_rgba(layer: &mut [u8], width: u32, height: u32, sigma: f32) {
+    let (w, h) = (width as usize, height as usize);
+    let r = ((sigma / 1.7).round() as usize).max(1);
+    if w == 0 || h == 0 || layer.len() < w * h * 4 {
+        return;
+    }
+    let mut pre: Vec<f32> = layer
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as f32 / 255.0;
+            [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, p[3] as f32]
+        })
+        .collect();
+    let mut tmp = vec![0f32; pre.len()];
+    for _ in 0..3 {
+        // Rows: a running window of 2r+1, clamped at the edges.
+        for y in 0..h {
+            let row = &pre[y * w * 4..(y + 1) * w * 4];
+            let out = &mut tmp[y * w * 4..(y + 1) * w * 4];
+            for c in 0..4 {
+                let mut acc = 0.0f32;
+                for x in 0..=r.min(w - 1) {
+                    acc += row[x * 4 + c];
+                }
+                let mut n = (r.min(w - 1) + 1) as f32;
+                for x in 0..w {
+                    out[x * 4 + c] = acc / n;
+                    if x + r + 1 < w {
+                        acc += row[(x + r + 1) * 4 + c];
+                        n += 1.0;
+                    }
+                    if x >= r {
+                        acc -= row[(x - r) * 4 + c];
+                        n -= 1.0;
+                    }
+                }
+            }
+        }
+        // Columns.
+        for x in 0..w {
+            for c in 0..4 {
+                let mut acc = 0.0f32;
+                for y in 0..=r.min(h - 1) {
+                    acc += tmp[(y * w + x) * 4 + c];
+                }
+                let mut n = (r.min(h - 1) + 1) as f32;
+                for y in 0..h {
+                    pre[(y * w + x) * 4 + c] = acc / n;
+                    if y + r + 1 < h {
+                        acc += tmp[((y + r + 1) * w + x) * 4 + c];
+                        n += 1.0;
+                    }
+                    if y >= r {
+                        acc -= tmp[((y - r) * w + x) * 4 + c];
+                        n -= 1.0;
+                    }
+                }
+            }
+        }
+    }
+    for (p, q) in layer.chunks_exact_mut(4).zip(pre.chunks_exact(4)) {
+        let a = q[3] / 255.0;
+        if a > 0.0 {
+            p[0] = (q[0] / a).round().clamp(0.0, 255.0) as u8;
+            p[1] = (q[1] / a).round().clamp(0.0, 255.0) as u8;
+            p[2] = (q[2] / a).round().clamp(0.0, 255.0) as u8;
+        } else {
+            p[0] = 0;
+            p[1] = 0;
+            p[2] = 0;
+        }
+        p[3] = q[3].round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// A layer's motion as a shape or a picture takes it: as one, with no
+/// stagger — a stagger is per glyph, and a layer that is not glyphs has
+/// nothing to stagger. Authoring refuses one; data that arrives with one
+/// anyway is played whole, and the log says so once.
+fn whole_layer_motion(motion: &klipp_timeline::TitleMotion) -> klipp_timeline::TitleMotion {
+    let whole = |m: Option<klipp_timeline::Motion>| {
+        m.map(|mut m| {
+            if m.stagger != klipp_timeline::StaggerUnit::None {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| tracing::warn!("a shape or picture layer has a staggered motion; a layer that is not glyphs moves as one"));
+                m.stagger = klipp_timeline::StaggerUnit::None;
+            }
+            m
+        })
+    };
+    klipp_timeline::TitleMotion { enter: whole(motion.enter), exit: whole(motion.exit) }
+}
+
 fn draw_mask_to_buf(
     buf: &mut [f32],
     mask: &[u8],
