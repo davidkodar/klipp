@@ -2,6 +2,7 @@ use crate::id::{BinId, ClipId, GroupId, MarkerId, MediaId, TrackId};
 use crate::modifier::{Modifier, ParamId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
+use crate::TemplateValue;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -1883,6 +1884,8 @@ pub enum AppCommand {
     /// current playhead. The app resolves the template metadata and records
     /// the resulting clip through the normal edit history.
     InsertCompositionTemplate { template_id: uuid::Uuid },
+    /// Change one exposed value on an inserted composition template.
+    SetTemplateOverride { clip_id: ClipId, parameter: String, value: TemplateValue },
     /// Open the dialog that saves a title clip as a user template in
     /// the Titles browser.
     SaveTitleTemplate { clip_id: ClipId },

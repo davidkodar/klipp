@@ -7552,6 +7552,60 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
+                    let selected = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
+                        .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                            klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, template_instance } => Some((*sequence_id, template_instance.clone())),
+                            _ => None,
+                        });
+                    let Some((sequence_id, old)) = selected else { return true };
+                    let Some(template) = self.state.composition_templates.templates().find(|template| template.id == old.template_id) else {
+                        self.state.toast.show("This template is not available in the local library");
+                        return true;
+                    };
+                    let Some(parameter_def) = template.parameters.get(parameter) else {
+                        self.state.toast.show(format!("Unknown template parameter '{parameter}'"));
+                        return true;
+                    };
+                    if let Err(error) = parameter_def.validate(value) {
+                        self.state.toast.show(error);
+                        return true;
+                    }
+                    let mut new = old.clone();
+                    new.overrides.insert(parameter.clone(), value.clone());
+                    let Some(template_sequence) = self.state.sequences.iter().find(|sequence| sequence.id == sequence_id) else {
+                        self.state.toast.show("Template composition is missing");
+                        return true;
+                    };
+                    if let Err(error) = klipp_timeline::flatten::validate_template_instance(&new, template_sequence) {
+                        self.state.toast.show(error);
+                        return true;
+                    }
+                    if old != new {
+                        if let Some((ti, ci)) = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id) {
+                            if let klipp_timeline::ClipKind::TemplatePrecomposition { template_instance, .. } = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
+                                *template_instance = new.clone();
+                            }
+                        }
+                        let cid = *clip_id;
+                        let history = self.state.active_history_mut();
+                        let merged = history.merge_into_last(|last| match last {
+                            crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: last_parameter, new: last_new, .. } if *clip_id == cid && last_parameter == parameter => {
+                                **last_new = new.clone();
+                                true
+                            }
+                            _ => false,
+                        });
+                        if !merged {
+                            history.push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, parameter: parameter.clone(), old: Box::new(old), new: Box::new(new) },
+                            });
+                        }
+                        self.sync_sequence_to_engine();
+                        self.state.dirty = true;
+                    }
+                    true
+                }
                 AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
                     if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
                         let old = seq.camera.clone();
