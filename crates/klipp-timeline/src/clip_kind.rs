@@ -80,6 +80,20 @@ pub enum ClipKind {
     Generator(GeneratorData),
     /// Adjustment layer — transparent clip that applies its effects to all clips below.
     AdjustmentLayer,
+    /// A sequence composed in isolation and laid in as one picture. Its
+    /// tracks, camera and masks resolve on a transparent surface of their
+    /// own, in the working space; the clip's transform, opacity, grade and
+    /// effects then apply once to that surface, and the parent camera and
+    /// shutter see one layer. The editorial compound above (`Sequence`) is
+    /// flattened into the parent instead — right for an edit, wrong for a
+    /// scene that must move, fade or blur as one.
+    ///
+    /// A kind of its own, appended after every earlier one so persisted
+    /// files never reorder, rather than a flag on `Sequence`: a reader
+    /// without it must refuse the file by name, not flatten the scene into
+    /// the wrong picture. Child identity at render time is scoped to the
+    /// instance, so one scene can be laid in twice.
+    Precomposition { sequence_id: klipp_core::SequenceId },
 }
 
 // GeneratorData is defined in klipp-core and re-exported here for convenience.
@@ -98,7 +112,8 @@ impl ClipKind {
             ClipKind::Media { .. }
             | ClipKind::Title(_)
             | ClipKind::Generator(_)
-            | ClipKind::Sequence { .. } => true,
+            | ClipKind::Sequence { .. }
+            | ClipKind::Precomposition { .. } => true,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
     }
@@ -108,7 +123,8 @@ impl ClipKind {
     /// (Title, Generator) produce frames directly without one.
     pub fn needs_decoder(&self) -> bool {
         match self {
-            ClipKind::Media { .. } | ClipKind::Sequence { .. } => true,
+            // A precomposition's inner media is decoded like a compound's.
+            ClipKind::Media { .. } | ClipKind::Sequence { .. } | ClipKind::Precomposition { .. } => true,
             ClipKind::Title(_) | ClipKind::Generator(_) => false,
             ClipKind::Gap | ClipKind::AdjustmentLayer => false,
         }
@@ -2202,6 +2218,7 @@ mod tests {
         assert!(ClipKind::Title(TitleData::default()).is_playable());
         assert!(ClipKind::Generator(GeneratorData::default()).is_playable());
         assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.is_playable());
+        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.is_playable());
         assert!(!ClipKind::Gap.is_playable());
         assert!(!ClipKind::AdjustmentLayer.is_playable());
     }
@@ -2210,6 +2227,7 @@ mod tests {
     fn clip_kind_decoder_need() {
         assert!(ClipKind::Media { media_id: MediaId::new() }.needs_decoder());
         assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.needs_decoder());
+        assert!(ClipKind::Precomposition { sequence_id: SequenceId::new() }.needs_decoder());
         assert!(!ClipKind::Title(TitleData::default()).needs_decoder());
         assert!(!ClipKind::Generator(GeneratorData::default()).needs_decoder());
     }

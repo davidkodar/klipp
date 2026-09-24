@@ -1270,6 +1270,7 @@ fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
         ClipKind::AdjustmentLayer => "adjustment layer".into(),
         ClipKind::Gap => "gap".into(),
         ClipKind::Sequence { .. } => "nested sequence".into(),
+        ClipKind::Precomposition { .. } => "precomposition".into(),
     }
     .to_string()
         + &seq.tracks.iter().enumerate().find(|(_, t)| t.clips.iter().any(|c| c.id == clip.id)).map(|(i, _)| format!(" on track {i}")).unwrap_or_default()

@@ -8,6 +8,10 @@
 //! a flat sequence; the exporter does its own per-clip mapping on top of
 //! the same flat output.
 //!
+//! A `ClipKind::Precomposition` is left exactly where it is: it is
+//! composed on its own surface by the renderer, and flattening it would
+//! be the wrong picture that kind exists to rule out.
+//!
 //! # Known limitations
 //!
 //! **Linked clip pairs:** If a compound clip's inner sequence contains
@@ -531,6 +535,31 @@ mod tests {
             0,
         );
         assert_eq!(leaves.len(), 1, "video parent track must yield only video inner clips");
+    }
+
+    /// A precomposition is the one nested kind flattening leaves alone:
+    /// the clip comes through as itself, with its own id, while the
+    /// compound beside it is expanded as before.
+    #[test]
+    fn a_precomposition_is_not_flattened() {
+        let mut child = make_seq("child");
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(media_clip(0, 24, 0, 24));
+        child.tracks.push(tr);
+
+        let mut parent = make_seq("parent");
+        let mut ptr = Track::new("V1", TrackKind::Video);
+        ptr.clips.push(Clip::precomposition(child.id, t(0), t(24)));
+        ptr.clips.push(Clip::sequence(child.id, t(24), t(48)));
+        let precomp_id = ptr.clips[0].id;
+        parent.tracks.push(ptr);
+
+        let flat = flatten_sequence(&parent, &[parent.clone(), child.clone()]);
+        let clips = &flat.tracks[0].clips;
+        assert_eq!(clips.len(), 2, "one precomposition kept, one compound expanded to its one clip");
+        assert!(matches!(clips[0].kind, ClipKind::Precomposition { sequence_id } if sequence_id == child.id));
+        assert_eq!(clips[0].id, precomp_id, "the precomposition keeps its own identity");
+        assert!(matches!(clips[1].kind, ClipKind::Media { .. }), "the compound is flattened as before");
     }
 
     #[test]

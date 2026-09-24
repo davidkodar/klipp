@@ -357,6 +357,7 @@ fn describe(kind: &ClipKind) -> String {
         ClipKind::Generator(_) => "a generator".to_string(),
         ClipKind::AdjustmentLayer => "an adjustment layer".to_string(),
         ClipKind::Sequence { .. } => "a compound clip".to_string(),
+        ClipKind::Precomposition { .. } => "a precomposition".to_string(),
         ClipKind::Media { .. } | ClipKind::Gap => "a clip".to_string(),
     }
 }

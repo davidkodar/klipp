@@ -873,6 +873,12 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 ClipKind::Generator(gen_data)
             }
             ClipKindJson::AdjustmentLayer => ClipKind::AdjustmentLayer,
+            ClipKindJson::Precomposition { sequence_id } => {
+                let sid = parse_uuid(sequence_id)
+                    .map(klipp_core::SequenceId)
+                    .unwrap_or_else(|_| klipp_core::SequenceId::new());
+                ClipKind::Precomposition { sequence_id: sid }
+            }
         };
     }
 

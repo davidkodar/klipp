@@ -216,6 +216,7 @@ pub fn generate_mlt_xml(seq: &Sequence, media_pool: &MediaPool) -> String {
                 | ClipKind::Generator(_)
                 | ClipKind::AdjustmentLayer
                 | ClipKind::Sequence { .. }
+                | ClipKind::Precomposition { .. }
                 | ClipKind::Gap => {
                     xml.push_str(&format!(
                         "    <blank length=\"{}\"/>\n",

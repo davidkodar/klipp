@@ -1866,6 +1866,10 @@ impl Renderer {
                 (GradeInput::Cpu(Arc::new(linear)), None)
             }
             ClipKind::Gap | ClipKind::Sequence { .. } | ClipKind::AdjustmentLayer => return None,
+            // Composed on its own surface by the change that follows this
+            // one. Until then it is an explicit kind that draws nothing —
+            // never a compound flattened into the wrong picture.
+            ClipKind::Precomposition { .. } => return None,
         };
 
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
