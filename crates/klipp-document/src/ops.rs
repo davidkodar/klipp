@@ -2385,15 +2385,15 @@ fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
 /// writing of its own down there (a name plate, a ticker); an outline
 /// alone is lost in it.
 fn caption_title(text: &str) -> klipp_timeline::TitleData {
-    let mut tb = klipp_timeline::TextBox {
+    let tb = klipp_timeline::TextBox {
         text: text.to_string(),
         font_size: 40.0,
         font_name: String::new(),
         alignment: klipp_timeline::TextAlignment::Center,
         ..Default::default()
     };
-    tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
     let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.objects[0].fx_mut().outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
     // Composited in linear light, where an alpha of 0.72 leaves the
     // picture at half its brightness to the eye; 0.92 is what looks
     // like a three-quarters black.
@@ -3724,7 +3724,8 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
             o.transform.center.x = (o.transform.center.x + dx).clamp(0.02, 0.98);
             o.transform.center.y = (o.transform.center.y + dy).clamp(0.02, 0.98);
         }
-        let TitleObjectContent::TextBox(tb) = &mut o.content else { continue };
+        let klipp_timeline::TitleObject { content, fx, .. } = o;
+        let TitleObjectContent::TextBox(tb) = content else { continue };
         if let Some(size) = look.size {
             tb.font_size = (tb.font_size / first_size * size).max(6.0);
         }
@@ -3746,9 +3747,10 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
             tb.alignment = a;
         }
         if let Some(w) = look.outline {
-            tb.outlines.clear();
+            let fx = fx.get_or_insert_with(Default::default);
+            fx.outlines.clear();
             if w > 0.0 {
-                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: w, enabled: true, width_keyframes: Vec::new() });
+                fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: w, enabled: true, width_keyframes: Vec::new() });
             }
         }
     }
@@ -3903,7 +3905,7 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         animation_type: Default::default(),
         background: klipp_timeline::TitleBackground::None,
     };
-    let mut name_box = TextBox {
+    let name_box = TextBox {
         text: name.to_string(),
         font_size: 46.0,
         font_name: "Inter".into(),
@@ -3912,9 +3914,10 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         alignment,
         ..Default::default()
     };
-    name_box.shadows.push(lift.clone());
-    name_box.motion = motion(0.0);
-    td.add_object(TitleObjectContent::TextBox(name_box), at(name_y));
+    let name_id = td.add_object(TitleObjectContent::TextBox(name_box), at(name_y));
+    let name_fx = td.object_mut(name_id).expect("just added").fx_mut();
+    name_fx.shadows.push(lift.clone());
+    name_fx.motion = motion(0.0);
     if let Some(role) = role {
         let mut role_box = TextBox {
             text: role.to_string(),
@@ -3927,9 +3930,10 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         };
         role_box.case_transform = klipp_timeline::TextCase::Uppercase;
         role_box.tracking = 3.0;
-        role_box.shadows.push(lift);
-        role_box.motion = motion(0.1);
-        td.add_object(TitleObjectContent::TextBox(role_box), at(name_y + LOWER_THIRD_ROLE_DROP));
+        let role_id = td.add_object(TitleObjectContent::TextBox(role_box), at(name_y + LOWER_THIRD_ROLE_DROP));
+        let role_fx = td.object_mut(role_id).expect("just added").fx_mut();
+        role_fx.shadows.push(lift);
+        role_fx.motion = motion(0.1);
     }
     td
 }
@@ -3986,6 +3990,9 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     };
 
     let mut tb = TextBox { text: text.to_string(), ..Default::default() };
+    // The layer's stack, authored beside the text and given to its
+    // object once the title is made.
+    let mut fx = klipp_timeline::LayerFx::default();
     if let Some(s) = a.size {
         if !s.is_finite() || !(4.0..=400.0).contains(&s) {
             return Err(refuse(i, format!("size {s} is out of range"), "give size between 4 and 400"));
@@ -4016,14 +4023,14 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             return Err(refuse(i, format!("outline {w} is out of range"), "give an outline width 0 to 40"));
         }
         let color = col(a.outline_color, "the outline")?.unwrap_or([0, 0, 0, 255]);
-        tb.outlines = vec![TextOutline { enabled: true, color, width: w, width_keyframes: Vec::new() }];
+        fx.outlines = vec![TextOutline { enabled: true, color, width: w, width_keyframes: Vec::new() }];
     }
     if let Some(g) = a.glow {
         if !g.is_finite() || !(0.0..=1.0).contains(&g) {
             return Err(refuse(i, format!("glow {g} is out of range"), "give a glow 0 to 1"));
         }
         let color = col(a.glow_color, "the glow")?.unwrap_or(tb.color);
-        tb.glows = vec![TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() }];
+        fx.glows = vec![TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() }];
     }
     if let Some(gr) = a.gradient {
         let top = parse_color(&gr[0]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[0]), "write the gradient colours as #rrggbb"))?;
@@ -4070,22 +4077,23 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             None if matches!(kind, MotionKind::Typewriter) => m = m.stagger(StaggerUnit::Char, 0.04),
             None => {}
         }
-        tb.motion = TitleMotion::enter(m);
+        fx.motion = TitleMotion::enter(m);
     }
     if let Some(lp) = a.loop_effect {
         let l = match lp.to_lowercase().as_str() {
             "pulse" | "breathe" => TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
             "flash" | "blink" => TitleLoop::Blink { rate_hz: 2.0, duty: 0.6 },
-            "neon" => TitleLoop::ColorBlend { color_a: tb.color, color_b: tb.glows.first().map(|g| g.color).unwrap_or([255, 40, 120, 255]), rate_hz: 1.5 },
+            "neon" => TitleLoop::ColorBlend { color_a: tb.color, color_b: fx.glows.first().map(|g| g.color).unwrap_or([255, 40, 120, 255]), rate_hz: 1.5 },
             "wave" => TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
             "shake" => TitleLoop::Shake { amplitude: 0.04, rate_hz: 10.0 },
             "color_cycle" | "colour_cycle" | "rainbow" => TitleLoop::ColorCycle { rate_hz: 0.4 },
             other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake or color_cycle")),
         };
-        tb.loops = vec![l];
+        fx.loops = vec![l];
     }
 
     let mut td = TitleData::single_text(tb);
+    td.objects[0].fx = Some(fx);
     if a.x.is_some() || a.y.is_some() {
         if let Some(obj) = td.objects.get_mut(0) {
             // Inside the title-safe area: nothing sits on the frame's edge,
@@ -4495,7 +4503,7 @@ mod tests {
         assert_eq!(tb.font_size, 28.0);
         assert_eq!(tb.color, [255, 102, 0, 255]);
         assert!((td.objects[0].transform.center.y - 0.12).abs() < 1e-6);
-        assert!(matches!(tb.motion.enter.map(|m| m.kind), Some(klipp_core::title_motion::MotionKind::Drop)));
+        assert!(matches!(td.objects[0].fx().motion.enter.map(|m| m.kind), Some(klipp_core::title_motion::MotionKind::Drop)));
         // Its own size wins over the look's.
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), Some(40.0))]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!() };
@@ -5268,10 +5276,10 @@ mod tests {
         assert!(created_track, "a text track is made when there is none");
         let td = clip.title_data().unwrap();
         assert_eq!(td.text(), "STRATA");
-        let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text box") };
-        assert!(!tb.glows.is_empty(), "the neon glow landed");
-        assert!(tb.motion.enter.is_some(), "the entrance landed");
-        assert!(!tb.loops.is_empty(), "the pulse loop landed");
+        let fx = td.objects[0].fx();
+        assert!(!fx.glows.is_empty(), "the neon glow landed");
+        assert!(fx.motion.enter.is_some(), "the entrance landed");
+        assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
         assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, style: None }]).is_err());
@@ -5466,7 +5474,7 @@ mod tests {
         let look = |c: &Clip| {
             let td = c.title_data().unwrap();
             let klipp_timeline::TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text") };
-            (tb.font_size, tb.color, tb.outlines.len(), td.objects[0].transform.center.y, td.background.clone())
+            (tb.font_size, tb.color, td.objects[0].fx().outlines.len(), td.objects[0].transform.center.y, td.background.clone())
         };
         let (size, color, outlines, y0, backing) = look(&caps[0]);
         assert_eq!((size, color, outlines), (48.0, [0xff, 0xe1, 0x4d, 255], 0));

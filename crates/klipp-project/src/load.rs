@@ -252,7 +252,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
                         }
                     }
                 }
-                if let Some(ClipKindJson::VectorTitle { title_data }) = &clip.kind {
+                if let Some(ClipKindJson::VectorTitle { title_data } | ClipKindJson::TitleV2 { title_data }) = &clip.kind {
                     for object in &title_data.objects {
                         if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {
                             if let klipp_timeline::ShapeKind::Path(path) = &shape.kind {
@@ -323,7 +323,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
                 continue;
             }
         };
-        let data: klipp_timeline::TitleData =
+        let mut data: klipp_timeline::TitleData =
             match serde_json::from_value(entry.data.clone()) {
                 Ok(d) => d,
                 Err(e) => {
@@ -334,6 +334,12 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
                     continue;
                 }
             };
+        // An asset is a title like any other: its layers' stacks are
+        // made explicit and the old text-box fields hoisted, once.
+        let fx = data.migrate_fx();
+        if fx.dropped_legacy > 0 {
+            tracing::warn!("title_asset {:?}: {} text box(es) had old effect fields beside a layer stack; the stack wins", entry.id, fx.dropped_legacy);
+        }
         title_assets.insert(
             id,
             klipp_timeline::TitleAsset {
@@ -553,6 +559,14 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 // keyframes the old kinds baked onto the clip go
                 // with them, since the loops now do the moving.
                 if let ClipKind::Title(td) = &mut clip.kind {
+                    // The layer stacks first: an object from before they
+                    // existed takes its text box's old fields; a text box
+                    // with old fields beside an explicit stack loses them
+                    // to it, and the log says so.
+                    let fx = td.migrate_fx();
+                    if fx.dropped_legacy > 0 {
+                        warn!("title {}: {} text box(es) had old effect fields beside a layer stack; the stack wins", clip.id, fx.dropped_legacy);
+                    }
                     let m = td.migrate_legacy_animation();
                     if m.clear_clip_keyframes {
                         clip.opacity_keyframes.clear();
@@ -691,6 +705,11 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     if let Some(kind_json) = &c.kind {
         return match kind_json {
             ClipKindJson::VectorTitle {title_data} => { let mut td=title_data.clone();resolve_title_paths(&mut td,project_dir);ClipKind::Title(td) },
+            ClipKindJson::TitleV2 { title_data } => {
+                let mut td = title_data.clone();
+                resolve_title_paths(&mut td, project_dir);
+                ClipKind::Title(td)
+            }
             ClipKindJson::Media { media_id } => {
                 let mid = parse_uuid(media_id)
                     .map(MediaId)
@@ -815,23 +834,30 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                         outlines_vec.insert(0, o);
                     }
                 }
+                // The flat fields are the old text-box shape; they go in
+                // as that shape and the object takes them when the text
+                // box is wrapped (`single_text` → `add_object`).
                 let tb = klipp_timeline::TextBox {
                     text: text.clone(),
                     font_size: *font_size,
                     font_name: font_name.clone(),
                     font_style: fs,
                     color: *color,
-                    motion: Default::default(),
                     alignment: align,
-                    shadows: shadow_vec,
-                    shadow_stack_enabled: *shadow_stack_enabled,
-                    outlines: outlines_vec,
-                    outline_stack_enabled: *outline_stack_enabled,
-                    glows: glow_vec,
-                    glow_stack_enabled: *glow_stack_enabled,
+                    legacy_fx: klipp_timeline::LegacyTextFx {
+                        shadows: shadow_vec,
+                        shadow_stack_enabled: *shadow_stack_enabled,
+                        outlines: outlines_vec,
+                        outline_stack_enabled: *outline_stack_enabled,
+                        glows: glow_vec,
+                        glow_stack_enabled: *glow_stack_enabled,
+                        inner_shadows: inner_shadow_vec,
+                        inner_shadow_stack_enabled: *inner_shadow_stack_enabled,
+                        motion: Default::default(),
+                        loops: Vec::new(),
+                        motion_blur: mb,
+                    },
                     gradient: gr,
-                    inner_shadows: inner_shadow_vec,
-                    inner_shadow_stack_enabled: *inner_shadow_stack_enabled,
                     pattern_fill: pf,
                     pattern_fill_enabled: true,
                     tracking: *tracking,
@@ -840,7 +866,6 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
-                    loops: Vec::new(),
                     // Prefer the new TextureFill struct when present
                     // (post-migration saves). Fall back to the legacy
                     // bare path for old projects, synthesizing a
@@ -867,7 +892,6 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                             })
                         }
                     },
-                    motion_blur: mb,
                     style_runs: sr,
                     ass_style_name: None,
                     underline: false,

@@ -353,6 +353,193 @@ pub struct TitleObject {
     #[serde(default = "default_one_f32")]
     pub opacity: f32,
     pub content: TitleObjectContent,
+    /// The layer's motion and effect stacks. `None` only in a file
+    /// written before this field existed: the loader migrates it to
+    /// `Some` (see [`TitleData::migrate_fx`]) before anything renders,
+    /// and the renderer reads it through [`TitleObject::fx`] and
+    /// nowhere else. `Some(LayerFx::default())` is an explicitly empty
+    /// stack and is written as such.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<LayerFx>,
+}
+
+/// What every object can carry, because it is the object that moves
+/// and glows, not its text. A text box carried these alone until now;
+/// a shape or a picture could be moved and nothing else. The glyph
+/// machinery is unchanged — a text layer's `motion` still staggers per
+/// character, word or line — and a non-text layer takes the pose as a
+/// whole, arriving after its neighbours by `Motion::delay_secs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayerFx {
+    /// Entrance and exit motion.
+    #[serde(default, skip_serializing_if = "motion_is_still")]
+    pub motion: TitleMotion,
+    /// What the layer keeps doing while on screen: blink, pulse,
+    /// shake, wave, colour cycle, scroll, crawl, counter. All of them
+    /// run at once, on top of the entrance and exit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<TitleLoop>,
+    /// Glow stack, rendered front-to-back so the lowest index is on top.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub glows: Vec<TextGlow>,
+    /// Soft-disable for the secondary glow stack (`glows[1..]`): the
+    /// primary is gated by its own `enabled`. The data is preserved
+    /// across re-enable.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub glow_stack_enabled: bool,
+    /// Drop shadow layers, front-to-back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<TitleShadow>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub shadow_stack_enabled: bool,
+    /// Outline/stroke layers, rendered widest-first, back-to-front.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outlines: Vec<TextOutline>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub outline_stack_enabled: bool,
+    /// Inner shadow stack, front-to-back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inner_shadows: Vec<InnerShadow>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub inner_shadow_stack_enabled: bool,
+    /// Motion blur (`None` = off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_blur: Option<MotionBlur>,
+}
+
+fn motion_is_still(m: &TitleMotion) -> bool {
+    !m.is_active()
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// A still layer with nothing on it: what an object without an
+/// authored stack reads as, so a reader never has to ask twice.
+static STILL_FX: LayerFx = LayerFx {
+    motion: TitleMotion { enter: None, exit: None },
+    loops: Vec::new(),
+    glows: Vec::new(),
+    glow_stack_enabled: true,
+    shadows: Vec::new(),
+    shadow_stack_enabled: true,
+    outlines: Vec::new(),
+    outline_stack_enabled: true,
+    inner_shadows: Vec::new(),
+    inner_shadow_stack_enabled: true,
+    motion_blur: None,
+};
+
+/// A fresh layer's stack is the still one: nothing on it, every
+/// secondary stack enabled — the flags default to on, as they always
+/// did, so a derived `Default` would be the wrong stack.
+impl Default for LayerFx {
+    fn default() -> Self {
+        STILL_FX.clone()
+    }
+}
+
+impl LayerFx {
+    /// Nothing authored: the stack a fresh layer has.
+    pub fn is_default(&self) -> bool {
+        *self == STILL_FX
+    }
+}
+
+impl TitleObject {
+    /// The layer's stack — the one place the renderer reads it from.
+    /// An object from before the field existed reads as still until
+    /// the loader migrates it.
+    pub fn fx(&self) -> &LayerFx {
+        self.fx.as_ref().unwrap_or(&STILL_FX)
+    }
+
+    /// The layer's stack, to edit: an object without one gets an
+    /// explicitly empty one to edit into.
+    pub fn fx_mut(&mut self) -> &mut LayerFx {
+        self.fx.get_or_insert_with(LayerFx::default)
+    }
+}
+
+/// The seven effect groups as a text box carried them before they moved
+/// to the object — a reader's shape, kept so every file and payload
+/// that ever wrote them still reads, and nothing else: it is never
+/// written, and the renderer never looks at it. [`TitleData::migrate_fx`]
+/// hoists it onto the owning object and empties it; that is the only
+/// reader it has. Retained until a supported-format policy retires the
+/// old shape, which a release passing does not do.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LegacyTextFx {
+    #[serde(default)]
+    pub shadows: Vec<TitleShadow>,
+    #[serde(default = "default_true")]
+    pub shadow_stack_enabled: bool,
+    #[serde(default)]
+    pub outlines: Vec<TextOutline>,
+    #[serde(default = "default_true")]
+    pub outline_stack_enabled: bool,
+    #[serde(default)]
+    pub glows: Vec<TextGlow>,
+    #[serde(default = "default_true")]
+    pub glow_stack_enabled: bool,
+    #[serde(default)]
+    pub inner_shadows: Vec<InnerShadow>,
+    #[serde(default = "default_true")]
+    pub inner_shadow_stack_enabled: bool,
+    #[serde(default)]
+    pub motion: TitleMotion,
+    #[serde(default)]
+    pub loops: Vec<TitleLoop>,
+    #[serde(default)]
+    pub motion_blur: Option<MotionBlur>,
+}
+
+/// Empty old fields, with the stack flags on as the old text box had
+/// them — what a text box that has been through the loader carries.
+impl Default for LegacyTextFx {
+    fn default() -> Self {
+        Self::default_authored()
+    }
+}
+
+impl LegacyTextFx {
+    /// Nothing in the old fields.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default_authored()
+    }
+
+    fn default_authored() -> Self {
+        Self {
+            shadows: Vec::new(),
+            shadow_stack_enabled: true,
+            outlines: Vec::new(),
+            outline_stack_enabled: true,
+            glows: Vec::new(),
+            glow_stack_enabled: true,
+            inner_shadows: Vec::new(),
+            inner_shadow_stack_enabled: true,
+            motion: TitleMotion::default(),
+            loops: Vec::new(),
+            motion_blur: None,
+        }
+    }
+
+    /// The old fields as the object's stack.
+    pub fn into_fx(self) -> LayerFx {
+        LayerFx {
+            motion: self.motion,
+            loops: self.loops,
+            glows: self.glows,
+            glow_stack_enabled: self.glow_stack_enabled,
+            shadows: self.shadows,
+            shadow_stack_enabled: self.shadow_stack_enabled,
+            outlines: self.outlines,
+            outline_stack_enabled: self.outline_stack_enabled,
+            inner_shadows: self.inner_shadows,
+            inner_shadow_stack_enabled: self.inner_shadow_stack_enabled,
+            motion_blur: self.motion_blur,
+        }
+    }
 }
 
 fn default_one_f32() -> f32 { 1.0 }
@@ -436,47 +623,17 @@ pub struct TextBox {
     pub font_style: FontStyle,
     pub color: [u8; 4],
     pub alignment: TextAlignment,
-    /// Drop shadow layers, rendered front-to-back so the lowest index
-    /// is on top. The legacy single `shadow` field is migrated into
-    /// `shadows[0]` on project load. Per-element keyframes live inside
-    /// each TitleShadow.
-    #[serde(default)]
-    pub shadows: Vec<TitleShadow>,
-    /// Soft-disable for the secondary shadow stack (`shadows[1..]`).
-    /// Primary shadow (index 0) is gated by its own `enabled` field.
-    /// When `false`, the renderer skips every layer at index >= 1 but
-    /// the data is preserved across re-enable.
-    #[serde(default = "default_true")]
-    pub shadow_stack_enabled: bool,
-    /// Outline/stroke layers, rendered widest-first, back-to-front.
-    #[serde(default)]
-    pub outlines: Vec<TextOutline>,
-    /// Soft-disable for the secondary outline stack (`outlines[1..]`).
-    /// `outlines[0]` is the primary outline, gated by its own
-    /// `enabled` field. When `false`, the renderer skips every layer
-    /// at index >= 1 but the data is preserved across re-enable.
-    #[serde(default = "default_true")]
-    pub outline_stack_enabled: bool,
-    /// Glow stack. Mirrors `shadows` — legacy projects with only
-    /// `glow` are migrated into `glows[0]` on project load.
-    #[serde(default)]
-    pub glows: Vec<TextGlow>,
-    /// Soft-disable for the secondary glow stack (`glows[1..]`).
-    #[serde(default = "default_true")]
-    pub glow_stack_enabled: bool,
+    /// The effect stacks and motion a text box carried before they
+    /// moved to its object ([`TitleObject::fx`]), as any older file or
+    /// payload still writes them. Read only by [`TitleData::migrate_fx`],
+    /// which hoists them onto the object; never written, never
+    /// rendered. Empty on every text box that has been through the
+    /// loader.
+    #[serde(flatten, default, skip_serializing)]
+    pub legacy_fx: LegacyTextFx,
     /// Gradient fill (overrides solid colour when set).
     #[serde(default)]
     pub gradient: Option<TextGradient>,
-    /// Inner shadow stack. Mirrors `shadows` — legacy projects with
-    /// only `inner_shadow` are migrated into `inner_shadows[0]` on
-    /// project load. Per-element keyframes live inside each entry.
-    #[serde(default)]
-    pub inner_shadows: Vec<InnerShadow>,
-    /// Soft-disable for the secondary inner-shadow stack
-    /// (`inner_shadows[1..]`). Primary (index 0) is gated by its own
-    /// `enabled` field.
-    #[serde(default = "default_true")]
-    pub inner_shadow_stack_enabled: bool,
     /// Pattern fill (overrides solid colour and gradient when set).
     #[serde(default)]
     pub pattern_fill: Option<TextPattern>,
@@ -507,24 +664,12 @@ pub struct TextBox {
     /// (`TitleData::migrate_legacy_animation`); nothing writes it.
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
-    /// Entrance and exit motion, evaluated per glyph with easing and
-    /// stagger.
-    #[serde(default)]
-    pub motion: TitleMotion,
-    /// What the layer keeps doing while on screen: blink, pulse,
-    /// shake, wave, colour cycle, scroll, crawl, counter. All of
-    /// them run at once, on top of the entrance and exit.
-    #[serde(default)]
-    pub loops: Vec<TitleLoop>,
     /// Texture fill — file path or procedural preset, plus the
     /// transform / blend params (scale, offset, rotation, opacity,
     /// tint, tile mode). `None` = no texture fill configured.
     /// Soft-disable lives inside `TextureFill::enabled`.
     #[serde(default)]
     pub texture_fill: Option<TextureFill>,
-    /// Motion blur settings (None = disabled).
-    #[serde(default)]
-    pub motion_blur: Option<MotionBlur>,
     /// Per-character style runs. Empty = uniform style.
     #[serde(default)]
     pub style_runs: Vec<StyleRun>,
@@ -608,12 +753,12 @@ pub struct TextBox {
     pub text_direction: TextDirection,
 }
 
-impl TextBox {
+impl LayerFx {
     /// Mutable accessor for the effect-keyframe vec named by
-    /// `param_key`. Routes by prefix: `"glow.*"` lands on the
-    /// `TextGlow` keyframe vecs, returning `None` if no glow is
-    /// configured. Add a new arm for each effect type as it gains
-    /// keyframable params.
+    /// `param_key`, for the params that live on the stack: `glow.*`,
+    /// `shadow.*`, `inner_shadow.*`, `outline.*`, `motion_blur.*`.
+    /// `None` for a param that is not the stack's — see
+    /// [`TitleObject::effect_keyframes_mut_for`] for the whole object.
     pub fn effect_keyframes_mut_for(
         &mut self,
         param_key: &str,
@@ -632,7 +777,6 @@ impl TextBox {
             // Legacy unindexed glow keys → glows[0].
             self.glows.get_mut(0).and_then(|g| g.keyframes_mut_for(param_key))
         } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key) {
-            // Per-stack-element inner-shadow keyframes (`inner_shadow.{idx}.field`).
             let layer = self.inner_shadows.get_mut(idx)?;
             match field {
                 "offset_x" => Some(&mut layer.offset_x_keyframes),
@@ -641,11 +785,8 @@ impl TextBox {
                 _ => None,
             }
         } else if param_key.starts_with("inner_shadow.") {
-            // Legacy unindexed inner_shadow keys → inner_shadows[0].
             self.inner_shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
         } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
-            // Per-stack-element shadow keyframes (`shadow.{idx}.field`).
-            // Out-of-range indices return None.
             let layer = self.shadows.get_mut(idx)?;
             match field {
                 "offset_x" => Some(&mut layer.offset_x_keyframes),
@@ -654,18 +795,12 @@ impl TextBox {
                 _ => None,
             }
         } else if param_key.starts_with("shadow.") {
-            // Legacy unindexed shadow keys (`shadow.offset_x` etc).
-            // Always route to shadows[0] so old projects keep working.
+            // Legacy unindexed shadow keys always route to shadows[0]
+            // so old projects keep working.
             self.shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
-        } else if param_key.starts_with("extrusion.") {
-            self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
             self.motion_blur.as_mut().and_then(|m| m.keyframes_mut_for(param_key))
-        } else if param_key.starts_with("char_anim.") {
-            self.char_animation.as_mut().and_then(|c| c.keyframes_mut_for(param_key))
         } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
-            // Per-stack-element outline keyframes. Each index is its
-            // own slot — out-of-range indices return None.
             match field {
                 "width" => self.outlines.get_mut(idx).map(|o| &mut o.width_keyframes),
                 _ => None,
@@ -675,8 +810,7 @@ impl TextBox {
         }
     }
 
-    /// Read-only mirror of `effect_keyframes_mut_for`. Used by the
-    /// inspector to build a `KeyframeState`.
+    /// Read-only mirror of `effect_keyframes_mut_for`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
             let layer = self.glows.get(idx)?;
@@ -696,7 +830,6 @@ impl TextBox {
                 _ => None,
             }
         } else if param_key.starts_with("inner_shadow.") {
-            // Legacy unindexed inner_shadow keys → inner_shadows[0].
             self.inner_shadows.first().and_then(|s| s.keyframes_for(param_key))
         } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
             let layer = self.shadows.get(idx)?;
@@ -707,14 +840,9 @@ impl TextBox {
                 _ => None,
             }
         } else if param_key.starts_with("shadow.") {
-            // Legacy unindexed keys → shadows[0].
             self.shadows.first().and_then(|s| s.keyframes_for(param_key))
-        } else if param_key.starts_with("extrusion.") {
-            self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
             self.motion_blur.as_ref().and_then(|m| m.keyframes_for(param_key))
-        } else if param_key.starts_with("char_anim.") {
-            self.char_animation.as_ref().and_then(|c| c.keyframes_for(param_key))
         } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
             match field {
                 "width" => self.outlines.get(idx).map(|o| o.width_keyframes.as_slice()),
@@ -722,6 +850,61 @@ impl TextBox {
             }
         } else {
             None
+        }
+    }
+}
+
+impl TextBox {
+    /// Mutable accessor for the keyframe vec of a param that is the
+    /// text's own — `extrusion.*`, `char_anim.*`. The stack's params
+    /// are the object's: [`TitleObject::effect_keyframes_mut_for`].
+    pub fn effect_keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        if param_key.starts_with("extrusion.") {
+            self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("char_anim.") {
+            self.char_animation.as_mut().and_then(|c| c.keyframes_mut_for(param_key))
+        } else {
+            None
+        }
+    }
+
+    /// Read-only mirror of `effect_keyframes_mut_for`.
+    pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        if param_key.starts_with("extrusion.") {
+            self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
+        } else if param_key.starts_with("char_anim.") {
+            self.char_animation.as_ref().and_then(|c| c.keyframes_for(param_key))
+        } else {
+            None
+        }
+    }
+}
+
+impl TitleObject {
+    /// The keyframe vec of any effect param on this object: the
+    /// stack's, or, for a text layer, the text's own.
+    pub fn effect_keyframes_mut_for(&mut self, param_key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        let Self { content, fx, .. } = self;
+        if let Some(keys) = fx.as_mut().and_then(|f| f.effect_keyframes_mut_for(param_key)) {
+            return Some(keys);
+        }
+        match content {
+            TitleObjectContent::TextBox(tb) => tb.effect_keyframes_mut_for(param_key),
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of [`Self::effect_keyframes_mut_for`].
+    pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        if let Some(keys) = self.fx().effect_keyframes_for(param_key) {
+            return Some(keys);
+        }
+        match &self.content {
+            TitleObjectContent::TextBox(tb) => tb.effect_keyframes_for(param_key),
+            _ => None,
         }
     }
 }
@@ -758,15 +941,8 @@ impl Default for TextBox {
             font_style: FontStyle::Regular,
             color: [255, 255, 255, 255],
             alignment: TextAlignment::Center,
-            shadows: Vec::new(),
-            shadow_stack_enabled: true,
-            outlines: Vec::new(),
-            outline_stack_enabled: true,
-            glows: Vec::new(),
-            glow_stack_enabled: true,
+            legacy_fx: LegacyTextFx::default_authored(),
             gradient: None,
-            inner_shadows: Vec::new(),
-            inner_shadow_stack_enabled: true,
             pattern_fill: None,
             pattern_fill_enabled: true,
             tracking: 0.0,
@@ -775,10 +951,7 @@ impl Default for TextBox {
             extrusion: None,
             text_path: None,
             char_animation: None,
-            loops: Vec::new(),
-            motion: TitleMotion::default(),
             texture_fill: None,
-            motion_blur: None,
             style_runs: Vec::new(),
             ass_style_name: None,
             underline: false,
@@ -864,6 +1037,16 @@ pub struct TitleData {
 }
 
 /// What `TitleData::migrate_legacy_animation` did.
+/// What [`TitleData::migrate_fx`] did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FxMigration {
+    /// Any object's stack was made explicit or old fields were dropped.
+    pub changed: bool,
+    /// Text boxes whose old fields sat beside an explicit stack and
+    /// were dropped in its favour; the loader says so.
+    pub dropped_legacy: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LegacyMigration {
     /// Something was converted; the title should be saved again.
@@ -899,6 +1082,8 @@ impl TitleData {
     pub fn migrate_legacy_animation(&mut self) -> LegacyMigration {
         use TitleAnimationType as T;
         let mut out = LegacyMigration::default();
+        // The stacks first, so what follows writes into them.
+        out.changed |= self.migrate_fx().changed;
         let legacy = std::mem::take(&mut self.animation_type);
         if !matches!(legacy, T::Static) {
             out.changed = true;
@@ -908,8 +1093,8 @@ impl TitleData {
                     | T::ColorCycle { .. } | T::ColorBlend { .. } | T::OutlineDrawOn { .. }
             );
             let chars = self.text().chars().count().max(1) as f32;
-            if let Some(tb) = self.primary_text_mut() {
-                let font = tb.font_size.max(1.0);
+            let font = self.font_size().max(1.0);
+            if let Some(tb) = self.primary_object_mut().map(TitleObject::fx_mut) {
                 let enter = |k: MotionKind, d: f32| Motion::new(k).duration(d.max(0.05));
                 let typing = |cps: f32| Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, 1.0 / cps.max(0.5));
                 match legacy {
@@ -958,19 +1143,21 @@ impl TitleData {
             }
         }
         for obj in &mut self.objects {
-            if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+            let TitleObject { content, fx, .. } = obj;
+            if let TitleObjectContent::TextBox(tb) = content {
                 if let Some(ca) = tb.char_animation.take() {
                     out.changed = true;
                     if !ca.enabled {
                         continue;
                     }
+                    let fx = fx.get_or_insert_with(LayerFx::default);
                     if let Some((kind, easing)) = char_entrance_motion(ca.entrance) {
-                        if tb.motion.enter.is_none() {
-                            tb.motion.enter = Some(Motion::new(kind).duration(0.4).easing(easing).stagger(StaggerUnit::Char, ca.stagger.max(0.0)));
+                        if fx.motion.enter.is_none() {
+                            fx.motion.enter = Some(Motion::new(kind).duration(0.4).easing(easing).stagger(StaggerUnit::Char, ca.stagger.max(0.0)));
                         }
                     }
                     if ca.wave_amplitude > 0.0 {
-                        tb.loops.push(TitleLoop::Wave { amplitude: ca.wave_amplitude * 0.3 / tb.font_size.max(1.0), rate_hz: ca.wave_speed });
+                        fx.loops.push(TitleLoop::Wave { amplitude: ca.wave_amplitude * 0.3 / tb.font_size.max(1.0), rate_hz: ca.wave_speed });
                     }
                 }
             }
@@ -992,6 +1179,15 @@ impl TitleData {
         td
     }
 
+    /// [`single_text`](Self::single_text) with the layer's stack given
+    /// alongside the text, since the stack is the object's, not the
+    /// text box's.
+    pub fn single_text_fx(text_box: TextBox, fx: LayerFx) -> Self {
+        let mut td = Self::single_text(text_box);
+        td.objects[0].fx = Some(fx);
+        td
+    }
+
     /// Push a new object onto the stack with a freshly-allocated id.
     /// Returns the assigned id so callers can immediately reference
     /// the new object (e.g. for selection).
@@ -1002,10 +1198,17 @@ impl TitleData {
     ) -> TitleObjectId {
         let id = TitleObjectId(self.next_object_id);
         self.next_object_id = self.next_object_id.saturating_add(1);
+        let mut content = content;
         let name = match &content {
             TitleObjectContent::TextBox(_) => format!("Text {}", id.0 + 1),
             TitleObjectContent::Shape(_) => format!("Shape {}", id.0 + 1),
             TitleObjectContent::Image(img) => img.stem(),
+        };
+        // A text box that still carries the old fields — read from an
+        // older payload and wrapped here — gives them to its object.
+        let fx = match &mut content {
+            TitleObjectContent::TextBox(tb) => std::mem::take(&mut tb.legacy_fx).into_fx(),
+            _ => LayerFx::default(),
         };
         self.objects.push(TitleObject {
             id,
@@ -1015,6 +1218,7 @@ impl TitleData {
             locked: false,
             opacity: 1.0,
             content,
+            fx: Some(fx),
         });
         id
     }
@@ -1046,6 +1250,48 @@ impl TitleData {
             TitleObjectContent::TextBox(tb) => Some(tb),
             _ => None,
         })
+    }
+
+    /// The object holding the primary text.
+    pub fn primary_object(&self) -> Option<&TitleObject> {
+        self.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
+    }
+
+    pub fn primary_object_mut(&mut self) -> Option<&mut TitleObject> {
+        self.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))
+    }
+
+    /// The primary text's stack, or a still one when there is no text.
+    pub fn primary_fx(&self) -> &LayerFx {
+        self.primary_object().map_or(&STILL_FX, TitleObject::fx)
+    }
+
+    /// Every object's stack made explicit, and the old text-box fields
+    /// hoisted onto their object. One direction, once: an object with
+    /// no stack takes the text box's old fields (a shape or picture
+    /// takes an empty one); an object that already has a stack keeps
+    /// it, and old fields found beside it are dropped — the stack is
+    /// the one place, and an explicitly empty one wins. Afterwards no
+    /// text box carries old fields, so a save writes one shape.
+    pub fn migrate_fx(&mut self) -> FxMigration {
+        let mut out = FxMigration::default();
+        for obj in &mut self.objects {
+            let TitleObject { content, fx, .. } = obj;
+            let legacy = match content {
+                TitleObjectContent::TextBox(tb) => std::mem::take(&mut tb.legacy_fx),
+                _ => LegacyTextFx::default_authored(),
+            };
+            match fx {
+                None => {
+                    *fx = Some(legacy.into_fx());
+                    out.changed = true;
+                }
+                Some(_) if !legacy.is_default() => out.dropped_legacy += 1,
+                Some(_) => {}
+            }
+        }
+        out.changed |= out.dropped_legacy > 0;
+        out
     }
 
     /// Convenience for tests / templates / single-object cases:
@@ -1099,28 +1345,28 @@ impl TitleData {
             .unwrap_or(TitlePosition { x: 0.5, y: 0.5 })
     }
     pub fn shadow(&self) -> Option<TitleShadow> {
-        self.primary_text().and_then(|tb| tb.shadows.first().cloned())
+        self.primary_fx().shadows.first().cloned()
     }
     pub fn shadows(&self) -> Vec<TitleShadow> {
-        self.primary_text().map(|tb| tb.shadows.clone()).unwrap_or_default()
+        self.primary_fx().shadows.clone()
     }
     pub fn outlines(&self) -> Vec<TextOutline> {
-        self.primary_text().map(|tb| tb.outlines.clone()).unwrap_or_default()
+        self.primary_fx().outlines.clone()
     }
     pub fn glow(&self) -> Option<TextGlow> {
-        self.primary_text().and_then(|tb| tb.glows.first().cloned())
+        self.primary_fx().glows.first().cloned()
     }
     pub fn glows(&self) -> Vec<TextGlow> {
-        self.primary_text().map(|tb| tb.glows.clone()).unwrap_or_default()
+        self.primary_fx().glows.clone()
     }
     pub fn gradient(&self) -> Option<TextGradient> {
         self.primary_text().and_then(|tb| tb.gradient.clone())
     }
     pub fn inner_shadow(&self) -> Option<InnerShadow> {
-        self.primary_text().and_then(|tb| tb.inner_shadows.first().cloned())
+        self.primary_fx().inner_shadows.first().cloned()
     }
     pub fn inner_shadows(&self) -> Vec<InnerShadow> {
-        self.primary_text().map(|tb| tb.inner_shadows.clone()).unwrap_or_default()
+        self.primary_fx().inner_shadows.clone()
     }
     pub fn pattern_fill(&self) -> Option<TextPattern> {
         self.primary_text().and_then(|tb| tb.pattern_fill)
@@ -1149,7 +1395,7 @@ impl TitleData {
             .and_then(|t| t.file_path().map(|s| s.to_string()))
     }
     pub fn motion_blur(&self) -> Option<MotionBlur> {
-        self.primary_text().and_then(|tb| tb.motion_blur.clone())
+        self.primary_fx().motion_blur.clone()
     }
     pub fn underline(&self) -> bool {
         self.primary_text().is_some_and(|tb| tb.underline)
@@ -2728,7 +2974,7 @@ mod tests {
     fn textbox_router_dispatches_shadow_param_keys() {
         use klipp_core::title_effect_keys;
 
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         // No shadow yet: router returns None for every shadow key.
         assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).is_none());
         assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).is_none());
@@ -2927,7 +3173,7 @@ mod tests {
     /// depend on for keyframe-aware editing.
     #[test]
     fn shadow_indexed_keyframe_routing_is_per_slot() {
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.shadows.push(TitleShadow {
             enabled: true, color: [0, 0, 0, 200],
             offset_x: 1.0, offset_x_keyframes: Vec::new(),
@@ -2977,7 +3223,7 @@ mod tests {
     /// Round-trip + legacy migration for the glow stack.
     #[test]
     fn glows_round_trip_and_legacy_default() {
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.glows.push(TextGlow {
             enabled: true,
             color: [10, 200, 255, 255],
@@ -2996,7 +3242,7 @@ mod tests {
         });
         tb.glow_stack_enabled = false;
         let json = serde_json::to_string(&tb).expect("serialise");
-        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(tb.glows, round.glows);
         assert!(!round.glow_stack_enabled);
 
@@ -3008,15 +3254,15 @@ mod tests {
             "alignment": "Center"
         }"#;
         let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
-        assert!(legacy.glows.is_empty());
-        assert!(legacy.glow_stack_enabled);
+        assert!(legacy.legacy_fx.glows.is_empty());
+        assert!(legacy.legacy_fx.glow_stack_enabled);
     }
 
     /// Indexed glow keyframe routing: `glow.{idx}.field` lands on
     /// `glows[idx].*_keyframes`.
     #[test]
     fn glow_indexed_keyframe_routing() {
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.glows.push(TextGlow {
             enabled: true,
             color: [0, 200, 255, 255],
@@ -3051,7 +3297,7 @@ mod tests {
     /// Round-trip + legacy migration for the inner-shadow stack.
     #[test]
     fn inner_shadows_round_trip_and_legacy_default() {
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [10, 20, 30, 200],
@@ -3068,7 +3314,7 @@ mod tests {
         });
         tb.inner_shadow_stack_enabled = false;
         let json = serde_json::to_string(&tb).expect("serialise");
-        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(tb.inner_shadows, round.inner_shadows);
         assert!(!round.inner_shadow_stack_enabled);
 
@@ -3081,15 +3327,15 @@ mod tests {
             "alignment": "Center"
         }"#;
         let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
-        assert!(legacy.inner_shadows.is_empty());
-        assert!(legacy.inner_shadow_stack_enabled);
+        assert!(legacy.legacy_fx.inner_shadows.is_empty());
+        assert!(legacy.legacy_fx.inner_shadow_stack_enabled);
     }
 
     /// Indexed inner-shadow keyframe routing: `inner_shadow.{idx}.field`
     /// lands on `inner_shadows[idx].*_keyframes`.
     #[test]
     fn inner_shadow_indexed_keyframe_routing() {
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [0, 0, 0, 200],
@@ -3123,7 +3369,7 @@ mod tests {
     #[test]
     fn shadows_round_trip_through_serde() {
         use klipp_core::{Interpolation, Keyframe};
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         tb.shadows.push(TitleShadow {
             enabled: true,
             color: [10, 20, 30, 200],
@@ -3149,7 +3395,7 @@ mod tests {
             blur_keyframes: Vec::new(),
         });
         let json = serde_json::to_string(&tb).expect("serialise");
-        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(tb.shadows, round.shadows);
         assert!(round.shadow_stack_enabled, "default missing field is true");
     }
@@ -3171,19 +3417,19 @@ mod tests {
             "alignment": "Center"
         }"#;
         let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
-        assert!(legacy.shadows.is_empty());
-        assert!(legacy.shadow_stack_enabled);
+        assert!(legacy.legacy_fx.shadows.is_empty());
+        assert!(legacy.legacy_fx.shadow_stack_enabled);
     }
 
     /// `shadow_stack_enabled = false` round-trips the explicit false.
     #[test]
     fn shadow_stack_enabled_round_trips_false() {
-        let tb = TextBox {
+        let tb = LayerFx {
             shadow_stack_enabled: false,
             ..Default::default()
         };
         let json = serde_json::to_string(&tb).expect("serialise");
-        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
         assert!(!round.shadow_stack_enabled);
     }
 
@@ -3194,12 +3440,12 @@ mod tests {
     #[test]
     fn outline_stack_enabled_round_trips_and_legacy_defaults_true() {
         // Round-trip `false`.
-        let tb = TextBox {
+        let tb = LayerFx {
             outline_stack_enabled: false,
             ..Default::default()
         };
         let json = serde_json::to_string(&tb).expect("serialise");
-        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        let round: LayerFx = serde_json::from_str(&json).expect("deserialise");
         assert!(!round.outline_stack_enabled, "explicit false must survive round-trip");
 
         // Legacy JSON: omit the field entirely. Must default to true.
@@ -3213,7 +3459,7 @@ mod tests {
         let legacy: TextBox = serde_json::from_str(legacy_json)
             .expect("legacy TextBox JSON without outline_stack_enabled must parse");
         assert!(
-            legacy.outline_stack_enabled,
+            legacy.legacy_fx.outline_stack_enabled,
             "missing field must default to true (preserve old project behaviour)"
         );
     }
@@ -3348,7 +3594,7 @@ mod tests {
     fn textbox_router_dispatches_indexed_outline_param_keys() {
         use klipp_core::title_effect_keys;
 
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         // Push two outline layers with width_keyframes empty.
         tb.outlines.push(TextOutline {
             enabled: true, color: [255, 0, 0, 255], width: 2.0,
@@ -3485,7 +3731,7 @@ mod tests {
     fn textbox_router_dispatches_inner_shadow_param_keys_distinctly() {
         use klipp_core::title_effect_keys;
 
-        let mut tb = TextBox::default();
+        let mut tb = LayerFx::default();
         // No inner shadow yet: inner_shadow.* returns None.
         assert!(tb
             .effect_keyframes_mut_for(title_effect_keys::INNER_SHADOW_BLUR)
@@ -3531,7 +3777,7 @@ mod legacy_animation_migration_tests {
         let mut td = title();
         let m = td.migrate_legacy_animation();
         assert!(!m.changed && !m.clear_clip_keyframes);
-        assert!(td.primary_text().unwrap().loops.is_empty());
+        assert!(td.primary_fx().loops.is_empty());
     }
 
     #[test]
@@ -3542,7 +3788,7 @@ mod legacy_animation_migration_tests {
         assert!(m.changed && m.clear_clip_keyframes);
         assert!(matches!(td.animation_type, TitleAnimationType::Static));
         assert_eq!(
-            td.primary_text().unwrap().loops,
+            td.primary_fx().loops,
             vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 }]
         );
     }
@@ -3552,9 +3798,9 @@ mod legacy_animation_migration_tests {
         let mut td = title();
         td.animation_type = TitleAnimationType::FadeInOut { fade_secs: 0.8 };
         td.migrate_legacy_animation();
-        let tb = td.primary_text().unwrap();
-        assert_eq!(tb.motion.enter.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
-        assert_eq!(tb.motion.exit.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
+        let fx = td.primary_fx();
+        assert_eq!(fx.motion.enter.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
+        assert_eq!(fx.motion.exit.map(|m| (m.kind, m.duration_secs)), Some((MotionKind::Fade, 0.8)));
     }
 
     #[test]
@@ -3563,7 +3809,7 @@ mod legacy_animation_migration_tests {
         td.animation_type = TitleAnimationType::Counter { from_value: 0.0, to_value: 9.0, duration_secs: 2.0, decimals: 1 };
         let m = td.migrate_legacy_animation();
         assert!(m.changed && !m.clear_clip_keyframes);
-        assert!(matches!(td.primary_text().unwrap().loops[0], TitleLoop::Counter { decimals: 1, .. }));
+        assert!(matches!(td.primary_fx().loops[0], TitleLoop::Counter { decimals: 1, .. }));
     }
 
     #[test]
@@ -3580,10 +3826,10 @@ mod legacy_animation_migration_tests {
             wave_speed_keyframes: Vec::new(),
         });
         td.migrate_legacy_animation();
-        let tb = td.primary_text().unwrap();
-        assert!(tb.char_animation.is_none());
-        let e = tb.motion.enter.unwrap();
+        assert!(td.primary_text().unwrap().char_animation.is_none());
+        let fx = td.primary_fx();
+        let e = fx.motion.enter.unwrap();
         assert_eq!((e.kind, e.stagger, e.stagger_secs), (MotionKind::Rise, StaggerUnit::Char, 0.07));
-        assert!(matches!(tb.loops[0], TitleLoop::Wave { rate_hz, .. } if rate_hz == 2.0));
+        assert!(matches!(fx.loops[0], TitleLoop::Wave { rate_hz, .. } if rate_hz == 2.0));
     }
 }

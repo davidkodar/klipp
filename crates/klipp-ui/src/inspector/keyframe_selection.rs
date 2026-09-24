@@ -1,6 +1,6 @@
 //! Frame-aware UI selection, separate from exact authored timestamp identity.
 use klipp_core::{AppCommand, AudioParam, Keyframe, TitlePositionAxis, VideoParam};
-use klipp_timeline::{Clip, Sequence, TitleObjectContent, TitleObjectId};
+use klipp_timeline::{Clip, Sequence, TitleObjectId};
 
 /// Inspector and K operate on the same canonical playhead, not the smooth
 /// pointer/playback position between displayed frames.
@@ -235,10 +235,9 @@ fn resolve_with<'a>(
             else {
                 return;
             };
-            let TitleObjectContent::TextBox(t) = &o.content else {
-                return;
-            };
-            (t.effect_keyframes_for(param_key).unwrap_or(&[]), time_secs)
+            // The object's: the stack's params live on any layer, the
+            // text's own on its text box, and the object knows both.
+            (o.effect_keyframes_for(param_key).unwrap_or(&[]), time_secs)
         }
         _ => return,
     };
@@ -280,10 +279,7 @@ mod tests {
             .insert("0:gain".into(), keys(&[0.7, 1.0]));
         let mut title = TitleData::default();
         title.objects[0].transform.center_x_keyframes = keys(&[0.7, 1.0]);
-        let TitleObjectContent::TextBox(text) = &mut title.objects[0].content else {
-            unreachable!()
-        };
-        text.glows.push(klipp_timeline::TextGlow {
+        title.objects[0].fx_mut().glows.push(klipp_timeline::TextGlow {
             radius_keyframes: keys(&[0.7, 1.0]),
             enabled: true,
             color: [255; 4],

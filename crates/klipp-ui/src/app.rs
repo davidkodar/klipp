@@ -15980,7 +15980,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.motion = *motion; }
+                            if let Some(fx) = target_fx_mut(td, target_oid) { fx.motion = *motion; }
                         }
                     }
                 }
@@ -16194,19 +16194,19 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some((tb, fx)) = target_object_mut(td, target_oid).and_then(|o| { let klipp_timeline::TitleObject { content, fx, .. } = o; match content { klipp_timeline::TitleObjectContent::TextBox(tb) => Some((tb, fx.get_or_insert_with(Default::default))), _ => None } }) {
                                 // Bright fill, thin dark outline for
                                 // legibility, strong outer glow tinted
                                 // to the accent. Outline alpha is dialled
                                 // down so the glow reads through.
                                 tb.color = *accent_color;
-                                tb.outlines = vec![klipp_timeline::TextOutline {
+                                fx.outlines = vec![klipp_timeline::TextOutline {
                                     color: [10, 10, 14, 180],
                                     width: 2.0,
                                     enabled: true,
                                     width_keyframes: Vec::new(),
                                 }];
-                                tb.glows = vec![klipp_timeline::TextGlow {
+                                fx.glows = vec![klipp_timeline::TextGlow {
                                     color: *accent_color,
                                     radius: 12.0,
                                     intensity: 1.4,
@@ -17314,8 +17314,14 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                apply_title_preset(tb, *preset_id);
+                            if let Some((tb, fx)) = target_object_mut(td, target_oid).and_then(|o| {
+                                let klipp_timeline::TitleObject { content, fx, .. } = o;
+                                match content {
+                                    klipp_timeline::TitleObjectContent::TextBox(tb) => Some((tb, fx.get_or_insert_with(Default::default))),
+                                    _ => None,
+                                }
+                            }) {
+                                apply_title_preset(tb, fx, *preset_id);
                             }
                         }
                     }
@@ -17345,20 +17351,20 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 // Primary shadow lives at shadows[0].
                                 // Preserve any keyframes by mutating in
                                 // place when the slot exists; otherwise
                                 // seed a fresh primary shadow without
                                 // touching shadows[1..].
-                                if let Some(s) = tb.shadows.first_mut() {
+                                if let Some(s) = fx.shadows.first_mut() {
                                     s.color = *color;
                                     s.offset_x = *offset_x;
                                     s.offset_y = *offset_y;
                                     s.blur = *blur;
                                     s.enabled = *enabled;
                                 } else {
-                                    tb.shadows.insert(0, klipp_timeline::TitleShadow {
+                                    fx.shadows.insert(0, klipp_timeline::TitleShadow {
                                         color: *color,
                                         offset_x: *offset_x,
                                         offset_y: *offset_y,
@@ -17389,18 +17395,18 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 let new_len = shadows.len();
-                                tb.shadows.truncate(new_len);
+                                fx.shadows.truncate(new_len);
                                 for (i, (color, off_x, off_y, blur)) in shadows.iter().enumerate() {
-                                    if let Some(existing) = tb.shadows.get_mut(i) {
+                                    if let Some(existing) = fx.shadows.get_mut(i) {
                                         existing.color = *color;
                                         existing.offset_x = *off_x;
                                         existing.offset_y = *off_y;
                                         existing.blur = *blur;
                                         existing.enabled = true;
                                     } else {
-                                        tb.shadows.push(klipp_timeline::TitleShadow {
+                                        fx.shadows.push(klipp_timeline::TitleShadow {
                                             color: *color,
                                             offset_x: *off_x,
                                             offset_y: *off_y,
@@ -17429,8 +17435,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(slot) = tb.shadows.get_mut(*index as usize) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(slot) = fx.shadows.get_mut(*index as usize) {
                                     slot.enabled = *enabled;
                                     slot.color = *color;
                                     slot.offset_x = *offset_x;
@@ -17454,8 +17460,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.shadow_stack_enabled = *enabled;
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                fx.shadow_stack_enabled = *enabled;
                             }
                         }
                     }
@@ -17476,15 +17482,15 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 // Preserve keyframes on outlines[0] —
                                 // mutate fields in place.
-                                if let Some(first) = tb.outlines.first_mut() {
+                                if let Some(first) = fx.outlines.first_mut() {
                                     first.color = *color;
                                     first.width = *width;
                                     first.enabled = *enabled;
                                 } else {
-                                    tb.outlines.push(klipp_timeline::TextOutline {
+                                    fx.outlines.push(klipp_timeline::TextOutline {
                                         color: *color,
                                         width: *width,
                                         enabled: *enabled,
@@ -17512,14 +17518,14 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(g) = tb.glows.first_mut() {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(g) = fx.glows.first_mut() {
                                     g.color = *color;
                                     g.radius = *radius;
                                     g.intensity = *intensity;
                                     g.enabled = *enabled;
                                 } else {
-                                    tb.glows.insert(0, klipp_timeline::TextGlow {
+                                    fx.glows.insert(0, klipp_timeline::TextGlow {
                                         color: *color,
                                         radius: *radius,
                                         intensity: *intensity,
@@ -17545,17 +17551,17 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 let new_len = glows.len();
-                                tb.glows.truncate(new_len);
+                                fx.glows.truncate(new_len);
                                 for (i, (color, radius, intensity)) in glows.iter().enumerate() {
-                                    if let Some(existing) = tb.glows.get_mut(i) {
+                                    if let Some(existing) = fx.glows.get_mut(i) {
                                         existing.color = *color;
                                         existing.radius = *radius;
                                         existing.intensity = *intensity;
                                         existing.enabled = true;
                                     } else {
-                                        tb.glows.push(klipp_timeline::TextGlow {
+                                        fx.glows.push(klipp_timeline::TextGlow {
                                             color: *color,
                                             radius: *radius,
                                             intensity: *intensity,
@@ -17582,8 +17588,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(slot) = tb.glows.get_mut(*index as usize) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(slot) = fx.glows.get_mut(*index as usize) {
                                     slot.enabled = *enabled;
                                     slot.color = *color;
                                     slot.radius = *radius;
@@ -17606,8 +17612,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.glow_stack_enabled = *enabled;
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                fx.glow_stack_enabled = *enabled;
                             }
                         }
                     }
@@ -17625,7 +17631,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 // Preserve per-index width_keyframes
                                 // when rebuilding the stack: existing
                                 // slots get their static fields
@@ -17635,15 +17641,15 @@ impl KlippApp {
                                 // their keyframes (which is correct —
                                 // a removed outline can't animate).
                                 let new_len = outlines.len();
-                                tb.outlines.truncate(new_len);
+                                fx.outlines.truncate(new_len);
                                 for (i, (color, width)) in outlines.iter().enumerate() {
-                                    if let Some(existing) = tb.outlines.get_mut(i) {
+                                    if let Some(existing) = fx.outlines.get_mut(i) {
                                         existing.color = *color;
                                         existing.width = *width;
                                         existing.enabled = true;
                                         // width_keyframes preserved.
                                     } else {
-                                        tb.outlines.push(klipp_timeline::TextOutline {
+                                        fx.outlines.push(klipp_timeline::TextOutline {
                                             color: *color,
                                             width: *width,
                                             enabled: true,
@@ -17671,8 +17677,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(slot) = tb.outlines.get_mut(*index as usize) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(slot) = fx.outlines.get_mut(*index as usize) {
                                     slot.enabled = *enabled;
                                     slot.color = *color;
                                     slot.width = *width;
@@ -17694,8 +17700,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.outline_stack_enabled = *enabled;
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                fx.outline_stack_enabled = *enabled;
                             }
                         }
                     }
@@ -17716,15 +17722,15 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(s) = tb.inner_shadows.first_mut() {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(s) = fx.inner_shadows.first_mut() {
                                     s.color = *color;
                                     s.offset_x = *offset_x;
                                     s.offset_y = *offset_y;
                                     s.blur = *blur;
                                     s.enabled = *enabled;
                                 } else {
-                                    tb.inner_shadows.insert(0, klipp_timeline::InnerShadow {
+                                    fx.inner_shadows.insert(0, klipp_timeline::InnerShadow {
                                         color: *color,
                                         offset_x: *offset_x,
                                         offset_y: *offset_y,
@@ -17752,18 +17758,18 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
                                 let new_len = shadows.len();
-                                tb.inner_shadows.truncate(new_len);
+                                fx.inner_shadows.truncate(new_len);
                                 for (i, (color, off_x, off_y, blur)) in shadows.iter().enumerate() {
-                                    if let Some(existing) = tb.inner_shadows.get_mut(i) {
+                                    if let Some(existing) = fx.inner_shadows.get_mut(i) {
                                         existing.color = *color;
                                         existing.offset_x = *off_x;
                                         existing.offset_y = *off_y;
                                         existing.blur = *blur;
                                         existing.enabled = true;
                                     } else {
-                                        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+                                        fx.inner_shadows.push(klipp_timeline::InnerShadow {
                                             color: *color,
                                             offset_x: *off_x,
                                             offset_y: *off_y,
@@ -17792,8 +17798,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(slot) = tb.inner_shadows.get_mut(*index as usize) {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(slot) = fx.inner_shadows.get_mut(*index as usize) {
                                     slot.enabled = *enabled;
                                     slot.color = *color;
                                     slot.offset_x = *offset_x;
@@ -17817,8 +17823,8 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.inner_shadow_stack_enabled = *enabled;
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                fx.inner_shadow_stack_enabled = *enabled;
                             }
                         }
                     }
@@ -17881,13 +17887,13 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(m) = tb.motion_blur.as_mut() {
+                            if let Some(fx) = target_fx_mut(td, target_oid) {
+                                if let Some(m) = fx.motion_blur.as_mut() {
                                     m.shutter_angle = *shutter_angle;
                                     m.samples = *samples;
                                     m.enabled = *enabled;
                                 } else {
-                                    tb.motion_blur = Some(klipp_timeline::MotionBlur {
+                                    fx.motion_blur = Some(klipp_timeline::MotionBlur {
                                         shutter_angle: *shutter_angle,
                                         samples: *samples,
                                         enabled: *enabled,
@@ -17915,11 +17921,9 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(o) = td.object_mut(target) {
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
-                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
-                                        klipp_core::keyframe::upsert_keyframe(kfs, *time_secs, *value);
-                                        routed = true;
-                                    }
+                                if let Some(kfs) = o.effect_keyframes_mut_for(param_key) {
+                                    klipp_core::keyframe::upsert_keyframe(kfs, *time_secs, *value);
+                                    routed = true;
                                 }
                             }
                         }
@@ -17945,10 +17949,8 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(o) = td.object_mut(target) {
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
-                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
-                                        klipp_core::keyframe::remove_keyframe_at(kfs, *time_secs);
-                                    }
+                                if let Some(kfs) = o.effect_keyframes_mut_for(param_key) {
+                                    klipp_core::keyframe::remove_keyframe_at(kfs, *time_secs);
                                 }
                             }
                         }
@@ -17970,10 +17972,8 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(o) = td.object_mut(target) {
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
-                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
-                                        klipp_core::keyframe::move_keyframe(kfs, *index, *new_time_secs, *new_value);
-                                    }
+                                if let Some(kfs) = o.effect_keyframes_mut_for(param_key) {
+                                    klipp_core::keyframe::move_keyframe(kfs, *index, *new_time_secs, *new_value);
                                 }
                             }
                         }
@@ -17995,10 +17995,8 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(o) = td.object_mut(target) {
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
-                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
-                                        klipp_core::keyframe::set_keyframe_interpolation(kfs, *keyframe_index, *interpolation);
-                                    }
+                                if let Some(kfs) = o.effect_keyframes_mut_for(param_key) {
+                                    klipp_core::keyframe::set_keyframe_interpolation(kfs, *keyframe_index, *interpolation);
                                 }
                             }
                         }
@@ -18063,7 +18061,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.loops = loops.clone(); }
+                            if let Some(fx) = target_fx_mut(td, target_oid) { fx.loops = loops.clone(); }
                         }
                     }
                 }
@@ -20507,10 +20505,11 @@ impl KlippApp {
                                     alignment: klipp_timeline::TextAlignment::Center,
                                     ..Default::default()
                                 };
-                                if let Some(o) = outline { tb.outlines.push(o); }
-                                if let Some(s) = shadow { tb.shadows.push(s); }
+                                let mut fx = klipp_timeline::LayerFx::default();
+                                if let Some(o) = outline { fx.outlines.push(o); }
+                                if let Some(s) = shadow { fx.shadows.push(s); }
                                 tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
-                                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
                                 if let Some(o) = title_data.objects.first_mut() {
                                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
                                 }
@@ -20532,15 +20531,16 @@ impl KlippApp {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
                                 let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
                                 let dur = timeline_out - timeline_in;
-                                let mut tb = klipp_timeline::TextBox {
+                                let tb = klipp_timeline::TextBox {
                                     text: sub.text.clone(),
                                     font_size: 32.0,
                                     font_name: String::new(),
                                     alignment: klipp_timeline::TextAlignment::Center,
                                     ..Default::default()
                                 };
-                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
-                                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                                let mut fx = klipp_timeline::LayerFx::default();
+                                fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
+                                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
                                 if let Some(o) = title_data.objects.first_mut() {
                                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
                                 }
@@ -20774,20 +20774,21 @@ impl KlippApp {
                         seq.tracks.iter().position(|t| t.id == id).unwrap()
                     });
 
-                let mut tb = klipp_timeline::TextBox {
+                let tb = klipp_timeline::TextBox {
                     text: String::new(),
                     font_size: 32.0,
                     font_name: String::new(),
                     alignment: klipp_timeline::TextAlignment::Center,
                     ..Default::default()
                 };
-                tb.outlines.push(klipp_timeline::TextOutline {
+                let mut fx = klipp_timeline::LayerFx::default();
+                fx.outlines.push(klipp_timeline::TextOutline {
                     color: [0, 0, 0, 200],
                     width: 2.0,
                     enabled: true,
                     width_keyframes: Vec::new(),
                 });
-                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
                 if let Some(o) = title_data.objects.first_mut() {
                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
                 }
@@ -34646,6 +34647,28 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
 /// TextBox when `target` is `None` (the historical single-text
 /// behaviour). Used by every per-property title command so an
 /// Inspector edit follows the active per-object selection.
+/// The object a title command targets: the one named, else the first
+/// text object — the same choice [`target_textbox_mut`] makes.
+fn target_object_mut(
+    td: &mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&mut klipp_timeline::TitleObject> {
+    let idx = match target {
+        Some(oid) => td.objects.iter().position(|o| o.id == oid),
+        None => td.objects.iter().position(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+    }?;
+    td.objects.get_mut(idx)
+}
+
+/// The stack of the object a title command targets — where a title's
+/// motion and effects live now — to edit.
+fn target_fx_mut(
+    td: &mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&mut klipp_timeline::LayerFx> {
+    target_object_mut(td, target).map(klipp_timeline::TitleObject::fx_mut)
+}
+
 fn target_textbox_mut(
     td: &mut klipp_timeline::TitleData,
     target: Option<klipp_timeline::TitleObjectId>,
@@ -34674,7 +34697,7 @@ fn target_textbox_mut(
 /// applied-and-flattened settings — there's no "currently-selected
 /// preset" recorded on the data, so the inspector dropdown is a
 /// quick-style picker rather than a slot.
-pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
+pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klipp_timeline::LayerFx, preset_id: u8) {
     use klipp_timeline::{InnerShadow, TextGlow, TextOutline, TitleShadow};
     match preset_id {
         // 0 = "None" sentinel — no-op so the dropdown's default
@@ -34685,13 +34708,13 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
         // to the accent.
         1 => {
             let accent = tb.color;
-            tb.outlines = vec![TextOutline {
+            fx.outlines = vec![TextOutline {
                 color: [10, 10, 14, 180],
                 width: 2.0,
                 enabled: true,
                 width_keyframes: Vec::new(),
             }];
-            tb.glows = vec![TextGlow {
+            fx.glows = vec![TextGlow {
                 color: accent,
                 radius: 12.0,
                 intensity: 1.4,
@@ -34700,8 +34723,8 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
                 intensity_keyframes: Vec::new(),
             }];
             // Clear conflicting effects so the look is clean.
-            tb.shadows.clear();
-            tb.inner_shadows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -34709,10 +34732,10 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
         // 2 = Classic. White fill, no decorations.
         2 => {
             tb.color = [255, 255, 255, 255];
-            tb.outlines.clear();
-            tb.glows.clear();
-            tb.shadows.clear();
-            tb.inner_shadows.clear();
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
             tb.gradient = None;
             tb.pattern_fill = None;
             tb.pattern_fill_enabled = true;
@@ -34723,9 +34746,9 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
         // against any background. Common lower-third look.
         3 => {
             tb.color = [255, 255, 255, 255];
-            tb.outlines.clear();
-            tb.glows.clear();
-            tb.shadows = vec![TitleShadow {
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows = vec![TitleShadow {
                 color: [0, 0, 0, 200],
                 offset_x: 4.0,
                 offset_y: 4.0,
@@ -34735,7 +34758,7 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
                 offset_y_keyframes: Vec::new(),
                 blur_keyframes: Vec::new(),
             }];
-            tb.inner_shadows.clear();
+            fx.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -34744,15 +34767,15 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
         // any backdrop without a fill plate.
         4 => {
             tb.color = [255, 255, 255, 255];
-            tb.outlines = vec![TextOutline {
+            fx.outlines = vec![TextOutline {
                 color: [0, 0, 0, 255],
                 width: 5.0,
                 enabled: true,
                 width_keyframes: Vec::new(),
             }];
-            tb.glows.clear();
-            tb.shadows.clear();
-            tb.inner_shadows.clear();
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -34761,10 +34784,10 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8
         // tape / synth-wave look. Keep the fill colour as-is so the
         // user's chosen hue tints the channel split.
         5 => {
-            tb.outlines.clear();
-            tb.glows.clear();
-            tb.shadows.clear();
-            tb.inner_shadows = vec![InnerShadow {
+            fx.outlines.clear();
+            fx.glows.clear();
+            fx.shadows.clear();
+            fx.inner_shadows = vec![InnerShadow {
                 color: [0, 0, 0, 100],
                 offset_x: 0.0,
                 offset_y: 0.0,

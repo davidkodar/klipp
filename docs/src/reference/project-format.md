@@ -128,3 +128,13 @@ tag and typed `title_data`. Older readers refuse this unknown kind by name,
 rather than falling back to a flat text title and losing the path. Ordinary
 text/rectangle/image titles retain their existing representation. Vector path
 geometry, paint and topology are validated before legacy sequence recovery.
+
+A title whose layers carry motion or effect stacks of their own (`fx` on a
+`TitleObject`: motion, loops, glows, shadows, outlines, inner shadows, motion
+blur — for text, shapes and images alike) uses the `title_v2` clip-kind tag.
+Older readers refuse it by name rather than reading the title as still and
+bare. A title whose layers all have an empty stack keeps the `title` or
+`vector_title` tag an older reader knows. On load, the old per-text-box
+effect fields are hoisted onto their object once; a text box that carries
+them beside an explicit stack loses them to the stack, and a save writes
+the stack only.

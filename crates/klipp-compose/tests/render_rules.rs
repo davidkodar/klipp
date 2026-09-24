@@ -889,17 +889,20 @@ fn a_default_title_shows_on_a_portrait_uhd_stack() {
 /// big enough and the size large enough for real glyphs. The animation
 /// is always the same; only what is asked of the renderer differs.
 fn entering_title(enter: klipp_core::title_motion::Motion, motion_blur: Option<f32>, color: [u8; 4]) -> (Sequence, Clip) {
-    let mut tb = klipp_timeline::TextBox { text: "RISE".into(), font_size: 420.0, color, ..Default::default() };
-    tb.motion_blur = motion_blur.map(|shutter_angle| klipp_timeline::MotionBlur {
-        enabled: true,
-        shutter_angle,
-        shutter_angle_keyframes: Vec::new(),
-        samples: 8,
-    });
-    tb.motion.enter = Some(enter);
+    let tb = klipp_timeline::TextBox { text: "RISE".into(), font_size: 420.0, color, ..Default::default() };
+    let fx = klipp_timeline::LayerFx {
+        motion: klipp_timeline::TitleMotion::enter(enter),
+        motion_blur: motion_blur.map(|shutter_angle| klipp_timeline::MotionBlur {
+            enabled: true,
+            shutter_angle,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 8,
+        }),
+        ..Default::default()
+    };
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: 480, height: 270 };
-    let title = clip(ClipKind::Title(klipp_timeline::TitleData::single_text(tb)), 0.0, 5.0);
+    let title = clip(ClipKind::Title(klipp_timeline::TitleData::single_text_fx(tb, fx)), 0.0, 5.0);
     let mut text = Track::new("Text 1", TrackKind::Text);
     text.clips = vec![title.clone()];
     let mut video = Track::new("V1", TrackKind::Video);

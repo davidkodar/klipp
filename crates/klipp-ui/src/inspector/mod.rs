@@ -2016,6 +2016,7 @@ fn show_title_effects_group(
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
     tb: &klipp_timeline::TextBox,
+    fx: &klipp_timeline::LayerFx,
     cmds: &mut Vec<AppCommand>,
     target_oid: Option<klipp_timeline::TitleObjectId>,
     clip_time_secs: f64,
@@ -2023,10 +2024,10 @@ fn show_title_effects_group(
 ) {
     use crate::widgets::inspector_group::{inspector_subgroup_card, GroupStatus};
 
-    let glow_enabled = tb.glows.first().is_some_and(|g| g.enabled);
-    let outline_enabled = tb.outlines.first().is_some_and(|o| o.enabled);
-    let shadow_enabled = tb.shadows.first().is_some_and(|s| s.enabled);
-    let inner_enabled = tb.inner_shadows.first().is_some_and(|i| i.enabled);
+    let glow_enabled = fx.glows.first().is_some_and(|g| g.enabled);
+    let outline_enabled = fx.outlines.first().is_some_and(|o| o.enabled);
+    let shadow_enabled = fx.shadows.first().is_some_and(|s| s.enabled);
+    let inner_enabled = fx.inner_shadows.first().is_some_and(|i| i.enabled);
     let gradient_enabled = tb.gradient.as_ref().is_some_and(|g| g.enabled);
     let pattern_enabled = tb.pattern_fill.is_some() && tb.pattern_fill_enabled;
     // Two distinct concepts for Texture Fill:
@@ -2048,7 +2049,7 @@ fn show_title_effects_group(
     ] {
         if on { active_count += 1; }
     }
-    if tb.outlines.len() > 1 { active_count += 1; }
+    if fx.outlines.len() > 1 { active_count += 1; }
 
     let status = GroupStatus {
         count: if active_count > 0 { Some(active_count) } else { None },
@@ -2062,7 +2063,7 @@ fn show_title_effects_group(
     // 1. Glow — primary at glows[0]. Stack rows for glows[1..] live
     // in subcard #2 (Glow Layers).
     {
-        let cur = tb.glows.first().cloned().unwrap_or(klipp_timeline::TextGlow {
+        let cur = fx.glows.first().cloned().unwrap_or(klipp_timeline::TextGlow {
             color: [0, 200, 255, 255],
             radius: 10.0,
             intensity: 0.8,
@@ -2076,12 +2077,12 @@ fn show_title_effects_group(
         let summary = if enabled {
             format!("{} px · {}%", display_radius.round() as u32, (display_intensity * 100.0).round() as u32)
         } else { String::new() };
-        let kfs_radius: &[klipp_core::Keyframe] = tb
+        let kfs_radius: &[klipp_core::Keyframe] = fx
             .glows
             .first()
             .map(|g| g.radius_keyframes.as_slice())
             .unwrap_or(&[]);
-        let kfs_intensity: &[klipp_core::Keyframe] = tb
+        let kfs_intensity: &[klipp_core::Keyframe] = fx
             .glows
             .first()
             .map(|g| g.intensity_keyframes.as_slice())
@@ -2137,8 +2138,8 @@ fn show_title_effects_group(
     // Mirrors Drop Shadow Layers; per-row color + radius + intensity
     // DragValues + × remove + +Add Layer.
     {
-        let mut enabled = tb.glow_stack_enabled;
-        let layer_count = tb.glows.len().saturating_sub(1);
+        let mut enabled = fx.glow_stack_enabled;
+        let layer_count = fx.glows.len().saturating_sub(1);
         let summary = if enabled && layer_count > 0 {
             format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
         } else {
@@ -2146,7 +2147,7 @@ fn show_title_effects_group(
         };
         inspector_subgroup_card(ui, "Glow Layers", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let glows = &tb.glows;
+            let glows = &fx.glows;
             let mut structural_change: Option<Vec<klipp_timeline::TextGlow>> = None;
             for i in 1..glows.len() {
                 let g = glows[i].clone();
@@ -2224,7 +2225,7 @@ fn show_title_effects_group(
                 cmds.push(AppCommand::SetTitleGlows { clip_id, glows: tuples });
             }
         });
-        if enabled != tb.glow_stack_enabled {
+        if enabled != fx.glow_stack_enabled {
             cmds.push(AppCommand::SetTitleGlowStackEnabled { clip_id, enabled });
         }
     }
@@ -2232,7 +2233,7 @@ fn show_title_effects_group(
 
     // 4. Outline (singular = outlines[0])
     {
-        let cur = tb.outlines.first().cloned().unwrap_or(klipp_timeline::TextOutline {
+        let cur = fx.outlines.first().cloned().unwrap_or(klipp_timeline::TextOutline {
             color: [255, 255, 255, 255],
             width: 2.0,
             enabled: false,
@@ -2241,7 +2242,7 @@ fn show_title_effects_group(
         let mut enabled = outline_enabled;
         let display_width = cur.evaluated_width(clip_time_secs);
         let summary = if enabled { format!("{} px", display_width.round() as u32) } else { String::new() };
-        let kfs_width: &[klipp_core::Keyframe] = tb
+        let kfs_width: &[klipp_core::Keyframe] = fx
             .outlines
             .first()
             .map(|o| o.width_keyframes.as_slice())
@@ -2287,8 +2288,8 @@ fn show_title_effects_group(
     // path otherwise — so structural ops (add / remove) and value
     // ops (color / width) preserve siblings' keyframes correctly.
     {
-        let mut enabled = tb.outline_stack_enabled;
-        let layer_count = tb.outlines.len().saturating_sub(1);
+        let mut enabled = fx.outline_stack_enabled;
+        let layer_count = fx.outlines.len().saturating_sub(1);
         let summary = if enabled && layer_count > 0 {
             format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
         } else {
@@ -2296,7 +2297,7 @@ fn show_title_effects_group(
         };
         inspector_subgroup_card(ui, "Outline Layers", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let outlines = &tb.outlines;
+            let outlines = &fx.outlines;
             let mut structural_change: Option<Vec<klipp_timeline::TextOutline>> = None;
             for i in 1..outlines.len() {
                 let ol = outlines[i].clone();
@@ -2362,7 +2363,7 @@ fn show_title_effects_group(
                 cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
             }
         });
-        if enabled != tb.outline_stack_enabled {
+        if enabled != fx.outline_stack_enabled {
             cmds.push(AppCommand::SetTitleOutlineStackEnabled { clip_id, enabled });
         }
     }
@@ -2372,7 +2373,7 @@ fn show_title_effects_group(
     // for offset/blur on the primary; colour is static. Stack rows
     // for shadows[1..] live in subcard #5 (Drop Shadow Layers).
     {
-        let cur = tb.shadows.first().cloned().unwrap_or(klipp_timeline::TitleShadow {
+        let cur = fx.shadows.first().cloned().unwrap_or(klipp_timeline::TitleShadow {
             color: [0, 0, 0, 180],
             offset_x: 3.0,
             offset_y: 3.0,
@@ -2391,17 +2392,17 @@ fn show_title_effects_group(
         let summary = if enabled {
             format!("{} px · {}%", display_blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
         } else { String::new() };
-        let kfs_ox: &[klipp_core::Keyframe] = tb
+        let kfs_ox: &[klipp_core::Keyframe] = fx
             .shadows
             .first()
             .map(|s| s.offset_x_keyframes.as_slice())
             .unwrap_or(&[]);
-        let kfs_oy: &[klipp_core::Keyframe] = tb
+        let kfs_oy: &[klipp_core::Keyframe] = fx
             .shadows
             .first()
             .map(|s| s.offset_y_keyframes.as_slice())
             .unwrap_or(&[]);
-        let kfs_blur: &[klipp_core::Keyframe] = tb
+        let kfs_blur: &[klipp_core::Keyframe] = fx
             .shadows
             .first()
             .map(|s| s.blur_keyframes.as_slice())
@@ -2467,8 +2468,8 @@ fn show_title_effects_group(
     // Each row uses keyframe-aware scrubby sliders so per-index
     // offset/blur keyframes work the same as the primary card.
     {
-        let mut enabled = tb.shadow_stack_enabled;
-        let layer_count = tb.shadows.len().saturating_sub(1);
+        let mut enabled = fx.shadow_stack_enabled;
+        let layer_count = fx.shadows.len().saturating_sub(1);
         let summary = if enabled && layer_count > 0 {
             format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
         } else {
@@ -2476,7 +2477,7 @@ fn show_title_effects_group(
         };
         inspector_subgroup_card(ui, "Drop Shadow Layers", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let shadows = &tb.shadows;
+            let shadows = &fx.shadows;
             let mut structural_change: Option<Vec<klipp_timeline::TitleShadow>> = None;
             for i in 1..shadows.len() {
                 let sh = shadows[i].clone();
@@ -2575,7 +2576,7 @@ fn show_title_effects_group(
                 cmds.push(AppCommand::SetTitleShadows { clip_id, shadows: tuples });
             }
         });
-        if enabled != tb.shadow_stack_enabled {
+        if enabled != fx.shadow_stack_enabled {
             cmds.push(AppCommand::SetTitleShadowStackEnabled { clip_id, enabled });
         }
     }
@@ -2584,7 +2585,7 @@ fn show_title_effects_group(
     // 8. Inner Shadow — primary at inner_shadows[0]. Stack rows for
     // inner_shadows[1..] live in subcard #7 (Inner Shadow Layers).
     {
-        let cur = tb.inner_shadows.first().cloned().unwrap_or(klipp_timeline::InnerShadow {
+        let cur = fx.inner_shadows.first().cloned().unwrap_or(klipp_timeline::InnerShadow {
             color: [0, 0, 0, 180],
             offset_x: 2.0,
             offset_y: 2.0,
@@ -2602,17 +2603,17 @@ fn show_title_effects_group(
         let summary = if enabled {
             format!("{} px · {}%", display_blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
         } else { String::new() };
-        let kfs_ox: &[klipp_core::Keyframe] = tb
+        let kfs_ox: &[klipp_core::Keyframe] = fx
             .inner_shadows
             .first()
             .map(|s| s.offset_x_keyframes.as_slice())
             .unwrap_or(&[]);
-        let kfs_oy: &[klipp_core::Keyframe] = tb
+        let kfs_oy: &[klipp_core::Keyframe] = fx
             .inner_shadows
             .first()
             .map(|s| s.offset_y_keyframes.as_slice())
             .unwrap_or(&[]);
-        let kfs_blur: &[klipp_core::Keyframe] = tb
+        let kfs_blur: &[klipp_core::Keyframe] = fx
             .inner_shadows
             .first()
             .map(|s| s.blur_keyframes.as_slice())
@@ -2677,8 +2678,8 @@ fn show_title_effects_group(
     // 9. Inner Shadow Layers — secondary stack (`inner_shadows[1..]`).
     // Mirrors Drop Shadow Layers in shape and behaviour.
     {
-        let mut enabled = tb.inner_shadow_stack_enabled;
-        let layer_count = tb.inner_shadows.len().saturating_sub(1);
+        let mut enabled = fx.inner_shadow_stack_enabled;
+        let layer_count = fx.inner_shadows.len().saturating_sub(1);
         let summary = if enabled && layer_count > 0 {
             format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
         } else {
@@ -2686,7 +2687,7 @@ fn show_title_effects_group(
         };
         inspector_subgroup_card(ui, "Inner Shadow Layers", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let inners = &tb.inner_shadows;
+            let inners = &fx.inner_shadows;
             let mut structural_change: Option<Vec<klipp_timeline::InnerShadow>> = None;
             for i in 1..inners.len() {
                 let sh = inners[i].clone();
@@ -2781,7 +2782,7 @@ fn show_title_effects_group(
                 cmds.push(AppCommand::SetTitleInnerShadows { clip_id, shadows: tuples });
             }
         });
-        if enabled != tb.inner_shadow_stack_enabled {
+        if enabled != fx.inner_shadow_stack_enabled {
             cmds.push(AppCommand::SetTitleInnerShadowStackEnabled { clip_id, enabled });
         }
     }
@@ -4228,6 +4229,12 @@ fn show_title_editor(
         Some(klipp_timeline::TitleObjectContent::TextBox(tb)) => Some(tb),
         _ => td.primary_text(),
     };
+    // The stack shown beside it is the targeted object's — where a
+    // layer's motion and effects live — or the primary text's.
+    let fx: &klipp_timeline::LayerFx = target_oid
+        .and_then(|id| td.object(id))
+        .map(klipp_timeline::TitleObject::fx)
+        .unwrap_or_else(|| td.primary_fx());
     if let Some(tb) = tb_target {
         show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs);
     }
@@ -4235,9 +4242,9 @@ fn show_title_editor(
 
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
-        title_tab::show_motion_card(ui, theme, clip_id, tb, chips, cmds);
+        title_tab::show_motion_card(ui, theme, clip_id, tb, fx, chips, cmds);
         ui.add_space(10.0);
-        title_tab::show_style_card(ui, theme, clip_id, tb, chips, cmds);
+        title_tab::show_style_card(ui, theme, clip_id, tb, fx, chips, cmds);
         ui.add_space(10.0);
     }
 
@@ -4252,7 +4259,7 @@ fn show_title_editor(
 
     // ── Effects group ──
     if let Some(tb) = tb_target {
-        show_title_effects_group(ui, theme, clip_id, tb, cmds, target_oid, clip_time_secs, keyframe_tolerance);
+        show_title_effects_group(ui, theme, clip_id, tb, fx, cmds, target_oid, clip_time_secs, keyframe_tolerance);
         ui.add_space(8.0);
     }
 
@@ -4479,8 +4486,9 @@ fn show_title_editor(
             // Display animated shutter_angle at the playhead.
             let display_shutter = mb.evaluated_shutter_angle(clip_time_secs);
             let kfs_shutter: &[klipp_core::Keyframe] = td
-                .primary_text()
-                .and_then(|tb| tb.motion_blur.as_ref())
+                .primary_fx()
+                .motion_blur
+                .as_ref()
                 .map(|m| m.shutter_angle_keyframes.as_slice())
                 .unwrap_or(&[]);
             let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
@@ -4523,7 +4531,7 @@ fn show_title_editor(
     {
         let status = crate::widgets::inspector_group::GroupStatus {
             count: None,
-            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0 || tb.motion_blur.as_ref().is_some_and(|m| m.enabled)) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
+            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0) || td.primary_fx().motion_blur.as_ref().is_some_and(|m| m.enabled) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
         };
         if title_group_is_open(ui, theme, clip_id, "3D & Distortion", status) {
             ui.add_space(6.0);

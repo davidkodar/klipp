@@ -2247,6 +2247,7 @@ mod title_text_coalesce_tests {
             locked: false,
             opacity: 1.0,
             content: klipp_timeline::TitleObjectContent::TextBox(tb_extra),
+            fx: Some(klipp_timeline::LayerFx::default()),
         });
         assert!(!title_diff_is_text_only(&a, &b));
     }

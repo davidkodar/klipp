@@ -5,9 +5,10 @@ use klipp_timeline::{TextAlignment, TextBox, TitleData, TitleShadow};
 use klipp_title::TitleRenderer;
 
 fn title(text: &str, tracking: f32, shadow: bool) -> TitleData {
-    let mut tb = TextBox { text: text.into(), font_size: 40.0, tracking, alignment: TextAlignment::Left, ..Default::default() };
+    let tb = TextBox { text: text.into(), font_size: 40.0, tracking, alignment: TextAlignment::Left, ..Default::default() };
+    let mut fx = klipp_timeline::LayerFx::default();
     if shadow {
-        tb.shadows.push(TitleShadow {
+        fx.shadows.push(TitleShadow {
             color: [0, 0, 0, 160],
             offset_x: 0.0,
             offset_y: 3.0,
@@ -18,7 +19,7 @@ fn title(text: &str, tracking: f32, shadow: bool) -> TitleData {
             blur_keyframes: Vec::new(),
         });
     }
-    let mut td = TitleData::single_text(tb);
+    let mut td = TitleData::single_text_fx(tb, fx);
     td.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.05, y: 0.5 };
     td.objects[0].transform.anchor_norm = klipp_timeline::TitlePosition { x: 0.0, y: 0.5 };
     td

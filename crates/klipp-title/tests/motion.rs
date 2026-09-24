@@ -11,12 +11,10 @@ fn coverage(r: &mut TitleRenderer, td: &TitleData, t: f32, window: Option<f32>) 
 }
 
 fn title(motion: TitleMotion) -> TitleData {
-    TitleData::single_text(TextBox {
-        text: "Motion test".into(),
-        font_size: 60.0,
-        motion,
-        ..Default::default()
-    })
+    TitleData::single_text_fx(
+        TextBox { text: "Motion test".into(), font_size: 60.0, ..Default::default() },
+        klipp_timeline::LayerFx { motion, ..Default::default() },
+    )
 }
 
 #[test]
@@ -82,12 +80,10 @@ fn a_mask_rise_never_paints_above_the_resting_box() {
 fn a_placed_frame_is_the_rendered_frame() {
     use klipp_timeline::{ScrollDirection, TitleLoop};
     let mut r = TitleRenderer::new();
-    let td = TitleData::single_text(TextBox {
-        text: "Rolling\ncredits\nhere".into(),
-        font_size: 40.0,
-        loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }],
-        ..Default::default()
-    });
+    let td = TitleData::single_text_fx(
+        TextBox { text: "Rolling\ncredits\nhere".into(), font_size: 40.0, ..Default::default() },
+        klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() },
+    );
     let (w, h) = (320, 180);
     let mut ids = Vec::new();
     for t in [0.5f32, 1.5, 2.5] {

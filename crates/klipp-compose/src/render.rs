@@ -2993,14 +2993,14 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
 /// moving now", which is the rasteriser's own cache-bypass decision and
 /// belongs to it.
 fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline::TitleData> {
-    let moves = td.objects.iter().any(|o| match &o.content {
-        klipp_timeline::TitleObjectContent::TextBox(tb) => {
-            tb.char_animation.as_ref().is_some_and(|c| c.enabled)
-                || tb.motion.enter.is_some()
-                || tb.motion.exit.is_some()
-                || !tb.loops.is_empty()
-        }
-        _ => false,
+    // Any layer's own motion: the stack is the object's, whatever the
+    // object is, and a character animation is a text's alone.
+    let moves = td.objects.iter().any(|o| {
+        let fx = o.fx();
+        fx.motion.enter.is_some()
+            || fx.motion.exit.is_some()
+            || !fx.loops.is_empty()
+            || matches!(&o.content, klipp_timeline::TitleObjectContent::TextBox(tb) if tb.char_animation.as_ref().is_some_and(|c| c.enabled))
     });
     moves.then_some(td)
 }

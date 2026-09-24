@@ -71,13 +71,13 @@ fn picture(width: u32, height: u32) -> Arc<Vec<u8>> {
 }
 
 fn credits() -> ClipKind {
-    let mut tb = klipp_timeline::TextBox {
+    let tb = klipp_timeline::TextBox {
         text: "Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]".into(),
         font_size: 36.0,
         ..Default::default()
     };
-    tb.loops.push(klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 });
-    ClipKind::Title(klipp_timeline::TitleData::single_text(tb))
+    let fx = klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() };
+    ClipKind::Title(klipp_timeline::TitleData::single_text_fx(tb, fx))
 }
 
 fn lower_third(text: &str) -> ClipKind {
