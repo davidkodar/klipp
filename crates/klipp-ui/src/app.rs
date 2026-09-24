@@ -7582,6 +7582,7 @@ impl KlippApp {
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
                                     track_points: Vec::new(),
+                                    precomp: None,
                                 };
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 self.state.push_history(EditCommand::LegacyPasteClip {
@@ -7760,6 +7761,7 @@ impl KlippApp {
                             stabilization_data: None,
                             smoothed_trajectory: None,
                             track_points: Vec::new(),
+                            precomp: None,
                         };
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
                         Self::overwrite_insert_clip_on_track(track, new_clip.clone());
@@ -15489,6 +15491,7 @@ impl KlippApp {
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
+                    precomp: None,
                 };
                 let clip_id = clip.id;
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
@@ -15844,6 +15847,7 @@ impl KlippApp {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         };
         self.state.sequences[seq_idx].tracks[track_idx]
             .clips
@@ -22890,6 +22894,7 @@ impl KlippApp {
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
+                precomp: None,
             };
             track.clips.insert(i + 1, right_clip);
         }
@@ -23022,6 +23027,7 @@ impl KlippApp {
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
+                precomp: None,
             };
             track.clips.insert(i + 1, right_clip);
         }

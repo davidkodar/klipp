@@ -1,7 +1,7 @@
 use crate::error::RenderError;
 use klipp_core::{ExportSettings, Keyframe, RationalTime};
 use klipp_media::MediaPool;
-use klipp_timeline::{ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -367,8 +367,21 @@ impl SequenceSnapshot {
             }
         }
         let mut media = HashMap::new();
-        for clip in timeline.tracks.iter().flat_map(|t| &t.clips) {
+        // A precomposition's scene is rendered from its own clips, so
+        // their media is the export's media too, however deep the scene.
+        fn each_clip<'a>(tracks: &'a [Track], out: &mut Vec<&'a Clip>) {
+            for clip in tracks.iter().flat_map(|t| &t.clips) {
+                out.push(clip);
+                if let Some(scene) = &clip.precomp {
+                    each_clip(&scene.tracks, out);
+                }
+            }
+        }
+        let mut clips = Vec::new();
+        each_clip(&timeline.tracks, &mut clips);
+        for clip in clips {
             if let ClipKind::Media { media_id } = &clip.kind {
+                let media_id: &klipp_core::MediaId = media_id;
                 let item = media_pool
                     .get(media_id)
                     .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;

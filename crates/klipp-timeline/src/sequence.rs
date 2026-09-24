@@ -875,6 +875,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         });
         clip_id
     }
@@ -1136,6 +1137,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         };
         let clip_b = Clip {
             id: ClipId::new(),
@@ -1199,6 +1201,7 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         };
 
         self.clips.remove(pos);
@@ -1731,6 +1734,13 @@ pub struct Clip {
     /// Tracked points for motion tracking.
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
+    /// A precomposition's scene, resolved for rendering: the inner
+    /// sequence with its compounds flattened, its own precompositions
+    /// resolved, and every clip re-identified for this instance. Set by
+    /// [`crate::flatten::flatten_sequence`], never saved — the file holds
+    /// the `sequence_id` and nothing else.
+    #[serde(skip)]
+    pub precomp: Option<std::sync::Arc<Sequence>>,
 }
 
 impl Clip {
@@ -1981,6 +1991,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 
@@ -2054,6 +2065,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 
@@ -2147,6 +2159,7 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            precomp: None,
         }
     }
 }
