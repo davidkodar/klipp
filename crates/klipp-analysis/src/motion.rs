@@ -1,6 +1,8 @@
 //! How much the picture moves, second by second: the mean absolute
-//! difference between consecutive frames' luma (ffmpeg's `signalstats`
-//! YDIF) on a small decode resampled to 30 fps (including held VFR pictures). Not where the camera went — a static shot
+//! difference between consecutive decoded frames' luma (ffmpeg's
+//! `signalstats` YDIF) on a small native-rate decode. A gap between decoded
+//! samples is treated as a held picture; leading and trailing gaps remain
+//! unknown. Not where the camera went — a static shot
 //! with a subject walking through it moves too — but enough to tell a
 //! locked-off shot from a pan or a handheld one, and to find the
 //! stretches where nothing happens.
@@ -8,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "motion";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Motion {
@@ -81,18 +83,23 @@ pub fn class_for(mean_ydif: f32) -> &'static str {
 /// `metadata=print` output: `frame:N pts:.. pts_time:T` lines followed
 /// by `lavfi.signalstats.YDIF=V`, into per-second means.
 pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
-    // The decode branch is sampled at 30 fps, including held VFR pictures.
-    // Empty bins therefore remain unknown, rather than invented stillness.
+    // Native-rate YDIF avoids making the motion class depend on source FPS.
+    // Empty bins between two decoded frames are held pictures and therefore
+    // measured zero; leading/trailing gaps remain unknown.
     // Accept the existing final bin even when video outlasts container duration;
     // one sampling interval beyond its edge covers timestamp rounding only.
     let tail_slack = 1.0 / 30.0;
     let seconds = duration_secs.ceil().max(1.0) as usize;
     let mut sums = vec![0.0f32; seconds];
     let mut counts = vec![0u32; seconds];
+    let mut decoded_times = Vec::new();
     let mut t: Option<f64> = None;
     for line in text.lines() {
         if let Some(i) = line.find("pts_time:") {
             t = line[i + "pts_time:".len()..].trim().parse().ok();
+            if let Some(frame_time) = t.filter(|value: &f64| value.is_finite() && *value >= 0.0) {
+                decoded_times.push(frame_time);
+            }
         } else if let Some(v) = line.strip_prefix("lavfi.signalstats.YDIF=") {
             if let (Some(t), Ok(v)) = (t, v.trim().parse::<f32>()) {
                 if !t.is_finite() || t < 0.0 || t > duration_secs.ceil() + tail_slack + 1e-9 || !valid_sample(v) {
@@ -102,6 +109,20 @@ pub fn parse_metadata(text: &str, duration_secs: f64) -> Motion {
                 sums[s] += v;
                 counts[s] += 1;
             }
+        }
+    }
+    decoded_times.sort_by(f64::total_cmp);
+    decoded_times.dedup_by(|a, b| a == b);
+    for second in 0..seconds {
+        if counts[second] != 0 {
+            continue;
+        }
+        let start = second as f64;
+        let end = (second + 1) as f64;
+        let bracketed = decoded_times.iter().any(|time| *time <= start)
+            && decoded_times.iter().any(|time| *time >= end);
+        if bracketed {
+            counts[second] = 1;
         }
     }
     let per_second = sums.iter().zip(&counts).map(|(s, c)| (*c > 0).then(|| s / *c as f32)).collect();
@@ -145,6 +166,23 @@ mod tests {
         assert!(m.per_second[..4].iter().all(Option::is_none));
         let variable = "frame:0 pts_time:4.85\nlavfi.signalstats.YDIF=2\nframe:1 pts_time:4.9\nlavfi.signalstats.YDIF=2\nframe:2 pts_time:4.97\nlavfi.signalstats.YDIF=2\nframe:3 pts_time:5.03\nlavfi.signalstats.YDIF=10\n";
         assert_eq!(parse_metadata(variable,5.0).per_second[4], Some(4.0));
+    }
+
+    #[test]
+    fn gaps_between_decoded_frames_are_held_stillness() {
+        let text = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=2\n\
+frame:1 pts_time:3.0\nlavfi.signalstats.YDIF=4\n";
+        let m = parse_metadata(text, 4.0);
+        assert_eq!(m.per_second, vec![Some(2.0), Some(0.0), Some(0.0), Some(4.0)]);
+    }
+
+    #[test]
+    fn motion_scale_does_not_depend_on_source_frame_rate() {
+        let text = "frame:0 pts_time:0\nlavfi.signalstats.YDIF=2\n\
+frame:1 pts_time:0.5\nlavfi.signalstats.YDIF=2\n";
+        let m = parse_metadata(text, 1.0);
+        assert_eq!(m.mean, Some(2.0));
+        assert_eq!(m.class_within(0.0, 1.0), Some("gentle"));
     }
 
     #[test]

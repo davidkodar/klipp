@@ -90,7 +90,7 @@ fn run_with(ctx: &crate::AnalysisCtx, item: &klipp_media::MediaItem, plan: crate
         "[0:v:0]split=4[s1][s2][m][b];\
          [s1]{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={fast},nullsink;\
          [s2]fps=2,{s320},select='gt(scene,{})',metadata=print:key=lavfi.scene_score:file={slow},nullsink;\
-         [m]{s160},fps=30,signalstats,metadata=print:key=lavfi.signalstats.YDIF:file={ydif},nullsink;\
+         [m]{s160},signalstats,metadata=print:key=lavfi.signalstats.YDIF:file={ydif},nullsink;\
          [b]fps={},{s480},split[fz][act];\
          [fz]freezedetect=n={}:d={},nullsink;\
          [act]fps={},format=gray,tblend=all_mode=difference,scale={}:{}:flags=area[acto]",
