@@ -147,6 +147,12 @@ pub struct TypeStyle {
     pub gradient: Option<[String; 2]>,
     #[serde(default)]
     pub animate: Option<String>,
+    /// Explicit motion, overriding the style's whole entrance/exit.
+    /// Do not combine `enter` with legacy animate/animate_secs/stagger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<crate::brief::TitleMotionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<crate::brief::TitleMotionSpec>,
     #[serde(default)]
     pub animate_secs: Option<f32>,
     #[serde(default)]
@@ -266,6 +272,8 @@ impl Brief {
                 if let Some(z) = s.size { bits.push(format!("{z:.0} px")); }
                 if let Some(c) = &s.color { bits.push(c.clone()); }
                 if let Some(a) = &s.animate { bits.push(a.clone()); }
+                if let Some(m) = &s.enter { bits.push(m.approval_text(false)); }
+                if let Some(m) = &s.exit { bits.push(m.approval_text(true)); }
                 if bits.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, bits.join(", ")) }
             }).collect();
             out.push(format!("Type styles: {}", looks.join("; ")));
@@ -297,5 +305,64 @@ impl Brief {
             out.push(format!("Notes: {}", self.notes));
         }
         out.join("\n")
+    }
+}
+
+/// Agent-facing entrance or exit configuration. Names use snake_case; this
+/// lowers to the existing renderer Motion without changing its serialization.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleMotionSpec {
+    /// A supported MotionKind name, or "none" to disable this side.
+    pub kind: String,
+    #[serde(default)]
+    /// Positive seconds, at most 5; default 0.6.
+    pub duration_secs: Option<f32>,
+    /// Entrance: delay after clip start. Exit: lead time before clip end.
+    /// Zero to 3600 seconds; default 0.
+    #[serde(default)]
+    pub delay_secs: Option<f32>,
+    #[serde(default)]
+    pub easing: Option<String>,
+    #[serde(default)]
+    pub stagger: Option<String>,
+    #[serde(default)]
+    /// Zero to 60 seconds; default 0.05 (typewriter defaults to char/0.04).
+    pub stagger_secs: Option<f32>,
+    /// Font-size fraction for rise/drop/slide_left/slide_right only. Other
+    /// kinds reject this field. Zero to 100; default 0.6.
+    #[serde(default)]
+    pub distance: Option<f32>,
+}
+
+impl TitleMotionSpec {
+    /// Approval timing uses the same defaults and implicit typewriter unit as lowering.
+    pub fn span_secs(&self, text: &str) -> f64 {
+        let defaults = klipp_core::title_motion::Motion::default();
+        let typewriter = matches!(self.kind.to_lowercase().as_str(), "typewriter" | "type");
+        let unit = self.stagger.as_deref().map(str::to_lowercase)
+            .unwrap_or_else(|| if typewriter { "char" } else { "none" }.into());
+        let units = match unit.as_str() {
+            "word" => text.split_whitespace().count(), "line" => text.lines().count(),
+            "char" | "character" => text.chars().filter(|c| !c.is_whitespace()).count(), _ => 1,
+        };
+        let stagger = self.stagger_secs.unwrap_or(if typewriter && self.stagger.is_none() {0.04} else {defaults.stagger_secs});
+        f64::from(self.delay_secs.unwrap_or(defaults.delay_secs) + self.duration_secs.unwrap_or(defaults.duration_secs)
+            + units.saturating_sub(1) as f32 * stagger)
+    }
+    /// Motion details shown before a human approves a brief or edit plan.
+    pub fn approval_text(&self, exit: bool) -> String {
+        let side = if exit { "exit" } else { "enter" };
+        if self.kind.eq_ignore_ascii_case("none") { return format!("{side}: disabled"); }
+        let mut bits = vec![format!("{side}: {}", self.kind)];
+        if let Some(v) = self.duration_secs { bits.push(format!("duration {v} s")); }
+        if let Some(v) = self.delay_secs {
+            bits.push(if exit { format!("exits {v} s early") } else { format!("delay {v} s") });
+        }
+        if let Some(v) = &self.stagger { bits.push(format!("by {v}")); }
+        else if matches!(self.kind.to_lowercase().as_str(), "typewriter" | "type") { bits.push("by char".into()); }
+        if let Some(v) = self.stagger_secs { bits.push(format!("stagger {v} s")); }
+        if let Some(v) = &self.easing { bits.push(format!("easing {v}")); }
+        if let Some(v) = self.distance { bits.push(format!("distance {v}")); }
+        bits.join(", ")
     }
 }

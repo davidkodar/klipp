@@ -13,6 +13,44 @@
 
 use serde::{Deserialize, Serialize};
 
+fn strict_motion_fields(value: &serde_json::Value) -> Result<(), String> {
+    let Some(object) = value.as_object() else { return Ok(()) };
+    for key in object.keys() {
+        if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance"].contains(&key.as_str()) {
+            return Err(format!("unknown motion field {key:?}"));
+        }
+    }
+    Ok(())
+}
+
+fn strict_brief<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_timeline::Brief, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    if let Some(styles) = value.get("type_styles").and_then(serde_json::Value::as_array) {
+        for style in styles {
+            for side in ["enter", "exit"] {
+                if let Some(motion) = style.get(side) {
+                    strict_motion_fields(motion).map_err(serde::de::Error::custom)?;
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
+fn strict_edit_plan<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_timeline::EditPlan, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    if let Some(segments) = value.get("segments").and_then(serde_json::Value::as_array) {
+        for segment in segments {
+            for side in ["enter", "exit"] {
+                if let Some(motion) = segment.get("title").and_then(|title| title.get(side)) {
+                    strict_motion_fields(motion).map_err(serde::de::Error::custom)?;
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
 /// A request. `id` is echoed back on the response so a client can have
 /// several in flight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,13 +700,19 @@ pub enum ControlCommand {
     /// The sequence's brief: what the piece is for.
     Brief,
     /// Replace the brief, as one undo step. Fields left out ask for nothing.
-    SetBrief { brief: klipp_timeline::Brief },
+    SetBrief {
+        #[serde(deserialize_with = "strict_brief")]
+        brief: klipp_timeline::Brief,
+    },
     /// The edit plan: the paper edit, proposed and approved before it is
     /// built, with the ops it lowers to.
     EditPlan,
     /// Replace the edit plan, as one undo step. It is stored unapproved:
     /// approval is the user's, given through `approve_edit_plan`.
-    SetEditPlan { plan: klipp_timeline::EditPlan },
+    SetEditPlan {
+        #[serde(deserialize_with = "strict_edit_plan")]
+        plan: klipp_timeline::EditPlan,
+    },
     /// Mark the edit plan approved, on the user's word. One undo step.
     ApproveEditPlan,
     /// Build the approved edit plan onto the timeline, after whatever is
@@ -788,3 +832,25 @@ unsafe fn libc_getuid() -> u32 {
 }
 
 fn default_analyze() -> bool { true }
+
+#[cfg(test)]
+mod tests {
+    use super::Request;
+    use serde_json::json;
+
+    #[test]
+    fn incoming_brief_and_plan_motion_reject_unknown_fields() {
+        let brief = json!({
+            "method": "set_brief",
+            "brief": {"type_styles": [{"name": "bad", "enter": {"kind": "rise", "delai_secs": 1.0}}]}
+        });
+        assert!(serde_json::from_value::<Request>(brief).is_err());
+
+        let plan = json!({
+            "method": "set_edit_plan",
+            "plan": {"segments": [{"media_id": uuid::Uuid::new_v4(), "source_in_secs": 0.0, "source_out_secs": 1.0,
+                "title": {"text": "Hi", "exit": {"kind": "fade", "durations_secs": 1.0}}}]}
+        });
+        assert!(serde_json::from_value::<Request>(plan).is_err());
+    }
+}

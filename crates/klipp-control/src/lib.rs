@@ -4155,6 +4155,10 @@ reference:   {}",
             if in_batch {
                 return Err("set_brief is its own undo step; send it on its own".into());
             }
+            for style in &brief.type_styles {
+                klipp_document::title_style::resolve_motion(style)
+                    .map_err(|e| format!("type style {:?}: {e}", style.name))?;
+            }
             if let Some(t) = brief.target_secs {
                 if !t.is_finite() || t <= 0.0 {
                     return Err(format!("a length of {t} s is not a length"));

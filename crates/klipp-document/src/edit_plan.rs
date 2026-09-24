@@ -37,8 +37,6 @@ fn is_hex_colour(s: &str) -> bool {
 
 /// A join with no length given is this long.
 const DEFAULT_TRANSITION_SECS: f64 = 0.5;
-/// A title with no hold given holds this long, or the segment if shorter.
-const DEFAULT_TITLE_SECS: f64 = 3.0;
 
 /// Why a plan cannot be stored, in a sentence with what would fix it.
 pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Result<(), String> {
@@ -79,19 +77,9 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             if t.glow.is_some_and(|g| !(0.0..=1.0).contains(&g)) {
                 return Err(format!("segment {n}: a title's glow is 0 to 1"));
             }
-            if let Some(a) = t.animate.as_deref() {
-                if !matches!(a, "fade" | "rise" | "drop" | "slide_left" | "slide_right" | "scale_up" | "scale_down" | "blur" | "typewriter") {
-                    return Err(format!("segment {n}: \"{a}\" is not an entrance; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur or typewriter"));
-                }
-            }
-            if let Some(st) = t.stagger.as_deref() {
-                if !matches!(st, "char" | "word" | "line") {
-                    return Err(format!("segment {n}: \"{st}\" is not a stagger; use char, word or line"));
-                }
-            }
-            if t.animate_secs.is_some_and(|x| !x.is_finite() || x <= 0.0 || x > 5.0) {
-                return Err(format!("segment {n}: a title's animate_secs is 0 to 5"));
-            }
+            let motion_style = crate::title_style::look(brief, if style.is_empty() { "heading" } else { style }).unwrap_or_default();
+            crate::title_style::effective_motion(&motion_style, t.enter.as_ref(), t.exit.as_ref(), t.animate.as_deref(), t.animate_secs, t.stagger.as_deref(), t.duration_secs(s.duration_secs()))
+                .map_err(|e| format!("segment {n}, style {:?}: {e}", motion_style.name))?;
             if [t.x, t.y].iter().flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
                 return Err(format!("segment {n}: a title's x and y are fractions of the frame, 0 to 1"));
             }
@@ -360,7 +348,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         let color = brief.and_then(|b| b.primary_color()).map(str::to_string);
         for (i, s) in plan.segments.iter().enumerate() {
             if let Some(t) = &s.title {
-                let hold = t.secs.filter(|x| *x > 0.0).unwrap_or(DEFAULT_TITLE_SECS).min(s.duration_secs());
+                let hold = t.duration_secs(s.duration_secs());
                 ops.push(title_op(t, hold, color.as_deref(), brief, ClipRef::At { track: video_below, secs: mids[i] }));
             }
         }
@@ -401,6 +389,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
     } else {
         (None, None, look.backing)
     };
+    let motion = crate::title_style::inherit_motion(&look, t.enter.as_ref(), t.exit.as_ref(), t.animate.as_deref(), t.animate_secs.map(|v| v as f32), t.stagger.as_deref());
     Op::Title {
         text: t.text.clone(),
         at: Anchor::ClipStart(over),
@@ -410,9 +399,8 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         x: Some(t.x.or(look.x).unwrap_or(0.5)), y: Some(t.y.or(look.y).unwrap_or(0.10)), size: look.size, color, font: look.font.clone(), bold: look.bold, align: look.align.clone(),
         backing, backing_color, full_frame, outline: look.outline, outline_color: look.outline_color.clone(),
         glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()),
-        animate: t.animate.clone().or(look.animate.clone()),
-        animate_secs: t.animate_secs.map(|v| v as f32).or(look.animate_secs),
-        stagger: t.stagger.clone().or(look.stagger.clone()),
+        animate: motion.animate, enter: motion.enter, exit: motion.exit,
+        animate_secs: motion.animate_secs, stagger: motion.stagger,
         loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None,
     }
 }

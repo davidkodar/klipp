@@ -1330,11 +1330,15 @@ fn tool_definitions() -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
+              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
+              Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or in_cubic. \
+              Timing: duration (0,5] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
+              Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
+              Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, typewriter) with stagger \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
@@ -1480,11 +1484,15 @@ fn tool_definitions() -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
+              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
+              Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or in_cubic. \
+              Timing: duration (0,5] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
+              Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
+              Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, typewriter) with stagger \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
@@ -1664,8 +1672,8 @@ fn tool_definitions() -> Vec<Value> {
              "Replace the brief, as one undo step. A brief is an object with any of: title, \
               type_styles (the brand's type system: [{name, font?, bold?, size?, color?, \
               fill?, backing?, full_frame?, x?, y?, align?, outline?, outline_color?, glow?, \
-              glow_color?, gradient?, animate?, animate_secs?, stagger?, loop_effect?}] — a \
-              title op or a plan title names one by style and its own fields override; \
+              glow_color?, gradient?, animate?, animate_secs?, stagger?, enter?, exit?, loop_effect?}] — a \
+              title op or a plan title names one by style and its own fields override; enter/exit use the title op motion object, including kind none to disable; \
               heading, callout and card are built in and a style of that name replaces it), \
               about (what the piece is about), tone, platform, target_secs, width and height \
               (the delivery's picture), loudness_lufs (about -14 for the web, -23 for \
@@ -1697,7 +1705,7 @@ fn tool_definitions() -> Vec<Value> {
               placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
               heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
               bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
-              typewriter, animate_secs?, stagger? char|word|line}, transition? \
+              typewriter|mask_rise|mask_drop, animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
               (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
               {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
               segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \

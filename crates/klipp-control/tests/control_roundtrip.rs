@@ -1139,3 +1139,37 @@ fn media_analysis_returns_null_for_undecoded_bins_and_ignores_old_sentinel_cache
     assert!(known["hits"].as_array().unwrap().iter().any(|v|v["media_id"]==id.0.to_string() && v["start_secs"]==1.0));
 
 }
+
+#[test]
+fn title_motion_reaches_plan_and_apply_and_invalid_styles_are_refused() {
+    let mut h = harness();
+    let ops = json!([{"op":"title","text":"Masked word stagger","at":{"secs":0},"secs":4,
+        "enter":{"kind":"mask_rise","stagger":"word","stagger_secs":0.13,"easing":"out_quint"},
+        "exit":{"kind":"mask_drop","duration_secs":0.4,"delay_secs":0.2}}]);
+    let preview = h.ok(json!({"method":"plan","ops":ops,"detail":true}));
+    assert_eq!(preview["applied"], false);
+    assert!(h.edits_seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    let applied = h.ok(json!({"method":"apply","ops":ops}));
+    assert_eq!(applied["applied"], true);
+    fn title_motion(edit: &klipp_document::history::EditCommand) -> Option<klipp_core::title_motion::TitleMotion> {
+        use klipp_document::history::EditCommand;
+        match edit {
+            EditCommand::Batch(edits) => edits.iter().find_map(title_motion),
+            EditCommand::AddTitleClip { clip, .. } => {
+                let object = clip.title_data()?.objects.first()?;
+                Some(object.fx().motion)
+            }
+            _ => None,
+        }
+    }
+    let edits = h.edits_seen.lock().unwrap_or_else(|e| e.into_inner());
+    let motion = edits.iter().find_map(title_motion).expect("motion in delivered edit");
+    assert_eq!(motion.enter.unwrap().kind, klipp_core::title_motion::MotionKind::MaskRise);
+    assert_eq!(motion.enter.unwrap().stagger_secs, 0.13);
+    assert_eq!(motion.exit.unwrap().kind, klipp_core::title_motion::MotionKind::MaskDrop);
+    assert_eq!(motion.exit.unwrap().delay_secs, 0.2);
+    drop(edits);
+    let reply = h.call(json!({"method":"set_brief","brief":{"type_styles":[{"name":"bad","exit":{"kind":"fade","delay_secs":-1}}]}}));
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().unwrap().contains("delay_secs"));
+}

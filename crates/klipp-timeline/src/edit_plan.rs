@@ -46,6 +46,12 @@ pub struct PlanTitle {
     /// by one.
     #[serde(default)]
     pub animate: Option<String>,
+    /// Explicit motion, overriding the style's whole entrance/exit.
+    /// Do not combine `enter` with legacy animate/animate_secs/stagger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<crate::brief::TitleMotionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<crate::brief::TitleMotionSpec>,
     #[serde(default)]
     pub animate_secs: Option<f64>,
     #[serde(default)]
@@ -318,6 +324,21 @@ impl EditPlan {
                         None => a.clone(),
                     });
                 }
+                if let Some(m) = &t.enter { extras.push(m.approval_text(false)); }
+                if let Some(m) = &t.exit { extras.push(m.approval_text(true)); }
+                if t.enter.is_some() || t.exit.is_some() {
+                    let window = t.duration_secs(s.duration_secs());
+                    extras.push(format!("title window {window} s"));
+                    let span = |m: &crate::brief::TitleMotionSpec| m.span_secs(&t.text);
+                    let entrance = t.enter.as_ref().filter(|m| !m.kind.eq_ignore_ascii_case("none")).map_or(0.0,span);
+                    let exit = t.exit.as_ref().filter(|m| !m.kind.eq_ignore_ascii_case("none")).map_or(0.0,span);
+                    if entrance > window { extras.push("entrance continues past the title window".into()); }
+                    if exit > window { extras.push("exit is already in progress at the title start".into()); }
+                    if entrance > 0.0 && exit > 0.0 && entrance + exit > window { extras.push("entrance and exit overlap".into()); }
+                }
+                if t.enter.is_none() && t.animate.is_none() && (t.animate_secs.is_some() || t.stagger.is_some()) {
+                    extras.push("legacy timing/stagger overrides apply only if the inherited entrance is active; otherwise ignored".into());
+                }
                 if t.glow.is_some() {
                     extras.push("glow".into());
                 }
@@ -350,6 +371,14 @@ fn clock(secs: f64) -> String {
     let m = (secs / 60.0).floor() as u64;
     let s = secs - (m as f64) * 60.0;
     format!("{m}:{s:05.2}")
+}
+
+
+impl PlanTitle {
+    /// Duration used by both plan validation and title-op lowering.
+    pub fn duration_secs(&self, segment_secs: f64) -> f64 {
+        self.secs.filter(|s|*s>0.0).unwrap_or(3.0).min(segment_secs)
+    }
 }
 
 #[cfg(test)]

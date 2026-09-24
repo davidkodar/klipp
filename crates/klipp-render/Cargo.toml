@@ -25,6 +25,7 @@ rayon          = { workspace = true }
 thiserror      = { workspace = true }
 
 [dev-dependencies]
+klipp-document = { workspace = true }
 klipp-testing = { workspace = true }
 klipp-project = { workspace = true }
 tracing-subscriber = { workspace = true }

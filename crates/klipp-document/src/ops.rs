@@ -15,6 +15,22 @@
 //!
 //! A [`Refusal`] says which step, why, and what would make it possible.
 
+fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<klipp_timeline::TitleMotionSpec>, D::Error> {
+    use serde::Deserialize;
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    value.map(|v| {
+        if let Some(object) = v.as_object() {
+            for key in object.keys() {
+                if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance"].contains(&key.as_str()) {
+                    return Err(serde::de::Error::custom(format!("unknown motion field {key:?}")));
+                }
+            }
+        }
+        serde_json::from_value(v).map_err(serde::de::Error::custom)
+    }).transpose()
+}
+
+
 use crate::history::{EditCommand, LinkedMovePartner};
 use klipp_core::{ClipId, Fps, MediaId, Timecode};
 use klipp_media::MediaPool;
@@ -582,12 +598,15 @@ pub enum Op {
     /// stroke, `glow`+`glow_color` a neon glow, `gradient` a two-colour
     /// fill (#top,#bottom). Motion: `animate` an entrance (fade, rise,
     /// drop, slide_left, slide_right, scale_up, scale_down, blur,
-    /// typewriter) over `animate_secs`, `stagger` (line/word/char) for
+    /// mask_rise, mask_drop, typewriter) over `animate_secs`, `stagger` (line/word/char) for
     /// per-unit timing; `loop` a continuous effect (pulse, flash/blink,
     /// neon, wave, shake, color_cycle); `glitch` and `chromatic` (0..1)
     /// add a digital edge. `style` names a look from the brief's type
     /// styles (or heading, callout, card): the look's fields fill every
-    /// one left out here.
+    /// one left out here. `enter`/`exit` expose kind, duration_secs, delay_secs,
+    /// easing, stagger, stagger_secs and distance (TitleMotionSpec). Each
+    /// explicit side replaces its style default; kind "none" disables it.
+    /// `enter` cannot coexist with explicit legacy entrance fields.
     Title {
         text: String,
         at: Anchor,
@@ -629,6 +648,10 @@ pub enum Op {
         gradient: Option<[String; 2]>,
         #[serde(default)]
         animate: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict_motion_spec")]
+        enter: Option<klipp_timeline::TitleMotionSpec>,
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict_motion_spec")]
+        exit: Option<klipp_timeline::TitleMotionSpec>,
         #[serde(default)]
         animate_secs: Option<f32>,
         #[serde(default)]
@@ -1567,7 +1590,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
-        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, animate_secs, stagger, loop_effect, glitch, chromatic } => {
+        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             // The look the style names fills what the op leaves out.
             let look = match style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1578,6 +1601,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 None => None,
             };
             let look = look.unwrap_or_default();
+            let motion = crate::title_style::effective_motion(&look, enter.as_ref(), exit.as_ref(), animate.as_deref(), animate_secs.map(f64::from), stagger.as_deref(), *secs)
+                .map_err(|e| refuse(i, format!("title motion (style {:?}): {e}", look.name), "correct the effective title motion or its inherited style"))?;
             let full_frame_color = full_frame.clone().or_else(|| look.full_frame.filter(|f| *f).map(|_| look.fill.clone().unwrap_or_else(|| "#101418".into())));
             let backing_color = backing_color.clone().or_else(|| if look.full_frame.unwrap_or(false) { None } else { look.fill.clone() });
             let keep_out = faces_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs);
@@ -1587,7 +1612,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 color: color.as_deref().or(look.color.as_deref()), font: font.clone().or(look.font.clone()), bold: bold.or(look.bold), align: align.as_deref().or(look.align.as_deref()),
                 backing: backing.or(if backing_color.is_some() { None } else { look.backing }), backing_color: backing_color.as_deref(), full_frame: full_frame_color.as_deref(),
                 outline: outline.or(look.outline), outline_color: outline_color.as_deref().or(look.outline_color.as_deref()), glow: glow.or(look.glow), glow_color: glow_color.as_deref().or(look.glow_color.as_deref()),
-                gradient: gradient.as_ref().or(look.gradient.as_ref()), animate: animate.as_deref().or(look.animate.as_deref()), animate_secs: animate_secs.or(look.animate_secs), stagger: stagger.as_deref().or(look.stagger.as_deref()),
+                gradient: gradient.as_ref().or(look.gradient.as_ref()), motion,
                 loop_effect: loop_effect.as_deref().or(look.loop_effect.as_deref()), glitch: *glitch, chromatic: *chromatic,
             };
             title_op(seq, fps, i, at, args)
@@ -3962,9 +3987,7 @@ struct TitleArgs<'a> {
     glow: Option<f32>,
     glow_color: Option<&'a str>,
     gradient: Option<&'a [String; 2]>,
-    animate: Option<&'a str>,
-    animate_secs: Option<f32>,
-    stagger: Option<&'a str>,
+    motion: klipp_core::title_motion::TitleMotion,
     loop_effect: Option<&'a str>,
     glitch: Option<f32>,
     chromatic: Option<f32>,
@@ -3975,7 +3998,7 @@ struct TitleArgs<'a> {
 /// Build a styled, animated title from scratch and place it on a text
 /// track — the general-purpose sibling of `lower_third`/`captions`.
 fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    use klipp_core::title_motion::{Motion, MotionKind, StaggerUnit, TitleLoop, TitleMotion};
+    use klipp_core::title_motion::TitleLoop;
     use klipp_timeline::{FontStyle, TextAlignment, TextBox, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData};
     let text = a.text.trim();
     if text.is_empty() {
@@ -4049,36 +4072,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         }
         tb.chromatic_aberration_px = ch * 12.0;
     }
-    if let Some(an) = a.animate {
-        let kind = match an.to_lowercase().as_str() {
-            "fade" => MotionKind::Fade,
-            "rise" => MotionKind::Rise,
-            "drop" => MotionKind::Drop,
-            "slide_left" | "slide" | "slideleft" => MotionKind::SlideLeft,
-            "slide_right" | "slideright" => MotionKind::SlideRight,
-            "scale_up" | "scaleup" | "zoom_in" | "pop" => MotionKind::ScaleUp,
-            "scale_down" | "scaledown" => MotionKind::ScaleDown,
-            "blur" | "focus" => MotionKind::Blur,
-            "typewriter" | "type" => MotionKind::Typewriter,
-            other => return Err(refuse(i, format!("\"{other}\" is not an entrance"), "use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur or typewriter")),
-        };
-        let mut m = Motion::new(kind).duration(a.animate_secs.unwrap_or(0.6).clamp(0.05, 5.0));
-        match a.stagger {
-            Some(st) => {
-                let unit = match st.to_lowercase().as_str() {
-                    "none" => StaggerUnit::None,
-                    "line" => StaggerUnit::Line,
-                    "word" => StaggerUnit::Word,
-                    "char" | "character" => StaggerUnit::Char,
-                    other => return Err(refuse(i, format!("\"{other}\" is not a stagger"), "use none, line, word or char")),
-                };
-                m = m.stagger(unit, 0.05);
-            }
-            None if matches!(kind, MotionKind::Typewriter) => m = m.stagger(StaggerUnit::Char, 0.04),
-            None => {}
-        }
-        fx.motion = TitleMotion::enter(m);
-    }
+    fx.motion = a.motion;
     if let Some(lp) = a.loop_effect {
         let l = match lp.to_lowercase().as_str() {
             "pulse" | "breathe" => TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
@@ -4386,7 +4380,7 @@ mod tests {
             }
         }
         let (seq, pool, media, _, _) = fixture();
-        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
         let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -4495,7 +4489,7 @@ mod tests {
             type_styles: vec![TypeStyle { name: "kicker".into(), size: Some(28.0), y: Some(0.12), color: Some("#ff6600".into()), animate: Some("drop".into()), ..Default::default() }],
             ..Default::default()
         });
-        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
+        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), None)]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
@@ -5282,7 +5276,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
-        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, style: None }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, style: None }]).is_err());
     }
 
     #[test]

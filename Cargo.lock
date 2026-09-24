@@ -3062,6 +3062,7 @@ dependencies = [
  "klipp-color",
  "klipp-compose",
  "klipp-core",
+ "klipp-document",
  "klipp-effects",
  "klipp-media",
  "klipp-nodes",
