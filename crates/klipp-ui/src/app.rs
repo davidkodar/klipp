@@ -23518,7 +23518,7 @@ impl KlippApp {
             working_colorspace: self.state.project_working_colorspace,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), &self.state.title_assets) {
+        match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
                     tracing::warn!("Failed to persist Looks library: {e}");
@@ -23645,7 +23645,7 @@ impl KlippApp {
     fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
             Ok((sequences, media_pool, color_settings, active_id, created_at, notes,
-                timeline_zoom, timeline_scroll_x, title_assets)) => {
+                timeline_zoom, timeline_scroll_x, timeline_track_scale, title_assets)) => {
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -23666,6 +23666,9 @@ impl KlippApp {
                 }
                 if let Some(sx) = timeline_scroll_x {
                     self.state.timeline_scroll_x = sx.max(0.0);
+                }
+                if let Some(scale) = timeline_track_scale {
+                    self.state.timeline_track_scale = scale.clamp(0.1, 1.0);
                 }
 
                 // Fix media resolutions for rotated videos (phone portrait clips)
@@ -27321,6 +27324,7 @@ impl eframe::App for KlippApp {
                 let backup_count = self.prefs.editing.backup_count;
                 let zoom = self.state.timeline_zoom;
                 let scroll_x = self.state.timeline_scroll_x;
+                let track_scale = self.state.timeline_track_scale;
 
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let repaint_ctx = ctx.clone();
@@ -27338,6 +27342,7 @@ impl eframe::App for KlippApp {
                             backup_count,
                             Some(zoom),
                             Some(scroll_x),
+                            Some(track_scale),
                             &title_assets,
                         )
                         .and_then(|()| {

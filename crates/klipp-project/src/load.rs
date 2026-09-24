@@ -79,12 +79,12 @@ fn migrate_graph(graph: &mut NodeGraph) {
 
 /// Result of loading a project: sequences, media pool, color settings,
 /// active sequence ID, created_at, free-form project notes, optional
-/// timeline zoom (px-per-second) and optional timeline scroll position.
-/// The two view-state fields round-trip through `project.json` so e.g.
+/// timeline zoom (px-per-second), scroll position, and vertical track scale.
+/// The view-state fields round-trip through `project.json` so e.g.
 /// "Fit Timeline to Window" persists across sessions.
 /// Project-scoped synthetic title assets, keyed by their
 /// `MediaItem.id`. Empty `HashMap` for projects that pre-date the
-/// synthetic-asset feature. The 9th tuple element of `LoadResult`.
+/// synthetic-asset feature. The 10th tuple element of `LoadResult`.
 pub type LoadedTitleAssets =
     std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>;
 
@@ -95,6 +95,7 @@ pub type LoadResult = (
     Option<String>,
     Option<String>,
     String,
+    Option<f32>,
     Option<f32>,
     Option<f32>,
     LoadedTitleAssets,
@@ -393,6 +394,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         project.notes,
         project.timeline_zoom,
         project.timeline_scroll_x,
+        project.timeline_track_scale,
         title_assets,
     ))
 }

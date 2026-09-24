@@ -156,7 +156,7 @@ fn consolidate_round_trip() {
     assert!(dest.join("media/clip_b.mp4").exists());
 
     // Consolidated project is loadable and its media items all resolve.
-    let (_seqs, loaded_pool, _color, _active, _created, _notes, _zoom, _scroll, _assets) = load_project(&dest).unwrap();
+    let (_seqs, loaded_pool, _color, _active, _created, _notes, _zoom, _scroll, _track_scale, _assets) = load_project(&dest).unwrap();
     for item in loaded_pool.all() {
         assert!(item.path.exists(), "media {:?} should exist", item.path);
         assert!(!item.offline);
