@@ -279,7 +279,7 @@ impl SequenceSnapshot {
     /// Freeze the sequence, resolving compound clips (nested sequences) by
     /// flattening their inner clips into the parent timeline. `all_sequences`
     /// must contain every sequence in the project so that
-    /// `ClipKind::Sequence { sequence_id }` can be resolved.
+    /// `ClipKind::Sequence { sequence_id, .. }` can be resolved.
     /// `working_colorspace` is the project's, and it is a parameter rather
     /// than a field the caller patches afterwards because every render
     /// decision downstream reads it: the display transform, the ACES ODT's
@@ -544,7 +544,7 @@ fn snapshot_audio_track(
         // A precomposition's sound is not taken here: flattening puts
         // it on runtime tracks of its own, with the scene's controls,
         // and the snapshot takes those below — once.
-        if let ClipKind::Sequence { sequence_id } = &clip.kind {
+        if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
             if depth < MAX_COMPOUND_DEPTH {
                 flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
                 continue;

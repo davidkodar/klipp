@@ -4827,7 +4827,7 @@ impl KlippApp {
             'outer: for (ti, track) in parent.tracks.iter().enumerate() {
                 for (ci, c) in track.clips.iter().enumerate() {
                     if c.id == clip_id {
-                        if let klipp_timeline::ClipKind::Sequence { sequence_id } = &c.kind {
+                        if let klipp_timeline::ClipKind::Sequence { sequence_id, .. } = &c.kind {
                             found = Some(CompoundSnapshot {
                                 parent_track_idx: ti,
                                 parent_clip_idx: ci,
@@ -5103,7 +5103,7 @@ impl KlippApp {
                 && seq.tracks.iter().any(|t| {
                     t.clips.iter().any(|c| {
                         matches!(c.kind, klipp_timeline::ClipKind::Sequence {
-                            sequence_id
+                            sequence_id, ..
                         } if sequence_id == snap.inner_seq_id)
                     })
                 })
@@ -5314,7 +5314,7 @@ impl KlippApp {
                     let nested_id = seq.all_clips()
                         .find(|c| c.id == cid)
                         .and_then(|c| match &c.kind {
-                            klipp_timeline::ClipKind::Sequence { sequence_id } => Some(*sequence_id),
+                            klipp_timeline::ClipKind::Sequence { sequence_id, .. } => Some(*sequence_id),
                             _ => None,
                         });
                     if let Some(sid) = nested_id {
@@ -15615,7 +15615,15 @@ impl KlippApp {
                 };
                 // A template is composed in isolation and placed as one
                 // picture: a precomposition, not a flattened compound.
-                let clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
+                let mut clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
+                clip.kind = klipp_timeline::ClipKind::Precomposition {
+                    sequence_id,
+                    template_instance: Some(crate::parameterized_templates::TemplateInstance {
+                        template_id: *template_id,
+                        overrides: std::collections::BTreeMap::new(),
+                        media_slots: std::collections::BTreeMap::new(),
+                    }),
+                };
                 let clip_id = clip.id;
                 seq.tracks[track_index].clips.push(clip.clone());
                 seq.tracks[track_index].sort_clips();
@@ -18575,7 +18583,7 @@ impl KlippApp {
                 if self.state.sequences.len() > 1 && *sequence_idx < self.state.sequences.len() {
                     // Refuse to delete a sequence that is used as a compound
                     // clip elsewhere — otherwise the compound clip's
-                    // ClipKind::Sequence { sequence_id } reference would
+                    // ClipKind::Sequence { sequence_id, .. } reference would
                     // dangle and double-click to re-open would silently fail.
                     let target_id = self.state.sequences[*sequence_idx].id;
                     let referenced_by: Option<String> = self
@@ -18587,8 +18595,8 @@ impl KlippApp {
                         .find_map(|(_, seq)| {
                             let used = seq.tracks.iter().any(|t| {
                                 t.clips.iter().any(|c| {
-                                    matches!(c.kind, klipp_timeline::ClipKind::Sequence {
-                                        sequence_id
+                                        matches!(c.kind, klipp_timeline::ClipKind::Sequence {
+                                            sequence_id, ..
                                     } if sequence_id == target_id)
                                 })
                             });
@@ -34446,7 +34454,7 @@ fn would_create_cycle(
         if let Some(seq) = all_sequences.iter().find(|s| s.id == sid) {
             for track in &seq.tracks {
                 for clip in &track.clips {
-                    if let klipp_timeline::ClipKind::Sequence { sequence_id } = &clip.kind {
+                    if let klipp_timeline::ClipKind::Sequence { sequence_id, .. } = &clip.kind {
                         stack.push(*sequence_id);
                     }
                 }
