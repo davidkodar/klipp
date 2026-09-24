@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "shots";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// Scene-change score above which a frame starts a new shot; ffmpeg's
 /// `scene` is 0 to 1, and 0.3 is the customary threshold.
@@ -54,7 +54,9 @@ impl Shots {
     /// both passes detect the same change. Explicit boundaries alone are
     /// treated as precise; only a slow-only detection gains uncertainty.
     pub fn from_passes(duration_secs: f64, fast: Vec<f64>, slow: Vec<f64>) -> Self {
-        let fast = Self::from_boundaries(duration_secs, fast).boundaries;
+        let mut fast = fast;
+        fast.retain(|t| t.is_finite() && *t > 0.0 && *t < duration_secs);
+        fast.sort_by(f64::total_cmp);
         // Match raw slow detections first: pre-coalescing can discard a
         // real cut through a duplicate that is itself removed by fast.
         let slow_boundaries: Vec<f64> = slow.into_iter().filter(|t| {
@@ -126,6 +128,11 @@ impl crate::Analyser for ShotsAnalyser {
 mod tests {
     use super::*;
 
+    #[test]
+    fn slow_matches_raw_fast_before_coalescing() {
+        let s=Shots::from_passes(5.0,vec![2.0,2.4],vec![2.9]);
+        assert_eq!(s.boundaries,vec![2.0]);assert!(s.slow_boundaries.is_empty());
+    }
     #[test]
     fn showinfo_lines_give_the_boundaries_and_shots_follow() {
         let text = "\

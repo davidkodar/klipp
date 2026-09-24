@@ -3904,8 +3904,21 @@ reference:   {}",
             } else {
                 json!(null)
             };
-            Ok(style_profile_response(&filename, &media_id, cuts, &beats, look,
-                StylePacingInput { shots, motion: report.motion.as_ref(), sheet: report.beatsheet.as_ref() }))
+            let mut response = style_profile_response(&filename, &media_id, cuts, &beats, look,
+                StylePacingInput { shots, motion: report.motion.as_ref(), sheet: report.beatsheet.as_ref() });
+            if report.motion.as_ref().is_none_or(|m| m.overall_mean().is_none())
+                && klipp_analysis::service::status(id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running)) {
+                response["next"] = json!("Motion analysis is queued or running; wait for it to finish, then read style_profile again. Do not queue a second analysis.");
+                for pointer in ["/text", "/guidance", "/pacing_evidence/guidance"] {
+                    if let Some(value)=response.pointer_mut(pointer) {
+                        if let Some(text)=value.as_str() {
+                            *value=json!(text.replace("Re-analyse the reference and check that its video stream decodes.", "Motion analysis is still in progress; wait for completion.")
+                                .replace("Re-analyse the reference to populate missing or outdated analysis.", "Motion analysis is still in progress; wait for completion."));
+                        }
+                    }
+                }
+            }
+            Ok(response)
         }
 
         ControlCommand::CutPoints { media_id, near_secs, from_secs, to_secs } => {

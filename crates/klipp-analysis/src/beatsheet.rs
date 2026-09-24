@@ -22,7 +22,7 @@ use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
 // Invalidate results derived from the previous shot-boundary selection.
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
