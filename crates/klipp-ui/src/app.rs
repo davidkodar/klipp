@@ -7591,7 +7591,7 @@ impl KlippApp {
                         let history = self.state.active_history_mut();
                         let merged = history.merge_into_last(|last| match last {
                             crate::history::EditCommand::SetTemplateInstance { clip_id, new: last_new, .. } if *clip_id == cid => {
-                                *last_new = Box::new(new.clone());
+                                **last_new = new.clone();
                                 true
                             }
                             _ => false,
