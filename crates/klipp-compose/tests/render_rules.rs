@@ -879,9 +879,144 @@ fn a_default_title_shows_on_a_portrait_uhd_stack() {
     assert!(bright > 5000, "bright pixels: {bright}");
 }
 
+/// A title's motion blur used to place one rasterisation at every shutter
+/// sample, so a title whose own drawing moves was averaged to itself. A
+/// word rising into place came out as sharp letters at one position —
+/// the sharpness motion blur exists to remove. The letters are what move
+/// here; the clip never does.
+///
+/// The title renderer scales type by height/1080, so the frame has to be
+/// big enough and the size large enough for real glyphs. The animation
+/// is always the same; only what is asked of the renderer differs.
+fn entering_title(enter: klipp_core::title_motion::Motion, motion_blur: Option<f32>, color: [u8; 4]) -> (Sequence, Clip) {
+    let mut tb = klipp_timeline::TextBox { text: "RISE".into(), font_size: 420.0, color, ..Default::default() };
+    tb.motion_blur = motion_blur.map(|shutter_angle| klipp_timeline::MotionBlur {
+        enabled: true,
+        shutter_angle,
+        shutter_angle_keyframes: Vec::new(),
+        samples: 8,
+    });
+    tb.motion.enter = Some(enter);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: 480, height: 270 };
+    let title = clip(ClipKind::Title(klipp_timeline::TitleData::single_text(tb)), 0.0, 5.0);
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    text.clips = vec![title.clone()];
+    let mut video = Track::new("V1", TrackKind::Video);
+    video.clips = vec![media(0.0, 5.0)];
+    seq.tracks = vec![text, video];
+    (seq, title)
+}
+
+/// Each letter rising over a tenth of a second, one after the next: at
+/// 0.25 s some are in place and some are still travelling, which is the
+/// moment worth sampling.
+fn rising_letters() -> klipp_core::title_motion::Motion {
+    klipp_core::title_motion::Motion {
+        kind: klipp_core::title_motion::MotionKind::Rise,
+        duration_secs: 0.1,
+        delay_secs: 0.0,
+        easing: Default::default(),
+        stagger: klipp_core::title_motion::StaggerUnit::Char,
+        stagger_secs: 0.08,
+        distance: 1.0,
+    }
+}
+
+/// The frame at 0.25 s of a sequence from [`entering_title`], on the CPU
+/// path, over a white source.
+fn entering_title_frame(seq: &Sequence, prepare: impl FnOnce(&mut Renderer)) -> Vec<f32> {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    prepare(&mut r);
+    r.render(seq, tc(0.25), 480, 270, &mut White, RenderOptions::default())
+}
+
+/// Partly-covered pixels: a sharp glyph edge makes few, a smeared one
+/// makes many.
+fn soft(img: &[f32]) -> usize {
+    img.chunks_exact(4).filter(|p| (0.05..0.95).contains(&p[0])).count()
+}
+
+#[test]
+fn a_stationary_title_whose_letters_rise_is_smeared_by_them() {
+    // Dark on the white source, so a glyph's coverage reads as a value
+    // between the two.
+    let shot = |shutter_angle: f32| entering_title_frame(&entering_title(rising_letters(), Some(shutter_angle), [0, 0, 0, 255]).0, |_| {});
+    let (closed, open) = (shot(0.0), shot(360.0));
+    assert!(
+        soft(&closed) > 0,
+        "the title should be on screen at all: no partly-covered pixels with the shutter closed",
+    );
+    assert!(
+        soft(&open) * 2 > soft(&closed) * 3,
+        "a letter travelling while the shutter is open should smear: {} partly-covered pixels against {} with it closed (measured 5317 against 2737)",
+        soft(&open),
+        soft(&closed),
+    );
+}
+
+/// A shutter that never opens changes nothing: every sample is the frame
+/// itself, and a title drawn once a sample has to come out as the title
+/// drawn once a frame. The three that follow pin each thing a sample was
+/// once drawn without — the grade, the working space, the blur it enters
+/// with — by comparing the shut shutter to no motion blur at all.
+fn assert_shut_shutter_is_identity(what: &str, off: &[f32], shut: &[f32]) {
+    assert!(soft(off) > 0, "the title should be on screen at all for the {what} comparison to mean anything");
+    let worst = off.iter().zip(shut).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(
+        worst < 1e-4,
+        "a shut shutter should draw exactly what no motion blur draws, but the {what} differs by up to {worst}",
+    );
+}
+
+#[test]
+fn a_shut_shutter_keeps_the_title_graded() {
+    // Grey, so a stop of exposure visibly lifts it.
+    let shot = |mb| {
+        let (mut seq, title) = entering_title(rising_letters(), mb, [110, 110, 110, 255]);
+        let graded = Clip { node_graph: exposure(1.0), ..title };
+        seq.tracks[0].clips = vec![graded];
+        entering_title_frame(&seq, |_| {})
+    };
+    let ungraded = entering_title_frame(&entering_title(rising_letters(), None, [110, 110, 110, 255]).0, |_| {});
+    let off = shot(None);
+    assert!(
+        off.iter().zip(&ungraded).any(|(a, b)| (a - b).abs() > 0.05),
+        "the grade should show on the letters at all, or the comparison proves nothing",
+    );
+    assert_shut_shutter_is_identity("grade", &off, &shot(Some(0.0)));
+}
+
+#[test]
+fn a_shut_shutter_keeps_the_title_in_the_working_space() {
+    use klipp_core::WorkingColorspace::AcesCG;
+    // A saturated colour: read as ACEScg primaries by mistake, it is a
+    // different colour; brought across properly, the same one.
+    let shot = |mb| entering_title_frame(&entering_title(rising_letters(), mb, [220, 40, 40, 255]).0, |r| r.set_working_colorspace(AcesCG));
+    assert_shut_shutter_is_identity("colour in an ACEScg project", &shot(None), &shot(Some(0.0)));
+}
+
+#[test]
+fn a_shut_shutter_keeps_the_blur_a_title_enters_with() {
+    // A blur entrance is not posed a letter at a time: the whole title
+    // is rastered and the blur deferred to the compositor, which is the
+    // step a sample can miss. So the title enters as one, slowly enough
+    // to still be blurred at 0.25 s.
+    let blurred_entrance = klipp_core::title_motion::Motion {
+        kind: klipp_core::title_motion::MotionKind::Blur,
+        duration_secs: 0.4,
+        stagger: klipp_core::title_motion::StaggerUnit::None,
+        ..rising_letters()
+    };
+    let shot = |mb| entering_title_frame(&entering_title(blurred_entrance, mb, [0, 0, 0, 255]).0, |_| {});
+    assert_shut_shutter_is_identity("blur entrance", &shot(None), &shot(Some(0.0)));
+}
+
 /// The viewer's fast path lays a title sprite over the presented bytes
 /// in display space. Where the text is solid or absent that is the full
 /// composite to the bit; only an anti-aliased edge may differ a little.
+
 #[test]
 fn a_title_laid_over_display_bytes_matches_the_full_composite() {
     let mut seq = Sequence::new_default();
