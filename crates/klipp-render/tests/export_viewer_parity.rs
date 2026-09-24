@@ -410,6 +410,66 @@ fn stacked_tracks_mix_in_linear_light() {
     }
 }
 
+/// A precomposition in an exported file is the scene composed first and
+/// faded after: green under half-red is (0.5, 0.5, 0) composed, and the
+/// precomposition at half opacity puts (0.25, 0.25, 0) in the file —
+/// through the real export, the real encoder, and the flattening the
+/// viewer's timeline goes through.
+#[test]
+fn a_precomposition_exports_as_the_composed_scene_faded_once() {
+    if !ffmpeg_ok() { return; }
+    let mut red = solid([255, 0, 0], 0, FRAMES as i64);
+    klipp_core::keyframe::upsert_keyframe(&mut red.opacity_keyframes, 0.0, 0.5);
+    let scene = timeline(vec![vec![red], vec![solid([0, 255, 0], 0, FRAMES as i64)]]).sequence;
+    let mut pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    klipp_core::keyframe::upsert_keyframe(&mut pre.opacity_keyframes, 0.0, 0.5);
+    let mut v = timeline(vec![vec![pre]]);
+    v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
+    let out = tmp("precomp_faded.mp4");
+    export_video(v, &out, |_| {});
+    let got = px(&decode_709(&out), W / 2, H / 2);
+    let q = srgb8_of_linear(0.25);
+    eprintln!("the composed scene at half: export {got:?}, want [{q}, {q}, 0]");
+    for (c, want) in got.iter().zip([q, q, 0]) {
+        assert!((c - want).abs() <= 2, "export {got:?}, want [{q}, {q}, 0]");
+    }
+}
+
+/// A precomposition of a media clip is decoded and exported like the
+/// clip itself: the bars come through the scene, the instance's own
+/// clip id, and the export's decoder streams, as they come through
+/// directly. Flat patches compared, as `ungraded_sdr_export_reproduces_the_source` does.
+#[test]
+fn a_precomposition_of_media_reproduces_its_source() {
+    let Some(src) = bars_source() else { return };
+    let m = media(src.clone(), None);
+    let scene = timeline(vec![vec![m.clip]]).sequence;
+    let pre = base_clip(klipp_timeline::ClipKind::Precomposition { sequence_id: scene.id });
+    let mut v = timeline(vec![vec![pre]]);
+    v.media.extend(m.media);
+    v.sequence = klipp_timeline::flatten::flatten_sequence(&v.sequence, &[v.sequence.clone(), scene]);
+    let out = tmp("precomp_bars.mp4");
+    export_video(v, &out, |_| {});
+    let (a, b) = (decode_709(&src), decode_709(&out));
+    let flat = |x: u32, y: u32| {
+        let c = &a[((y * W + x) * 3) as usize..][..3];
+        (0..81).all(|k| &a[(((y + k / 9 - 4) * W + x + k % 9 - 4) * 3) as usize..][..3] == c)
+    };
+    let (mut worst, mut sampled) = (0, 0);
+    for gy in 1..27 {
+        for gx in 1..48 {
+            let (x, y) = (gx * W / 48, gy * H / 27);
+            if !flat(x, y) { continue; }
+            sampled += 1;
+            let (p, q) = (px(&a, x, y), px(&b, x, y));
+            worst = worst.max((0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap());
+        }
+    }
+    eprintln!("bars through a precomposition: worst {worst} over {sampled} flat samples");
+    assert!(sampled > 100, "too few flat samples ({sampled}) to mean anything");
+    assert!(worst <= 5, "the precomposition's export differs from the source by {worst} levels");
+}
+
 /// A dissolve's midpoint is half of each clip in linear light, in the
 /// exported file too.
 #[test]

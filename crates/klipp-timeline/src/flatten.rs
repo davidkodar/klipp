@@ -48,17 +48,19 @@ pub const MAX_COMPOUND_DEPTH: u8 = 8;
 /// The returned `Sequence` shares `seq`'s id, name, fps, resolution,
 /// markers, in_point, out_point, and last_playhead — only `tracks` differ.
 pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence {
-    flatten_within(seq, all_sequences, &mut Vec::new())
+    flatten_within(seq, all_sequences, &mut Vec::new(), None)
 }
 
-/// The name of the runtime track a precomposition's sound is flattened
-/// onto. It exists only in a flattened sequence, never in a project.
-pub const PRECOMPOSITION_SOUND_TRACK: &str = "Precomposition sound";
-
-/// [`flatten_sequence`] with the chain of sequences being resolved, so a
-/// scene that contains itself, at any remove, is refused rather than
-/// followed forever.
-fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>) -> Sequence {
+/// [`flatten_sequence`] within an instance: `namespace` is the clip
+/// this sequence is the scene of, `None` at the top. The chain of
+/// sequences being resolved is kept so a scene that contains itself, at
+/// any remove, is refused rather than followed forever.
+///
+/// This instance's clips are renamed under `namespace` *before* the
+/// scenes inside it are resolved, so a scene inside a scene is named
+/// under the instance-scoped id of the clip that holds it: the same
+/// leaf reached through two instances of a middle scene is two leaves.
+fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, namespace: Option<ClipId>) -> Sequence {
     ancestors.push(seq.id);
     let mut flat = seq.clone();
     flat.tracks = seq
@@ -66,19 +68,29 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
         .iter()
         .map(|track| flatten_track(track, all_sequences, 0))
         .collect();
+    if let Some(ns) = namespace {
+        let ids: HashMap<ClipId, ClipId> = flat
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .map(|c| (c.id, instance_id(ns, c.id)))
+            .collect();
+        reidentify(&mut flat, &ids);
+    }
     let mut sound = Vec::new();
     for track in &mut flat.tracks {
+        let carrier = Controls::of(track);
         for clip in &mut track.clips {
             if let ClipKind::Precomposition { sequence_id } = clip.kind {
-                clip.precomp = resolve_precomposition(clip, sequence_id, all_sequences, ancestors, &mut sound);
+                // A clip that is off is off: no scene, no sound.
+                clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
+                if let Some(scene) = &clip.precomp {
+                    sound.extend(scene_sound(clip, scene, &carrier));
+                }
             }
         }
     }
-    if !sound.is_empty() {
-        let mut t = Track::new(PRECOMPOSITION_SOUND_TRACK, TrackKind::Audio);
-        t.clips = sound;
-        flat.tracks.push(t);
-    }
+    flat.tracks.extend(sound);
     ancestors.pop();
     flat
 }
@@ -86,16 +98,11 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
 /// One precomposition clip's scene, as an instance of its own.
 ///
 /// The inner sequence is flattened like any other (its compounds
-/// expanded, its own precompositions resolved), and then every clip in
-/// it is given an id derived from this clip's id and its own — the same
-/// scene laid in twice is two sets of clips, and a link, a matte or a
+/// expanded, its own precompositions resolved), and every clip in it is
+/// given an id derived from this clip's id and its own — the same scene
+/// laid in twice is two sets of clips, and a link, a matte or a
 /// transition inside the scene points at the copy in its own instance.
 /// The persisted ids are untouched; this is a render-time copy.
-///
-/// The scene's sound cannot be composed on a surface, so its
-/// audio-bearing clips are sliced onto this clip's window, at the
-/// instance's ids, and collected into `sound` for the caller to put on
-/// a track the mixer reads — as a compound's sound reaches the mix.
 ///
 /// `None`, and so nothing rendered, when the scene is missing, when it
 /// contains itself at any remove, or past [`MAX_COMPOUND_DEPTH`].
@@ -104,47 +111,74 @@ pub fn resolve_precomposition(
     sequence_id: SequenceId,
     all_sequences: &[Sequence],
     ancestors: &mut Vec<SequenceId>,
-    sound: &mut Vec<Clip>,
 ) -> Option<Arc<Sequence>> {
     if ancestors.contains(&sequence_id) || ancestors.len() >= MAX_COMPOUND_DEPTH as usize {
         return None;
     }
     let inner = all_sequences.iter().find(|s| s.id == sequence_id)?;
-    let mut instance = flatten_within(inner, all_sequences, ancestors);
-    let ids: HashMap<ClipId, ClipId> = instance
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
-        .map(|c| (c.id, instance_id(clip.id, c.id)))
-        .collect();
-    reidentify(&mut instance, &ids);
+    Some(Arc::new(flatten_within(inner, all_sequences, ancestors, Some(clip.id))))
+}
 
+/// A track's say over the sound on it.
+struct Controls {
+    muted: bool,
+    solo: bool,
+    volume: f32,
+    pan: f32,
+}
+
+impl Controls {
+    fn of(track: &Track) -> Self {
+        Self { muted: track.muted, solo: track.solo, volume: track.volume, pan: track.pan }
+    }
+}
+
+/// A scene's sound, on tracks the mixer reads.
+///
+/// A surface cannot carry sound, so each scene track with audio-bearing
+/// clips becomes a runtime audio track of the containing sequence: its
+/// clips sliced onto the precomposition's window (at the instance's
+/// ids), and its controls composed with the containing track's — muted
+/// if either is, the volumes multiplied, the pans added. Solo is settled
+/// inside the scene, where it was set: a soloed scene track silences
+/// its siblings and nothing outside the scene. The runtime track takes
+/// the containing track's solo, so it stands or falls with it. A scene
+/// inside the scene has already had this done at its own level, and its
+/// runtime tracks come through here like any other, composed once more.
+///
+/// A video clip whose audio half sits on an audio track of the scene
+/// sounds through that half, as it does in the scene.
+fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> {
     let rate = clip.timeline_in.rate;
     let (t_in, s_in, s_out) = (clip.timeline_in.to_secs_f64(), clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-    for track in &instance.tracks {
-        for inner_clip in &track.clips {
-            if !inner_clip.enabled || inner_clip.media_id().is_none() {
-                continue;
-            }
-            // A video clip whose audio half sits on an audio track of the
-            // scene sounds through that half, as it does in the scene.
-            if track.kind == TrackKind::Video {
-                if let Some(lid) = inner_clip.linked_clip_id {
-                    let partner_on_audio = instance
-                        .tracks
-                        .iter()
-                        .any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|c| c.id == lid));
-                    if partner_on_audio {
-                        continue;
-                    }
-                }
-            }
-            if let Some(sliced) = slice_inner_clip_to_compound(inner_clip, t_in, s_in, s_out, clip.speed, rate) {
-                sound.push(sliced);
-            }
+    let any_solo = scene.tracks.iter().any(|t| t.solo);
+    let mut out = Vec::new();
+    for track in &scene.tracks {
+        let clips: Vec<Clip> = track
+            .clips
+            .iter()
+            .filter(|c| c.enabled && c.media_id().is_some())
+            .filter(|c| {
+                !(track.kind == TrackKind::Video
+                    && c.linked_clip_id.is_some_and(|lid| {
+                        scene.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.clips.iter().any(|p| p.id == lid))
+                    }))
+            })
+            .filter_map(|c| slice_inner_clip_to_compound(c, t_in, s_in, s_out, clip.speed, rate))
+            .collect();
+        if clips.is_empty() {
+            continue;
         }
+        let mut t = Track::new(&format!("{} · {}", scene.name, track.name), TrackKind::Audio);
+        t.clips = clips;
+        t.muted = track.muted || carrier.muted || (any_solo && !track.solo);
+        t.solo = carrier.solo;
+        t.volume = track.volume * carrier.volume;
+        t.pan = (track.pan + carrier.pan).clamp(-1.0, 1.0);
+        t.precomposition_sound = true;
+        out.push(t);
     }
-    Some(Arc::new(instance))
+    out
 }
 
 /// The id a scene's clip has inside one instance of the scene: a name
@@ -761,7 +795,7 @@ mod tests {
         parent.tracks.push(p);
 
         let flat = flatten_sequence(&parent, &[parent.clone(), scene.clone()]);
-        let sound = flat.tracks.iter().find(|t| t.name == PRECOMPOSITION_SOUND_TRACK).expect("a sound track");
+        let sound = flat.tracks.iter().find(|t| t.precomposition_sound).expect("a sound track");
         assert_eq!(sound.kind, TrackKind::Audio);
         assert_eq!(sound.clips.len(), 1, "the linked pair sounds once, through its audio half");
         let instance = flat.tracks[0].clips[0].precomp.as_ref().unwrap();

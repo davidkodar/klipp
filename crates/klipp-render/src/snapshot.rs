@@ -359,6 +359,13 @@ impl SequenceSnapshot {
         // subtitle tracks render into the picture only when burning in
         // (the user can still export sidecar SRT/VTT).
         let mut timeline = klipp_timeline::flatten::flatten_sequence(seq, all_sequences);
+        // A precomposition's sound, wherever the precomposition sits:
+        // the runtime tracks flattening made for it, the scene's and the
+        // containing track's controls already composed into them — the
+        // one path that sound takes, so the viewer and the export agree.
+        for track in timeline.tracks.iter().filter(|t| t.precomposition_sound) {
+            audio_tracks.push(snapshot_audio_track(track, &timeline, all_sequences, media_pool, fps, 0)?);
+        }
         if !burn_in {
             for t in &mut timeline.tracks {
                 if matches!(t.kind, TrackKind::Text | TrackKind::Subtitle) {
@@ -534,9 +541,10 @@ fn snapshot_audio_track(
     let mut clips = Vec::new();
     for clip in &track.clips {
         if !clip.enabled { continue; }
-        // Sound has no surface to be isolated on: a precomposition's
-        // audio is flattened into the mix exactly as a compound's is.
-        if let ClipKind::Sequence { sequence_id } | ClipKind::Precomposition { sequence_id } = &clip.kind {
+        // A precomposition's sound is not taken here: flattening puts
+        // it on runtime tracks of its own, with the scene's controls,
+        // and the snapshot takes those below — once.
+        if let ClipKind::Sequence { sequence_id } = &clip.kind {
             if depth < MAX_COMPOUND_DEPTH {
                 flatten_compound_audio_clips(clip, *sequence_id, all_sequences, media_pool, fps, depth, &mut clips)?;
                 continue;
