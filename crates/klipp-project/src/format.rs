@@ -565,6 +565,13 @@ pub enum ClipKindJson {
     },
     /// Explicit feature tag: older readers must refuse editable path titles.
     VectorTitle { title_data: klipp_timeline::TitleData },
+    /// A title whose layers carry motion or effect stacks of their own
+    /// (`TitleObject::fx`), text or not. Its own tag so a reader from
+    /// before layers could do that refuses the file by name instead of
+    /// reading the title as still and bare. Written only when some
+    /// object's stack is not the default; a title of still, bare layers
+    /// keeps the `title` or `vector_title` tag an older reader knows.
+    TitleV2 { title_data: klipp_timeline::TitleData },
 }
 
 fn default_one_f32() -> f32 { 1.0 }

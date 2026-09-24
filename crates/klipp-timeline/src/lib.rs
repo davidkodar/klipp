@@ -61,6 +61,7 @@ pub use clip_kind::{
     TextExtrusion, TextGlow, TextGradient, TextOutline, TextPattern, TextPath, TextureFill,
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
     TitleAsset,
+    LayerFx, LegacyTextFx, FxMigration,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, TypeStyle};

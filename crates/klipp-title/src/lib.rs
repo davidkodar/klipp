@@ -32,6 +32,7 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
+use klipp_timeline::TitleObject;
 use klipp_timeline::{
     FontStyle, ImageFit, ImageLayer, ObjectTransform, Shape, ShapeKind, StyleRun,
     TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
@@ -965,7 +966,8 @@ impl TitleRenderer {
         // A staggered motion poses each glyph on its own from the
         // resting render, so it needs to know which glyph a pixel is.
         let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
-        let tag_glyphs = time_secs.is_none() && (staggers(tb.motion.enter) || staggers(tb.motion.exit));
+        let fx = title.primary_fx();
+        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit));
         let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
@@ -975,12 +977,12 @@ impl TitleRenderer {
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         match time_secs {
-            Some(t) if tb.motion.is_active() || self.loop_wave.is_some() => {
+            Some(t) if fx.motion.is_active() || self.loop_wave.is_some() => {
                 rasterize_to_mask_motion(
                     font, glyphs,
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
-                    &tb.motion, t, font_px, self.motion_window, self.loop_wave,
+                    &fx.motion, t, font_px, self.motion_window, self.loop_wave,
                 );
             }
             _ => {
@@ -1331,12 +1333,13 @@ impl TitleRenderer {
         // via per-element keyframes.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let mut active_glows: Vec<(f32, f32, &klipp_timeline::TextGlow)> = tb
+            let fx = title.primary_fx();
+            let mut active_glows: Vec<(f32, f32, &klipp_timeline::TextGlow)> = fx
                 .glows
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| g.enabled)
-                .filter(|(i, _)| *i == 0 || tb.glow_stack_enabled)
+                .filter(|(i, _)| *i == 0 || fx.glow_stack_enabled)
                 .map(|(_, g)| (g.evaluated_radius(t), g.evaluated_intensity(t), g))
                 .collect();
             // Largest radius first (rendered behind smaller ones).
@@ -1355,11 +1358,12 @@ impl TitleRenderer {
         // through the same evaluator the legacy single-shadow used.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            for (i, shadow) in tb.shadows.iter().enumerate().rev() {
+            let fx = title.primary_fx();
+            for (i, shadow) in fx.shadows.iter().enumerate().rev() {
                 if !shadow.enabled {
                     continue;
                 }
-                if i >= 1 && !tb.shadow_stack_enabled {
+                if i >= 1 && !fx.shadow_stack_enabled {
                     continue;
                 }
                 let off_x = shadow.evaluated_offset_x(t);
@@ -1389,14 +1393,15 @@ impl TitleRenderer {
             // own `enabled` is true). Index >= 1 is the secondary
             // stack, gated by `outline_stack_enabled` so the user
             // can hide the whole stack without dropping the data.
-            for (i, ol) in tb.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
-                if i >= 1 && !tb.outline_stack_enabled {
+            let fx = title.primary_fx();
+            for (i, ol) in fx.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
+                if i >= 1 && !fx.outline_stack_enabled {
                     continue;
                 }
                 all_outlines.push((ol.evaluated_width(t_secs), ol));
             }
             // Legacy single-outline support is gone — outline data
-            // lives entirely in `tb.outlines` now.
+            // lives entirely in the object's stack now.
             all_outlines.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
             // Stroke draw-on: clip the rendered outline horizontally
@@ -1492,11 +1497,12 @@ impl TitleRenderer {
         // (index >= 1) are gated by `inner_shadow_stack_enabled`.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            for (i, inner) in tb.inner_shadows.iter().enumerate().rev() {
+            let fx = title.primary_fx();
+            for (i, inner) in fx.inner_shadows.iter().enumerate().rev() {
                 if !inner.enabled {
                     continue;
                 }
-                if i >= 1 && !tb.inner_shadow_stack_enabled {
+                if i >= 1 && !fx.inner_shadow_stack_enabled {
                     continue;
                 }
                 let off_x = inner.evaluated_offset_x(t);
@@ -1669,7 +1675,9 @@ impl TitleRenderer {
         // An entrance or exit only changes the frame inside its own
         // window; at rest the render is the resting one and cacheable.
         let window = self.motion_window;
-        let motion_live = |tb: &klipp_timeline::TextBox| -> bool {
+        let motion_live = |o: &TitleObject| -> bool {
+            let TitleObjectContent::TextBox(tb) = &o.content else { return false };
+            let fx = o.fx();
             // How long a motion runs: its own time, plus the stagger of
             // its last unit — and only when it staggers. The stagger time
             // has a default of its own, and counting it for a motion with
@@ -1685,8 +1693,8 @@ impl TitleRenderer {
                 }
             };
             let span = |m: &klipp_timeline::Motion| m.delay_secs + m.duration_secs + units(m) * m.stagger_secs + 0.05;
-            let enter = tb.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
-            let exit = match (tb.motion.exit.as_ref(), window) {
+            let enter = fx.motion.enter.as_ref().is_some_and(|m| time_secs < span(m));
+            let exit = match (fx.motion.exit.as_ref(), window) {
                 (Some(m), Some(w)) => (w - time_secs) < span(m),
                 _ => false,
             };
@@ -1701,7 +1709,8 @@ impl TitleRenderer {
             .enumerate()
             .filter_map(|(i, o)| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
-                if tb.loops.is_empty() || !o.visible {
+                let fx = o.fx();
+                if fx.loops.is_empty() || !o.visible {
                     return None;
                 }
                 let font_px = tb.font_size * scale;
@@ -1714,14 +1723,11 @@ impl TitleRenderer {
                     text_h: lines * font_px * tb.line_spacing.max(0.5) * 1.4,
                     font_px,
                 };
-                Some((i, klipp_core::title_motion::eval_loops(&tb.loops, time_secs, window, geo, tb.color)))
+                Some((i, klipp_core::title_motion::eval_loops(&fx.loops, time_secs, window, geo, tb.color)))
             })
             .collect();
         let loops_need_raster = poses.iter().any(|(_, p)| p.wave.is_some() || p.color.is_some() || p.text.is_some());
-        let any_motion_live = title.objects.iter().any(|o| match &o.content {
-            TitleObjectContent::TextBox(tb) => o.visible && motion_live(tb),
-            _ => false,
-        });
+        let any_motion_live = title.objects.iter().any(|o| o.visible && motion_live(o));
         // One visible layer carrying the only pose: the cached resting
         // render, shifted and faded, is the frame.
         let visible = title.objects.iter().filter(|o| o.visible).count();
@@ -1738,15 +1744,16 @@ impl TitleRenderer {
         let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
+                let fx = o.fx();
                 let whole = |m: Option<klipp_timeline::Motion>| m.is_none_or(|m| m.stagger == klipp_timeline::StaggerUnit::None);
-                if !(whole(tb.motion.enter) && whole(tb.motion.exit)) {
+                if !(whole(fx.motion.enter) && whole(fx.motion.exit)) {
                     return None;
                 }
                 let font_px = tb.font_size * scale;
-                let (pe, px) = tb.motion.progress(time_secs, window, 0);
+                let (pe, px) = fx.motion.progress(time_secs, window, 0);
                 let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
-                let (a1, dx1, dy1, s1, b1, c1) = tb.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
-                let (a2, dx2, dy2, s2, b2, c2) = tb.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
+                let (a1, dx1, dy1, s1, b1, c1) = fx.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
+                let (a2, dx2, dy2, s2, b2, c2) = fx.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
                 Some((a1 * a2, dx1 + dx2, dy1 + dy2, s1 * s2, b1.max(b2), c1 || c2))
             })
         } else {
@@ -1756,13 +1763,13 @@ impl TitleRenderer {
         // glyph on its own from the resting render's glyph map — the
         // frame is the glyphs placed, on the GPU. A blur cannot be
         // posed per glyph and is rastered.
-        let staggered: Option<&klipp_timeline::TextBox> = if any_motion_live && motion_pose.is_none() && visible == 1 && !loops_need_raster {
+        let staggered: Option<&TitleObject> = if any_motion_live && motion_pose.is_none() && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
-                TitleObjectContent::TextBox(tb)
-                    if tb.motion.enter.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur)
-                        && tb.motion.exit.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur) =>
+                TitleObjectContent::TextBox(_)
+                    if o.fx().motion.enter.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur)
+                        && o.fx().motion.exit.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur) =>
                 {
-                    Some(tb)
+                    Some(o)
                 }
                 _ => None,
             })
@@ -1795,35 +1802,17 @@ impl TitleRenderer {
         // when their respective vecs are non-empty. Same cache-bypass
         // requirement as position keyframes.
         let any_glow_keyframes = title.objects.iter().any(|o| {
-            if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.glows.iter().any(|g| {
-                    !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty()
-                })
-            } else {
-                false
-            }
+            o.fx().glows.iter().any(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
         });
         let any_shadow_keyframes = title.objects.iter().any(|o| {
-            if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.shadows.iter().any(|s| {
-                    !s.offset_x_keyframes.is_empty()
-                        || !s.offset_y_keyframes.is_empty()
-                        || !s.blur_keyframes.is_empty()
-                })
-            } else {
-                false
-            }
+            o.fx().shadows.iter().any(|s| {
+                !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty()
+            })
         });
         let any_inner_shadow_keyframes = title.objects.iter().any(|o| {
-            if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.inner_shadows.iter().any(|s| {
-                    !s.offset_x_keyframes.is_empty()
-                        || !s.offset_y_keyframes.is_empty()
-                        || !s.blur_keyframes.is_empty()
-                })
-            } else {
-                false
-            }
+            o.fx().inner_shadows.iter().any(|s| {
+                !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty()
+            })
         });
         let any_extrusion_keyframes = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
@@ -1839,13 +1828,7 @@ impl TitleRenderer {
                 false
             }
         });
-        let any_outline_keyframes = title.objects.iter().any(|o| {
-            if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.outlines.iter().any(|ol| !ol.width_keyframes.is_empty())
-            } else {
-                false
-            }
-        });
+        let any_outline_keyframes = title.objects.iter().any(|o| o.fx().outlines.iter().any(|ol| !ol.width_keyframes.is_empty()));
 
         let any_render_time_override = any_path_motion || any_char_anim
             || any_glitch_active
@@ -1868,11 +1851,11 @@ impl TitleRenderer {
             };
             let sprite = self.resting_sprite(&resting_title(title), width, height, gpu.take());
             let rows = sprite.rows;
-            if let Some(tb) = staggered {
+            if let Some(o) = staggered {
                 if let Some(units) = sprite.units.clone().filter(|u| u.boxes.len() <= MAX_POSED_GLYPHS) {
-                    let font_px = tb.font_size * scale;
+                    let font_px = match &o.content { TitleObjectContent::TextBox(tb) => tb.font_size, _ => 72.0 } * scale;
                     let loop_pose = translate_only.as_ref().map(|p| (p.dx, p.dy, p.opacity)).unwrap_or((0.0, 0.0, 1.0));
-                    let poses = glyph_poses(&units, &tb.motion, time_secs, window, font_px, loop_pose, under.is_some());
+                    let poses = glyph_poses(&units, &o.fx().motion, time_secs, window, font_px, loop_pose, under.is_some());
                     let rows = if under.is_some() {
                         (0, height)
                     } else {
@@ -2050,12 +2033,12 @@ impl TitleRenderer {
             match &obj.content {
                 TitleObjectContent::TextBox(tb) => {
                     // Synthesise a one-object TitleData carrying just
-                    // this TextBox + its transform centre, then route
-                    // through the existing single-text raster path.
-                    // A full-frame `background` is painted once, above,
-                    // and not per text layer; a colour backing goes with
-                    // the first text box.
-                    let mut single = TitleData::single_text(tb.clone());
+                    // this TextBox, its stack and its transform centre,
+                    // then route through the existing single-text raster
+                    // path. A full-frame `background` is painted once,
+                    // above, and not per text layer; a colour backing
+                    // goes with the first text box.
+                    let mut single = TitleData::single_text_fx(tb.clone(), obj.fx().clone());
                     single.background = backing.take().unwrap_or(TitleBackground::None);
                     if let Some(o) = single.objects.first_mut() {
                         o.transform = effective_transform;
@@ -2132,7 +2115,7 @@ impl TitleRenderer {
         let target = title.object(fit.target).filter(|o| o.visible)?;
         let TitleObjectContent::TextBox(tb) = &target.content else { return None };
         if tb.text.trim().is_empty() { return None; }
-        let mut single = TitleData::single_text(tb.clone());
+        let mut single = TitleData::single_text_fx(tb.clone(), target.fx().clone());
         single.objects[0].transform = target.transform.clone();
         if let Some(t) = time_secs {
             single.objects[0].transform.center = target.transform.evaluated_center(t as f64);
@@ -3885,11 +3868,12 @@ fn render_extrusion(
 /// Compute the maximum padding needed around the text bounding box for effects.
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let tb = title.primary_text_or_default();
+    let fx = title.primary_fx();
     let mut pad = 0i32;
-    for (i, outline) in tb.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
+    for (i, outline) in fx.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
         // Mirror the renderer's stack gate so we don't reserve padding
         // for layers that won't draw.
-        if i >= 1 && !tb.outline_stack_enabled {
+        if i >= 1 && !fx.outline_stack_enabled {
             continue;
         }
         // Pad for the worst-case width across the clip — static value
@@ -3905,8 +3889,8 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     // Glow stack — pad for the worst-case radius across every layer
     // that will draw. Each layer's worst case is the larger of its
     // static radius or any keyframe value.
-    for (i, glow) in tb.glows.iter().enumerate().filter(|(_, g)| g.enabled) {
-        if i >= 1 && !tb.glow_stack_enabled {
+    for (i, glow) in fx.glows.iter().enumerate().filter(|(_, g)| g.enabled) {
+        if i >= 1 && !fx.glow_stack_enabled {
             continue;
         }
         let max_radius = glow
@@ -3918,8 +3902,8 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     }
     // Pad for the worst-case shadow extent across the entire stack —
     // each layer that will draw needs its own offset+blur reservation.
-    for (i, shadow) in tb.shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
-        if i >= 1 && !tb.shadow_stack_enabled {
+    for (i, shadow) in fx.shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
+        if i >= 1 && !fx.shadow_stack_enabled {
             continue;
         }
         let max_ox = shadow
@@ -3946,8 +3930,8 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     // Inner shadow stack — pad worst-case extent for every layer
     // that will render. Inner shadow stays within the glyph mask, so
     // this pad mostly matters when the user keyframes blur way up.
-    for (i, inner) in tb.inner_shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
-        if i >= 1 && !tb.inner_shadow_stack_enabled {
+    for (i, inner) in fx.inner_shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
+        if i >= 1 && !fx.inner_shadow_stack_enabled {
             continue;
         }
         let max_ox = inner
@@ -4785,7 +4769,9 @@ mod tests {
         color: [255, 255, 255, 255],
         ..Default::default()
     };
-    let mut td = klipp_timeline::TitleData::single_text(tb);
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
+    let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
     td
 };
@@ -4803,7 +4789,9 @@ mod tests {
         text: "BG".to_string(),
         ..Default::default()
     };
-    let mut td = klipp_timeline::TitleData::single_text(tb);
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
+    let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
     td.background = TitleBackground::FullFrame {
                 color: [0, 0, 128, 255],
             };
@@ -4915,19 +4903,21 @@ mod tests {
     fn shadow_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
         let no_shadow = {
-    let mut tb = klipp_timeline::TextBox {
+    let tb = klipp_timeline::TextBox {
         text: "S".to_string(),
         font_size: 100.0,
         ..Default::default()
     };
-    tb.shadows.clear();
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
+    fx.shadows.clear();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let with_shadow = {
     let mut td = no_shadow.clone();
-    if let Some(tb) = td.primary_text_mut() {
-        tb.shadows.push(klipp_timeline::TitleShadow {
+    if let Some(fx) = td.primary_object_mut().map(|o| o.fx_mut()) {
+        fx.shadows.push(klipp_timeline::TitleShadow {
             color: [0, 0, 0, 200],
             offset_x: 4.0,
             offset_y: 4.0,
@@ -4956,13 +4946,15 @@ mod tests {
         font_size: 100.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let with_outline = {
     let mut td = no_outline.clone();
-    if let Some(tb) = td.primary_text_mut() {
-        tb.outlines.insert(0, klipp_timeline::TextOutline {
+    if let Some(fx) = td.primary_object_mut().map(|o| o.fx_mut()) {
+        fx.outlines.insert(0, klipp_timeline::TextOutline {
             color: [255, 0, 0, 255],
             width: 4.0,
             enabled: true,
@@ -4987,13 +4979,15 @@ mod tests {
         font_size: 100.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let with_glow = {
     let mut td = no_glow.clone();
-    if let Some(tb) = td.primary_text_mut() {
-        tb.glows.push(klipp_timeline::TextGlow {
+    if let Some(fx) = td.primary_object_mut().map(|o| o.fx_mut()) {
+        fx.glows.push(klipp_timeline::TextGlow {
             color: [0, 255, 0, 255],
             radius: 10.0,
             intensity: 0.8,
@@ -5025,8 +5019,10 @@ mod tests {
         }),
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let buf = renderer.render(&title, 640, 480);
         // Should have both reddish and bluish pixels
@@ -5057,8 +5053,10 @@ mod tests {
         font_size: 100.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let with_ext = {
     let mut td = no_ext.clone();
@@ -5093,8 +5091,10 @@ mod tests {
         font_size: 72.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Should have 6 entries: 5 chars + 1 end-of-text cursor position
@@ -5119,8 +5119,10 @@ mod tests {
         font_size: 72.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Line1\nLine2".chars().count(); // 11
@@ -5157,7 +5159,9 @@ mod tests {
                 columns: cols,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let buf = renderer.render(&mk(2), 1280, 720);
         // Two-column body centred in the frame should populate both
@@ -5188,7 +5192,9 @@ mod tests {
                 vertical_layout: vertical,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let horizontal = renderer.render_layout(&mk(false), 1280, 720);
         let vertical = renderer.render_layout(&mk(true), 1280, 720);
@@ -5218,7 +5224,9 @@ mod tests {
                 text_direction: dir,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let ltr = renderer.render(&mk(klipp_timeline::TextDirection::Ltr), 1280, 720);
         let rtl = renderer.render(&mk(klipp_timeline::TextDirection::Rtl), 1280, 720);
@@ -5241,7 +5249,9 @@ mod tests {
                 chromatic_aberration_px: ca_px,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let plain = renderer.render(&mk(0.0), 1280, 720);
         let with_ca = renderer.render(&mk(8.0), 1280, 720);
@@ -5268,7 +5278,9 @@ mod tests {
             glitch_intensity: 0.5,
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.0);
         let frame_b = renderer.render_with_time(&td, 1280, 720, None, 0.5);
@@ -5282,18 +5294,20 @@ mod tests {
     #[test]
     fn outline_draw_on_clips_outline_horizontally() {
         let mut renderer = TitleRenderer::new();
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "ABCDE".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.outlines.push(klipp_timeline::TextOutline {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.outlines.push(klipp_timeline::TextOutline {
             color: [255, 0, 0, 255],
             width: 4.0,
             enabled: true,
             width_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let count_red = |buf: &[u8]| -> usize {
             buf.chunks_exact(4)
@@ -5329,8 +5343,10 @@ mod tests {
             font_size: 80.0,
             ..Default::default()
         };
-        let mut td = klipp_timeline::TitleData::single_text(tb);
-        td.primary_text_mut().unwrap().loops.push(klipp_timeline::TitleLoop::ColorBlend {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
+        td.primary_object_mut().unwrap().fx_mut().loops.push(klipp_timeline::TitleLoop::ColorBlend {
             color_a: [255, 0, 0, 255],
             color_b: [0, 0, 255, 255],
             rate_hz: 1.0,
@@ -5370,7 +5386,9 @@ mod tests {
                 drop_cap_scale: scale,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let no_cap = renderer.render_layout(&mk(0.0), 1280, 720);
         let with_wrap = renderer.render_layout(&mk(3.0), 1280, 720);
@@ -5399,7 +5417,9 @@ mod tests {
                 drop_cap_scale: scale,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let plain = renderer.render_layout(&mk(0.0), 1920, 1080);
         let with_cap = renderer.render_layout(&mk(3.0), 1920, 1080);
@@ -5428,8 +5448,10 @@ mod tests {
             color: [255, 0, 0, 255], // pure red resting hue
             ..Default::default()
         };
-        let mut td = klipp_timeline::TitleData::single_text(tb);
-        td.primary_text_mut().unwrap().loops.push(klipp_timeline::TitleLoop::ColorCycle { rate_hz: 1.0 });
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
+        td.primary_object_mut().unwrap().fx_mut().loops.push(klipp_timeline::TitleLoop::ColorCycle { rate_hz: 1.0 });
 
         let frame_t0 = renderer.render_with_time(&td, 1280, 720, None, 0.0);
         let frame_t_quarter = renderer.render_with_time(&td, 1280, 720, None, 0.25); // 90° hue shift
@@ -5457,10 +5479,11 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 100.0,
-            motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Blur).duration(0.4)),
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx { motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Blur).duration(0.4)), ..Default::default() };
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha. The
         // frame is the resting sprite placed, and the blur it asks for
@@ -5486,12 +5509,14 @@ mod tests {
             font_size: 80.0,
             ..Default::default()
         };
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
         let td_full = {
             
-            klipp_timeline::TitleData::single_text(tb.clone())
+            klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone())
         };
         let td_half = {
-            let mut td = klipp_timeline::TitleData::single_text(tb.clone());
+            let mut td = klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone());
             if let Some(o) = td.objects.first_mut() { o.opacity = 0.5; }
             td
         };
@@ -5523,7 +5548,9 @@ mod tests {
                 strikethrough: strike,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let count_nonzero = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 0).count();
         let plain = renderer.render(&mk(false, false), 1280, 720);
@@ -5555,7 +5582,9 @@ mod tests {
                 case_transform: case,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         let lower = renderer.render(&mk(klipp_timeline::TextCase::None), 1280, 720);
         let upper = renderer.render(&mk(klipp_timeline::TextCase::Uppercase), 1280, 720);
@@ -5585,7 +5614,9 @@ mod tests {
                 baseline_shift: shift,
                 ..Default::default()
             };
-            klipp_timeline::TitleData::single_text(tb)
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            klipp_timeline::TitleData::single_text_fx(tb, fx)
         };
         // Find first row with a non-transparent pixel for each render.
         let first_visible_row = |buf: &[u8], w: u32, h: u32| -> Option<u32> {
@@ -5628,12 +5659,16 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "ABCDEFG".to_string(),
             font_size: 80.0,
+            ..Default::default()
+        };
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx {
             motion: klipp_timeline::TitleMotion::enter(
                 klipp_timeline::Motion::new(klipp_timeline::MotionKind::Fade).duration(0.4).stagger(klipp_timeline::StaggerUnit::Char, 0.05),
             ),
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, 1920, 1080, None, 0.0);
         let buf_t_settled = renderer.render_with_time(&td, 1920, 1080, None, 10.0);
@@ -5658,12 +5693,16 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "TEST".to_string(),
             font_size: 80.0,
+            ..Default::default()
+        };
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx {
             motion: klipp_timeline::TitleMotion::enter(
                 klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise).duration(0.4).stagger(klipp_timeline::StaggerUnit::Char, 0.1),
             ),
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.05);
         let frame_b = renderer.render_with_time(&td, 1280, 720, None, 0.20);
@@ -5696,7 +5735,9 @@ mod tests {
                 alignment,
                 ..Default::default()
             };
-            let mut td = klipp_timeline::TitleData::single_text(tb);
+            #[allow(unused_mut)]
+            let mut fx = klipp_timeline::LayerFx::default();
+            let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
             if let Some(o) = td.objects.first_mut() {
                 o.transform.center = TitlePosition { x: cx, y: 0.5 };
             }
@@ -5747,8 +5788,10 @@ mod tests {
                 ],
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Hello World".chars().count(); // 11
@@ -5769,8 +5812,10 @@ mod tests {
         font_size: 72.0,
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Every non-end position should have a byte_offset that points to the right character
@@ -5798,8 +5843,10 @@ mod tests {
                 ],
         ..Default::default()
     };
+    #[allow(unused_mut)]
+    let mut fx = klipp_timeline::LayerFx::default();
     
-    klipp_timeline::TitleData::single_text(tb)
+    klipp_timeline::TitleData::single_text_fx(tb, fx)
 };
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // All ASCII so byte_offset == char_index
@@ -5851,7 +5898,9 @@ mod tests {
             font_size: 100.0,
             ..Default::default()
         };
-        let mut td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let mut td = klipp_timeline::TitleData::single_text_fx(tb, fx);
         if let Some(o) = td.objects.first_mut() {
             // Static fallback in the centre — must be ignored once the
             // keyframes evaluate.
@@ -5924,7 +5973,9 @@ mod tests {
             font_size: 80.0,
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -5949,12 +6000,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.glows.push(klipp_timeline::TextGlow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 4.0,
@@ -5977,7 +6030,7 @@ mod tests {
             intensity: 1.0,
             intensity_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6011,12 +6064,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "O".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.glows.push(klipp_timeline::TextGlow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 100, 100, 255],
             radius: 12.0,
@@ -6039,7 +6094,7 @@ mod tests {
                 },
             ],
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t1 = renderer.render_with_time(&td, frame_w, frame_h, None, 1.0);
@@ -6066,11 +6121,11 @@ mod tests {
             text: "ABCDE".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
-            motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Fade).duration(1.0)),
-            loops: vec![klipp_timeline::TitleLoop::Wave { amplitude: 0.3, rate_hz: 2.0 }],
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx { motion: klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Fade).duration(1.0)), loops: vec![klipp_timeline::TitleLoop::Wave { amplitude: 0.3, rate_hz: 2.0 }], ..Default::default() };
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
         let buf_a = renderer.render_with_time(&td, 1280, 720, None, 2.0);
         let buf_b = renderer.render_with_time(&td, 1280, 720, None, 2.1);
         assert_ne!(&buf_a[..], &buf_b[..], "the wave must move the glyphs between two settled frames");
@@ -6083,10 +6138,11 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
-            loops: vec![klipp_timeline::TitleLoop::Blink { rate_hz: 1.0, duty: 0.5 }],
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Blink { rate_hz: 1.0, duty: 0.5 }], ..Default::default() };
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
         let on = renderer.render_with_time(&td, 640, 360, None, 0.25);
         let off = renderer.render_with_time(&td, 640, 360, None, 0.75);
         assert!(on.chunks_exact(4).any(|p| p[3] > 0));
@@ -6101,10 +6157,11 @@ mod tests {
         let tb = klipp_timeline::TextBox {
             text: "Roll".to_string(),
             font_size: 80.0,
-            loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }],
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() };
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
         let row_of = |buf: &[u8]| -> Option<usize> {
             buf.chunks_exact(4).position(|p| p[3] > 0).map(|i| i / 640)
         };
@@ -6124,12 +6181,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.glows.push(klipp_timeline::TextGlow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 4.0,
@@ -6152,7 +6211,7 @@ mod tests {
             intensity: 1.0,
             intensity_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6177,12 +6236,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.glows.push(klipp_timeline::TextGlow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 12.0,
@@ -6190,7 +6251,7 @@ mod tests {
             intensity: 0.8,
             intensity_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -6213,12 +6274,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.shadows.push(klipp_timeline::TitleShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 220],
             offset_x: 6.0,
@@ -6239,7 +6302,7 @@ mod tests {
                 },
             ],
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6267,13 +6330,15 @@ mod tests {
         let frame_w: u32 = 1280;
         let frame_h: u32 = 720;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 100.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.shadows.push(klipp_timeline::TitleShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 255],
             offset_x: 0.0,
@@ -6294,7 +6359,7 @@ mod tests {
             blur: 0.0,
             blur_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6333,13 +6398,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "O".to_string(),
             font_size: 100.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 255],
             offset_x: 4.0, offset_x_keyframes: Vec::new(),
@@ -6358,7 +6425,7 @@ mod tests {
                 },
             ],
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6390,12 +6457,14 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.shadows.push(klipp_timeline::TitleShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 200],
             offset_x: 4.0,
@@ -6405,7 +6474,7 @@ mod tests {
             blur: 6.0,
             blur_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -6428,13 +6497,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.outlines.push(klipp_timeline::TextOutline {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [255, 0, 0, 255],
             width: 1.0,
@@ -6451,7 +6522,7 @@ mod tests {
                 },
             ],
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6484,13 +6555,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.outlines.push(klipp_timeline::TextOutline {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 100, 255, 255],
             width: 4.0,
@@ -6498,7 +6571,7 @@ mod tests {
         });
         // outlines[1]: green, keyframed 1→10 px (rendered behind
         // outlines[0] because the renderer draws widest-first).
-        tb.outlines.push(klipp_timeline::TextOutline {
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 255, 0, 255],
             width: 1.0,
@@ -6515,7 +6588,7 @@ mod tests {
                 },
             ],
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6560,13 +6633,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "G".to_string(),
             font_size: 100.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.glows.push(klipp_timeline::TextGlow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 0, 0, 255],
             radius: 4.0,
@@ -6575,7 +6650,7 @@ mod tests {
             intensity_keyframes: Vec::new(),
         });
         // Secondary glow (green, much wider so it spreads further).
-        tb.glows.push(klipp_timeline::TextGlow {
+        fx.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [0, 255, 0, 255],
             radius: 30.0,
@@ -6583,9 +6658,9 @@ mod tests {
             intensity: 1.0,
             intensity_keyframes: Vec::new(),
         });
-        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
-        tb.glow_stack_enabled = false;
-        let td_off = klipp_timeline::TitleData::single_text(tb);
+        let td_on = klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone());
+        fx.glow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_on = renderer.render(&td_on, frame_w, frame_h);
         let buf_off = renderer.render(&td_off, frame_w, frame_h);
@@ -6618,13 +6693,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "O".to_string(),
             font_size: 100.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [255, 0, 0, 220],
             offset_x: 2.0, offset_x_keyframes: Vec::new(),
@@ -6632,16 +6709,16 @@ mod tests {
             blur: 0.0, blur_keyframes: Vec::new(),
         });
         // Secondary inner shadow (green, much bigger).
-        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+        fx.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 255, 0, 220],
             offset_x: 10.0, offset_x_keyframes: Vec::new(),
             offset_y: 10.0, offset_y_keyframes: Vec::new(),
             blur: 0.0, blur_keyframes: Vec::new(),
         });
-        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
-        tb.inner_shadow_stack_enabled = false;
-        let td_off = klipp_timeline::TitleData::single_text(tb);
+        let td_on = klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone());
+        fx.inner_shadow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_on = renderer.render(&td_on, frame_w, frame_h);
         let buf_off = renderer.render(&td_off, frame_w, frame_h);
@@ -6666,13 +6743,15 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.shadows.push(klipp_timeline::TitleShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [255, 0, 0, 220],
             offset_x: 4.0,
@@ -6684,7 +6763,7 @@ mod tests {
         });
         // Secondary (green) at larger offset so it draws in a
         // different region than primary.
-        tb.shadows.push(klipp_timeline::TitleShadow {
+        fx.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 255, 0, 220],
             offset_x: 30.0,
@@ -6694,9 +6773,9 @@ mod tests {
             blur: 0.0,
             blur_keyframes: Vec::new(),
         });
-        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
-        tb.shadow_stack_enabled = false;
-        let td_off = klipp_timeline::TitleData::single_text(tb);
+        let td_on = klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone());
+        fx.shadow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_on = renderer.render(&td_on, frame_w, frame_h);
         let buf_off = renderer.render(&td_off, frame_w, frame_h);
@@ -6732,27 +6811,29 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             color: [255, 255, 255, 255],
             ..Default::default()
         };
-        tb.outlines.push(klipp_timeline::TextOutline {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 100, 255, 255],
             width: 4.0,
             width_keyframes: Vec::new(),
         });
-        tb.outlines.push(klipp_timeline::TextOutline {
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [0, 255, 0, 255],
             width: 8.0,
             width_keyframes: Vec::new(),
         });
-        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
-        tb.outline_stack_enabled = false;
-        let td_off = klipp_timeline::TitleData::single_text(tb);
+        let td_on = klipp_timeline::TitleData::single_text_fx(tb.clone(), fx.clone());
+        fx.outline_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_on = renderer.render_with_time(&td_on, frame_w, frame_h, None, 0.0);
         let buf_off = renderer.render_with_time(&td_off, frame_w, frame_h, None, 0.0);
@@ -6789,18 +6870,20 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.outlines.push(klipp_timeline::TextOutline {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.outlines.push(klipp_timeline::TextOutline {
             enabled: true,
             color: [255, 0, 0, 255],
             width: 3.0,
             width_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -6848,7 +6931,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
         let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
@@ -6885,7 +6970,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        let td = klipp_timeline::TitleData::single_text(tb);
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -6904,19 +6991,21 @@ mod tests {
         let frame_w: u32 = 640;
         let frame_h: u32 = 480;
 
-        let mut tb = klipp_timeline::TextBox {
+        let tb = klipp_timeline::TextBox {
             text: "X".to_string(),
             font_size: 80.0,
             ..Default::default()
         };
-        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        fx.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 200],
             offset_x: 2.0, offset_x_keyframes: Vec::new(),
             offset_y: 2.0, offset_y_keyframes: Vec::new(),
             blur: 4.0, blur_keyframes: Vec::new(),
         });
-        let td = klipp_timeline::TitleData::single_text(tb);
+        let td = klipp_timeline::TitleData::single_text_fx(tb, fx);
 
         let buf_no_time = renderer.render(&td, frame_w, frame_h);
         let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
@@ -7189,7 +7278,9 @@ mod tests {
             alignment: TextAlignment::Center,
             ..Default::default()
         };
-        klipp_timeline::TitleData::single_text(tb)
+        #[allow(unused_mut)]
+        let mut fx = klipp_timeline::LayerFx::default();
+        klipp_timeline::TitleData::single_text_fx(tb, fx)
     }
 
     fn glyph_hash_modify_text_box(

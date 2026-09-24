@@ -75,11 +75,10 @@ fn a_disabled_builtin_effect_stays_disabled() {
 #[test]
 fn a_title_keeps_its_animation_and_every_object() {
     let mut seq = Sequence::new_default();
-    let mut td = TitleData::single_text(TextBox {
-        text: "Headline".into(),
-        loops: vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }],
-        ..TextBox::default()
-    });
+    let mut td = TitleData::single_text_fx(
+        TextBox { text: "Headline".into(), ..TextBox::default() },
+        klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }], ..Default::default() },
+    );
     td.add_object(
         TitleObjectContent::TextBox(TextBox { text: "Subtitle".into(), font_size: 40.0, ..TextBox::default() }),
         klipp_timeline::default_text_transform(),
@@ -91,7 +90,7 @@ fn a_title_keeps_its_animation_and_every_object() {
     let back = round_trip("title", seq);
     let ClipKind::Title(loaded) = &back.tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.objects.len(), 2, "the second object was dropped");
-    assert_eq!(loaded.primary_text().unwrap().loops, vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }], "the loop was dropped");
+    assert_eq!(loaded.primary_fx().loops, vec![klipp_timeline::TitleLoop::ColorCycle { rate_hz: 2.0 }], "the loop was dropped");
     assert_eq!(loaded, &td, "the title did not round-trip whole");
 }
 
@@ -112,7 +111,7 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
     let ClipKind::Title(loaded) = &clip.kind else { panic!("not a title") };
     assert_eq!(loaded.animation_type, TitleAnimationType::Static, "the old kind should be folded away");
     assert_eq!(
-        loaded.primary_text().unwrap().loops,
+        loaded.primary_fx().loops,
         vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 40.0 }]
     );
     assert!(clip.transform_pos_y_keyframes.is_empty(), "the baked keyframes should go with it");

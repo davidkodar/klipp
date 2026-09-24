@@ -401,6 +401,12 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
         ClipKind::Media { media_id } => ClipKindJson::Media {
             media_id: media_id.to_string(),
         },
+        // A layer with a stack of its own is the newest thing a title
+        // can carry, and takes the newest tag; a path without one keeps
+        // its tag; a title with neither keeps the oldest.
+        ClipKind::Title(data) if data.objects.iter().any(|o| !o.fx().is_default()) => {
+            ClipKindJson::TitleV2 { title_data: title_data_for_file(data, project_dir) }
+        }
         ClipKind::Title(data) if data.objects.iter().any(|o| matches!(&o.content,klipp_timeline::TitleObjectContent::Shape(shape) if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_)))) => {
             ClipKindJson::VectorTitle {title_data:title_data_for_file(data,project_dir)}
         }
@@ -411,6 +417,9 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
             // proper `objects` array in the JSON in a follow-up
             // commit when the loader can read them.
             let tb = data.primary_text_or_default();
+            // Still and bare by the arm above, so these are the empty
+            // stacks an older reader expects to find here.
+            let fx = data.primary_fx();
             let pos = data.position();
             ClipKindJson::Title {
                 title_data: serde_json::to_value(title_data_for_file(data, project_dir)).ok(),
@@ -426,28 +435,28 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
                 // Legacy single-shadow JSON field — emit shadows[0]
                 // for back-compat with older Klipp readers; the full
                 // stack lives under `shadows`.
-                shadow: serde_json::to_value(tb.shadows.first()).unwrap_or_default(),
-                shadows: serde_json::to_value(&tb.shadows).unwrap_or_default(),
-                shadow_stack_enabled: tb.shadow_stack_enabled,
+                shadow: serde_json::to_value(fx.shadows.first()).unwrap_or_default(),
+                shadows: serde_json::to_value(&fx.shadows).unwrap_or_default(),
+                shadow_stack_enabled: fx.shadow_stack_enabled,
                 // Single-outline JSON field is legacy; the canonical
                 // list lives under `outlines`. Emit the first outline
                 // as `outline` for compat with older readers, and the
                 // full list under `outlines`.
-                outline: serde_json::to_value(tb.outlines.first()).unwrap_or_default(),
-                outlines: serde_json::to_value(&tb.outlines).unwrap_or_default(),
-                outline_stack_enabled: tb.outline_stack_enabled,
+                outline: serde_json::to_value(fx.outlines.first()).unwrap_or_default(),
+                outlines: serde_json::to_value(&fx.outlines).unwrap_or_default(),
+                outline_stack_enabled: fx.outline_stack_enabled,
                 // Legacy single-glow field — emit glows[0] for
                 // back-compat. Full stack lives under `glows`.
-                glow: serde_json::to_value(tb.glows.first()).unwrap_or_default(),
-                glows: serde_json::to_value(&tb.glows).unwrap_or_default(),
-                glow_stack_enabled: tb.glow_stack_enabled,
+                glow: serde_json::to_value(fx.glows.first()).unwrap_or_default(),
+                glows: serde_json::to_value(&fx.glows).unwrap_or_default(),
+                glow_stack_enabled: fx.glow_stack_enabled,
                 gradient: serde_json::to_value(&tb.gradient).unwrap_or_default(),
                 // Legacy single-inner-shadow field — emit inner_shadows[0]
                 // for back-compat with older readers; the full stack
                 // lives under `inner_shadows`.
-                inner_shadow: serde_json::to_value(tb.inner_shadows.first()).unwrap_or_default(),
-                inner_shadows: serde_json::to_value(&tb.inner_shadows).unwrap_or_default(),
-                inner_shadow_stack_enabled: tb.inner_shadow_stack_enabled,
+                inner_shadow: serde_json::to_value(fx.inner_shadows.first()).unwrap_or_default(),
+                inner_shadows: serde_json::to_value(&fx.inner_shadows).unwrap_or_default(),
+                inner_shadow_stack_enabled: fx.inner_shadow_stack_enabled,
                 pattern_fill: serde_json::to_value(&tb.pattern_fill).unwrap_or_default(),
                 tracking: tb.tracking,
                 line_spacing: tb.line_spacing,
@@ -479,7 +488,7 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
                     }
                     serde_json::to_value(&copy).unwrap_or_default()
                 }).unwrap_or_default(),
-                motion_blur: serde_json::to_value(&tb.motion_blur).unwrap_or_default(),
+                motion_blur: serde_json::to_value(&fx.motion_blur).unwrap_or_default(),
                 style_runs: serde_json::to_value(&tb.style_runs).unwrap_or_default(),
             }
         }

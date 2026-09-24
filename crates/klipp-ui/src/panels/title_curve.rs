@@ -19,10 +19,7 @@ impl TitleCurveParam {
         match self {
             Self::Position(TitlePositionAxis::X) => &object.transform.center_x_keyframes,
             Self::Position(TitlePositionAxis::Y) => &object.transform.center_y_keyframes,
-            Self::Effect(key) => match &object.content {
-                TitleObjectContent::TextBox(tb) => tb.effect_keyframes_for(key).unwrap_or(&[]),
-                _ => &[],
-            },
+            Self::Effect(key) => object.effect_keyframes_for(key).unwrap_or(&[]),
         }
     }
 
@@ -41,10 +38,7 @@ impl TitleCurveParam {
         let keyframes = match self {
             Self::Position(axis) => object.transform.position_keyframes_mut(*axis),
             Self::Effect(key) => {
-                let TitleObjectContent::TextBox(tb) = &mut object.content else {
-                    return;
-                };
-                let Some(keyframes) = tb.effect_keyframes_mut_for(key) else {
+                let Some(keyframes) = object.effect_keyframes_mut_for(key) else {
                     return;
                 };
                 keyframes
@@ -224,7 +218,7 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
         TitleCurveParam::Position(TitlePositionAxis::X),
         TitleCurveParam::Position(TitlePositionAxis::Y),
     ];
-    if let TitleObjectContent::TextBox(tb) = &object.content {
+    if let TitleObjectContent::TextBox(_) = &object.content {
         let mut keys = vec![
             k::EXTRUSION_DEPTH.into(),
             k::EXTRUSION_ANGLE.into(),
@@ -234,29 +228,29 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
             k::CHAR_ANIM_WAVE_AMPLITUDE.into(),
             k::CHAR_ANIM_WAVE_SPEED.into(),
         ];
-        for i in 0..tb.glows.len() {
+        for i in 0..object.fx().glows.len() {
             keys.extend([k::glow_radius_key(i), k::glow_intensity_key(i)]);
         }
-        for i in 0..tb.shadows.len() {
+        for i in 0..object.fx().shadows.len() {
             keys.extend([
                 k::shadow_offset_x_key(i),
                 k::shadow_offset_y_key(i),
                 k::shadow_blur_key(i),
             ]);
         }
-        for i in 0..tb.inner_shadows.len() {
+        for i in 0..object.fx().inner_shadows.len() {
             keys.extend([
                 k::inner_shadow_offset_x_key(i),
                 k::inner_shadow_offset_y_key(i),
                 k::inner_shadow_blur_key(i),
             ]);
         }
-        for i in 0..tb.outlines.len() {
+        for i in 0..object.fx().outlines.len() {
             keys.push(k::outline_width_key(i));
         }
         params.extend(
             keys.into_iter()
-                .filter(|key| tb.effect_keyframes_for(key).is_some())
+                .filter(|key| object.effect_keyframes_for(key).is_some())
                 .map(TitleCurveParam::Effect),
         );
     }
@@ -271,20 +265,23 @@ mod tests {
     use klipp_timeline::{Sequence, TextBox, TextGlow, TitleData};
 
     fn animated_title() -> (TitleData, u32) {
-        let mut title = TitleData::single_text(TextBox {
-            glows: vec![
-                TextGlow {
-                    enabled: true,
-                    color: [255; 4],
-                    radius: 10.0,
-                    intensity: 0.8,
-                    radius_keyframes: Vec::new(),
-                    intensity_keyframes: Vec::new()
-                };
-                2
-            ],
-            ..Default::default()
-        });
+        let mut title = TitleData::single_text_fx(
+            TextBox::default(),
+            klipp_timeline::LayerFx {
+                glows: vec![
+                    TextGlow {
+                        enabled: true,
+                        color: [255; 4],
+                        radius: 10.0,
+                        intensity: 0.8,
+                        radius_keyframes: Vec::new(),
+                        intensity_keyframes: Vec::new()
+                    };
+                    2
+                ],
+                ..Default::default()
+            },
+        );
         let object = &mut title.objects[0];
         let id = object.id.0;
         let keys = vec![
@@ -304,9 +301,7 @@ mod tests {
             },
         ];
         object.transform.center_x_keyframes = keys.clone();
-        if let TitleObjectContent::TextBox(tb) = &mut object.content {
-            *tb.effect_keyframes_mut_for("glow.1.radius").unwrap() = keys;
-        }
+        *object.effect_keyframes_mut_for("glow.1.radius").unwrap() = keys;
         (title, id)
     }
 
@@ -388,9 +383,6 @@ mod tests {
             Some((0.3, 3.0)),
         );
         assert_eq!(title.objects[0].transform, old.objects[0].transform);
-        let TitleObjectContent::TextBox(tb) = &title.objects[0].content else {
-            panic!()
-        };
-        assert!(tb.effect_keyframes_for("glow.0.radius").unwrap().is_empty());
+        assert!(title.objects[0].effect_keyframes_for("glow.0.radius").unwrap().is_empty());
     }
 }

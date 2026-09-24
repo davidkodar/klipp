@@ -132,32 +132,42 @@ fn lift() -> TitleShadow {
 }
 
 /// A text layer in one of the bundled faces.
-fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], align: TextAlignment) -> klipp_timeline::TextBox {
-    klipp_timeline::TextBox {
-        text: text.into(),
-        font_size: size,
-        font_name: family.into(),
-        font_style: style,
-        color,
-        alignment: align,
-        ..Default::default()
+/// A text layer as a template composes it: the text box and the stack
+/// its object will carry.
+struct Text {
+    tb: klipp_timeline::TextBox,
+    fx: klipp_timeline::LayerFx,
+}
+
+fn face(text: &str, family: &str, style: FontStyle, size: f32, color: [u8; 4], align: TextAlignment) -> Text {
+    Text {
+        tb: klipp_timeline::TextBox {
+            text: text.into(),
+            font_size: size,
+            font_name: family.into(),
+            font_style: style,
+            color,
+            alignment: align,
+            ..Default::default()
+        },
+        fx: klipp_timeline::LayerFx::default(),
     }
 }
 
-fn upper(mut tb: klipp_timeline::TextBox, tracking: f32) -> klipp_timeline::TextBox {
-    tb.case_transform = klipp_timeline::TextCase::Uppercase;
-    tb.tracking = tracking;
-    tb
+fn upper(mut t: Text, tracking: f32) -> Text {
+    t.tb.case_transform = klipp_timeline::TextCase::Uppercase;
+    t.tb.tracking = tracking;
+    t
 }
 
-fn lifted(mut tb: klipp_timeline::TextBox) -> klipp_timeline::TextBox {
-    tb.shadows.push(lift());
-    tb
+fn lifted(mut t: Text) -> Text {
+    t.fx.shadows.push(lift());
+    t
 }
 
-fn moved(mut tb: klipp_timeline::TextBox, motion: TitleMotion) -> klipp_timeline::TextBox {
-    tb.motion = motion;
-    tb
+fn moved(mut t: Text, motion: TitleMotion) -> Text {
+    t.fx.motion = motion;
+    t
 }
 
 /// Where a layer sits: `x`, `y` in 0..1 of the frame; the anchor
@@ -170,24 +180,29 @@ fn at(x: f32, y: f32, anchor_x: f32) -> ObjectTransform {
     }
 }
 
-fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> (TitleObjectContent, ObjectTransform) {
+/// One layer of a template: what it is, where it sits, and its stack.
+type Layer = (TitleObjectContent, ObjectTransform, klipp_timeline::LayerFx);
+
+fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
     (
         TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: Some(fill), stroke: None }),
         ObjectTransform { center: TitlePosition { x, y }, size: TitlePosition { x: w, y: h }, ..default_text_transform() },
+        klipp_timeline::LayerFx::default(),
     )
 }
 
 /// Build a title from layers, back to front.
-fn layers(items: Vec<(TitleObjectContent, ObjectTransform)>) -> TitleData {
+fn layers(items: Vec<Layer>) -> TitleData {
     let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: TitleAnimationType::default(), background: TitleBackground::None };
-    for (content, transform) in items {
-        td.add_object(content, transform);
+    for (content, transform, fx) in items {
+        let id = td.add_object(content, transform);
+        td.object_mut(id).expect("just added").fx = Some(fx);
     }
     td
 }
 
-fn text_at(tb: klipp_timeline::TextBox, x: f32, y: f32, anchor_x: f32) -> (TitleObjectContent, ObjectTransform) {
-    (TitleObjectContent::TextBox(tb), at(x, y, anchor_x))
+fn text_at(t: Text, x: f32, y: f32, anchor_x: f32) -> Layer {
+    (TitleObjectContent::TextBox(t.tb), at(x, y, anchor_x), t.fx)
 }
 
 // ── Motion presets ──
@@ -380,8 +395,8 @@ fn cap_caption() -> TitleData {
 
 fn cap_subtitle() -> TitleData {
     let mut tb = face("[Subtitle]", GRO, FontStyle::Bold, 40.0, WHITE, TextAlignment::Center);
-    tb.shadows.push(TitleShadow { color: [0, 0, 0, 200], offset_x: 0.0, offset_y: 2.0, blur: 4.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
-    tb.shadows.push(lift());
+    tb.fx.shadows.push(TitleShadow { color: [0, 0, 0, 200], offset_x: 0.0, offset_y: 2.0, blur: 4.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
+    tb.fx.shadows.push(lift());
     layers(vec![text_at(tb, 0.5, 0.90, 0.5)])
 }
 
@@ -402,8 +417,8 @@ fn cr_roll() -> TitleData {
         lifted(face("Director\n[Name]\n\nProducer\n[Name]\n\nEditor\n[Name]", GRO, FontStyle::Regular, 36.0, WHITE, TextAlignment::Center)),
         0.5, 0.5, 0.5,
     )]);
-    if let Some(tb) = td.primary_text_mut() {
-        tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 });
+    if let Some(o) = td.primary_object_mut() {
+        o.fx_mut().loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 });
     }
     td
 }
@@ -1098,10 +1113,7 @@ fn preview_data(title: &Entry, text: &str) -> TitleData {
 
 /// Whether any layer of the template moves.
 fn template_is_animated(title: &Entry) -> bool {
-    let animated = |td: &TitleData| td.objects.iter().any(|o| match &o.content {
-        TitleObjectContent::TextBox(tb) => tb.motion.is_active() || !tb.loops.is_empty(),
-        _ => false,
-    });
+    let animated = |td: &TitleData| td.objects.iter().any(|o| o.fx().motion.is_active() || !o.fx().loops.is_empty());
     match title {
         Entry::Builtin(t) => animated(&(t.create_data)()),
         Entry::User(t) => animated(&t.data),
@@ -1781,6 +1793,21 @@ fn titles_result_strip(
 
 #[cfg(test)]
 mod tests {
+    /// A template is a producer of titles: every layer it makes has an
+    /// explicit stack, and no text box of it carries the old fields.
+    #[test]
+    fn every_template_authors_its_stacks_on_the_object() {
+        for tpl in TITLES {
+            let td = (tpl.create_data)();
+            for o in &td.objects {
+                assert!(o.fx.is_some(), "{}: layer {} has no explicit stack", tpl.name, o.name);
+                if let TitleObjectContent::TextBox(tb) = &o.content {
+                    assert!(tb.legacy_fx.is_default(), "{}: layer {} keeps effects in the old place", tpl.name, o.name);
+                }
+            }
+        }
+    }
+
     use super::*;
 
     /// No template may claim it animates (`animation: Some(_)`) and
@@ -1820,10 +1847,7 @@ mod tests {
             // Only motion the renderer itself evaluates; scroll and
             // crawl become clip keyframes at creation and are covered
             // by the app's template test.
-            let moves_in_renderer = td.objects.iter().any(|o| match &o.content {
-                TitleObjectContent::TextBox(tb) => tb.motion.is_active(),
-                _ => false,
-            });
+            let moves_in_renderer = td.objects.iter().any(|o| matches!(o.content, TitleObjectContent::TextBox(_)) && o.fx().motion.is_active());
             if !moves_in_renderer {
                 continue;
             }
