@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use klipp_core::title_motion::StaggerUnit;
 use klipp_timeline::{
     Easing, LayerFx, Motion, MotionBlur, MotionKind, ObjectTransform, Shape, ShapeKind,
     ShapeStroke, TextAlignment, TextBox, TextGlow, TitleData, TitleLoop, TitleMotion,
@@ -67,7 +68,12 @@ pub struct TemplateManifest {
 /// These manifests are intentionally data-only; each corresponding
 /// composition can be built, previewed and saved through the same app path as
 /// a user template.
-pub fn builtin_manifests() -> Vec<TemplateManifest> {
+pub fn builtin_manifests() -> &'static [TemplateManifest] {
+    static CATALOGUE: std::sync::LazyLock<Vec<TemplateManifest>> = std::sync::LazyLock::new(catalogue);
+    &CATALOGUE
+}
+
+fn catalogue() -> Vec<TemplateManifest> {
     vec![
         manifest(
             "terminal-card",
@@ -269,6 +275,11 @@ impl TemplateParameter {
             return Err(format!("value for '{}' has the wrong type", self.label));
         }
         if let TemplateValue::Number(number) = value {
+            // NaN and infinity have no JSON form: serde writes `null`,
+            // and the saved template would never load again.
+            if !number.is_finite() {
+                return Err(format!("value for '{}' is not a number", self.label));
+            }
             if let Some(range) = &self.range {
                 if range.min.is_some_and(|min| *number < min)
                     || range.max.is_some_and(|max| *number > max)
@@ -373,20 +384,20 @@ pub fn terminal_card_composition() -> TitleData {
     title.next_object_id = 0;
     let card_transform = ObjectTransform {
         center: TitlePosition { x: 0.5, y: 0.5 },
-        center_x_keyframes: vec![
-            key(0.0, 0.44, Easing::OutCubic),
-            key(0.16, 0.5, Easing::OutCubic),
-            key(0.55, 0.5, Easing::InOutCubic),
-            key(0.9, 0.505, Easing::InOutCubic),
-            key(1.25, 0.49, Easing::OutCubic),
-        ],
-        center_y_keyframes: vec![
-            key(0.0, 0.52, Easing::OutCubic),
-            key(0.16, 0.5, Easing::OutCubic),
-            key(0.72, 0.497, Easing::InOutCubic),
-            key(1.1, 0.503, Easing::InOutCubic),
-            key(1.3, 0.5, Easing::OutCubic),
-        ],
+        center_x_keyframes: eased(&[
+            (0.0, 0.44, Easing::OutCubic),
+            (0.16, 0.5, Easing::OutCubic),
+            (0.55, 0.5, Easing::InOutCubic),
+            (0.9, 0.505, Easing::InOutCubic),
+            (1.25, 0.49, Easing::OutCubic),
+        ]),
+        center_y_keyframes: eased(&[
+            (0.0, 0.52, Easing::OutCubic),
+            (0.16, 0.5, Easing::OutCubic),
+            (0.72, 0.497, Easing::InOutCubic),
+            (1.1, 0.503, Easing::InOutCubic),
+            (1.3, 0.5, Easing::OutCubic),
+        ]),
         size: TitlePosition { x: 0.42, y: 0.22 },
         rotation: 0.0,
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
@@ -441,7 +452,7 @@ pub fn terminal_card_composition() -> TitleData {
         card.fx = Some(card_fx);
     }
 
-    let mut command = TextBox {
+    let command = TextBox {
         text: "$ find invoice.pdf".into(),
         font_size: 42.0,
         font_name: "JetBrains Mono".into(),
@@ -449,7 +460,7 @@ pub fn terminal_card_composition() -> TitleData {
         alignment: TextAlignment::Left,
         ..TextBox::default()
     };
-    command.write_on = 1.0;
+    let command_len = command.text.chars().count().max(1) as f32;
     let text_transform = ObjectTransform {
         center: TitlePosition { x: 0.5, y: 0.49 },
         center_x_keyframes: Vec::new(),
@@ -460,8 +471,12 @@ pub fn terminal_card_composition() -> TitleData {
     };
     let text_fx = LayerFx {
         motion: TitleMotion::both(
+            // Typewriter is a step per unit: without a stagger the whole
+            // line pops in at once. One character every 0.02 s makes the
+            // 0.34 s the parameter names.
             Motion::new(MotionKind::Typewriter)
-                .duration(0.34)
+                .duration(0.02)
+                .stagger(StaggerUnit::Char, 0.34 / command_len)
                 .easing(Easing::Linear),
             Motion::new(MotionKind::Fade)
                 .duration(0.12)
@@ -602,20 +617,30 @@ pub fn terminal_card_template(composition_id: Uuid) -> CompositionTemplate {
     template
 }
 
-fn key(time_secs: f64, value: f32, easing: Easing) -> klipp_core::Keyframe {
-    klipp_core::Keyframe {
-        time_secs,
-        value,
-        interpolation: match easing {
-            Easing::Linear => klipp_core::Interpolation::Linear,
-            Easing::InOutCubic | Easing::InCubic | Easing::OutCubic => {
-                klipp_core::Interpolation::Bezier
-            }
-            _ => klipp_core::Interpolation::Linear,
-        },
-        tangent_out: (0.0, 0.0),
-        tangent_in: (0.0, 0.0),
+/// The keys of one moving value, each segment eased into its key by the
+/// named curve: the same handles the `camera` op and the curve editor
+/// write, so what the card does is what a person would key by hand.
+fn eased(keys: &[(f64, f32, Easing)]) -> Vec<klipp_core::Keyframe> {
+    let mut out: Vec<klipp_core::Keyframe> = keys
+        .iter()
+        .map(|(time_secs, value, _)| klipp_core::Keyframe {
+            time_secs: *time_secs,
+            value: *value,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        })
+        .collect();
+    for (i, (_, _, easing)) in keys.iter().enumerate() {
+        let ease = match easing {
+            Easing::InCubic => klipp_core::keyframe::Ease::In,
+            Easing::OutCubic => klipp_core::keyframe::Ease::Out,
+            Easing::InOutCubic => klipp_core::keyframe::Ease::InOut,
+            _ => klipp_core::keyframe::Ease::Linear,
+        };
+        klipp_core::keyframe::ease_into(&mut out, i, ease);
     }
+    out
 }
 
 /// An inserted template instance. Only overrides are stored; default values
@@ -682,7 +707,16 @@ impl CompositionTemplateStore {
                         serde_json::from_str::<CompositionTemplate>(&json)
                             .map_err(|error| error.to_string())
                     }) {
-                    Ok(template) if template.validate().is_ok() => entries.push((path, template)),
+                    Ok(template) if template.validate().is_ok() => {
+                        // One id is one template: a second file carrying
+                        // it is a copy, and saving would rewrite the
+                        // first while dropping both from the list.
+                        if entries.iter().any(|(_, existing): &(PathBuf, CompositionTemplate)| existing.id == template.id) {
+                            tracing::warn!("Skipping template '{}': its id is already loaded from another file", path.display());
+                        } else {
+                            entries.push((path, template));
+                        }
+                    }
                     Ok(template) => tracing::warn!(
                         "Skipping invalid template '{}': {}",
                         path.display(),
@@ -692,7 +726,7 @@ impl CompositionTemplateStore {
                 }
             }
         }
-        entries.sort_by_key(|(_, template)| template.name.to_lowercase());
+        entries.sort_by_key(|(path, template)| (template.name.to_lowercase(), path.clone()));
         Self { dir, entries }
     }
 
@@ -712,14 +746,26 @@ impl CompositionTemplateStore {
             .iter()
             .find(|(_, existing)| existing.id == template.id)
             .map(|(path, _)| path.clone())
-            .unwrap_or_else(|| dir.join(format!("{}.{}", safe_stem(&template.name), EXTENSION)));
+            .unwrap_or_else(|| {
+                // A new template named like another gets a file of its
+                // own rather than the other's.
+                let stem = safe_stem(&template.name);
+                let taken = |p: &PathBuf| self.entries.iter().any(|(existing, _)| existing == p);
+                let mut candidate = dir.join(format!("{stem}.{EXTENSION}"));
+                let mut n = 2;
+                while taken(&candidate) || candidate.exists() {
+                    candidate = dir.join(format!("{stem}-{n}.{EXTENSION}"));
+                    n += 1;
+                }
+                candidate
+            });
         let json = serde_json::to_string_pretty(&template).map_err(|error| error.to_string())?;
         std::fs::write(&path, json).map_err(|error| error.to_string())?;
         self.entries
             .retain(|(_, existing)| existing.id != template.id);
         self.entries.push((path, template));
         self.entries
-            .sort_by_key(|(_, item)| item.name.to_lowercase());
+            .sort_by_key(|(path, item)| (item.name.to_lowercase(), path.clone()));
         Ok(())
     }
 }
@@ -840,12 +886,63 @@ mod tests {
             .any(|loop_| matches!(loop_, TitleLoop::Blink { .. })));
     }
 
+    /// The card's drift is eased into each key by the named curve: the
+    /// segment before an eased key is a Bezier with handles, not a
+    /// straight line labelled as one.
+    #[test]
+    fn the_cards_keys_are_eased_by_their_named_curves() {
+        let title = terminal_card_composition();
+        let keys = &title.objects[0].transform.center_x_keyframes;
+        assert!(keys.len() >= 4);
+        for pair in keys.windows(2) {
+            assert_eq!(pair[0].interpolation, klipp_core::Interpolation::Bezier, "each segment is eased");
+            assert!(pair[0].tangent_out.0 > 0.0 || pair[1].tangent_in.0 < 0.0, "with real handles");
+        }
+        assert_eq!(keys[0].tangent_in, (0.0, 0.0), "nothing precedes the first key");
+    }
+
+    /// A number that JSON cannot carry is refused before it is saved.
+    #[test]
+    fn a_non_finite_number_is_refused() {
+        let parameter = TemplateParameter { label: "Speed".into(), default: TemplateValue::Number(0.5), range: None, choices: vec![] };
+        assert!(parameter.validate(&TemplateValue::Number(f64::NAN)).is_err());
+        assert!(parameter.validate(&TemplateValue::Number(f64::INFINITY)).is_err());
+        assert!(parameter.validate(&TemplateValue::Number(0.25)).is_ok());
+    }
+
+    /// The command types on one character at a time and takes the
+    /// 0.34 s the parameter names to do it.
+    #[test]
+    fn the_command_types_on_character_by_character() {
+        let title = terminal_card_composition();
+        let enter = title.objects[1].fx().motion.enter.as_ref().expect("an entrance");
+        assert_eq!(enter.stagger, StaggerUnit::Char);
+        let chars = "$ find invoice.pdf".chars().count() as f32;
+        assert!((enter.stagger_secs * chars - 0.34).abs() < 1e-5, "{}", enter.stagger_secs);
+    }
+
+    /// Two templates that share a name are two files.
+    #[test]
+    fn a_second_template_with_the_same_name_gets_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("klipp_templates_{}_{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = CompositionTemplateStore::load(Some(dir.clone()));
+        store.save(CompositionTemplate::new("Card", Uuid::new_v4())).unwrap();
+        store.save(CompositionTemplate::new("Card", Uuid::new_v4())).unwrap();
+        let paths: std::collections::BTreeSet<_> = store.entries.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let reloaded = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(reloaded.templates().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn builtin_catalog_is_unique_and_declares_media_slots() {
         let manifests = builtin_manifests();
         assert_eq!(manifests.len(), 12);
         let mut ids = std::collections::BTreeSet::new();
-        for manifest in &manifests {
+        for manifest in manifests {
             assert!(ids.insert(&manifest.id));
             assert!(!manifest.description.is_empty());
             if manifest.asset_kind == TemplateAssetKind::MediaBacked {

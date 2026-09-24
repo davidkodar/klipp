@@ -15586,27 +15586,45 @@ impl KlippApp {
                     self.state.toast.show("The template's composition is missing");
                     return true;
                 };
-                let Some(track_index) = self.state.sequences[sequence_idx]
-                    .tracks
-                    .iter()
-                    .position(|track| track.kind == klipp_timeline::TrackKind::Video && !track.locked)
-                else {
-                    self.state.toast.show("Add a video track before inserting a template");
+                if self.state.sequences[sequence_idx].id == sequence_id {
+                    self.state.toast.show("A template cannot be inserted into its own composition");
                     return true;
+                }
+                if duration.to_secs_f64() <= 0.0 {
+                    self.state.toast.show("The template's composition is empty");
+                    return true;
+                }
+                let fps_rate = self.state.sequences[sequence_idx].fps.rate();
+                let timeline_in = self.state.playhead.rescale_to(fps_rate);
+                let timeline_out = timeline_in + duration.rescale_to(timeline_in.rate);
+                // An unlocked video track with room for the whole span,
+                // else a new one on top — as a title finds its track.
+                let seq = &mut self.state.sequences[sequence_idx];
+                let free = seq.tracks.iter().position(|t| {
+                    t.kind == klipp_timeline::TrackKind::Video
+                        && !t.locked
+                        && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
+                });
+                let track_index = match free {
+                    Some(i) => i,
+                    None => {
+                        let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count() + 1;
+                        seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Video {n}"), klipp_timeline::TrackKind::Video));
+                        0
+                    }
                 };
-                let timeline_in = self.state.playhead.rescale_to(self.state.fps.rate());
-                let source_duration = duration.rescale_to(timeline_in.rate);
-                let mut clip = klipp_timeline::Clip::gap(timeline_in, timeline_in + source_duration);
-                clip.kind = klipp_timeline::ClipKind::Sequence { sequence_id };
-                clip.source_in = klipp_core::Timecode::zero().rescale_to(timeline_in.rate);
-                clip.source_out = source_duration;
+                // A template is composed in isolation and placed as one
+                // picture: a precomposition, not a flattened compound.
+                let clip = klipp_timeline::Clip::precomposition(sequence_id, timeline_in, timeline_out);
                 let clip_id = clip.id;
-                self.state.sequences[sequence_idx].tracks[track_index].clips.push(clip.clone());
+                seq.tracks[track_index].clips.push(clip.clone());
+                seq.tracks[track_index].sort_clips();
                 self.state.push_history(klipp_document::history::EditCommand::LegacyAppendClip {
                     clip,
                     track_index,
                 });
                 self.state.selected_clip = Some(clip_id);
+                self.state.selected_clips.clear();
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
                 self.state.toast.show(format!("Inserted template '{}'", template.name));

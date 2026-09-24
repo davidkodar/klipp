@@ -1,8 +1,9 @@
 //! The in-app composition-template browser.
 //!
 //! This is deliberately an app-owned surface: users can discover the same
-//! template metadata without MCP or an external script. Insertion and
-//! parameter editing will build on this list in the next slice.
+//! template metadata without MCP or an external script, and insert a saved
+//! template at the playhead. Editing a template's parameters is not here
+//! yet.
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -37,20 +38,21 @@ pub fn show(
     ui.add_space(4.0);
 
     ui.label(egui::RichText::new("Built-in motion language").strong());
-    ui.label(egui::RichText::new("These data-only manifests are the starting library for launch films; each can be materialized into an editable composition.").small().color(theme.text_dim));
+    ui.label(egui::RichText::new("The starting library for launch films. These are catalogue entries: their compositions are not built yet, so they cannot be inserted.").small().color(theme.text_dim));
     for manifest in crate::parameterized_templates::builtin_manifests()
-        .into_iter()
+        .iter()
         .filter(|manifest| {
             needle.is_empty()
                 || manifest.name.to_lowercase().contains(&needle)
                 || manifest.category.to_lowercase().contains(&needle)
+                || manifest.description.to_lowercase().contains(&needle)
         })
     {
         ui.group(|ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(manifest.name).strong());
+                ui.label(egui::RichText::new(&manifest.name).strong());
                 ui.label(
-                    egui::RichText::new(manifest.category)
+                    egui::RichText::new(&manifest.category)
                         .small()
                         .color(theme.text_dim),
                 );
@@ -68,7 +70,7 @@ pub fn show(
                 );
             });
             ui.label(
-                egui::RichText::new(manifest.description)
+                egui::RichText::new(&manifest.description)
                     .small()
                     .color(theme.text_secondary),
             );
