@@ -2011,11 +2011,15 @@ fn show_title_quick_style_subsection(
 /// the Outline Layers stack. Soft-disable on each subcard preserves
 /// params via the `enabled` field. Group expansion is sticky per
 /// `clip_id` via egui ctx data.
+/// The layer's stack — glow, outline, drop shadow, inner shadow and
+/// their secondary layers — for any layer, and the fills (gradient,
+/// pattern, texture) when the layer is a text: `tb` is `None` for a
+/// shape or a picture, which has a face of its own.
 fn show_title_effects_group(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
-    tb: &klipp_timeline::TextBox,
+    tb: Option<&klipp_timeline::TextBox>,
     fx: &klipp_timeline::LayerFx,
     cmds: &mut Vec<AppCommand>,
     target_oid: Option<klipp_timeline::TitleObjectId>,
@@ -2028,8 +2032,8 @@ fn show_title_effects_group(
     let outline_enabled = fx.outlines.first().is_some_and(|o| o.enabled);
     let shadow_enabled = fx.shadows.first().is_some_and(|s| s.enabled);
     let inner_enabled = fx.inner_shadows.first().is_some_and(|i| i.enabled);
-    let gradient_enabled = tb.gradient.as_ref().is_some_and(|g| g.enabled);
-    let pattern_enabled = tb.pattern_fill.is_some() && tb.pattern_fill_enabled;
+    let gradient_enabled = tb.is_some_and(|tb| tb.gradient.as_ref().is_some_and(|g| g.enabled));
+    let pattern_enabled = tb.is_some_and(|tb| tb.pattern_fill.is_some() && tb.pattern_fill_enabled);
     // Two distinct concepts for Texture Fill:
     //   - `texture_toggle_on` drives the subcard toggle. Reflects
     //     just the user-set flag so clicking the toggle round-trips
@@ -2039,8 +2043,8 @@ fn show_title_effects_group(
     //     predicate used by the active-count badge + summary chip
     //     so a toggle-on without a file isn't counted as a live
     //     effect.
-    let texture_toggle_on = tb.texture_fill.as_ref().is_some_and(|t| t.enabled);
-    let texture_active = tb.texture_fill.as_ref().is_some_and(|t| t.is_active());
+    let texture_toggle_on = tb.is_some_and(|tb| tb.texture_fill.as_ref().is_some_and(|t| t.enabled));
+    let texture_active = tb.is_some_and(|tb| tb.texture_fill.as_ref().is_some_and(|t| t.is_active()));
 
     let mut active_count: u32 = 0;
     for on in [
@@ -2788,325 +2792,330 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 10. Gradient Fill
-    {
-        let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient {
-            top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255], enabled: false,
-        });
-        let mut enabled = gradient_enabled;
-        let summary = if enabled { "Linear · 2 stops".to_string() } else { String::new() };
-        let cur_top = cur.top_color;
-        let cur_bot = cur.bottom_color;
-        inspector_subgroup_card(ui, "Gradient Fill", &mut enabled,
-            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let mut top_col = egui::Color32::from_rgba_premultiplied(cur_top[0], cur_top[1], cur_top[2], cur_top[3]);
-            let mut bot_col = egui::Color32::from_rgba_premultiplied(cur_bot[0], cur_bot[1], cur_bot[2], cur_bot[3]);
-            let top_changed = effect_color_row(ui, theme, "Top", &mut top_col, ("gradient_top", clip_id));
-            let bot_changed = effect_color_row(ui, theme, "Bottom", &mut bot_col, ("gradient_bot", clip_id));
-            if top_changed || bot_changed {
-                cmds.push(AppCommand::SetTitleGradient {
-                    clip_id, enabled: true,
-                    top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
-                    bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
-                });
-            }
-        });
-        if enabled != gradient_enabled {
-            cmds.push(AppCommand::SetTitleGradient {
-                clip_id, enabled, top_color: cur_top, bottom_color: cur_bot,
+    // The fills are a text's own; a shape or a picture has a face of
+    // its own and no fill to pick.
+    if let Some(tb) = tb {
+        // 10. Gradient Fill
+        {
+            let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient {
+                top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255], enabled: false,
             });
-        }
-    }
-    ui.add_space(6.0);
-
-    // 11. Pattern Fill
-    {
-        let mut enabled = pattern_enabled;
-        let pat_idx: usize = match &tb.pattern_fill {
-            None => 0,
-            Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
-            Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
-            Some(klipp_timeline::TextPattern::Checkerboard { .. }) => 3,
-            Some(klipp_timeline::TextPattern::DiagonalStripes { .. }) => 4,
-        };
-        let labels = ["None", "H-Stripes", "V-Stripes", "Checker", "Diagonal"];
-        let summary = if enabled { labels[pat_idx].to_string() } else { String::new() };
-        inspector_subgroup_card(ui, "Pattern Fill", &mut enabled,
-            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            // Kind row — laid out with the same 70 px label column +
-            // 8 px spacing as the rest of the inspector so the
-            // "Kind" / "A" / "B" / "Size" labels line up vertically.
-            let mut new_idx = pat_idx;
-            let label_w: f32 = 70.0;
-            let row_h: f32 = 28.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (label_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(label_w, row_h),
-                    egui::Sense::hover(),
-                );
-                ui.painter().text(
-                    egui::pos2(label_rect.min.x, label_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    "Kind",
-                    egui::FontId::proportional(11.0),
-                    theme.text_dim,
-                );
-                egui::ComboBox::from_id_salt("title_pattern_kind")
-                    .selected_text(labels[new_idx])
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for (i, label) in labels.iter().enumerate() {
-                            if ui.selectable_label(new_idx == i, *label).clicked() {
-                                new_idx = i;
-                            }
-                        }
-                    });
-            });
-            if new_idx != pat_idx {
-                cmds.push(AppCommand::SetTitlePattern {
-                    clip_id, pattern_kind: new_idx as u8,
-                    color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
-                });
-            }
-            if let Some(pf) = &tb.pattern_fill {
-                let (ca0, cb0, mut size) = match pf {
-                    klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-                    klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-                    klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
-                    klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-                };
-                let mut col_a = egui::Color32::from_rgba_premultiplied(ca0[0], ca0[1], ca0[2], ca0[3]);
-                let mut col_b = egui::Color32::from_rgba_premultiplied(cb0[0], cb0[1], cb0[2], cb0[3]);
-                // A and B each get their own row with the new
-                // effect_color_row treatment (label + swatch + hex
-                // input) so they line up with every other Color row
-                // in the inspector.
-                let a_changed = effect_color_row(ui, theme, "A", &mut col_a, ("pattern_a", clip_id));
-                let b_changed = effect_color_row(ui, theme, "B", &mut col_b, ("pattern_b", clip_id));
-                let size_pill = format!("{} px", size.round() as i32);
-                let resp_size = effect_param_row(
-                    ui, theme, "Size", &mut size, 2.0..=50.0,
-                    &size_pill, &[],
-                );
-                if a_changed || b_changed || resp_size.changed {
-                    let ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
-                    let cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
-                    cmds.push(AppCommand::SetTitlePattern {
-                        clip_id, pattern_kind: pat_idx as u8,
-                        color_a: ca, color_b: cb, size,
+            let mut enabled = gradient_enabled;
+            let summary = if enabled { "Linear · 2 stops".to_string() } else { String::new() };
+            let cur_top = cur.top_color;
+            let cur_bot = cur.bottom_color;
+            inspector_subgroup_card(ui, "Gradient Fill", &mut enabled,
+                (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+                let mut top_col = egui::Color32::from_rgba_premultiplied(cur_top[0], cur_top[1], cur_top[2], cur_top[3]);
+                let mut bot_col = egui::Color32::from_rgba_premultiplied(cur_bot[0], cur_bot[1], cur_bot[2], cur_bot[3]);
+                let top_changed = effect_color_row(ui, theme, "Top", &mut top_col, ("gradient_top", clip_id));
+                let bot_changed = effect_color_row(ui, theme, "Bottom", &mut bot_col, ("gradient_bot", clip_id));
+                if top_changed || bot_changed {
+                    cmds.push(AppCommand::SetTitleGradient {
+                        clip_id, enabled: true,
+                        top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
+                        bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
                     });
                 }
-            }
-        });
-        if enabled != pattern_enabled {
-            if enabled && tb.pattern_fill.is_none() {
-                cmds.push(AppCommand::SetTitlePattern {
-                    clip_id, pattern_kind: 1,
-                    color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
+            });
+            if enabled != gradient_enabled {
+                cmds.push(AppCommand::SetTitleGradient {
+                    clip_id, enabled, top_color: cur_top, bottom_color: cur_bot,
                 });
             }
-            cmds.push(AppCommand::SetTitlePatternEnabled { clip_id, enabled });
         }
-    }
-    ui.add_space(6.0);
+        ui.add_space(6.0);
 
-    // 12. Texture Fill
-    {
-        let mut enabled = texture_toggle_on;
-        // Read current state — fall back to defaults when no
-        // TextureFill exists yet so the inspector renders sensible
-        // values even before the user enables.
-        let cur_tf: klipp_timeline::TextureFill = tb
-            .texture_fill
-            .clone()
-            .unwrap_or_default();
-        let cur_preset: Option<klipp_timeline::TexturePresetId> = match &cur_tf.source {
-            klipp_timeline::TextureSource::Preset(id) => Some(*id),
-            _ => None,
-        };
-        let source_label = match &cur_tf.source {
-            klipp_timeline::TextureSource::None => "(none)".to_string(),
-            klipp_timeline::TextureSource::File(p) => std::path::Path::new(p)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("(file)")
-                .to_string(),
-            klipp_timeline::TextureSource::Preset(id) => preset_display_name(*id).to_string(),
-        };
-        let summary = if texture_active { source_label.clone() } else { String::new() };
-        inspector_subgroup_card(ui, "Texture Fill", &mut enabled,
-            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            // ── Source row: label + current source name (read-only).
-            let label_w: f32 = 70.0;
-            let row_h: f32 = 28.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (label_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(label_w, row_h), egui::Sense::hover(),
-                );
-                ui.painter().text(
-                    egui::pos2(label_rect.min.x, label_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    "Source",
-                    egui::FontId::proportional(11.0),
-                    theme.text_dim,
-                );
-                ui.label(
-                    egui::RichText::new(&source_label)
-                        .size(11.0)
-                        .monospace()
-                        .color(theme.text_secondary),
-                );
-            });
-
-            // ── Browse / Preset dropdown / Clear row.
-            ui.horizontal(|ui| {
-                if ui.button("Browse\u{2026}").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Images", &{
-                            let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
-                            exts.push("tga");
-                            exts
-                        })
-                        .pick_file()
-                    {
-                        cmds.push(AppCommand::SetTitleTextureFill {
-                            clip_id, path: Some(path.to_string_lossy().to_string()),
+        // 11. Pattern Fill
+        {
+            let mut enabled = pattern_enabled;
+            let pat_idx: usize = match &tb.pattern_fill {
+                None => 0,
+                Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
+                Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
+                Some(klipp_timeline::TextPattern::Checkerboard { .. }) => 3,
+                Some(klipp_timeline::TextPattern::DiagonalStripes { .. }) => 4,
+            };
+            let labels = ["None", "H-Stripes", "V-Stripes", "Checker", "Diagonal"];
+            let summary = if enabled { labels[pat_idx].to_string() } else { String::new() };
+            inspector_subgroup_card(ui, "Pattern Fill", &mut enabled,
+                (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+                // Kind row — laid out with the same 70 px label column +
+                // 8 px spacing as the rest of the inspector so the
+                // "Kind" / "A" / "B" / "Size" labels line up vertically.
+                let mut new_idx = pat_idx;
+                let label_w: f32 = 70.0;
+                let row_h: f32 = 28.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let (label_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(label_w, row_h),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().text(
+                        egui::pos2(label_rect.min.x, label_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "Kind",
+                        egui::FontId::proportional(11.0),
+                        theme.text_dim,
+                    );
+                    egui::ComboBox::from_id_salt("title_pattern_kind")
+                        .selected_text(labels[new_idx])
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for (i, label) in labels.iter().enumerate() {
+                                if ui.selectable_label(new_idx == i, *label).clicked() {
+                                    new_idx = i;
+                                }
+                            }
+                        });
+                });
+                if new_idx != pat_idx {
+                    cmds.push(AppCommand::SetTitlePattern {
+                        clip_id, pattern_kind: new_idx as u8,
+                        color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
+                    });
+                }
+                if let Some(pf) = &tb.pattern_fill {
+                    let (ca0, cb0, mut size) = match pf {
+                        klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                        klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                        klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
+                        klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                    };
+                    let mut col_a = egui::Color32::from_rgba_premultiplied(ca0[0], ca0[1], ca0[2], ca0[3]);
+                    let mut col_b = egui::Color32::from_rgba_premultiplied(cb0[0], cb0[1], cb0[2], cb0[3]);
+                    // A and B each get their own row with the new
+                    // effect_color_row treatment (label + swatch + hex
+                    // input) so they line up with every other Color row
+                    // in the inspector.
+                    let a_changed = effect_color_row(ui, theme, "A", &mut col_a, ("pattern_a", clip_id));
+                    let b_changed = effect_color_row(ui, theme, "B", &mut col_b, ("pattern_b", clip_id));
+                    let size_pill = format!("{} px", size.round() as i32);
+                    let resp_size = effect_param_row(
+                        ui, theme, "Size", &mut size, 2.0..=50.0,
+                        &size_pill, &[],
+                    );
+                    if a_changed || b_changed || resp_size.changed {
+                        let ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
+                        let cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
+                        cmds.push(AppCommand::SetTitlePattern {
+                            clip_id, pattern_kind: pat_idx as u8,
+                            color_a: ca, color_b: cb, size,
                         });
                     }
                 }
-                // Procedural-preset picker. Selecting any entry
-                // dispatches SetTitleTexturePreset, swapping the
-                // source while preserving every other param.
-                let preset_text = cur_preset
-                    .map(preset_display_name)
-                    .unwrap_or("Preset\u{2026}");
-                egui::ComboBox::from_id_salt("title_texture_preset")
-                    .selected_text(preset_text)
-                    .show_ui(ui, |ui| {
-                        for (id, name) in [
-                            (0u8, "Paper Grain"),
-                            (1u8, "Scanlines"),
-                            (2u8, "Diagonal Hatch"),
-                            (3u8, "Gradient Sweep"),
-                        ] {
-                            let active = matches!(cur_preset, Some(p) if preset_id_to_u8(p) == id);
-                            if ui.selectable_label(active, name).clicked() {
-                                cmds.push(AppCommand::SetTitleTexturePreset {
-                                    clip_id, preset_id: id,
-                                });
-                            }
-                        }
+            });
+            if enabled != pattern_enabled {
+                if enabled && tb.pattern_fill.is_none() {
+                    cmds.push(AppCommand::SetTitlePattern {
+                        clip_id, pattern_kind: 1,
+                        color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
                     });
-                // Clear nukes the entire TextureFill — different
-                // from "no preset" since it also drops the params.
-                let has_source = !matches!(cur_tf.source, klipp_timeline::TextureSource::None);
-                if ui.add_enabled(has_source, egui::Button::new("Clear")).clicked() {
-                    cmds.push(AppCommand::SetTitleTextureFill {
-                        clip_id, path: None,
+                }
+                cmds.push(AppCommand::SetTitlePatternEnabled { clip_id, enabled });
+            }
+        }
+        ui.add_space(6.0);
+
+        // 12. Texture Fill
+        {
+            let mut enabled = texture_toggle_on;
+            // Read current state — fall back to defaults when no
+            // TextureFill exists yet so the inspector renders sensible
+            // values even before the user enables.
+            let cur_tf: klipp_timeline::TextureFill = tb
+                .texture_fill
+                .clone()
+                .unwrap_or_default();
+            let cur_preset: Option<klipp_timeline::TexturePresetId> = match &cur_tf.source {
+                klipp_timeline::TextureSource::Preset(id) => Some(*id),
+                _ => None,
+            };
+            let source_label = match &cur_tf.source {
+                klipp_timeline::TextureSource::None => "(none)".to_string(),
+                klipp_timeline::TextureSource::File(p) => std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("(file)")
+                    .to_string(),
+                klipp_timeline::TextureSource::Preset(id) => preset_display_name(*id).to_string(),
+            };
+            let summary = if texture_active { source_label.clone() } else { String::new() };
+            inspector_subgroup_card(ui, "Texture Fill", &mut enabled,
+                (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+                // ── Source row: label + current source name (read-only).
+                let label_w: f32 = 70.0;
+                let row_h: f32 = 28.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let (label_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(label_w, row_h), egui::Sense::hover(),
+                    );
+                    ui.painter().text(
+                        egui::pos2(label_rect.min.x, label_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "Source",
+                        egui::FontId::proportional(11.0),
+                        theme.text_dim,
+                    );
+                    ui.label(
+                        egui::RichText::new(&source_label)
+                            .size(11.0)
+                            .monospace()
+                            .color(theme.text_secondary),
+                    );
+                });
+
+                // ── Browse / Preset dropdown / Clear row.
+                ui.horizontal(|ui| {
+                    if ui.button("Browse\u{2026}").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Images", &{
+                                let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
+                                exts.push("tga");
+                                exts
+                            })
+                            .pick_file()
+                        {
+                            cmds.push(AppCommand::SetTitleTextureFill {
+                                clip_id, path: Some(path.to_string_lossy().to_string()),
+                            });
+                        }
+                    }
+                    // Procedural-preset picker. Selecting any entry
+                    // dispatches SetTitleTexturePreset, swapping the
+                    // source while preserving every other param.
+                    let preset_text = cur_preset
+                        .map(preset_display_name)
+                        .unwrap_or("Preset\u{2026}");
+                    egui::ComboBox::from_id_salt("title_texture_preset")
+                        .selected_text(preset_text)
+                        .show_ui(ui, |ui| {
+                            for (id, name) in [
+                                (0u8, "Paper Grain"),
+                                (1u8, "Scanlines"),
+                                (2u8, "Diagonal Hatch"),
+                                (3u8, "Gradient Sweep"),
+                            ] {
+                                let active = matches!(cur_preset, Some(p) if preset_id_to_u8(p) == id);
+                                if ui.selectable_label(active, name).clicked() {
+                                    cmds.push(AppCommand::SetTitleTexturePreset {
+                                        clip_id, preset_id: id,
+                                    });
+                                }
+                            }
+                        });
+                    // Clear nukes the entire TextureFill — different
+                    // from "no preset" since it also drops the params.
+                    let has_source = !matches!(cur_tf.source, klipp_timeline::TextureSource::None);
+                    if ui.add_enabled(has_source, egui::Button::new("Clear")).clicked() {
+                        cmds.push(AppCommand::SetTitleTextureFill {
+                            clip_id, path: None,
+                        });
+                    }
+                });
+
+                // ── Tile mode dropdown — same label-column alignment.
+                let tile_mode_idx = match cur_tf.tile_mode {
+                    klipp_timeline::TextureTileMode::Stretch => 0u8,
+                    klipp_timeline::TextureTileMode::Tile => 1,
+                    klipp_timeline::TextureTileMode::Fit => 2,
+                    klipp_timeline::TextureTileMode::Cover => 3,
+                };
+                let mut new_tile = tile_mode_idx;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let (label_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(label_w, row_h), egui::Sense::hover(),
+                    );
+                    ui.painter().text(
+                        egui::pos2(label_rect.min.x, label_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "Tile",
+                        egui::FontId::proportional(11.0),
+                        theme.text_dim,
+                    );
+                    let tile_labels = ["Stretch", "Tile", "Fit", "Cover"];
+                    egui::ComboBox::from_id_salt("title_texture_tile_mode")
+                        .selected_text(tile_labels[tile_mode_idx as usize])
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for (i, label) in tile_labels.iter().enumerate() {
+                                if ui.selectable_label(new_tile == i as u8, *label).clicked() {
+                                    new_tile = i as u8;
+                                }
+                            }
+                        });
+                });
+
+                // ── Scale / Offset X / Offset Y / Rotation / Opacity
+                //    rows via effect_param_row so they look identical
+                //    to every other inspector slider.
+                let mut scale = cur_tf.scale;
+                let mut offset_x = cur_tf.offset_x;
+                let mut offset_y = cur_tf.offset_y;
+                let mut rotation = cur_tf.rotation;
+                let mut opacity = cur_tf.opacity;
+
+                let pill_scale = format!("{:.2}\u{00d7}", scale);
+                let resp_scale = effect_param_row(
+                    ui, theme, "Scale", &mut scale, 0.1..=5.0, &pill_scale, &[],
+                );
+                let pill_ox = format!("{} px", offset_x.round() as i32);
+                let resp_ox = effect_param_row(
+                    ui, theme, "Offset X", &mut offset_x, -200.0..=200.0, &pill_ox, &[],
+                );
+                let pill_oy = format!("{} px", offset_y.round() as i32);
+                let resp_oy = effect_param_row(
+                    ui, theme, "Offset Y", &mut offset_y, -200.0..=200.0, &pill_oy, &[],
+                );
+                let pill_rot = format!("{}\u{00b0}", rotation.round() as i32);
+                let resp_rot = effect_param_row(
+                    ui, theme, "Rotation", &mut rotation, -180.0..=180.0, &pill_rot, &[],
+                );
+                let pill_op = format!("{}%", (opacity * 100.0).round() as i32);
+                let resp_op = effect_param_row(
+                    ui, theme, "Opacity", &mut opacity, 0.0..=1.0, &pill_op, &[],
+                );
+
+                // ── Tint row via effect_color_row (label + swatch + hex).
+                let mut tint_col = egui::Color32::from_rgba_premultiplied(
+                    cur_tf.tint[0], cur_tf.tint[1], cur_tf.tint[2], cur_tf.tint[3],
+                );
+                let tint_changed = effect_color_row(
+                    ui, theme, "Tint", &mut tint_col, ("texture_tint", clip_id),
+                );
+
+                // Dispatch a single SetTitleTextureParams command if
+                // anything changed. The handler preserves the source,
+                // so this cleanly composes with the source-picker
+                // dispatches above.
+                let any_param_changed = new_tile != tile_mode_idx
+                    || resp_scale.changed
+                    || resp_ox.changed
+                    || resp_oy.changed
+                    || resp_rot.changed
+                    || resp_op.changed
+                    || tint_changed;
+                if any_param_changed {
+                    cmds.push(AppCommand::SetTitleTextureParams {
+                        clip_id,
+                        tile_mode: new_tile,
+                        scale,
+                        offset_x,
+                        offset_y,
+                        rotation,
+                        opacity,
+                        tint: [tint_col.r(), tint_col.g(), tint_col.b(), tint_col.a()],
                     });
                 }
             });
-
-            // ── Tile mode dropdown — same label-column alignment.
-            let tile_mode_idx = match cur_tf.tile_mode {
-                klipp_timeline::TextureTileMode::Stretch => 0u8,
-                klipp_timeline::TextureTileMode::Tile => 1,
-                klipp_timeline::TextureTileMode::Fit => 2,
-                klipp_timeline::TextureTileMode::Cover => 3,
-            };
-            let mut new_tile = tile_mode_idx;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (label_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(label_w, row_h), egui::Sense::hover(),
-                );
-                ui.painter().text(
-                    egui::pos2(label_rect.min.x, label_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    "Tile",
-                    egui::FontId::proportional(11.0),
-                    theme.text_dim,
-                );
-                let tile_labels = ["Stretch", "Tile", "Fit", "Cover"];
-                egui::ComboBox::from_id_salt("title_texture_tile_mode")
-                    .selected_text(tile_labels[tile_mode_idx as usize])
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        for (i, label) in tile_labels.iter().enumerate() {
-                            if ui.selectable_label(new_tile == i as u8, *label).clicked() {
-                                new_tile = i as u8;
-                            }
-                        }
-                    });
-            });
-
-            // ── Scale / Offset X / Offset Y / Rotation / Opacity
-            //    rows via effect_param_row so they look identical
-            //    to every other inspector slider.
-            let mut scale = cur_tf.scale;
-            let mut offset_x = cur_tf.offset_x;
-            let mut offset_y = cur_tf.offset_y;
-            let mut rotation = cur_tf.rotation;
-            let mut opacity = cur_tf.opacity;
-
-            let pill_scale = format!("{:.2}\u{00d7}", scale);
-            let resp_scale = effect_param_row(
-                ui, theme, "Scale", &mut scale, 0.1..=5.0, &pill_scale, &[],
-            );
-            let pill_ox = format!("{} px", offset_x.round() as i32);
-            let resp_ox = effect_param_row(
-                ui, theme, "Offset X", &mut offset_x, -200.0..=200.0, &pill_ox, &[],
-            );
-            let pill_oy = format!("{} px", offset_y.round() as i32);
-            let resp_oy = effect_param_row(
-                ui, theme, "Offset Y", &mut offset_y, -200.0..=200.0, &pill_oy, &[],
-            );
-            let pill_rot = format!("{}\u{00b0}", rotation.round() as i32);
-            let resp_rot = effect_param_row(
-                ui, theme, "Rotation", &mut rotation, -180.0..=180.0, &pill_rot, &[],
-            );
-            let pill_op = format!("{}%", (opacity * 100.0).round() as i32);
-            let resp_op = effect_param_row(
-                ui, theme, "Opacity", &mut opacity, 0.0..=1.0, &pill_op, &[],
-            );
-
-            // ── Tint row via effect_color_row (label + swatch + hex).
-            let mut tint_col = egui::Color32::from_rgba_premultiplied(
-                cur_tf.tint[0], cur_tf.tint[1], cur_tf.tint[2], cur_tf.tint[3],
-            );
-            let tint_changed = effect_color_row(
-                ui, theme, "Tint", &mut tint_col, ("texture_tint", clip_id),
-            );
-
-            // Dispatch a single SetTitleTextureParams command if
-            // anything changed. The handler preserves the source,
-            // so this cleanly composes with the source-picker
-            // dispatches above.
-            let any_param_changed = new_tile != tile_mode_idx
-                || resp_scale.changed
-                || resp_ox.changed
-                || resp_oy.changed
-                || resp_rot.changed
-                || resp_op.changed
-                || tint_changed;
-            if any_param_changed {
-                cmds.push(AppCommand::SetTitleTextureParams {
-                    clip_id,
-                    tile_mode: new_tile,
-                    scale,
-                    offset_x,
-                    offset_y,
-                    rotation,
-                    opacity,
-                    tint: [tint_col.r(), tint_col.g(), tint_col.b(), tint_col.a()],
-                });
+            if enabled != texture_toggle_on {
+                cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
             }
-        });
-        if enabled != texture_toggle_on {
-            cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
         }
+
     }
     ui.add_space(10.0);
 }
@@ -4071,6 +4080,109 @@ fn show_title_layer_row(
     );
 }
 
+/// The layer's motion blur — the compositor smears the layer along its
+/// path by it — for any layer: the text's, or a shape's or picture's.
+#[allow(clippy::too_many_arguments)]
+fn show_title_motion_blur_group(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    fx: &klipp_timeline::LayerFx,
+    cmds: &mut Vec<AppCommand>,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    clip_time_secs: f64,
+    keyframe_tolerance: f64,
+) {
+    {
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: fx.motion_blur.clone().is_some_and(|m| m.enabled),
+        };
+        if title_group_is_open(ui, theme, clip_id, "Motion Blur", status) {
+            ui.add_space(6.0);
+    // ── Motion Blur ──
+    {
+        let mut enabled = fx.motion_blur.clone().is_some();
+        if ui.checkbox(&mut enabled, "Enable").changed() {
+            cmds.push(AppCommand::SetTitleMotionBlur {
+                clip_id,
+                enabled,
+                shutter_angle: 180.0,
+                samples: 8,
+            });
+        }
+        if let Some(mb) = fx.motion_blur.clone() {
+            // Display animated shutter_angle at the playhead.
+            let display_shutter = mb.evaluated_shutter_angle(clip_time_secs);
+            let kfs_shutter: &[klipp_core::Keyframe] = fx
+                .motion_blur
+                .as_ref()
+                .map(|m| m.shutter_angle_keyframes.as_slice())
+                .unwrap_or(&[]);
+            let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
+
+            let mut shutter = display_shutter;
+            let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
+                target_oid.map(|_| ks_shutter),
+            );
+            handle_motion_blur_axis_response(
+                cmds, clip_id, target_oid,
+                shutter, &mb, kfs_shutter, clip_time_secs, &resp_shutter,
+                keyframe_tolerance,
+            );
+
+            // Samples is integer-valued — not keyframable; keeps the
+            // simple DragValue UI.
+            let mut samples = mb.samples as i32;
+            let samples_resp = ui.horizontal(|ui| {
+                ui.label("Samples:");
+                ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed()
+            });
+            if samples_resp.inner {
+                cmds.push(AppCommand::SetTitleMotionBlur {
+                    clip_id,
+                    enabled: true,
+                    shutter_angle: mb.shutter_angle,
+                    samples: samples as u8,
+                });
+            }
+        }
+    }
+    ui.add_space(12.0);
+
+            ui.add_space(8.0);
+        }
+    }
+}
+
+/// The cards a shape or a picture shares with a text now that its
+/// motion and effects are its own: the motion card with its loops,
+/// the effects group, the motion blur — each reading and writing the
+/// selected layer's stack, with the layer itself in the chips.
+#[allow(clippy::too_many_arguments)]
+fn show_title_layer_stack(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    oid: klipp_timeline::TitleObjectId,
+    chips: &mut title_tab::TitleChips,
+    cmds: &mut Vec<AppCommand>,
+    clip_time_secs: f64,
+    keyframe_tolerance: f64,
+) {
+    let Some(object) = td.object(oid) else { return };
+    let fx = object.fx();
+    let subject = title_tab::ChipSubject::Layer(object.content.clone());
+    ui.add_space(10.0);
+    title_tab::show_motion_card(ui, theme, clip_id, &subject, fx, chips, cmds);
+    ui.add_space(10.0);
+    show_title_effects_group(ui, theme, clip_id, None, fx, cmds, Some(oid), clip_time_secs, keyframe_tolerance);
+    ui.add_space(8.0);
+    show_title_motion_blur_group(ui, theme, clip_id, fx, cmds, Some(oid), clip_time_secs, keyframe_tolerance);
+}
+
 fn show_title_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -4197,6 +4309,7 @@ fn show_title_editor(
             show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds, (state.playhead.to_secs_f64()-clip.timeline_in.to_secs_f64()).max(0.0), 0.5/state.sequence().fps.as_f64());
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance);
         }
         return;
     }
@@ -4205,6 +4318,7 @@ fn show_title_editor(
             show_title_image_editor(ui, theme, clip_id, oid, img, cmds);
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance);
         }
         return;
     }
@@ -4242,7 +4356,7 @@ fn show_title_editor(
 
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
-        title_tab::show_motion_card(ui, theme, clip_id, tb, fx, chips, cmds);
+        title_tab::show_motion_card(ui, theme, clip_id, &title_tab::ChipSubject::Text(tb.clone()), fx, chips, cmds);
         ui.add_space(10.0);
         title_tab::show_style_card(ui, theme, clip_id, tb, fx, chips, cmds);
         ui.add_space(10.0);
@@ -4259,7 +4373,7 @@ fn show_title_editor(
 
     // ── Effects group ──
     if let Some(tb) = tb_target {
-        show_title_effects_group(ui, theme, clip_id, tb, fx, cmds, target_oid, clip_time_secs, keyframe_tolerance);
+        show_title_effects_group(ui, theme, clip_id, Some(tb), fx, cmds, target_oid, clip_time_secs, keyframe_tolerance);
         ui.add_space(8.0);
     }
 
@@ -4464,68 +4578,7 @@ fn show_title_editor(
     }
     ui.add_space(2.0);
 
-    {
-        let status = crate::widgets::inspector_group::GroupStatus {
-            count: None,
-            active: td.motion_blur().is_some_and(|m| m.enabled),
-        };
-        if title_group_is_open(ui, theme, clip_id, "Motion Blur", status) {
-            ui.add_space(6.0);
-    // ── Motion Blur ──
-    {
-        let mut enabled = td.motion_blur().is_some();
-        if ui.checkbox(&mut enabled, "Enable").changed() {
-            cmds.push(AppCommand::SetTitleMotionBlur {
-                clip_id,
-                enabled,
-                shutter_angle: 180.0,
-                samples: 8,
-            });
-        }
-        if let Some(mb) = td.motion_blur() {
-            // Display animated shutter_angle at the playhead.
-            let display_shutter = mb.evaluated_shutter_angle(clip_time_secs);
-            let kfs_shutter: &[klipp_core::Keyframe] = td
-                .primary_fx()
-                .motion_blur
-                .as_ref()
-                .map(|m| m.shutter_angle_keyframes.as_slice())
-                .unwrap_or(&[]);
-            let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
-
-            let mut shutter = display_shutter;
-            let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
-                target_oid.map(|_| ks_shutter),
-            );
-            handle_motion_blur_axis_response(
-                cmds, clip_id, target_oid,
-                shutter, &mb, kfs_shutter, clip_time_secs, &resp_shutter,
-                keyframe_tolerance,
-            );
-
-            // Samples is integer-valued — not keyframable; keeps the
-            // simple DragValue UI.
-            let mut samples = mb.samples as i32;
-            let samples_resp = ui.horizontal(|ui| {
-                ui.label("Samples:");
-                ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed()
-            });
-            if samples_resp.inner {
-                cmds.push(AppCommand::SetTitleMotionBlur {
-                    clip_id,
-                    enabled: true,
-                    shutter_angle: mb.shutter_angle,
-                    samples: samples as u8,
-                });
-            }
-        }
-    }
-    ui.add_space(12.0);
-
-            ui.add_space(8.0);
-        }
-    }
+    show_title_motion_blur_group(ui, theme, clip_id, fx, cmds, target_oid, clip_time_secs, keyframe_tolerance);
     ui.add_space(2.0);
 
     {

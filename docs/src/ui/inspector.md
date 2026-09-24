@@ -86,6 +86,15 @@ Selected title clips get a Title tab in three tiers: the text, font and position
 
 ### Editable vector paths
 
+Every layer of a title — text, shape or picture — carries its own motion and
+effect stack. Select the layer and the inspector shows its Motion card (an
+entrance, an exit and the loops, previewed on the layer itself), its Effects
+group (glow, outline, drop shadow, inner shadow and their secondary layers)
+and its Motion Blur; a text layer also has the fills, which a shape or a
+picture has no use for. A backing pill can rise with its words, a logo can
+fade in under a glow, and a row of cards can arrive one after another by
+each card's own delay.
+
 Select a title's shape layer and choose **Start editable path** to begin with a
 square. The path editor exposes vertices, absolute cubic handles, contours,
 fill RGBA, stroke RGBA and stroke width (pixels at 1080p). Drag the points or
