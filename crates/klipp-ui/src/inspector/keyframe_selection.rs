@@ -8,6 +8,21 @@ pub(super) fn clip_time(state: &crate::state::AppState, clip: &Clip) -> f64 {
     (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0)
 }
 
+/// The canonical clip time and selection window travel together through all
+/// mask inspector pages. Callers supply the canonical playhead, not the
+/// smooth scrub position.
+#[derive(Clone, Copy)]
+pub(crate) struct FrameSelection {
+    pub time_secs: f64,
+    pub tolerance: f64,
+}
+
+impl FrameSelection {
+    pub fn new(playhead: klipp_core::Timecode, clip_start: klipp_core::Timecode, tolerance: f64) -> Self {
+        Self { time_secs: (playhead.to_secs_f64() - clip_start.to_secs_f64()).max(0.0), tolerance }
+    }
+}
+
 /// Half a displayed sequence frame; storage identity remains a separate rule.
 pub(crate) fn frame_tolerance(sequence: &Sequence) -> f64 {
     0.5 / sequence.fps.as_f64()
@@ -19,6 +34,8 @@ fn in_window(key_time: f64, time: f64, tolerance: f64) -> bool {
 
 /// Pick the closest key within half a sequence frame. Equal distances prefer
 /// the earlier entry in the sorted track. Never move the stored timestamp.
+/// Endpoints are inclusive with rounding slack: a halfway key is selectable
+/// from either adjacent frame, rather than unreachable from both.
 pub(crate) fn nearest(keys: &[Keyframe], time: f64, tolerance: f64) -> Option<usize> {
     keys.iter()
         .enumerate()
@@ -486,6 +503,40 @@ mod tests {
         assert_eq!(nearest(&track, 1.0 / 24.0, 0.5 / 24.0), Some(5));
         assert_eq!(selection.prev_keyframe_time, Some(2.0 / 120.0));
         assert_eq!(selection.next_keyframe_time, Some(8.0 / 120.0));
+    }
+
+    #[test]
+    fn editing_an_off_grid_bezier_key_preserves_its_curve_shape() {
+        let mut seq = fixture();
+        let clip = &mut seq.tracks[0].clips[0];
+        clip.opacity_keyframes[0].interpolation = Interpolation::Bezier;
+        clip.opacity_keyframes[0].tangent_in = (-0.2, -0.3);
+        clip.opacity_keyframes[0].tangent_out = (0.1, 0.4);
+        let mut expected = clip.opacity_keyframes.clone();
+        expected[0].value = 0.9;
+        let mut cmd = AppCommand::AddVideoKeyframe { clip_id: clip.id, param: VideoParam::Opacity, time_secs: 17.0 / 24.0, value: 0.9 };
+        resolve_command(&seq, &mut cmd);
+        let AppCommand::AddVideoKeyframe { time_secs, value, .. } = cmd else { unreachable!() };
+        klipp_core::keyframe::upsert_keyframe(&mut seq.tracks[0].clips[0].opacity_keyframes, time_secs, value);
+        assert_eq!(seq.tracks[0].clips[0].opacity_keyframes, expected);
+    }
+
+    #[test]
+    fn mask_frame_context_uses_canonical_clip_time_and_sequence_window() {
+        for (rate, stored) in [(24, 0.7), (60, 0.707)] {
+            let mut seq = fixture();
+            seq.fps = Fps::new(rate, 1);
+            let clip_start = Timecode::from_secs_f64(2.0, rate);
+            let playhead = Timecode::from_secs_f64(2.0 + stored, rate);
+            let frame = FrameSelection::new(playhead, clip_start, frame_tolerance(&seq));
+            let track = keys(&[stored, 1.0]);
+            let selected = nearest(&track, frame.time_secs, frame.tolerance).unwrap();
+            assert_eq!(track[selected].time_secs, stored);
+            assert!((frame.time_secs - stored).abs() > 1e-3, "old node mask window must miss this fixture");
+            let mut edited = track.clone();
+            klipp_core::keyframe::remove_keyframe_at(&mut edited, track[selected].time_secs);
+            assert_eq!(edited, keys(&[1.0]));
+        }
     }
 
 }

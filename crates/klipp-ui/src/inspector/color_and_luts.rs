@@ -50,9 +50,13 @@ pub fn show_color_and_luts(
                         })
                     }));
             if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
+                let frame = crate::inspector::keyframe_selection::FrameSelection {
+                    time_secs: clip_time_secs,
+                    tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                };
                 section_card(ui, "MASKS", None, theme, |ui| {
-                    crate::panels::node_inspector::NodeInspectorPanel::render_masks_body_with_tolerance(
-                        ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked, crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                    crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
+                        ui, &mut masks, node_id, clip_id, cmds, theme, frame, &tracked,
                     );
                 });
             }

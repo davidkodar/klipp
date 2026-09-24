@@ -46,25 +46,24 @@ pub struct Keyframe {
 /// Mouse hit testing should use a separate, pixel-based tolerance.
 pub const KEYFRAME_TIME_EPSILON: f64 = 1e-6;
 
-/// Insert (or replace at the same timestamp) a keyframe at `time_secs` and
-/// keep the vec sorted by time. Centralises the dedup + sort logic so
-/// every per-effect/per-axis keyframe handler shares one
-/// implementation. Default interpolation is Linear; right-click menus
-/// can flip it later via `set_keyframe_interpolation`.
+/// Update a key's value without changing its stored time, interpolation or
+/// tangents; insert a Linear key when no timestamp matches.
 pub fn upsert_keyframe(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32) {
-    kfs.retain(|k| (k.time_secs - time_secs).abs() >= KEYFRAME_TIME_EPSILON);
+    upsert_keyframe_with_interpolation(kfs, time_secs, value, Interpolation::Linear);
+}
+
+/// As [`upsert_keyframe`], with a default interpolation for newly inserted keys.
+/// Existing keys keep their curve shape, including when editing Step parameters.
+pub fn upsert_keyframe_with_interpolation(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32, default: Interpolation) {
+    if let Some(key) = kfs.iter_mut().find(|k| (k.time_secs - time_secs).abs() < KEYFRAME_TIME_EPSILON) {
+        key.value = value;
+        return;
+    }
     kfs.push(Keyframe {
-        time_secs,
-        value,
-        interpolation: Interpolation::Linear,
-        tangent_out: (0.0, 0.0),
-        tangent_in: (0.0, 0.0),
+        time_secs, value, interpolation: default,
+        tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
     });
-    kfs.sort_by(|a, b| {
-        a.time_secs
-            .partial_cmp(&b.time_secs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
 }
 
 /// Remove every keyframe at `time_secs` (within [`KEYFRAME_TIME_EPSILON`]). No-op when
@@ -725,4 +724,20 @@ mod precision_tests {
         remove_keyframe_at(&mut keys, 0.1 + 0.2);
         assert!(keys.is_empty());
     }
+    #[test]
+    fn value_updates_preserve_shape_and_new_keys_use_the_requested_default() {
+        let mut keys = Vec::new();
+        upsert_keyframe_with_interpolation(&mut keys, 0.7, 0.5, Interpolation::Bezier);
+        keys[0].tangent_in = (-0.1, -0.2);
+        keys[0].tangent_out = (0.3, 0.4);
+        let mut expected = keys[0].clone();
+        expected.value = 0.9;
+        upsert_keyframe(&mut keys, 0.7 + KEYFRAME_TIME_EPSILON / 2.0, 0.9);
+        assert_eq!(keys, vec![expected]);
+        upsert_keyframe_with_interpolation(&mut keys, 1.0, 1.0, Interpolation::Step);
+        assert_eq!(keys[1].interpolation, Interpolation::Step);
+        upsert_keyframe(&mut keys, 2.0, 0.5);
+        assert_eq!(keys[2].interpolation, Interpolation::Linear);
+    }
+
 }

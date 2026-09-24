@@ -9394,13 +9394,6 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: klipp_core::Interpolation::Linear,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = match param {
                                 klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
                                 klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
@@ -9412,9 +9405,7 @@ impl KlippApp {
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
-                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
                             break;
                         }
                     }
@@ -10002,17 +9993,8 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: klipp_core::Interpolation::Linear,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = clip.effect_keyframes.entry(key.clone()).or_default();
-                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
                             break;
                         }
                     }
@@ -10177,17 +10159,8 @@ impl KlippApp {
                     };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: default_interp,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
-                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe_with_interpolation(keyframes, *time_secs, *value, default_interp);
                             break;
                         }
                     }
@@ -32724,6 +32697,7 @@ impl KlippApp {
             if in_color_workspace {
                 let clip_id = self.state.selected_clip.unwrap();
                 let seq_idx = self.state.active_sequence_idx;
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -32881,7 +32855,7 @@ impl KlippApp {
                     // them — otherwise clicking e.g. an ExternalMatte
                     // in the canvas would hide its file picker behind
                     // the grade tabs.
-                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     // Descent-aware graph: when the user is inside a
                     // compound, the inspector should read/write the
                     // sub-graph's nodes. Fall back to the root graph
@@ -32929,7 +32903,7 @@ impl KlippApp {
                     let panel_cmds = if use_per_node_inspector {
                         self.node_inspector_panel.show(
                             ui, &self.state.selected_node_id,
-                            graph, clip_id, &self.theme, clip_time_secs,
+                            graph, clip_id, &self.theme, mask_frame,
                         )
                     } else {
                         self.node_inspector_panel.show_simple(
@@ -32937,7 +32911,7 @@ impl KlippApp {
                             &mut self.state.selected_node_id,
                             &mut self.state.color_tab,
                             &self.theme,
-                            clip_time_secs,
+                            mask_frame,
                         )
                     };
                     all_cmds.extend(panel_cmds);
@@ -33665,10 +33639,11 @@ impl KlippApp {
             ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
             if let Some(clip_id) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
-                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     let path = self.state.graph_descent_path.clone();
                     let graph: &mut klipp_nodes::NodeGraph =
                         match Self::resolve_graph_at_path_mut(clip, &path) {
@@ -33680,7 +33655,7 @@ impl KlippApp {
                         &mut self.state.selected_node_id,
                         &mut self.state.color_tab_bottom,
                         &self.theme,
-                        clip_time_secs,
+                        mask_frame,
                     );
                     all_cmds.extend(panel_cmds);
                 }
