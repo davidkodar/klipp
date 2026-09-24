@@ -840,6 +840,8 @@ pub enum ShapeKind {
         #[serde(default)]
         corner_radius: f32,
     },
+    /// Editable cubic contours with explicit topology-preserving morph keys.
+    Path(crate::VectorPath),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

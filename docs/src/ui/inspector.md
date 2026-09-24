@@ -83,3 +83,25 @@ Hover any parameter for a tooltip with the parameter name, current value, and (w
 ## Title Tab
 
 Selected title clips get a Title tab in three tiers: the text, font and position and the Motion and Style cards always open, with every choice shown as a chip rendered on the clip's own text; the full effect stacks and the rest under Advanced. With nothing selected the tab offers **Add Title**. See [Titles](../editing/titles.md).
+
+### Editable vector paths
+
+Select a title's shape layer and choose **Start editable path** to begin with a
+square. The path editor exposes vertices, absolute cubic handles, contours,
+fill RGBA, stroke RGBA and stroke width (pixels at 1080p). Drag the points or
+edit their coordinates; normalized `(0,0)` and `(1,1)` span the layer box.
+JSON import/export uses the same `VectorPath` structure as the `vector_path`
+agent operation. SVG import is not implemented.
+
+**Key pose** stores geometry and paint at the clip-local playhead. Editing near
+an existing key changes that key's stored pose and timestamp; the easing menu
+controls interpolation toward the next key. The first/last pose is held outside
+the keyed range. Clear keys before changing contour count, vertex count/order
+or closed flags: mismatched topology is refused rather than guessed. Contour
+and vertex order establish morph correspondence. Up to 16 contours, 256 total
+vertices and 256 pose keys are supported.
+
+Closed contours use even-odd fill (including holes); open contours are
+stroke-only. Strokes have round caps and joins. Cubics are flattened at output
+resolution and antialiased; no fixed-resolution bitmap is stored in the project.
+Path animation is evaluated in both the viewer and export title pipeline.

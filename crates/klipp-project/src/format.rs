@@ -563,6 +563,8 @@ pub enum ClipKindJson {
     Precomposition {
         sequence_id: String,
     },
+    /// Explicit feature tag: older readers must refuse editable path titles.
+    VectorTitle { title_data: klipp_timeline::TitleData },
 }
 
 fn default_one_f32() -> f32 { 1.0 }

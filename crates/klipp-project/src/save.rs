@@ -401,6 +401,9 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
         ClipKind::Media { media_id } => ClipKindJson::Media {
             media_id: media_id.to_string(),
         },
+        ClipKind::Title(data) if data.objects.iter().any(|o| matches!(&o.content,klipp_timeline::TitleObjectContent::Shape(shape) if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_)))) => {
+            ClipKindJson::VectorTitle {title_data:title_data_for_file(data,project_dir)}
+        }
         ClipKind::Title(data) => {
             // Serialise via the legacy single-text-flat shape for
             // commit 1: read the primary TextBox + first object's
