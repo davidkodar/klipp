@@ -100,6 +100,29 @@ pub type LoadResult = (
     LoadedTitleAssets,
 );
 
+/// A clip's built-in effects from the file, each read on its own so the
+/// one that fails is the one named: an effect tag from a newer Klipp,
+/// or a value that is not an effect at all, refuses the load rather
+/// than costing the clip the effects around it.
+fn read_builtin_effects(value: &serde_json::Value, clip_id: &str) -> Result<Vec<klipp_effects::BuiltinEffect>, String> {
+    let Some(items) = value.as_array() else {
+        return Err(format!("clip {clip_id}: its effects are not a list; the project cannot be read as it was saved"));
+    };
+    items
+        .iter()
+        .map(|item| {
+            serde_json::from_value::<klipp_effects::BuiltinEffect>(item.clone()).map_err(|e| {
+                match item.get("type").and_then(serde_json::Value::as_str) {
+                    Some(tag) => format!(
+                        "clip {clip_id}: effect \"{tag}\" is not one this Klipp knows; the project was saved by a newer version, open it there ({e})"
+                    ),
+                    None => format!("clip {clip_id}: an effect could not be read: {e}"),
+                }
+            })
+        })
+        .collect()
+}
+
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
     let manifest_path = dir.join("media").join("manifest.json");
@@ -236,10 +259,15 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         }
     }
 
-    // Refuse invalid vector data before legacy sequence recovery can skip it.
+    // Refuse invalid vector data — and an effect this reader does not
+    // know, by name — before legacy sequence recovery can skip the
+    // sequence that carries it and read the rest as if it were whole.
     for sequence in &project.sequences {
         for track in &sequence.tracks {
             for clip in &track.clips {
+                if let Some(value) = &clip.builtin_effects {
+                    read_builtin_effects(value, &clip.id)?;
+                }
                 if let Some(ClipKindJson::Title { title_data: Some(value), .. }) = &clip.kind {
                     // The legacy wrapper is permissive for old text DTOs, but a
                     // path payload must never bypass the path contract.
@@ -371,6 +399,18 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 
 
 fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Result<Sequence, String> {
+    // Refuse an effect this reader does not know, by name, before any
+    // clip is built. The effects are stored as one tagged array; read as
+    // a whole and swallowed, one unknown tag — a project written by a
+    // newer Klipp with an effect appended since — cost the clip every
+    // effect it had, silently, and the next save wrote it back without
+    // them (#222).
+    let mut effects_by_clip: HashMap<&str, Vec<klipp_effects::BuiltinEffect>> = HashMap::new();
+    for clip in seq_json.tracks.iter().flat_map(|t| t.clips.iter()) {
+        if let Some(value) = &clip.builtin_effects {
+            effects_by_clip.insert(clip.id.as_str(), read_builtin_effects(value, &clip.id)?);
+        }
+    }
     let mut sequence = Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
@@ -438,9 +478,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                         migrate_graph(&mut g);
                         g
                     },
-                    builtin_effects: c.builtin_effects.as_ref()
-                        .and_then(|v| serde_json::from_value::<Vec<klipp_effects::BuiltinEffect>>(v.clone()).ok())
-                        .unwrap_or_default(),
+                    builtin_effects: effects_by_clip.get(c.id.as_str()).cloned().unwrap_or_default(),
                     builtin_effects_enabled: c.builtin_effects_enabled.clone(),
                     effects: c.effects.iter().map(|e| {
                         klipp_plugin::AppliedEffect {
