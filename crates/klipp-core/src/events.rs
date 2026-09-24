@@ -1879,6 +1879,10 @@ pub enum AppCommand {
     /// clip is selected, the inspector opens on its text, the playhead
     /// parks where the title is at rest.
     AddTitleAtPlayhead { over_clip: Option<ClipId> },
+    /// Insert a saved composition template as a precomposition clip at the
+    /// current playhead. The app resolves the template metadata and records
+    /// the resulting clip through the normal edit history.
+    InsertCompositionTemplate { template_id: uuid::Uuid },
     /// Open the dialog that saves a title clip as a user template in
     /// the Titles browser.
     SaveTitleTemplate { clip_id: ClipId },

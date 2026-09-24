@@ -14,6 +14,7 @@ pub fn show(
     theme: &KlippTheme,
     search: &str,
 ) -> Vec<klipp_core::AppCommand> {
+    let mut commands = Vec::new();
     let needle = search.trim().to_lowercase();
     let templates: Vec<_> = state
         .composition_templates
@@ -76,10 +77,15 @@ pub fn show(
                     );
                 });
             }
+            if ui.button("Insert at playhead").clicked() {
+                commands.push(klipp_core::AppCommand::InsertCompositionTemplate {
+                    template_id: template.id,
+                });
+            }
         });
         ui.add_space(4.0);
     }
-    Vec::new()
+    commands
 }
 
 fn value_kind(value: &crate::parameterized_templates::TemplateValue) -> &'static str {

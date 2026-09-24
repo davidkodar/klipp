@@ -15563,6 +15563,55 @@ impl KlippApp {
                 };
                 self.handle_title_lifecycle(&AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }, _needs_refresh)
             }
+            AppCommand::InsertCompositionTemplate { template_id } => {
+                let Some(template) = self
+                    .state
+                    .composition_templates
+                    .templates()
+                    .find(|template| template.id == *template_id)
+                    .cloned()
+                else {
+                    self.state.toast.show("That template is no longer available");
+                    return true;
+                };
+                let sequence_idx = self.state.active_sequence_idx;
+                let sequence_id = klipp_core::SequenceId(template.composition_id);
+                let Some(duration) = self
+                    .state
+                    .sequences
+                    .iter()
+                    .find(|sequence| sequence.id == sequence_id)
+                    .map(|sequence| sequence.total_duration())
+                else {
+                    self.state.toast.show("The template's composition is missing");
+                    return true;
+                };
+                let Some(track_index) = self.state.sequences[sequence_idx]
+                    .tracks
+                    .iter()
+                    .position(|track| track.kind == klipp_timeline::TrackKind::Video && !track.locked)
+                else {
+                    self.state.toast.show("Add a video track before inserting a template");
+                    return true;
+                };
+                let timeline_in = self.state.playhead.rescale_to(self.state.fps.rate());
+                let source_duration = duration.rescale_to(timeline_in.rate);
+                let mut clip = klipp_timeline::Clip::gap(timeline_in, timeline_in + source_duration);
+                clip.kind = klipp_timeline::ClipKind::Sequence { sequence_id };
+                clip.source_in = klipp_core::Timecode::zero().rescale_to(timeline_in.rate);
+                clip.source_out = source_duration;
+                let clip_id = clip.id;
+                self.state.sequences[sequence_idx].tracks[track_index].clips.push(clip.clone());
+                self.state.push_history(klipp_document::history::EditCommand::LegacyAppendClip {
+                    clip,
+                    track_index,
+                });
+                self.state.selected_clip = Some(clip_id);
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                self.state.toast.show(format!("Inserted template '{}'", template.name));
+                true
+            }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
                 let ti = *track_index;
                 // Check if this track was just created (it's a fresh text track with no clips)
