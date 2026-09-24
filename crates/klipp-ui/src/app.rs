@@ -612,6 +612,29 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
     }
 }
 
+/// One camera key set or cleared, on the list the param names.
+///
+/// Free of the app so it can be tested without one. The insert and the
+/// remove are `klipp_core::keyframe`'s, so what counts as "the same
+/// moment" stays one decision in one place.
+fn apply_camera_key(
+    camera: &mut klipp_timeline::Camera,
+    param: klipp_core::CameraParam,
+    time_secs: f64,
+    value: Option<f32>,
+) {
+    let keys = match param {
+        klipp_core::CameraParam::X => &mut camera.x_keyframes,
+        klipp_core::CameraParam::Y => &mut camera.y_keyframes,
+        klipp_core::CameraParam::Zoom => &mut camera.zoom_keyframes,
+        klipp_core::CameraParam::Roll => &mut camera.roll_keyframes,
+    };
+    match value {
+        Some(v) => klipp_core::keyframe::upsert_keyframe(keys, time_secs, v),
+        None => klipp_core::keyframe::remove_keyframe_at(keys, time_secs),
+    }
+}
+
 impl KlippApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -4166,6 +4189,31 @@ impl KlippApp {
         attach_linked_audio_to_clip(&mut self.state.sequences[seq_idx], video_clip_id, external)
     }
 
+    /// Set or clear one of the sequence camera's keys, as one undo step.
+    ///
+    /// The whole camera is snapshotted either side, which is what
+    /// `SetSequenceShutter` already does, so this needs no history
+    /// variant of its own and undo restores the keyframe lists along
+    /// with everything else the camera carries. `value` of `None`
+    /// removes the key at that moment.
+    ///
+    /// The dedup is `klipp_core::keyframe`'s, not a second copy: what
+    /// counts as "the same moment" is one decision and it lives there.
+    fn key_sequence_camera(&mut self, sequence_idx: usize, param: klipp_core::CameraParam, time_secs: f64, value: Option<f32>) {
+        let Some(seq) = self.state.sequences.get_mut(sequence_idx) else { return };
+        let old = seq.camera.clone();
+        apply_camera_key(&mut seq.camera, param, time_secs, value);
+        if seq.camera != old {
+            let new = seq.camera.clone();
+            let id = seq.id;
+            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::SetSequenceCamera { old: Box::new(old), new: Box::new(new) },
+            });
+            self.sync_sequence_to_engine();
+            self.state.dirty = true;
+        }
+    }
+
     fn sync_sequence_to_engine(&self) {
         // Parameter changes still queued for the engine are already in
         // the mirror this pushes; left in the queue they would land
@@ -7437,6 +7485,14 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     }
+                    true
+                }
+                AppCommand::SetSequenceCameraKey { sequence_idx, param, time_secs, value } => {
+                    self.key_sequence_camera(*sequence_idx, *param, *time_secs, Some(*value));
+                    true
+                }
+                AppCommand::RemoveSequenceCameraKey { sequence_idx, param, time_secs } => {
+                    self.key_sequence_camera(*sequence_idx, *param, *time_secs, None);
                     true
                 }
                 AppCommand::SetClipRole { clip_id, role } => {
@@ -39337,5 +39393,47 @@ mod linked_missing_key_review_tests {
         let mut partner=vec![];
         super::edit_linked_audio_key(&mut partner,0.700,0.5/24.0,0.707,Some(0.25));
         assert_eq!(partner[0].time_secs,0.707);
+    }
+}
+
+#[cfg(test)]
+mod sequence_camera_tests {
+    use super::*;
+    use klipp_core::CameraParam;
+
+    /// A key goes on the list its param names and nowhere else.
+    #[test]
+    fn a_key_lands_on_one_axis() {
+        let mut cam = klipp_timeline::Camera::default();
+        apply_camera_key(&mut cam, CameraParam::Zoom, 1.0, Some(1.4));
+        assert_eq!(cam.zoom_keyframes.len(), 1);
+        assert_eq!(cam.zoom_keyframes[0].value, 1.4);
+        assert!(
+            cam.x_keyframes.is_empty() && cam.y_keyframes.is_empty() && cam.roll_keyframes.is_empty(),
+            "keying the zoom should leave the other three alone",
+        );
+    }
+
+    /// Keying the same moment twice replaces rather than stacks, and
+    /// clearing it takes it away — the diamond's two states.
+    #[test]
+    fn keying_twice_replaces_and_clearing_removes() {
+        let mut cam = klipp_timeline::Camera::default();
+        apply_camera_key(&mut cam, CameraParam::X, 2.0, Some(0.4));
+        apply_camera_key(&mut cam, CameraParam::X, 2.0, Some(0.6));
+        assert_eq!(cam.x_keyframes.len(), 1, "one moment holds one key");
+        assert_eq!(cam.x_keyframes[0].value, 0.6);
+        apply_camera_key(&mut cam, CameraParam::X, 2.0, None);
+        assert!(cam.x_keyframes.is_empty(), "clearing the key at that moment removes it");
+    }
+
+    /// Nothing keyed means the camera is still the camera: no keys, no
+    /// lists, nothing written to the project.
+    #[test]
+    fn a_camera_with_no_keys_stays_empty() {
+        let mut cam = klipp_timeline::Camera::default();
+        apply_camera_key(&mut cam, CameraParam::Y, 1.0, None);
+        assert!(cam.y_keyframes.is_empty());
+        assert_eq!(cam, klipp_timeline::Camera::default());
     }
 }
