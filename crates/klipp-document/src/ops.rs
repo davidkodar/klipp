@@ -5064,6 +5064,35 @@ mod tests {
     }
 
     #[test]
+    fn dense_compose_preserves_each_pose_and_its_easing_after_save_load() {
+        use klipp_core::keyframe::{evaluate, Ease};
+        for rate in [24.0, 30.0, 60.0, 120.0, 24000.0 / 1001.0, 60000.0 / 1001.0] {
+            let (seq, mut pool, _, clip_id, _) = fixture();
+            let poses = vec![
+                ComposePose { secs: 0.0, x: 0.25, ..Default::default() },
+                ComposePose { secs: 1.0 / rate, x: 0.5, ease: Ease::Out, ..Default::default() },
+                ComposePose { secs: 2.0 / rate, x: 0.75, ease: Ease::In, ..Default::default() },
+            ];
+            let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(clip_id), poses }]).unwrap();
+            let mut fps = seq.fps;
+            let mut sequences = vec![seq];
+            let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let saved = serde_json::to_string(&sequences[0]).unwrap();
+            let loaded: Sequence = serde_json::from_str(&saved).unwrap();
+            let keys = &loaded.all_clips().find(|c| c.id == clip_id).unwrap().transform_pos_x_keyframes;
+            assert_eq!(keys.len(), 3, "dense compose at {rate} fps");
+            for (frame, expected) in [-480.0, 0.0, 480.0].into_iter().enumerate() {
+                assert!((evaluate(keys, frame as f64 / rate, 99.0) - expected).abs() < 1e-3);
+            }
+            // The first segment eases out, the second eases in; neither
+            // may inherit a neighbour's ease when the poses are dense.
+            assert!(evaluate(keys, 0.5 / rate, 99.0) > -240.0);
+            assert!(evaluate(keys, 1.5 / rate, 99.0) < 240.0);
+        }
+    }
+
+    #[test]
     fn a_compose_places_a_picture_smaller_than_the_frame_and_animates_between_poses() {
         let (seq, pool, _media, a, _) = fixture();
 

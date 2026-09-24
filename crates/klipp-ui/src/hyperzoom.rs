@@ -1287,15 +1287,17 @@ mod tests {
 
     #[test]
     fn plan_emits_distinct_keyframe_times() {
-        // Sanity: the upsert dedup window is 20 ms. Two keyframes
-        // closer than that would collapse into one. Default 0.5 s
-        // duration is well above the threshold, but check that the
-        // duration-clamp floor (50 ms) still produces a useful gap.
+        // Even the shortest planned move keeps both authored endpoints
+        // when stored through the shared timestamp-identity rule.
         let plan = plan_hyperzoom(input(0.5, 0.5, 0.0, 50.0, 3.0, 3.0));
-        let src = &plan.source_scale_kfs;
-        let tgt = &plan.target_scale_kfs;
-        assert!((src[1].time_secs - src[0].time_secs).abs() > 0.02);
-        assert!((tgt[1].time_secs - tgt[0].time_secs).abs() > 0.02);
+        for planned in [&plan.source_scale_kfs, &plan.target_scale_kfs] {
+            let mut stored = Vec::new();
+            for k in planned {
+                klipp_core::keyframe::upsert_keyframe(&mut stored, k.time_secs, k.value);
+            }
+            assert_eq!(stored.len(), planned.len());
+            assert!(planned.windows(2).all(|w| w[1].time_secs - w[0].time_secs >= 0.05 - 1e-9));
+        }
     }
 
     // ────── Chromatic-aberration convenience layer (opt-in) ──────

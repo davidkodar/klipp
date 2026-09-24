@@ -32,8 +32,7 @@ pub fn show_color_and_luts(
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .and_then(|c| {
-                        let clip_time = (state.playhead_smooth_secs
-                            - c.timeline_in.to_secs_f64()).max(0.0);
+                        let clip_time = crate::inspector::keyframe_selection::clip_time(state, c);
                         let mask_node = c.node_graph.nodes.iter()
                             .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
                         mask_node.map(|n| {
@@ -51,9 +50,13 @@ pub fn show_color_and_luts(
                         })
                     }));
             if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
+                let frame = crate::inspector::keyframe_selection::FrameSelection {
+                    time_secs: clip_time_secs,
+                    tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                };
                 section_card(ui, "MASKS", None, theme, |ui| {
                     crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
-                        ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked,
+                        ui, &mut masks, node_id, clip_id, cmds, theme, frame, &tracked,
                     );
                 });
             }

@@ -4,11 +4,6 @@ use klipp_audio::ladspa::LadspaPluginInfo;
 use klipp_core::{AppCommand, AudioEffectInstance, ClipId, Keyframe};
 use std::collections::HashMap;
 
-/// Tolerance for "is there a kf at the playhead?" — same as
-/// `inspector::effects_tab::effect_keyframe_state`. ~20ms wide so a
-/// scrub jitter doesn't cause the diamond to flip on/off.
-const KF_TOLERANCE_SECS: f64 = 0.02;
-
 /// Build the KeyframeState the scrubby_param widget needs for one
 /// audio-effect param. Mirrors `effect_keyframe_state` in the video
 /// inspector, but reads from the clip's audio_effect_keyframes map.
@@ -17,28 +12,14 @@ fn audio_kf_state(
     effect_index: usize,
     param_name: &str,
     clip_time_secs: f64,
+    keyframe_tolerance: f64,
 ) -> KeyframeState {
     let key = format!("{effect_index}:{param_name}");
     let kfs = audio_effect_keyframes
         .get(&key)
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
-    KeyframeState {
-        has_keyframe_at_playhead: kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS),
-        has_any_keyframes: !kfs.is_empty(),
-        prev_keyframe_time: kfs
-            .iter()
-            .rfind(|k| k.time_secs < clip_time_secs - KF_TOLERANCE_SECS)
-            .map(|k| k.time_secs),
-        next_keyframe_time: kfs
-            .iter()
-            .find(|k| k.time_secs > clip_time_secs + KF_TOLERANCE_SECS)
-            .map(|k| k.time_secs),
-        current_interpolation: kfs
-            .iter()
-            .find(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS)
-            .map(|k| k.interpolation),
-    }
+    crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance)
 }
 
 /// Evaluate a kf'd audio-effect param at the playhead, falling back to
@@ -49,11 +30,12 @@ fn audio_kf_eval(
     param_name: &str,
     clip_time_secs: f64,
     default: f32,
+    tolerance: f64,
 ) -> f32 {
     let key = format!("{effect_index}:{param_name}");
     if let Some(kfs) = audio_effect_keyframes.get(&key) {
         if !kfs.is_empty() {
-            return klipp_core::keyframe::evaluate(kfs, clip_time_secs, default);
+            return crate::inspector::keyframe_selection::editable_value(kfs, clip_time_secs, default, tolerance);
         }
     }
     default
@@ -104,6 +86,7 @@ fn dispatch_audio_kf_response(
     clip_timeline_in_secs: f64,
     clip_rate: u32,
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     // Auto-update: when the user drags the value and kfs exist, lay
     // down a kf at the playhead so the change actually animates.
@@ -121,7 +104,7 @@ fn dispatch_audio_kf_response(
         let key = format!("{effect_index}:{param_name}");
         let has_at_playhead = audio_effect_keyframes
             .get(&key)
-            .is_some_and(|kfs| kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS));
+            .is_some_and(|kfs| crate::inspector::keyframe_selection::nearest(kfs, clip_time_secs, keyframe_tolerance).is_some());
         if has_at_playhead {
             cmds.push(AppCommand::RemoveAudioEffectKeyframe {
                 clip_id,
@@ -143,10 +126,7 @@ fn dispatch_audio_kf_response(
     if resp.keyframe_nav_prev {
         let key = format!("{effect_index}:{param_name}");
         if let Some(kfs) = audio_effect_keyframes.get(&key) {
-            if let Some(prev_t) = kfs
-                .iter()
-                .rfind(|k| k.time_secs < clip_time_secs - KF_TOLERANCE_SECS)
-                .map(|k| k.time_secs)
+            if let Some(prev_t) = crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance).prev_keyframe_time
             {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
                     clip_timeline_in_secs + prev_t,
@@ -159,10 +139,7 @@ fn dispatch_audio_kf_response(
     if resp.keyframe_nav_next {
         let key = format!("{effect_index}:{param_name}");
         if let Some(kfs) = audio_effect_keyframes.get(&key) {
-            if let Some(next_t) = kfs
-                .iter()
-                .find(|k| k.time_secs > clip_time_secs + KF_TOLERANCE_SECS)
-                .map(|k| k.time_secs)
+            if let Some(next_t) = crate::inspector::keyframe_selection::state(kfs, clip_time_secs, keyframe_tolerance).next_keyframe_time
             {
                 cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
                     clip_timeline_in_secs + next_t,
@@ -434,6 +411,7 @@ pub fn show(
     clip_rate: u32,
     ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     // ── Section header ──
     ui.horizontal(|ui| {
@@ -473,6 +451,7 @@ pub fn show(
         ui, theme, clip_id, audio_effects, audio_effect_keyframes,
         clip_time_secs, clip_timeline_in_secs, clip_rate,
         ladspa_plugins, cmds,
+        keyframe_tolerance,
     );
 }
 
@@ -496,6 +475,7 @@ pub fn show_content(
     clip_rate: u32,
     ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     // "+ Add Effect" button
     ui.horizontal(|ui| {
@@ -665,7 +645,7 @@ pub fn show_content(
                             .get(&format!("{idx}:__bypass"));
                         let has_any_bypass = bypass_kfs.is_some_and(|v| !v.is_empty());
                         let has_at_playhead = bypass_kfs.is_some_and(|v| {
-                            v.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS)
+                            crate::inspector::keyframe_selection::nearest(v, clip_time_secs, keyframe_tolerance).is_some()
                         });
                         let diamond_color = if has_at_playhead {
                             theme.accent
@@ -715,6 +695,7 @@ pub fn show_content(
                             ui, theme, clip_id, idx, inst, info,
                             audio_effect_keyframes, clip_time_secs,
                             clip_timeline_in_secs, clip_rate, cmds,
+                            keyframe_tolerance,
                         );
                     } else if inst.effect_type.starts_with("ladspa:") {
                         ui.label(
@@ -730,6 +711,7 @@ pub fn show_content(
                             ui, theme, clip_id, idx, inst, info,
                             audio_effect_keyframes, clip_time_secs,
                             clip_timeline_in_secs, clip_rate, cmds,
+                            keyframe_tolerance,
                         );
                     } else if inst.effect_type.starts_with("lv2:") {
                         ui.label(
@@ -745,6 +727,7 @@ pub fn show_content(
                             ui, theme, clip_id, idx, inst, info,
                             audio_effect_keyframes, clip_time_secs,
                             clip_timeline_in_secs, clip_rate, cmds,
+                            keyframe_tolerance,
                         );
                     } else if inst.effect_type.starts_with("clap:") {
                         ui.label(
@@ -772,8 +755,7 @@ pub fn show_content(
                                 idx,
                                 desc.name,
                                 clip_time_secs,
-                                static_value,
-                            );
+                                static_value, keyframe_tolerance);
                             let unit_suffix = match desc.unit {
                                 klipp_audio::dsp::ParamUnit::Db => " dB",
                                 klipp_audio::dsp::ParamUnit::Hz => " Hz",
@@ -787,7 +769,7 @@ pub fn show_content(
                             let speed = (range * 0.003) as f64;
                             let decimals = if range > 100.0 { 0 } else if range > 10.0 { 1 } else { 2 };
                             let kf_state = if desc.is_keyframable() {
-                                Some(audio_kf_state(audio_effect_keyframes, idx, desc.name, clip_time_secs))
+                                Some(audio_kf_state(audio_effect_keyframes, idx, desc.name, clip_time_secs, keyframe_tolerance))
                             } else {
                                 None
                             };
@@ -820,6 +802,7 @@ pub fn show_content(
                                 &resp, val, audio_effect_keyframes,
                                 clip_id, idx, desc.name,
                                 clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+                                keyframe_tolerance,
                             );
                         }
                     }
@@ -835,10 +818,10 @@ pub fn show_content(
                         idx,
                         "__wetdry",
                         clip_time_secs,
-                        static_wet_dry,
-                    );
+                        static_wet_dry, keyframe_tolerance);
                     let kf_state = Some(audio_kf_state(
                         audio_effect_keyframes, idx, "__wetdry", clip_time_secs,
+                        keyframe_tolerance,
                     ));
                     let resp = scrubby_param_row(
                         ui,
@@ -863,6 +846,7 @@ pub fn show_content(
                         &resp, wet_dry, audio_effect_keyframes,
                         clip_id, idx, "__wetdry",
                         clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+                        keyframe_tolerance,
                     );
                 }
             });
@@ -903,6 +887,7 @@ fn render_ladspa_params(
     clip_timeline_in_secs: f64,
     clip_rate: u32,
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     if info.control_inputs.is_empty() {
         ui.label(
@@ -958,8 +943,7 @@ fn render_ladspa_params(
             effect_index,
             &port.name,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = (port.max - port.min).max(f32::EPSILON);
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if port.is_integer {
@@ -981,6 +965,7 @@ fn render_ladspa_params(
         };
         let kf_state = Some(audio_kf_state(
             audio_effect_keyframes, effect_index, &port.name, clip_time_secs,
+            keyframe_tolerance,
         ));
 
         let resp = scrubby_param_row(
@@ -1008,6 +993,7 @@ fn render_ladspa_params(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &port.name,
             clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+            keyframe_tolerance,
         );
     }
 }
@@ -1029,6 +1015,7 @@ fn render_lv2_params(
     clip_timeline_in_secs: f64,
     clip_rate: u32,
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     if info.control_inputs.is_empty() {
         ui.label(
@@ -1065,8 +1052,7 @@ fn render_lv2_params(
             effect_index,
             &port.symbol,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = max - min;
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if range > 100.0 {
@@ -1081,6 +1067,7 @@ fn render_lv2_params(
             effect_index,
             &port.symbol,
             clip_time_secs,
+            keyframe_tolerance,
         ));
 
         let resp = scrubby_param_row(
@@ -1108,6 +1095,7 @@ fn render_lv2_params(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &port.symbol,
             clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+            keyframe_tolerance,
         );
     }
 }
@@ -1130,6 +1118,7 @@ fn render_clap_params(
     clip_timeline_in_secs: f64,
     clip_rate: u32,
     cmds: &mut Vec<AppCommand>,
+    keyframe_tolerance: f64,
 ) {
     if info.params.is_empty() {
         ui.label(
@@ -1162,8 +1151,7 @@ fn render_clap_params(
             effect_index,
             &key,
             clip_time_secs,
-            static_value,
-        );
+            static_value, keyframe_tolerance);
         let range = (port.max - port.min).max(f32::EPSILON);
         let speed = (range * 0.003).max(0.0001) as f64;
         let decimals = if range > 100.0 {
@@ -1178,6 +1166,7 @@ fn render_clap_params(
             effect_index,
             &key,
             clip_time_secs,
+            keyframe_tolerance,
         ));
 
         let resp = scrubby_param_row(
@@ -1205,6 +1194,7 @@ fn render_clap_params(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &key,
             clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+            keyframe_tolerance,
         );
     }
 }
@@ -1247,7 +1237,7 @@ mod helper_tests {
     #[test]
     fn audio_kf_eval_falls_back_to_default_when_no_track() {
         let map: HashMap<String, Vec<Keyframe>> = HashMap::new();
-        assert_eq!(audio_kf_eval(&map, 0, "gain", 0.5, 0.7), 0.7);
+        assert_eq!(audio_kf_eval(&map, 0, "gain", 0.5, 0.7, 0.0), 0.7);
     }
 
     #[test]
@@ -1255,41 +1245,60 @@ mod helper_tests {
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:gain".to_string(), vec![kf(0.0, 0.0), kf(1.0, 1.0)]);
         // Linear ramp 0 → 1 over [0, 1]; midpoint = 0.5.
-        let v = audio_kf_eval(&map, 0, "gain", 0.5, 99.0);
+        let v = audio_kf_eval(&map, 0, "gain", 0.5, 99.0, 0.0);
         assert!((v - 0.5).abs() < 1e-3, "expected ~0.5, got {v}");
     }
 
     #[test]
     fn audio_kf_state_at_playhead_detects_within_tolerance() {
+        let keyframe_tolerance = 0.5 / 24.0;
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:gain".to_string(), vec![kf(0.5, 0.5)]);
-        // Within 20ms — must register as "at playhead"
-        let s = audio_kf_state(&map, 0, "gain", 0.51);
+        // Timestamp conversion roundoff still identifies the current key.
+        let s = audio_kf_state(&map, 0, "gain", 0.5 + 1e-8, keyframe_tolerance);
         assert!(s.has_keyframe_at_playhead);
         assert!(s.has_any_keyframes);
         // Outside tolerance — must not register
-        let s = audio_kf_state(&map, 0, "gain", 0.6);
+        let s = audio_kf_state(&map, 0, "gain", 0.6, keyframe_tolerance);
         assert!(!s.has_keyframe_at_playhead);
         assert!(s.has_any_keyframes);
     }
 
     #[test]
+    fn audio_kf_state_keeps_adjacent_frames_distinct() {
+        for fps in [60.0, 120.0, 60000.0 / 1001.0] {
+            let dt = 1.0 / fps;
+            let keyframe_tolerance = 0.5 / fps;
+            let map = HashMap::from([("0:gain".to_string(), vec![
+                kf(0.0, 0.0), kf(dt, 1.0), kf(2.0 * dt, 2.0),
+            ])]);
+            let state = audio_kf_state(&map, 0, "gain", dt, keyframe_tolerance);
+            assert!(state.has_keyframe_at_playhead);
+            assert_eq!(state.prev_keyframe_time, Some(0.0));
+            assert_eq!(state.next_keyframe_time, Some(2.0 * dt));
+            assert!(!audio_kf_state(&map, 0, "gain", 3.0 * dt, keyframe_tolerance).has_keyframe_at_playhead);
+        }
+    }
+
+    #[test]
     fn audio_kf_state_finds_prev_and_next() {
+        let keyframe_tolerance = 0.5 / 24.0;
         let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
         map.insert("0:gain".to_string(), vec![kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 2.0)]);
-        let s = audio_kf_state(&map, 0, "gain", 1.5);
+        let s = audio_kf_state(&map, 0, "gain", 1.5, keyframe_tolerance);
         assert_eq!(s.prev_keyframe_time, Some(1.0));
         assert_eq!(s.next_keyframe_time, Some(2.0));
         // At the very start of the track, prev is None.
-        let s = audio_kf_state(&map, 0, "gain", 0.0);
+        let s = audio_kf_state(&map, 0, "gain", 0.0, keyframe_tolerance);
         assert_eq!(s.prev_keyframe_time, None);
         assert_eq!(s.next_keyframe_time, Some(1.0));
     }
 
     #[test]
     fn audio_kf_state_reports_no_kfs_for_unknown_param() {
+        let keyframe_tolerance = 0.5 / 24.0;
         let map: HashMap<String, Vec<Keyframe>> = HashMap::new();
-        let s = audio_kf_state(&map, 0, "gain", 0.0);
+        let s = audio_kf_state(&map, 0, "gain", 0.0, keyframe_tolerance);
         assert!(!s.has_any_keyframes);
         assert!(!s.has_keyframe_at_playhead);
         assert!(s.prev_keyframe_time.is_none());
@@ -1308,8 +1317,8 @@ mod helper_tests {
                 tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
         ]);
         // Step interp before second kf: still 0.0
-        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0), 0.0);
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0, 0.0), 0.0);
         // After second kf: 1.0
-        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0), 1.0);
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0, 0.0), 1.0);
     }
 }

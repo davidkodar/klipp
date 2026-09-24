@@ -40,32 +40,37 @@ pub struct Keyframe {
     pub tangent_in: (f64, f32),
 }
 
-/// Insert (or replace within ±20ms) a keyframe at `time_secs` and
-/// keep the vec sorted by time. Centralises the dedup + sort logic so
-/// every per-effect/per-axis keyframe handler shares one
-/// implementation. Default interpolation is Linear; right-click menus
-/// can flip it later via `set_keyframe_interpolation`.
+/// Timestamp tolerance for keyframe identity, in seconds. This absorbs rounding
+/// from floating-point arithmetic without merging adjacent video frames.
+/// This does not absorb quantization to a video frame.
+/// Mouse hit testing should use a separate, pixel-based tolerance.
+pub const KEYFRAME_TIME_EPSILON: f64 = 1e-6;
+
+/// Update a key's value without changing its stored time, interpolation or
+/// tangents; insert a Linear key when no timestamp matches.
 pub fn upsert_keyframe(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32) {
-    kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-    kfs.push(Keyframe {
-        time_secs,
-        value,
-        interpolation: Interpolation::Linear,
-        tangent_out: (0.0, 0.0),
-        tangent_in: (0.0, 0.0),
-    });
-    kfs.sort_by(|a, b| {
-        a.time_secs
-            .partial_cmp(&b.time_secs)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    upsert_keyframe_with_interpolation(kfs, time_secs, value, Interpolation::Linear);
 }
 
-/// Remove every keyframe within ±20ms of `time_secs`. No-op when
+/// As [`upsert_keyframe`], with a default interpolation for newly inserted keys.
+/// Existing keys keep their curve shape, including when editing Step parameters.
+pub fn upsert_keyframe_with_interpolation(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32, default: Interpolation) {
+    if let Some(key) = kfs.iter_mut().find(|k| (k.time_secs - time_secs).abs() < KEYFRAME_TIME_EPSILON) {
+        key.value = value;
+        return;
+    }
+    kfs.push(Keyframe {
+        time_secs, value, interpolation: default,
+        tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+    });
+    kfs.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+}
+
+/// Remove every keyframe at `time_secs` (within [`KEYFRAME_TIME_EPSILON`]). No-op when
 /// nothing matches; matches the NLE-standard "click diamond again to
 /// delete" affordance.
 pub fn remove_keyframe_at(kfs: &mut Vec<Keyframe>, time_secs: f64) {
-    kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+    kfs.retain(|k| (k.time_secs - time_secs).abs() >= KEYFRAME_TIME_EPSILON);
 }
 
 /// Move the keyframe at `index` to a new (time, value) and re-sort.
@@ -670,4 +675,69 @@ mod ease_tests {
         let e: Ease = serde_json::from_str("\"expo_out\"").unwrap();
         assert_eq!(e, Ease::ExpoOut);
     }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_frames_survive_mutation_and_round_trip() {
+        for fps in [24.0, 30.0, 60.0, 120.0, 24000.0 / 1001.0, 60000.0 / 1001.0] {
+            let mut keys = Vec::new();
+            for frame in 0..4 {
+                upsert_keyframe(&mut keys, frame as f64 / fps, frame as f32);
+            }
+            assert_eq!(keys.len(), 4, "insertion at {fps} fps");
+            ease_into(&mut keys, 1, Ease::Out);
+            let encoded = serde_json::to_string(&keys).unwrap();
+            let mut decoded: Vec<Keyframe> = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(keys.len(), decoded.len());
+            for (before, after) in keys.iter().zip(&decoded) {
+                assert!((before.time_secs - after.time_secs).abs() < KEYFRAME_TIME_EPSILON);
+                assert_eq!(before.value, after.value);
+                assert_eq!(before.interpolation, after.interpolation);
+                assert!((before.tangent_in.0 - after.tangent_in.0).abs() < KEYFRAME_TIME_EPSILON);
+                assert_eq!(before.tangent_in.1, after.tangent_in.1);
+            }
+            for frame in 0..4 {
+                assert_eq!(evaluate(&decoded, frame as f64 / fps, -1.0), frame as f32);
+            }
+            assert!(move_keyframe(&mut decoded, 3, 4.0 / fps, 4.0));
+            assert_eq!(decoded.len(), 4);
+            remove_keyframe_at(&mut decoded, 1.0 / fps);
+            assert_eq!(decoded.len(), 3, "deletion at {fps} fps");
+            assert_eq!(decoded[0].time_secs, 0.0);
+            assert!((decoded[1].time_secs - 2.0 / fps).abs() < KEYFRAME_TIME_EPSILON);
+            upsert_keyframe(&mut decoded, 2.0 / fps, 20.0);
+            assert_eq!(decoded.len(), 3, "replacement at {fps} fps");
+            assert_eq!(evaluate(&decoded, 2.0 / fps, -1.0), 20.0);
+        }
+    }
+
+    #[test]
+    fn floating_point_roundoff_still_identifies_the_same_time() {
+        let mut keys = Vec::new();
+        upsert_keyframe(&mut keys, 0.1 + 0.2, 1.0);
+        upsert_keyframe(&mut keys, 0.3, 2.0);
+        assert_eq!(keys.len(), 1);
+        remove_keyframe_at(&mut keys, 0.1 + 0.2);
+        assert!(keys.is_empty());
+    }
+    #[test]
+    fn value_updates_preserve_shape_and_new_keys_use_the_requested_default() {
+        let mut keys = Vec::new();
+        upsert_keyframe_with_interpolation(&mut keys, 0.7, 0.5, Interpolation::Bezier);
+        keys[0].tangent_in = (-0.1, -0.2);
+        keys[0].tangent_out = (0.3, 0.4);
+        let mut expected = keys[0].clone();
+        expected.value = 0.9;
+        upsert_keyframe(&mut keys, 0.7 + KEYFRAME_TIME_EPSILON / 2.0, 0.9);
+        assert_eq!(keys, vec![expected]);
+        upsert_keyframe_with_interpolation(&mut keys, 1.0, 1.0, Interpolation::Step);
+        assert_eq!(keys[1].interpolation, Interpolation::Step);
+        upsert_keyframe(&mut keys, 2.0, 0.5);
+        assert_eq!(keys[2].interpolation, Interpolation::Linear);
+    }
+
 }

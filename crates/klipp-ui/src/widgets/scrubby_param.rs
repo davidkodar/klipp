@@ -55,6 +55,8 @@ pub struct KeyframeState {
     pub has_keyframe_at_playhead: bool,
     /// The parameter has any keyframes at all.
     pub has_any_keyframes: bool,
+    /// Number of authored keys within this displayed frame window.
+    pub keys_in_frame: usize,
     /// Time of the previous keyframe (relative to clip), if any.
     pub prev_keyframe_time: Option<f64>,
     /// Time of the next keyframe (relative to clip), if any.
@@ -367,7 +369,11 @@ pub fn scrubby_param_row(
         }
 
         if let Some(ref ks) = keyframe_state {
-            if !ks.has_any_keyframes {
+            if ks.keys_in_frame > 1 {
+                diamond_btn_resp.clone().on_hover_text(format!(
+                    "{} keys in this frame. This diamond edits or removes the nearest key; use the curve editor to select the others.", ks.keys_in_frame
+                ));
+            } else if !ks.has_any_keyframes {
                 diamond_btn_resp.clone().on_hover_text("Click to enable keyframing");
             } else if ks.has_keyframe_at_playhead {
                 diamond_btn_resp.clone().on_hover_text("Remove keyframe");

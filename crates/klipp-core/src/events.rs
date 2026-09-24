@@ -2383,6 +2383,9 @@ pub enum AppCommand {
     Quit,
 
     // Audio keyframes
+    /// Inspector edit selecting each linked clip's nearest key in the displayed frame.
+    /// Exact curve/agent mutations continue to use Add/RemoveAudioKeyframe.
+    EditAudioKeyframeAtFrame { clip_id: ClipId, param: AudioParam, time_secs: f64, value: Option<f32> },
     AddAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64, value: f32 },
     RemoveAudioKeyframe { clip_id: ClipId, param: AudioParam, time_secs: f64 },
     MoveAudioKeyframe { clip_id: ClipId, param: AudioParam, index: usize, new_time_secs: f64, new_value: f32 },

@@ -1,3 +1,4 @@
+use crate::inspector::keyframe_selection::FrameSelection;
 use crate::icons::Icon;
 use crate::presets::{self, ToolPreset, ToolScope};
 use crate::state::ColorTab;
@@ -103,14 +104,14 @@ impl NodeInspectorPanel {
         })
     }
 
-    pub fn show(
+    pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
         selected_node: &Option<NodeId>,
         graph: &mut NodeGraph,
         clip_id: ClipId,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -128,7 +129,7 @@ impl NodeInspectorPanel {
                         let keyframes = &mut node.keyframes;
                         self.show_inspector(
                             ui, node_id, &node_kind, node_enabled,
-                            params, keyframes, clip_id, &mut cmds, theme, clip_time_secs,
+                            params, keyframes, clip_id, &mut cmds, theme, frame,
                         );
                     }
                 } else {
@@ -140,7 +141,7 @@ impl NodeInspectorPanel {
     }
 
     /// Simple tabbed view matching the HTML mockup design.
-    pub fn show_simple(
+    pub(crate) fn show_simple(
         &mut self,
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
@@ -148,13 +149,13 @@ impl NodeInspectorPanel {
         selected_node: &mut Option<NodeId>,
         color_tab: &mut ColorTab,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
     ) -> Vec<AppCommand> {
-        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, clip_time_secs, false)
+        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, frame, false)
     }
 
     /// Show color inspector with horizontal layout (for bottom panel — wide, short).
-    pub fn show_simple_horizontal(
+    pub(crate) fn show_simple_horizontal(
         &mut self,
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
@@ -162,9 +163,9 @@ impl NodeInspectorPanel {
         selected_node: &mut Option<NodeId>,
         color_tab: &mut ColorTab,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
     ) -> Vec<AppCommand> {
-        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, clip_time_secs, true)
+        self.show_simple_layout(ui, graph, clip_id, selected_node, color_tab, theme, frame, true)
     }
 
     fn show_simple_layout(
@@ -175,7 +176,7 @@ impl NodeInspectorPanel {
         selected_node: &mut Option<NodeId>,
         color_tab: &mut ColorTab,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
         wide_layout: bool,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
@@ -212,14 +213,14 @@ impl NodeInspectorPanel {
                     if pad > 10.0 {
                         ui.indent("wide_center", |ui| {
                             ui.set_max_width(max_content_w);
-                            Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
+                            Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, frame, wide_layout);
                         });
                     } else {
-                        Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
+                        Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, frame, wide_layout);
                     }
                 } else {
                     ui.set_min_width(full_w);
-                    Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, clip_time_secs, wide_layout);
+                    Self::render_tab_content(self, ui, graph, clip_id, selected_node, color_tab, &mut cmds, theme, frame, wide_layout);
                 }
             });
 
@@ -235,7 +236,7 @@ impl NodeInspectorPanel {
         color_tab: &mut ColorTab,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
         wide_layout: bool,
     ) {
         // ── Preset bar ──
@@ -267,7 +268,7 @@ impl NodeInspectorPanel {
 
         match color_tab {
             ColorTab::Adjustments => {
-                self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme, clip_time_secs);
+                self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme, frame);
             }
             ColorTab::Wheels if wide_layout => {
                 // Wide layout: combined wheels + sat/bri in unified columns
@@ -314,7 +315,7 @@ impl NodeInspectorPanel {
                             &mut scratch_enabled,
                             &mut scratch_params,
                             &mut scratch_keyframes,
-                            clip_id, cmds, theme, clip_time_secs, wide_layout,
+                            clip_id, cmds, theme, frame, wide_layout,
                         );
                     }
                     return;
@@ -351,7 +352,7 @@ impl NodeInspectorPanel {
                         let params = &mut node.params;
                         let keyframes = &mut node.keyframes;
                         self.show_inspector_layout(ui, node_id, &node_kind, node_enabled,
-                            params, keyframes, clip_id, cmds, theme, clip_time_secs, wide_layout);
+                            params, keyframes, clip_id, cmds, theme, frame, wide_layout);
                     }
                 }
             }
@@ -622,16 +623,17 @@ impl NodeInspectorPanel {
     /// discarded; only the `SetNodeMasks` command at the end
     /// persists). On any change we push one `SetNodeMasks` so every
     /// path lands in history identically.
-    pub fn render_masks_body(
+    pub(crate) fn render_masks_body(
         ui: &mut egui::Ui,
         masks: &mut klipp_core::MaskStack,
         node_id: NodeId,
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
         tracked_mask_indices: &[usize],
     ) {
+        let clip_time_secs = frame.time_secs;
         let mut masks_changed = false;
 
         ui.horizontal(|ui| {
@@ -712,6 +714,7 @@ impl NodeInspectorPanel {
                 display_val: f32,
                 has_keyframes: bool,
                 has_kf_at_playhead: bool,
+                key_time: f64,
                 range: std::ops::RangeInclusive<f32>,
             }
             let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
@@ -724,16 +727,19 @@ impl NodeInspectorPanel {
                 } else {
                     static_val
                 };
-                let has_kf_at_playhead = track.is_some_and(|t| {
-                    t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-                });
+                let selected = track.and_then(|t| crate::inspector::keyframe_selection::nearest(t, clip_time_secs, frame.tolerance).map(|i| &t[i]));
+                let has_kf_at_playhead = selected.is_some();
+                let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
+                // Like the camera row, this edits the selected key's value,
+                // which can differ from the viewer's interpolated value.
+                let display_val = selected.map_or(display_val, |k| k.value);
                 let range = match param_name {
                     "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
                     "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
                     "rotation" => -180.0..=180.0,
                     _ => 0.0..=1.0,
                 };
-                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
+                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, key_time, range }
             }).collect();
 
             ui.add_space(4.0);
@@ -840,12 +846,12 @@ impl NodeInspectorPanel {
                         if info.has_kf_at_playhead {
                             cmds.push(AppCommand::RemoveMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                             });
                         } else {
                             cmds.push(AppCommand::AddMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                                 value: info.display_val,
                             });
                         }
@@ -879,7 +885,7 @@ impl NodeInspectorPanel {
                         if info.has_keyframes {
                             cmds.push(AppCommand::AddMaskKeyframe {
                                 clip_id, node_id, mask_index: mask_idx,
-                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                param: info.name.to_string(), time_secs: info.key_time,
                                 value: val,
                             });
                         } else {
@@ -1016,8 +1022,9 @@ impl NodeInspectorPanel {
         selected_node: &mut Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
     ) {
+        let clip_time_secs = frame.time_secs;
         // When no grade node exists on the clip, the sections below
         // naturally skip (find_node returns None for every kind).
         // Show a one-line hint pointing at the tabs that DO support
@@ -1078,15 +1085,16 @@ impl NodeInspectorPanel {
                 .find(|n| n.kind == NodeKind::Corrector)
                 .map(|n| (n.id, n.label.clone(), n.enabled)));
         if let Some((target_id, target_label, target_enabled)) = bypass_target {
-            let (track_has_kfs, kf_at_playhead, effective_on) = {
+            let (track_has_kfs, kf_at_playhead, effective_on, key_time) = {
                 let node = graph.nodes.iter().find(|n| n.id == target_id);
                 let track = node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK));
                 let has_kfs = track.is_some_and(|t| !t.keyframes.is_empty());
-                let at_ph = track.is_some_and(|t| t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3));
-                let on = track.and_then(|t| t.evaluate(clip_time_secs))
+                let selected = track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
+                let at_ph = selected.is_some();
+                let on = selected.map(|k| k.value).or_else(|| track.and_then(|t| t.evaluate(clip_time_secs)))
                     .map(|v| v >= 0.5)
                     .unwrap_or(target_enabled);
-                (has_kfs, at_ph, on)
+                (has_kfs, at_ph, on, selected.map_or(clip_time_secs, |k| k.time_secs))
             };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1097,7 +1105,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id: target_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if shown { 1.0 } else { 0.0 },
                         });
                     } else {
@@ -1142,13 +1150,13 @@ impl NodeInspectorPanel {
                             cmds.push(AppCommand::RemoveKeyframe {
                                 clip_id, node_id: target_id,
                                 param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: clip_time_secs,
+                                time_secs: key_time,
                             });
                         } else {
                             cmds.push(AppCommand::AddKeyframe {
                                 clip_id, node_id: target_id,
                                 param: klipp_nodes::ENABLED_TRACK.to_string(),
-                                time_secs: clip_time_secs,
+                                time_secs: key_time,
                                 value: if effective_on { 1.0 } else { 0.0 },
                             });
                         }
@@ -1458,7 +1466,7 @@ impl NodeInspectorPanel {
             if let Some(idx) = mask_node_idx {
                 let node_id = graph.nodes[idx].id;
                 let masks = graph.nodes[idx].params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
             } else {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
@@ -1528,9 +1536,9 @@ impl NodeInspectorPanel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
     ) {
-        self.show_inspector_layout(ui, node_id, kind, enabled, params, keyframes, clip_id, cmds, theme, clip_time_secs, false)
+        self.show_inspector_layout(ui, node_id, kind, enabled, params, keyframes, clip_id, cmds, theme, frame, false)
     }
 
     fn show_inspector_layout(
@@ -1544,16 +1552,16 @@ impl NodeInspectorPanel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
-        clip_time_secs: f64,
+        frame: FrameSelection,
         wide_layout: bool,
     ) {
+        let clip_time_secs = frame.time_secs;
         let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
         let bypass_track_has_kfs = enabled_track.is_some_and(|t| !t.keyframes.is_empty());
-        let bypass_kf_at_playhead = enabled_track.is_some_and(|t| {
-            t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-        });
-        let effective_on = enabled_track
-            .and_then(|t| t.evaluate(clip_time_secs))
+        let selected = enabled_track.and_then(|t| crate::inspector::keyframe_selection::nearest(&t.keyframes, clip_time_secs, frame.tolerance).map(|i| &t.keyframes[i]));
+        let key_time = selected.map_or(clip_time_secs, |k| k.time_secs);
+        let bypass_kf_at_playhead = selected.is_some();
+        let effective_on = selected.map(|k| k.value).or_else(|| enabled_track.and_then(|t| t.evaluate(clip_time_secs)))
             .map(|v| v >= 0.5)
             .unwrap_or(*enabled);
 
@@ -1570,7 +1578,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if shown { 1.0 } else { 0.0 },
                         });
                     } else {
@@ -1595,13 +1603,13 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::RemoveKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                         });
                     } else {
                         cmds.push(AppCommand::AddKeyframe {
                             clip_id, node_id,
                             param: klipp_nodes::ENABLED_TRACK.to_string(),
-                            time_secs: clip_time_secs,
+                            time_secs: key_time,
                             value: if effective_on { 1.0 } else { 0.0 },
                         });
                     }
@@ -2549,7 +2557,7 @@ impl NodeInspectorPanel {
             }
             NodeKind::Mask => {
                 let masks = params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, frame, &[]);
             }
             NodeKind::FilmGrain => {
                 let grain = params.grain.get_or_insert_with(Default::default);

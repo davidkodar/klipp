@@ -603,6 +603,15 @@ enum SaveOutcome {
     Failed,
 }
 
+/// A linked clip may have a differently nudged key in the same displayed frame.
+fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolerance: f64, insert_time: f64, value: Option<f32>) {
+    let target = if tolerance > 0.0 { crate::inspector::keyframe_selection::nearest(keys, time, tolerance).map_or(insert_time, |i| keys[i].time_secs) } else { time };
+    match value {
+        Some(value) => klipp_core::keyframe::upsert_keyframe(keys, target, value),
+        None => klipp_core::keyframe::remove_keyframe_at(keys, target),
+    }
+}
+
 impl KlippApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -8651,7 +8660,7 @@ impl KlippApp {
 
         // Remove duplicate times (keep the last keyframe at each time)
         keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-        keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < 0.01);
+        keyframes.dedup_by(|a, b| (a.time_secs - b.time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON);
 
         // 4. Apply keyframes to the target clip
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -8683,18 +8692,21 @@ impl KlippApp {
     }
 
     fn handle_audio_keyframe_curves(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
+        let mut resolved;
+        let (cmd, frame_time) = if let AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs, value } = cmd {
+            resolved = match value {
+                Some(value) => AppCommand::AddAudioKeyframe { clip_id: *clip_id, param: *param, time_secs: *time_secs, value: *value },
+                None => AppCommand::RemoveAudioKeyframe { clip_id: *clip_id, param: *param, time_secs: *time_secs },
+            };
+            crate::inspector::keyframe_selection::resolve_command(self.state.sequence(), &mut resolved);
+            (&resolved, Some(*time_secs))
+        } else { (cmd, None) };
+        let tolerance = if frame_time.is_some() { crate::inspector::keyframe_selection::frame_tolerance(self.state.sequence()) } else { 0.0 };
         match cmd {
                 AppCommand::AddAudioKeyframe { clip_id, param, time_secs, value } => {
                     let mut linked_partner_id = None;
                     let mut old_state = None;
                     let mut old_linked_state = None;
-                    let kf = klipp_core::Keyframe {
-                        time_secs: *time_secs,
-                        value: *value,
-                        interpolation: klipp_core::Interpolation::Linear,
-                        tangent_out: (0.0, 0.0),
-                        tangent_in: (0.0, 0.0),
-                    };
                     // Capture old state for linked partner before main clip mutation
                     {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -8715,9 +8727,7 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                            keyframes.push(kf.clone());
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
                             break;
                         }
                     }
@@ -8730,9 +8740,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                                keyframes.push(kf);
-                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, Some(*value));
                                 break;
                             }
                         }
@@ -8782,7 +8790,7 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
                             break;
                         }
                     }
@@ -8794,7 +8802,7 @@ impl KlippApp {
                                     klipp_core::AudioParam::Pan => &mut partner.pan_keyframes,
                                     klipp_core::AudioParam::Gain => &mut partner.gain_keyframes,
                                 };
-                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                edit_linked_audio_key(keyframes, frame_time.unwrap_or(*time_secs), tolerance, *time_secs, None);
                                 break;
                             }
                         }
@@ -9395,13 +9403,6 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: klipp_core::Interpolation::Linear,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = match param {
                                 klipp_core::VideoParam::Opacity => &mut clip.opacity_keyframes,
                                 klipp_core::VideoParam::PositionX => &mut clip.transform_pos_x_keyframes,
@@ -9413,9 +9414,7 @@ impl KlippApp {
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
                             break;
                         }
                     }
@@ -9548,7 +9547,7 @@ impl KlippApp {
                                 klipp_core::VideoParam::MatteFeather => &mut clip.matte_feather_keyframes,
                                 klipp_core::VideoParam::MatteChoke => &mut clip.matte_choke_keyframes,
                             };
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
                             break;
                         }
                     }
@@ -10003,17 +10002,8 @@ impl KlippApp {
                         .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: klipp_core::Interpolation::Linear,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = clip.effect_keyframes.entry(key.clone()).or_default();
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe(keyframes, *time_secs, *value);
                             break;
                         }
                     }
@@ -10044,7 +10034,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.effect_keyframes.get_mut(&key) {
-                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
                                 if keyframes.is_empty() {
                                     clip.effect_keyframes.remove(&key);
                                 }
@@ -10178,17 +10168,8 @@ impl KlippApp {
                     };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            let kf = klipp_core::Keyframe {
-                                time_secs: *time_secs,
-                                value: *value,
-                                interpolation: default_interp,
-                                tangent_out: (0.0, 0.0),
-                                tangent_in: (0.0, 0.0),
-                            };
                             let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
-                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
-                            keyframes.push(kf);
-                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            klipp_core::keyframe::upsert_keyframe_with_interpolation(keyframes, *time_secs, *value, default_interp);
                             break;
                         }
                     }
@@ -10234,7 +10215,7 @@ impl KlippApp {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
-                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                klipp_core::keyframe::remove_keyframe_at(keyframes, *time_secs);
                                 if keyframes.is_empty() {
                                     clip.audio_effect_keyframes.remove(&key);
                                 }
@@ -14598,7 +14579,7 @@ impl KlippApp {
                                 if let Some(mask) = masks.masks.get_mut(*mask_index) {
                                     if let Some(track) = mask.keyframes.track_mut(param) {
                                         // Insert or update keyframe at this time
-                                        let epsilon = 1e-6;
+                                        let epsilon = klipp_core::keyframe::KEYFRAME_TIME_EPSILON;
                                         if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
                                             kf.value = *value;
                                         } else {
@@ -14628,8 +14609,7 @@ impl KlippApp {
                             if let Some(masks) = &mut node.params.masks {
                                 if let Some(mask) = masks.masks.get_mut(*mask_index) {
                                     if let Some(track) = mask.keyframes.track_mut(param) {
-                                        let epsilon = 1e-6;
-                                        track.retain(|k| (k.time_secs - time_secs).abs() >= epsilon);
+                                        klipp_core::keyframe::remove_keyframe_at(track, *time_secs);
                                     }
                                 }
                             }
@@ -24742,6 +24722,7 @@ impl KlippApp {
             }
             // K — Toggle keyframe at playhead for the active parameter
             if kb.is_action_pressed("toggle_keyframe", i) {
+                let mut keys_in_frame = 0;
                 if let Some(clip_id) = self.state.selected_clip {
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     // Find the clip and its track kind
@@ -24754,7 +24735,7 @@ impl KlippApp {
                         let clip_end_secs = clip.timeline_out.to_secs_f64();
                         if playhead_secs >= clip_start_secs && playhead_secs <= clip_end_secs {
                             let clip_time_secs = playhead_secs - clip_start_secs;
-                            let tolerance = 0.02;
+                            let tolerance = crate::inspector::keyframe_selection::frame_tolerance(seq);
                             if track_kind == klipp_timeline::TrackKind::Audio {
                                 match self.state.rubber_band_param.clone() {
                                     crate::state::RubberBandParam::ClipParam(param) => {
@@ -24763,9 +24744,10 @@ impl KlippApp {
                                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                             klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                         };
-                                        let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
-                                        if let Some(kf) = existing {
-                                            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                        keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
+                                        let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
+                                        if existing.is_some() {
+                                            cmds.push(AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs: clip_time_secs, value: None });
                                         } else {
                                             let default_val = match param {
                                                 klipp_core::AudioParam::Volume => clip.volume,
@@ -24773,14 +24755,15 @@ impl KlippApp {
                                                 klipp_core::AudioParam::Gain => clip.gain,
                                             };
                                             let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
-                                            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                            cmds.push(AppCommand::EditAudioKeyframeAtFrame { clip_id, param, time_secs: clip_time_secs, value: Some(value) });
                                         }
                                     }
                                     crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
                                         let key = format!("{effect_index}:{param_name}");
                                         let empty: Vec<klipp_core::Keyframe> = Vec::new();
                                         let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
-                                        let existing = kfs_ref.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        keys_in_frame = crate::inspector::keyframe_selection::state(kfs_ref, clip_time_secs, tolerance).keys_in_frame;
+                                        let existing = crate::inspector::keyframe_selection::nearest(kfs_ref, clip_time_secs, tolerance).map(|i| &kfs_ref[i]);
                                         if let Some(kf) = existing {
                                             cmds.push(AppCommand::RemoveAudioEffectKeyframe {
                                                 clip_id, effect_index, param_name: param_name.clone(), time_secs: kf.time_secs,
@@ -24819,7 +24802,8 @@ impl KlippApp {
                                     klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
                                     klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
-                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
+                                        let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                 if let Some(kf) = existing {
                                     cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param, time_secs: kf.time_secs });
                                 } else {
@@ -24841,6 +24825,7 @@ impl KlippApp {
                         }
                     }
                 }
+                if keys_in_frame > 1 { self.state.toast.show(format!("{keys_in_frame} keys share this frame; K edits the nearest. Use Shift+K for individual subframe keys.")); }
             }
             // Shift+K — Toggle curve editor (keyframe editor) panel
             if kb.is_action_pressed("toggle_keyframe_editor", i) {
@@ -24894,10 +24879,10 @@ impl KlippApp {
                             }
                         };
                         // Find previous keyframe (strictly before current time with tolerance)
-                        let prev = keyframes.iter().rev()
-                            .find(|kf| kf.time_secs < clip_time_secs - 0.001);
-                        if let Some(kf) = prev {
-                            let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
+                        let prev = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs,
+                            crate::inspector::keyframe_selection::frame_tolerance(seq)).prev_keyframe_time;
+                        if let Some(time) = prev {
+                            let abs_secs = clip.timeline_in.to_secs_f64() + time;
                             let rate = self.state.playhead.rate;
                             self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
                             let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -24942,10 +24927,10 @@ impl KlippApp {
                             }
                         };
                         // Find next keyframe (strictly after current time with tolerance)
-                        let next = keyframes.iter()
-                            .find(|kf| kf.time_secs > clip_time_secs + 0.001);
-                        if let Some(kf) = next {
-                            let abs_secs = clip.timeline_in.to_secs_f64() + kf.time_secs;
+                        let next = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs,
+                            crate::inspector::keyframe_selection::frame_tolerance(seq)).next_keyframe_time;
+                        if let Some(time) = next {
+                            let abs_secs = clip.timeline_in.to_secs_f64() + time;
                             let rate = self.state.playhead.rate;
                             self.state.playhead = klipp_core::Timecode::from_secs_f64(abs_secs, rate);
                             let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -32726,6 +32711,7 @@ impl KlippApp {
             if in_color_workspace {
                 let clip_id = self.state.selected_clip.unwrap();
                 let seq_idx = self.state.active_sequence_idx;
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -32883,7 +32869,7 @@ impl KlippApp {
                     // them — otherwise clicking e.g. an ExternalMatte
                     // in the canvas would hide its file picker behind
                     // the grade tabs.
-                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     // Descent-aware graph: when the user is inside a
                     // compound, the inspector should read/write the
                     // sub-graph's nodes. Fall back to the root graph
@@ -32931,7 +32917,7 @@ impl KlippApp {
                     let panel_cmds = if use_per_node_inspector {
                         self.node_inspector_panel.show(
                             ui, &self.state.selected_node_id,
-                            graph, clip_id, &self.theme, clip_time_secs,
+                            graph, clip_id, &self.theme, mask_frame,
                         )
                     } else {
                         self.node_inspector_panel.show_simple(
@@ -32939,7 +32925,7 @@ impl KlippApp {
                             &mut self.state.selected_node_id,
                             &mut self.state.color_tab,
                             &self.theme,
-                            clip_time_secs,
+                            mask_frame,
                         )
                     };
                     all_cmds.extend(panel_cmds);
@@ -33667,10 +33653,11 @@ impl KlippApp {
             ui.painter().rect_filled(tools_rect, 0.0, theme.bg_panel);
             if let Some(clip_id) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
+                let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
-                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let mask_frame = crate::inspector::keyframe_selection::FrameSelection::new(self.state.playhead, clip.timeline_in, mask_tolerance);
                     let path = self.state.graph_descent_path.clone();
                     let graph: &mut klipp_nodes::NodeGraph =
                         match Self::resolve_graph_at_path_mut(clip, &path) {
@@ -33682,7 +33669,7 @@ impl KlippApp {
                         &mut self.state.selected_node_id,
                         &mut self.state.color_tab_bottom,
                         &self.theme,
-                        clip_time_secs,
+                        mask_frame,
                     );
                     all_cmds.extend(panel_cmds);
                 }
@@ -39300,5 +39287,55 @@ mod true_peak_tests {
         d.loudness_preset = 3;
         d.normalize_loudness = false;
         assert_eq!(dialog_true_peak(&d), None);
+    }
+}
+
+#[cfg(test)]
+mod linked_audio_frame_tests {
+    use super::edit_linked_audio_key;
+    use klipp_core::keyframe::upsert_keyframe;
+
+    #[test]
+    fn a_nudged_partner_key_is_edited_and_removed_at_its_own_time() {
+        let mut keys = Vec::new();
+        upsert_keyframe(&mut keys, 0.707, 0.5);
+        upsert_keyframe(&mut keys, 0.750, 0.8);
+        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, 0.707, Some(0.3));
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].time_secs, 0.707);
+        assert_eq!(keys[0].value, 0.3);
+        assert_eq!(keys[1].value, 0.8);
+        edit_linked_audio_key(&mut keys, 0.700, 0.5 / 24.0, 0.707, None);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].time_secs, 0.750);
+    }
+}
+
+#[cfg(test)]
+mod exact_audio_review_tests {
+    use super::edit_linked_audio_key;
+    #[test]
+    fn exact_linked_edits_do_not_overwrite_nearby_keys() {
+        let mut main = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut main,0.707,0.5);
+        let mut partner = main.clone();
+        klipp_core::keyframe::upsert_keyframe(&mut main,0.700,0.3);
+        edit_linked_audio_key(&mut partner,0.700,0.0,0.700,Some(0.3));
+        assert_eq!(main,partner);
+        assert_eq!(partner.len(),2);
+        klipp_core::keyframe::remove_keyframe_at(&mut main,0.700);
+        edit_linked_audio_key(&mut partner,0.700,0.0,0.700,None);
+        assert_eq!(main,partner);
+        assert_eq!(partner[0].time_secs,0.707);
+    }
+}
+
+#[cfg(test)]
+mod linked_missing_key_review_tests {
+    #[test]
+    fn absent_partner_key_uses_the_selected_main_timestamp() {
+        let mut partner=vec![];
+        super::edit_linked_audio_key(&mut partner,0.700,0.5/24.0,0.707,Some(0.25));
+        assert_eq!(partner[0].time_secs,0.707);
     }
 }
