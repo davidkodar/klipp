@@ -36,6 +36,47 @@ pub fn show(
     });
     ui.add_space(4.0);
 
+    ui.label(egui::RichText::new("Built-in motion language").strong());
+    ui.label(egui::RichText::new("These data-only manifests are the starting library for launch films; each can be materialized into an editable composition.").small().color(theme.text_dim));
+    for manifest in crate::parameterized_templates::builtin_manifests()
+        .into_iter()
+        .filter(|manifest| {
+            needle.is_empty()
+                || manifest.name.to_lowercase().contains(&needle)
+                || manifest.category.to_lowercase().contains(&needle)
+        })
+    {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(manifest.name).strong());
+                ui.label(
+                    egui::RichText::new(manifest.category)
+                        .small()
+                        .color(theme.text_dim),
+                );
+                ui.label(
+                    egui::RichText::new(match manifest.asset_kind {
+                        crate::parameterized_templates::TemplateAssetKind::Procedural => {
+                            "procedural"
+                        }
+                        crate::parameterized_templates::TemplateAssetKind::MediaBacked => {
+                            "media-backed"
+                        }
+                    })
+                    .small()
+                    .color(theme.text_dim),
+                );
+            });
+            ui.label(
+                egui::RichText::new(manifest.description)
+                    .small()
+                    .color(theme.text_secondary),
+            );
+        });
+    }
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Your templates").strong());
+
     if templates.is_empty() {
         ui.group(|ui| {
             ui.label(egui::RichText::new(if needle.is_empty() {
