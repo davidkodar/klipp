@@ -1081,7 +1081,7 @@ impl Preferences {
 
             // Try to load project metadata from disk
             match klipp_project::load_project(&rp.path) {
-                Ok((sequences, media_pool, _color, _active_id, _created_at, _notes, _zoom, _scroll, _assets)) => {
+                Ok((sequences, media_pool, _color, _active_id, _created_at, _notes, _zoom, _scroll, _track_scale, _assets)) => {
                     if rp.total_size_bytes.is_none() {
                         rp.total_size_bytes = Some(media_pool.all().map(|m| m.file_size_bytes).sum());
                         changed = true;

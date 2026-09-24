@@ -53,11 +53,11 @@ pub fn save_project_with_color(
     created_at: Option<&str>,
     notes: &str,
 ) -> Result<(), String> {
-    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5, None, None)
+    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5, None, None, None)
 }
 
 /// Save with configurable backup count and optional view state
-/// (`timeline_zoom`, `timeline_scroll_x`) so timeline zoom/scroll —
+/// (`timeline_zoom`, `timeline_scroll_x`, `timeline_track_scale`) so timeline view —
 /// including the result of "Fit Timeline to Window" — round-trips
 /// across save/load.
 #[allow(clippy::too_many_arguments)]
@@ -72,11 +72,12 @@ pub fn save_project_with_color_and_backups(
     backup_count: u32,
     timeline_zoom: Option<f32>,
     timeline_scroll_x: Option<f32>,
+    timeline_track_scale: Option<f32>,
 ) -> Result<(), String> {
     save_project_full(
         dir, sequences, media_pool, color,
         active_sequence_id, created_at, notes, backup_count,
-        timeline_zoom, timeline_scroll_x,
+        timeline_zoom, timeline_scroll_x, timeline_track_scale,
         &std::collections::HashMap::new(),
     )
 }
@@ -98,6 +99,7 @@ pub fn save_project_full(
     backup_count: u32,
     timeline_zoom: Option<f32>,
     timeline_scroll_x: Option<f32>,
+    timeline_track_scale: Option<f32>,
     title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
 ) -> Result<(), String> {
     // Create directory structure
@@ -129,6 +131,7 @@ pub fn save_project_full(
         notes: notes.to_string(),
         timeline_zoom,
         timeline_scroll_x,
+        timeline_track_scale,
         working_colorspace: color.working_colorspace,
         title_assets: title_assets_json,
     };

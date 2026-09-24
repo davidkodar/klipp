@@ -33,6 +33,9 @@ pub struct ProjectJson {
     /// Last horizontal timeline scroll position when saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_scroll_x: Option<f32>,
+    /// Last vertical timeline track scale when saved. `None` for legacy files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_track_scale: Option<f32>,
     /// Working colorspace for this project's grade chain. Old project
     /// files written before Phase E lack this field; serde default
     /// gives them `Rec709Linear`, matching the pipeline's behaviour
@@ -864,6 +867,7 @@ mod tests {
             notes: String::new(),
             timeline_zoom: None,
             timeline_scroll_x: None,
+            timeline_track_scale: Some(0.5),
             working_colorspace: klipp_core::WorkingColorspace::AcesCG,
             title_assets: Vec::new(),
         };
@@ -873,6 +877,7 @@ mod tests {
             back.working_colorspace,
             klipp_core::WorkingColorspace::AcesCG,
         );
+        assert_eq!(back.timeline_track_scale, Some(0.5));
     }
 
     /// Pin the on-disk variant names. The string tags are part of the

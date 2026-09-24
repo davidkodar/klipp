@@ -521,6 +521,7 @@ pub fn consolidate_project(
         5,
         None,
         None,
+        None,
     ) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
         return Err(ConsolidateError::SaveFailed(e));
