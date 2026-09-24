@@ -1493,7 +1493,7 @@ fn camera_section(
     let seq = state.sequence();
     let idx = state.active_sequence_idx;
     let at = state.playhead.to_secs_f64();
-    let fps = seq.fps.as_f64();
+    let tolerance = super::keyframe_selection::frame_tolerance(seq);
     section_card(ui, "CAMERA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
         for param in [CameraParam::X, CameraParam::Y, CameraParam::Zoom, CameraParam::Roll] {
             let keys = match param {
@@ -1502,7 +1502,7 @@ fn camera_section(
                 CameraParam::Zoom => &seq.camera.zoom_keyframes,
                 CameraParam::Roll => &seq.camera.roll_keyframes,
             };
-            let row = CameraRow::at(keys, at, fps, param.resting());
+            let row = CameraRow::at(keys, at, tolerance, param.resting());
             let mut value = row.value;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(param.label()).color(theme.text_secondary));
@@ -1532,8 +1532,9 @@ fn camera_section(
 /// The row is asked at a displayed frame, but a key is stored at an exact
 /// timestamp that need not sit on one: an agent writes 0.7 s into a 24 fps
 /// sequence, and no frame of that sequence is at 0.7 s. So the row selects
-/// the nearest key within half a frame, as every other inspector row does,
-/// and edits or removes *that* key at its own stored timestamp. Only when
+/// the nearest key within the inspector's frame tolerance, as every other
+/// inspector row does, and edits or removes *that* key at its own stored
+/// timestamp. Only when
 /// no key is near does the canonical playhead become the time. Asking the
 /// remover instead, at the playhead, left the diamond dark on a key the
 /// playhead was on and stacked a second key beside it on every drag.
@@ -1548,8 +1549,8 @@ struct CameraRow {
 }
 
 impl CameraRow {
-    fn at(keys: &[klipp_core::Keyframe], playhead_secs: f64, fps: f64, resting: f32) -> Self {
-        match super::keyframe_selection::nearest(keys, playhead_secs, 0.5 / fps) {
+    fn at(keys: &[klipp_core::Keyframe], playhead_secs: f64, tolerance: f64, resting: f32) -> Self {
+        match super::keyframe_selection::nearest(keys, playhead_secs, tolerance) {
             Some(i) => Self { time_secs: keys[i].time_secs, keyed: true, value: keys[i].value },
             None => Self {
                 time_secs: playhead_secs,
@@ -1571,8 +1572,18 @@ impl CameraRow {
 #[cfg(test)]
 mod camera_row_tests {
     use super::*;
+    use crate::inspector::keyframe_selection::frame_tolerance;
     use klipp_core::keyframe::{remove_keyframe_at, upsert_keyframe};
-    use klipp_core::{CameraParam, Interpolation, Keyframe};
+    use klipp_core::{CameraParam, Fps, Interpolation, Keyframe};
+    use klipp_timeline::Sequence;
+
+    /// The tolerance the inspector uses in a sequence at that rate — the
+    /// one owner of that number, not a copy of it.
+    fn tolerance_at(fps: Fps) -> f64 {
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        frame_tolerance(&seq)
+    }
 
     fn keys(times: &[f64]) -> Vec<Keyframe> {
         times
@@ -1603,7 +1614,7 @@ mod camera_row_tests {
     #[test]
     fn an_off_frame_key_is_edited_where_it_is_stored() {
         let stored = keys(&[0.7]);
-        let row = CameraRow::at(&stored, 17.0 / 24.0, 24.0, 0.0);
+        let row = CameraRow::at(&stored, 17.0 / 24.0, tolerance_at(Fps::film_24()), 0.0);
         assert!(row.keyed, "the diamond should light on frame 17 for the key at 0.7 s");
         assert_eq!(row.value, 0.5);
         let set = row.set(0, CameraParam::X, 0.3);
@@ -1625,12 +1636,13 @@ mod camera_row_tests {
     /// its own, emits its stored time, and leaves its neighbours alone.
     #[test]
     fn consecutive_keys_stay_distinct_at_high_and_fractional_rates() {
-        for fps in [60.0, 120.0, 30000.0 / 1001.0] {
+        for rate in [Fps::new(60, 1), Fps::new(120, 1), Fps::ntsc_29970()] {
+            let fps = rate.as_f64();
             let times: Vec<f64> = (0..48).map(|i| i as f64 / fps).collect();
             let stored = keys(&times);
             for (i, &t) in times.iter().enumerate() {
                 for probe in [t, t + 0.25 / fps] {
-                    let row = CameraRow::at(&stored, probe, fps, 0.0);
+                    let row = CameraRow::at(&stored, probe, tolerance_at(rate), 0.0);
                     assert!(row.keyed, "frame {i} at {fps} fps holds a key");
                     assert_eq!(row.time_secs, t, "frame {i} at {fps} fps should select its own key, probed at {probe}");
                     let set = row.set(0, CameraParam::Zoom, 1.5);
@@ -1653,12 +1665,35 @@ mod camera_row_tests {
     #[test]
     fn with_no_key_near_the_playhead_is_the_moment() {
         let stored = keys(&[1.0, 2.0]);
-        let row = CameraRow::at(&stored, 1.5, 24.0, 0.0);
+        let row = CameraRow::at(&stored, 1.5, tolerance_at(Fps::film_24()), 0.0);
         assert!(!row.keyed);
         assert_eq!(row.time_secs, 1.5);
         assert_eq!(row.value, 0.5);
         assert_eq!(time_of(&row.set(0, CameraParam::Roll, 2.0)), 1.5);
         let empty: Vec<Keyframe> = Vec::new();
-        assert_eq!(CameraRow::at(&empty, 1.5, 24.0, 1.0).value, 1.0, "no keys: the resting value");
+        assert_eq!(CameraRow::at(&empty, 1.5, tolerance_at(Fps::film_24()), 1.0).value, 1.0, "no keys: the resting value");
+    }
+
+    /// A key exactly half a frame from a frame time, in a rate whose
+    /// frame is not a binary fraction: 17/24 + 1/48 is one ulp outside
+    /// a bare half-frame comparison at 17/24. The row uses the shared
+    /// window, which has the slack for that, so the key is on the row
+    /// from the frame on either side of it — and its stored time is
+    /// what the commands carry.
+    #[test]
+    fn a_key_on_the_decimal_half_frame_boundary_is_still_the_rows_key() {
+        let stored_at = 17.0 / 24.0 + 1.0 / 48.0;
+        let stored = keys(&[stored_at]);
+        let tolerance = tolerance_at(Fps::film_24());
+        for frame in [17.0, 18.0] {
+            let row = CameraRow::at(&stored, frame / 24.0, tolerance, 0.0);
+            assert!(row.keyed, "frame {frame} should be on the key half a frame from it");
+            assert_eq!(row.time_secs, stored_at);
+            assert_eq!(time_of(&row.set(0, CameraParam::Y, 0.1)), stored_at);
+            assert_eq!(time_of(&row.remove(0, CameraParam::Y)), stored_at);
+            let mut edited = stored.clone();
+            upsert_keyframe(&mut edited, time_of(&row.set(0, CameraParam::Y, 0.1)), 0.1);
+            assert_eq!(edited.len(), 1, "editing from frame {frame} should not add a key");
+        }
     }
 }
