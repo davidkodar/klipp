@@ -105,3 +105,22 @@ Closed contours use even-odd fill (including holes); open contours are
 stroke-only. Strokes have round caps and joins. Cubics are flattened at output
 resolution and antialiased; no fixed-resolution bitmap is stored in the project.
 Path animation is evaluated in both the viewer and export title pipeline.
+
+### Stroke trim and glow
+
+Enable **Trim stroke** in an editable path's inspector. **Start** and **End**
+select an interval of each contour's length; **Offset** shifts it in turns.
+Start must not exceed End. Open contours clip shifted intervals to their ends;
+closed contours wrap across the seam. A full-length closed stroke stays full
+at any offset. Each contour reveals independently over its own length. Reveals
+use arc length measured on output-resolution cubic subdivisions, so unequal
+curve segments do not receive equal time.
+
+Trim has its own key button and easing, independent of morph/paint keys. Key
+End from 0 to 1 to draw, hold that range, then key Start from 0 to 1 to retract.
+Round caps/joins apply at reveal endpoints. Fill remains unchanged. **Stroke
+glow** (independent of Trim stroke) adds a soft halo in the stroke's color from only the currently revealed
+stroke; radius scales from 1080p and strength is 0..1. Glow radius and strength are pose paint and can be keyed with the morph/paint keys.
+The same optional `path.trim` object is accepted by the `vector_path` operation
+and JSON import. Readers supporting paths but not trim refuse the unknown
+`trim` field; paths without trim retain the prior representation.

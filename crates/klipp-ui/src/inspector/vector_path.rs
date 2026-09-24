@@ -224,6 +224,32 @@ pub(super) fn show(
             }
         }
     }
+    let mut glow_enabled = pose.stroke_glow.is_some();
+    if ui.checkbox(&mut glow_enabled, "Stroke glow").changed() {
+        pose.stroke_glow = glow_enabled.then_some(klipp_timeline::StrokeGlow {
+            radius: 12.0,
+            strength: 0.8,
+        });
+        changed = true;
+    }
+    if let Some(glow) = &mut pose.stroke_glow {
+        changed |= ui
+            .add(egui::Slider::new(&mut glow.radius, 0.0..=200.0).text("Glow px @ 1080p"))
+            .changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut glow.strength, 0.0..=1.0).text("Glow strength"))
+            .changed();
+    }
+    ui.separator();
+    ui.label("Stroke reveal (independent of morph)");
+    let mut enabled = next.trim.is_some();
+    if ui.checkbox(&mut enabled, "Trim stroke").changed() {
+        next.trim = enabled.then(klipp_timeline::PathTrim::default);
+        direct = true;
+    }
+    if let Some(trim) = &mut next.trim {
+        direct |= trim_controls(ui, object, trim, time, tolerance, cmds);
+    }
     if changed {
         if path.keyframes.is_empty() {
             next.pose = pose;
@@ -260,4 +286,84 @@ fn read_path_file(path: &std::path::Path) -> Result<String, String> {
         return Err("Path file exceeds 2 MB".into());
     }
     Ok(text)
+}
+
+fn trim_controls(
+    ui: &mut egui::Ui,
+    object: TitleObjectId,
+    trim: &mut klipp_timeline::PathTrim,
+    time: f64,
+    tolerance: f64,
+    cmds: &mut Vec<AppCommand>,
+) -> bool {
+    let selected = trim
+        .keyframes
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| (k.time_secs - time).abs() <= tolerance + 1e-6)
+        .min_by(|(_, a), (_, b)| {
+            (a.time_secs - time)
+                .abs()
+                .total_cmp(&(b.time_secs - time).abs())
+        })
+        .map(|(i, _)| i);
+    let key_time = selected.map_or(time, |i| trim.keyframes[i].time_secs);
+    let mut range = selected.map_or_else(|| trim.at(time), |i| trim.keyframes[i].range);
+    let mut direct = false;
+    ui.horizontal(|ui| {
+        if ui
+            .button(if selected.is_some() {
+                "◆ Remove trim key"
+            } else {
+                "◇ Key trim"
+            })
+            .clicked()
+        {
+            if let Some(i) = selected {
+                trim.keyframes.remove(i);
+            } else if let Err(e) = trim.key(time, range) {
+                cmds.push(AppCommand::TitlePathError { message: e });
+            }
+            direct = true;
+        }
+        if ui.button("Clear trim keys").clicked() {
+            trim.range = range;
+            trim.keyframes.clear();
+            direct = true;
+        }
+    });
+    if let Some(i) = selected.filter(|_| !direct) {
+        egui::ComboBox::from_id_salt(("trim_easing", object.0))
+            .selected_text(trim.keyframes[i].easing.label())
+            .show_ui(ui, |ui| {
+                for e in klipp_timeline::Easing::ALL {
+                    direct |= ui
+                        .selectable_value(&mut trim.keyframes[i].easing, e, e.label())
+                        .changed();
+                }
+            });
+    }
+    let mut changed = ui
+        .add(egui::Slider::new(&mut range.start, 0.0..=range.end).text("Start"))
+        .changed();
+    changed |= ui
+        .add(egui::Slider::new(&mut range.end, range.start..=1.0).text("End"))
+        .changed();
+    changed |= ui
+        .add(
+            egui::DragValue::new(&mut range.offset)
+                .range(-100.0..=100.0)
+                .speed(0.01)
+                .prefix("Offset (turns): "),
+        )
+        .changed();
+    if changed {
+        if trim.keyframes.is_empty() {
+            trim.range = range;
+        } else if let Err(e) = trim.key(key_time, range) {
+            cmds.push(AppCommand::TitlePathError { message: e });
+            return direct;
+        }
+    }
+    changed || direct
 }

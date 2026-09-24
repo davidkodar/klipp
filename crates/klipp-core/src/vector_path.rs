@@ -27,6 +27,8 @@ pub struct PathContour {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PathPose {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_glow: Option<StrokeGlow>,
     pub contours: Vec<PathContour>,
     /// Straight RGBA in authored sRGB, 0..1. Alpha zero disables paint.
     pub fill: [f32; 4],
@@ -46,6 +48,8 @@ pub struct PathKeyframe {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VectorPath {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim: Option<PathTrim>,
     pub pose: PathPose,
     #[serde(default)]
     pub keyframes: Vec<PathKeyframe>,
@@ -61,7 +65,9 @@ impl Default for VectorPath {
             })
             .collect();
         Self {
+            trim: None,
             pose: PathPose {
+                stroke_glow: None,
                 contours: vec![PathContour {
                     closed: true,
                     vertices,
@@ -76,6 +82,9 @@ impl Default for VectorPath {
 }
 impl VectorPath {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(t) = &self.trim {
+            t.validate()?;
+        }
         if self.keyframes.len() > MAX_PATH_KEYS {
             return Err("a path supports at most 256 morph keys".into());
         }
@@ -152,6 +161,15 @@ impl PathPose {
                 .all(|(a, b)| a.closed == b.closed && a.vertices.len() == b.vertices.len())
     }
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(g) = self.stroke_glow {
+            if !g.radius.is_finite()
+                || !(0.0..=200.0).contains(&g.radius)
+                || !g.strength.is_finite()
+                || !(0.0..=1.0).contains(&g.strength)
+            {
+                return Err("stroke glow needs radius 0..200 and strength 0..1".into());
+            }
+        }
         if self.contours.is_empty() || self.contours.len() > MAX_PATH_CONTOURS {
             return Err("a path needs 1..16 contours".into());
         }
@@ -199,7 +217,140 @@ impl PathPose {
             out.stroke[i] = lerp(self.stroke[i], b.stroke[i]).clamp(0.0, 1.0);
         }
         out.stroke_width = lerp(self.stroke_width, b.stroke_width).clamp(0.0, 200.0);
+        out.stroke_glow = if self.stroke_glow.is_some() || b.stroke_glow.is_some() {
+            let a = self.stroke_glow.unwrap_or_default();
+            let b = b.stroke_glow.unwrap_or_default();
+            Some(StrokeGlow {
+                radius: lerp(a.radius, b.radius).clamp(0.0, 200.0),
+                strength: lerp(a.strength, b.strength).clamp(0.0, 1.0),
+            })
+        } else {
+            None
+        };
         out
+    }
+}
+
+/// Stroke-local halo paint, keyed with the pose independently of trim.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StrokeGlow {
+    pub radius: f32,
+    pub strength: f32,
+}
+
+/// Stroke-only reveal, independently keyed from the path's morph poses.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TrimRange {
+    pub start: f32,
+    pub end: f32,
+    #[serde(default)]
+    pub offset: f32,
+}
+impl Default for TrimRange {
+    fn default() -> Self {
+        Self {
+            start: 0.0,
+            end: 1.0,
+            offset: 0.0,
+        }
+    }
+}
+impl TrimRange {
+    fn validate(self) -> Result<(), String> {
+        if !self.start.is_finite()
+            || !self.end.is_finite()
+            || !self.offset.is_finite()
+            || !(0.0..=1.0).contains(&self.start)
+            || !(self.start..=1.0).contains(&self.end)
+            || !(-100.0..=100.0).contains(&self.offset)
+        {
+            return Err("trim needs 0 <= start <= end <= 1 and finite offset in -100..100".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TrimKeyframe {
+    pub time_secs: f64,
+    pub range: TrimRange,
+    #[serde(default = "linear_easing")]
+    pub easing: Easing,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PathTrim {
+    #[serde(default)]
+    pub range: TrimRange,
+    #[serde(default)]
+    pub keyframes: Vec<TrimKeyframe>,
+}
+impl PathTrim {
+    pub fn validate(&self) -> Result<(), String> {
+        self.range.validate()?;
+        if self.keyframes.len() > MAX_PATH_KEYS {
+            return Err("trim supports at most 256 keys".into());
+        }
+        let mut previous = None;
+        for key in &self.keyframes {
+            key.range.validate()?;
+            if !key.time_secs.is_finite()
+                || key.time_secs < 0.0
+                || previous.is_some_and(|p| key.time_secs - p < 1e-6)
+            {
+                return Err(
+                    "trim key times must be finite, nonnegative, sorted and distinct".into(),
+                );
+            }
+            previous = Some(key.time_secs);
+        }
+        Ok(())
+    }
+    pub fn at(&self, time: f64) -> TrimRange {
+        if self.keyframes.is_empty() {
+            return self.range;
+        }
+        let next = self.keyframes.partition_point(|k| k.time_secs <= time);
+        if next == 0 {
+            return self.keyframes[0].range;
+        }
+        let a = &self.keyframes[next - 1];
+        let Some(b) = self.keyframes.get(next) else {
+            return a.range;
+        };
+        let t = a
+            .easing
+            .apply(((time - a.time_secs) / (b.time_secs - a.time_secs)) as f32)
+            .clamp(0.0, 1.0);
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        TrimRange {
+            start: lerp(a.range.start, b.range.start),
+            end: lerp(a.range.end, b.range.end),
+            offset: lerp(a.range.offset, b.range.offset),
+        }
+    }
+    pub fn key(&mut self, time: f64, range: TrimRange) -> Result<(), String> {
+        let mut next = self.clone();
+        if let Some(k) = next
+            .keyframes
+            .iter_mut()
+            .find(|k| (k.time_secs - time).abs() < 1e-6)
+        {
+            k.range = range;
+        } else {
+            next.keyframes.push(TrimKeyframe {
+                time_secs: time,
+                range,
+                easing: Easing::Linear,
+            });
+            next.keyframes
+                .sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        }
+        next.validate()?;
+        *self = next;
+        Ok(())
     }
 }
 
@@ -207,10 +358,67 @@ impl PathPose {
 mod tests {
     use super::*;
     #[test]
+    fn static_glow_and_keyed_glow_do_not_require_trim() {
+        let mut p = VectorPath::default();
+        p.pose.stroke_glow = Some(StrokeGlow {
+            radius: 10.0,
+            strength: 0.2,
+        });
+        p.key(0.0, p.pose.clone()).unwrap();
+        let mut end = p.pose.clone();
+        end.stroke_glow = Some(StrokeGlow {
+            radius: 30.0,
+            strength: 0.8,
+        });
+        p.key(1.0, end).unwrap();
+        assert!(p.trim.is_none());
+        let g = p.at(0.5).stroke_glow.unwrap();
+        assert_eq!(g.radius, 20.0);
+        assert!((g.strength - 0.5).abs() < 1e-6);
+        let mut t = PathTrim::default();
+        t.key(
+            0.0,
+            TrimRange {
+                end: 0.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        t.key(1.0, TrimRange::default()).unwrap();
+        assert_eq!(t.at(0.5).end, 0.5);
+        t.keyframes[0].easing = Easing::OutCubic;
+        t.key(
+            0.0,
+            TrimRange {
+                end: 0.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(t.keyframes[0].easing, Easing::OutCubic);
+        assert!(t
+            .key(
+                0.0,
+                TrimRange {
+                    start: 0.8,
+                    end: 0.2,
+                    offset: 0.0
+                }
+            )
+            .is_err());
+    }
+    #[test]
     fn overshoot_moves_geometry_but_keeps_paint_valid() {
-        let mut p=VectorPath::default();let mut end=p.pose.clone();end.contours[0].vertices[0].point=[0.5,0.5];end.fill=[1.0;4];
-        p.key(0.0,p.pose.clone()).unwrap();p.key(1.0,end).unwrap();p.keyframes[0].easing=Easing::OutBack;
-        let pose=p.at(0.7);assert!(pose.contours[0].vertices[0].point[0]>0.5);assert!(pose.fill.iter().all(|v|(0.0..=1.0).contains(v)));
+        let mut p = VectorPath::default();
+        let mut end = p.pose.clone();
+        end.contours[0].vertices[0].point = [0.5, 0.5];
+        end.fill = [1.0; 4];
+        p.key(0.0, p.pose.clone()).unwrap();
+        p.key(1.0, end).unwrap();
+        p.keyframes[0].easing = Easing::OutBack;
+        let pose = p.at(0.7);
+        assert!(pose.contours[0].vertices[0].point[0] > 0.5);
+        assert!(pose.fill.iter().all(|v| (0.0..=1.0).contains(v)));
     }
     #[test]
     fn morphs_points_handles_and_paint_with_explicit_correspondence() {

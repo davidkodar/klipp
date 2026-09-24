@@ -1769,7 +1769,7 @@ impl TitleRenderer {
         } else {
             None
         };
-        let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty()));
+        let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t|!t.keyframes.is_empty())));
         let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
@@ -2089,14 +2089,14 @@ impl TitleRenderer {
                         effective_transform = fitted;
                     }
                     if (obj.opacity - 1.0).abs() < 0.001 {
-                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0));
+                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
                     } else {
                         // Render the shape into a fresh transparent
                         // layer, scale its alpha, then over-blend —
                         // matches the per-object opacity behaviour
                         // for TextBox layers.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
-                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0));
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
                         scale_layer_alpha(&mut layer, obj.opacity);
                         over_blend(&mut buf, &layer);
                     }
@@ -3707,9 +3707,10 @@ fn paint_shape_layer(
     width: u32,
     height: u32,
     time_secs: f32,
+    gpu: Option<&mut dyn AlphaMaskProcessor>,
 ) {
     if let ShapeKind::Path(path) = &shape.kind {
-        vector_path::paint(buf, &path.at(time_secs as f64), transform, width, height);
+        vector_path::paint(buf, &path.at(time_secs as f64), transform, width, height, path.trim.as_ref().map(|t|t.at(time_secs as f64)), gpu);
         return;
     }
     let w_f = width as f32;
@@ -4387,37 +4388,35 @@ fn dilate_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
 /// Blur an alpha mask using a 2-pass box blur approximation of gaussian (3 iterations).
 fn blur_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
     let r = radius.round() as usize;
-    if r == 0 { return mask.to_vec(); }
+    if r == 0 || w == 0 || h == 0 {
+        return mask.to_vec();
+    }
     let mut src = mask.to_vec();
-    // 3 passes of box blur for gaussian approximation
+    let mut temp = vec![0u8; w * h];
+    let mut prefix = vec![0u64; w.max(h) + 1];
+    // Same three box passes, edge normalization and integer rounding as
+    // before, using prefix sums so the work no longer scales with radius.
     for _ in 0..3 {
-        let mut temp = vec![0u8; w * h];
-        // Horizontal pass
         for y in 0..h {
+            prefix[0] = 0;
             for x in 0..w {
-                let mut sum = 0u32;
-                let mut count = 0u32;
-                let x0 = x.saturating_sub(r);
-                let x1 = (x + r).min(w - 1);
-                for dx in x0..=x1 {
-                    sum += src[y * w + dx] as u32;
-                    count += 1;
-                }
-                temp[y * w + x] = (sum / count) as u8;
+                prefix[x + 1] = prefix[x] + src[y * w + x] as u64;
+            }
+            for x in 0..w {
+                let lo = x.saturating_sub(r);
+                let hi = (x + r + 1).min(w);
+                temp[y * w + x] = ((prefix[hi] - prefix[lo]) / (hi - lo) as u64) as u8;
             }
         }
-        // Vertical pass
-        for y in 0..h {
-            for x in 0..w {
-                let mut sum = 0u32;
-                let mut count = 0u32;
-                let y0 = y.saturating_sub(r);
-                let y1 = (y + r).min(h - 1);
-                for dy in y0..=y1 {
-                    sum += temp[dy * w + x] as u32;
-                    count += 1;
-                }
-                src[y * w + x] = (sum / count) as u8;
+        for x in 0..w {
+            prefix[0] = 0;
+            for y in 0..h {
+                prefix[y + 1] = prefix[y] + temp[y * w + x] as u64;
+            }
+            for y in 0..h {
+                let lo = y.saturating_sub(r);
+                let hi = (y + r + 1).min(h);
+                src[y * w + x] = ((prefix[hi] - prefix[lo]) / (hi - lo) as u64) as u8;
             }
         }
     }
