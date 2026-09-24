@@ -164,7 +164,7 @@ pub enum EditCommand {
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
     /// Replace the persisted values of an inserted composition template.
-    SetTemplateInstance { clip_id: ClipId, old: Box<klipp_core::TemplateInstance>, new: Box<klipp_core::TemplateInstance> },
+    SetTemplateInstance { clip_id: ClipId, parameter: String, old: Box<klipp_core::TemplateInstance>, new: Box<klipp_core::TemplateInstance> },
     /// Title clip added (with optional track creation for undo)
     AddTitleClip {
         clip: Clip,

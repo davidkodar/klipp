@@ -7590,7 +7590,7 @@ impl KlippApp {
                         let cid = *clip_id;
                         let history = self.state.active_history_mut();
                         let merged = history.merge_into_last(|last| match last {
-                            crate::history::EditCommand::SetTemplateInstance { clip_id, new: last_new, .. } if *clip_id == cid => {
+                            crate::history::EditCommand::SetTemplateInstance { clip_id, parameter: last_parameter, new: last_new, .. } if *clip_id == cid && last_parameter == parameter => {
                                 **last_new = new.clone();
                                 true
                             }
@@ -7598,7 +7598,7 @@ impl KlippApp {
                         });
                         if !merged {
                             history.push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, old: Box::new(old), new: Box::new(new) },
+                                command: crate::history::EditCommand::SetTemplateInstance { clip_id: cid, parameter: parameter.clone(), old: Box::new(old), new: Box::new(new) },
                             });
                         }
                         self.sync_sequence_to_engine();
