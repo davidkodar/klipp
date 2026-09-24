@@ -72,3 +72,6 @@ pub use sequence::{
     Look, MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackKind, TrackRole,
     Transition, TransitionKind, TransformLink, TransformLinkTarget, SPEED_MAX, SPEED_MIN,
 };
+
+pub mod vector_path;
+pub use vector_path::{VectorPath, PathPose, PathContour, PathVertex, PathKeyframe};

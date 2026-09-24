@@ -236,6 +236,23 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         }
     }
 
+    // Refuse invalid vector data before legacy sequence recovery can skip it.
+    for sequence in &project.sequences {
+        for track in &sequence.tracks {
+            for clip in &track.clips {
+                if let Some(ClipKindJson::VectorTitle { title_data }) = &clip.kind {
+                    for object in &title_data.objects {
+                        if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {
+                            if let klipp_timeline::ShapeKind::Path(path) = &shape.kind {
+                                path.validate()?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Reconstruct all sequences
     let mut sequences: Vec<Sequence> = project.sequences.iter()
         .filter_map(|seq_json| load_sequence_from_json(seq_json, dir).ok())
@@ -636,11 +653,31 @@ fn parse_marker_kind(s: &str) -> klipp_core::MarkerKind {
     }
 }
 
+fn resolve_title_paths(td: &mut klipp_timeline::TitleData, project_dir: &Path) {
+    // Texture paths are stored project-relative, like the flat fields.
+    for obj in &mut td.objects {
+        match &mut obj.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => {
+                if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
+                    *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                        .to_string_lossy().to_string();
+                }
+            }
+            klipp_timeline::TitleObjectContent::Image(img) => {
+                img.path = crate::path_util::resolve_media_path(project_dir, Path::new(&img.path))
+                    .to_string_lossy().to_string();
+            }
+            klipp_timeline::TitleObjectContent::Shape(_) => {}
+        }
+    }
+}
+
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
 fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     // New format: `kind` field is present
     if let Some(kind_json) = &c.kind {
         return match kind_json {
+            ClipKindJson::VectorTitle {title_data} => { let mut td=title_data.clone();resolve_title_paths(&mut td,project_dir);ClipKind::Title(td) },
             ClipKindJson::Media { media_id } => {
                 let mid = parse_uuid(media_id)
                     .map(MediaId)
@@ -686,25 +723,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 if let Some(v) = title_data {
                     match serde_json::from_value::<klipp_timeline::TitleData>(v.clone()) {
                         Ok(mut td) => {
-                            // Texture paths are stored project-relative;
-                            // resolve them here as the flat fields are.
-                            for obj in &mut td.objects {
-                                match &mut obj.content {
-                                    klipp_timeline::TitleObjectContent::TextBox(tb) => {
-                                        if let Some(p) = tb.texture_fill.as_mut().and_then(|t| t.file_path_mut()) {
-                                            *p = crate::path_util::resolve_media_path(project_dir, Path::new(p))
-                                                .to_string_lossy()
-                                                .to_string();
-                                        }
-                                    }
-                                    klipp_timeline::TitleObjectContent::Image(img) => {
-                                        img.path = crate::path_util::resolve_media_path(project_dir, Path::new(&img.path))
-                                            .to_string_lossy()
-                                            .to_string();
-                                    }
-                                    klipp_timeline::TitleObjectContent::Shape(_) => {}
-                                }
-                            }
+                            resolve_title_paths(&mut td, project_dir);
                             return ClipKind::Title(td);
                         }
                         Err(e) => warn!("title_data could not be read, using the flat title fields: {e}"),

@@ -122,3 +122,9 @@ Klipp references media files by absolute path, not by copy. Moving or renaming s
 ## See Also
 
 The authoritative schema reference is `crates/klipp-project/src/format.rs`. When format structs change, this page should change in the same commit.
+
+Titles containing editable cubic paths use the explicit `vector_title` clip-kind
+tag and typed `title_data`. Older readers refuse this unknown kind by name,
+rather than falling back to a flat text title and losing the path. Ordinary
+text/rectangle/image titles retain their existing representation. Vector path
+geometry, paint and topology are validated before legacy sequence recovery.

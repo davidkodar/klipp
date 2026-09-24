@@ -1328,7 +1328,7 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
-              title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width},keyframes:[{time_secs,pose,easing}]}} edits a title layer; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
               animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
@@ -1478,7 +1478,7 @@ fn tool_definitions() -> Vec<Value> {
               the speaker is not on the left or the picture has its own name burnt in there, \
               side \"right\" sets it against the right edge, x is that edge and y the name's line, \
               as fractions of the frame inside title-safe.\n\
-              title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
+              vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width},keyframes:[{time_secs,pose,easing}]}} edits a title layer; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
               animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?} — a title from scratch, \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \

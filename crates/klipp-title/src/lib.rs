@@ -26,6 +26,7 @@
 //! render, even when the user's system has no matching font. It's
 //! picked automatically when the requested font can't be resolved.
 
+mod vector_path;
 use fontdue::layout::{
     CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign,
     WrapStyle,
@@ -1768,7 +1769,8 @@ impl TitleRenderer {
         } else {
             None
         };
-        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
+        let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty()));
+        let any_char_anim = any_path_motion || (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -2087,14 +2089,14 @@ impl TitleRenderer {
                         effective_transform = fitted;
                     }
                     if (obj.opacity - 1.0).abs() < 0.001 {
-                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height);
+                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0));
                     } else {
                         // Render the shape into a fresh transparent
                         // layer, scale its alpha, then over-blend —
                         // matches the per-object opacity behaviour
                         // for TextBox layers.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
-                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height);
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0));
                         scale_layer_alpha(&mut layer, obj.opacity);
                         over_blend(&mut buf, &layer);
                     }
@@ -3704,7 +3706,12 @@ fn paint_shape_layer(
     transform: &ObjectTransform,
     width: u32,
     height: u32,
+    time_secs: f32,
 ) {
+    if let ShapeKind::Path(path) = &shape.kind {
+        vector_path::paint(buf, &path.at(time_secs as f64), transform, width, height);
+        return;
+    }
     let w_f = width as f32;
     let h_f = height as f32;
     let half_w = (transform.size.x * w_f * 0.5).max(0.0);
@@ -3720,6 +3727,7 @@ fn paint_shape_layer(
     }
 
     match &shape.kind {
+        ShapeKind::Path(_) => unreachable!("path handled above"),
         ShapeKind::Rectangle { corner_radius } => {
             let r = corner_radius.max(0.0);
             // Render-scale the corner radius the same way the

@@ -86,3 +86,5 @@ pub use smart_bin::{RuleOp, SmartBin, SmartRule};
 pub use sync::{timecode_to_secs, SyncMethod, SyncedAudio};
 pub use media_marker::{MediaMarker, MediaMarkerKind};
 pub use span::ClipSpan;
+
+pub mod vector_path;

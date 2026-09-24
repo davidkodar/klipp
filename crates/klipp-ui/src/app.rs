@@ -16688,6 +16688,37 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleVectorPath { clip_id, object_id, path } => {
+                if let Err(e) = path.validate() {
+                    self.state.toast.show(e);
+                    return true;
+                }
+                let old = self.snapshot_title(*clip_id);
+                let mut changed = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if track.locked { continue; }
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(td) = &mut clip.kind {
+                            if let Some(object) = td.object_mut(klipp_timeline::TitleObjectId(*object_id)) {
+                                if object.locked { continue; }
+                                if let klipp_timeline::TitleObjectContent::Shape(shape) = &mut object.content {
+                                    shape.kind = klipp_timeline::ShapeKind::Path(path.clone());
+                                    shape.fit = None;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if changed {
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Edit Vector Path", old); }
+                    self.render_title_to_viewer(*clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::SetTitleShapeFill { clip_id, object_id, color } => {
                 let old = self.snapshot_title(*clip_id);
                 let target = klipp_timeline::TitleObjectId(*object_id);

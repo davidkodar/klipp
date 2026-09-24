@@ -1,3 +1,4 @@
+mod vector_path;
 pub mod letter_picker;
 pub mod tracker_picker;
 pub mod video_tab;
@@ -3194,7 +3195,11 @@ fn show_title_shape_editor(
     shape: &klipp_timeline::Shape,
     title: &klipp_timeline::TitleData,
     cmds: &mut Vec<AppCommand>,
+    time: f64,
+    tolerance: f64,
 ) {
+    if let klipp_timeline::ShapeKind::Path(path)=&shape.kind {vector_path::show(ui,clip_id,object_id,path,time,tolerance,cmds);return;}
+    if ui.button("Start editable path").clicked() {cmds.push(AppCommand::SetTitleVectorPath{clip_id,object_id:object_id.0,path:klipp_timeline::VectorPath::default()});}
     ui.label(egui::RichText::new("Shape").strong().size(12.0));
     ui.add_space(6.0);
 
@@ -3299,6 +3304,7 @@ fn show_title_shape_editor(
     // Rectangle-specific: corner radius. Future shape kinds add
     // their own per-kind controls in the matching arm.
     match shape.kind {
+        klipp_timeline::ShapeKind::Path(_) => {}
         klipp_timeline::ShapeKind::Rectangle { corner_radius } => {
             let mut r = corner_radius;
             if ui.add(egui::Slider::new(&mut r, 0.0..=200.0)
@@ -4199,7 +4205,7 @@ fn show_title_editor(
     let kind_ref = target_oid.and_then(|oid| td.object(oid)).map(|o| &o.content);
     if let Some(klipp_timeline::TitleObjectContent::Shape(shape)) = kind_ref {
         if let Some(oid) = target_oid {
-            show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds);
+            show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds, (state.playhead.to_secs_f64()-clip.timeline_in.to_secs_f64()).max(0.0), 0.5/state.sequence().fps.as_f64());
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
         }

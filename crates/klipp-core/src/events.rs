@@ -1920,6 +1920,7 @@ pub enum AppCommand {
     /// Per-shape style mutations. Each command targets one Shape
     /// object inside a Title clip, identified by its object id.
     /// Used by the Inspector when a Shape layer is selected.
+    SetTitleVectorPath { clip_id: ClipId, object_id: u32, path: crate::vector_path::VectorPath },
     SetTitleShapeFill { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]> },
     SetTitleShapeStroke { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]>, width: f32 },
     SetTitleShapeCornerRadius { clip_id: ClipId, object_id: u32, radius: f32 },
