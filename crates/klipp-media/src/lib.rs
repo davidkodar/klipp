@@ -35,6 +35,7 @@ pub mod exif_read;
 pub mod field;
 pub mod card;
 pub mod smart_bin;
+pub mod relink;
 pub mod sidecar;
 mod item;
 mod pool;
