@@ -1050,6 +1050,11 @@ impl Preferences {
 
     /// Add a project to the recent projects list (most recent first, max 20).
     pub fn add_recent_project(&mut self, project: RecentProject) {
+        // Restoring an auto-save opens its folder; the project it belongs
+        // to is what goes in the list.
+        if crate::app::is_autosave_path(&project.path) {
+            return;
+        }
         self.general.recent_projects.retain(|p| p.path != project.path);
         self.general.recent_projects.insert(0, project);
         self.general.recent_projects.truncate(20);
@@ -1907,6 +1912,31 @@ fn default_media_list_columns() -> Vec<klipp_media::Field> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_autosave_never_enters_the_recent_list() {
+        let mut prefs = Preferences::default();
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/X_autosave.klipp")));
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/X.klipp")));
+        let paths: Vec<_> = prefs.general.recent_projects.iter().map(|r| r.path.clone()).collect();
+        assert_eq!(paths, vec![PathBuf::from("/p/X.klipp")]);
+    }
+
+    #[test]
+    fn a_newer_autosave_is_found_and_an_older_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("klipp-newer-autosave-{}", std::process::id()));
+        let project = dir.join("X.klipp");
+        let autosave = crate::app::autosave_path_for(&project);
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(!crate::app::has_newer_autosave(&project), "no auto-save at all");
+        std::fs::create_dir_all(&autosave).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&project).unwrap().set_modified(old).unwrap();
+        assert!(crate::app::has_newer_autosave(&project));
+        std::fs::File::open(&autosave).unwrap().set_modified(old - std::time::Duration::from_secs(60)).unwrap();
+        assert!(!crate::app::has_newer_autosave(&project));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Helper: serialize to JSON string and deserialize back.
     fn round_trip(prefs: &Preferences) -> Preferences {

@@ -94,6 +94,10 @@ pub struct LaunchScreen {
     logo_texture: Option<egui::TextureHandle>,
     sort_mode: SortMode,
     view_mode: ViewMode,
+    /// Projects with an auto-save newer than their last save, re-read
+    /// from disk every few seconds rather than every repaint.
+    newer_autosave: HashMap<PathBuf, bool>,
+    autosave_checked_at: Option<std::time::Instant>,
 }
 
 impl LaunchScreen {
@@ -119,6 +123,12 @@ impl LaunchScreen {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         self.ensure_logo_texture(ctx);
+        if self.autosave_checked_at.is_none_or(|t| t.elapsed().as_secs() >= 3) {
+            self.newer_autosave = recent.iter()
+                .map(|rp| (rp.path.clone(), crate::app::has_newer_autosave(&rp.path)))
+                .collect();
+            self.autosave_checked_at = Some(std::time::Instant::now());
+        }
         let full_rect = ui.max_rect();
 
         // Fill background
@@ -1243,6 +1253,25 @@ impl LaunchScreen {
         // Missing media warning badge (top-right of thumbnail)
         if rp.missing_media == Some(true) {
             draw_missing_media_badge(ui, egui::pos2(thumb_rect.max.x, thumb_rect.min.y), theme.marker_warning);
+        }
+
+        // Unsaved work: an auto-save newer than the project. Without this
+        // the card shows the last save ("Empty project" when there never
+        // was one) and nothing says the work is there to restore.
+        if self.newer_autosave.get(&rp.path).copied().unwrap_or(false) {
+            let g = layout_truncated(
+                ui.painter(),
+                "Unsaved work recovered \u{2014} open to restore",
+                egui::FontId::proportional(10.0),
+                theme.bg_void,
+                thumb_rect.width() - 20.0,
+            );
+            let pill = egui::Rect::from_min_size(
+                egui::pos2(thumb_rect.min.x + 6.0, thumb_rect.max.y - g.size().y - 12.0),
+                g.size() + egui::vec2(8.0, 6.0),
+            );
+            ui.painter().rect_filled(pill, 4.0, theme.accent);
+            ui.painter().galley(pill.min + egui::vec2(4.0, 3.0), g, theme.bg_void);
         }
 
         // ── Info area (bottom ~40%) ──
