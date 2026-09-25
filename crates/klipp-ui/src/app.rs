@@ -526,6 +526,7 @@ pub struct KlippApp {
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
+    relink_panel: crate::panels::relink::RelinkPanel,
     /// "Sequence Settings…" modal — `Some` when open. Carries the per-
     /// invocation editor state (the targeted sequence index + its current
     /// width/height/fps being edited). `None` when closed.
@@ -884,6 +885,7 @@ impl KlippApp {
             last_window_title: String::new(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
+            relink_panel: Default::default(),
             sequence_settings_dialog: None,
             framerate_mismatch_dialog: None,
             suppress_fps_prompt: false,
@@ -12520,38 +12522,11 @@ impl KlippApp {
                     true
                 }
                 AppCommand::RelinkAllFromDirectory { directory } => {
-                    let offline: Vec<_> = self.state.media_pool.all()
-                        .filter(|m| m.offline)
-                        .map(|m| (m.id, m.filename.clone()))
-                        .collect();
-
-                    let mut file_map = std::collections::HashMap::new();
-                    fn scan_dir(dir: &std::path::Path, map: &mut std::collections::HashMap<String, PathBuf>, depth: u32) {
-                        if depth > 5 { return; }
-                        if let Ok(entries) = std::fs::read_dir(dir) {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if path.is_dir() {
-                                    scan_dir(&path, map, depth + 1);
-                                } else if let Some(name) = path.file_name() {
-                                    map.insert(name.to_string_lossy().to_string(), path);
-                                }
-                            }
-                        }
-                    }
-                    scan_dir(directory, &mut file_map, 0);
-
-                    let mut relinked = 0;
-                    for (media_id, filename) in &offline {
-                        if let Some(new_path) = file_map.get(filename) {
-                            if self.state.media_pool.get(media_id).is_some() {
-                                self.relink_media(*media_id, new_path);
-                                relinked += 1;
-                            }
-                        }
-                    }
-                    self.state.toast.show(format!("Relinked {relinked}/{} offline items", offline.len()));
-                    self.state.dirty = true;
+                    // Searched and scored off the UI thread; the relink
+                    // dialog shows what it found, and relinks only what
+                    // the user keeps ticked.
+                    self.relink_panel.request_scan(directory.clone());
+                    self.state.show_relink_dialog = true;
                     true
                 }
                 AppCommand::ShowRelinkDialog => {
@@ -28103,76 +28078,11 @@ impl eframe::App for KlippApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    let offline_items: Vec<_> = self.state.media_pool.all()
-                        .filter(|m| m.offline)
-                        .map(|m| (m.id, m.filename.clone(), m.path.clone()))
-                        .collect();
-
-                    if offline_items.is_empty() {
-                        ui.label("All media is online.");
-                        ui.add_space(8.0);
-                        if ui.button("Close").clicked() {
-                            self.state.show_relink_dialog = false;
-                        }
-                    } else {
-                        ui.label(format!("{} offline item(s)", offline_items.len()));
-                        ui.add_space(4.0);
-
-                        // Action buttons
-                        ui.horizontal(|ui| {
-                            if ui.button("Search Directory...").clicked() {
-                                crate::file_dialog::spawn(move || {
-                                    rfd::FileDialog::new()
-                                        .set_title("Select folder to search for media")
-                                        .pick_folder()
-                                        .map(|dir| vec![AppCommand::RelinkAllFromDirectory { directory: dir }])
-                                        .unwrap_or_default()
-                                });
-                            }
-                            if ui.button("Skip All").clicked() {
-                                self.state.show_relink_dialog = false;
-                            }
-                        });
-
-                        ui.separator();
-
-                        // Scrollable list of offline items
-                        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                            for (id, filename, path) in &offline_items {
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        self.theme.marker_error,
-                                        "OFFLINE",
-                                    );
-                                    ui.label(filename);
-                                    ui.label(
-                                        egui::RichText::new(path.to_string_lossy())
-                                            .size(10.0)
-                                            .color(self.theme.text_dim),
-                                    );
-                                    if ui.small_button("Browse...").clicked() {
-                                        // Filter the file picker to the original extension when
-                                        // we have one — reduces accidental mis-relinks.
-                                        let ext = path
-                                            .extension()
-                                            .and_then(|e| e.to_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        let media_id = *id;
-                                        let title = format!("Locate {}", filename);
-                                        crate::file_dialog::spawn(move || {
-                                            let mut dialog = rfd::FileDialog::new().set_title(title);
-                                            if !ext.is_empty() {
-                                                dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
-                                            }
-                                            dialog.pick_file()
-                                                .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
-                                                .unwrap_or_default()
-                                        });
-                                    }
-                                });
-                            }
-                        });
+                    let relinks = self.relink_panel.show(ui, &self.state, &self.theme);
+                    all_cmds.extend(relinks);
+                    ui.add_space(4.0);
+                    if ui.button("Close").clicked() {
+                        self.state.show_relink_dialog = false;
                     }
                 });
             if !open {
@@ -34753,18 +34663,7 @@ fn check_system_audio_muted() -> bool {
 }
 
 fn compute_media_fingerprint(path: &Path) -> Option<u64> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; 65536];
-    let n = f.read(&mut buf).ok()?;
-    buf.truncate(n);
-    let file_size = std::fs::metadata(path).ok()?.len();
-    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
-    for &byte in buf.iter().chain(file_size.to_le_bytes().iter()) {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
-    }
-    Some(hash)
+    klipp_media::relink::fingerprint(path)
 }
 
 /// Detect if a set of paths forms a numbered image sequence.
