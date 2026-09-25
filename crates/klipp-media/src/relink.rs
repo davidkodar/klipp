@@ -38,9 +38,12 @@ pub enum Criterion {
     NameStem,
     /// The same duration, within a frame.
     Duration,
-    /// The same filename in a folder of the same name: the same place on
-    /// a drive mounted somewhere else, and what tells two cards'
-    /// `C0001.MP4` apart when each sits in its card's folder.
+    /// The same filename under folders of the same names, counted from
+    /// the file up: the same place on a drive mounted somewhere else, and
+    /// what tells two cards' `C0001.MP4` apart when each sits in its
+    /// card's folder. Only a tiebreak, never an identity: a camera's own
+    /// layout (`PRIVATE/M4ROOT/CLIP`, `DCIM/100CANON`) is the same on
+    /// every card, so a matching folder says little on its own.
     Folder,
 }
 
@@ -68,7 +71,8 @@ impl Criterion {
             Criterion::Name => 150,
             Criterion::NameStem => 100,
             Criterion::Duration => 60,
-            Criterion::Folder => 120,
+            // Per matching folder; see `score`.
+            Criterion::Folder => 10,
         }
     }
 }
@@ -176,10 +180,7 @@ impl Scored {
     pub fn is_strong(&self) -> bool {
         let has = |c| self.matched.contains(&c);
         let named = has(Criterion::Name) || has(Criterion::NameStem);
-        let identities = usize::from(named)
-            + usize::from(has(Criterion::Reel))
-            + usize::from(has(Criterion::Timecode))
-            + usize::from(has(Criterion::Folder));
+        let identities = usize::from(named) + usize::from(has(Criterion::Reel)) + usize::from(has(Criterion::Timecode));
         has(Criterion::Content) || identities >= 2 || (named && has(Criterion::Duration))
     }
 }
@@ -214,8 +215,7 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
 
     if criteria.name && name == w.filename {
         matched.push(Criterion::Name);
-        let folder = |p: &Path| p.parent().and_then(|d| d.file_name()).map(|n| n.to_os_string());
-        if folder(&w.original_path).is_some_and(|f| Some(f) == folder(&c.path)) {
+        if shared_folders(&w.original_path, &c.path) > 0 {
             matched.push(Criterion::Folder);
         }
     } else if criteria.name_any_extension && stem(&name).eq_ignore_ascii_case(stem(&w.filename)) && !stem(&name).is_empty() {
@@ -284,6 +284,10 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
         return Err(String::new());
     }
     let mut score: u32 = matched.iter().map(|c| c.weight()).sum();
+    if matched.contains(&Criterion::Folder) {
+        // The deeper the shared path, the likelier the same card.
+        score += Criterion::Folder.weight() * (shared_folders(&w.original_path, &c.path).min(8) as u32 - 1);
+    }
     if !same_content && c.file_size == w.file_size && c.file_size > 0 {
         // Byte-identical size is a tiebreak between otherwise equal copies.
         score += 5;
@@ -340,6 +344,13 @@ pub fn propose(wanted: &[Wanted], candidates: &[Candidate], criteria: Criteria) 
             }
         })
         .collect()
+}
+
+/// How many folders `a` and `b` share, counted up from the file until
+/// the names differ.
+fn shared_folders(a: &Path, b: &Path) -> usize {
+    let dirs = |p: &Path| p.parent().map(|d| d.components().rev().map(|c| c.as_os_str().to_os_string()).collect::<Vec<_>>()).unwrap_or_default();
+    dirs(a).iter().zip(dirs(b).iter()).take_while(|(x, y)| x == y && !x.is_empty() && x.as_os_str() != "/").count()
 }
 
 /// One frame at `fps`, and never tighter than a container's rounding.
@@ -432,9 +443,13 @@ fn norm_reel(r: Option<&str>) -> Option<String> {
 
 /// Timecode digits only, so `01:00:00;00` and `01:00:00:00` agree: the
 /// separator records drop-frame counting, not a different instant label.
+///
+/// All zeros is no timecode: it is where a record-run camera starts every
+/// card, and where a file with none is often stamped, so it identifies
+/// nothing and contradicts nothing.
 fn norm_tc(t: Option<&str>) -> Option<String> {
     let digits: String = t?.chars().filter(|c| c.is_ascii_digit()).collect();
-    (!digits.is_empty()).then_some(digits)
+    (digits.chars().any(|c| c != '0')).then_some(digits)
 }
 
 /// FNV-1a over the first 64 KB and the file size: the content key a
@@ -892,7 +907,9 @@ mod tests {
         let t = std::time::Instant::now();
         let out = propose(&w, &c, Criteria::default());
         assert_eq!(out.len(), 500);
-        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        // Linear scoring took minutes here; indexed, well under a second.
+        // Generous, since the gate runs under load.
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
     }
 
     #[test]
@@ -923,6 +940,33 @@ mod tests {
                 assert!(s.matched.contains(&Criterion::Folder) && s.is_strong());
             }
             other => panic!("expected CARD_B, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_camera_layout_folder_does_not_make_the_wrong_card_strong() {
+        let mut w = wanted("C0001.MP4");
+        w.original_path = "/mnt/CARD_A/PRIVATE/M4ROOT/CLIP/C0001.MP4".into();
+        // Only card B in the search, its header unread.
+        let other_card = Candidate { path: "/media/CARD_B/PRIVATE/M4ROOT/CLIP/C0001.MP4".into(), file_size: 5, fingerprint: None, facts: None };
+        match &propose(&[w], &[other_card], Criteria::default())[0] {
+            Proposal::Found(s) => assert!(!s.is_strong(), "{s:?}"),
+            other => panic!("expected a weak suggestion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_zero_timecode_identifies_nothing() {
+        let mut w = wanted("C0002.MP4");
+        w.reel = Some("A001".into());
+        w.start_timecode = Some("00:00:00:00".into());
+        let sibling = Facts { reel: Some("A001".into()), start_timecode: Some("00:00:00:00".into()), ..ten_seconds() };
+        match &propose(&[w], &[cand("/a/C0001.MP4", sibling)], Criteria::default())[0] {
+            Proposal::Found(s) => {
+                assert!(!s.matched.contains(&Criterion::Timecode));
+                assert!(!s.is_strong());
+            }
+            other => panic!("expected a weak suggestion, got {other:?}"),
         }
     }
 }

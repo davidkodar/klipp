@@ -28,6 +28,8 @@ pub struct RelinkPanel {
     requested: Option<PathBuf>,
     scan: Option<Running>,
     plan: Option<Plan>,
+    /// A search or re-score that ended without an answer.
+    failure: Option<String>,
 }
 
 struct Running {
@@ -35,6 +37,9 @@ struct Running {
     wanted: Vec<Wanted>,
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
+    /// The criteria the scan runs with; a toggle while it runs is
+    /// applied when it finishes.
+    criteria: Criteria,
     rx: mpsc::Receiver<(ScanResult, Vec<Proposal>)>,
 }
 
@@ -90,7 +95,8 @@ impl RelinkPanel {
             return;
         }
         self.plan = None;
-        self.scan = Some(Running { dir, wanted, cancel, progress, rx });
+        self.failure = None;
+        self.scan = Some(Running { dir, wanted, cancel, progress, criteria, rx });
     }
 
     /// Draw the dialog's contents. Returns the relinks the user applied.
@@ -107,7 +113,10 @@ impl RelinkPanel {
         if let Some(dir) = self.requested.take() {
             self.start_scan(dir, state, ui.ctx());
         }
-        self.collect_scan();
+        self.collect_scan(ui.ctx());
+        if let Some(why) = &self.failure {
+            ui.label(egui::RichText::new(why).color(theme.marker_error));
+        }
 
         let offline = state.media_pool.all().filter(|m| m.offline).count();
         if offline == 0 && self.plan.is_none() && self.scan.is_none() {
@@ -129,6 +138,9 @@ impl RelinkPanel {
             ui.checkbox(&mut c.name_any_extension, "Name, any extension")
                 .on_hover_text("A transcode: A001C001.MXF found as A001C001.mov");
             ui.checkbox(&mut c.duration, "Duration").on_hover_text("Within one frame");
+            ui.label(egui::RichText::new("\u{24D8}").color(theme.text_dim)).on_hover_text(
+                "The folders a file sits in, matched from the file upward, break ties between files of the same name — two cards' C0001.MP4 — but never make a match on their own.",
+            );
             if *c != before {
                 if let Some(plan) = &mut self.plan {
                     plan.repropose(*c, ui.ctx());
@@ -193,20 +205,34 @@ impl RelinkPanel {
         cmds
     }
 
-    fn collect_scan(&mut self) {
+    fn collect_scan(&mut self, ctx: &egui::Context) {
         let Some(scan) = &self.scan else { return };
-        let Ok((found, proposals)) = scan.rx.try_recv() else { return };
+        let (found, proposals) = match scan.rx.try_recv() {
+            Ok(done) => done,
+            Err(mpsc::TryRecvError::Empty) => return,
+            // The worker died (a panic): say so rather than spin forever.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.scan = None;
+                self.failure = Some("The search stopped unexpectedly; see the log, and try Search Folder again.".into());
+                return;
+            }
+        };
         let scan = self.scan.take().expect("checked above");
         let rows = proposals.iter().map(Row::for_proposal).collect();
-        self.plan = Some(Plan {
+        let mut plan = Plan {
             dir: scan.dir,
             wanted: Arc::new(scan.wanted),
             found: Arc::new(found),
-            scanned_with: self.criteria,
+            scanned_with: scan.criteria,
             proposals,
             rows,
             rescoring: None,
-        });
+        };
+        // Criteria changed while the search ran: score for what is ticked now.
+        if self.criteria != scan.criteria {
+            plan.repropose(self.criteria, ctx);
+        }
+        self.plan = Some(plan);
     }
 }
 
@@ -235,7 +261,16 @@ impl Plan {
 
     fn collect_rescore(&mut self, current: Criteria) {
         let Some(rx) = &self.rescoring else { return };
-        let Ok((criteria, proposals)) = rx.try_recv() else { return };
+        let (criteria, proposals) = match rx.try_recv() {
+            Ok(done) => done,
+            Err(mpsc::TryRecvError::Empty) => return,
+            // The re-score died: keep the last proposals rather than spin.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                tracing::error!("relink: re-scoring ended without an answer");
+                self.rescoring = None;
+                return;
+            }
+        };
         self.rescoring = None;
         // A later toggle has its own re-score coming.
         if criteria == current {
