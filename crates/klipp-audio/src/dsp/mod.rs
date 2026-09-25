@@ -11,6 +11,7 @@ pub mod delay;
 pub mod eq;
 pub mod gate;
 pub mod high_pass;
+pub mod denoiser;
 pub mod hum_removal;
 pub mod limiter;
 pub mod noise_reduction;
@@ -482,6 +483,7 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         "limiter" => Some(Box::new(limiter::Limiter::new(sample_rate))),
         "gate" => Some(Box::new(gate::NoiseGate::new(sample_rate))),
         "high_pass" => Some(Box::new(high_pass::HighPass::new(sample_rate))),
+        "denoiser" => Some(Box::new(denoiser::Denoiser::new(sample_rate))),
         "reverb" => Some(Box::new(reverb::Reverb::new(sample_rate))),
         "delay" => Some(Box::new(delay::Delay::new(sample_rate))),
         "deesser" => Some(Box::new(deesser::DeEsser::new(sample_rate))),
@@ -504,6 +506,7 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("limiter", "Limiter"),
         ("gate", "Noise Gate"),
         ("high_pass", "High-pass Filter"),
+        ("denoiser", "Broadband Denoiser"),
         ("reverb", "Reverb"),
         ("delay", "Delay"),
         ("deesser", "De-Esser"),

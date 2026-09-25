@@ -677,6 +677,14 @@ impl EffectRegistry {
                 grouping: "Restoration".into(),
             },
             EffectEntry {
+                name: "Broadband Denoiser".into(),
+                category: EffectCategory::AudioRestoration,
+                source: EffectSource::Audio("denoiser".into()),
+                source_label: "Built-in",
+                description: "Learn and reduce steady background noise".into(),
+                grouping: "Restoration".into(),
+            },
+            EffectEntry {
                 name: "De-Esser".into(),
                 category: EffectCategory::AudioRestoration,
                 source: EffectSource::Audio("deesser".into()),
