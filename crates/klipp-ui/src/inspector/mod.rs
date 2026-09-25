@@ -231,7 +231,18 @@ impl NewInspectorPanel {
         }
 
         // ── Tab content ──
-        egui::ScrollArea::vertical().id_salt("inspector_body_scroll").show(ui, |ui| {
+        // Keep the content rail tied to the panel's current width.  The
+        // vertical scroll area used to auto-size itself from the widest
+        // child, so a compact Inspector could grow an invisible horizontal
+        // extent and clip the controls at the right edge.  A fixed-width
+        // content rail lets rows wrap instead of asking users to resize the
+        // panel just to reach a field.
+        egui::ScrollArea::vertical()
+            .id_salt("inspector_body_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+            let content_width = ui.available_width();
+            ui.set_width(content_width);
             ui.add_space(10.0);
             match active_tab {
                 InspectorTab::Video => {
