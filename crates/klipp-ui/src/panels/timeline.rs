@@ -2912,24 +2912,14 @@ impl TimelinePanel {
             state.drag_drop.end();
             let imported_count = compatible.len();
             let skipped = paths.len() - imported_count;
-            for path in compatible {
-                let media_id = klipp_core::MediaId::new();
-                cmds.push(AppCommand::LoadMediaFile {
-                    path,
-                    media_id,
-                });
-                cmds.push(AppCommand::AppendClipToTrack {
-                    media_id,
-                    track_index: track_idx,
-                });
-            }
+            cmds.extend(files_drop_commands(compatible, track_idx));
             if skipped > 0 {
                 state.toast.show(format!(
-                    "Imported {} file(s) — skipped {} incompatible",
+                    "Adding {} file(s) to the timeline — skipped {} incompatible",
                     imported_count, skipped
                 ));
             } else {
-                state.toast.show(format!("Imported {} file(s) to timeline", imported_count));
+                state.toast.show(format!("Adding {} file(s) to the timeline", imported_count));
             }
         }
     }
@@ -15911,6 +15901,48 @@ fn marker_tooltip_text(marker: &klipp_timeline::Marker, duration_secs: Option<f6
         lines.push(marker.comment.clone());
     }
     lines.join("\n")
+}
+
+/// What a drop of files from the Files browser onto track `track_idx`
+/// asks for. The clip can only be placed once its media has loaded,
+/// and loading is asynchronous: appending in the same batch as the load
+/// found nothing in the pool and placed nothing. So each file is
+/// imported with the track as its destination, and placed when it
+/// arrives.
+fn files_drop_commands(paths: Vec<std::path::PathBuf>, track_idx: usize) -> Vec<AppCommand> {
+    paths
+        .into_iter()
+        .map(|path| AppCommand::ImportMediaTo {
+            path,
+            drop: klipp_core::events::ClipDrop::AppendToTrack { track_index: track_idx },
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod files_drop_tests {
+    use super::*;
+
+    /// Regression for #315: the drop used to queue the append beside
+    /// the load, and the append ran before the media was in the pool.
+    #[test]
+    fn a_files_drop_imports_with_the_track_as_destination() {
+        let cmds = files_drop_commands(
+            vec![std::path::PathBuf::from("/a.mov"), std::path::PathBuf::from("/b.mov")],
+            2,
+        );
+        assert_eq!(cmds.len(), 2);
+        for c in &cmds {
+            assert!(
+                matches!(c, AppCommand::ImportMediaTo { drop: klipp_core::events::ClipDrop::AppendToTrack { track_index: 2 }, .. }),
+                "expected an import that places on track 2, got {c:?}",
+            );
+        }
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AppCommand::AppendClipToTrack { .. } | AppCommand::LoadMediaFile { .. })),
+            "nothing may try to place the clip before its media has loaded",
+        );
+    }
 }
 
 #[cfg(test)]

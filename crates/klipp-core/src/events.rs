@@ -832,6 +832,9 @@ pub enum ClipDrop {
     AtPlayhead,
     /// Append at the end of the existing V1/A1 stack (the double-click default).
     EndOfTimeline,
+    /// Append at the end of one track: a file dropped from the Files
+    /// browser onto that track's row.
+    AppendToTrack { track_index: usize },
 }
 
 

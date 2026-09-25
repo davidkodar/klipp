@@ -11862,6 +11862,9 @@ impl KlippApp {
                         .to_string_lossy()
                 ));
                 self.state.source_media_id = Some(existing_id);
+                if let Some(place) = retarget_pending_drop(&mut self.state.pending_media_drop, *media_id, existing_id) {
+                    let _ = self.cmd_tx.send(place);
+                }
                 return true;
             }
             if let Some(fp) = compute_media_fingerprint(path) {
@@ -11874,6 +11877,9 @@ impl KlippApp {
                         existing_name,
                     ));
                     self.state.source_media_id = Some(existing_id);
+                    if let Some(place) = retarget_pending_drop(&mut self.state.pending_media_drop, *media_id, existing_id) {
+                        let _ = self.cmd_tx.send(place);
+                    }
                     return true;
                 }
             }
@@ -11930,6 +11936,12 @@ impl KlippApp {
                         }
                         klipp_core::events::ClipDrop::AtPlayhead => {
                             self.place_media_at_playhead(*media_id);
+                        }
+                        klipp_core::events::ClipDrop::AppendToTrack { track_index } => {
+                            let _ = self.cmd_tx.send(AppCommand::AppendClipToTrack {
+                                media_id: *media_id,
+                                track_index: *track_index,
+                            });
                         }
                     }
                     true
@@ -39930,6 +39942,44 @@ fn title_seek_on_select(
         return None;
     }
     title_rest_time(clip, fps_rate)
+}
+
+/// A file that turns out to be in the pool already is not imported
+/// again, but a destination it was given (a drop on a track, "add at
+/// playhead") still holds: the item already there is placed instead.
+fn retarget_pending_drop(
+    pending: &mut std::collections::HashMap<klipp_core::MediaId, klipp_core::events::ClipDrop>,
+    requested: klipp_core::MediaId,
+    existing: klipp_core::MediaId,
+) -> Option<AppCommand> {
+    let drop = pending.remove(&requested)?;
+    Some(AppCommand::PlaceMedia { media_id: existing, drop })
+}
+
+#[cfg(test)]
+mod retarget_drop_tests {
+    use super::{retarget_pending_drop, AppCommand};
+    use klipp_core::events::ClipDrop;
+    use klipp_core::MediaId;
+
+    #[test]
+    fn a_duplicate_with_a_destination_places_the_existing_item() {
+        let (requested, existing) = (MediaId::new(), MediaId::new());
+        let mut pending = std::collections::HashMap::new();
+        pending.insert(requested, ClipDrop::AppendToTrack { track_index: 0 });
+        let cmd = retarget_pending_drop(&mut pending, requested, existing);
+        assert!(matches!(
+            cmd,
+            Some(AppCommand::PlaceMedia { media_id, drop: ClipDrop::AppendToTrack { track_index: 0 } }) if media_id == existing
+        ));
+        assert!(pending.is_empty(), "the stale destination was left behind");
+    }
+
+    #[test]
+    fn a_duplicate_with_no_destination_places_nothing() {
+        let mut pending = std::collections::HashMap::new();
+        assert!(retarget_pending_drop(&mut pending, MediaId::new(), MediaId::new()).is_none());
+    }
 }
 
 /// Where the playhead goes when a clip is selected on the Colour page:
