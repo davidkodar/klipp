@@ -101,6 +101,15 @@ pub(super) fn reduced_for_quality(size: (u32, u32), divisor: u8) -> (u32, u32) {
     ((rw & !1).max(2), (rh & !1).max(2))
 }
 
+/// Playback Quality's divisor for a frame rendered in `state`: the
+/// reduction while playing, full size otherwise. A parked frame is for
+/// judging and renders full size, so everything made ahead for it — the
+/// render cache's scan, the titles' warm — has to be made at that size
+/// too, or a parked scrub finds nothing it can use.
+pub(super) fn quality_divisor_for(state: PlaybackState, divisor: u8) -> u8 {
+    if state == PlaybackState::Playing { divisor } else { 1 }
+}
+
 /// The fewest lines Playback Quality reduces the viewer to.
 pub(super) const MIN_REDUCED_HEIGHT: u32 = 180;
 
@@ -527,11 +536,7 @@ impl PlaybackEngine {
         };
         // Playback Quality applies while playing: a parked frame is for
         // judging, and renders full size.
-        let (w, h) = if self.state == PlaybackState::Playing {
-            reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor())
-        } else {
-            (w, h)
-        };
+        let (w, h) = reduced_for_quality((w, h), quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()));
         if w == 0 || h == 0 {
             return false;
         }
@@ -1049,10 +1054,11 @@ impl PlaybackEngine {
             klipp_compose::frame_snapshot(&seq, self.playhead)
         };
         let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
-        // Ahead of playback, so at the size playback will ask for.
+        // At the size the viewer shows frames in now: the scan runs while
+        // parked, and a parked frame is full size whatever the quality.
         let (w, h) = reduced_for_quality(
             viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height)),
-            crate::video_decoder::playback_quality_divisor(),
+            quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()),
         );
         let rendered = match self.render_cache_key(&seq, primary, (w, h)) {
             // Already cached at this size, in memory or on disk: nothing to
@@ -1131,6 +1137,11 @@ mod playback_quality_tests {
         assert_eq!(reduced_for_quality((1920, 1080), 4), (480, 270));
         assert_eq!(reduced_for_quality((854, 480), 4), (320, 180));
         assert_eq!(reduced_for_quality((320, 180), 2), (320, 180));
+        // Parked, whatever the quality, frames are full size; the
+        // reduction is for playing.
+        assert_eq!(quality_divisor_for(PlaybackState::Playing, 2), 2);
+        assert_eq!(quality_divisor_for(PlaybackState::Paused, 4), 1);
+        assert_eq!(quality_divisor_for(PlaybackState::Stopped, 2), 1);
         // Odd shapes stay even, for the encoder-shaped buffers downstream.
         let (w, h) = reduced_for_quality((2048, 858), 2);
         assert!(w % 2 == 0 && h % 2 == 0 && (w as f64 / h as f64 - 2048.0 / 858.0).abs() < 0.01, "{w}x{h}");
