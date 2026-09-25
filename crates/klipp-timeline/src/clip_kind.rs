@@ -213,6 +213,10 @@ pub struct ObjectTransform {
     pub center_x_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub center_y_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub size_x_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub size_y_keyframes: Vec<klipp_core::Keyframe>,
     /// Normalised width / height of the bounding box (1.0 = full
     /// frame extent). `width = 1.0, height = 0.2` is a full-frame-
     /// width × 20%-frame-height bar — a typical lower-third bar.
@@ -220,11 +224,17 @@ pub struct ObjectTransform {
     /// Rotation in degrees, positive = clockwise.
     #[serde(default)]
     pub rotation: f32,
+    #[serde(default)]
+    pub rotation_keyframes: Vec<klipp_core::Keyframe>,
     /// Anchor point inside the bounding box (normalised 0..1 within
     /// the box). 0.5,0.5 = centre (default). Drives rotation pivot
     /// and resize behaviour.
     #[serde(default = "default_anchor_norm")]
     pub anchor_norm: TitlePosition,
+    #[serde(default)]
+    pub anchor_x_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub anchor_y_keyframes: Vec<klipp_core::Keyframe>,
 }
 
 impl ObjectTransform {
@@ -253,6 +263,57 @@ impl ObjectTransform {
             )
         };
         TitlePosition { x, y }
+    }
+
+    /// Returns the complete transform sampled at a clip-local time.
+    pub fn evaluated_at(&self, time_secs: f64) -> Self {
+        let mut out = self.clone();
+        out.center = self.evaluated_center(time_secs);
+        out.size.x = self.evaluated_property(klipp_core::TitleTransformProperty::Width, time_secs);
+        out.size.y = self.evaluated_property(klipp_core::TitleTransformProperty::Height, time_secs);
+        out.rotation = self.evaluated_property(klipp_core::TitleTransformProperty::Rotation, time_secs);
+        out.anchor_norm.x = self.evaluated_property(klipp_core::TitleTransformProperty::AnchorX, time_secs);
+        out.anchor_norm.y = self.evaluated_property(klipp_core::TitleTransformProperty::AnchorY, time_secs);
+        out
+    }
+
+    pub fn transform_keyframes_mut(&mut self, property: klipp_core::TitleTransformProperty) -> &mut Vec<klipp_core::Keyframe> {
+        match property {
+            klipp_core::TitleTransformProperty::Width => &mut self.size_x_keyframes,
+            klipp_core::TitleTransformProperty::Height => &mut self.size_y_keyframes,
+            klipp_core::TitleTransformProperty::Rotation => &mut self.rotation_keyframes,
+            klipp_core::TitleTransformProperty::AnchorX => &mut self.anchor_x_keyframes,
+            klipp_core::TitleTransformProperty::AnchorY => &mut self.anchor_y_keyframes,
+        }
+    }
+
+    pub fn transform_keyframes_ref(&self, property: klipp_core::TitleTransformProperty) -> &Vec<klipp_core::Keyframe> {
+        match property {
+            klipp_core::TitleTransformProperty::Width => &self.size_x_keyframes,
+            klipp_core::TitleTransformProperty::Height => &self.size_y_keyframes,
+            klipp_core::TitleTransformProperty::Rotation => &self.rotation_keyframes,
+            klipp_core::TitleTransformProperty::AnchorX => &self.anchor_x_keyframes,
+            klipp_core::TitleTransformProperty::AnchorY => &self.anchor_y_keyframes,
+        }
+    }
+
+    pub fn evaluated_property(&self, property: klipp_core::TitleTransformProperty, time_secs: f64) -> f32 {
+        let (keys, fallback) = match property {
+            klipp_core::TitleTransformProperty::Width => (&self.size_x_keyframes, self.size.x),
+            klipp_core::TitleTransformProperty::Height => (&self.size_y_keyframes, self.size.y),
+            klipp_core::TitleTransformProperty::Rotation => (&self.rotation_keyframes, self.rotation),
+            klipp_core::TitleTransformProperty::AnchorX => (&self.anchor_x_keyframes, self.anchor_norm.x),
+            klipp_core::TitleTransformProperty::AnchorY => (&self.anchor_y_keyframes, self.anchor_norm.y),
+        };
+        if keys.is_empty() { fallback } else { klipp_core::keyframe::evaluate(keys, time_secs, fallback) }
+    }
+
+    pub fn upsert_transform_keyframe(&mut self, property: klipp_core::TitleTransformProperty, time_secs: f64, value: f32) {
+        klipp_core::keyframe::upsert_keyframe(self.transform_keyframes_mut(property), time_secs, value);
+    }
+
+    pub fn remove_transform_keyframe_at(&mut self, property: klipp_core::TitleTransformProperty, time_secs: f64) {
+        klipp_core::keyframe::remove_keyframe_at(self.transform_keyframes_mut(property), time_secs);
     }
 
     /// Mutable accessor for the `*_keyframes` vec of one axis. Routes
@@ -1473,9 +1534,14 @@ pub fn default_text_transform() -> ObjectTransform {
         center: TitlePosition { x: 0.5, y: 0.5 },
         center_x_keyframes: Vec::new(),
         center_y_keyframes: Vec::new(),
+        size_x_keyframes: Vec::new(),
+        size_y_keyframes: Vec::new(),
         size: TitlePosition { x: 1.0, y: 1.0 },
         rotation: 0.0,
+        rotation_keyframes: Vec::new(),
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        anchor_x_keyframes: Vec::new(),
+        anchor_y_keyframes: Vec::new(),
     }
 }
 
@@ -2518,6 +2584,25 @@ mod tests {
         let t = default_text_transform();
         assert!(t.center_x_keyframes.is_empty());
         assert!(t.center_y_keyframes.is_empty());
+    }
+
+    #[test]
+    fn transform_property_keyframes_evaluate_and_round_trip() {
+        use klipp_core::TitleTransformProperty as P;
+        let mut t = default_text_transform();
+        t.upsert_transform_keyframe(P::Width, 0.0, 0.5);
+        t.upsert_transform_keyframe(P::Width, 1.0, 1.0);
+        t.upsert_transform_keyframe(P::Rotation, 0.0, -10.0);
+        t.upsert_transform_keyframe(P::Rotation, 1.0, 30.0);
+        t.upsert_transform_keyframe(P::AnchorX, 0.0, 0.0);
+        t.upsert_transform_keyframe(P::AnchorX, 1.0, 1.0);
+        let mid = t.evaluated_at(0.5);
+        assert!((mid.size.x - 0.75).abs() < 1e-6);
+        assert!((mid.rotation - 10.0).abs() < 1e-6);
+        assert!((mid.anchor_norm.x - 0.5).abs() < 1e-6);
+        let json = serde_json::to_string(&t).unwrap();
+        let round: ObjectTransform = serde_json::from_str(&json).unwrap();
+        assert_eq!(t, round);
     }
 
     /// Round-trip: a `TextBox` with non-empty position keyframes on its

@@ -436,6 +436,7 @@ pub fn terminal_card_composition() -> TitleData {
         size: TitlePosition { x: 0.42, y: 0.22 },
         rotation: 0.0,
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
     };
     let mut card_fx = LayerFx {
         motion: TitleMotion::both(
@@ -503,6 +504,7 @@ pub fn terminal_card_composition() -> TitleData {
         size: TitlePosition { x: 0.34, y: 0.08 },
         rotation: 0.0,
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
     };
     let text_fx = LayerFx {
         motion: TitleMotion::both(
@@ -545,6 +547,7 @@ pub fn terminal_card_composition() -> TitleData {
         size: TitlePosition { x: 0.008, y: 0.065 },
         rotation: 0.0,
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(), rotation_keyframes: Vec::new(), anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
     };
     let cursor_fx = LayerFx {
         loops: vec![TitleLoop::Blink {

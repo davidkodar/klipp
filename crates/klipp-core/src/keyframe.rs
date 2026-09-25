@@ -9,6 +9,16 @@ pub enum TitlePositionAxis {
     Y,
 }
 
+/// A separately animatable property of a title layer transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TitleTransformProperty {
+    Width,
+    Height,
+    Rotation,
+    AnchorX,
+    AnchorY,
+}
+
 /// Interpolation method between keyframes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Interpolation {
