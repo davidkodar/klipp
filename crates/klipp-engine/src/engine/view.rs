@@ -318,7 +318,9 @@ impl PlaybackEngine {
     /// frame and a full-size one of the same clip and grade are different
     /// pictures, and the disk cache is looked up by name alone, so without
     /// it a frame cached at one Playback Quality stopped the other ever
-    /// being rendered ahead.
+    /// being rendered ahead. It is its own field, not folded into the
+    /// grade hash, so the timeline's cache bar still counts a clip's
+    /// frames by grade.
     fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
             || self.solo_node.is_some()
@@ -344,13 +346,8 @@ impl PlaybackEngine {
             return None;
         }
         let track_opacity = seq.tracks.get(layer.track).map(|t| t.opacity).unwrap_or(1.0);
-        let grade_hash = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (self.render_key_hash(clip, track_opacity), size).hash(&mut h);
-            h.finish()
-        };
-        Some(crate::render_cache::RenderCacheKey { clip_id: clip.id, frame_number: self.playhead.value, grade_hash })
+        let grade_hash = self.render_key_hash(clip, track_opacity);
+        Some(crate::render_cache::RenderCacheKey { clip_id: clip.id, frame_number: self.playhead.value, grade_hash, size })
     }
 
     /// The render cache's hash for a clip's frames: the clip, the global

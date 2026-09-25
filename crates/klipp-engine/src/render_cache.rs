@@ -111,11 +111,16 @@ pub struct RenderCacheKey {
     pub clip_id: klipp_core::ClipId,
     pub frame_number: i64,
     pub grade_hash: u64,
+    /// The rendered size: a half-size frame and a full-size one of the
+    /// same clip and grade are different pictures. Kept apart from the
+    /// grade hash so "how much of this clip is cached" can still be
+    /// counted by grade, whatever size it was cached at.
+    pub size: (u32, u32),
 }
 
 impl RenderCacheKey {
     pub fn filename(&self) -> String {
-        format!("{}_{:08}_{:016x}.lz4", self.clip_id.0.as_simple(), self.frame_number, self.grade_hash)
+        format!("{}_{:08}_{:016x}_{}x{}.lz4", self.clip_id.0.as_simple(), self.frame_number, self.grade_hash, self.size.0, self.size.1)
     }
 }
 
@@ -498,13 +503,18 @@ mod tests {
         let b = klipp_core::ClipId::new();
         let mut hot = HotCache::new(8);
         for f in 0..3 {
-            hot.insert(RenderCacheKey { clip_id: a, frame_number: f * 1001, grade_hash: 7 }, vec![0; 4], 1, 1);
+            hot.insert(RenderCacheKey { clip_id: a, frame_number: f * 1001, grade_hash: 7, size: (1, 1) }, vec![0; 4], 1, 1);
         }
-        hot.insert(RenderCacheKey { clip_id: a, frame_number: 5005, grade_hash: 9 }, vec![0; 4], 1, 1);
-        hot.insert(RenderCacheKey { clip_id: b, frame_number: 0, grade_hash: 7 }, vec![0; 4], 1, 1);
+        hot.insert(RenderCacheKey { clip_id: a, frame_number: 5005, grade_hash: 9, size: (1, 1) }, vec![0; 4], 1, 1);
+        hot.insert(RenderCacheKey { clip_id: b, frame_number: 0, grade_hash: 7, size: (1, 1) }, vec![0; 4], 1, 1);
         assert_eq!(hot.count_for(a, 7), 3);
         assert_eq!(hot.count_for(a, 9), 1, "a stale grade's frames are not this grade's");
         assert_eq!(hot.count_for(b, 7), 1);
+        // A frame cached at a reduced Playback Quality is still one of
+        // the clip's cached frames at that grade, and a different entry
+        // from the full-size frame of the same moment.
+        hot.insert(RenderCacheKey { clip_id: b, frame_number: 0, grade_hash: 7, size: (2, 2) }, vec![0; 16], 2, 2);
+        assert_eq!(hot.count_for(b, 7), 2);
     }
 
     use super::*;
@@ -554,6 +564,7 @@ mod tests {
             clip_id: klipp_core::ClipId::new(),
             frame_number: frame,
             grade_hash: 0xdead_beef,
+            size: (4, 4),
         }
     }
 
