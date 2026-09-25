@@ -30452,6 +30452,13 @@ impl KlippApp {
             project.path = self.state.project_path.clone();
             project.dirty = self.state.dirty;
         }
+        // And where the user is, so a frame read can put the playhead back.
+        if let Ok(mut transport) = self.state.control_shared.transport.lock() {
+            *transport = klipp_core::TransportStatus {
+                playhead: Some(self.state.playhead),
+                playing: self.state.playback == PlaybackState::Playing,
+            };
+        }
         // The queue as the control socket sees it, refreshed every frame
         // the queue is polled; cheap, the queue is short.
         if let Ok(mut exports) = self.state.control_shared.exports.lock() {

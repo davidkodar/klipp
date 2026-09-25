@@ -384,17 +384,84 @@ fn timeline_text(
 
 /// `text` within `max_chars`, cut on a line boundary and saying so, and
 /// whether it was cut.
+/// Where the user's viewer was before a frame read moved it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeldTransport {
+    at: Option<klipp_core::Timecode>,
+    playing: bool,
+}
+
+/// Note where the user is before a read moves the playhead. The UI's
+/// own playhead, as it publishes it, not the last frame the viewer
+/// presented: that lags a seek, and in a window that is not being drawn
+/// it can be minutes stale, so a read "put back" to it left the
+/// playhead, and the Colour page following it, somewhere else.
+fn hold_transport(ctx: &ControlContext) -> Result<HeldTransport, String> {
+    let published = ctx.shared.transport.lock().map(|t| *t).unwrap_or_default();
+    let presented = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_presented();
+    Ok(held_from(published, presented))
+}
+
+fn held_from(published: klipp_core::TransportStatus, presented: Option<klipp_core::Timecode>) -> HeldTransport {
+    HeldTransport { at: published.playhead.or(presented), playing: published.playing }
+}
+
+/// What puts the viewer back after a read: the playhead where it was,
+/// and playback running again if it was running.
+fn restore_commands(held: HeldTransport) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    if let Some(t) = held.at {
+        cmds.push(AppCommand::SeekTo(t));
+    }
+    if held.playing {
+        cmds.push(AppCommand::Play);
+    }
+    cmds
+}
+
+fn restore_transport(ctx: &ControlContext, held: HeldTransport) {
+    let cmds = restore_commands(held);
+    if !cmds.is_empty() {
+        let _ = send_envelope(ctx, cmds, false);
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use klipp_core::{Timecode, TransportStatus};
+
+    #[test]
+    fn the_published_playhead_wins_over_a_stale_presented_frame() {
+        let held = held_from(
+            TransportStatus { playhead: Some(Timecode::from_frames(150, 30)), playing: false },
+            Some(Timecode::from_frames(5307, 30)),
+        );
+        assert_eq!(held.at, Some(Timecode::from_frames(150, 30)));
+    }
+
+    #[test]
+    fn with_nothing_published_the_presented_frame_is_used() {
+        let held = held_from(TransportStatus::default(), Some(Timecode::from_frames(30, 30)));
+        assert_eq!(held.at, Some(Timecode::from_frames(30, 30)));
+    }
+
+    #[test]
+    fn a_read_during_playback_seeks_back_and_plays_on() {
+        let t = Timecode::from_frames(90, 30);
+        let cmds = restore_commands(HeldTransport { at: Some(t), playing: true });
+        assert!(matches!(cmds.as_slice(), [AppCommand::SeekTo(s), AppCommand::Play] if *s == t), "{cmds:?}");
+    }
+}
+
 /// Seek to `secs`, wait for the frame there, read its RGBA bytes, and
-/// seek back — the picture as the viewer shows it, for measuring. Shares
-/// the one-grab lock and the wait with frame_at.
+/// put the user's playhead back — the picture as the viewer shows it,
+/// for measuring. Shares the one-grab lock and the wait with frame_at.
 fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
     static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
-    let (was_at, fps) = {
-        let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
-        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-        (fb.latest_presented(), seq.fps)
-    };
+    let held = hold_transport(ctx)?;
+    let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps;
     let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
     let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
     send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
@@ -409,9 +476,7 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
             break;
         }
         if std::time::Instant::now() >= deadline {
-            if let Some(t) = was_at {
-                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
-            }
+            restore_transport(ctx, held);
             return Err(format!("no frame at {secs:.3} s within {} ms; give a longer timeout_ms", wait.as_millis()));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -429,16 +494,12 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
             break (data, width, height);
         }
         if std::time::Instant::now() >= deadline {
-            if let Some(t) = was_at {
-                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
-            }
+            restore_transport(ctx, held);
             return Err("the viewer has no frame to measure yet".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    if let Some(t) = was_at {
-        let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
-    }
+    restore_transport(ctx, held);
     let expected = (width as usize) * (height as usize) * 4;
     Ok((data[..expected].to_vec(), width, height))
 }
@@ -4585,11 +4646,8 @@ reference:   {}",
             // seek it out from under each other and the second fails.
             static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
-            let (was_at, fps) = {
-                let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
-                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                (fb.latest_presented(), seq.fps)
-            };
+            let held = hold_transport(ctx)?;
+            let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps;
             let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
             let before = {
                 let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
@@ -4618,9 +4676,7 @@ reference:   {}",
                     break g;
                 }
                 if std::time::Instant::now() >= deadline {
-                    if let Some(t) = was_at {
-                        let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
-                    }
+                    restore_transport(ctx, held);
                     let state = match (at_target, complete) {
                         (false, _) => format!(
                             "the viewer is at {} s, not {secs:.3} s",
@@ -4639,9 +4695,7 @@ reference:   {}",
                 &mut None,
             );
             // Back where the playhead was, whatever the capture did.
-            if let Some(t) = was_at {
-                let _ = send_envelope(ctx, vec![AppCommand::SeekTo(t)], false);
-            }
+            restore_transport(ctx, held);
             let mut v = shot?;
             v["secs"] = json!(secs);
             v["frame"] = json!((secs * fps.as_f64()).round() as i64);
