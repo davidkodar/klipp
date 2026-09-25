@@ -30,6 +30,10 @@ pub struct NewInspectorPanel {
     pub last_duck_clip: Option<klipp_core::ClipId>,
     /// Chips for the Title tab, rendered by the title engine.
     pub title_chips: title_tab::TitleChips,
+    /// The last selected clip used for synthetic-tab routing. This keeps
+    /// title/generator clips opening on their useful tab once, without
+    /// overriding a user's later click on Video, Effects, or Info.
+    pub last_synthetic_clip: Option<klipp_core::ClipId>,
 }
 
 impl NewInspectorPanel {
@@ -68,6 +72,9 @@ impl NewInspectorPanel {
         // tracks-iter walk — closes (steady state
         // is one Track::find_clip rather than tracks × clips).
         let clip_info = state.selected_clip_loc();
+        let selected_clip_id = clip_info.map(|(_, clip)| clip.id);
+        let clip_changed = self.last_synthetic_clip != selected_clip_id;
+        self.last_synthetic_clip = selected_clip_id;
         let media = clip_info
             .and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
@@ -196,9 +203,9 @@ impl NewInspectorPanel {
         }
 
         // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
-        if is_title_clip && *active_tab != InspectorTab::Title {
+        if clip_changed && is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
-        } else if is_generator_clip && *active_tab != InspectorTab::Generator {
+        } else if clip_changed && is_generator_clip && *active_tab != InspectorTab::Generator {
             *active_tab = InspectorTab::Generator;
         } else if (!is_title_clip && *active_tab == InspectorTab::Title)
             || (!is_generator_clip && *active_tab == InspectorTab::Generator)
@@ -4352,36 +4359,6 @@ fn show_title_editor(
     show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
     ui.separator();
     ui.add_space(4.0);
-    let target_oid = state
-        .selected_title_object
-        .filter(|(c, _)| *c == clip_id)
-        .map(|(_, oid)| oid);
-
-    // Text layers have enough controls to deserve a contextual second
-    // navigation row. The global TITLE / VIDEO / EFFECTS / INFO tabs stay
-    // unchanged; this strip only changes which text-layer workbench is
-    // visible, so animation and effects are discoverable without removing
-    // any of the existing controls.
-    let context_tab_id = ui.id().with(("title_context_tab", clip_id));
-    let mut context_tab: u8 = ui.memory(|m| m.data.get_temp(context_tab_id)).unwrap_or(0);
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("TEXT LAYER").size(10.0).color(theme.text_dim));
-        for (idx, label) in [(0u8, "Text"), (1, "Transform"), (2, "Animation"), (3, "Effects")] {
-            let selected = context_tab == idx;
-            if ui.selectable_label(selected, egui::RichText::new(label).size(11.0)).clicked() {
-                context_tab = idx;
-                ui.memory_mut(|m| m.data.insert_temp(context_tab_id, context_tab));
-            }
-        }
-    });
-    let animation_summary = target_oid
-        .and_then(|oid| td.object(oid))
-        .map(|o| o.fx())
-        .unwrap_or_else(|| td.primary_fx());
-    if animation_summary.motion.enter.is_some() || animation_summary.motion.exit.is_some() || !animation_summary.loops.is_empty() {
-        ui.label(egui::RichText::new("Animation configured").size(10.0).color(theme.accent));
-    }
-    ui.add_space(6.0);
 
     // ── Polymorphic pinned core ──
     // Branch on the selected layer's kind. Shape layers get the existing
@@ -4389,6 +4366,10 @@ fn show_title_editor(
     // text-only sections; TextBox layers fall through to the new pinned
     // core (textarea / font+size / B/I/U/S + L/C/R / colour / position)
     // and the legacy compat strip for selection-aware tools.
+    let target_oid = state
+        .selected_title_object
+        .filter(|(c, _)| *c == clip_id)
+        .map(|(_, oid)| oid);
     let kind_ref = target_oid.and_then(|oid| td.object(oid)).map(|o| &o.content);
     if let Some(klipp_timeline::TitleObjectContent::Shape(shape)) = kind_ref {
         if let Some(oid) = target_oid {
@@ -4408,51 +4389,60 @@ fn show_title_editor(
         }
         return;
     }
-
-    if context_tab == 1 {
-        if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
-            let t = &object.transform;
-            let mut w = t.size.x * 100.0;
-            let mut h = t.size.y * 100.0;
-            let mut rotation = t.rotation;
-            let mut anchor_x = t.anchor_norm.x * 100.0;
-            let mut anchor_y = t.anchor_norm.y * 100.0;
-            let mut changed = false;
-            ui.label(egui::RichText::new("TRANSFORM").size(10.0).color(theme.text_dim));
-            ui.horizontal(|ui| {
-                ui.label("W");
-                changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed();
-                ui.label("H");
-                changed |= ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label("Rotation");
-                changed |= ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label("Anchor");
-                changed |= ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed();
-                changed |= ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed();
-            });
-            ui.horizontal(|ui| {
-                if ui.small_button("Center").clicked() {
-                    cmds.push(AppCommand::SetTitleObjectTransform { clip_id, object_id: object.id.0, center_x: 0.5, center_y: 0.5, size_x: t.size.x, size_y: t.size.y, rotation: t.rotation, anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y });
-                }
-                if ui.small_button("Reset transform").clicked() {
-                    cmds.push(AppCommand::SetTitleObjectTransform { clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y, size_x: t.size.x, size_y: t.size.y, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5 });
-                }
-            });
-            if changed {
-                cmds.push(AppCommand::SetTitleObjectTransform { clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y, size_x: w / 100.0, size_y: h / 100.0, rotation, anchor_x: anchor_x / 100.0, anchor_y: anchor_y / 100.0 });
+    if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
+        let t = &object.transform;
+        let mut w = t.size.x * 100.0;
+        let mut h = t.size.y * 100.0;
+        let mut rotation = t.rotation;
+        let mut anchor_x = t.anchor_norm.x * 100.0;
+        let mut anchor_y = t.anchor_norm.y * 100.0;
+        let mut changed = false;
+        ui.label(egui::RichText::new("TRANSFORM").size(10.0).color(theme.text_dim));
+        ui.horizontal(|ui| {
+            ui.label("W");
+            changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed();
+            ui.label("H");
+            changed |= ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Rotation");
+            changed |= ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Anchor");
+            changed |= ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed();
+            changed |= ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed();
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("Center").on_hover_text("Center this layer in the frame").clicked() {
+                cmds.push(AppCommand::SetTitleObjectTransform {
+                    clip_id, object_id: object.id.0, center_x: 0.5, center_y: 0.5,
+                    size_x: t.size.x, size_y: t.size.y, rotation: t.rotation,
+                    anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
+                });
             }
+            if ui.small_button("Reset transform").clicked() {
+                cmds.push(AppCommand::SetTitleObjectTransform {
+                    clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                    size_x: t.size.x, size_y: t.size.y, rotation: 0.0,
+                    anchor_x: 0.5, anchor_y: 0.5,
+                });
+            }
+        });
+        if changed {
+            cmds.push(AppCommand::SetTitleObjectTransform {
+                clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                size_x: w / 100.0, size_y: h / 100.0, rotation,
+                anchor_x: anchor_x / 100.0, anchor_y: anchor_y / 100.0,
+            });
         }
-        return;
     }
+
     let tb_target: Option<&klipp_timeline::TextBox> = match kind_ref {
         Some(klipp_timeline::TitleObjectContent::TextBox(tb)) => Some(tb),
         _ => td.primary_text(),
     };
-    if context_tab == 0 && target_oid.is_none() && tb_target.is_some() {
+    if target_oid.is_none() && tb_target.is_some() {
         ui.label(
             egui::RichText::new("No layer selected — editing the primary text layer")
                 .size(10.0)
@@ -4466,25 +4456,17 @@ fn show_title_editor(
         .and_then(|id| td.object(id))
         .map(klipp_timeline::TitleObject::fx)
         .unwrap_or_else(|| td.primary_fx());
-    if context_tab == 0 {
     if let Some(tb) = tb_target {
         show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs);
-    }
     }
     ui.add_space(8.0);
 
     // ── Motion and Style: the first tier, always open ──
-    if context_tab == 2 {
     if let Some(tb) = tb_target {
         title_tab::show_motion_card(ui, theme, clip_id, &title_tab::ChipSubject::Text(tb.clone()), fx, chips, cmds);
-        return;
-    }
-    }
-    if context_tab == 0 {
-    if let Some(tb) = tb_target {
+        ui.add_space(10.0);
         title_tab::show_style_card(ui, theme, clip_id, tb, fx, chips, cmds);
-        return;
-    }
+        ui.add_space(10.0);
     }
 
     // ── Advanced: every other group, collapsed by default ──
