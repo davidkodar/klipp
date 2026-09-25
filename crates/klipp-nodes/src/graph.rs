@@ -665,6 +665,18 @@ pub struct NodePos {
 #[error("cycle detected in node graph")]
 pub struct CycleError;
 
+/// Why [`NodeGraph::append`] would not run one graph after another.
+/// Worded for the person who asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CannotAppend {
+    #[error("the grade to add has no Source node")]
+    NoSource,
+    #[error("nothing feeds this grade's Output, so there is nowhere to add after")]
+    NothingFeedsOutput,
+    #[error("the grade to add is pinned to the {theirs:?} working space and this one to {ours:?}; convert one first")]
+    WorkingSpace { ours: klipp_core::WorkingColorspace, theirs: klipp_core::WorkingColorspace },
+}
+
 impl NodeGraph {
     /// The nodes with a path to the output node, over drawn edges and
     /// wireless links: the grade. A node left in the graph without a way
@@ -1012,25 +1024,39 @@ impl NodeGraph {
 
     /// Run `other` after this graph: its nodes, with fresh ids, go
     /// between whatever fed this graph's Output and the Output, wired as
-    /// they were between its own Source and Output. This graph's nodes
-    /// stay as they are, so a look put on after a clip's balance keeps
-    /// the balance. `other`'s Input Transform, if it has one, is left
-    /// behind (see [`Self::strip_input_transforms`]): this graph's own
-    /// already decoded the footage. `false`, and nothing changed, when
-    /// either graph has no Source-to-Output path to splice into.
-    pub fn append(&mut self, other: &NodeGraph) -> bool {
+    /// they were between its own Source and Output, and its frames and
+    /// notes come along, laid out to the right. This graph's nodes stay
+    /// as they are, so a look put on after a clip's balance keeps the
+    /// balance. `other`'s Input Transform, if it has one, is left behind
+    /// (see [`Self::strip_input_transforms`]): this graph's own already
+    /// decoded the footage.
+    ///
+    /// Refused, and nothing changed, when either graph has no
+    /// Source-to-Output path to splice into, or when the two are pinned
+    /// to different working spaces: `other`'s luma-weighted nodes would
+    /// run in this graph's space, a colour shift. A graph pinned to
+    /// nothing follows the project, and joins or takes a pinned one as
+    /// it is; the pin, if any, stays this graph's.
+    pub fn append(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
+        if let (Some(ours), Some(theirs)) = (self.working_space_override, other.working_space_override) {
+            if ours != theirs {
+                return Err(CannotAppend::WorkingSpace { ours, theirs });
+            }
+        }
         let mut other = other.remap_ids();
         other.strip_input_transforms();
-        let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return false };
+        let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else {
+            return Err(CannotAppend::NoSource);
+        };
         let o_out = other.output_node_id;
         let out = self.output_node_id;
         let Some(feed) = self.edges.iter().find(|e| e.to_node == out && e.to_port == 0).map(|e| (e.from_node, e.from_port)) else {
-            return false;
+            return Err(CannotAppend::NothingFeedsOutput);
         };
         let middle: Vec<Node> = other.nodes.iter().filter(|n| n.id != src && n.id != o_out).cloned().collect();
         if middle.is_empty() {
             // An identity graph: nothing to run after.
-            return true;
+            return Ok(());
         }
         // Laid out to the right of what is there, so the two read in order.
         let right = self.node_positions.values().map(|p| p.x).fold(f32::MIN, f32::max);
@@ -1047,6 +1073,7 @@ impl NodeGraph {
         }
         self.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
         let insert_at = self.nodes.iter().position(|n| n.id == out).unwrap_or(self.nodes.len());
+        let spliced: HashSet<NodeId> = middle.iter().map(|n| n.id).collect();
         self.nodes.splice(insert_at..insert_at, middle);
         for e in &other.edges {
             if e.to_node == src {
@@ -1056,11 +1083,26 @@ impl NodeGraph {
             let to_node = if e.to_node == o_out { out } else { e.to_node };
             self.edges.push(Edge { from_node, from_port, to_node, to_port: e.to_port });
         }
-        true
+        // A frame around the other graph's Source or Output has no such
+        // node here: it keeps the members that came.
+        for mut frame in other.frames {
+            frame.contained_node_ids.retain(|id| spliced.contains(id));
+            if !frame.contained_node_ids.is_empty() {
+                self.frames.push(frame);
+            }
+        }
+        for mut note in other.sticky_notes {
+            note.pos.x += shift;
+            self.sticky_notes.push(note);
+        }
+        Ok(())
     }
 
-    /// Regenerate all NodeIds and update edge/position references.
-    /// Used when pasting a copied graph onto a different clip.
+    /// This graph with fresh ids throughout: every node, and every edge,
+    /// position and frame membership that names one; frames and notes
+    /// get new ids of their own. For a copied graph pasted onto another
+    /// clip, so the two share nothing the executor's per-node caches are
+    /// keyed by.
     pub fn remap_ids(&self) -> NodeGraph {
         let id_map: HashMap<NodeId, NodeId> = self
             .nodes
@@ -1081,6 +1123,14 @@ impl NodeGraph {
             .iter()
             .map(|(old_id, pos)| (id_map[old_id], *pos))
             .collect();
+        for frame in &mut new_graph.frames {
+            frame.id = NodeFrameId::new_v4();
+            // A member the graph no longer has is not one the copy has.
+            frame.contained_node_ids = frame.contained_node_ids.iter().filter_map(|id| id_map.get(id).copied()).collect();
+        }
+        for note in &mut new_graph.sticky_notes {
+            note.id = NodeStickyNoteId::new_v4();
+        }
         new_graph
     }
 }
@@ -1654,7 +1704,7 @@ mod append_tests {
         let mut clip = exposure_graph(0.4);
         let balance = clip.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
         let look = exposure_graph(-0.2);
-        assert!(clip.append(&look));
+        assert!(clip.append(&look).is_ok());
         let order = clip.topo_sort().expect("no cycle");
         let correctors: Vec<NodeId> = order
             .iter()
@@ -1714,7 +1764,7 @@ mod append_tests {
         let own = with_input_transform(&mut clip, LogFormat::SLog3);
         let mut look = exposure_graph(-0.2);
         with_input_transform(&mut look, LogFormat::LogC3);
-        assert!(clip.append(&look));
+        assert!(clip.append(&look).is_ok());
         assert_eq!(input_formats(&clip), vec![LogFormat::SLog3], "the clip's own, and only that");
         assert!(clip.nodes.iter().any(|n| n.id == own), "the clip's own transform node, untouched");
         assert_eq!(
@@ -1752,13 +1802,95 @@ mod append_tests {
         assert_eq!(chain_kinds(&new), vec![NodeKind::Source, NodeKind::Corrector, NodeKind::Output]);
     }
 
+    /// A frame around `g`'s Corrector, and a note beside it.
+    fn with_frame_and_note(g: &mut NodeGraph) -> (NodeId, f32) {
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        g.frames.push(NodeFrame {
+            id: NodeFrameId::new_v4(),
+            label: "Look".into(),
+            description: String::new(),
+            color_rgba: 0,
+            contained_node_ids: [corrector].into_iter().collect(),
+        });
+        let note_x = 220.0;
+        g.sticky_notes.push(NodeStickyNote {
+            id: NodeStickyNoteId::new_v4(),
+            pos: NodePos { x: note_x, y: -80.0 },
+            width: 200.0,
+            text: "warm it".into(),
+            color_rgba: 0,
+        });
+        (corrector, note_x)
+    }
+
+    #[test]
+    fn grades_pinned_to_different_working_spaces_do_not_join() {
+        use klipp_core::WorkingColorspace as Ws;
+        let mut clip = exposure_graph(0.4);
+        clip.working_space_override = Some(Ws::Rec709Linear);
+        let mut look = exposure_graph(-0.2);
+        look.working_space_override = Some(Ws::AcesCG);
+        let before = clip.nodes.len();
+        assert_eq!(
+            clip.append(&look),
+            Err(CannotAppend::WorkingSpace { ours: Ws::Rec709Linear, theirs: Ws::AcesCG }),
+        );
+        assert_eq!(clip.nodes.len(), before, "nothing changed");
+        assert!(!clip.append(&look).unwrap_err().to_string().is_empty(), "a reason to show");
+    }
+
+    #[test]
+    fn a_pinned_grade_joins_an_unpinned_graph_which_stays_unpinned() {
+        let mut clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        look.working_space_override = Some(klipp_core::WorkingColorspace::AcesCG);
+        assert!(clip.append(&look).is_ok());
+        assert_eq!(clip.working_space_override, None);
+        assert_eq!(count(&clip, NodeKind::Corrector), 2);
+    }
+
+    #[test]
+    fn an_appended_grade_brings_its_frames_and_notes_on_the_new_ids() {
+        let mut clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        let (old_corrector, note_x) = with_frame_and_note(&mut look);
+        assert!(clip.append(&look).is_ok());
+        assert_eq!(clip.frames.len(), 1);
+        let members: Vec<NodeId> = clip.frames[0].contained_node_ids.iter().copied().collect();
+        assert_eq!(members.len(), 1);
+        assert_ne!(members[0], old_corrector, "the frame follows the fresh id");
+        assert!(clip.nodes.iter().any(|n| n.id == members[0] && n.kind == NodeKind::Corrector));
+        assert_ne!(clip.frames[0].id, look.frames[0].id);
+        assert_eq!(clip.sticky_notes.len(), 1);
+        assert!(clip.sticky_notes[0].pos.x > note_x, "moved right with the nodes it sat beside");
+    }
+
+    #[test]
+    fn remapped_ids_keep_frame_membership() {
+        let mut g = exposure_graph(0.4);
+        let (old_corrector, _) = with_frame_and_note(&mut g);
+        g.frames[0].contained_node_ids.insert(NodeId::new_v4()); // a stale member
+        let new = g.remap_ids();
+        let ids: HashSet<NodeId> = new.nodes.iter().map(|n| n.id).collect();
+        assert_eq!(new.frames.len(), 1);
+        assert_eq!(new.frames[0].contained_node_ids.len(), 1, "the stale member is dropped");
+        assert!(new.frames[0].contained_node_ids.iter().all(|id| ids.contains(id)));
+        assert!(!new.frames[0].contained_node_ids.contains(&old_corrector));
+        assert_ne!(new.frames[0].id, g.frames[0].id);
+        assert_ne!(new.sticky_notes[0].id, g.sticky_notes[0].id);
+    }
+
+    fn count(g: &NodeGraph, kind: NodeKind) -> usize {
+        g.nodes.iter().filter(|n| n.kind == kind).count()
+    }
+
     #[test]
     fn appending_an_identity_graph_changes_nothing() {
         let mut clip = exposure_graph(0.4);
         let before = clip.nodes.len();
         let empty = NodeGraph::default();
         let identity_nodes = empty.nodes.iter().filter(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output)).count();
-        assert!(clip.append(&empty));
+        assert!(clip.append(&empty).is_ok());
         assert_eq!(clip.nodes.len(), before + identity_nodes);
     }
 }

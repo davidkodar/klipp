@@ -710,7 +710,8 @@ fn grade_from_still_edits(
         .filter_map(|c| {
             let new_graph = if append {
                 let mut g = c.node_graph.clone();
-                g.append(grade).then_some(g)?
+                g.append(grade).ok()?;
+                g
             } else {
                 c.node_graph.with_grade_of(grade)
             };
@@ -16031,7 +16032,7 @@ impl KlippApp {
                             // Input Transform kept: the Look's, if it has
                             // one, is the shot it was saved on.
                             if *append {
-                                if !clip.node_graph.append(&look.node_graph) {
+                                if clip.node_graph.append(&look.node_graph).is_err() {
                                     continue;
                                 }
                             } else {
