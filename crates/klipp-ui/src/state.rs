@@ -1255,6 +1255,11 @@ pub struct AppState {
     /// Media imported with a timeline destination (e.g. from the Audio
     /// Library): once its async load lands in the pool, drop it there.
     pub pending_media_drop: std::collections::HashMap<klipp_core::MediaId, klipp_core::events::ClipDrop>,
+    /// Media of projects no longer open. A probe the engine was still
+    /// running when the project changed reports back afterwards, and
+    /// the load handler would add that item to whatever project is
+    /// open by then — a new project saved with a clip of the last one.
+    pub retired_media_ids: std::collections::HashSet<klipp_core::MediaId>,
 
     // Thumbnails
     pub thumbnail_cache: ThumbnailCache,
@@ -3515,6 +3520,7 @@ impl Default for AppState {
             pending_media_path: None,
             pending_skip_analysis: std::collections::HashSet::new(),
             pending_media_drop: std::collections::HashMap::new(),
+            retired_media_ids: std::collections::HashSet::new(),
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),

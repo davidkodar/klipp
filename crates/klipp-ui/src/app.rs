@@ -1759,6 +1759,12 @@ impl KlippApp {
                         );
                     }
                 }
+                AppEvent::MediaLoaded(payload) if self.state.retired_media_ids.contains(&payload.media_id) => {
+                    tracing::debug!(
+                        "Dropping the probe of {:?}: its project is no longer open",
+                        payload.path.file_name().unwrap_or_default(),
+                    );
+                }
                 AppEvent::MediaLoaded(payload) => {
                     let klipp_core::MediaLoadedPayload {
                         media_id,
@@ -18535,32 +18541,22 @@ impl KlippApp {
                     brief: None,
                     edit_plan: None,
                 };
+                // The same reset closing a project does. Resetting only the
+                // UI's copy left the engine on the last project: its
+                // decoders, parked frame and playhead, and its media pool,
+                // so the new timeline was drawn with the old footage.
+                self.media_watcher = None;
+                self.reset_project_state();
                 self.state.sequences = vec![seq];
                 self.state.active_sequence_idx = 0;
                 self.state.fps = fps;
-                self.state.media_pool = klipp_media::MediaPool::new();
                 self.state.project_path = Some(project_dir.clone());
                 self.state.created_at = Some(klipp_project::iso8601_now());
-                self.state.dirty = false;
                 self.state.filmstrip_generating = false;
-                self.state.selected_clip = None;
-                self.state.selected_clips.clear();
-                self.state.hovered_clip = None;
-                self.state.playback = PlaybackState::Idle;
                 let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                 self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
-                self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
-                let thumb_drain: Vec<_> = self.state.thumbnail_textures.drain().map(|(_, t)| t).collect();
-                self.defer_drop_textures(thumb_drain);
-                let strip_drain: Vec<_> = self.state.filmstrip_textures.drain()
-                    .flat_map(|(_, v)| v.into_iter().map(|(_, t)| t)).collect();
-                self.defer_drop_textures(strip_drain);
-                self.state.filmstrip_in_progress.clear();
-                self.state.filmstrip_queue.clear();
                 self.state.filmstrip_total_queued = 0;
                 self.state.filmstrip_completed = 0;
-                self.state.command_histories.clear();
-                self.state.history_ops_since_save = 0;
                 self.sync_sequence_to_engine();
                 // Save immediately so the .klipp directory is created
                 self.do_save_project(&project_dir);
@@ -22797,9 +22793,20 @@ impl KlippApp {
         let _ = self.cmd_tx.send(AppCommand::ResetEngine);
 
         // 2. Replace project-scoped data
+        self.retire_project_media();
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
         self.state.media_pool = klipp_media::MediaPool::new();
+        // The engine resolves clips through its own copy of the pool.
+        self.sync_media_pool_to_engine();
+        self.state.title_assets.clear();
+        self.state.looks.clear();
+        self.state.grade_stills.clear();
+        self.state.active_grade_still = None;
+        self.state.grade_still_compare = false;
+        self.state.offline_media_ids.clear();
+        self.state.pending_skim_transcodes.clear();
+        self.state.source_media_id = None;
         self.state.project_path = None;
         self.state.project_notes = String::new();
         self.state.dirty = false;
@@ -22862,6 +22869,21 @@ impl KlippApp {
 
         // 8. Clear render-cache range markers (no clips → no ranges)
         self.state.render_cache_ranges.clear();
+    }
+
+    /// Mark every item of the open project, and every import still
+    /// being probed for it, as belonging to a project that is going
+    /// away, so a probe that lands after the switch is dropped rather
+    /// than added to the next project.
+    fn retire_project_media(&mut self) {
+        let ids: Vec<klipp_core::MediaId> = self.state.media_pool.all().map(|m| m.id)
+            .chain(self.state.pending_media_drop.keys().copied())
+            .chain(self.state.pending_skip_analysis.iter().copied())
+            .collect();
+        self.state.retired_media_ids.extend(ids);
+        self.state.pending_media_drop.clear();
+        self.state.pending_skip_analysis.clear();
+        self.state.pending_media_path = None;
     }
 
     fn apply_undo(&mut self) {
@@ -23708,7 +23730,12 @@ impl KlippApp {
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
+                self.retire_project_media();
                 self.state.media_pool = media_pool;
+                // Reopening a project brings its own media back.
+                for item in self.state.media_pool.all() {
+                    self.state.retired_media_ids.remove(&item.id);
+                }
                 self.state.title_assets = title_assets;
                 self.state.looks = klipp_project::load_looks(path);
                 self.probe_unread_metadata();
