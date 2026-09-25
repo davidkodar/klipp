@@ -1025,13 +1025,30 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     e
 }
 
-/// Resolve a [`DialogKind`] into an `AppCommand` by surfacing the
+/// Ask for media files to import: several at once, and every kind the
+/// pool takes (video, audio, stills), not only video. Empty on cancel.
+///
+/// Every import route (File menu, palette, Ctrl+I, the media tab's
+/// menu) goes through here so they cannot drift apart again: they
+/// once offered one file per dialog, and Ctrl+I only video.
+pub fn pick_media_files() -> Vec<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Import Media")
+        .add_filter("All media", &klipp_core::media_extensions::all_media_extensions())
+        .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
+        .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
+        .add_filter("Image", klipp_core::media_extensions::IMAGE_EXTENSIONS)
+        .pick_files()
+        .unwrap_or_default()
+}
+
+/// Resolve a [`DialogKind`] into `AppCommand`s by surfacing the
 /// matching system file picker. Blocks (modal) until the user picks
 /// or cancels — same behaviour as the menu-bar entries that opened
-/// these dialogs before. Returns `None` on cancel; the palette
-/// callers push the command on Some.
-pub fn dispatch_dialog(kind: DialogKind) -> Option<AppCommand> {
-    match kind {
+/// these dialogs before. Empty on cancel; more than one command only
+/// for pickers that take several files.
+pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
+    let single = match kind {
         DialogKind::OpenProject => rfd::FileDialog::new()
             .set_title("Open Project")
             .pick_folder()
@@ -1042,10 +1059,9 @@ pub fn dispatch_dialog(kind: DialogKind) -> Option<AppCommand> {
             .set_file_name("project.klipp")
             .save_file()
             .map(|p| AppCommand::SaveProjectAs { path: p }),
-        DialogKind::ImportMedia => rfd::FileDialog::new()
-            .set_title("Import Media")
-            .pick_file()
-            .map(|p| AppCommand::ImportMedia { path: p }),
+        DialogKind::ImportMedia => {
+            return pick_media_files().into_iter().map(|path| AppCommand::ImportMedia { path }).collect();
+        }
         DialogKind::ImportSubtitles => rfd::FileDialog::new()
             .set_title("Import Subtitles")
             .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
@@ -1099,7 +1115,8 @@ pub fn dispatch_dialog(kind: DialogKind) -> Option<AppCommand> {
             .add_filter("OpenTimelineIO", &["otio"])
             .pick_file()
             .map(|p| AppCommand::ImportOtio { path: p }),
-    }
+    };
+    single.into_iter().collect()
 }
 
 #[cfg(test)]
