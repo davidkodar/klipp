@@ -303,6 +303,11 @@ pub enum EditCommand {
     /// a track — undone and redone as one. Undo applies the inverses in
     /// reverse order; redo the forwards in order.
     Batch(Vec<EditCommand>),
+    /// An edit under the name of what was asked for — "Cut 3 fillers",
+    /// "Captions from transcript" — rather than the name of what it is
+    /// made of. History shows the label; the edit is applied and undone
+    /// as itself.
+    Named { label: String, edit: Box<EditCommand> },
     LegacyMoveClipToTrack {
         clip: Clip,
         old_timeline_in: RationalTime,
@@ -674,8 +679,9 @@ impl EditCommand {
             || matches!(self, EditCommand::ReplaceClip { description: "Blade Clip", .. })
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
+            EditCommand::Named { label, .. } => label,
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::SetBrief { .. } => "Set Brief",
@@ -754,7 +760,7 @@ pub struct HistoryEntry {
 }
 
 impl HistoryEntry {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> &str {
         self.command.label()
     }
 }
@@ -818,11 +824,26 @@ impl CommandHistory {
     /// Close the batch: nothing collected pushes nothing, one edit pushes
     /// itself, more push a `Batch`.
     pub fn end_batch(&mut self) {
-        let Some(mut commands) = self.batch.take() else { return };
+        if let Some(command) = self.close_batch() {
+            self.push(HistoryEntry { command });
+        }
+    }
+
+    /// Close the batch as [`end_batch`](Self::end_batch) does, but under
+    /// `label`: what the person asked for, which is what history should
+    /// say, not "Add Clips" for a transcript cut.
+    pub fn end_batch_as(&mut self, label: &str) {
+        if let Some(edit) = self.close_batch() {
+            self.push(HistoryEntry { command: EditCommand::Named { label: label.to_string(), edit: Box::new(edit) } });
+        }
+    }
+
+    fn close_batch(&mut self) -> Option<EditCommand> {
+        let mut commands = self.batch.take()?;
         match commands.len() {
-            0 => {}
-            1 => self.push(HistoryEntry { command: commands.pop().unwrap() }),
-            _ => self.push(HistoryEntry { command: EditCommand::Batch(commands) }),
+            0 => None,
+            1 => commands.pop(),
+            _ => Some(EditCommand::Batch(commands)),
         }
     }
 
@@ -1037,11 +1058,11 @@ impl CommandHistory {
         !self.redo_stack.is_empty()
     }
 
-    pub fn undo_label(&self) -> Option<&'static str> {
+    pub fn undo_label(&self) -> Option<&str> {
         self.undo_stack.back().map(|e| e.label())
     }
 
-    pub fn redo_label(&self) -> Option<&'static str> {
+    pub fn redo_label(&self) -> Option<&str> {
         self.redo_stack.back().map(|e| e.label())
     }
 
@@ -2670,6 +2691,28 @@ mod batch_tests {
             assert_eq!(clip.timeline_in.value, i as i64 * 10, "the batch keeps the order of the pushes");
         }
         assert!(h.undo().is_none(), "the three were one entry");
+    }
+
+    #[test]
+    fn a_batch_closed_under_a_label_shows_that_label_and_undoes_as_one() {
+        let mut h = CommandHistory::new();
+        h.begin_batch();
+        for i in 0..2 {
+            h.push(HistoryEntry { command: append(i) });
+        }
+        h.end_batch_as("Cut 2 fillers");
+        let entry = h.undo().expect("one entry");
+        assert_eq!(entry.label(), "Cut 2 fillers");
+        let EditCommand::Named { edit, .. } = &entry.command else { panic!("not named: {:?}", entry.command) };
+        assert!(matches!(**edit, EditCommand::Batch(ref commands) if commands.len() == 2));
+        assert!(h.undo().is_none(), "the two were one entry");
+        // One edit under a label is still that one edit, named.
+        h.begin_batch();
+        h.push(HistoryEntry { command: append(0) });
+        h.end_batch_as("Cut \u{201C}um\u{201D}");
+        let entry = h.undo().expect("one entry");
+        assert_eq!(entry.label(), "Cut \u{201C}um\u{201D}");
+        assert!(matches!(&entry.command, EditCommand::Named { edit, .. } if matches!(**edit, EditCommand::LegacyAppendClip { .. })));
     }
 
     #[test]

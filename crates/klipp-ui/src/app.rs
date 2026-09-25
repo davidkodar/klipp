@@ -1798,7 +1798,7 @@ impl KlippApp {
             self.apply_edit_forward(e);
             self.state.push_history(e.clone());
         }
-        self.state.active_history_mut().end_batch();
+        self.state.active_history_mut().end_batch_as(label);
         self.state.dirty = true;
         self.state.media_usage_cache_dirty = true;
         self.sync_sequence_to_engine();
@@ -1819,11 +1819,15 @@ impl KlippApp {
             } else {
                 ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
             };
-            // A refusal, as the person at the keyboard reads it: where, and why.
+            // A refusal, as the person at the keyboard reads it: where, and
+            // why. The document's hints are written for whoever asked, the
+            // assistant included; the one a person meets from the captions
+            // form is said in the form's own words.
             let said = |r: &Refusal| {
                 let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
                 match ops.get(r.step) {
                     Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
+                    Some(Op::Captions { .. }) if r.why.contains("would overlap") => "Captions already exist in that range; tick Replace to overwrite them".to_string(),
                     _ => format!("{}{hint}", r.why),
                 }
             };

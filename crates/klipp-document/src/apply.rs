@@ -68,6 +68,7 @@ impl DocumentView<'_> {
                     effects.merge(self.apply_inverse(c));
                 }
             }
+            EditCommand::Named { edit, .. } => effects.merge(self.apply_inverse(edit)),
             EditCommand::AddTrack { index, track } => {
                 let seq = &mut self.sequences[self.active];
                 if seq.tracks.get(*index).is_some_and(|t| t.id == track.id) {
@@ -675,6 +676,7 @@ impl DocumentView<'_> {
                     effects.merge(self.apply_forward(c));
                 }
             }
+            EditCommand::Named { edit, .. } => effects.merge(self.apply_forward(edit)),
             EditCommand::AddTrack { index, track } => {
                 let seq = &mut self.sequences[self.active];
                 let idx = (*index).min(seq.tracks.len());
