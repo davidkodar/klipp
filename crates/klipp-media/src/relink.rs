@@ -15,6 +15,7 @@
 //! is what the tests exercise. [`scan`] walks a folder and reads each
 //! plausible file, and is what a UI runs on a worker thread.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -37,6 +38,10 @@ pub enum Criterion {
     NameStem,
     /// The same duration, within a frame.
     Duration,
+    /// The same filename in a folder of the same name: the same place on
+    /// a drive mounted somewhere else, and what tells two cards'
+    /// `C0001.MP4` apart when each sits in its card's folder.
+    Folder,
 }
 
 impl Criterion {
@@ -48,6 +53,7 @@ impl Criterion {
             Criterion::Name => "name",
             Criterion::NameStem => "name (other extension)",
             Criterion::Duration => "duration",
+            Criterion::Folder => "folder",
         }
     }
 
@@ -62,6 +68,7 @@ impl Criterion {
             Criterion::Name => 150,
             Criterion::NameStem => 100,
             Criterion::Duration => 60,
+            Criterion::Folder => 120,
         }
     }
 }
@@ -89,6 +96,8 @@ impl Default for Criteria {
 pub struct Wanted {
     pub media_id: MediaId,
     pub filename: String,
+    /// Where the file was: its folder's name is evidence too.
+    pub original_path: PathBuf,
     pub file_size: u64,
     pub fingerprint: Option<u64>,
     pub reel: Option<String>,
@@ -107,6 +116,7 @@ impl Wanted {
         Self {
             media_id: item.id,
             filename: item.filename.clone(),
+            original_path: item.path.clone(),
             file_size: item.file_size_bytes,
             fingerprint: item.fingerprint,
             reel: item.shot.reel_name.clone(),
@@ -156,14 +166,21 @@ pub struct Scored {
 
 impl Scored {
     /// Whether this is evidence enough to relink without the user
-    /// choosing: content, reel or timecode, or a name the duration
-    /// confirms. A bare name or a bare duration is only a suggestion.
+    /// choosing: the same content, or two independent identities
+    /// agreeing (reel, timecode, name), or a name the duration confirms.
+    ///
+    /// A reel alone is not enough: it names a card, not a clip, and a
+    /// sibling on the same card with the same length would be ticked. A
+    /// timecode alone is not either: jam-synced cameras on a remote start
+    /// record the same one. A bare name or duration is only a suggestion.
     pub fn is_strong(&self) -> bool {
         let has = |c| self.matched.contains(&c);
-        has(Criterion::Content)
-            || has(Criterion::Reel)
-            || has(Criterion::Timecode)
-            || ((has(Criterion::Name) || has(Criterion::NameStem)) && has(Criterion::Duration))
+        let named = has(Criterion::Name) || has(Criterion::NameStem);
+        let identities = usize::from(named)
+            + usize::from(has(Criterion::Reel))
+            + usize::from(has(Criterion::Timecode))
+            + usize::from(has(Criterion::Folder));
+        has(Criterion::Content) || identities >= 2 || (named && has(Criterion::Duration))
     }
 }
 
@@ -197,6 +214,10 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
 
     if criteria.name && name == w.filename {
         matched.push(Criterion::Name);
+        let folder = |p: &Path| p.parent().and_then(|d| d.file_name()).map(|n| n.to_os_string());
+        if folder(&w.original_path).is_some_and(|f| Some(f) == folder(&c.path)) {
+            matched.push(Criterion::Folder);
+        }
     } else if criteria.name_any_extension && stem(&name).eq_ignore_ascii_case(stem(&w.filename)) && !stem(&name).is_empty() {
         matched.push(Criterion::NameStem);
     }
@@ -224,13 +245,18 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
         }
         if criteria.duration {
             if let (Some(a), Some(b)) = (w.duration_secs, facts.duration_secs) {
-                // A frame at the item's rate, and never tighter than a
-                // container's rounding.
-                let tolerance = w.fps.map_or(0.05, |f| (1.0 / f).max(0.02));
-                if (a - b).abs() <= tolerance {
+                // Within a frame is a match. Beyond that is not yet a
+                // contradiction: a transcode's audio padding (AAC primes
+                // up to ~21 ms) lengthens the container by more than a
+                // frame at 50p. Only a difference no transcode makes
+                // rules the file out.
+                let diff = (a - b).abs();
+                if diff <= frame_tolerance(w.fps) {
                     matched.push(Criterion::Duration);
-                } else {
+                } else if diff > DURATION_VETO_SECS {
                     contradiction = contradiction.or(Some(format!("{name}: {b:.2} s long, not {a:.2} s")));
+                } else {
+                    warnings.push(format!("{:.0} ms {}", diff * 1000.0, if b > a { "longer" } else { "shorter" }));
                 }
             }
         }
@@ -272,13 +298,19 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
 /// the same. Candidates that tie are all returned for the user to choose
 /// from, which is what keeps two cards' `C0001.MP4` from relinking by
 /// accident.
+///
+/// Copies with the same content tie by construction — a backup folder
+/// beside the footage — and are the same file, so the first is proposed
+/// with a note rather than offered as a choice.
 pub fn propose(wanted: &[Wanted], candidates: &[Candidate], criteria: Criteria) -> Vec<Proposal> {
+    let index = Index::new(candidates);
     wanted
         .iter()
         .map(|w| {
             let mut hits = Vec::new();
             let mut rejected = Vec::new();
-            for (i, c) in candidates.iter().enumerate() {
+            for i in index.candidates_for(w, criteria) {
+                let c = &candidates[i];
                 match score(w, c, criteria) {
                     Ok(mut s) => {
                         s.candidate = i;
@@ -296,11 +328,97 @@ pub fn propose(wanted: &[Wanted], candidates: &[Candidate], criteria: Criteria) 
                 _ => {
                     let top = hits[0].score;
                     hits.retain(|h| h.score == top);
-                    Proposal::Ambiguous(hits)
+                    if hits.iter().all(|h| h.matched.contains(&Criterion::Content)) {
+                        let copies = hits.len();
+                        let mut first = hits.remove(0);
+                        first.warnings.push(format!("{copies} identical copies found; this is the first"));
+                        Proposal::Found(first)
+                    } else {
+                        Proposal::Ambiguous(hits)
+                    }
                 }
             }
         })
         .collect()
+}
+
+/// One frame at `fps`, and never tighter than a container's rounding.
+fn frame_tolerance(fps: Option<f64>) -> f64 {
+    fps.map_or(0.05, |f| (1.0 / f).max(0.02))
+}
+
+/// A duration difference past this rules a candidate out. Transcodes,
+/// rewraps and audio padding all stay well inside it.
+pub const DURATION_VETO_SECS: f64 = 0.25;
+
+/// Candidates grouped by the keys a match can come from, so each wanted
+/// item is scored against the files that share something with it rather
+/// than against every file in the folder.
+struct Index {
+    by_stem: HashMap<String, Vec<usize>>,
+    by_size: HashMap<u64, Vec<usize>>,
+    by_reel: HashMap<String, Vec<usize>>,
+    by_tc: HashMap<String, Vec<usize>>,
+    /// Sorted by duration.
+    by_duration: Vec<(f64, usize)>,
+}
+
+impl Index {
+    fn new(candidates: &[Candidate]) -> Self {
+        let mut ix = Index {
+            by_stem: HashMap::new(),
+            by_size: HashMap::new(),
+            by_reel: HashMap::new(),
+            by_tc: HashMap::new(),
+            by_duration: Vec::new(),
+        };
+        for (i, c) in candidates.iter().enumerate() {
+            let name = c.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            ix.by_stem.entry(stem(&name).to_ascii_lowercase()).or_default().push(i);
+            if c.file_size > 0 {
+                ix.by_size.entry(c.file_size).or_default().push(i);
+            }
+            if let Some(f) = &c.facts {
+                if let Some(r) = norm_reel(f.reel.as_deref()) {
+                    ix.by_reel.entry(r).or_default().push(i);
+                }
+                if let Some(t) = norm_tc(f.start_timecode.as_deref()) {
+                    ix.by_tc.entry(t).or_default().push(i);
+                }
+                if let Some(d) = f.duration_secs {
+                    ix.by_duration.push((d, i));
+                }
+            }
+        }
+        ix.by_duration.sort_by(|a, b| a.0.total_cmp(&b.0));
+        ix
+    }
+
+    /// Every candidate that could score on some criterion for `w`.
+    fn candidates_for(&self, w: &Wanted, criteria: Criteria) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut add = |v: Option<&Vec<usize>>| out.extend(v.into_iter().flatten().copied());
+        if criteria.name || criteria.name_any_extension {
+            add(self.by_stem.get(&stem(&w.filename).to_ascii_lowercase()));
+        }
+        add(self.by_size.get(&w.file_size));
+        if criteria.reel {
+            add(norm_reel(w.reel.as_deref()).and_then(|r| self.by_reel.get(&r)));
+        }
+        if criteria.timecode {
+            add(norm_tc(w.start_timecode.as_deref()).and_then(|t| self.by_tc.get(&t)));
+        }
+        if criteria.duration {
+            if let Some(d) = w.duration_secs {
+                let tol = frame_tolerance(w.fps);
+                let from = self.by_duration.partition_point(|(x, _)| *x < d - tol);
+                out.extend(self.by_duration[from..].iter().take_while(|(x, _)| *x <= d + tol).map(|(_, i)| *i));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 fn stem(name: &str) -> &str {
@@ -380,7 +498,8 @@ pub const MAX_FILES: usize = 200_000;
 /// fingerprint only when the size equals some wanted item's; its header
 /// (duration, rate, resolution, reel, timecode) when it shares a name or
 /// a size with something wanted, and otherwise only when `criteria`
-/// match on reel, timecode or duration. There is no depth limit — a card's `PRIVATE/M4ROOT/CLIP`
+/// match on reel, timecode or duration — which the defaults do, so by
+/// default every video and audio file is read. See [`needs_headers`]. There is no depth limit — a card's `PRIVATE/M4ROOT/CLIP`
 /// is four levels down before anyone has organised anything — but
 /// symlinked folders are not followed.
 pub fn scan(
@@ -428,7 +547,7 @@ pub fn scan(
     let sizes: std::collections::HashSet<u64> = wanted.iter().map(|w| w.file_size).filter(|&s| s > 0).collect();
     let names: std::collections::HashSet<String> =
         wanted.iter().map(|w| stem(&w.filename).to_ascii_lowercase()).collect();
-    let needs_facts = criteria.reel || criteria.timecode || criteria.duration;
+    let needs_facts = needs_headers(criteria);
     for path in files {
         let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -461,6 +580,13 @@ pub fn scan(
     }
     progress(p);
     out
+}
+
+/// Whether `criteria` need every file's header read, not only those
+/// sharing a name or size with something wanted. A scan made without
+/// them cannot serve criteria that need them; search again.
+pub fn needs_headers(criteria: Criteria) -> bool {
+    criteria.reel || criteria.timecode || criteria.duration
 }
 
 /// Read a file's duration, rate, resolution, reel and start timecode —
@@ -689,6 +815,114 @@ mod tests {
                 assert!(s.matched.contains(&Criterion::Timecode));
             }
             other => panic!("expected the A002 card, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reel_alone_does_not_tick_a_same_card_sibling() {
+        let mut w = wanted("C0001.MP4");
+        w.reel = Some("A001".into());
+        let sibling = Facts { reel: Some("A001".into()), ..ten_seconds() };
+        match &propose(&[w], &[cand("/a/C0002.MP4", sibling)], Criteria::default())[0] {
+            Proposal::Found(s) => assert!(!s.is_strong(), "{s:?}"),
+            other => panic!("expected a weak suggestion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_contradicting_timecode_rules_the_file_out_not_just_down() {
+        let mut w = wanted("C0001.MP4");
+        w.start_timecode = Some("01:00:00:00".into());
+        let other = Facts { start_timecode: Some("02:00:00:00".into()), ..ten_seconds() };
+        match &propose(&[w], &[cand("/a/C0001.MP4", other)], Criteria::default())[0] {
+            Proposal::NotFound { rejected } => assert!(rejected[0].contains("starts at 02:00:00:00"), "{rejected:?}"),
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_metadata_on_either_side_is_ignored_not_a_contradiction() {
+        let mut w = wanted("C0001.MP4");
+        w.reel = Some("A001".into());
+        w.start_timecode = None;
+        // The file has a timecode the item never read, and no reel.
+        let facts = Facts { start_timecode: Some("01:00:00:00".into()), ..ten_seconds() };
+        assert!(matches!(propose(&[w], &[cand("/a/C0001.MP4", facts)], Criteria::default())[0], Proposal::Found(_)));
+    }
+
+    #[test]
+    fn transcode_padding_is_neither_a_match_nor_a_veto() {
+        let mut w = wanted("A001C001.MXF");
+        w.fps = Some(50.0);
+        // 21 ms of AAC priming: more than a frame at 50p.
+        let padded = Facts { duration_secs: Some(10.021), fps: Some(50.0), ..ten_seconds() };
+        match &propose(&[w], &[cand("/t/A001C001.mov", padded)], Criteria::default())[0] {
+            Proposal::Found(s) => {
+                assert_eq!(s.matched, vec![Criterion::NameStem]);
+                assert!(s.warnings.iter().any(|x| x.contains("21 ms longer")), "{:?}", s.warnings);
+            }
+            other => panic!("expected the transcode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn byte_identical_backups_do_not_make_a_choice() {
+        let w = [wanted("C0001.MP4")];
+        let copy = |p: &str| Candidate { path: p.into(), file_size: 1000, fingerprint: Some(42), facts: Some(ten_seconds()) };
+        match &propose(&w, &[copy("/footage/C0001.MP4"), copy("/backup/C0001.MP4")], Criteria::default())[0] {
+            Proposal::Found(s) => {
+                assert_eq!(s.candidate, 0);
+                assert!(s.warnings.iter().any(|x| x.contains("2 identical copies")));
+            }
+            other => panic!("expected the first copy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proposing_scales_to_a_large_folder() {
+        let w: Vec<Wanted> = (0..500).map(|i| Wanted { duration_secs: Some(1000.0 + i as f64), ..wanted(&format!("C{i:04}.MP4")) }).collect();
+        let c: Vec<Candidate> = (0..200_000)
+            .map(|i| Candidate {
+                path: format!("/big/X{i:06}.MP4").into(),
+                file_size: 7 + i as u64,
+                fingerprint: None,
+                facts: Some(Facts { duration_secs: Some(i as f64 * 0.37), ..Facts::default() }),
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        let out = propose(&w, &c, Criteria::default());
+        assert_eq!(out.len(), 500);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn scan_stops_when_cancelled_and_does_not_follow_symlinked_folders() {
+        let root = std::env::temp_dir().join(format!("klipp-relink-walk-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::write(root.join("real/C0001.MP4"), b"x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&root, root.join("real/loop")).unwrap();
+        let w = [wanted("C0001.MP4")];
+        let found = scan(&root, &w, Criteria::default(), &AtomicBool::new(false), |_| {});
+        assert_eq!(found.candidates.len(), 1);
+        #[cfg(unix)]
+        assert_eq!(found.skipped_dirs, 1);
+        let cancelled = scan(&root, &w, Criteria::default(), &AtomicBool::new(true), |_| {});
+        std::fs::remove_dir_all(&root).ok();
+        assert!(cancelled.cancelled && cancelled.candidates.is_empty());
+    }
+
+    #[test]
+    fn the_card_folder_tells_two_cards_same_name_apart() {
+        let mut w = wanted("C0001.MP4");
+        w.original_path = "/mnt/old/shoot/CARD_B/C0001.MP4".into();
+        let c = [cand("/media/new/shoot/CARD_A/C0001.MP4", ten_seconds()), cand("/media/new/shoot/CARD_B/C0001.MP4", ten_seconds())];
+        match &propose(&[w], &c, Criteria::default())[0] {
+            Proposal::Found(s) => {
+                assert_eq!(s.candidate, 1);
+                assert!(s.matched.contains(&Criterion::Folder) && s.is_strong());
+            }
+            other => panic!("expected CARD_B, got {other:?}"),
         }
     }
 }

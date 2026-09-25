@@ -22,6 +22,8 @@ use crate::theme::KlippTheme;
 #[derive(Default)]
 pub struct RelinkPanel {
     criteria: Criteria,
+    /// The project this panel's search and plan belong to.
+    epoch: u64,
     /// A folder to search, asked for before the dialog next drew.
     requested: Option<PathBuf>,
     scan: Option<Running>,
@@ -33,15 +35,21 @@ struct Running {
     wanted: Vec<Wanted>,
     cancel: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
-    rx: mpsc::Receiver<ScanResult>,
+    rx: mpsc::Receiver<(ScanResult, Vec<Proposal>)>,
 }
 
 struct Plan {
     dir: PathBuf,
-    wanted: Vec<Wanted>,
-    found: ScanResult,
+    wanted: Arc<Vec<Wanted>>,
+    found: Arc<ScanResult>,
+    /// The criteria the scan ran with: it read headers only if these
+    /// needed them.
+    scanned_with: Criteria,
     proposals: Vec<Proposal>,
     rows: Vec<Row>,
+    /// Re-scoring for changed criteria, on a worker: the criteria, then
+    /// the proposals.
+    rescoring: Option<mpsc::Receiver<(Criteria, Vec<Proposal>)>>,
 }
 
 struct Row {
@@ -72,7 +80,9 @@ impl RelinkPanel {
                 *progress2.lock().unwrap_or_else(|e| e.into_inner()) = p;
                 ctx.request_repaint();
             });
-            let _ = tx.send(found);
+            // Scored here too: with a large folder it is not a UI-frame job.
+            let proposals = relink::propose(&wanted2, &found.candidates, criteria);
+            let _ = tx.send((found, proposals));
             ctx.request_repaint();
         });
         if let Err(e) = spawned {
@@ -86,6 +96,14 @@ impl RelinkPanel {
     /// Draw the dialog's contents. Returns the relinks the user applied.
     pub fn show(&mut self, ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        // A search belongs to the project it was made for.
+        if self.epoch != state.project_epoch {
+            if let Some(old) = self.scan.take() {
+                old.cancel.store(true, Ordering::Relaxed);
+            }
+            self.plan = None;
+            self.epoch = state.project_epoch;
+        }
         if let Some(dir) = self.requested.take() {
             self.start_scan(dir, state, ui.ctx());
         }
@@ -113,7 +131,7 @@ impl RelinkPanel {
             ui.checkbox(&mut c.duration, "Duration").on_hover_text("Within one frame");
             if *c != before {
                 if let Some(plan) = &mut self.plan {
-                    plan.repropose(*c);
+                    plan.repropose(*c, ui.ctx());
                 }
             }
         });
@@ -135,6 +153,11 @@ impl RelinkPanel {
                         .unwrap_or_default()
                 });
             }
+            if let Some(dir) = self.plan.as_ref().map(|p| p.dir.clone()) {
+                if ui.add_enabled(!searching, egui::Button::new("Search Again")).on_hover_text(dir.display().to_string()).clicked() {
+                    self.requested = Some(dir);
+                }
+            }
             if let Some(scan) = &self.scan {
                 let p = *scan.progress.lock().unwrap_or_else(|e| e.into_inner());
                 ui.spinner();
@@ -151,10 +174,9 @@ impl RelinkPanel {
 
         ui.separator();
         if let Some(plan) = &mut self.plan {
-            cmds = plan.show(ui, state, theme);
-            if !cmds.is_empty() {
-                self.plan = None;
-            }
+            // The plan stays after relinking: rows that went online say
+            // so, and the ones still to choose are still there.
+            cmds = plan.show(ui, state, theme, self.criteria);
         } else {
             // Before a search: what is missing, each locatable by hand.
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
@@ -173,12 +195,18 @@ impl RelinkPanel {
 
     fn collect_scan(&mut self) {
         let Some(scan) = &self.scan else { return };
-        let Ok(found) = scan.rx.try_recv() else { return };
+        let Ok((found, proposals)) = scan.rx.try_recv() else { return };
         let scan = self.scan.take().expect("checked above");
-        let proposals = relink::propose(&scan.wanted, &found.candidates, self.criteria);
-        let mut plan = Plan { dir: scan.dir, wanted: scan.wanted, found, proposals, rows: Vec::new() };
-        plan.rows = plan.proposals.iter().map(Row::for_proposal).collect();
-        self.plan = Some(plan);
+        let rows = proposals.iter().map(Row::for_proposal).collect();
+        self.plan = Some(Plan {
+            dir: scan.dir,
+            wanted: Arc::new(scan.wanted),
+            found: Arc::new(found),
+            scanned_with: self.criteria,
+            proposals,
+            rows,
+            rescoring: None,
+        });
     }
 }
 
@@ -192,12 +220,39 @@ impl Row {
 }
 
 impl Plan {
-    fn repropose(&mut self, criteria: Criteria) {
-        self.proposals = relink::propose(&self.wanted, &self.found.candidates, criteria);
-        self.rows = self.proposals.iter().map(Row::for_proposal).collect();
+    fn repropose(&mut self, criteria: Criteria, ctx: &egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        let (wanted, found, ctx) = (self.wanted.clone(), self.found.clone(), ctx.clone());
+        let spawned = std::thread::Builder::new().name("relink-score".into()).spawn(move || {
+            let _ = tx.send((criteria, relink::propose(&wanted, &found.candidates, criteria)));
+            ctx.request_repaint();
+        });
+        match spawned {
+            Ok(_) => self.rescoring = Some(rx),
+            Err(e) => tracing::error!("relink: could not re-score: {e}"),
+        }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) -> Vec<AppCommand> {
+    fn collect_rescore(&mut self, current: Criteria) {
+        let Some(rx) = &self.rescoring else { return };
+        let Ok((criteria, proposals)) = rx.try_recv() else { return };
+        self.rescoring = None;
+        // A later toggle has its own re-score coming.
+        if criteria == current {
+            self.rows = proposals.iter().map(Row::for_proposal).collect();
+            self.proposals = proposals;
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, criteria: Criteria) -> Vec<AppCommand> {
+        self.collect_rescore(criteria);
+        if self.rescoring.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Re-scoring\u{2026}");
+            });
+            return Vec::new();
+        }
         let found = self.proposals.iter().filter(|p| matches!(p, Proposal::Found(_))).count();
         let choices = self.proposals.iter().filter(|p| matches!(p, Proposal::Ambiguous(_))).count();
         let missing = self.proposals.len() - found - choices;
@@ -211,6 +266,12 @@ impl Plan {
         }
         if self.found.hit_file_limit {
             notes.push(format!("the search stopped after {} media files", relink::MAX_FILES));
+        }
+        if relink::needs_headers(criteria) && !relink::needs_headers(self.scanned_with) {
+            notes.push(
+                "reel, timecode and duration were read only for files sharing a name or size with a missing item; Search Again to use them for the rest"
+                    .to_string(),
+            );
         }
         if self.found.skipped_dirs > 0 {
             notes.push(format!("{} folders could not be read or are links, and were skipped", self.found.skipped_dirs));
@@ -279,6 +340,21 @@ impl Plan {
                     .into_iter()
                     .map(|(media_id, new_path)| AppCommand::RelinkMedia { media_id, new_path })
                     .collect();
+                for row in &mut self.rows {
+                    row.apply = false;
+                }
+            }
+            if ui.button("Tick Clear Matches").on_hover_text("Tick every row whose match is strong").clicked() {
+                for (row, p) in self.rows.iter_mut().zip(&self.proposals) {
+                    if let Proposal::Found(s) = p {
+                        row.apply = s.is_strong();
+                    }
+                }
+            }
+            if ui.button("Untick All").clicked() {
+                for row in &mut self.rows {
+                    row.apply = false;
+                }
             }
         });
         cmds
