@@ -669,6 +669,14 @@ impl EffectRegistry {
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
+                name: "High-pass Filter".into(),
+                category: EffectCategory::AudioRestoration,
+                source: EffectSource::Audio("high_pass".into()),
+                source_label: "Built-in",
+                description: "Remove low-frequency rumble and wind".into(),
+                grouping: "Restoration".into(),
+            },
+            EffectEntry {
                 name: "De-Esser".into(),
                 category: EffectCategory::AudioRestoration,
                 source: EffectSource::Audio("deesser".into()),

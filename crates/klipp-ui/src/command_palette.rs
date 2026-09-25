@@ -865,6 +865,24 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }),
             enabled: true,
         });
+        // Camera-wind preset: a conservative rumble cut followed by a gate
+        // for pauses. Each effect is still editable in the Audio inspector.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Camera Wind — rumble reduction"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Custom(|state, cmds| {
+                let Some(cid) = state.selected_clip else { return };
+                let base = state.sequence().all_clips().find(|c| c.id == cid).map(|c| c.audio_effects.len()).unwrap_or(0);
+                cmds.push(AppCommand::AddAudioEffect { clip_id: cid, effect_type: "high_pass".into() });
+                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id: cid, effect_index: base, param_name: "frequency".into(), value: 100.0 });
+                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id: cid, effect_index: base, param_name: "slope".into(), value: 3.0 });
+                cmds.push(AppCommand::AddAudioEffect { clip_id: cid, effect_type: "gate".into() });
+                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id: cid, effect_index: base + 1, param_name: "threshold".into(), value: -45.0 });
+                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id: cid, effect_index: base + 1, param_name: "range".into(), value: -18.0 });
+                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id: cid, effect_index: base + 1, param_name: "release".into(), value: 120.0 });
+            }),
+            enabled: true,
+        });
         // PiP corner presets — one entry per corner. Drops a 30 %-
         // scale Transform onto the selected clip with the clip
         // anchored to the named corner of the frame, with offsets
