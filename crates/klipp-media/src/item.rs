@@ -452,6 +452,13 @@ impl MediaItem {
             if t.contains("v-log") || t.contains("vlog") {
                 return LogFormat::VLog;
             }
+            // An explicit SDR transfer is authoritative: a 10-bit Sony or
+            // iPhone clip shot in a Rec.709 profile says so here, and the
+            // camera guesses below would otherwise call it log. Only an
+            // unknown or unspecified tag falls through to them.
+            if is_sdr_transfer(&t) {
+                return LogFormat::Srgb;
+            }
         }
 
         // For camera-specific detection, only suggest if bit depth > 8 (10-bit+ = likely log)
@@ -525,6 +532,20 @@ impl MediaItem {
 
         LogFormat::Srgb
     }
+}
+
+/// Whether a lowercased `color_transfer` name is an SDR display curve.
+/// Takes both the probe's display names ("BT.709", "SMPTE 170M",
+/// "Gamma 2.2", "sRGB", "BT.2020 10-bit") and ffmpeg's short names
+/// ("bt709", "smpte170m", "gamma22", "iec61966-2-1", "bt2020-10").
+fn is_sdr_transfer(trc: &str) -> bool {
+    let key: String = trc.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    matches!(
+        key.as_str(),
+        "bt709" | "bt1886" | "bt1361" | "bt1361e" | "smpte170m" | "smpte240m"
+            | "bt470m" | "bt470bg" | "gamma22" | "gamma28" | "srgb" | "iec6196621"
+            | "bt202010" | "bt202012" | "bt202010bit" | "bt202012bit"
+    )
 }
 
 #[cfg(test)]
@@ -1002,6 +1023,62 @@ mod reprobe_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ten_bit_hevc(make: &str, model: &str, encoder: &str, trc: Option<&str>) -> MediaItem {
+        let mut item = MediaItem::synthetic_for_test(std::path::PathBuf::from("/tmp/c.mp4"), None);
+        item.camera_make = (!make.is_empty()).then(|| make.to_string());
+        item.camera_model = (!model.is_empty()).then(|| model.to_string());
+        item.encoder = (!encoder.is_empty()).then(|| encoder.to_string());
+        item.bit_depth = Some(10);
+        item.pixel_format = Some("yuv420p10le".into());
+        item.color_transfer = trc.map(str::to_string);
+        item
+    }
+
+    #[test]
+    fn a_bt709_tagged_ten_bit_sony_clip_is_sdr() {
+        use klipp_core::LogFormat;
+        for trc in ["BT.709", "bt709"] {
+            let item = ten_bit_hevc("Sony", "ILCE-6700", "HEVC Coding", Some(trc));
+            assert_eq!(item.detect_log_format(), LogFormat::Srgb, "{trc}");
+        }
+        let item = ten_bit_hevc("", "", "HEVC Coding", Some("BT.709"));
+        assert_eq!(item.detect_log_format(), LogFormat::Srgb, "encoder guess");
+    }
+
+    #[test]
+    fn an_untagged_ten_bit_sony_clip_is_still_slog3() {
+        use klipp_core::LogFormat;
+        for trc in [None, Some("Unspecified"), Some("unknown")] {
+            let item = ten_bit_hevc("Sony", "", "", trc);
+            assert_eq!(item.detect_log_format(), LogFormat::SLog3, "{trc:?}");
+            let item = ten_bit_hevc("", "", "HEVC Coding", trc);
+            assert_eq!(item.detect_log_format(), LogFormat::SLog3, "{trc:?}");
+        }
+    }
+
+    #[test]
+    fn an_iphone_clip_follows_its_transfer_tag() {
+        use klipp_core::LogFormat;
+        let sdr = ten_bit_hevc("Apple", "iPhone 15 Pro", "", Some("BT.709"));
+        assert_eq!(sdr.detect_log_format(), LogFormat::Srgb);
+        let hlg = ten_bit_hevc("Apple", "iPhone 15 Pro", "", Some("HLG (ARIB STD-B67)"));
+        assert_eq!(hlg.detect_log_format(), LogFormat::HLG);
+        let untagged = ten_bit_hevc("Apple", "iPhone 15 Pro", "", None);
+        assert_eq!(untagged.detect_log_format(), LogFormat::AppleLog);
+    }
+
+    #[test]
+    fn every_sdr_transfer_name_is_recognised() {
+        for trc in ["BT.709", "Gamma 2.2", "Gamma 2.8", "SMPTE 170M", "sRGB", "BT.2020 10-bit",
+            "BT.2020 12-bit", "smpte170m", "bt470bg", "iec61966-2-1", "gamma22", "bt2020-10"]
+        {
+            assert!(is_sdr_transfer(&trc.to_lowercase()), "{trc}");
+        }
+        for trc in ["Unspecified", "unknown", "PQ (ST 2084)", "Linear", ""] {
+            assert!(!is_sdr_transfer(&trc.to_lowercase()), "{trc}");
+        }
+    }
 
     #[test]
     fn a_duration_reads_as_seconds_under_a_minute_and_minutes_past_it() {
