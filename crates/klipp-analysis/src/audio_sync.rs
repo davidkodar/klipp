@@ -256,17 +256,112 @@ pub fn decode_mono_pcm(ffmpeg: &std::path::Path, path: &std::path::Path, sample_
 /// overlap. Confidence is the normalised correlation of the envelopes at
 /// that lag: roughly 0 for unrelated sound, near 1 for the same room.
 pub fn find_long_offset(reference: &[f32], clip: &[f32], sample_rate: u32) -> Option<(f64, f64)> {
-    let hop = (sample_rate / ENVELOPE_RATE).max(1) as usize;
-    let a = onset_envelope(reference, hop);
-    let b = onset_envelope(clip, hop);
-    let min_overlap = (MIN_OVERLAP_SECS * ENVELOPE_RATE as f64) as usize;
-    if a.len() < min_overlap || b.len() < min_overlap {
+    let coarse = coarse_offset(&SoundPrint::of(reference, sample_rate), &SoundPrint::of(clip, sample_rate))?;
+    let sr = f64::from(sample_rate);
+    let (ref_from, clip_from, len) = coarse.refine_windows();
+    let slice = |pcm: &'_ [f32], from: f64, secs: f64| {
+        let a = ((from * sr).round().max(0.0) as usize).min(pcm.len());
+        let b = (a + (secs * sr).round() as usize).min(pcm.len());
+        pcm[a..b].to_vec()
+    };
+    let r = slice(reference, ref_from, len);
+    let c = slice(clip, clip_from, len + 2.0 * REFINE_SLACK_SECS);
+    Some((refine_offset(&r, &c, sample_rate, &coarse), coarse.confidence))
+}
+
+/// A recording's level envelope, 100 frames a second: all
+/// the coarse search needs of a whole file. An hour is a few hundred kB,
+/// where the sound it came from is over a hundred MB at 8 kHz, so a
+/// dozen angles can be compared without holding a dozen files' sound.
+#[derive(Debug, Clone)]
+pub struct SoundPrint {
+    env: Vec<f32>,
+}
+
+impl SoundPrint {
+    pub fn of(pcm: &[f32], sample_rate: u32) -> Self {
+        let hop = (sample_rate / ENVELOPE_RATE).max(1) as usize;
+        Self { env: onset_envelope(pcm, hop) }
+    }
+
+    pub fn secs(&self) -> f64 {
+        self.env.len() as f64 / f64::from(ENVELOPE_RATE)
+    }
+}
+
+/// Where a clip sits against a reference, to within an envelope frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoarseMatch {
+    /// A moment `t` into the reference is `t + offset_secs` into the clip.
+    pub offset_secs: f64,
+    /// 0 (chance) to 1 (unmistakable). See [`find_long_offset`].
+    pub confidence: f64,
+    /// Where in the reference to refine: the start of a window in the
+    /// middle of the overlap.
+    pub probe_at_secs: f64,
+}
+
+impl CoarseMatch {
+    /// The stretches to decode for [`refine_offset`]: the reference from
+    /// the first value, the clip from the second, for the third's length
+    /// (the clip's plus twice [`REFINE_SLACK_SECS`]).
+    pub fn refine_windows(&self) -> (f64, f64, f64) {
+        (self.probe_at_secs, self.probe_at_secs + self.offset_secs - REFINE_SLACK_SECS, REFINE_WINDOW_SECS)
+    }
+}
+
+/// The waveform compared to refine a coarse match.
+pub const REFINE_WINDOW_SECS: f64 = 2.0;
+/// How far either side of the coarse match the refinement looks: two
+/// envelope frames.
+pub const REFINE_SLACK_SECS: f64 = 2.0 / ENVELOPE_RATE as f64;
+
+/// The coarse half of [`find_long_offset`], on prints.
+pub fn coarse_offset(reference: &SoundPrint, clip: &SoundPrint) -> Option<CoarseMatch> {
+    let min_overlap = (MIN_OVERLAP_SECS * f64::from(ENVELOPE_RATE)) as usize;
+    if reference.env.len() < min_overlap || clip.env.len() < min_overlap {
         return None;
     }
-    let (lag, confidence) = best_envelope_lag(&a, &b, min_overlap)?;
-    let coarse = lag * hop as i64;
-    let fine = refine_lag(reference, clip, coarse, hop as i64, sample_rate as usize * 2);
-    Some((fine as f64 / f64::from(sample_rate), confidence))
+    let (lag, confidence) = best_envelope_lag(&reference.env, &clip.env, min_overlap)?;
+    let offset_secs = lag as f64 / f64::from(ENVELOPE_RATE);
+    // The overlap in reference time, and a window in its middle that
+    // leaves the slack inside both recordings.
+    let from = (-offset_secs).max(0.0) + REFINE_SLACK_SECS;
+    let to = reference.secs().min(clip.secs() - offset_secs) - REFINE_SLACK_SECS;
+    let probe_at_secs = (from + (to - from - REFINE_WINDOW_SECS) / 2.0).max(from);
+    Some(CoarseMatch { offset_secs, confidence, probe_at_secs })
+}
+
+/// Refine `coarse` to the sample: `reference` and `clip` are the windows
+/// [`CoarseMatch::refine_windows`] names. Falls back to the coarse offset
+/// where there is nothing to compare — digital silence would otherwise
+/// pull the answer to the edge of the search.
+pub fn refine_offset(reference: &[f32], clip: &[f32], sample_rate: u32, coarse: &CoarseMatch) -> f64 {
+    let sr = f64::from(sample_rate);
+    let slack = (REFINE_SLACK_SECS * sr).round() as usize;
+    let w = reference.len().min(clip.len().saturating_sub(2 * slack));
+    let energy = |x: &[f32]| x.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>();
+    if w < 16 || energy(&reference[..w]) <= 1e-9 {
+        return coarse.offset_secs;
+    }
+    let seg = &reference[..w];
+    let mut best: Option<(usize, f64)> = None;
+    for k in 0..=2 * slack {
+        let other = &clip[k..k + w];
+        let eb = energy(other);
+        if eb <= 1e-9 {
+            continue;
+        }
+        let num: f64 = seg.iter().zip(other).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum();
+        let score = num / (energy(seg) * eb).sqrt();
+        if best.is_none_or(|(_, s)| score > s) {
+            best = Some((k, score));
+        }
+    }
+    match best {
+        Some((k, _)) => coarse.offset_secs - REFINE_SLACK_SECS + k as f64 / sr,
+        None => coarse.offset_secs,
+    }
 }
 
 /// Envelope frames per second for [`find_long_offset`].
@@ -300,9 +395,12 @@ fn onset_envelope(pcm: &[f32], hop: usize) -> Vec<f32> {
         .collect()
 }
 
-/// A lag whose correlation stands this many standard errors above chance
-/// is certainly the match; below it, confidence is scaled down. Chance
-/// peaks over a few thousand lags reach about 4.
+/// Significance (correlation × √overlap) at or below which a peak is
+/// what chance produces over tens of thousands of lags of a smooth
+/// envelope, and at or above which it is unmistakable. Confidence runs
+/// from 0 to 1 between them, so it measures the same thing the lag was
+/// chosen by.
+const CHANCE_Z: f64 = 5.0;
 const SURE_Z: f64 = 12.0;
 
 /// The lag `k` at which `a[i]` and `b[i + k]` correlate most
@@ -312,7 +410,7 @@ const SURE_Z: f64 = 12.0;
 /// the search can line up by chance as well as minutes in the middle
 /// line up for real, and correlation × √overlap (a z-score for
 /// independent frames) tells them apart. The confidence is the
-/// correlation, scaled down when the peak is not clear of chance.
+/// peak's significance mapped onto 0..1 between chance and certainty.
 fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f64)> {
     use realfft::RealFftPlanner;
     let n = (a.len() + b.len()).next_power_of_two();
@@ -347,6 +445,20 @@ fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f
         p
     };
     let (pa, pb) = (prefix(a, mean_a), prefix(b, mean_b));
+    // Neighbouring envelope frames are far from independent (a level
+    // holds for a while, and the one-second average is shared), so a
+    // count of frames overstates the evidence. Bartlett's correction
+    // for two autocorrelated series gives the independent count.
+    let lag1 = |x: &[f32], mean: f64| {
+        let d: Vec<f64> = x.iter().map(|&v| f64::from(v) - mean).collect();
+        let var: f64 = d.iter().map(|v| v * v).sum();
+        if var <= f64::EPSILON {
+            return 0.0;
+        }
+        (d.windows(2).map(|w| w[0] * w[1]).sum::<f64>() / var).clamp(0.0, 0.99)
+    };
+    let rho = lag1(a, mean_a) * lag1(b, mean_b);
+    let independent = (1.0 - rho) / (1.0 + rho);
     let (na, nb) = (a.len() as i64, b.len() as i64);
     let mut best: Option<(i64, f64, f64)> = None;
     for k in -(na - 1)..nb {
@@ -364,47 +476,12 @@ fn best_envelope_lag(a: &[f32], b: &[f32], min_overlap: usize) -> Option<(i64, f
         }
         let raw = corr[k.rem_euclid(n as i64) as usize] / n as f64;
         let r = raw / denom;
-        let z = r * ((i1 - i0) as f64).sqrt();
+        let z = r * ((i1 - i0) as f64 * independent).sqrt();
         if best.is_none_or(|(_, bz, _)| z > bz) {
             best = Some((k, z, r));
         }
     }
-    best.map(|(k, z, r)| (k, (r * (z / SURE_Z).min(1.0).powi(2)).clamp(0.0, 1.0)))
-}
-
-/// Refine a lag found on envelopes to the sample: search `coarse ± slack`
-/// on the waveforms, comparing `window` samples from the middle of the
-/// overlap.
-fn refine_lag(a: &[f32], b: &[f32], coarse: i64, slack: i64, window: usize) -> i64 {
-    let (na, nb) = (a.len() as i64, b.len() as i64);
-    let i0 = (-coarse).max(0) + slack;
-    let i1 = na.min(nb - coarse) - slack;
-    if i1 - i0 < 16 {
-        return coarse;
-    }
-    let w = (window as i64).min(i1 - i0);
-    let start = i0 + (i1 - i0 - w) / 2;
-    let seg = &a[start as usize..(start + w) as usize];
-    let mut best = (coarse, f64::NEG_INFINITY);
-    for k in coarse - slack..=coarse + slack {
-        let from = start + k;
-        if from < 0 || from + w > nb {
-            continue;
-        }
-        let other = &b[from as usize..(from + w) as usize];
-        let (mut num, mut ea, mut eb) = (0.0f64, 0.0f64, 0.0f64);
-        for (&x, &y) in seg.iter().zip(other) {
-            let (x, y) = (f64::from(x), f64::from(y));
-            num += x * y;
-            ea += x * x;
-            eb += y * y;
-        }
-        let score = num / (ea * eb).sqrt().max(f64::EPSILON);
-        if score > best.1 {
-            best = (k, score);
-        }
-    }
-    best.0
+    best.map(|(k, z, _)| (k, ((z - CHANCE_Z) / (SURE_Z - CHANCE_Z)).clamp(0.0, 1.0)))
 }
 
 #[cfg(test)]
@@ -503,5 +580,44 @@ mod tests {
         let (offset, confidence) = find_long_offset(&a, &b, SR).unwrap();
         assert!((offset + 138.0).abs() < 0.001, "offset {offset}");
         assert!(confidence > 0.3, "confidence {confidence}");
+    }
+
+    /// A crude second microphone: the room further away (duller, with an
+    /// early reflection) under its own hiss.
+    fn other_mic(room_sound: &[f32], sr: usize, hiss_seed: u64) -> Vec<f32> {
+        let hiss = room(room_sound.len(), hiss_seed);
+        let echo = sr * 23 / 1000;
+        let mut dull = 0.0f32;
+        room_sound
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| {
+                dull = dull * 0.3 + s * 0.7;
+                let reflection = if i >= echo { room_sound[i - echo] * 0.25 } else { 0.0 };
+                dull * 0.8 + reflection + hiss[i] * 0.15
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_different_microphones_in_one_room_sync() {
+        const SR: u32 = 8_000;
+        let sec = SR as usize;
+        let event = room(sec * 240, 23);
+        let a = event[..sec * 150].to_vec();
+        let b = other_mic(&event[sec * 61..], sec, 77);
+        let (offset, confidence) = find_long_offset(&a, &b, SR).expect("89 s of overlap");
+        // Within 5 ms, which is well inside a frame.
+        assert!((offset + 61.0).abs() < 0.005, "offset {offset}");
+        assert!(confidence > 0.5, "confidence {confidence}");
+        let unrelated = other_mic(&room(sec * 120, 5), sec, 6);
+        let (_, low) = find_long_offset(&a, &unrelated, SR).unwrap();
+        assert!(low < 0.3, "unrelated rooms scored {low}");
+    }
+
+    #[test]
+    fn refining_over_digital_silence_keeps_the_coarse_answer() {
+        let coarse = CoarseMatch { offset_secs: -12.34, confidence: 1.0, probe_at_secs: 20.0 };
+        assert_eq!(refine_offset(&[0.0; 16_000], &[0.0; 16_400], 8_000, &coarse), -12.34);
     }
 }

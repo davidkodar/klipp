@@ -23124,7 +23124,8 @@ impl KlippApp {
     /// right-click equivalent.
     fn place_media_at_playhead(&mut self, media_id: klipp_core::MediaId) {
         let start = self.state.playhead;
-        if let Some((_, entry)) = self.place_media_on_new_tracks(media_id, start) {
+        if let Some((_, mut entry)) = self.place_media_on_new_tracks(media_id, start) {
+            self.refresh_placement_snapshot(self.state.active_sequence_idx, &mut entry);
             self.state.active_history_mut().push(crate::history::HistoryEntry { command: entry });
         }
         self.state.dirty = true;
@@ -23237,16 +23238,33 @@ impl KlippApp {
         ))
     }
 
+    /// Re-take a placement's clip snapshots from the sequence as it is
+    /// now. `place_media_on_new_tracks` snapshots the picture before its
+    /// sound is linked to it, and a multicam groups the clips after that;
+    /// redo restores the snapshots, so without this it brought the clips
+    /// back unlinked and ungrouped. The track indices stay as recorded.
+    fn refresh_placement_snapshot(&self, seq_idx: usize, entry: &mut crate::history::EditCommand) {
+        let crate::history::EditCommand::LinkedImport { video, audio, .. } = entry else { return };
+        let seq = &self.state.sequences[seq_idx];
+        for (clip, _) in [video.as_mut(), audio.as_mut()].into_iter().flatten() {
+            if let Some(now) = seq.tracks.iter().find_map(|t| t.find_clip(clip.id)) {
+                *clip = now.clone();
+            }
+        }
+    }
+
     /// Sync `media_ids` onto one clock, off the UI thread when sound is
     /// involved; the plan comes back as `AppEvent::MulticamSyncReady`.
     fn spawn_multicam_sync(&mut self, media_ids: Vec<klipp_core::MediaId>, method: klipp_core::MulticamSync) {
         let mut items: Vec<klipp_media::MediaItem> = media_ids
             .iter()
             .filter_map(|id| self.state.media_pool.get(id))
-            .filter(|m| !m.offline && !m.video_codec.is_empty() && !m.is_still)
+            // A sound-only recording joins as the others' reference and
+            // goes on an audio track; it is not an angle.
+            .filter(|m| !m.offline && !m.is_still && (!m.video_codec.is_empty() || m.has_audio))
             .cloned()
             .collect();
-        if items.len() < 2 {
+        if items.iter().filter(|m| !m.video_codec.is_empty()).count() < 2 {
             self.state.toast.show("A multicam needs two or more online video clips");
             return;
         }
@@ -23271,23 +23289,37 @@ impl KlippApp {
             self.state.toast.show(format!("Syncing {} angles\u{2026}", angles.len()));
         }
         let spawned = std::thread::Builder::new().name("klipp-multicam-sync".into()).spawn(move || {
+            use klipp_analysis::audio_sync::{coarse_offset, decode_mono_pcm, refine_offset, SoundPrint};
+            use klipp_core::AudioMatch;
             const SR: u32 = 8_000;
             let ffmpeg = std::path::Path::new("ffmpeg");
-            let mut pcm: std::collections::HashMap<usize, Option<Vec<f32>>> = std::collections::HashMap::new();
-            let mut sound = |i: usize| -> Option<Vec<f32>> {
-                pcm.entry(i)
-                    .or_insert_with(|| match klipp_analysis::audio_sync::decode_mono_pcm(ffmpeg, &paths[i], SR, 0.0, 0.0) {
-                        Ok(s) => Some(s),
-                        Err(e) => {
-                            tracing::warn!("multicam sync: {e}");
-                            None
-                        }
-                    })
+            // Each file's sound is decoded once and kept only as its
+            // print; the refinement decodes two seconds of each again.
+            // Twelve one-hour angles would otherwise hold 1.4 GB.
+            let mut prints: std::collections::HashMap<usize, Result<std::sync::Arc<SoundPrint>, String>> =
+                std::collections::HashMap::new();
+            let mut print = |i: usize| {
+                prints
+                    .entry(i)
+                    .or_insert_with(|| decode_mono_pcm(ffmpeg, &paths[i], SR, 0.0, 0.0).map(|pcm| std::sync::Arc::new(SoundPrint::of(&pcm, SR))))
                     .clone()
             };
             let plan = klipp_core::plan_multicam(&angles, method, |r, i| {
-                let (a, b) = (sound(r)?, sound(i)?);
-                klipp_analysis::audio_sync::find_long_offset(&a, &b, SR)
+                let (a, b) = match (print(r), print(i)) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(e), _) | (_, Err(e)) => return AudioMatch::Unavailable(e),
+                };
+                let Some(coarse) = coarse_offset(&a, &b) else { return AudioMatch::TooLittleOverlap };
+                let (ref_from, clip_from, len) = coarse.refine_windows();
+                let slack = klipp_analysis::audio_sync::REFINE_SLACK_SECS;
+                let offset_secs = match (
+                    decode_mono_pcm(ffmpeg, &paths[r], SR, ref_from.max(0.0), len),
+                    decode_mono_pcm(ffmpeg, &paths[i], SR, clip_from.max(0.0), len + 2.0 * slack),
+                ) {
+                    (Ok(rw), Ok(cw)) if clip_from >= 0.0 => refine_offset(&rw, &cw, SR, &coarse),
+                    _ => coarse.offset_secs,
+                };
+                AudioMatch::Matched { offset_secs, confidence: coarse.confidence }
             });
             let _ = tx.send(AppEvent::MulticamSyncReady { plan, sequence_id, at_secs });
         });
@@ -23309,12 +23341,14 @@ impl KlippApp {
             self.state.toast.show(format!("Could not put two angles on one clock{why}"));
             return;
         }
-        let fps = self.state.sequences[seq_idx].fps;
         let mut entries = Vec::new();
         let mut video_clips = Vec::new();
         for p in &plan.placements {
             // On a frame of the sequence: a sound match is finer than a
             // frame, and a clip between frames is a clip nobody can cut.
+            // Read each time: the first placement in an empty sequence
+            // sets its rate from the clip.
+            let fps = self.state.sequences[seq_idx].fps;
             let frames = ((at_secs + p.start_secs) * fps.as_f64()).round() as i64;
             let start = klipp_core::RationalTime { value: frames * i64::from(fps.den), rate: fps.num };
             if let Some((video, entry)) = self.place_media_on_new_tracks(p.media_id, start) {
@@ -23323,11 +23357,6 @@ impl KlippApp {
                     video_clips.push((v, p.is_reference));
                 }
             }
-        }
-        if !entries.is_empty() {
-            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::Batch(entries),
-            });
         }
         // The reference angle first: angle 0 carries the cut list, and
         // it is the sound the others were matched to.
@@ -23342,6 +23371,15 @@ impl KlippApp {
                     break;
                 }
             }
+        }
+        // Snapshots taken now, grouped: redo puts back what they hold.
+        for entry in &mut entries {
+            self.refresh_placement_snapshot(seq_idx, entry);
+        }
+        if !entries.is_empty() {
+            self.state.active_history_mut().push(crate::history::HistoryEntry {
+                command: crate::history::EditCommand::Batch(entries),
+            });
         }
         let by = |m| plan.placements.iter().filter(|p| p.method == Some(m)).count();
         let (tc, snd) = (by(klipp_core::SyncMethod::Timecode), by(klipp_core::SyncMethod::Waveform));
