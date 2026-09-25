@@ -783,17 +783,21 @@ impl ViewerPanel {
             return None;
         }
 
-        // Use the actual video texture dimensions for aspect ratio — this matches what's
-        // actually being displayed. The engine may render at sequence resolution (e.g. 1920×1080)
-        // even if the source clip is 1920×818. Using the texture size ensures WYSIWYG.
-        let tex_dims = self.video_texture.as_ref()
-            .map(|t| t.size_vec2())
-            .filter(|s| s.x > 0.0 && s.y > 0.0);
-        let (video_w, video_h) = tex_dims
-            .map(|s| (s.x, s.y))
-            .or_else(|| current_media_info.map(|(w, h, _)| (w as f32, h as f32)))
-            .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
-            .unwrap_or((1920.0, 1080.0));
+        // Fit the Program image to the stable sequence/output aspect. The
+        // texture can be recreated at a different backing size when the
+        // viewer layout changes; using that transient size here makes the
+        // same portrait frame become wider or narrower between dual and
+        // single layouts, which also moves and clips title overlays.
+        // Texture pixels are sampled into this sequence frame below.
+        let sequence_resolution = state.sequence().resolution;
+        let (video_w, video_h) = if sequence_resolution.width > 0 && sequence_resolution.height > 0 {
+            (sequence_resolution.width as f32, sequence_resolution.height as f32)
+        } else {
+            current_media_info
+                .map(|(w, h, _)| (w as f32, h as f32))
+                .or_else(|| state.media_pool.all().next().map(|m| (m.resolution.width as f32, m.resolution.height as f32)))
+                .unwrap_or((1920.0, 1080.0))
+        };
 
         if video_w == 0.0 || video_h == 0.0 { return None; }
 
