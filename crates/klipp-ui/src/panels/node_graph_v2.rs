@@ -476,7 +476,8 @@ impl NodeGraphV2Panel {
         deferred_drops: &mut Vec<egui::TextureHandle>,
         descent_path: &mut Vec<NodeId>,
         breadcrumb_labels: &[String],
-        grade_version_names: &[String],
+        // `None` for a graph that keeps no versions: the timeline grade.
+        grade_version_names: Option<&[String]>,
         active_grade_version: Option<usize>,
         clip_time_secs: f64,
         port_snap_enabled: bool,
@@ -713,6 +714,8 @@ impl NodeGraphV2Panel {
         // actions. Clicking a version triggers SwitchGradeVersion;
         // "Save as new version" picks the next auto-name (V1 / V2 /
         // ...). Rename / delete act on the currently-active version.
+        let keeps_versions = grade_version_names.is_some();
+        let grade_version_names = grade_version_names.unwrap_or(&[]);
         let active_name = active_grade_version
             .and_then(|i| grade_version_names.get(i).map(|s| s.as_str()));
         // Plain-language labels — the previous "V: +" / "V: —" /
@@ -742,7 +745,7 @@ impl NodeGraphV2Panel {
                 ),
             ),
         };
-        let menu_resp = toolbar_ui.menu_button(menu_label, |mb_ui| {
+        let menu_resp = toolbar_ui.add_enabled_ui(keeps_versions, |ui| ui.menu_button(menu_label, |mb_ui| {
             // Existing versions — click to switch.
             for (i, name) in grade_version_names.iter().enumerate() {
                 let marker = if Some(i) == active_grade_version { "●" } else { "○" };
@@ -776,8 +779,12 @@ impl NodeGraphV2Panel {
                     mb_ui.close_menu();
                 }
             }
-        });
-        menu_resp.response.on_hover_text(menu_tooltip);
+        })).inner;
+        if keeps_versions {
+            menu_resp.response.on_hover_text(menu_tooltip);
+        } else {
+            menu_resp.response.on_disabled_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
+        }
         toolbar_ui.add_space(8.0);
         // Solo indicator — only visible when a node is currently
         // soloed. Shows the soloed node's label (so the user knows

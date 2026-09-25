@@ -34349,44 +34349,57 @@ impl KlippApp {
                             add(ui);
                         });
                     };
+                    // Grading the timeline: `clip` is its stand-in. Its
+                    // graph is the one thing written back, so versions
+                    // saved on it would be lost; stills and Looks land on
+                    // the timeline grade, and say so.
+                    let grading_timeline = clip.id == timeline_grade_id;
                     crate::widgets::inspector_group::section_card(ui, "GRADE", version_badge, &theme, |ui| {
                         caption_row(ui, "Versions", &mut |ui| {
-                            let num_versions = clip.grade_versions.len();
-                            let active = clip.active_grade_version;
-                            for i in 0..num_versions {
-                                let is_active = active == Some(i);
-                                let label = {
-                                    let name = &clip.grade_versions[i].name;
-                                    if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
-                                };
-                                let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(crate::theme::type_scale::CAPTION));
-                                if resp.clicked() && !is_active {
-                                    all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
+                            let row = ui.add_enabled_ui(!grading_timeline, |ui| {
+                                let num_versions = clip.grade_versions.len();
+                                let active = clip.active_grade_version;
+                                for i in 0..num_versions {
+                                    let is_active = active == Some(i);
+                                    let label = {
+                                        let name = &clip.grade_versions[i].name;
+                                        if name.is_empty() { format!("V{}", i + 1) } else { name.clone() }
+                                    };
+                                    let resp = ui.selectable_label(is_active, egui::RichText::new(&label).size(crate::theme::type_scale::CAPTION));
+                                    if resp.clicked() && !is_active {
+                                        all_cmds.push(AppCommand::SwitchGradeVersion { clip_id, version_index: i });
+                                    }
+                                    resp.context_menu(|ui| {
+                                        if ui.button("Rename...").clicked() {
+                                            all_cmds.push(AppCommand::RenameGradeVersion {
+                                                clip_id,
+                                                version_index: i,
+                                                name: format!("Version {}", i + 1),
+                                            });
+                                            ui.close_menu();
+                                        }
+                                        if !is_active && ui.button("Delete").clicked() {
+                                            all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
+                                            ui.close_menu();
+                                        }
+                                    });
                                 }
-                                resp.context_menu(|ui| {
-                                    if ui.button("Rename...").clicked() {
-                                        all_cmds.push(AppCommand::RenameGradeVersion {
-                                            clip_id,
-                                            version_index: i,
-                                            name: format!("Version {}", i + 1),
-                                        });
-                                        ui.close_menu();
-                                    }
-                                    if !is_active && ui.button("Delete").clicked() {
-                                        all_cmds.push(AppCommand::DeleteGradeVersion { clip_id, version_index: i });
-                                        ui.close_menu();
-                                    }
-                                });
-                            }
-                            if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
-                                let name = format!("Version {}", num_versions + 1);
-                                all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                                if ui.small_button("+").on_hover_text("Save current grade as new version").clicked() {
+                                    let name = format!("Version {}", num_versions + 1);
+                                    all_cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                                }
+                            });
+                            if grading_timeline {
+                                row.response.on_hover_text("Versions are kept per clip; the timeline grade has none. Save it as a Look to keep a copy.");
                             }
                         });
 
                         // Apply Grade from Still goes to the timeline
-                        // selection, or the one selected clip, as Looks do.
-                        let grade_targets: Vec<klipp_core::ClipId> = if !self.state.selected_clips.is_empty() {
+                        // selection, or the one selected clip, as Looks do;
+                        // to the timeline grade when that is what is graded.
+                        let grade_targets: Vec<klipp_core::ClipId> = if grading_timeline {
+                            vec![timeline_grade_id]
+                        } else if !self.state.selected_clips.is_empty() {
                             self.state.selected_clips.clone()
                         } else {
                             self.state.selected_clip.into_iter().collect()
@@ -34446,16 +34459,21 @@ impl KlippApp {
                                 resp.context_menu(|ui| {
                                     let why = if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" };
                                     let can = has_grade && !grade_targets.is_empty();
-                                    if ui.add_enabled(can, egui::Button::new("Apply Grade to Selected Clips"))
-                                        .on_hover_text("In place of each clip's own grade")
+                                    let (apply_label, apply_hover, add_label, add_hover) = if grading_timeline {
+                                        ("Apply Grade to Timeline Grade", "In place of the timeline grade", "Add Grade After Timeline Grade", "After the timeline grade, keeping it")
+                                    } else {
+                                        ("Apply Grade to Selected Clips", "In place of each clip's own grade", "Add Grade After Their Own", "After each clip's own grade, keeping its balance")
+                                    };
+                                    if ui.add_enabled(can, egui::Button::new(apply_label))
+                                        .on_hover_text(apply_hover)
                                         .on_disabled_hover_text(why)
                                         .clicked()
                                     {
                                         apply_idx = Some((i, false));
                                         ui.close_menu();
                                     }
-                                    if ui.add_enabled(can, egui::Button::new("Add Grade After Their Own"))
-                                        .on_hover_text("After each clip's own grade, keeping its balance")
+                                    if ui.add_enabled(can, egui::Button::new(add_label))
+                                        .on_hover_text(add_hover)
                                         .on_disabled_hover_text(why)
                                         .clicked()
                                     {
@@ -34478,9 +34496,14 @@ impl KlippApp {
                             // grab a finished shot, then grade the next ones
                             // from the same setup from it.
                             let active_grade = self.state.active_grade_still.filter(|&i| self.state.grade_stills.get(i).is_some_and(|s| s.grade.is_some()));
+                            let (apply_label, apply_hover) = if grading_timeline {
+                                ("Apply to Timeline Grade", "Put the active still's grade on the timeline grade, in place of it")
+                            } else {
+                                ("Apply", "Put the active still's grade on the selected clips")
+                            };
                             if ui
-                                .add_enabled(active_grade.is_some() && !grade_targets.is_empty(), egui::Button::new("Apply").small())
-                                .on_hover_text("Put the active still's grade on the selected clips")
+                                .add_enabled(active_grade.is_some() && !grade_targets.is_empty(), egui::Button::new(apply_label).small())
+                                .on_hover_text(apply_hover)
                                 .on_disabled_hover_text("Pick a still that kept its grade, and select the clips to grade")
                                 .clicked()
                             {
@@ -34516,13 +34539,15 @@ impl KlippApp {
 
                         // Looks: project-level reusable grades. Saves the
                         // selected clip's graph, applies to the timeline
-                        // selection (or the single selected clip).
+                        // selection (or the single selected clip), or to
+                        // the timeline grade while that is what is graded.
                         let looks_cmds = crate::panels::looks::show(
                             ui,
                             &mut self.looks_panel_state,
                             &self.state.looks,
                             self.state.selected_clip,
-                            &self.state.selected_clips,
+                            if grading_timeline { &[] } else { &self.state.selected_clips },
+                            grading_timeline,
                             &theme,
                         );
                         all_cmds.extend(looks_cmds);
@@ -35646,6 +35671,9 @@ impl KlippApp {
             let clip_id = self.state.selected_clip;
             if let Some(cid) = clip_id {
                 let seq_idx = self.state.active_sequence_idx;
+                // The timeline grade's stand-in keeps no versions: only
+                // its graph is written back.
+                let keeps_versions = cid != self.state.sequences[seq_idx].timeline_grade_clip_id();
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
@@ -35736,7 +35764,7 @@ impl KlippApp {
                             &mut self.state.deferred_texture_drops[slot],
                             &mut self.state.graph_descent_path,
                             &breadcrumb_labels,
-                            &grade_version_names,
+                            keeps_versions.then_some(&grade_version_names[..]),
                             active_grade_version,
                             clip_time_secs,
                             self.prefs.color.port_snap_enabled,
