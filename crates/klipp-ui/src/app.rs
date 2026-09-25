@@ -23736,10 +23736,11 @@ impl KlippApp {
     }
 
     /// The open project's folder, for the writers that put files beside
-    /// the project (freeze frames, extracted stills, grade stills) —
+    /// the project (freeze frames, extracted stills, grade stills) or
+    /// clear what is beside it (the auto-save, on close and Don't Save) —
     /// `None` when it is open read-only, whose folder belongs to the
-    /// editor holding it. Those writers then use a temporary folder, as
-    /// they do for a project never saved.
+    /// editor holding it. The writers then use a temporary folder, as
+    /// they do for a project never saved, and nothing is cleared.
     fn writable_project_dir(&self) -> Option<PathBuf> {
         self.state.project_path.clone().filter(|p| self.read_only_project.as_ref() != Some(p))
     }
@@ -24323,7 +24324,9 @@ impl KlippApp {
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
                         // Clean up autosave backup since user chose not to save
-                        if let Some(ref path) = self.state.project_path {
+                        // — only our own: read-only, it is the holder's
+                        // crash recovery.
+                        if let Some(ref path) = self.writable_project_dir() {
                             let autosave = autosave_path_for(path);
                             if autosave.exists() {
                                 let _ = std::fs::remove_dir_all(&autosave);
@@ -28775,7 +28778,9 @@ impl eframe::App for KlippApp {
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else if !self.state.dirty {
                 eprintln!("Klipp: clean close → exit(0)");
-                if let Some(path) = self.state.project_path.clone() {
+                // Read-only, the auto-save beside the project is the
+                // holder's crash recovery, not ours to clear.
+                if let Some(path) = self.writable_project_dir() {
                     let autosave = autosave_path_for(&path);
                     if autosave.exists() {
                         std::thread::Builder::new()
@@ -28806,7 +28811,9 @@ impl eframe::App for KlippApp {
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
                 eprintln!("Klipp: has_quit branch → exit(0)");
-                if let Some(path) = self.state.project_path.clone() {
+                // Read-only, the auto-save beside the project is the
+                // holder's crash recovery, not ours to clear.
+                if let Some(path) = self.writable_project_dir() {
                     let autosave = autosave_path_for(&path);
                     if autosave.exists() {
                         std::thread::Builder::new()

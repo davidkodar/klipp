@@ -312,8 +312,9 @@ pub fn take_over(project: &Path, me: &Holder, from: Option<&LockInfo>) -> std::i
 /// There is no compare-and-swap on a plain file, so a takeover landing
 /// between the check and the write would be overwritten. The check is
 /// made again immediately before writing, which leaves a window of
-/// microseconds; if it is ever lost, the taker's own next heartbeat finds
-/// this session's lock and it goes read-only — both stop saving, and
+/// microseconds. If it is ever lost, the taker's next heartbeat finds
+/// this session's lock and the taker goes read-only while this session
+/// keeps saving: the takeover fails, but there is still one writer, and
 /// nobody's work is replaced.
 pub fn heartbeat(project: &Path, me: &Holder) -> Result<(), LockInfo> {
     let now = now_secs();
@@ -559,10 +560,15 @@ mod tests {
     #[test]
     fn of_many_simultaneous_openers_exactly_one_wins() {
         let p = project("race");
+        // All sixteen released at once, so the attempts really overlap.
+        let start = std::sync::Arc::new(std::sync::Barrier::new(16));
         let winners: usize = (0..16)
             .map(|i| {
-                let p = p.clone();
-                std::thread::spawn(move || usize::from(acquire(&p, &other("racer", 1000 + i)).is_ok()))
+                let (p, start) = (p.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    usize::from(acquire(&p, &other("racer", 1000 + i)).is_ok())
+                })
             })
             .collect::<Vec<_>>()
             .into_iter()
