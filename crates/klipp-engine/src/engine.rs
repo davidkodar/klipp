@@ -8136,7 +8136,7 @@ impl PlaybackEngine {
 
                 let mut video_w = 1920u32;
                 let mut video_h = 1080u32;
-                let mut container_fps = 24.0f64;
+                let mut container_fps = Fps::film_24();
                 let mut video_codec = String::new();
                 let mut audio_codec = String::new();
                 let mut has_audio = false;
@@ -8183,9 +8183,10 @@ impl PlaybackEngine {
                                     }
                                 }
                             }
-                            let rate = stream.avg_frame_rate();
-                            if rate.1 != 0 {
-                                container_fps = rate.0 as f64 / rate.1 as f64;
+                            let r = stream.rate();
+                            let avg = stream.avg_frame_rate();
+                            if let Some(fps) = fps_from_stream_rates((r.0, r.1), (avg.0, avg.1)) {
+                                container_fps = fps;
                             }
                         }
                         ffmpeg_next::media::Type::Audio => {
@@ -8235,7 +8236,7 @@ impl PlaybackEngine {
                 // decoder held — left over from when an import was shown
                 // in the viewer. An import while parked then had the next
                 // edit drawn from the wrong decoder.
-                let fps = fps_from_float(container_fps);
+                let fps = container_fps;
                 let duration = RationalTime::from_secs_f64(duration_secs, fps.rate());
 
                 let fs_meta = std::fs::metadata(&path).ok();
@@ -9193,6 +9194,43 @@ fn is_image_extension(path: &std::path::Path) -> bool {
     klipp_core::media_extensions::path_is_image(path)
 }
 
+/// A video stream's frame rate, kept rational.
+///
+/// `r_frame_rate` is the stream's declared base rate (24000/1001 on a
+/// 23.976 camera file) and is taken when the average agrees with it.
+/// `avg_frame_rate` is frames over duration, so edit lists and a short
+/// last frame move it: a 23.976 a6700 clip averages 525000/21883 =
+/// 23.991, which the float snap below calls 24. The average is used only
+/// when the base rate is missing or is not the rate the frames come at
+/// (a variable-rate phone clip declares its timebase-scale 600/1 or 120/1).
+/// `None` when neither is usable.
+fn fps_from_stream_rates(r_frame_rate: (i32, i32), avg_frame_rate: (i32, i32)) -> Option<Fps> {
+    let as_f64 = |(n, d): (i32, i32)| (n > 0 && d > 0).then(|| n as f64 / d as f64);
+    let r = as_f64(r_frame_rate).filter(|r| *r <= 1000.0);
+    let avg = as_f64(avg_frame_rate);
+    match (r, avg) {
+        (Some(r), Some(avg)) if (avg / r - 1.0).abs() > 0.05 => Some(fps_from_rational(avg_frame_rate)),
+        (Some(_), _) => Some(fps_from_rational(r_frame_rate)),
+        (None, Some(_)) => Some(fps_from_rational(avg_frame_rate)),
+        (None, None) => None,
+    }
+}
+
+/// An exact rate as itself when it is a whole or NTSC (x/1001) rate, and
+/// otherwise snapped to the nearest standard one. The caller guarantees
+/// both parts are positive.
+fn fps_from_rational((n, d): (i32, i32)) -> Fps {
+    fn gcd(a: u32, b: u32) -> u32 { if b == 0 { a } else { gcd(b, a % b) } }
+    let (n, d) = (n as u32, d as u32);
+    let g = gcd(n, d).max(1);
+    let (n, d) = (n / g, d / g);
+    if d == 1 || d == 1001 {
+        Fps::new(n, d)
+    } else {
+        fps_from_float(n as f64 / d as f64)
+    }
+}
+
 fn fps_from_float(fps: f64) -> Fps {
     if (fps - 23.976).abs() < 0.01 {
         Fps::ntsc_23976()
@@ -9212,6 +9250,31 @@ fn fps_from_float(fps: f64) -> Fps {
         Fps::new(60, 1)
     } else {
         Fps::new(fps.round() as u32, 1)
+    }
+}
+
+#[cfg(test)]
+mod stream_rate_tests {
+    use super::*;
+
+    #[test]
+    fn a_camera_file_keeps_its_exact_ntsc_rate() {
+        // ffprobe of two a6700 23.976 clips: the averages sit either
+        // side of 24 and the float snap called both 24.
+        assert_eq!(fps_from_stream_rates((24000, 1001), (525000, 21883)), Some(Fps::ntsc_23976()));
+        assert_eq!(fps_from_stream_rates((24000, 1001), (118400, 4933)), Some(Fps::ntsc_23976()));
+        assert_eq!(fps_from_stream_rates((30000, 1001), (30000, 1001)), Some(Fps::ntsc_29970()));
+        assert_eq!(fps_from_stream_rates((50, 2), (25, 1)), Some(Fps::pal_25()));
+    }
+
+    #[test]
+    fn a_declared_rate_the_frames_do_not_follow_gives_way_to_the_average() {
+        // Variable-rate phone clip: timebase-scale base rate.
+        assert_eq!(fps_from_stream_rates((600, 1), (2997, 100)), Some(Fps::ntsc_29970()));
+        // Interlaced: field rate declared, frame rate averaged.
+        assert_eq!(fps_from_stream_rates((50, 1), (25, 1)), Some(Fps::pal_25()));
+        assert_eq!(fps_from_stream_rates((0, 0), (60000, 1001)), Some(Fps::new(60000, 1001)));
+        assert_eq!(fps_from_stream_rates((0, 0), (0, 0)), None);
     }
 }
 
