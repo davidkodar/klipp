@@ -150,25 +150,26 @@ pub fn show_workspace_manager_dialog(
                                 cmds.push(AppCommand::DeleteWorkspaceLayout { name: old_name.clone() });
                             }
                             if ui.button("Export JSON\u{2026}").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_title("Export Workspace")
-                                    .add_filter("Klipp workspace (JSON)", &["json"])
-                                    .set_file_name(format!("{}.json", sanitize(&ws.name)))
-                                    .save_file()
-                                {
-                                    match serde_json::to_string_pretty(ws) {
-                                        Ok(s) => {
-                                            if let Err(e) = std::fs::write(&path, s) {
-                                                state.toast.show(format!("Export failed: {e}"));
-                                            } else {
-                                                state.toast.show(format!(
-                                                    "Exported workspace to {}",
-                                                    path.display()
-                                                ));
+                                // Serialized now, written once a place is chosen.
+                                match serde_json::to_string_pretty(ws) {
+                                    Ok(json) => {
+                                        let file_name = format!("{}.json", sanitize(&ws.name));
+                                        crate::file_dialog::spawn(move || {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_title("Export Workspace")
+                                                .add_filter("Klipp workspace (JSON)", &["json"])
+                                                .set_file_name(file_name)
+                                                .save_file()
+                                            {
+                                                crate::file_dialog::notify(match std::fs::write(&path, json) {
+                                                    Ok(()) => format!("Exported workspace to {}", path.display()),
+                                                    Err(e) => format!("Export failed: {e}"),
+                                                });
                                             }
-                                        }
-                                        Err(e) => state.toast.show(format!("Serialize failed: {e}")),
+                                            Vec::new()
+                                        });
                                     }
+                                    Err(e) => state.toast.show(format!("Serialize failed: {e}")),
                                 }
                             }
                         });
@@ -201,31 +202,34 @@ pub fn show_workspace_manager_dialog(
 
             // ── Footer: Import + Close ──
             ui.horizontal(|ui| {
+                let picker = egui::Id::new("workspace-manager-import");
                 if ui.button("Import JSON\u{2026}").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Import Workspace")
-                        .add_filter("Klipp workspace (JSON)", &["json"])
-                        .pick_file()
-                    {
-                        match std::fs::read_to_string(&path) {
-                            Ok(s) => match serde_json::from_str::<SavedWorkspaceLayout>(&s) {
-                                Ok(ws) => {
-                                    // Imports collide with existing names
-                                    // → append " (imported)" to keep both.
-                                    let mut ws = ws;
-                                    if state.custom_workspaces.iter().any(|w| w.name == ws.name)
-                                        || built_ins.iter().any(|b| b.name == ws.name)
-                                    {
-                                        ws.name = format!("{} (imported)", ws.name);
-                                    }
-                                    let name = ws.name.clone();
-                                    state.custom_workspaces.push(ws);
-                                    state.toast.show(format!("Imported \"{name}\""));
+                    crate::file_dialog::pick_path(picker, || {
+                        rfd::FileDialog::new()
+                            .set_title("Import Workspace")
+                            .add_filter("Klipp workspace (JSON)", &["json"])
+                            .pick_file()
+                    });
+                }
+                if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                    match std::fs::read_to_string(&path) {
+                        Ok(s) => match serde_json::from_str::<SavedWorkspaceLayout>(&s) {
+                            Ok(ws) => {
+                                // Imports collide with existing names
+                                // → append " (imported)" to keep both.
+                                let mut ws = ws;
+                                if state.custom_workspaces.iter().any(|w| w.name == ws.name)
+                                    || built_ins.iter().any(|b| b.name == ws.name)
+                                {
+                                    ws.name = format!("{} (imported)", ws.name);
                                 }
-                                Err(e) => state.toast.show(format!("Import failed: {e}")),
-                            },
-                            Err(e) => state.toast.show(format!("Read failed: {e}")),
-                        }
+                                let name = ws.name.clone();
+                                state.custom_workspaces.push(ws);
+                                state.toast.show(format!("Imported \"{name}\""));
+                            }
+                            Err(e) => state.toast.show(format!("Import failed: {e}")),
+                        },
+                        Err(e) => state.toast.show(format!("Read failed: {e}")),
                     }
                 }
                 ui.with_layout(

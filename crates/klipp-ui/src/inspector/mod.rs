@@ -3077,18 +3077,19 @@ fn show_title_effects_group(
                 // ── Browse / Preset dropdown / Clear row.
                 ui.horizontal(|ui| {
                     if ui.button("Browse\u{2026}").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Images", &{
-                                let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
-                                exts.push("tga");
-                                exts
-                            })
-                            .pick_file()
-                        {
-                            cmds.push(AppCommand::SetTitleTextureFill {
-                                clip_id, path: Some(path.to_string_lossy().to_string()),
-                            });
-                        }
+                        crate::file_dialog::spawn(move || {
+                            rfd::FileDialog::new()
+                                .add_filter("Images", &{
+                                    let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
+                                    exts.push("tga");
+                                    exts
+                                })
+                                .pick_file()
+                                .map(|path| vec![AppCommand::SetTitleTextureFill {
+                                    clip_id, path: Some(path.to_string_lossy().to_string()),
+                                }])
+                                .unwrap_or_default()
+                        });
                     }
                     // Procedural-preset picker. Selecting any entry
                     // dispatches SetTitleTexturePreset, swapping the
@@ -3230,7 +3231,8 @@ fn show_title_effects_group(
 /// radius. Phase-1 ships only the rectangle primitive, so the
 /// editor is small. Future shape kinds (ellipse, polygon, path)
 /// add more controls inside the same `match shape.kind` arm.
-/// One image file, chosen by the user.
+/// One image file, chosen by the user. Blocks, so it runs inside
+/// `file_dialog::spawn`.
 fn pick_image_file() -> Option<String> {
     rfd::FileDialog::new()
         .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
@@ -3255,9 +3257,12 @@ fn show_title_image_editor(
             .on_hover_text(&img.path);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new(egui::RichText::new("Replace\u{2026}").size(crate::theme::type_scale::CAPTION))).clicked() {
-                if let Some(path) = pick_image_file() {
-                    cmds.push(AppCommand::SetTitleImagePath { clip_id, object_id: object_id.0, path });
-                }
+                let object_id = object_id.0;
+                crate::file_dialog::spawn(move || {
+                    pick_image_file()
+                        .map(|path| vec![AppCommand::SetTitleImagePath { clip_id, object_id, path }])
+                        .unwrap_or_default()
+                });
             }
         });
     });
@@ -3505,9 +3510,11 @@ fn show_title_layers_panel(
             );
             if resp.clicked() {
                 if kind == 2 {
-                    if let Some(path) = pick_image_file() {
-                        cmds.push(AppCommand::AddTitleImageObject { clip_id, path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        pick_image_file()
+                            .map(|path| vec![AppCommand::AddTitleImageObject { clip_id, path }])
+                            .unwrap_or_default()
+                    });
                 } else {
                     cmds.push(AppCommand::AddTitleObject { clip_id, kind });
                 }

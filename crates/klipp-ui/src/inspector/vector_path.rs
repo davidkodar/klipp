@@ -178,16 +178,21 @@ pub(super) fn show(
         }
     });
     if ui.button("Export path JSON…").clicked() {
-        if let Some(file) = rfd::FileDialog::new()
-            .add_filter("Editable path", &["json"])
-            .save_file()
-        {
-            if let Err(e) = serde_json::to_string_pretty(path)
-                .map_err(|e| e.to_string())
-                .and_then(|s| std::fs::write(file, s).map_err(|e| e.to_string()))
-            {
-                cmds.push(AppCommand::TitlePathError { message: e });
-            }
+        // Serialized now, written once a place is chosen.
+        match serde_json::to_string_pretty(path) {
+            Ok(json) => crate::file_dialog::spawn(move || {
+                let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Editable path", &["json"])
+                    .save_file()
+                else {
+                    return Vec::new();
+                };
+                match std::fs::write(file, json) {
+                    Ok(()) => Vec::new(),
+                    Err(e) => vec![AppCommand::TitlePathError { message: e.to_string() }],
+                }
+            }),
+            Err(e) => cmds.push(AppCommand::TitlePathError { message: e.to_string() }),
         }
     }
     ui.horizontal(|ui| {
@@ -203,24 +208,27 @@ pub(super) fn show(
     changed |= ui
         .add(egui::Slider::new(&mut pose.stroke_width, 0.0..=200.0).text("Stroke px @ 1080p"))
         .changed();
+    let picker = egui::Id::new("vector-path-import").with((clip_id, object.0));
     if ui.button("Import path JSON…").clicked() {
-        if let Some(file) = rfd::FileDialog::new()
-            .add_filter("Editable path", &["json"])
-            .pick_file()
-        {
-            match read_path_file(&file)
-                .and_then(|s| serde_json::from_str::<VectorPath>(&s).map_err(|e| e.to_string()))
-                .and_then(|p| {
-                    p.validate()?;
-                    Ok(p)
-                }) {
-                Ok(p) => {
-                    next = p;
-                    direct = true;
-                }
-                Err(e) => {
-                    cmds.push(AppCommand::TitlePathError { message: e });
-                }
+        crate::file_dialog::pick_path(picker, || {
+            rfd::FileDialog::new()
+                .add_filter("Editable path", &["json"])
+                .pick_file()
+        });
+    }
+    if let Some(crate::file_dialog::Picked::Path(file)) = crate::file_dialog::take_path(picker) {
+        match read_path_file(&file)
+            .and_then(|s| serde_json::from_str::<VectorPath>(&s).map_err(|e| e.to_string()))
+            .and_then(|p| {
+                p.validate()?;
+                Ok(p)
+            }) {
+            Ok(p) => {
+                next = p;
+                direct = true;
+            }
+            Err(e) => {
+                cmds.push(AppCommand::TitlePathError { message: e });
             }
         }
     }

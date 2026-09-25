@@ -465,6 +465,8 @@ pub struct KlippApp {
     /// the callers, and every route gets the same treatment.
     last_workspace: crate::state::Workspace,
     hb_max_gap: std::time::Duration,
+    /// The unsaved-changes dialog's Save is waiting on its Save As picker.
+    unsaved_save_waiting: bool,
     hb_max_update: std::time::Duration,
     /// When the last `update()` returned, for the gap above.
     last_update_end: std::time::Instant,
@@ -591,6 +593,9 @@ pub struct KlippApp {
     /// killed by their `cancel()` impl on Drop.
     job_scheduler: Arc<klipp_jobs::JobScheduler>,
 }
+
+/// The id the unsaved-changes dialog's Save As picker answers under.
+const UNSAVED_SAVE_PICKER: &str = "unsaved-dialog-save-as";
 
 /// What came of asking the user to save: the result a close, an open or a
 /// quit is allowed to proceed on.
@@ -854,6 +859,7 @@ impl KlippApp {
             browser_before_workspace: None,
             last_workspace: crate::state::Workspace::default(),
             hb_max_gap: std::time::Duration::ZERO,
+            unsaved_save_waiting: false,
             hb_max_update: std::time::Duration::ZERO,
             last_update_end: std::time::Instant::now(),
             last_frame_at: std::time::Instant::now(),
@@ -8625,18 +8631,21 @@ impl KlippApp {
                             "frame_{}.png",
                             self.state.playhead.to_timecode_string().replace(':', "-")
                         );
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Save Frame As")
-                            .add_filter("PNG Image", &["png"])
-                            .set_file_name(&default_name)
-                            .save_file()
-                        {
-                            if save_rgb_as_png(&rgb, w, h, &path) {
-                                self.state.toast.show(format!("Frame saved to {}", path.display()));
-                            } else {
-                                self.state.toast.show("Failed to save frame".to_string());
+                        crate::file_dialog::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Save Frame As")
+                                .add_filter("PNG Image", &["png"])
+                                .set_file_name(&default_name)
+                                .save_file()
+                            {
+                                if save_rgb_as_png(&rgb, w, h, &path) {
+                                    crate::file_dialog::notify(format!("Frame saved to {}", path.display()));
+                                } else {
+                                    crate::file_dialog::notify("Failed to save frame");
+                                }
                             }
-                        }
+                            Vec::new()
+                        });
                     } else {
                         self.state.toast.show("No frame available".to_string());
                     }
@@ -18399,7 +18408,20 @@ impl KlippApp {
                 true
             }
             AppCommand::SaveProject => {
-                let _ = self.save_project_interactively();
+                match self.state.project_path.clone() {
+                    Some(path) => {
+                        self.do_save_project(&path);
+                    }
+                    // Never saved: ask where, off the UI thread. The
+                    // answer comes back as Save As.
+                    None => crate::file_dialog::spawn(|| {
+                        rfd::FileDialog::new()
+                            .set_title("Save Project")
+                            .pick_folder()
+                            .map(|path| vec![AppCommand::SaveProjectAs { path }])
+                            .unwrap_or_default()
+                    }),
+                }
                 true
             }
             AppCommand::SaveProjectAs { path } => {
@@ -23678,18 +23700,37 @@ impl KlippApp {
         }
     }
 
-    /// Save the project, asking where if it has never been saved. Runs to
-    /// completion before returning — the native picker blocks — so a
-    /// caller can act on the outcome: close, open another, quit.
-    fn save_project_interactively(&mut self) -> SaveOutcome {
+    /// Save the project for the unsaved-changes dialog, so a close, an
+    /// open or a quit can act on the outcome. A project saved before
+    /// saves now. One never saved needs a place first: the picker runs
+    /// off the UI thread, and until it answers this is `None` and the
+    /// dialog waits for it.
+    /// `clicked` is this frame's Save click. The picker opens on the
+    /// click only; while it is open this only collects its answer, so
+    /// it can never open twice, and a picker refused because another
+    /// is open leaves the dialog as it was rather than waiting.
+    fn save_project_interactively(&mut self, clicked: bool) -> Option<SaveOutcome> {
+        use crate::file_dialog::{await_path, Awaited, Picked};
         let path = match self.state.project_path.clone() {
-            Some(p) => p,
-            None => match rfd::FileDialog::new().set_title("Save Project").pick_folder() {
-                Some(p) => ensure_klipp_extension(p),
-                None => return SaveOutcome::Cancelled,
-            },
+            Some(p) if clicked => p,
+            Some(_) => {
+                // Saved before, so nothing to wait for.
+                self.unsaved_save_waiting = false;
+                return None;
+            }
+            None => {
+                let step = await_path(UNSAVED_SAVE_PICKER.into(), self.unsaved_save_waiting, clicked, || {
+                    rfd::FileDialog::new().set_title("Save Project").pick_folder()
+                });
+                self.unsaved_save_waiting = step == Awaited::Waiting;
+                match step {
+                    Awaited::Idle | Awaited::Waiting => return None,
+                    Awaited::Answered(Picked::Cancelled) => return Some(SaveOutcome::Cancelled),
+                    Awaited::Answered(Picked::Path(p)) => ensure_klipp_extension(p),
+                }
+            }
         };
-        if self.do_save_project(&path) { SaveOutcome::Saved } else { SaveOutcome::Failed }
+        Some(if self.do_save_project(&path) { SaveOutcome::Saved } else { SaveOutcome::Failed })
     }
 
     fn do_open_project(&mut self, path: &std::path::Path) {
@@ -24046,6 +24087,7 @@ impl KlippApp {
                     if ui.button("Don't Save").clicked() {
                         eprintln!("unsaved dialog: Don't Save clicked");
                         tracing::info!("unsaved dialog: Don't Save clicked");
+                        self.unsaved_save_waiting = false;
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
                         // Clean up autosave backup since user chose not to save
@@ -24091,9 +24133,15 @@ impl KlippApp {
                         tracing::info!("unsaved dialog: Cancel clicked");
                         self.state.show_unsaved_dialog = false;
                         self.state.unsaved_dialog_action = UnsavedAction::None;
+                        self.unsaved_save_waiting = false;
                     }
-                    if ui.button("Save").clicked() {
+                    let save_clicked = ui
+                        .add_enabled(!self.unsaved_save_waiting, egui::Button::new("Save"))
+                        .clicked();
+                    if save_clicked {
                         tracing::info!("unsaved dialog: Save clicked");
+                    }
+                    if save_clicked || self.unsaved_save_waiting {
                         // The save happens here, now, and the action
                         // follows only if it succeeded. It used to be
                         // queued as a command and the action taken at
@@ -24102,8 +24150,11 @@ impl KlippApp {
                         // replaced the project first, so the save wrote
                         // the *new* one. Either way the edits the user
                         // had just chosen to keep were gone.
-                        match self.save_project_interactively() {
-                            SaveOutcome::Saved => {
+                        let outcome = self.save_project_interactively(save_clicked);
+                        match outcome {
+                            // The Save As picker is still open.
+                            None => {}
+                            Some(SaveOutcome::Saved) => {
                                 self.state.show_unsaved_dialog = false;
                                 let action = self.state.unsaved_dialog_action.clone();
                                 self.state.unsaved_dialog_action = UnsavedAction::None;
@@ -24131,14 +24182,14 @@ impl KlippApp {
                             // The picker was dismissed: the user changed
                             // their mind about the whole thing. Nothing
                             // closes.
-                            SaveOutcome::Cancelled => {
+                            Some(SaveOutcome::Cancelled) => {
                                 self.state.show_unsaved_dialog = false;
                                 self.state.unsaved_dialog_action = UnsavedAction::None;
                             }
                             // The save failed and said so in a toast; the
                             // question is still open, and so is the
                             // project.
-                            SaveOutcome::Failed => {}
+                            Some(SaveOutcome::Failed) => {}
                         }
                     }
                 });
@@ -24147,6 +24198,7 @@ impl KlippApp {
         if !open {
             self.state.show_unsaved_dialog = false;
             self.state.unsaved_dialog_action = UnsavedAction::None;
+            self.unsaved_save_waiting = false;
         }
 
         cmds
@@ -27604,10 +27656,21 @@ impl eframe::App for KlippApp {
         };
         crate::file_dialog::install(ctx, picker_scope);
         let picked = crate::file_dialog::take_ready();
+        // Everything the pickers had to say this frame, in one toast: a
+        // refusal must not hide a worker's "Frame saved".
+        let mut said: Vec<String> = Vec::new();
         if picked.stale > 0 {
-            self.state.toast.show("The project or sequence changed while the file dialog was open, so that choice was not applied".to_string());
-        } else if picked.refused > 0 {
-            self.state.toast.show("A file dialog is already open".to_string());
+            said.push("The project or sequence changed while the file dialog was open, so that choice was not applied".into());
+        }
+        if picked.refused > 0 {
+            said.push("A file dialog is already open".into());
+        }
+        if picked.expired > 0 {
+            said.push("The file dialog answered after its panel had closed, so that choice was not applied".into());
+        }
+        said.extend(picked.notices);
+        if !said.is_empty() {
+            self.state.toast.show(said.join(" \u{2022} "));
         }
         let mut all_cmds = picked.commands;
 
@@ -30127,13 +30190,14 @@ impl KlippApp {
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(&mut self.export_dialog.output_path)
                                 .desired_width((ui.available_width() - 40.0).max(120.0)));
+                            let picker = egui::Id::new("export-output-path");
                             if ui.button("...").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_title("Export to...")
-                                    .save_file()
-                                {
-                                    self.export_dialog.output_path = path.to_string_lossy().to_string();
-                                }
+                                crate::file_dialog::pick_path(picker, || {
+                                    rfd::FileDialog::new().set_title("Export to...").save_file()
+                                });
+                            }
+                            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                                self.export_dialog.output_path = path.to_string_lossy().to_string();
                             }
                         });
                         ui.end_row();
@@ -32020,14 +32084,17 @@ impl KlippApp {
                             )
                             .desired_width(280.0),
                         );
+                        let picker = egui::Id::new("consolidate-destination");
                         if ui.button("\u{2026}").clicked() {
-                            if let Some(dir) = rfd::FileDialog::new()
-                                .set_title("Choose Consolidation Destination")
-                                .pick_folder()
-                            {
-                                self.state.consolidate_dest_path =
-                                    dir.to_string_lossy().to_string();
-                            }
+                            crate::file_dialog::pick_path(picker, || {
+                                rfd::FileDialog::new()
+                                    .set_title("Choose Consolidation Destination")
+                                    .pick_folder()
+                            });
+                        }
+                        if let Some(crate::file_dialog::Picked::Path(dir)) = crate::file_dialog::take_path(picker) {
+                            self.state.consolidate_dest_path =
+                                dir.to_string_lossy().to_string();
                         }
                     });
                     ui.add_space(8.0);

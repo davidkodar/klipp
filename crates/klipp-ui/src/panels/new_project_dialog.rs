@@ -145,14 +145,18 @@ impl NewProjectDialog {
                             .text_color(theme.text_dim),
                     );
                     let _ = loc_str; // consumed above
+                    let picker = egui::Id::new("new-project-location");
                     if ui.button("Browse...").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_title("Choose Project Location")
-                            .set_directory(&self.location)
-                            .pick_folder()
-                        {
-                            self.location = dir;
-                        }
+                        let start = self.location.clone();
+                        crate::file_dialog::pick_path(picker, move || {
+                            rfd::FileDialog::new()
+                                .set_title("Choose Project Location")
+                                .set_directory(&start)
+                                .pick_folder()
+                        });
+                    }
+                    if let Some(crate::file_dialog::Picked::Path(dir)) = crate::file_dialog::take_path(picker) {
+                        self.location = dir;
                     }
                 });
 
