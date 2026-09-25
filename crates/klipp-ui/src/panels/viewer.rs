@@ -1734,9 +1734,13 @@ impl ViewerPanel {
         //
         // The toggle itself is untouched: leaving Colour brings them
         // straight back, and nothing is written to the user's prefs.
+        let title_object_active = state
+            .selected_title_object
+            .is_some_and(|(selected_clip, _)| Some(selected_clip) == state.selected_clip);
         if state.show_transform_controls
             && !state.show_color_panel
             && !state.viewer_text_edit
+            && !title_object_active
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {
