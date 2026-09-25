@@ -4435,6 +4435,14 @@ fn show_title_editor(
         Some(klipp_timeline::TitleObjectContent::TextBox(tb)) => Some(tb),
         _ => td.primary_text(),
     };
+    if target_oid.is_none() && tb_target.is_some() {
+        ui.label(
+            egui::RichText::new("No layer selected — editing the primary text layer")
+                .size(10.0)
+                .color(theme.text_secondary),
+        );
+        ui.add_space(4.0);
+    }
     // The stack shown beside it is the targeted object's — where a
     // layer's motion and effects live — or the primary text's.
     let fx: &klipp_timeline::LayerFx = target_oid
