@@ -743,8 +743,7 @@ pub fn show_content(
                     {
                         let descs = effect.param_descriptors();
                         for desc in descs {
-                            if inst.effect_type == "denoiser" && (desc.name == "learn" || desc.name == "profile_reset") { continue; }
-                            let static_value = inst.params.iter()
+                                                        let static_value = inst.params.iter()
                                 .find(|(k, _)| k == desc.name)
                                 .map(|(_, v)| *v)
                                 .unwrap_or(desc.default);
@@ -809,39 +808,7 @@ pub fn show_content(
                     }
 
                     if inst.effect_type == "denoiser" {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("PROFILE WORKFLOW").size(10.0).strong().color(theme.text_dim));
-                        ui.label(egui::RichText::new("Place the playhead over a noise-only section, choose a preset, then learn before playing the dialogue.").size(10.0).color(theme.text_secondary));
-                        let profile_reset = inst.params.iter()
-                            .find(|(name, _)| name == "profile_reset")
-                            .map(|(_, value)| *value)
-                            .unwrap_or(0.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new("PRESETS").size(9.0).strong().color(theme.text_dim));
-                            for (label, strength, floor, window) in [
-                                ("Wind", 0.95, 0.02, 1.0),
-                                ("Voice", 0.75, 0.08, 0.5),
-                                ("Aggressive", 1.0, 0.01, 2.0),
-                            ] {
-                                if ui.small_button(label).on_hover_text(match label {
-                                    "Wind" => "Strong broadband reduction for steady wind and rumble",
-                                    "Voice" => "Balanced cleanup that preserves dialogue",
-                                    _ => "Maximum reduction; use carefully on music or ambience",
-                                }).clicked() {
-                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "strength".into(), value: strength });
-                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "floor".into(), value: floor });
-                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_seconds".into(), value: window });
-                                }
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button("Learn Noise Profile").on_hover_text("Relearn from the next profile window").clicked() {
-                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_reset".into(), value: profile_reset + 1.0 });
-                            }
-                            if ui.button("Reset Profile").clicked() {
-                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_reset".into(), value: profile_reset + 1.0 });
-                            }
-                        });
+                        show_denoiser_controls(ui, theme, clip_id, idx, inst, clip_time_secs, cmds);
                     }
 
                     ui.add_space(4.0);
@@ -1242,6 +1209,109 @@ fn render_clap_params(
 // (state lookup, kf evaluation, has-kfs check) so the diamond's
 // behavior is correct even when the visual smoke test isn't run.
 // ═══════════════════════════════════════════════════════════════════
+/// Broadband Denoiser presets: (name, hint, Reduction, Noise Floor gain,
+/// Wind Reduction, Learn Window seconds). The floor is the deepest a
+/// noise-only bin is pulled down (0.12 ≈ -18 dB), which is what keeps
+/// dialogue natural.
+const DENOISER_PRESETS: &[(&str, &str, f32, f32, f32, f32)] = &[
+    ("Dialogue", "Everyday cleanup for speech: removes steady noise and keeps the voice natural (-18 dB floor)", 0.7, 0.12, 0.0, 0.5),
+    ("Light Touch", "Gentle reduction for interviews and ambience you want to keep (-12 dB floor)", 0.5, 0.25, 0.0, 0.5),
+    ("Room Tone", "Steady room ambience and camera self-noise behind dialogue", 0.8, 0.08, 0.0, 1.0),
+    ("Hiss", "Preamp, tape and high-gain microphone hiss", 0.85, 0.06, 0.0, 0.5),
+    ("HVAC / Fan", "Air conditioning, computer fans and fridge beds; learn over a longer stretch", 0.85, 0.05, 0.0, 2.0),
+    ("Wind", "Outdoor wind: ducks gusts in the low end and cleans the steady rush. Add a High-pass (camera wind preset) before it for heavy buffeting", 1.0, 0.03, 1.0, 1.0),
+    ("Traffic", "Distant traffic and city bed under location dialogue, with light gust control", 0.9, 0.06, 0.5, 2.0),
+    ("Aggressive", "Maximum reduction for rescue jobs; listen for watery artefacts", 1.0, 0.01, 1.0, 2.0),
+];
+
+fn show_denoiser_controls(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    idx: usize,
+    inst: &AudioEffectInstance,
+    clip_time_secs: f64,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let param = |name: &str, default: f32| {
+        inst.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v).unwrap_or(default)
+    };
+    let strength = param("strength", 0.75);
+    let floor = param("floor", 0.08);
+    let window = param("profile_seconds", 0.5);
+    let wind = param("wind", 0.0);
+    let learned = param("profile_learned", 0.0) > 0.5;
+    let learned_at = param("profile_at", -1.0);
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("PRESETS").size(10.0).strong().color(theme.text_dim));
+    ui.horizontal_wrapped(|ui| {
+        for (name, hint, p_strength, p_floor, p_wind, p_window) in DENOISER_PRESETS {
+            let active = (strength - p_strength).abs() < 0.005
+                && (floor - p_floor).abs() < 0.005
+                && (wind - p_wind).abs() < 0.005
+                && (window - p_window).abs() < 0.005;
+            if ui.selectable_label(active, *name).on_hover_text(*hint).clicked() {
+                cmds.push(AppCommand::SetAudioEffectParams {
+                    clip_id,
+                    effect_index: idx,
+                    params: vec![
+                        ("strength".into(), *p_strength),
+                        ("floor".into(), *p_floor),
+                        ("wind".into(), *p_wind),
+                        ("profile_seconds".into(), *p_window),
+                    ],
+                });
+            }
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("NOISE PROFILE").size(10.0).strong().color(theme.text_dim));
+    let status = if learned {
+        let secs = learned_at.max(0.0);
+        format!(
+            "Learned from {}:{:04.1} into the clip. Reduction and floor apply to that noise.",
+            (secs / 60.0).floor() as u32,
+            secs % 60.0,
+        )
+    } else {
+        "Adaptive: tracks the steady noise floor automatically. Learn a profile for the most precise result.".to_string()
+    };
+    ui.label(egui::RichText::new(status).size(10.0).color(theme.text_secondary));
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Learn at Playhead")
+            .on_hover_text("Learn from the Learn Window starting at the playhead. Park it on noise only: no speech or music.")
+            .clicked()
+        {
+            cmds.push(AppCommand::LearnDenoiserProfile {
+                clip_id,
+                effect_index: idx,
+                at_clip_secs: Some(clip_time_secs.max(0.0)),
+            });
+        }
+        if ui
+            .button("Auto Learn")
+            .on_hover_text("Find the quietest stretch of this clip and learn the noise from it")
+            .clicked()
+        {
+            cmds.push(AppCommand::LearnDenoiserProfile { clip_id, effect_index: idx, at_clip_secs: None });
+        }
+        if ui
+            .add_enabled(learned, egui::Button::new("Clear"))
+            .on_hover_text("Forget the learned profile and go back to adaptive tracking")
+            .clicked()
+        {
+            cmds.push(AppCommand::SetAudioEffectParams {
+                clip_id,
+                effect_index: idx,
+                params: vec![("profile_learned".into(), 0.0)],
+            });
+        }
+    });
+}
+
 #[cfg(test)]
 mod helper_tests {
     use super::*;

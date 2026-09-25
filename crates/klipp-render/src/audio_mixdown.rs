@@ -260,7 +260,14 @@ fn get_track_samples(
                         channels: 2,
                         clip_time_secs: 0.0,
                     };
+                    // Effects that look ahead (STFT denoiser, pitch shift)
+                    // delay their output. Export has the whole clip, so
+                    // flush the delay with silence and drop the head to
+                    // keep the sound on the picture.
+                    let latency = chain.total_latency_samples(sample_rate) as usize * 2;
+                    buf.resize(buf.len() + latency, 0.0);
                     chain.process(&mut buf, &ctx);
+                    buf.drain(..latency);
                 }
                 buf
             }

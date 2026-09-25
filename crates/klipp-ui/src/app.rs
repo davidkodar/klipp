@@ -2328,7 +2328,9 @@ impl KlippApp {
                 | AppEvent::AudioSyncFailed { .. }
                 | AppEvent::MediaSyncComplete { .. }
                 | AppEvent::MediaSyncFailed { .. }
-                | AppEvent::MulticamSyncReady { .. } => {}
+                | AppEvent::MulticamSyncReady { .. }
+                | AppEvent::DenoiserProfileLearned { .. }
+                | AppEvent::DenoiserProfileFailed { .. } => {}
             }
         }
 
@@ -10403,6 +10405,126 @@ impl KlippApp {
     /// the snapshot pair would be identical (defensive — should never
     /// happen if the caller actually mutated state, but it keeps the
     /// undo stack tidy in case a no-op slips through).
+    /// Store several params on one audio effect as a single undo step and
+    /// rebuild the running chain.
+    fn set_audio_effect_params(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        effect_index: usize,
+        params: &[(String, f32)],
+        description: &'static str,
+    ) {
+        let old_state = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .map(crate::history::AudioChainSnapshot::from_clip);
+        let mut applied = false;
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                if let Some(inst) = clip.audio_effects.get_mut(effect_index) {
+                    for (name, value) in params {
+                        if let Some(p) = inst.params.iter_mut().find(|(k, _)| k == name) {
+                            p.1 = *value;
+                        } else {
+                            inst.params.push((name.clone(), *value));
+                        }
+                    }
+                    applied = true;
+                }
+                break;
+            }
+        }
+        if !applied {
+            return;
+        }
+        self.push_audio_chain_history(clip_id, description, old_state);
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+    }
+
+    /// Learn a Broadband Denoiser profile from the clip's conformed audio
+    /// on a worker thread. The result arrives as
+    /// `AppEvent::DenoiserProfileLearned` and is stored in the effect's
+    /// params, so it is part of the project and export uses it too.
+    fn learn_denoiser_profile(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        effect_index: usize,
+        at_clip_secs: Option<f64>,
+    ) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return };
+        let window_secs = clip
+            .audio_effects
+            .get(effect_index)
+            .and_then(|inst| inst.params.iter().find(|(k, _)| k == "profile_seconds"))
+            .map(|(_, v)| *v as f64)
+            .unwrap_or(0.5)
+            .clamp(0.1, 5.0);
+        let source_in = clip.source_in.to_secs_f64();
+        let source_out = clip.source_out.to_secs_f64().max(source_in);
+        let pcm_path = clip
+            .media_id()
+            .and_then(|id| self.state.media_pool.get(&id))
+            .and_then(|m| m.audio_cache.as_ref())
+            .map(|c| c.pcm_path.clone());
+        let Some(pcm_path) = pcm_path else {
+            self.state.toast.show("Denoiser: this clip's audio is not ready yet. Try again in a moment.".to_string());
+            return;
+        };
+        let tx = self.proxy_event_tx.clone();
+        self.state.toast.show("Learning noise profile\u{2026}".to_string());
+        let spawned = std::thread::Builder::new()
+            .name("klipp-denoiser-learn".into())
+            .spawn(move || {
+                const SR: u32 = 48_000;
+                let (start, end) = match at_clip_secs {
+                    Some(t) => {
+                        let start = (source_in + t.max(0.0)).min(source_out);
+                        (start, (start + window_secs).min(source_out))
+                    }
+                    None => (source_in, source_out),
+                };
+                let mono = match read_pcm_mono_range(&pcm_path, start, end, SR) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::DenoiserProfileFailed { error: format!("read audio: {e}") });
+                        return;
+                    }
+                };
+                let (offset, slice) = if at_clip_secs.is_some() {
+                    (0, &mono[..])
+                } else {
+                    match klipp_audio::dsp::denoiser::quietest_window(&mono, SR, window_secs as f32) {
+                        Some(o) => {
+                            let len = ((window_secs * SR as f64) as usize).min(mono.len() - o);
+                            (o, &mono[o..o + len])
+                        }
+                        None => (0, &mono[..]),
+                    }
+                };
+                let Some(bands) = klipp_audio::dsp::denoiser::learn_noise_profile(slice, SR) else {
+                    let _ = tx.send(AppEvent::DenoiserProfileFailed {
+                        error: "that section is too short or silent to learn from".to_string(),
+                    });
+                    return;
+                };
+                let source_secs = start + offset as f64 / SR as f64;
+                let mut params: Vec<(String, f32)> = bands
+                    .iter()
+                    .enumerate()
+                    .map(|(b, db)| (klipp_audio::dsp::denoiser::band_param_name(b), *db))
+                    .collect();
+                params.push(("profile_learned".into(), 1.0));
+                params.push(("profile_at".into(), (source_secs - source_in) as f32));
+                let _ = tx.send(AppEvent::DenoiserProfileLearned { clip_id, effect_index, params, source_secs });
+            });
+        if let Err(e) = spawned {
+            self.state.toast.show(format!("Denoiser: could not start learning: {e}"));
+        }
+    }
+
     fn push_audio_chain_history(
         &mut self,
         clip_id: klipp_core::ClipId,
@@ -11642,6 +11764,14 @@ impl KlippApp {
                 // until the next seek. The fingerprint check skips pointless
                 // restarts when the value is identical.
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                true
+            }
+            AppCommand::SetAudioEffectParams { clip_id, effect_index, ref params } => {
+                self.set_audio_effect_params(*clip_id, *effect_index, params, "Apply Audio Effect Preset");
+                true
+            }
+            AppCommand::LearnDenoiserProfile { clip_id, effect_index, at_clip_secs } => {
+                self.learn_denoiser_profile(*clip_id, *effect_index, *at_clip_secs);
                 true
             }
             AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
@@ -26900,6 +27030,39 @@ pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<Ap
     out
 }
 
+/// Read `[start_secs, end_secs)` of a conformed 48 kHz stereo f32 PCM cache
+/// as mono, without loading the whole file.
+fn read_pcm_mono_range(
+    path: &std::path::Path,
+    start_secs: f64,
+    end_secs: f64,
+    sample_rate: u32,
+) -> std::io::Result<Vec<f32>> {
+    use std::io::{Read, Seek, SeekFrom};
+    const FRAME_BYTES: u64 = 8;
+    let mut file = std::fs::File::open(path)?;
+    let total_frames = file.metadata()?.len() / FRAME_BYTES;
+    let first = ((start_secs.max(0.0) * sample_rate as f64) as u64).min(total_frames);
+    let last = ((end_secs.max(0.0) * sample_rate as f64) as u64).clamp(first, total_frames);
+    file.seek(SeekFrom::Start(first * FRAME_BYTES))?;
+    let mut bytes = vec![0u8; ((last - first) * FRAME_BYTES) as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes
+        .chunks_exact(8)
+        .map(|f| {
+            let l = f32::from_le_bytes([f[0], f[1], f[2], f[3]]);
+            let r = f32::from_le_bytes([f[4], f[5], f[6], f[7]]);
+            0.5 * (l + r)
+        })
+        .collect())
+}
+
+/// `m:ss.s` for a source position in toasts.
+fn format_profile_time(secs: f64) -> String {
+    let secs = secs.max(0.0);
+    format!("{}:{:04.1}", (secs / 60.0).floor() as u64, secs % 60.0)
+}
+
 #[cfg(test)]
 mod control_envelope_tests {
     use super::*;
@@ -30691,6 +30854,14 @@ impl KlippApp {
                 AppEvent::AudioSyncFailed { clip_id, error } => {
                     tracing::warn!("Audio sync failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Audio sync failed: {error}"));
+                }
+                AppEvent::DenoiserProfileLearned { clip_id, effect_index, params, source_secs } => {
+                    self.set_audio_effect_params(clip_id, effect_index, &params, "Learn Noise Profile");
+                    self.state.toast.show(format!("Noise profile learned at {}", format_profile_time(source_secs)));
+                }
+                AppEvent::DenoiserProfileFailed { error } => {
+                    tracing::warn!("Denoiser profile learning failed: {}", error);
+                    self.state.toast.show(format!("Could not learn noise profile: {error}"));
                 }
                 _ => {}
             }
