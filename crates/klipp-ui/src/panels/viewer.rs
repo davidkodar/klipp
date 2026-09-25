@@ -1623,7 +1623,8 @@ impl ViewerPanel {
         }
         {
             let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
-            let galley = painter.layout_no_wrap("Editing \u{2014} Esc to finish".to_string(), font, theme.text_primary);
+            let layer_name = if obj.name.is_empty() { "Text layer" } else { obj.name.as_str() };
+            let galley = painter.layout_no_wrap(format!("Editing: {layer_name} \u{2014} Esc to finish"), font, theme.text_primary);
             let pad = egui::vec2(8.0, 3.0);
             let size = galley.size() + pad * 2.0;
             let x = bb.min.x.max(image_rect.min.x + 2.0);
