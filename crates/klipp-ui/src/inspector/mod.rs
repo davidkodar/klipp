@@ -2166,7 +2166,7 @@ fn show_title_effects_group(
         count: if active_count > 0 { Some(active_count) } else { None },
         active: active_count > 0,
     };
-    if !title_group_is_open(ui, theme, clip_id, "Effects", status) {
+    if !title_group_is_open(ui, theme, clip_id, "Text effects", status) {
         return;
     }
     ui.add_space(6.0);
@@ -4512,7 +4512,12 @@ fn show_title_editor(
     // ── Advanced: every other group, collapsed by default ──
     {
         let status = crate::widgets::inspector_group::GroupStatus { count: None, active: false };
-        if !title_group_is_open(ui, theme, clip_id, "Advanced", status) {
+    ui.label(
+        egui::RichText::new("More text effects, typography and layer controls")
+            .size(10.0)
+            .color(theme.text_secondary),
+    );
+    if !title_group_is_open(ui, theme, clip_id, "Advanced title tools", status) {
             return;
         }
     }

@@ -461,10 +461,55 @@ pub fn show_motion_card(
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
 ) {
-    caption(ui, theme, "MOTION");
+    caption(ui, theme, "ANIMATION");
+    ui.label(
+        egui::RichText::new("Entrance and exit animation for this text layer")
+            .size(crate::theme::type_scale::CAPTION)
+            .color(theme.text_secondary),
+    );
     ui.add_space(4.0);
     let mut motion = fx.motion;
     let mut changed = false;
+
+    // Keep the most common title actions one click away.  The full motion
+    // gallery remains below, but users should not have to discover that a
+    // thumbnail opens a picker just to fade or type a title on.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        if ui.small_button("Fade In").on_hover_text("Fade this text layer in").clicked() {
+            motion.enter = Some(Motion::new(MotionKind::Fade));
+            changed = true;
+        }
+        if ui.small_button("Fade Out").on_hover_text("Fade this text layer out").clicked() {
+            motion.exit = Some(Motion::new(MotionKind::Fade));
+            changed = true;
+        }
+        if ui.small_button("Type On").on_hover_text("Reveal the text one character at a time").clicked() {
+            motion.enter = Some(Motion::new(MotionKind::Typewriter));
+            changed = true;
+        }
+        if ui.small_button("Rise").on_hover_text("Bring the text up into place").clicked() {
+            motion.enter = Some(Motion::new(MotionKind::Rise));
+            changed = true;
+        }
+        if ui.small_button("Slide").on_hover_text("Slide the text into place").clicked() {
+            motion.enter = Some(Motion::new(MotionKind::SlideRight));
+            changed = true;
+        }
+        if ui.small_button("Clear").on_hover_text("Remove entrance and exit animation").clicked() {
+            motion.enter = None;
+            motion.exit = None;
+            changed = true;
+        }
+    });
+    let in_label = motion.enter.map(|m| m.kind.label()).unwrap_or("None");
+    let out_label = motion.exit.map(|m| m.kind.label()).unwrap_or("None");
+    ui.label(
+        egui::RichText::new(format!("In: {in_label}  ·  Out: {out_label}"))
+            .size(crate::theme::type_scale::CAPTION)
+            .color(theme.text_dim),
+    );
+    ui.add_space(4.0);
     changed |= motion_row(ui, theme, chips, subject, fx, Direction::Enter, &mut motion.enter);
     ui.add_space(4.0);
     changed |= motion_row(ui, theme, chips, subject, fx, Direction::Exit, &mut motion.exit);
@@ -665,7 +710,7 @@ pub fn show_style_card(
     cmds: &mut Vec<AppCommand>,
 ) {
     let subject = ChipSubject::Text(tb.clone());
-    caption(ui, theme, "STYLE");
+    caption(ui, theme, "APPEARANCE");
     ui.add_space(4.0);
     // Presets, rendered on this text.
     ui.horizontal_wrapped(|ui| {
