@@ -11546,12 +11546,23 @@ impl KlippApp {
                         params: default_params,
                     }
                 };
+                let mut added = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.audio_effects.push(instance.clone());
                         tracing::debug!("audio_fx: added effect '{}' to clip {:?}, total: {}", effect_type, clip.id, clip.audio_effects.len());
+                        added = true;
                         break;
                     }
+                }
+                if !added {
+                    // A stale browser/inspector command must be visible to the
+                    // user rather than looking like a no-op. This can happen
+                    // when a clip is deleted or the active sequence changes
+                    // between frames.
+                    tracing::warn!("audio_fx: could not find target clip {:?} for '{}'", clip_id, effect_type);
+                    self.state.toast.show("Select an audio clip before adding an effect");
+                    return true;
                 }
                 self.push_audio_chain_history(*clip_id, "Add Audio Effect", old_state);
                 self.sync_sequence_to_engine();

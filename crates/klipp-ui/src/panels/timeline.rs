@@ -6386,6 +6386,55 @@ impl TimelinePanel {
         }
     }
 
+    /// Draw a compact, always-visible effect strip for every audio effect on
+    /// a clip. An effect remains discoverable before it has keyframes; hover
+    /// names the chain and points users to the Audio inspector for editing.
+    fn draw_audio_effect_badges(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        track_kind: klipp_timeline::TrackKind,
+        pointer_pos: Option<egui::Pos2>,
+    ) {
+        if track_kind != TrackKind::Audio || clip.audio_effects.is_empty() || clip_rect.width() < 8.0 || clip.kind.is_gap() {
+            return;
+        }
+        const H: f32 = 4.0;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(clip_rect.left(), clip_rect.top() + 5.0),
+            egui::vec2(clip_rect.width(), H),
+        );
+        let cell_w = rect.width() / clip.audio_effects.len() as f32;
+        let theme_ref = theme();
+        let mut hovered = None;
+        for (idx, inst) in clip.audio_effects.iter().enumerate() {
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + idx as f32 * cell_w, rect.top()),
+                egui::vec2(cell_w.max(1.0), H),
+            );
+            let color = crate::browser::audio_fx_tab::audio_effect_color_for_type(&inst.effect_type, &theme_ref);
+            painter.rect_filled(cell, 1.0, color);
+            if pointer_pos.is_some_and(|p| cell.expand(2.0).contains(p)) {
+                hovered = Some(cell);
+            }
+        }
+        if let Some(cell) = hovered {
+            let names = clip.audio_effects.iter().map(|fx| effect_display_name(&fx.effect_type)).collect::<Vec<_>>();
+            egui::show_tooltip_at(
+                ui.ctx(), ui.layer_id(),
+                egui::Id::new(("audio_effect_chain_tooltip", clip.id)),
+                cell.center_bottom(),
+                |ui| {
+                    ui.label(egui::RichText::new("Audio effects").strong().size(11.0));
+                    ui.label(names.join("  •  "));
+                    ui.label(egui::RichText::new("Edit parameters in the Audio inspector").size(10.0).color(theme_ref.text_dim));
+                },
+            );
+        }
+    }
+
     /// Draw audio fade in/out visual indicators on clips.
     #[allow(clippy::too_many_arguments)]
     /// Draw thin bottom-edge strips on an audio clip that has bypass
@@ -11230,6 +11279,7 @@ impl TimelinePanel {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                 self.draw_audio_fade_overlay(painter, clip_rect, clip, state, track_kind);
                 self.draw_fade_drag_handles(ui, painter, clip_rect, clip, state, track_kind, content_rect, pointer_pos);
+                self.draw_audio_effect_badges(ui, painter, clip_rect, clip, track_kind, pointer_pos);
                 self.draw_audio_bypass_strips(ui, painter, clip_rect, clip, track_kind, pointer_pos);
             }
 
