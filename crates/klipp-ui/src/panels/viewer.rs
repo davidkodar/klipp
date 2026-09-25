@@ -1358,6 +1358,7 @@ impl ViewerPanel {
             Some(td) => td,
             None => return,
         };
+        tighten_text_editor_boxes(&mut td, (frame.video_w.max(1.0) as u32, frame.video_h.max(1.0) as u32));
         let clip_time = state.sequence().tracks.iter()
             .find_map(|t| t.find_clip(clip_id))
             .map(|c| (state.playhead_smooth_secs - c.timeline_in.to_secs_f64()).max(0.0))
@@ -1467,6 +1468,8 @@ impl ViewerPanel {
         let Some(td) = clip.title_data().cloned() else {
             return;
         };
+        let mut td = td;
+        tighten_text_editor_boxes(&mut td, (video_w.max(1.0) as u32, video_h.max(1.0) as u32));
         let clip_time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
         // The layer being edited: the targeted one, else the first
         // text layer.
@@ -3715,6 +3718,7 @@ impl ViewerPanel {
         let Some(clip) = state.sequence().tracks.iter()
             .flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
         let Some(title) = clip.title_data() else { return };
+        let raw_title = title.clone();
         let time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
         let resolution = state.sequence().resolution;
         let td = editor_title_geometry(
@@ -3992,6 +3996,9 @@ impl ViewerPanel {
                     .and_then(|(_, oid)| td.object(oid).cloned());
                 if let Some(obj) = &selected {
                     if let Some(handle) = hit_test_handles(obj, image_rect, p) {
+                        let initial_transform = raw_title.object(obj.id)
+                            .map(|raw| raw.transform.clone())
+                            .unwrap_or_else(|| obj.transform.clone());
                         let initial_font_size = match &obj.content {
                             klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
                             _ => 0.0,
@@ -4000,7 +4007,7 @@ impl ViewerPanel {
                             clip_id,
                             object_id: obj.id,
                             handle,
-                            initial_transform: obj.transform.clone(),
+                            initial_transform,
                             initial_font_size,
                             drag_start_pos: p,
                         });
@@ -4019,6 +4026,9 @@ impl ViewerPanel {
                             object_id: Some(obj.id.0),
                         });
                         if is_fitted_shape(obj) { return; }
+                        let initial_transform = raw_title.object(obj.id)
+                            .map(|raw| raw.transform.clone())
+                            .unwrap_or_else(|| obj.transform.clone());
                         let initial_font_size = match &obj.content {
                             klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
                             _ => 0.0,
@@ -4027,7 +4037,7 @@ impl ViewerPanel {
                             clip_id,
                             object_id: obj.id,
                             handle: crate::state::TitleObjectHandle::Body,
-                            initial_transform: obj.transform.clone(),
+                            initial_transform,
                             initial_font_size,
                             drag_start_pos: p,
                         });
@@ -5443,8 +5453,9 @@ fn editor_title_geometry(
     time: f64,
     cache: &mut Option<TitleFitGeometry>,
 ) -> klipp_timeline::TitleData {
-    if !title.objects.iter().any(is_fitted_shape) { return title.clone(); }
-    if cache.as_ref().is_none_or(|c| c.title != *title || c.dimensions != dimensions) {
+    if title.objects.iter().any(is_fitted_shape)
+        && cache.as_ref().is_none_or(|c| c.title != *title || c.dimensions != dimensions)
+    {
         let mut renderer = klipp_title::TitleRenderer::new();
         let transforms = title.objects.iter().filter_map(|obj| {
             let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content else { return None };
@@ -5468,7 +5479,28 @@ fn editor_title_geometry(
             }
         }
     }
+    tighten_text_editor_boxes(&mut resolved, dimensions);
     resolved
+}
+
+/// Match the editor frame to the renderer's measured glyph bounds while
+/// preserving the authored transform centre and wrapping constraint.
+fn tighten_text_editor_boxes(title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
+    let mut renderer = klipp_title::TitleRenderer::new();
+    let (width, height) = dimensions;
+    for obj in &mut title.objects {
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else { continue };
+        let mut single = klipp_timeline::TitleData::single_text_fx(tb.clone(), obj.fx().clone());
+        single.objects[0].transform = obj.transform.clone();
+        let layout = renderer.render_layout(&single, width.max(1), height.max(1));
+        if layout.glyph_count == 0 { continue; }
+        let pad_x = (layout.scale * 8.0).clamp(4.0, 12.0);
+        let pad_y = (layout.scale * 6.0).clamp(3.0, 10.0);
+        let w = (layout.text_right - layout.text_left + pad_x * 2.0) / width.max(1) as f32;
+        let h = (layout.text_bottom - layout.text_top + pad_y * 2.0) / height.max(1) as f32;
+        obj.transform.size.x = w.clamp(0.01, obj.transform.size.x.max(0.01));
+        obj.transform.size.y = h.clamp(0.01, obj.transform.size.y.max(0.01));
+    }
 }
 
 fn object_screen_bb(
@@ -5497,7 +5529,7 @@ fn object_screen_points(
     // frame makes direct manipulation feel disconnected from the text.
     // The editor frame hugs the visible text with a small cushion while
     // retaining the authored box as the renderer's wrapping constraint.
-    let size = editor_object_size(obj, image_rect);
+        let size = obj.transform.size;
     let half = egui::vec2(
         size.x * image_rect.width() * 0.5,
         size.y * image_rect.height() * 0.5,
@@ -5513,44 +5545,6 @@ fn object_screen_points(
     ]
 }
 
-fn editor_object_size(
-    obj: &klipp_timeline::TitleObject,
-    image_rect: egui::Rect,
-) -> klipp_timeline::TitlePosition {
-    let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else {
-        return obj.transform.size;
-    };
-
-    let frame_w = image_rect.width().max(1.0);
-    let frame_h = image_rect.height().max(1.0);
-    let scale = frame_h / 1080.0;
-    let font_px = tb.font_size.max(1.0) * scale;
-    let line_height = font_px * tb.line_spacing.max(0.5) * 1.2;
-    let authored_w_px = obj.transform.size.x.max(0.01) * frame_w;
-    let authored_h_px = obj.transform.size.y.max(0.01) * frame_h;
-    let tracking_px = tb.tracking * scale;
-    let advance_px = (font_px * 0.55 + tracking_px).max(1.0);
-    let chars_per_line = (authored_w_px / advance_px).floor().max(1.0) as usize;
-    let mut visual_lines = 0usize;
-    let mut max_line_chars = 0usize;
-    for line in tb.text.split('\n') {
-        let chars = line.chars().count();
-        max_line_chars = max_line_chars.max(chars);
-        visual_lines += chars.max(1).div_ceil(chars_per_line);
-    }
-    visual_lines = visual_lines.max(1);
-
-    // Match the renderer's layout scale closely enough for the editor
-    // affordance, then leave a modest hit-area cushion around glyphs.
-    let padding_px = (font_px * 0.12).clamp(4.0, 12.0);
-    let glyph_w_px = (max_line_chars as f32 * advance_px).max(font_px * 0.35);
-    let visual_w_px = (glyph_w_px + padding_px * 2.0).min(authored_w_px);
-    let visual_h_px = (visual_lines as f32 * line_height + padding_px * 2.0).min(authored_h_px);
-    klipp_timeline::TitlePosition {
-        x: (visual_w_px / frame_w).clamp(0.01, obj.transform.size.x.max(0.01)),
-        y: (visual_h_px / frame_h).clamp(0.01, obj.transform.size.y.max(0.01)),
-    }
-}
 
 fn object_contains_screen_point(
     obj: &klipp_timeline::TitleObject,
@@ -6887,9 +6881,11 @@ mod fitted_backing_editor_tests {
             font_size: 72.0,
             ..Default::default()
         });
-        let object = &title.objects[0];
         let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
-        let size = editor_object_size(object, frame);
+        let mut fitted = title.clone();
+        tighten_text_editor_boxes(&mut fitted, (1920, 1080));
+        let object = &fitted.objects[0];
+        let size = object.transform.size;
         assert!(size.x < 0.6, "single-line text should not inherit the full-frame layout width");
         assert!(size.y < 0.25, "single-line text should not inherit the full-frame layout height");
         let bb = object_screen_bb(object, frame);
@@ -6904,9 +6900,10 @@ mod fitted_backing_editor_tests {
             font_size: 72.0,
             ..Default::default()
         });
-        let object = &title.objects[0];
-        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
-        let size = editor_object_size(object, frame);
+        let mut fitted = title.clone();
+        tighten_text_editor_boxes(&mut fitted, (1920, 1080));
+        let object = &fitted.objects[0];
+        let size = object.transform.size;
         assert!(size.x <= object.transform.size.x + 1e-6);
         assert!(size.y <= object.transform.size.y + 1e-6);
     }
