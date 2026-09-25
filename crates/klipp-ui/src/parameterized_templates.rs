@@ -388,6 +388,24 @@ pub fn template_from_sequence(sequence: &klipp_timeline::Sequence, name: impl In
     template
 }
 
+/// Save a composition as a template in the store. The composition's
+/// existing template, found by `composition_id`, is replaced — same id,
+/// same file — so saving twice does not make two; a composition with no
+/// template yet gets a new one. Returns whether one was replaced.
+pub fn save_composition_as_template(
+    store: &mut CompositionTemplateStore,
+    sequence: &klipp_timeline::Sequence,
+    name: impl Into<String>,
+) -> Result<bool, String> {
+    let mut template = template_from_sequence(sequence, name);
+    let existing = store.templates().find(|existing| existing.composition_id == sequence.id.0).map(|existing| existing.id);
+    if let Some(id) = existing {
+        template.id = id;
+    }
+    store.save(template)?;
+    Ok(existing.is_some())
+}
+
 /// The bundled terminal card used by the Lunel-style launch-film workflow.
 ///
 /// This is deliberately ordinary title content: a dark rounded panel, a
@@ -881,6 +899,53 @@ mod tests {
         assert!(template.parameters.contains_key("text"));
         assert_eq!(template.bindings[0].property, "object:1.text");
         template.validate().unwrap();
+    }
+
+    /// A composition with no text object is still a template — of the
+    /// whole composition, with nothing exposed — and it validates.
+    #[test]
+    fn a_composition_without_text_makes_a_parameterless_template() {
+        let mut sequence = klipp_timeline::Sequence::new_default();
+        sequence.tracks[0].clips.push(klipp_timeline::Clip::gap(
+            klipp_core::Timecode::from_frames(0, 24),
+            klipp_core::Timecode::from_frames(24, 24),
+        ));
+        let template = template_from_sequence(&sequence, "Plain");
+        assert_eq!(template.composition_id, sequence.id.0);
+        assert!(template.parameters.is_empty());
+        assert!(template.bindings.is_empty());
+        template.validate().unwrap();
+    }
+
+    /// Saving the same composition twice replaces its template — one
+    /// entry, one file, the same id, the new name — while another
+    /// composition gets a template of its own.
+    #[test]
+    fn saving_a_composition_twice_replaces_its_template() {
+        let dir = std::env::temp_dir().join(format!("klipp_save_twice_{}_{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = CompositionTemplateStore::load(Some(dir.clone()));
+        let mut card = klipp_timeline::Sequence::new_default();
+        let mut clip = klipp_timeline::Clip::gap(klipp_core::Timecode::from_frames(0, 24), klipp_core::Timecode::from_frames(24, 24));
+        clip.kind = klipp_timeline::ClipKind::Title(terminal_card_composition());
+        card.tracks[0].clips.push(clip);
+
+        assert!(!save_composition_as_template(&mut store, &card, "Card").unwrap(), "the first save is new");
+        let first_id = store.templates().next().unwrap().id;
+        assert!(save_composition_as_template(&mut store, &card, "Card, renamed").unwrap(), "the second replaces");
+        assert_eq!(store.templates().count(), 1, "one template for one composition");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "and one file");
+        let only = store.templates().next().unwrap();
+        assert_eq!(only.id, first_id, "the same template, kept by id");
+        assert_eq!(only.name, "Card, renamed");
+        assert_eq!(only.composition_id, card.id.0);
+
+        let other = klipp_timeline::Sequence::new_default();
+        assert!(!save_composition_as_template(&mut store, &other, "Other").unwrap());
+        assert_eq!(store.templates().count(), 2, "another composition is another template");
+        let reloaded = CompositionTemplateStore::load(Some(dir.clone()));
+        assert_eq!(reloaded.templates().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

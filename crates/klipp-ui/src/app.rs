@@ -7558,7 +7558,7 @@ impl KlippApp {
                     }
                     true
                 }
-            AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
+                AppCommand::SetTemplateOverride { clip_id, parameter, value } => {
                     let selected = self.state.sequences[self.state.active_sequence_idx].find_clip(*clip_id)
                         .and_then(|(ti, ci)| match &self.state.sequences[self.state.active_sequence_idx].tracks[ti].clips[ci].kind {
                             klipp_timeline::ClipKind::TemplatePrecomposition { sequence_id, template_instance } => Some((*sequence_id, template_instance.clone())),
@@ -7617,15 +7617,9 @@ impl KlippApp {
                         self.state.toast.show("The selected composition is missing");
                         return true;
                     };
-                    let mut template = crate::parameterized_templates::template_from_sequence(&sequence, name.clone());
-                    if let Some(existing_id) = self.state.composition_templates.templates()
-                        .find(|existing| existing.composition_id == sequence.id.0)
-                        .map(|existing| existing.id)
-                    {
-                        template.id = existing_id;
-                    }
-                    match self.state.composition_templates.save(template) {
-                        Ok(()) => self.state.toast.show(format!("Saved '{}' as a template", name)),
+                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, name.clone()) {
+                        Ok(true) => self.state.toast.show(format!("Updated the template '{name}'")),
+                        Ok(false) => self.state.toast.show(format!("Saved '{name}' as a template")),
                         Err(error) => self.state.toast.show(format!("Could not save template: {error}")),
                     }
                     true
