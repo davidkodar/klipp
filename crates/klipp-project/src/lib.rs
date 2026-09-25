@@ -36,6 +36,7 @@
 //! rejected (a hostile project shouldn't exfiltrate `~/.ssh/id_rsa`
 //! during consolidation).
 
+pub mod lock;
 pub mod metadata_sheet;
 pub mod consolidate;
 mod format;

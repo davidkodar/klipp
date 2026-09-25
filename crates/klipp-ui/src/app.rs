@@ -527,6 +527,21 @@ pub struct KlippApp {
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
     relink_panel: crate::panels::relink::RelinkPanel,
+    /// Who this session is, in the lock files it writes.
+    lock_holder: klipp_project::lock::Holder,
+    /// The lock this session holds on the open project, kept alive by
+    /// its own heartbeat thread.
+    lock_keeper: Option<klipp_project::lock::Keeper>,
+    /// The project path the lock was last reconciled against.
+    lock_seen_path: Option<PathBuf>,
+    /// The open project, when it is open read-only because someone else
+    /// holds its lock. Saving to it is refused.
+    read_only_project: Option<PathBuf>,
+    /// A lock found on a project being opened, waiting for the user.
+    lock_prompt: Option<(PathBuf, klipp_project::lock::LockInfo, klipp_project::lock::Liveness)>,
+    /// What the user chose for a locked project; the open that follows
+    /// acts on it instead of asking again.
+    lock_decision: Option<(PathBuf, LockDecision)>,
     /// "Sequence Settings…" modal — `Some` when open. Carries the per-
     /// invocation editor state (the targeted sequence index + its current
     /// width/height/fps being edited). `None` when closed.
@@ -597,6 +612,14 @@ pub struct KlippApp {
 
 /// The id the unsaved-changes dialog's Save As picker answers under.
 const UNSAVED_SAVE_PICKER: &str = "unsaved-dialog-save-as";
+
+/// What the user chose when the project they opened was locked.
+#[derive(Debug, Clone)]
+enum LockDecision {
+    ReadOnly,
+    /// Take it, recording whom from.
+    TakeOver(Option<klipp_project::lock::LockInfo>),
+}
 
 /// What came of asking the user to save: the result a close, an open or a
 /// quit is allowed to proceed on.
@@ -886,6 +909,12 @@ impl KlippApp {
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             relink_panel: Default::default(),
+            lock_holder: klipp_project::lock::Holder::current(),
+            lock_keeper: None,
+            lock_seen_path: None,
+            read_only_project: None,
+            lock_prompt: None,
+            lock_decision: None,
             sequence_settings_dialog: None,
             framerate_mismatch_dialog: None,
             suppress_fps_prompt: false,
@@ -6823,7 +6852,7 @@ impl KlippApp {
         };
 
         // 2. Work out the sidecar directory (saved project or temp fallback).
-        let stills_root: std::path::PathBuf = match self.state.project_path.clone() {
+        let stills_root: std::path::PathBuf = match self.writable_project_dir() {
             Some(dir) => dir,
             None => std::env::temp_dir().join("klipp_freeze"),
         };
@@ -8668,7 +8697,7 @@ impl KlippApp {
                     // Output directory: the saved project's .klipp dir, or a
                     // temp fallback so the feature still works in an unsaved
                     // project. save_freeze_frame_png appends media/stills/.
-                    let stills_root: std::path::PathBuf = match self.state.project_path.clone() {
+                    let stills_root: std::path::PathBuf = match self.writable_project_dir() {
                         Some(dir) => dir,
                         None => std::env::temp_dir().join("klipp_extracts"),
                     };
@@ -15216,7 +15245,7 @@ impl KlippApp {
                     }
                     // Best-effort PNG cleanup. Re-write the index so the load
                     // path doesn't try to read a now-missing file.
-                    if let Some(project_dir) = self.state.project_path.clone() {
+                    if let Some(project_dir) = self.writable_project_dir() {
                         if !removed_filename.is_empty() {
                             klipp_project::delete_grade_still_file(&project_dir, &removed_filename);
                         }
@@ -15287,7 +15316,7 @@ impl KlippApp {
     /// Write all current grade stills (PNG sidecars + index) to the
     /// project directory. No-op if the project hasn't been saved yet.
     fn persist_grade_stills(&self) {
-        let Some(project_dir) = self.state.project_path.clone() else {
+        let Some(project_dir) = self.writable_project_dir() else {
             return;
         };
         let stills: Vec<klipp_project::GradeStillData> = self
@@ -18424,6 +18453,10 @@ impl KlippApp {
                 true
             }
             AppCommand::DeleteProject { path } => {
+                if let Some(who) = self.lock_held_elsewhere(path) {
+                    self.state.toast.show(format!("{who} has that project open, so it was not deleted"));
+                    return true;
+                }
                 if path.exists() {
                     if let Err(e) = std::fs::remove_dir_all(path) {
                         tracing::error!("Failed to delete project: {e}");
@@ -18436,6 +18469,10 @@ impl KlippApp {
                 true
             }
             AppCommand::RenameProjectOnDisk { old_path, new_name } => {
+                if let Some(who) = self.lock_held_elsewhere(old_path) {
+                    self.state.toast.show(format!("{who} has that project open, so it was not renamed"));
+                    return true;
+                }
                 if let Some(parent) = old_path.parent() {
                     let new_dir_name = format!("{new_name}.klipp");
                     let new_path = parent.join(&new_dir_name);
@@ -23595,7 +23632,196 @@ impl KlippApp {
         }
     }
 
+    /// Whether a save may write `path`: not when the project is open
+    /// read-only, and not when someone has taken its lock since. Says
+    /// why when it may not.
+    fn may_write_project(&mut self, path: &std::path::Path) -> bool {
+        if let Some(keeper) = self.lock_keeper.as_ref().filter(|k| k.project() == path) {
+            if let Err(taker) = keeper.check_now() {
+                self.lose_lock(taker);
+            }
+        }
+        if self.read_only_project.as_deref() == Some(path) {
+            self.state.toast.show(
+                "This project is open read-only, so it was not saved. Save As keeps your changes in a copy.".to_string(),
+            );
+            return false;
+        }
+        // Save As over a project someone else has open would replace
+        // their work as surely as two saves of one project.
+        let ours = self.lock_keeper.as_ref().is_some_and(|k| k.project() == path);
+        if !ours {
+            use klipp_project::lock::{self, Liveness, LockState};
+            if let LockState::Held(info, Liveness::Active | Liveness::Stale) = lock::inspect(path, &self.lock_holder) {
+                self.state.toast.show(format!(
+                    "{} has that project open, so it was not saved over. Choose another name.",
+                    info.who()
+                ));
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Ask what to do about a project someone else has open.
+    fn show_lock_prompt(&mut self, ctx: &egui::Context) {
+        use klipp_project::lock::{describe_secs, now_secs, Liveness};
+        let Some((path, info, liveness)) = self.lock_prompt.clone() else { return };
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let quiet = describe_secs(info.quiet_for(now_secs()));
+        let mut choice = None;
+        let mut cancelled = false;
+        let mut open = true;
+        egui::Window::new("Project In Use")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                match liveness {
+                    Liveness::Active => {
+                        ui.label(format!("\u{201C}{name}\u{201D} is open in Klipp for {}, active {quiet} ago.", info.who()));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("If you both save, whoever saves last replaces the other's work. Open it read-only to look, or ask them to close it first.")
+                                .size(11.0)
+                                .color(self.theme.text_dim),
+                        );
+                    }
+                    _ => {
+                        ui.label(format!("\u{201C}{name}\u{201D} was left open by {}, last seen {quiet} ago.", info.who()));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Klipp there most likely quit without closing it, or the machine went to sleep. Taking it over is safe if nobody is working in it.")
+                                .size(11.0)
+                                .color(self.theme.text_dim),
+                        );
+                    }
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let take = ui.button("Take Over").on_hover_text(format!(
+                        "Open it for editing. {} is switched to read-only on their next check, and the takeover is recorded in the project.",
+                        info.who()
+                    ));
+                    if take.clicked() {
+                        choice = Some(LockDecision::TakeOver(Some(info.clone())));
+                    }
+                    if ui.button("Open Read-Only").clicked() {
+                        choice = Some(LockDecision::ReadOnly);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if let Some(decision) = choice {
+            self.lock_prompt = None;
+            self.lock_decision = Some((path.clone(), decision));
+            self.do_open_project(&path);
+        } else if cancelled || !open {
+            self.lock_prompt = None;
+        }
+    }
+
+    /// Who has `path` open, when someone other than this session does
+    /// and their lock is not dead.
+    fn lock_held_elsewhere(&self, path: &std::path::Path) -> Option<String> {
+        use klipp_project::lock::{self, Liveness, LockState};
+        match lock::inspect(path, &self.lock_holder) {
+            LockState::Held(info, Liveness::Active | Liveness::Stale) => Some(info.who()),
+            _ => None,
+        }
+    }
+
+    /// The open project's folder, for the writers that put files beside
+    /// the project (freeze frames, extracted stills, grade stills) or
+    /// clear what is beside it (the auto-save, on close and Don't Save) —
+    /// `None` when it is open read-only, whose folder belongs to the
+    /// editor holding it. The writers then use a temporary folder, as
+    /// they do for a project never saved, and nothing is cleared.
+    fn writable_project_dir(&self) -> Option<PathBuf> {
+        self.state.project_path.clone().filter(|p| self.read_only_project.as_ref() != Some(p))
+    }
+
+    /// Someone took the open project's lock: stop saving to it.
+    fn lose_lock(&mut self, taker: klipp_project::lock::LockInfo) {
+        let Some(keeper) = self.lock_keeper.take() else { return };
+        self.read_only_project = Some(keeper.project().to_path_buf());
+        // Dropping the keeper does not remove a lock that is not ours.
+        drop(keeper);
+        self.state.toast.show(format!(
+            "{} took over this project. It is read-only here now; Save As keeps your changes in a copy.",
+            taker.who()
+        ));
+    }
+
+    /// Hold the lock on whichever project is open, and only that one.
+    /// Runs every frame, but touches the disk only when the open project
+    /// changes: the heartbeat runs on the keeper's thread.
+    fn sync_project_lock(&mut self) {
+        use klipp_project::lock::{self, Liveness};
+        if let Some(taker) = self.lock_keeper.as_ref().and_then(|k| k.lost()) {
+            self.lose_lock(taker);
+        }
+        if self.state.project_path == self.lock_seen_path {
+            return;
+        }
+        self.lock_seen_path = self.state.project_path.clone();
+        // Another project, or none: whatever was held is given up.
+        self.lock_keeper = None;
+        if self.read_only_project != self.state.project_path {
+            self.read_only_project = None;
+        }
+        // An untitled project has no folder to lock until its first save.
+        // A save that creates the folder asks for this again.
+        let Some(path) = self.state.project_path.clone().filter(|p| p.is_dir()) else {
+            return;
+        };
+        let decision = self.lock_decision.take().filter(|(p, _)| *p == path).map(|(_, d)| d);
+        match decision {
+            _ if self.read_only_project.as_ref() == Some(&path) => {}
+            Some(LockDecision::ReadOnly) => self.read_only_project = Some(path),
+            Some(LockDecision::TakeOver(from)) => self.take_over_lock(path, from.as_ref()),
+            None => match lock::acquire(&path, &self.lock_holder).map_err(|held| *held) {
+                Ok(()) => self.lock_keeper = Some(lock::Keeper::start(path, self.lock_holder.clone())),
+                Err((info, Liveness::Dead)) => self.take_over_lock(path, Some(&info)),
+                // Opened by a route that did not ask (an agent, a
+                // restore), or someone opened it in the same instant.
+                Err((info, _)) => {
+                    self.read_only_project = Some(path);
+                    self.state.toast.show(format!(
+                        "{} has this project open, so it is read-only here. Save As keeps your changes in a copy.",
+                        info.who()
+                    ));
+                }
+            },
+        }
+    }
+
+    /// Take the lock on `path`, or, when it cannot be written, say so and
+    /// open read-only: a keeper started on a lock that was never taken
+    /// would blame the holder for a takeover thirty seconds later.
+    fn take_over_lock(&mut self, path: PathBuf, from: Option<&klipp_project::lock::LockInfo>) {
+        match klipp_project::lock::take_over(&path, &self.lock_holder, from) {
+            Ok(()) => self.lock_keeper = Some(klipp_project::lock::Keeper::start(path, self.lock_holder.clone())),
+            Err(e) => {
+                tracing::warn!("project lock: could not take over {}: {e}", path.display());
+                self.read_only_project = Some(path);
+                self.state.toast.show(format!(
+                    "Could not take the project over ({e}), so it is open read-only. Save As keeps your changes in a copy."
+                ));
+            }
+        }
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
+        if !self.may_write_project(path) {
+            // The control socket waits on a project event for every save.
+            self.note_project_event(Some("not saved: the project is open read-only or locked by someone else".into()));
+            return false;
+        }
         let color = klipp_project::ColorSettings {
             global_lut_path: self.state.global_lut_path.clone(),
             global_lut_opacity: self.state.global_lut_opacity,
@@ -23610,6 +23836,10 @@ impl KlippApp {
             Ok(()) => {
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
                     tracing::warn!("Failed to persist Looks library: {e}");
+                }
+                // A first save has just made the folder there is to lock.
+                if self.lock_keeper.is_none() && self.read_only_project.is_none() {
+                    self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -23709,9 +23939,35 @@ impl KlippApp {
     }
 
     fn do_open_project(&mut self, path: &std::path::Path) {
-        // Check for newer autosave
+        // Someone else has it open: ask before loading, unless this open
+        // is the answer to that question.
+        let decided = self.lock_decision.as_ref().is_some_and(|(p, _)| p == path);
+        if !decided {
+            use klipp_project::lock::{self, Liveness, LockState};
+            match lock::inspect(path, &self.lock_holder) {
+                // Klipp on this machine died holding it: nobody to ask.
+                LockState::Held(info, Liveness::Dead) => {
+                    self.state.toast.show(format!(
+                        "Took over the lock left by Klipp (pid {}), which is no longer running",
+                        info.pid
+                    ));
+                    self.lock_decision = Some((path.to_path_buf(), LockDecision::TakeOver(Some(info))));
+                }
+                LockState::Held(info, liveness) => {
+                    self.lock_prompt = Some((path.to_path_buf(), info, liveness));
+                    return;
+                }
+                LockState::Free | LockState::Ours => {}
+            }
+        }
+        // Check for newer autosave — not when opening read-only: the
+        // holder's live auto-save is always newer, and it is theirs.
+        // Restoring it would load their work in progress, and keeping
+        // the saved version retires it, which takes their crash
+        // recovery away.
+        let read_only = matches!(&self.lock_decision, Some((p, LockDecision::ReadOnly)) if p == path);
         let autosave = autosave_path_for(path);
-        if autosave.exists() {
+        if autosave.exists() && !read_only {
             // Compare modification times
             let orig_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
             let auto_modified = std::fs::metadata(&autosave).and_then(|m| m.modified()).ok();
@@ -24024,6 +24280,8 @@ impl KlippApp {
             }
             Err(e) => {
                 tracing::error!("Failed to load project: {e}");
+                // What was decided about its lock was for this open.
+                self.lock_decision = None;
                 self.note_project_event(Some(format!("could not open: {e}")));
             }
         }
@@ -24066,7 +24324,9 @@ impl KlippApp {
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
                         // Clean up autosave backup since user chose not to save
-                        if let Some(ref path) = self.state.project_path {
+                        // — only our own: read-only, it is the holder's
+                        // crash recovery.
+                        if let Some(ref path) = self.writable_project_dir() {
                             let autosave = autosave_path_for(path);
                             if autosave.exists() {
                                 let _ = std::fs::remove_dir_all(&autosave);
@@ -26415,6 +26675,11 @@ impl KlippApp {
     /// closing the window, and exiting anyway is no worse than the
     /// behaviour this replaces.
     fn exit_after_engine_shutdown(&mut self) -> ! {
+        // Before anything that can hang: a lock left behind makes the
+        // next open ask a question nobody needs to answer.
+        if let Some(keeper) = self.lock_keeper.take() {
+            keeper.release_now();
+        }
         const BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
         let t0 = std::time::Instant::now();
 
@@ -27242,10 +27507,11 @@ impl eframe::App for KlippApp {
                     let name = p.file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| "Untitled".into());
+                    let read_only = if self.read_only_project.as_ref() == Some(p) { " (read-only)" } else { "" };
                     if self.state.dirty {
-                        format!("Klipp \u{2014} {name} \u{2022}")
+                        format!("Klipp \u{2014} {name}{read_only} \u{2022}")
                     } else {
-                        format!("Klipp \u{2014} {name}")
+                        format!("Klipp \u{2014} {name}{read_only}")
                     }
                 }
                 None => "Klipp".to_string(),
@@ -27394,6 +27660,8 @@ impl eframe::App for KlippApp {
             }
         }
 
+        self.sync_project_lock();
+
         // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
         let op_threshold = self.prefs.general.auto_save_op_threshold;
@@ -27401,9 +27669,13 @@ impl eframe::App for KlippApp {
             && self.last_autosave.elapsed().as_secs() >= interval as u64;
         let op_trigger = op_threshold > 0
             && self.state.history_ops_since_save >= op_threshold as u64;
+        // Not for a project open read-only: its auto-save folder sits
+        // beside the project, where the editor who holds it would find
+        // this session's edits offered as their own recovery.
         if (time_trigger || op_trigger)
             && self.state.dirty
             && self.state.project_path.is_some()
+            && self.read_only_project != self.state.project_path
             && !self.state.any_drag_in_progress()
             && self.autosave_rx.is_none()
         {
@@ -28506,7 +28778,9 @@ impl eframe::App for KlippApp {
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else if !self.state.dirty {
                 eprintln!("Klipp: clean close → exit(0)");
-                if let Some(path) = self.state.project_path.clone() {
+                // Read-only, the auto-save beside the project is the
+                // holder's crash recovery, not ours to clear.
+                if let Some(path) = self.writable_project_dir() {
                     let autosave = autosave_path_for(&path);
                     if autosave.exists() {
                         std::thread::Builder::new()
@@ -28537,7 +28811,9 @@ impl eframe::App for KlippApp {
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
                 eprintln!("Klipp: has_quit branch → exit(0)");
-                if let Some(path) = self.state.project_path.clone() {
+                // Read-only, the auto-save beside the project is the
+                // holder's crash recovery, not ours to clear.
+                if let Some(path) = self.writable_project_dir() {
                     let autosave = autosave_path_for(&path);
                     if autosave.exists() {
                         std::thread::Builder::new()
@@ -31505,6 +31781,9 @@ impl KlippApp {
                 self.state.show_save_hyperzoom_preset_dialog = false;
             }
         }
+
+        // 4a0. The project being opened is locked by someone else.
+        self.show_lock_prompt(ctx);
 
         // 4a1. Auto-save recovery dialog
         if self.state.show_autosave_recovery {
