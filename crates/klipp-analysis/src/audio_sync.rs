@@ -270,7 +270,7 @@ pub fn find_long_offset(reference: &[f32], clip: &[f32], sample_rate: u32) -> Op
 }
 
 /// A recording's level envelope, 100 frames a second: all
-/// the coarse search needs of a whole file. An hour is a few hundred kB,
+/// the coarse search needs of a whole file. An hour is about 1.4 MB,
 /// where the sound it came from is over a hundred MB at 8 kHz, so a
 /// dozen angles can be compared without holding a dozen files' sound.
 #[derive(Debug, Clone)]
@@ -316,6 +316,11 @@ pub const REFINE_WINDOW_SECS: f64 = 2.0;
 /// envelope frames.
 pub const REFINE_SLACK_SECS: f64 = 2.0 / ENVELOPE_RATE as f64;
 
+/// The waveform correlation a refinement must reach to be used over the
+/// coarse answer. The same sound through two microphones scores well
+/// above it; unrelated stretches of sound, far below.
+const REFINE_MIN_CORRELATION: f64 = 0.3;
+
 /// The coarse half of [`find_long_offset`], on prints.
 pub fn coarse_offset(reference: &SoundPrint, clip: &SoundPrint) -> Option<CoarseMatch> {
     let min_overlap = (MIN_OVERLAP_SECS * f64::from(ENVELOPE_RATE)) as usize;
@@ -359,8 +364,15 @@ pub fn refine_offset(reference: &[f32], clip: &[f32], sample_rate: u32, coarse: 
         }
     }
     match best {
-        Some((k, _)) => coarse.offset_secs - REFINE_SLACK_SECS + k as f64 / sr,
-        None => coarse.offset_secs,
+        // At the edge of the search the true peak may lie beyond it — a
+        // seek that landed off by more than the slack (VBR MP3, some
+        // containers) — and the edge is worse than the coarse answer.
+        // A weak peak is noise lining up, which is what a missed window
+        // gives too.
+        Some((k, score)) if k > 0 && k < 2 * slack && score >= REFINE_MIN_CORRELATION => {
+            coarse.offset_secs - REFINE_SLACK_SECS + k as f64 / sr
+        }
+        _ => coarse.offset_secs,
     }
 }
 
@@ -619,5 +631,17 @@ mod tests {
     fn refining_over_digital_silence_keeps_the_coarse_answer() {
         let coarse = CoarseMatch { offset_secs: -12.34, confidence: 1.0, probe_at_secs: 20.0 };
         assert_eq!(refine_offset(&[0.0; 16_000], &[0.0; 16_400], 8_000, &coarse), -12.34);
+    }
+
+    #[test]
+    fn a_refinement_pinned_to_the_edge_keeps_the_coarse_answer() {
+        const SR: u32 = 8_000;
+        let sound = room(SR as usize * 4, 3);
+        let coarse = CoarseMatch { offset_secs: 5.0, confidence: 1.0, probe_at_secs: 0.0 };
+        // The clip window starts 0.1 s late, far past the 20 ms slack.
+        let slack = (REFINE_SLACK_SECS * f64::from(SR)) as usize;
+        let reference = sound[..SR as usize * 2].to_vec();
+        let late = sound[SR as usize / 10..SR as usize / 10 + SR as usize * 2 + 2 * slack].to_vec();
+        assert_eq!(refine_offset(&reference, &late, SR, &coarse), 5.0);
     }
 }

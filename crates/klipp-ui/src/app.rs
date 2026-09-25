@@ -23341,14 +23341,27 @@ impl KlippApp {
             self.state.toast.show(format!("Could not put two angles on one clock{why}"));
             return;
         }
+        // On a frame of the sequence: a sound match is finer than a frame,
+        // and a clip between frames is a clip nobody can cut. The grid is
+        // the one the sequence will have: an empty sequence takes its rate
+        // from the first clip with picture placed in it, and that must
+        // hold for that first clip's own position too.
+        let fps = {
+            let seq = &self.state.sequences[seq_idx];
+            let has_video = seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Video && !t.clips.is_empty());
+            let first_picture = plan
+                .placements
+                .iter()
+                .filter_map(|p| self.state.media_pool.get(&p.media_id))
+                .find(|m| !m.video_codec.is_empty() && m.resolution.width > 0 && m.resolution.height > 0);
+            match first_picture {
+                Some(m) if !has_video => m.fps,
+                _ => seq.fps,
+            }
+        };
         let mut entries = Vec::new();
         let mut video_clips = Vec::new();
         for p in &plan.placements {
-            // On a frame of the sequence: a sound match is finer than a
-            // frame, and a clip between frames is a clip nobody can cut.
-            // Read each time: the first placement in an empty sequence
-            // sets its rate from the clip.
-            let fps = self.state.sequences[seq_idx].fps;
             let frames = ((at_secs + p.start_secs) * fps.as_f64()).round() as i64;
             let start = klipp_core::RationalTime { value: frames * i64::from(fps.den), rate: fps.num };
             if let Some((video, entry)) = self.place_media_on_new_tracks(p.media_id, start) {
