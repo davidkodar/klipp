@@ -3824,6 +3824,17 @@ impl ViewerPanel {
         // without stealing focus from other widgets.
         let resp = ui.interact(image_rect, ui.id().with("title_object_editor"), egui::Sense::click_and_drag());
 
+        if resp.hovered() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let over_text = td.objects.iter().rev().any(|obj| {
+                    obj.visible && !obj.locked && object_contains_screen_point(obj, image_rect, p)
+                });
+                if over_text {
+                    resp.clone().on_hover_text("Double-click text to edit");
+                }
+            }
+        }
+
         // Resolve pointer position once per frame.
         let pointer = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.hover_pos()));
 
@@ -5476,9 +5487,16 @@ fn object_screen_points(
         image_rect.min.x + obj.transform.center.x * image_rect.width(),
         image_rect.min.y + obj.transform.center.y * image_rect.height(),
     );
+    // A TextBox's authored size is its layout/wrapping region.  It is
+    // often intentionally much larger than the rendered glyphs (the
+    // default is a full-frame layout box), so using it as the selection
+    // frame makes direct manipulation feel disconnected from the text.
+    // The editor frame hugs the visible text with a small cushion while
+    // retaining the authored box as the renderer's wrapping constraint.
+    let size = editor_object_size(obj, image_rect);
     let half = egui::vec2(
-        obj.transform.size.x * image_rect.width() * 0.5,
-        obj.transform.size.y * image_rect.height() * 0.5,
+        size.x * image_rect.width() * 0.5,
+        size.y * image_rect.height() * 0.5,
     );
     let angle = obj.transform.rotation.to_radians();
     let (sin, cos) = angle.sin_cos();
@@ -5489,6 +5507,45 @@ fn object_screen_points(
         center + rotate(egui::vec2(half.x, half.y)),
         center + rotate(egui::vec2(-half.x, half.y)),
     ]
+}
+
+fn editor_object_size(
+    obj: &klipp_timeline::TitleObject,
+    image_rect: egui::Rect,
+) -> klipp_timeline::TitlePosition {
+    let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else {
+        return obj.transform.size;
+    };
+
+    let frame_w = image_rect.width().max(1.0);
+    let frame_h = image_rect.height().max(1.0);
+    let scale = frame_h / 1080.0;
+    let font_px = tb.font_size.max(1.0) * scale;
+    let line_height = font_px * tb.line_spacing.max(0.5) * 1.2;
+    let authored_w_px = obj.transform.size.x.max(0.01) * frame_w;
+    let authored_h_px = obj.transform.size.y.max(0.01) * frame_h;
+    let tracking_px = tb.tracking * scale;
+    let advance_px = (font_px * 0.55 + tracking_px).max(1.0);
+    let chars_per_line = (authored_w_px / advance_px).floor().max(1.0) as usize;
+    let mut visual_lines = 0usize;
+    let mut max_line_chars = 0usize;
+    for line in tb.text.split('\n') {
+        let chars = line.chars().count();
+        max_line_chars = max_line_chars.max(chars);
+        visual_lines += chars.max(1).div_ceil(chars_per_line);
+    }
+    visual_lines = visual_lines.max(1);
+
+    // Match the renderer's layout scale closely enough for the editor
+    // affordance, then leave a modest hit-area cushion around glyphs.
+    let padding_px = (font_px * 0.12).clamp(4.0, 12.0);
+    let glyph_w_px = (max_line_chars as f32 * advance_px).max(font_px * 0.35);
+    let visual_w_px = (glyph_w_px + padding_px * 2.0).min(authored_w_px);
+    let visual_h_px = (visual_lines as f32 * line_height + padding_px * 2.0).min(authored_h_px);
+    klipp_timeline::TitlePosition {
+        x: (visual_w_px / frame_w).clamp(0.01, obj.transform.size.x.max(0.01)),
+        y: (visual_h_px / frame_h).clamp(0.01, obj.transform.size.y.max(0.01)),
+    }
 }
 
 fn object_contains_screen_point(
@@ -6817,5 +6874,36 @@ mod fitted_backing_editor_tests {
         assert_eq!(allocation, cache.as_ref().unwrap().transforms.as_ptr());
         let delta = last.object(backing).unwrap().transform.center.x - first.object(backing).unwrap().transform.center.x;
         assert!((delta - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn text_editor_frame_hugs_single_line_glyphs() {
+        let title = TitleData::single_text(TextBox {
+            text: "A day at the beach".into(),
+            font_size: 72.0,
+            ..Default::default()
+        });
+        let object = &title.objects[0];
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let size = editor_object_size(object, frame);
+        assert!(size.x < 0.6, "single-line text should not inherit the full-frame layout width");
+        assert!(size.y < 0.25, "single-line text should not inherit the full-frame layout height");
+        let bb = object_screen_bb(object, frame);
+        assert!(bb.width() < frame.width() * 0.6);
+        assert!(bb.height() < frame.height() * 0.25);
+    }
+
+    #[test]
+    fn text_editor_frame_keeps_wrapped_lines_inside_authored_box() {
+        let title = TitleData::single_text(TextBox {
+            text: "one two three four five six seven eight".into(),
+            font_size: 72.0,
+            ..Default::default()
+        });
+        let object = &title.objects[0];
+        let frame = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let size = editor_object_size(object, frame);
+        assert!(size.x <= object.transform.size.x + 1e-6);
+        assert!(size.y <= object.transform.size.y + 1e-6);
     }
 }
