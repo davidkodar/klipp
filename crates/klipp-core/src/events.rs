@@ -2718,6 +2718,13 @@ pub enum AppCommand {
     ToggleAudioEffect { clip_id: ClipId, effect_index: usize },
     SetAudioEffectWetDry { clip_id: ClipId, effect_index: usize, wet_dry: f32 },
     ReorderAudioEffect { clip_id: ClipId, from_index: usize, to_index: usize },
+    /// Learn a Broadband Denoiser noise profile from the clip's source
+    /// audio. `at_clip_secs` is a clip-relative start (the playhead);
+    /// `None` searches the clip for its quietest stretch.
+    LearnDenoiserProfile { clip_id: ClipId, effect_index: usize, at_clip_secs: Option<f64> },
+    /// Set several params of one audio effect as a single undo step
+    /// (presets, learned profiles).
+    SetAudioEffectParams { clip_id: ClipId, effect_index: usize, params: Vec<(String, f32)> },
 
     // Undo coalescing — drag gesture signals for builtin effects
     BeginEffectDrag {
@@ -3537,6 +3544,10 @@ pub enum AppEvent {
         ref_timeline_in_secs: f64,
     },
     AudioSyncFailed { clip_id: ClipId, error: String },
+    /// A denoiser profile was learned in the background (see
+    /// `AppCommand::LearnDenoiserProfile`); `params` are ready to store.
+    DenoiserProfileLearned { clip_id: ClipId, effect_index: usize, params: Vec<(String, f32)>, source_secs: f64 },
+    DenoiserProfileFailed { error: String },
 }
 
 /// Target for generating keyframes from tracked point data.
