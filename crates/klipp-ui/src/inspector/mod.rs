@@ -17,6 +17,21 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
+fn inspector_scope_banner(ui: &mut egui::Ui, theme: &KlippTheme, scope: &str, detail: &str) {
+    egui::Frame::none()
+        .fill(theme.accent_subtle)
+        .stroke(egui::Stroke::new(1.0_f32, theme.accent))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+        .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(scope).size(10.0).strong().color(theme.accent));
+                ui.label(egui::RichText::new(detail).size(10.0).color(theme.text_secondary));
+            });
+        });
+}
+
 #[derive(Default)]
 pub struct NewInspectorPanel {
     show_add_builtin: bool,
@@ -175,7 +190,7 @@ impl NewInspectorPanel {
         let tabs: Vec<(InspectorTab, &str, &str)> = if is_title_clip {
             vec![
                 (InspectorTab::Title, "TITLE", "TTL"),
-                (InspectorTab::Video, "VIDEO", "VID"),
+                (InspectorTab::Video, "CLIP VIDEO", "CLIP"),
                 (InspectorTab::Effects, "EFFECTS", "FX"),
                 (InspectorTab::Info, "INFO", "INFO"),
             ]
@@ -222,6 +237,14 @@ impl NewInspectorPanel {
                 InspectorTab::Video => {
                     if let Some((_, clip)) = clip_info {
                         let clip_time_secs = keyframe_selection::clip_time(state, clip);
+                        if matches!(clip.kind, klipp_timeline::ClipKind::Title(_)) {
+                            inspector_scope_banner(
+                                ui,
+                                theme,
+                                "WHOLE CLIP",
+                                "These controls affect the complete title clip and its video frame.",
+                            );
+                        }
                         video_tab::show(ui, theme, state, Some((clip, clip_time_secs, true)), bin_media, &mut cmds);
                     } else {
                         video_tab::show(ui, theme, state, None, bin_media, &mut cmds);
@@ -355,6 +378,12 @@ impl NewInspectorPanel {
                                     left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
                                 })
                                 .show(ui, |ui| {
+                                    inspector_scope_banner(
+                                        ui,
+                                        theme,
+                                        "TEXT LAYER",
+                                        "These controls affect the selected text layer. Use CLIP VIDEO for the whole title clip.",
+                                    );
                                     show_title_editor(ui, theme, clip, state, &mut cmds, &mut self.title_chips);
                                 });
                         }
