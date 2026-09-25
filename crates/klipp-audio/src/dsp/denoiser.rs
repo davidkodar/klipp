@@ -32,6 +32,10 @@ static PARAM_DESCS: &[AudioParamDescriptor] = &[
     AudioParamDescriptor { name: "floor", label: "Noise Floor", default: 0.08, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
     AudioParamDescriptor { name: "profile_seconds", label: "Learn Window (s)", default: 0.5, min: 0.1, max: 5.0, unit: ParamUnit::None },
     AudioParamDescriptor { name: "learn", label: "Learn Profile", default: 0.0, min: 0.0, max: 1.0, unit: ParamUnit::None },
+    // Monotonic UI-only nonce. Changing it forces the live chain to rebuild
+    // and therefore starts a fresh profile window without becoming a saved
+    // audio setting or retriggering on every later rebuild.
+    AudioParamDescriptor { name: "profile_reset", label: "Profile Reset", default: 0.0, min: 0.0, max: f32::MAX, unit: ParamUnit::None },
 ];
 
 impl Denoiser {
@@ -137,7 +141,16 @@ impl AudioEffect for Denoiser {
     fn serialize_params(&self) -> Vec<(String, f32)> {
         vec![("strength".into(), self.strength), ("floor".into(), self.floor), ("profile_seconds".into(), self.profile_seconds)]
     }
-    fn deserialize_params(&mut self, params: &[(String, f32)]) { for (k, v) in params { self.set_param(k, *v); } }
+    fn deserialize_params(&mut self, params: &[(String, f32)]) {
+        for (k, v) in params {
+            // `learn` is a one-shot control, not part of the saved effect
+            // state. Older projects may still contain it in their parameter
+            // list; ignoring it here prevents every chain rebuild from
+            // erasing an already captured profile.
+            if k == "learn" { continue; }
+            self.set_param(k, *v);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +192,13 @@ mod tests {
         fx.set_param("learn", 1.0);
         assert_eq!(fx.learned_frames, 0);
         assert!(fx.learn_requested);
+    }
+
+    #[test]
+    fn persisted_learn_flag_does_not_retrigger_on_rebuild() {
+        let mut fx = Denoiser::new(48_000);
+        fx.deserialize_params(&[("learn".into(), 1.0)]);
+        assert_eq!(fx.learned_frames, 0);
+        assert!(!fx.learn_requested);
     }
 }

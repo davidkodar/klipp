@@ -743,7 +743,7 @@ pub fn show_content(
                     {
                         let descs = effect.param_descriptors();
                         for desc in descs {
-                            if inst.effect_type == "denoiser" && desc.name == "learn" { continue; }
+                            if inst.effect_type == "denoiser" && (desc.name == "learn" || desc.name == "profile_reset") { continue; }
                             let static_value = inst.params.iter()
                                 .find(|(k, _)| k == desc.name)
                                 .map(|(_, v)| *v)
@@ -811,13 +811,35 @@ pub fn show_content(
                     if inst.effect_type == "denoiser" {
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new("PROFILE WORKFLOW").size(10.0).strong().color(theme.text_dim));
-                        ui.label(egui::RichText::new("Place the playhead over a short section containing only the wind or room noise, then learn it before playing the dialogue.").size(10.0).color(theme.text_secondary));
+                        ui.label(egui::RichText::new("Place the playhead over a noise-only section, choose a preset, then learn before playing the dialogue.").size(10.0).color(theme.text_secondary));
+                        let profile_reset = inst.params.iter()
+                            .find(|(name, _)| name == "profile_reset")
+                            .map(|(_, value)| *value)
+                            .unwrap_or(0.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("PRESETS").size(9.0).strong().color(theme.text_dim));
+                            for (label, strength, floor, window) in [
+                                ("Wind", 0.95, 0.02, 1.0),
+                                ("Voice", 0.75, 0.08, 0.5),
+                                ("Aggressive", 1.0, 0.01, 2.0),
+                            ] {
+                                if ui.small_button(label).on_hover_text(match label {
+                                    "Wind" => "Strong broadband reduction for steady wind and rumble",
+                                    "Voice" => "Balanced cleanup that preserves dialogue",
+                                    _ => "Maximum reduction; use carefully on music or ambience",
+                                }).clicked() {
+                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "strength".into(), value: strength });
+                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "floor".into(), value: floor });
+                                    cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_seconds".into(), value: window });
+                                }
+                            }
+                        });
                         ui.horizontal(|ui| {
                             if ui.button("Learn Noise Profile").on_hover_text("Relearn from the next profile window").clicked() {
-                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "learn".into(), value: 1.0 });
+                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_reset".into(), value: profile_reset + 1.0 });
                             }
                             if ui.button("Reset Profile").clicked() {
-                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "learn".into(), value: 1.0 });
+                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "profile_reset".into(), value: profile_reset + 1.0 });
                             }
                         });
                     }

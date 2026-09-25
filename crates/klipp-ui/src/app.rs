@@ -11507,6 +11507,11 @@ impl KlippApp {
 
             // Audio DSP effects
             AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
+                // Audio effects are edited in the Audio inspector. Switch to
+                // that surface as soon as the user adds one from the browser,
+                // a drop, or another command so the new chain entry and its
+                // controls are immediately discoverable.
+                self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Audio;
                 // Snapshot pre-state for undo.
                 let old_state = self.state.sequences[self.state.active_sequence_idx]
                     .all_clips()
