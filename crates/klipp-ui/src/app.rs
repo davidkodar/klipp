@@ -35177,8 +35177,22 @@ impl KlippApp {
                     self.state.selected_node_id = None;
                     self.state.selected_node_ids.clear();
                 }
-                if ui.selectable_label(self.state.grade_timeline, "Timeline")
-                    .on_hover_text("Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT")
+                // Marked while a timeline grade is doing something, so
+                // its being there shows from Clip mode too.
+                let has_timeline_grade = self.state.sequences.get(self.state.active_sequence_idx)
+                    .and_then(|s| s.timeline_graph.as_ref())
+                    .is_some_and(|g| !g.is_identity());
+                let timeline_label = if has_timeline_grade && !self.state.grade_timeline {
+                    egui::RichText::new("Timeline \u{25CF}").color(theme.accent)
+                } else {
+                    egui::RichText::new("Timeline")
+                };
+                if ui.selectable_label(self.state.grade_timeline, timeline_label)
+                    .on_hover_text(
+                        "Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT.\n\
+                         Only when this sequence is the one played or exported: nested in another as a compound clip or a \
+                         precomposition, it plays without its timeline grade.",
+                    )
                     .clicked()
                 {
                     self.state.grade_timeline = true;
