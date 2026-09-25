@@ -3923,6 +3923,17 @@ pub struct ControlShared {
     pub exports: std::sync::Mutex<Vec<ExportStatus>>,
     /// The open project as the UI last saw it.
     pub project: std::sync::Mutex<ProjectStatus>,
+    /// The playhead and whether it is playing, as the UI last saw them.
+    /// A frame read moves the viewer to the time it measures and puts
+    /// it back here afterwards.
+    pub transport: std::sync::Mutex<TransportStatus>,
+}
+
+/// Where the user's playhead is, as the UI last saw it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TransportStatus {
+    pub playhead: Option<RationalTime>,
+    pub playing: bool,
 }
 
 /// The open project as a client sees it.

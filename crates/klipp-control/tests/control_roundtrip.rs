@@ -1173,3 +1173,50 @@ fn title_motion_reaches_plan_and_apply_and_invalid_styles_are_refused() {
     assert_eq!(reply["ok"], false);
     assert!(reply["error"].as_str().unwrap().contains("delay_secs"));
 }
+
+/// #319: a frame read moves the viewer to the time it measures, then
+/// puts the user back where the UI says the playhead is — not where
+/// the last presented frame was, which can be minutes stale — and
+/// plays on if it was playing.
+#[test]
+fn a_frame_read_puts_the_users_playhead_back_and_plays_on() {
+    use klipp_core::{AppCommand, Timecode, TransportStatus};
+
+    let mut h = harness();
+    let rate = h.sequence.read().unwrap().fps.rate();
+    let user_at = Timecode::from_secs_f64(5.0, rate);
+    *h.shared.transport.lock().unwrap() = TransportStatus { playhead: Some(user_at), playing: true };
+    h.frame_buffer.lock().unwrap().set_presented(Timecode::from_secs_f64(176.9, rate), true);
+
+    // A stand-in engine: every seek presents a frame at that time.
+    let seen: Arc<Mutex<Vec<AppCommand>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (rx, fb, seen) = (h.cmd_rx.clone(), Arc::clone(&h.frame_buffer), Arc::clone(&seen));
+        std::thread::spawn(move || {
+            for c in rx {
+                if let AppCommand::SeekTo(t) = &c {
+                    let mut fb = fb.lock().unwrap();
+                    fb.set_presented(*t, true);
+                    fb.write_frame(vec![128; 64 * 32 * 4], 64, 32);
+                }
+                seen.lock().unwrap().push(c);
+            }
+        });
+    }
+
+    h.ok(json!({ "method": "frame_stats", "secs": 2.0 }));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while seen.lock().unwrap().len() < 4 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let seen = seen.lock().unwrap();
+    let secs = |c: &AppCommand| match c { AppCommand::SeekTo(t) => Some(t.to_secs_f64()), _ => None };
+    assert!(matches!(seen.first(), Some(AppCommand::Pause)), "{seen:?}");
+    assert!((secs(&seen[1]).unwrap() - 2.0).abs() < 0.05, "measured at the wrong time: {seen:?}");
+    assert!(
+        (secs(&seen[2]).expect("a seek back after the read") - 5.0).abs() < 0.05,
+        "the playhead went back to the stale presented frame, not the user's: {seen:?}",
+    );
+    assert!(matches!(seen.get(3), Some(AppCommand::Play)), "playback was not resumed: {seen:?}");
+}
