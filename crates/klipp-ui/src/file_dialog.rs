@@ -93,6 +93,8 @@ pub struct Ready {
     pub stale: usize,
     /// Requests ignored because another picker was already open.
     pub refused: usize,
+    /// Paths chosen for a widget that closed before collecting them.
+    pub expired: usize,
     /// What picker workers had to say, in order.
     pub notices: Vec<String>,
 }
@@ -139,11 +141,42 @@ where
 /// Run `pick` on a worker thread for the widget `id`, which collects the
 /// answer with [`take_path`]. For a picker whose result the widget
 /// applies itself rather than through a command.
-pub fn pick_path<F>(id: egui::Id, pick: F)
+///
+/// `false` when the picker was refused because another is open: nothing
+/// will answer, and a caller waiting on the answer must not wait.
+pub fn pick_path<F>(id: egui::Id, pick: F) -> bool
 where
     F: FnOnce() -> Option<PathBuf> + Send + 'static,
 {
-    run(Some(id), move || Answer::Path(id, pick().map_or(Picked::Cancelled, Picked::Path)));
+    run(Some(id), move || Answer::Path(id, pick().map_or(Picked::Cancelled, Picked::Path)))
+}
+
+/// One frame of a widget that must act on the path it asks for — the
+/// unsaved-changes dialog's Save, whose close or quit follows the save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awaited {
+    /// Not asking: never started, or the picker was refused.
+    Idle,
+    /// The picker is open, or its answer has not reached this widget yet.
+    Waiting,
+    Answered(Picked),
+}
+
+/// Drive [`Awaited`] for `id`. `waiting` is what the last frame returned
+/// ([`Awaited::Waiting`]); `start` is the click that asks. While waiting
+/// this only collects: it never opens a second picker, however the
+/// worker's finishing falls between frames.
+pub fn await_path<F>(id: egui::Id, waiting: bool, start: bool, pick: F) -> Awaited
+where
+    F: FnOnce() -> Option<PathBuf> + Send + 'static,
+{
+    if waiting {
+        return take_path(id).map_or(Awaited::Waiting, Awaited::Answered);
+    }
+    if start && pick_path(id, pick) {
+        return Awaited::Waiting;
+    }
+    Awaited::Idle
 }
 
 /// The answer to the [`pick_path`] picker `id` opened, once it has closed.
@@ -169,13 +202,13 @@ pub fn notify(message: impl Into<String>) {
     }
 }
 
-fn run<F>(id: Option<egui::Id>, pick: F)
+fn run<F>(id: Option<egui::Id>, pick: F) -> bool
 where
     F: FnOnce() -> Answer + Send + 'static,
 {
     if OPEN.swap(true, Ordering::AcqRel) {
         REFUSED.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     }
     *lock(&PENDING) = id;
     let scope = SCOPE.load(Ordering::Acquire);
@@ -195,7 +228,9 @@ where
         tracing::error!("file dialog: could not start the picker thread: {e}");
         *lock(&PENDING) = None;
         OPEN.store(false, Ordering::Release);
+        return false;
     }
+    true
 }
 
 /// What pickers that closed since the last call chose, for the scope the
@@ -211,14 +246,17 @@ pub fn take_ready() -> Ready {
     let mut paths = lock(&PATHS);
     // Age the paths already waiting; one its widget has not collected
     // in time belongs to a widget that has closed.
-    paths.retain_mut(|(_, id, _, age)| {
+    let mut expired = 0;
+    paths.retain_mut(|(_, id, picked, age)| {
         *age += 1;
         let keep = *age <= PATH_FRAMES;
         if !keep {
-            tracing::debug!("file dialog: dropped an uncollected answer for {id:?}");
+            tracing::info!("file dialog: dropped an uncollected answer for {id:?}");
+            expired += usize::from(*picked != Picked::Cancelled);
         }
         keep
     });
+    ready.expired = expired;
     for (opened_in, answer) in batches {
         match answer {
             Answer::Commands(cmds) if opened_in == scope => ready.commands.extend(cmds),
@@ -389,5 +427,66 @@ mod tests {
         });
         wait_until("the picker to close", || !is_open());
         assert_eq!(take_ready().notices, vec!["Frame saved".to_string()]);
+    }
+
+    #[test]
+    fn a_path_nobody_collects_is_counted_so_the_app_can_say_so() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset(16);
+        let id = egui::Id::new("closed-panel");
+        pick_path(id, || Some(PathBuf::from("/media")));
+        wait_until("the picker to close", || !is_open());
+        let mut expired = 0;
+        for _ in 0..=PATH_FRAMES + 1 {
+            expired += take_ready().expired;
+        }
+        assert_eq!(expired, 1);
+    }
+
+    #[test]
+    fn awaiting_a_path_never_opens_a_second_picker() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset(17);
+        let id = egui::Id::new("unsaved-save");
+        let opened = std::sync::Arc::new(AtomicUsize::new(0));
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let o = opened.clone();
+        assert_eq!(
+            await_path(id, false, true, move || {
+                o.fetch_add(1, Ordering::SeqCst);
+                release_rx.recv().unwrap();
+                Some(PathBuf::from("/p/A.klipp"))
+            }),
+            Awaited::Waiting
+        );
+        release_tx.send(()).unwrap();
+        // The worker finishes, and its answer sits in READY until the
+        // next frame's take_ready: the widget must keep waiting, not ask
+        // again — even when the click is repeated.
+        wait_until("the picker to close", || !is_open());
+        let o = opened.clone();
+        assert_eq!(await_path(id, true, true, move || { o.fetch_add(1, Ordering::SeqCst); None }), Awaited::Waiting);
+        let _ = take_ready();
+        assert_eq!(await_path(id, true, false, || None), Awaited::Answered(Picked::Path("/p/A.klipp".into())));
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_refused_picker_is_not_waited_on() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset(18);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        spawn(move || {
+            release_rx.recv().unwrap();
+            Vec::new()
+        });
+        let id = egui::Id::new("unsaved-save");
+        assert_eq!(await_path(id, false, true, || None), Awaited::Idle, "refused, so nothing will answer");
+        // And it does not open by itself once the other picker closes.
+        release_tx.send(()).unwrap();
+        wait_until("the other picker to close", || !is_open());
+        assert_eq!(await_path(id, false, false, || None), Awaited::Idle);
+        assert!(!is_open());
+        assert_eq!(take_ready().refused, 1);
     }
 }

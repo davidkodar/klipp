@@ -23705,21 +23705,26 @@ impl KlippApp {
     /// saves now. One never saved needs a place first: the picker runs
     /// off the UI thread, and until it answers this is `None` and the
     /// dialog waits for it.
-    fn save_project_interactively(&mut self) -> Option<SaveOutcome> {
+    /// `clicked` is this frame's Save click. The picker opens on the
+    /// click only; while it is open this only collects its answer, so
+    /// it can never open twice, and a picker refused because another
+    /// is open leaves the dialog as it was rather than waiting.
+    fn save_project_interactively(&mut self, clicked: bool) -> Option<SaveOutcome> {
+        use crate::file_dialog::{await_path, Awaited, Picked};
         let path = match self.state.project_path.clone() {
-            Some(p) => p,
-            None => match crate::file_dialog::take_path(UNSAVED_SAVE_PICKER.into()) {
-                Some(crate::file_dialog::Picked::Path(p)) => ensure_klipp_extension(p),
-                Some(crate::file_dialog::Picked::Cancelled) => return Some(SaveOutcome::Cancelled),
-                None => {
-                    if !crate::file_dialog::is_pending(UNSAVED_SAVE_PICKER.into()) {
-                        crate::file_dialog::pick_path(UNSAVED_SAVE_PICKER.into(), || {
-                            rfd::FileDialog::new().set_title("Save Project").pick_folder()
-                        });
-                    }
-                    return None;
+            Some(p) if clicked => p,
+            Some(_) => return None,
+            None => {
+                let step = await_path(UNSAVED_SAVE_PICKER.into(), self.unsaved_save_waiting, clicked, || {
+                    rfd::FileDialog::new().set_title("Save Project").pick_folder()
+                });
+                self.unsaved_save_waiting = step == Awaited::Waiting;
+                match step {
+                    Awaited::Idle | Awaited::Waiting => return None,
+                    Awaited::Answered(Picked::Cancelled) => return Some(SaveOutcome::Cancelled),
+                    Awaited::Answered(Picked::Path(p)) => ensure_klipp_extension(p),
                 }
-            },
+            }
         };
         Some(if self.do_save_project(&path) { SaveOutcome::Saved } else { SaveOutcome::Failed })
     }
@@ -24141,8 +24146,7 @@ impl KlippApp {
                         // replaced the project first, so the save wrote
                         // the *new* one. Either way the edits the user
                         // had just chosen to keep were gone.
-                        let outcome = self.save_project_interactively();
-                        self.unsaved_save_waiting = outcome.is_none();
+                        let outcome = self.save_project_interactively(save_clicked);
                         match outcome {
                             // The Save As picker is still open.
                             None => {}
@@ -27652,8 +27656,10 @@ impl eframe::App for KlippApp {
             self.state.toast.show("The project or sequence changed while the file dialog was open, so that choice was not applied".to_string());
         } else if picked.refused > 0 {
             self.state.toast.show("A file dialog is already open".to_string());
-        } else if let Some(notice) = picked.notices.into_iter().last() {
-            self.state.toast.show(notice);
+        } else if picked.expired > 0 {
+            self.state.toast.show("The file dialog answered after its panel had closed, so that choice was not applied".to_string());
+        } else if !picked.notices.is_empty() {
+            self.state.toast.show(picked.notices.join(" \u{2022} "));
         }
         let mut all_cmds = picked.commands;
 
