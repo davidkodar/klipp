@@ -58,6 +58,10 @@ struct ClipStream {
     /// held; said once per clip.
     held_warned: bool,
     path: std::path::PathBuf,
+    /// The size the decoder makes: the picture fitted into the frame,
+    /// upright, with its own aspect. The renderer bars the rest.
+    width: u32,
+    height: u32,
 }
 
 impl ClipStream {
@@ -198,6 +202,12 @@ impl<'a> ExportFrameSource<'a> {
         // needs a flag on the clip, as `log_format_user_set` does for
         // the analogous problem with log formats.)
         let rotation = if clip.source_rotation != 0 { clip.source_rotation } else { file.source_rotation };
+        // Decoded at the picture's own aspect, not the frame's. Scaled
+        // to the frame it was stretched: a portrait phone clip in a
+        // landscape sequence came out three times too wide, while the
+        // viewer — handed the clip at its own size — pillarboxed it.
+        let (width, height) = crate::clip_decoder::display_size(&file.path, rotation)
+            .map_or((width, height), |(sw, sh)| fitted_size(sw, sh, width, height));
         let decoder = RenderDecoder::open(&file.path, secs.max(0.0), f64::INFINITY, width, height, self.fps, rotation)
             .map_err(|e| warn!("export: cannot open {:?}: {e}", file.path))
             .ok()?
@@ -214,6 +224,8 @@ impl<'a> ExportFrameSource<'a> {
             error: None,
             held_warned: false,
             path: file.path.clone(),
+            width,
+            height,
         })
     }
 }
@@ -233,24 +245,24 @@ impl FrameSource for ExportFrameSource<'_> {
         let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
         stream.seek_forward(source_secs, gpu);
-        let to_working = stream.to_working;
+        let (to_working, w, h) = (stream.to_working, stream.width, stream.height);
         let decoded = stream.current.as_ref();
         self.t_decode += t0.elapsed();
         let t1 = std::time::Instant::now();
-        let out = decoded.map(|d| source_frame(d, to_working, width, height));
+        let out = decoded.map(|d| source_frame(d, to_working, w, h));
         self.t_convert += t1.elapsed();
         out
     }
 
     /// The decoder's next frame, already pulled by `frame`'s seek.
-    fn frame_after(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+    fn frame_after(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
         let Self { streams, gpu, .. } = self;
         let stream = streams.get_mut(&clip.id)?;
         if stream.next.is_none() {
             stream.next = stream.pull(gpu);
         }
-        let to_working = stream.to_working;
-        stream.next.as_ref().map(|d| source_frame(d, to_working, width, height))
+        let (to_working, w, h) = (stream.to_working, stream.width, stream.height);
+        stream.next.as_ref().map(|d| source_frame(d, to_working, w, h))
     }
 
     fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
@@ -355,6 +367,30 @@ fn seed_matrix(to_working: Option<[[f32; 3]; 3]>) -> [[f32; 4]; 3] {
         [m[1][0], m[1][1], m[1][2], 0.0],
         [m[2][0], m[2][1], m[2][2], 0.0],
     ]
+}
+
+/// A picture of `sw`×`sh` fitted into a `fw`×`fh` frame, aspect kept:
+/// the frame itself when the two have the same shape (to within a pixel
+/// of rounding), else the frame's full height or width.
+fn fitted_size(sw: u32, sh: u32, fw: u32, fh: u32) -> (u32, u32) {
+    if sw == 0 || sh == 0 {
+        return (fw, fh);
+    }
+    let (sw, sh, fw64, fh64) = (sw as u64, sh as u64, fw as u64, fh as u64);
+    // Width at the frame's height, and the other way round.
+    let w_at_fh = (sw * fh64 + sh / 2) / sh;
+    let h_at_fw = (sh * fw64 + sw / 2) / sw;
+    if w_at_fh.abs_diff(fw64) <= 1 || h_at_fw.abs_diff(fh64) <= 1 {
+        return (fw, fh);
+    }
+    // Not rounded to even: an odd picture, 1920x803, decodes at its own
+    // 803 rows, as the viewer's does, so the bars fall on the same rows.
+    let side = |v: u64| (v as u32).max(1);
+    if w_at_fh < fw64 {
+        (side(w_at_fh), fh)
+    } else {
+        (fw, side(h_at_fw))
+    }
 }
 
 fn source_frame(
@@ -502,6 +538,24 @@ fn rgba64_to_linear(rgba: &[u16], to_working: Option<[[f32; 3]; 3]>) -> Vec<f32>
             dst[3] = px[3] as f32 / 65535.0;
         });
     out
+}
+
+#[cfg(test)]
+mod fitted_size_tests {
+    use super::fitted_size;
+
+    #[test]
+    fn a_picture_the_frames_shape_fills_it_and_another_keeps_its_own() {
+        assert_eq!(fitted_size(3840, 2160, 1920, 1080), (1920, 1080));
+        // A 2.35 scope picture: letterboxed.
+        assert_eq!(fitted_size(1920, 818, 1920, 1080), (1920, 818));
+        // An upright phone clip in a landscape frame: pillarboxed.
+        assert_eq!(fitted_size(2160, 3840, 1920, 1080), (608, 1080));
+        // Rounding that only moves a pixel is the same shape.
+        assert_eq!(fitted_size(1280, 721, 1280, 720), (1280, 720));
+        // An odd picture keeps its odd side.
+        assert_eq!(fitted_size(1920, 803, 1920, 1080), (1920, 803));
+    }
 }
 
 #[cfg(test)]

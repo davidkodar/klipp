@@ -1488,8 +1488,13 @@ impl PlaybackEngine {
                     if !clip.enabled || start < now - 0.1 || start > now + AHEAD_SECS {
                         continue;
                     }
-                    // The frame size the title is placed at: the video
-                    // under it, else the sequence's.
+                    // The frame size the title is placed at: the frame
+                    // the video under it is shown in, else the sequence's.
+                    // That frame is sized from the picture as decoded —
+                    // at most the playback resolution — not as the file
+                    // holds it: warmed at the file's size, a 4K portrait
+                    // clip's title was made for a frame it is never
+                    // shown in.
                     let (w, h) = seq
                         .tracks
                         .iter()
@@ -1497,7 +1502,13 @@ impl PlaybackEngine {
                         .find_map(|t| {
                             let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
                             let item = pool.get(&c.media_id()?)?;
-                            Some((item.resolution.width, item.resolution.height))
+                            // The item's size is already upright.
+                            let decoded = crate::video_decoder::playback_dimensions(
+                                item.resolution.width,
+                                item.resolution.height,
+                                0,
+                            );
+                            Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
                         })
                         .unwrap_or((seq.resolution.width, seq.resolution.height));
                     if w == 0 || h == 0 {
@@ -4645,7 +4656,8 @@ impl PlaybackEngine {
         // `direct_present_blocker` for the conditions and why this is
         // byte-identical.
         if let Some(ref gpu) = gpu_source {
-            let blockers = self.direct_present_blockers();
+            let mut blockers = self.direct_present_blockers();
+            blockers.extend(self.picture_shape_blocker((final_w, final_h)));
             // Log only on change: per-frame this would be 60 lines a
             // second, but the transition is exactly what you want to see
             // when asking why playback is slower than it should be. The
@@ -6717,6 +6729,17 @@ impl PlaybackEngine {
         self.fast_path_blockers(false)
     }
 
+    /// Why a fast path cannot present `picture`, a frame it holds: a
+    /// picture of another shape from the sequence's is barred by the
+    /// renderer, in a frame of the sequence's shape, and the plain present
+    /// would show it bare. Asked of the frame itself, not the media pool,
+    /// whose size is a fallback when the file's could not be read.
+    fn picture_shape_blocker(&self, picture: (u32, u32)) -> Option<&'static str> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let sequence = (seq.resolution.width, seq.resolution.height);
+        (!view::same_shape(picture, sequence)).then_some("picture is not the sequence's shape")
+    }
+
     /// Whether the only things standing between the decoder and the
     /// viewer are ones the *graded* GPU path handles itself: a grade to
     /// run, and a display transform it has a shader for.
@@ -7241,7 +7264,9 @@ impl PlaybackEngine {
             debug!("gpu regrade ({mode:?}): no parked pre-grade");
             return false;
         };
-        if !Self::only_the_graded_path_handles(&self.fast_path_blockers_for(mode)) {
+        let mut blockers = self.fast_path_blockers_for(mode);
+        blockers.extend(self.picture_shape_blocker((width, height)));
+        if !Self::only_the_graded_path_handles(&blockers) {
             return false;
         }
         let t_frame = std::time::Instant::now();

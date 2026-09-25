@@ -1094,6 +1094,22 @@ fn rotate_rgba<T: Copy + Default + Send + Sync>(
     (out, nw, nh)
 }
 
+/// The picture's size upright: the video stream's coded size, turned for a
+/// 90° or 270° `rotation`. `None` when the file cannot be read.
+pub(crate) fn display_size(path: &Path, rotation: i32) -> Option<(u32, u32)> {
+    let input = ffmpeg_next::format::input(path).ok()?;
+    let stream = input.streams().best(ffmpeg_next::media::Type::Video)?;
+    let (w, h) = unsafe {
+        let par = (*stream.as_ptr()).codecpar;
+        ((*par).width, (*par).height)
+    };
+    let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some(if rotation.rem_euclid(180) == 90 { (h, w) } else { (w, h) })
+}
+
 /// Decode the frame at `seek_secs` from a media file, scaled to `max_width`.
 /// Used for RSC motion estimation (decodes adjacent frames at low resolution).
 /// Returns (rgba_data, width, height) or None on failure.

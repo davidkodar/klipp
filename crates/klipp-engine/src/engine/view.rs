@@ -49,6 +49,41 @@ impl ViewerSource<'_> {
     }
 }
 
+/// Whether two sizes are the same shape, to within a pixel of rounding.
+pub(super) fn same_shape((aw, ah): (u32, u32), (bw, bh): (u32, u32)) -> bool {
+    if aw == 0 || ah == 0 || bw == 0 || bh == 0 {
+        return true;
+    }
+    let (aw, ah, bw, bh) = (aw as u64, ah as u64, bw as u64, bh as u64);
+    // `a`'s width at `b`'s height, and the other way round.
+    ((aw * bh + ah / 2) / ah).abs_diff(bw) <= 1 || ((ah * bw + aw / 2) / aw).abs_diff(bh) <= 1
+}
+
+/// The frame the viewer renders a primary picture of `picture` size in.
+///
+/// The picture's own size when it is the sequence's shape, so a clip is
+/// shown at the resolution it was decoded at. Otherwise a frame of the
+/// sequence's shape around it, which the renderer bars — as export does.
+/// Rendered at the picture's size, a portrait phone clip in a landscape
+/// sequence made a portrait frame: titles over it were laid out to its
+/// width, and nothing said the export would differ.
+pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, u32) {
+    let ((pw, ph), (sw, sh)) = (picture, sequence);
+    if same_shape(picture, sequence) {
+        return picture;
+    }
+    let even = |v: u64| ((v as u32) & !1).max(2);
+    let (w, h) = if (pw as u64) * (sh as u64) < (ph as u64) * (sw as u64) {
+        // Narrower: the picture's height, bars at the sides.
+        (even((ph as u64 * sw as u64 + sh as u64 / 2) / sh as u64), ph)
+    } else {
+        (pw, even((pw as u64 * sh as u64 + sw as u64 / 2) / sw as u64))
+    };
+    // Never beyond the sequence itself: a 4K portrait picture would
+    // otherwise want a frame 6827 pixels wide.
+    if w > sw || h > sh { sequence } else { (w, h) }
+}
+
 fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
@@ -448,9 +483,10 @@ impl PlaybackEngine {
             let id = primary.as_ref().and(self.v1_clip_id(&seq));
             (klipp_compose::frame_snapshot(&seq, self.playhead), id)
         };
+        let seq_size = (seq.resolution.width, seq.resolution.height);
         let (w, h) = match &primary {
-            Some(p) => (p.width, p.height),
-            None => (seq.resolution.width, seq.resolution.height),
+            Some(p) => viewer_canvas((p.width, p.height), seq_size),
+            None => seq_size,
         };
         if w == 0 || h == 0 {
             return false;
@@ -471,15 +507,22 @@ impl PlaybackEngine {
         let progress = self.presenting_progress;
         if let Some(p) = primary.as_ref().filter(|_| !parked && !progress && self.pregrade_encode_needed()) {
             let pregrade = p.pregrade();
-            self.cached_pregrade_frame = Some((pregrade.clone(), w, h));
+            // At the picture's own size, which the frame around it may
+            // not be (see `viewer_canvas`).
+            let (pw, ph) = (p.width, p.height);
+            self.cached_pregrade_frame = Some((pregrade.clone(), pw, ph));
             self.cached_pregrade_at = Some(self.playhead);
             let published = std::sync::Arc::new(pregrade.clone());
-            self.frame_cache.insert(self.playhead.value, pregrade, w, h);
+            self.frame_cache.insert(self.playhead.value, pregrade, pw, ph);
             // The frame, not its picture: only the UI's scope preview reads
             // this, and only while a grade is being dragged. Encoding it here
             // cost an HDR 4K frame 20 to 30 ms on every paused frame, for
             // bytes that were usually dropped unread.
-            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).pregrade = Some(published);
+            //
+            // Read at the frame buffer's size, so only when the picture
+            // fills the frame.
+            self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).pregrade =
+                ((pw, ph) == (w, h)).then_some(published);
         }
 
         let cache_key = if progress || stack_only { None } else { self.render_cache_key(&seq, primary_clip) };
@@ -534,7 +577,8 @@ impl PlaybackEngine {
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
         if let Some(p) = primary.as_ref().filter(|_| !stack_only) {
-            let blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
+            let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
+            blockers.extend(self.picture_shape_blocker((p.width, p.height)));
             if !blockers.is_empty() {
                 tracing::debug!("paused present: full path because {}", blockers.join(", "));
             }
@@ -961,6 +1005,7 @@ impl PlaybackEngine {
             klipp_compose::frame_snapshot(&seq, self.playhead)
         };
         let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
+        let (w, h) = viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height));
         let rendered = match self.render_cache_key(&seq, primary) {
             // Already cached at this size, in memory or on disk: nothing to
             // render. Without this the scan rendered its nearest candidate
@@ -970,13 +1015,12 @@ impl PlaybackEngine {
                 if self
                     .render_cache_hot
                     .get(&key)
-                    .is_some_and(|(_, cw, ch)| (cw, ch) == (pixels.width, pixels.height))
+                    .is_some_and(|(_, cw, ch)| (cw, ch) == (w, h))
                     || self.render_cache_disk.contains(&key) =>
             {
                 false
             }
             Some(key) => {
-                let (w, h) = (pixels.width, pixels.height);
                 // No per-node thumbnails: this is not the user's frame.
                 self.thumb_capture_suspended = true;
                 let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, &pixels)), w, h, Inspect::default());
