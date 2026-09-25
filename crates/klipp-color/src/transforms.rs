@@ -5,33 +5,22 @@
 //! `klipp_effects::gpu`'s shaders; the camera-log curves live in
 //! [`crate::camera_log`].
 
-/// Auto white balance on the grey-world assumption: the temperature and
-/// tint that make the frame's average colour neutral.
+/// Auto white balance: the temperature and tint that make the frame's
+/// neutral surfaces neutral, or `None` when it has none to read.
 ///
-/// `rgba` is a displayed frame (sRGB bytes). The average is taken in
-/// linear light, and the slider values come from
-/// [`crate::white_balance::white_balance_to_neutralise`] — solved
-/// against the balance the grade actually applies, rather than a scale
-/// factor guessed from the channel differences, which stopped meaning
-/// anything when temperature and tint became a chromatic adaptation.
-pub fn auto_white_balance(rgba: &[u8], _width: u32, _height: u32) -> (f32, f32) {
-    let mut sum = [0.0f64; 3];
-    let mut count: u64 = 0;
-
-    // Sample every 4th pixel for performance
-    for chunk in rgba.chunks_exact(4).step_by(4) {
-        for (acc, v) in sum.iter_mut().zip(&chunk[..3]) {
-            *acc += crate::transfer::srgb_to_linear(*v as f32 / 255.0) as f64;
-        }
-        count += 1;
-    }
-
-    if count == 0 {
-        return (0.0, 0.0);
-    }
-
-    let mean = sum.map(|v| (v / count as f64) as f32);
-    crate::white_balance::white_balance_to_neutralise(mean, klipp_core::WorkingColorspace::Rec709Linear)
+/// `rgba` is a displayed frame (sRGB bytes). The reference is
+/// [`crate::measure::neutral_reference`] — the walls, paper and road
+/// under the scene's light — and the slider values come from
+/// [`crate::white_balance::white_balance_to_neutralise`], solved against
+/// the balance the grade actually applies.
+///
+/// It used to average the whole frame (grey world). On a street of pink
+/// brick under a blue sky that "neutralised" the brick and the sky, and
+/// pushed the balance a long way toward magenta: the neutrals came out
+/// further from grey than they went in.
+pub fn auto_white_balance(rgba: &[u8], width: u32, height: u32) -> Option<(f32, f32)> {
+    let mean = crate::measure::neutral_reference(rgba, width, height)?;
+    Some(crate::white_balance::white_balance_to_neutralise(mean, klipp_core::WorkingColorspace::Rec709Linear))
 }
 
 /// Camera log / HDR transfer → scene-linear, from a normalised 10-bit code
@@ -55,7 +44,7 @@ mod tests {
     #[test]
     fn auto_white_balance_neutralises_a_cast() {
         let cool: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
-        let (temperature, tint) = auto_white_balance(&cool, 20, 20);
+        let (temperature, tint) = auto_white_balance(&cool, 20, 20).expect("a grey wall under a blue light is a white reference");
         assert!(temperature > 5.0, "a blue cast should ask for warmth, got {temperature}");
         let mean = [110f32, 120.0, 150.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
         let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
@@ -64,8 +53,41 @@ mod tests {
         assert!((mx - mn) / mx < 0.02, "still a cast: {out:?}");
         // A neutral frame needs no correction.
         let grey: Vec<u8> = (0..400).flat_map(|_| [128u8, 128, 128, 255]).collect();
-        let (t, g) = auto_white_balance(&grey, 20, 20);
+        let (t, g) = auto_white_balance(&grey, 20, 20).expect("a grey frame is its own reference");
         assert!(t.abs() < 0.5 && g.abs() < 0.5, "a neutral frame asked for ({t}, {g})");
+    }
+
+    /// #318: a street of pink brick under a blue sky, with a strip of
+    /// slightly warm grey wall. Grey world "neutralised" the brick and
+    /// sky; reading the wall asks for a small cooling, and nothing like
+    /// the magenta push the whole-frame average gave.
+    #[test]
+    fn auto_white_balance_reads_the_wall_not_the_sky_and_brick() {
+        let (w, h) = (100u32, 100u32);
+        let mut px = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for _ in 0..w {
+                let c: [u8; 3] = if y < 45 { [90, 150, 230] } else if y < 60 { [150, 146, 138] } else { [190, 110, 110] };
+                px.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+        }
+        let (temperature, tint) = auto_white_balance(&px, w, h).expect("the wall is a white reference");
+        assert!(temperature < 0.0, "a warm wall asks for a cooler balance, got {temperature}");
+        assert!(tint.abs() < 8.0, "no magenta push from the brick: tint {tint}");
+        // And the answer does what it is for: the wall comes out grey.
+        let wall = [150f32, 146.0, 138.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
+        let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = m.map(|row| row[0] * wall[0] + row[1] * wall[1] + row[2] * wall[2]);
+        let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
+        assert!((mx - mn) / mx < 0.02, "the wall is still not neutral: {out:?}");
+    }
+
+    /// A frame with nothing neutral in it — grass against sky — has no
+    /// white reference, and auto white balance leaves the grade alone.
+    #[test]
+    fn auto_white_balance_declines_a_frame_with_no_neutrals() {
+        let px: Vec<u8> = (0..400).flat_map(|i| if i < 200 { [60u8, 150, 50, 255] } else { [80, 140, 235, 255] }).collect();
+        assert_eq!(auto_white_balance(&px, 20, 20), None);
     }
 
     // ─── Film grain CPU tests ─────────────────────────────────────────
