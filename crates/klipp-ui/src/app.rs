@@ -872,7 +872,7 @@ impl KlippApp {
             layout_dirty: false,
             browser: BrowserPanel::default(),
             new_inspector: NewInspectorPanel::default(),
-            new_timeline: crate::timeline::NewTimelinePanel,
+            new_timeline: crate::timeline::NewTimelinePanel::default(),
             skim_consumer,
             cpal_sample_rate,
             last_window_title: String::new(),
@@ -32740,6 +32740,7 @@ impl KlippApp {
                 &self.theme,
                 &mut self.timeline,
                 &self.key_bindings,
+                self.prefs.editing.adaptive_timeline_fit,
             );
             all_cmds.extend(panel_cmds);
         });

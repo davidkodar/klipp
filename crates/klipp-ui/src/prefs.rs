@@ -617,6 +617,10 @@ pub struct EditingPrefs {
     /// Whether playhead scrolls to follow playback position.
     #[serde(default = "default_true")]
     pub playhead_follows_playback: bool,
+    /// Keep the timeline fitted to the available viewport as the window or
+    /// layout changes. Off by default so manual zoom and track sizing remain stable.
+    #[serde(default)]
+    pub adaptive_timeline_fit: bool,
     /// Enable magnetic timeline (FCP-style collision-based editing).
     #[serde(default = "default_true")]
     pub magnetic_timeline: bool,
@@ -696,6 +700,7 @@ impl Default for EditingPrefs {
             zoom_step: default_zoom_step(),
             backup_count: default_backup_count(),
             playhead_follows_playback: true,
+            adaptive_timeline_fit: false,
             magnetic_timeline: true,
             multicam_sync_method: MulticamSyncMethod::default(),
             multicam_auto_viewer: true,
