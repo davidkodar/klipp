@@ -1980,16 +1980,37 @@ impl TitleRenderer {
                     let mut single = TitleData::single_text_fx(tb.clone(), obj.fx().clone());
                     single.background = backing.take().unwrap_or(TitleBackground::None);
                     if let Some(o) = single.objects.first_mut() {
-                        o.transform = effective_transform;
+                        o.transform = effective_transform.clone();
                     }
                     self.loop_wave = self.loop_waves.get(&obj.id.0).copied();
-                    let layer = self.render_text_layer(
+                    let mut layer = self.render_text_layer(
                         &single,
                         width,
                         height,
                         gpu_for_first_text.take(),
                         time_secs,
                     );
+                    // Text layers use the same object transform as their
+                    // editor.  Layout still happens in the authored box,
+                    // then the rendered glyph layer is rotated around the
+                    // authored anchor so the canvas and Inspector stay
+                    // WYSIWYG.
+                    if effective_transform.rotation.abs() > 0.001 {
+                        rotate_rgba_layer(
+                            &mut layer,
+                            width as usize,
+                            height as usize,
+                            effective_transform.center.x * width as f32
+                                + (effective_transform.anchor_norm.x - 0.5)
+                                    * effective_transform.size.x
+                                    * width as f32,
+                            effective_transform.center.y * height as f32
+                                + (effective_transform.anchor_norm.y - 0.5)
+                                    * effective_transform.size.y
+                                    * height as f32,
+                            effective_transform.rotation.to_radians(),
+                        );
+                    }
                     self.loop_wave = None;
                     if first_layer && (obj.opacity - 1.0).abs() < 0.001 {
                         buf = layer;
@@ -4738,6 +4759,85 @@ fn blit_rotated(
                 }
             }
         }
+    }
+}
+
+/// Rotate a frame-sized RGBA layer around an object anchor. The title
+/// renderer already produces a transparent frame-sized layer, so this
+/// touches only the non-transparent bounds and keeps the common zero-
+/// rotation path allocation-free.
+fn rotate_rgba_layer(
+    layer: &mut [u8],
+    width: usize,
+    height: usize,
+    pivot_x: f32,
+    pivot_y: f32,
+    angle_rad: f32,
+) {
+    if width == 0 || height == 0 || layer.len() < width.saturating_mul(height).saturating_mul(4) {
+        return;
+    }
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    for y in 0..height {
+        for x in 0..width {
+            if layer[(y * width + x) * 4 + 3] != 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+    let source = layer.to_vec();
+    layer.fill(0);
+    let (sin, cos) = angle_rad.sin_cos();
+    let radius = ((max_x - min_x + 1).pow(2) as f32
+        + (max_y - min_y + 1).pow(2) as f32)
+        .sqrt()
+        .ceil() as i32;
+    let x0 = (pivot_x.floor() as i32 - radius).max(0);
+    let x1 = (pivot_x.ceil() as i32 + radius).min(width as i32 - 1);
+    let y0 = (pivot_y.floor() as i32 - radius).max(0);
+    let y1 = (pivot_y.ceil() as i32 + radius).min(height as i32 - 1);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let dx = x as f32 - pivot_x;
+            let dy = y as f32 - pivot_y;
+            let sx = pivot_x + dx * cos + dy * sin;
+            let sy = pivot_y - dx * sin + dy * cos;
+            let sx_i = sx.round() as i32;
+            let sy_i = sy.round() as i32;
+            if sx_i < min_x as i32 || sx_i > max_x as i32 || sy_i < min_y as i32 || sy_i > max_y as i32 {
+                continue;
+            }
+            let src_idx = (sy_i as usize * width + sx_i as usize) * 4;
+            if source[src_idx + 3] == 0 {
+                continue;
+            }
+            let dst_idx = (y as usize * width + x as usize) * 4;
+            layer[dst_idx..dst_idx + 4].copy_from_slice(&source[src_idx..src_idx + 4]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod object_transform_tests {
+    use super::rotate_rgba_layer;
+
+    #[test]
+    fn rotates_rgba_layer_around_anchor() {
+        let mut layer = vec![0u8; 5 * 5 * 4];
+        let idx = (1usize * 5 + 2) * 4;
+        layer[idx..idx + 4].copy_from_slice(&[255, 10, 20, 255]);
+        rotate_rgba_layer(&mut layer, 5, 5, 2.0, 2.0, std::f32::consts::FRAC_PI_2);
+        let rotated = (2usize * 5 + 3) * 4;
+        assert_eq!(&layer[rotated..rotated + 4], &[255, 10, 20, 255]);
     }
 }
 
