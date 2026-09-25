@@ -6135,6 +6135,11 @@ mod title_object_drag_tests {
             size: TitlePosition { x: 0.4, y: 0.2 },
             rotation: 0.0,
             anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+            size_x_keyframes: Vec::new(),
+            size_y_keyframes: Vec::new(),
+            rotation_keyframes: Vec::new(),
+            anchor_x_keyframes: Vec::new(),
+            anchor_y_keyframes: Vec::new(),
         }
     }
 
