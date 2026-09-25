@@ -492,6 +492,29 @@ fn should_publish_gpu_viewer() -> bool {
 /// playhead position, and how it is read. A grade is not in it — the
 /// cache holds frames before the grade — so grading leaves the cache
 /// standing.
+/// What the video tracks hold at `tc`: which clips, of which file, at
+/// which point of it. An edit that leaves this alone need not decode.
+fn under_playhead_fingerprint(seq: &klipp_timeline::Sequence, tc: Timecode) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if track.kind != klipp_timeline::TrackKind::Video {
+            continue;
+        }
+        let Some((ci, clip)) = track.clip_at_timecode(tc) else { continue };
+        (ti, ci, track.visible).hash(&mut h);
+        clip.id.hash(&mut h);
+        clip.media_id().hash(&mut h);
+        clip.enabled.hash(&mut h);
+        (clip.timeline_in.value, clip.timeline_in.rate).hash(&mut h);
+        (clip.source_in.value, clip.source_in.rate).hash(&mut h);
+        clip.speed.to_bits().hash(&mut h);
+        clip.source_rotation.hash(&mut h);
+        std::mem::discriminant(&clip.kind).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -977,7 +1000,6 @@ pub struct PlaybackEngine {
     /// True when audio is continuing seamlessly across a contiguous clip boundary.
     /// Suppresses fade-in on the new clip to prevent dropout.
     contiguous_audio: std::sync::atomic::AtomicBool,
-    duration: Timecode,
     fps: Fps,
     playhead: Timecode,
     sequence: Arc<RwLock<Sequence>>,
@@ -1286,6 +1308,13 @@ pub struct PlaybackEngine {
     /// What the pre-grade cache was filled under (see
     /// [`timeline_layout_fingerprint`]); a different layout empties it.
     layout_fingerprint: u64,
+    /// What was under the playhead when the layout was last looked at
+    /// (see [`under_playhead_fingerprint`]); an edit that changes it is
+    /// shown by seeking there again.
+    under_playhead_fingerprint: (Timecode, u64),
+    /// A seek made to show an edit, not to go anywhere: it has no scrub
+    /// chirp.
+    quiet_seek: bool,
     /// The transfer the SDR viewer encodes for — the monitor it assumes.
     sdr_transfer: klipp_core::SdrTransfer,
     /// Reasons the direct-present fast path declined the previous frame,
@@ -1691,7 +1720,6 @@ impl PlaybackEngine {
             current_clip_index: 0,
             current_track_index: 0,
             contiguous_audio: std::sync::atomic::AtomicBool::new(false),
-            duration: Timecode::zero(),
             fps: Fps::film_24(),
             playhead: RationalTime::from_frames(0, 24),
             sequence,
@@ -1803,6 +1831,8 @@ impl PlaybackEngine {
             presenting_progress: false,
             last_composite_path: None,
             layout_fingerprint: 0,
+            under_playhead_fingerprint: (Timecode::zero(), 0),
+            quiet_seek: false,
             sdr_transfer: klipp_core::SdrTransfer::Srgb,
             last_direct_present_blockers: Vec::new(),
             last_grab_wait: Duration::ZERO,
@@ -1948,6 +1978,8 @@ impl PlaybackEngine {
 
     fn run_inner(mut self) {
         info!("Engine thread starting");
+        // The timeline the engine starts on is not an edit to show.
+        self.note_layout_change(true);
 
         loop {
             // Heartbeat for the watchdog thread in klipp-app::main. Bumped at
@@ -2067,6 +2099,7 @@ impl PlaybackEngine {
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
+            self.tick_layout_check();
             // Full-quality refresh of the parked frame when playback ran
             // on the skim substitute (optimised playback). Runs every
             // tick: paused it debounces/polls/paints, any other state it
@@ -2980,15 +3013,7 @@ impl PlaybackEngine {
                 // only while the same media plays at each position. A
                 // grade change leaves it alone; a cut, move, trim, speed
                 // or rotation change empties it.
-                let layout = {
-                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                    timeline_layout_fingerprint(&seq)
-                };
-                if layout != self.layout_fingerprint {
-                    self.layout_fingerprint = layout;
-                    self.frame_cache.clear();
-                    self.titles_warmed.clear();
-                }
+                let under_playhead_changed = self.note_layout_change(true);
                 // The project's frame rate may be what changed.
                 self.sync_fps_to_sequence();
                 // Sync per-clip volume/pan to active audio sources
@@ -3047,6 +3072,10 @@ impl PlaybackEngine {
                     if speed_state_changed {
                         self.reset_ramp_anchor();
                     }
+                } else if under_playhead_changed {
+                    // Another clip, or another part of one, is under the
+                    // playhead: the parked frame is the old picture.
+                    self.show_edit_at_playhead();
                 } else {
                     // Paused: re-render, so title, generator and layout
                     // edits show at once.
@@ -5683,15 +5712,27 @@ impl PlaybackEngine {
         drop(seq);
 
         if let Some((ti, idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
-            let need_new_decoder =
-                self.current_track_index != ti || self.current_clip_index != idx || self.v1_decoder.is_none();
+            // The decoder is the clip's only when it reads the clip's file
+            // the clip's way up. The index alone is not the clip: an insert
+            // or a drop at the playhead puts another clip at the same index,
+            // which was then drawn from the decoder of the one it displaced.
+            let file = self.resolve_media_path(media_id, false).map(|path| {
+                let rot = self.effective_decode_rotation(media_id, &path, rot);
+                (path, rot)
+            });
+            let same_file = file.as_ref().is_some_and(|(path, rot)| {
+                self.current_file.as_ref() == Some(path) && self.current_source_rotation == *rot
+            });
+            let need_new_decoder = self.current_track_index != ti
+                || self.current_clip_index != idx
+                || self.v1_decoder.is_none()
+                || !same_file;
             self.current_track_index = ti;
 
             if need_new_decoder {
-                if let Some(path) = self.path_for_media(media_id) {
+                if let Some((path, effective_rot)) = file {
                     self.v1_decoder = None;
                     self.stop_all_audio();
-                    let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
                     match VideoDecoder::open(&path, effective_rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
@@ -5806,7 +5847,7 @@ impl PlaybackEngine {
                 }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
-                if audio_in_place && (!self.is_scrubbing || self.scrub_audio_enabled) {
+                if audio_in_place && !self.quiet_seek && (!self.is_scrubbing || self.scrub_audio_enabled) {
                     if let Some(active) = self.audio_sources.first() {
                         active.source.chirp(source_secs, 0.04);
                         if let Some(aout) = &self.audio_output {
@@ -5856,7 +5897,7 @@ impl PlaybackEngine {
                     self.master_clock.resume();
                 } else {
                     // Play scrub chirp for audio-only
-                    if !self.is_scrubbing || self.scrub_audio_enabled {
+                    if !self.quiet_seek && (!self.is_scrubbing || self.scrub_audio_enabled) {
                         if let Some(active) = self.audio_sources.first() {
                             let source_secs = {
                                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -7555,6 +7596,65 @@ impl PlaybackEngine {
             .is_some_and(|clip| klipp_compose::frame_blends(clip, self.playhead))
     }
 
+    /// Look at the timeline's layout, and if it changed since the last
+    /// look, empty what was cached under the old one. Whether what is
+    /// under the playhead changed with it — the parked frame is then
+    /// another picture's. `blocking` waits for the sequence; otherwise a
+    /// busy lock means "look next time".
+    fn note_layout_change(&mut self, blocking: bool) -> bool {
+        let (layout, under) = {
+            let seq = if blocking {
+                self.sequence.read().unwrap_or_else(|e| e.into_inner())
+            } else {
+                match self.sequence.try_read() {
+                    Ok(seq) => seq,
+                    Err(_) => return false,
+                }
+            };
+            (timeline_layout_fingerprint(&seq), under_playhead_fingerprint(&seq, self.playhead))
+        };
+        if layout == self.layout_fingerprint {
+            return false;
+        }
+        self.layout_fingerprint = layout;
+        self.frame_cache.clear();
+        self.titles_warmed.clear();
+        let before = std::mem::replace(&mut self.under_playhead_fingerprint, (self.playhead, under));
+        if before == (self.playhead, under) {
+            return false;
+        }
+        self.cached_pregrade_frame = None;
+        self.cached_pregrade_at = None;
+        true
+    }
+
+    /// An edit changed what is under the parked playhead, whether or not
+    /// anyone said so: the UI writes many edits to the sequence and sends
+    /// nothing after them. Looked for every tick the engine is not
+    /// playing (playback follows the timeline as it goes).
+    fn tick_layout_check(&mut self) {
+        if self.state != PlaybackState::Playing && self.note_layout_change(false) {
+            self.show_edit_at_playhead();
+        }
+    }
+
+    /// Show what is under the playhead now, after an edit: seek there
+    /// again, so the primary decoder is the clip's and the frame is this
+    /// timeline's. From Idle or Stopped this parks the engine, as a seek
+    /// from the UI does, so the edits after it render too.
+    fn show_edit_at_playhead(&mut self) {
+        let ph = self.playhead;
+        self.quiet_seek = true;
+        self.seek_in_sequence(ph);
+        self.quiet_seek = false;
+        if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+            && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
+        {
+            self.state = PlaybackState::Paused;
+            let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+        }
+    }
+
     fn regrade_cached_frame(&mut self) {
         mark_stage(EngineStage::PausedRegrade);
         // A slider step on a frame the renderer would only grade.
@@ -7973,6 +8073,13 @@ impl PlaybackEngine {
     }
 
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {
+        self.resolve_media_path(media_id, true)
+    }
+
+    /// [`Self::path_for_media`], and with `log` false without saying so:
+    /// for asking which file a clip would read, every seek, rather than
+    /// opening it.
+    fn resolve_media_path(&self, media_id: MediaId, log: bool) -> Option<PathBuf> {
         self.media_pool
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -7982,7 +8089,9 @@ impl PlaybackEngine {
                 if self.use_proxies {
                     if let Some(ref proxy_path) = item.proxy_path {
                         if item.proxy_ready && proxy_path.exists() {
-                            tracing::trace!("resolve_media_path: using proxy for {}", item.filename);
+                            if log {
+                                tracing::trace!("resolve_media_path: using proxy for {}", item.filename);
+                            }
                             return proxy_path.clone();
                         }
                     }
@@ -8002,12 +8111,14 @@ impl PlaybackEngine {
                         item.fps.as_f64(),
                         skim_ready,
                     ) {
-                        tracing::info!(
-                            "resolve_media_path: using skim ({} {}x{}@{:.2} fps) for {}",
-                            match mode { 1 => "AlwaysOriginal", 2 => "AlwaysOptimized", _ => "Auto" },
-                            item.resolution.width, item.resolution.height,
-                            item.fps.as_f64(), item.filename,
-                        );
+                        if log {
+                            tracing::info!(
+                                "resolve_media_path: using skim ({} {}x{}@{:.2} fps) for {}",
+                                match mode { 1 => "AlwaysOriginal", 2 => "AlwaysOptimized", _ => "Auto" },
+                                item.resolution.width, item.resolution.height,
+                                item.fps.as_f64(), item.filename,
+                            );
+                        }
                         return skim_path.clone();
                     }
                 }
@@ -8118,13 +8229,14 @@ impl PlaybackEngine {
                     warn!("{:?} holds {duration_secs:.1} s of the {header:.1} s its header claims: the file is cut short", path.file_name().unwrap_or_default());
                 }
 
-                self.fps = fps_from_float(container_fps);
-                self.duration = RationalTime::from_secs_f64(duration_secs, self.fps.rate());
-                self.playhead = RationalTime::from_frames(0, self.fps.rate());
-                self.current_file = Some(path.clone());
-                self.current_clip_index = 0;
-                self.current_track_index = 0;
-                self.state = PlaybackState::Stopped;
+                // A probe, and nothing else. It used to take over the
+                // playback cursor as well — the engine's frame rate, the
+                // playhead, the clip index and the file it believed its
+                // decoder held — left over from when an import was shown
+                // in the viewer. An import while parked then had the next
+                // edit drawn from the wrong decoder.
+                let fps = fps_from_float(container_fps);
+                let duration = RationalTime::from_secs_f64(duration_secs, fps.rate());
 
                 let fs_meta = std::fs::metadata(&path).ok();
                 let file_size_bytes = fs_meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -8293,8 +8405,8 @@ impl PlaybackEngine {
                     klipp_core::MediaLoadedPayload {
                         media_id,
                         path,
-                        duration: self.duration,
-                        fps: self.fps,
+                        duration,
+                        fps,
                         resolution: Resolution {
                             width: video_w,
                             height: video_h,
