@@ -15147,13 +15147,22 @@ impl KlippApp {
                 true
             }
             AppCommand::AutoWhiteBalance { clip_id } => {
-                // Grab current frame and compute auto WB correction
+                // The newest frame the engine made, not the one last
+                // swapped in: while paused the UI repaints rarely, and
+                // `data` can be several frames behind.
                 let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
-                    let (temp_adj, tint_adj) = klipp_color::auto_white_balance(
-                        &fb.data, fb.width, fb.height,
+                let (bytes, fw, fh, _) = fb.latest_frame();
+                let has_picture = fw > 0 && fh > 0 && bytes.chunks_exact(4).any(|p| p[3] != 0);
+                let reading = has_picture.then(|| klipp_color::auto_white_balance(bytes, fw, fh));
+                drop(fb);
+                if !has_picture {
+                    self.state.toast.show("Auto White Balance: the viewer has no picture to read yet");
+                } else if reading == Some(None) {
+                    self.state.toast.show(
+                        "Auto White Balance: nothing neutral in this frame to balance from \
+                         (no grey, white or black surface) — the balance is left as it was",
                     );
-                    drop(fb);
+                } else if let Some(Some((temp_adj, tint_adj))) = reading {
                     // Apply to the clip's ColorBalance node. Snapshot the graph
                     // before applying so we can push a single SetNodeGraph undo
                     // entry covering the whole auto-WB gesture.
@@ -15175,9 +15184,12 @@ impl KlippApp {
                                 n.kind == klipp_nodes::NodeKind::ColorBalance
                             ));
                             if let Some(idx) = target_idx {
+                                // The frame read is the graded one, so the
+                                // correction is on top of the balance the
+                                // clip already has, not instead of it.
                                 let node = &mut clip.node_graph.nodes[idx];
-                                node.params.temperature = Some(temp_adj);
-                                node.params.tint = Some(tint_adj);
+                                node.params.temperature = Some((node.params.temperature.unwrap_or(0.0) + temp_adj).clamp(-50.0, 50.0));
+                                node.params.tint = Some((node.params.tint.unwrap_or(0.0) + tint_adj).clamp(-50.0, 50.0));
                                 applied = true;
                             }
                             committed = Some(clip.node_graph.clone());

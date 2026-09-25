@@ -477,6 +477,59 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
     }
 }
 
+/// The white reference in a frame: the average colour, in linear
+/// light, of the pixels that are neutral surfaces under the scene's
+/// light, chosen as [`measure_frame`] chooses them for its cast reading.
+/// Pixels with almost no colour first; failing enough of those, the
+/// least-coloured quarter, taken only when it agrees on one cast — a
+/// grey wall under a lamp does, grass against sky does not. `None` when
+/// the frame has no such surface, and then there is nothing a white
+/// balance can honestly be read from.
+pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3]> {
+    let total = (width as usize) * (height as usize);
+    let step = (total / 250_000).max(1);
+    // (chroma, a*, b*, linear rgb) of the mid-lightness pixels.
+    let mut mids: Vec<(f32, f32, f32, [f32; 3])> = Vec::new();
+    let mut n = 0usize;
+    let mut i = 0;
+    while i < total && rgba.len() >= (i + 1) * 4 {
+        let p = i * 4;
+        let c = srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]);
+        if c.l >= 20.0 && c.l <= 90.0 {
+            let lin = [rgba[p], rgba[p + 1], rgba[p + 2]].map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
+            mids.push((c.chroma(), c.a, c.b, lin));
+        }
+        n += 1;
+        i += step;
+    }
+    let solid: Vec<&(f32, f32, f32, [f32; 3])> = mids.iter().filter(|m| m.0 < 8.0).collect();
+    let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
+    let picked: Vec<&(f32, f32, f32, [f32; 3])> = if enough {
+        solid
+    } else {
+        let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
+        chroma_sorted.sort_by(|a, b| a.total_cmp(b));
+        let gate = percentile(&chroma_sorted, 0.25).clamp(6.0, 25.0);
+        let quarter: Vec<_> = mids.iter().filter(|m| m.0 <= gate).collect();
+        let (mut a, mut b): (Vec<f32>, Vec<f32>) = quarter.iter().map(|m| (m.1, m.2)).unzip();
+        let chroma = median(&mut a.iter().zip(&b).map(|(a, b)| (a * a + b * b).sqrt()).collect::<Vec<_>>());
+        if quarter.is_empty() || iqr(&mut a) >= 6.0 || iqr(&mut b) >= 6.0 || chroma >= 18.0 {
+            return None;
+        }
+        quarter
+    };
+    if picked.is_empty() {
+        return None;
+    }
+    let mut sum = [0.0f64; 3];
+    for m in &picked {
+        for (acc, v) in sum.iter_mut().zip(m.3) {
+            *acc += v as f64;
+        }
+    }
+    Some(sum.map(|v| (v / picked.len() as f64) as f32))
+}
+
 /// The flat parts of a picture, where noise and banding show: the
 /// lightness spread of the flattest tiles (the noise floor, in L*), and
 /// how many of them carry the staircase of banding — a run of identical
