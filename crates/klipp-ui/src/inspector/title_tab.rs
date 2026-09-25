@@ -303,7 +303,11 @@ fn motion_row(
     let (rest, hover_from, hover_len) = dir.timing();
     let popup_id = ui.id().with(("title_motion_gallery", dir.label()));
     let mut open_gallery = false;
-    ui.horizontal(|ui| {
+    // The motion row contains four controls and is wider than the compact
+    // Inspector at its normal width.  Wrapping keeps every control inside
+    // the panel instead of letting the final duration field disappear past
+    // the right edge.
+    ui.horizontal_wrapped(|ui| {
         ui.add_sized(
             [28.0, ROW_CHIP.y],
             egui::Label::new(egui::RichText::new(dir.label()).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
@@ -325,7 +329,11 @@ fn motion_row(
             open_gallery = true;
         }
         let name = current.map(|m| m.kind.label()).unwrap_or("None");
-        let btn = ui.add(egui::Button::new(egui::RichText::new(format!("{name}  \u{25be}")).size(crate::theme::type_scale::CONTROL)).min_size(egui::vec2(120.0, crate::theme::control::COMPACT)));
+        let kind_width = ui.available_width().clamp(86.0, 120.0);
+        let btn = ui.add_sized(
+            [kind_width, crate::theme::control::COMPACT],
+            egui::Button::new(egui::RichText::new(format!("{name}  \u{25be}")).size(crate::theme::type_scale::CONTROL)),
+        );
         if btn.clicked() {
             open_gallery = true;
         }
@@ -389,7 +397,7 @@ fn motion_row(
     if let Some(m) = slot.as_mut() {
         let details_id = ui.id().with(("title_motion_details", dir.label()));
         let mut open: bool = ui.memory(|mem| mem.data.get_temp(details_id)).unwrap_or(false);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add_space(28.0 + 8.0);
             let arrow = if open { "\u{25be}" } else { "\u{25b8}" };
             if ui.add(egui::Button::new(egui::RichText::new(format!("{arrow} Details")).size(crate::theme::type_scale::CAPTION).color(theme.text_secondary)).frame(false)).clicked() {
@@ -398,7 +406,7 @@ fn motion_row(
             }
         });
         if open {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(36.0);
                 if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").prefix("Delay ").fixed_decimals(2)).changed() {
                     changed = true;
