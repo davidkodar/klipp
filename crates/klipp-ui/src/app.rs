@@ -649,6 +649,41 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
     }
 }
 
+/// The clip a grade still is taken from: the selected clip when it is
+/// under the playhead, since that is the one the Colour panels show;
+/// otherwise the topmost visible video clip there, which is what the
+/// viewer shows. `None` over a gap.
+fn still_source_clip(
+    seq: &klipp_timeline::Sequence,
+    playhead: klipp_core::Timecode,
+    selected: Option<klipp_core::ClipId>,
+) -> Option<&klipp_timeline::Clip> {
+    let video = || seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video) && t.visible);
+    let selected_here = selected.and_then(|id| video().find_map(|t| t.clip_at_timecode(playhead).map(|(_, c)| c).filter(|c| c.id == id)));
+    selected_here.or_else(|| video().find_map(|t| t.clip_at_timecode(playhead).map(|(_, c)| c)))
+}
+
+/// `secs` as HH:MM:SS:FF at a nominal `fps`, for display.
+fn record_timecode(secs: f64, fps: f64) -> String {
+    let nominal = fps.round().max(1.0) as i64;
+    let frames = (secs.max(0.0) * fps).round() as i64;
+    let (ff, total) = (frames % nominal, frames / nominal);
+    format!("{:02}:{:02}:{:02}:{:02}", total / 3600, total / 60 % 60, total % 60, ff)
+}
+
+/// A still's grade onto each of `targets`, fresh node ids per clip, as
+/// graph edits to apply together.
+fn grade_from_still_edits(
+    seq: &klipp_timeline::Sequence,
+    grade: &klipp_nodes::NodeGraph,
+    targets: &[klipp_core::ClipId],
+) -> Vec<EditCommand> {
+    seq.all_clips()
+        .filter(|c| targets.contains(&c.id))
+        .map(|c| EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph: grade.remap_ids() })
+        .collect()
+}
+
 /// The edits a Paste Attributes makes: each target clip replaced whole
 /// by itself with the chosen attributes written on. Free of the app so
 /// it can be tested without one.
@@ -15315,6 +15350,23 @@ impl KlippApp {
                 self.state.active_grade_still = *index;
                 true
             }
+            AppCommand::ApplyGradeFromStill { index, clip_ids } => {
+                let Some(still) = self.state.grade_stills.get(*index) else { return true };
+                let Some(grade) = still.grade.clone() else {
+                    self.state.toast.show("That still was grabbed before stills kept their grade; grab it again to use its grade");
+                    return true;
+                };
+                let name = still.name.clone();
+                let edits = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids);
+                if edits.is_empty() {
+                    self.state.toast.show("Select the clips to grade first");
+                    return true;
+                }
+                let n = edits.len();
+                self.apply_edits_as_one(&edits, "Apply Grade from Still");
+                self.state.toast.show(format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" }));
+                true
+            }
             AppCommand::ToggleGradeStillCompare => {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
                 true
@@ -15360,12 +15412,26 @@ impl KlippApp {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
+        let seq = self.state.sequences.get(self.state.active_sequence_idx)?;
+        let clip = still_source_clip(seq, self.state.playhead, self.state.selected_clip);
+        let source = clip.map(|c| klipp_project::StillSource {
+            clip_id: Some(c.id),
+            media_id: c.media_id(),
+            record_secs: self.state.playhead.to_secs_f64(),
+            clip_name: c
+                .media_id()
+                .and_then(|m| self.state.media_pool.get(&m))
+                .map(|m| m.filename.clone())
+                .unwrap_or_default(),
+        });
         Some(crate::state::GradeStill {
             name,
             filename,
             rgba,
             width: tw,
             height: th,
+            source,
+            grade: clip.map(|c| c.node_graph.clone()),
             texture: None,
         })
     }
@@ -15386,6 +15452,8 @@ impl KlippApp {
                 rgba: s.rgba.clone(),
                 width: s.width,
                 height: s.height,
+                source: s.source.clone(),
+                grade: s.grade.clone(),
             })
             .collect();
         if let Err(e) = klipp_project::save_grade_stills(&project_dir, &stills) {
@@ -24572,6 +24640,8 @@ impl KlippApp {
                         rgba: d.rgba,
                         width: d.width,
                         height: d.height,
+                        source: d.source,
+                        grade: d.grade,
                         texture: None,
                     })
                     .collect();
@@ -33819,8 +33889,16 @@ impl KlippApp {
                             }
                         });
 
+                        // Apply Grade from Still goes to the timeline
+                        // selection, or the one selected clip, as Looks do.
+                        let grade_targets: Vec<klipp_core::ClipId> = if !self.state.selected_clips.is_empty() {
+                            self.state.selected_clips.clone()
+                        } else {
+                            self.state.selected_clip.into_iter().collect()
+                        };
                         caption_row(ui, "Stills", &mut |ui| {
                             let mut delete_idx = None;
+                            let mut apply_idx = None;
                             for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
                                 let is_active = self.state.active_grade_still == Some(i);
                                 if still.texture.is_none() && !still.rgba.is_empty() {
@@ -33859,8 +33937,25 @@ impl KlippApp {
                                         index: if is_active { None } else { Some(i) },
                                     });
                                 }
-                                let resp = resp.on_hover_text(&still.name);
+                                let hover = match &still.source {
+                                    Some(src) => format!(
+                                        "{}\nFrom {} at {}",
+                                        still.name,
+                                        if src.clip_name.is_empty() { "a clip" } else { src.clip_name.as_str() },
+                                        record_timecode(src.record_secs, self.state.fps.as_f64()),
+                                    ),
+                                    None => still.name.clone(),
+                                };
+                                let resp = resp.on_hover_text(hover);
+                                let has_grade = still.grade.is_some();
                                 resp.context_menu(|ui| {
+                                    let apply = ui
+                                        .add_enabled(has_grade && !grade_targets.is_empty(), egui::Button::new("Apply Grade to Selected Clips"))
+                                        .on_disabled_hover_text(if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" });
+                                    if apply.clicked() {
+                                        apply_idx = Some(i);
+                                        ui.close_menu();
+                                    }
                                     if ui.button("Delete").clicked() {
                                         delete_idx = Some(i);
                                         ui.close_menu();
@@ -33869,6 +33964,23 @@ impl KlippApp {
                             }
                             if let Some(idx) = delete_idx {
                                 all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
+                            }
+                            if let Some(idx) = apply_idx {
+                                all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone() });
+                            }
+                            // The active still's grade onto the selection:
+                            // grab a finished shot, then grade the next ones
+                            // from the same setup from it.
+                            let active_grade = self.state.active_grade_still.filter(|&i| self.state.grade_stills.get(i).is_some_and(|s| s.grade.is_some()));
+                            if ui
+                                .add_enabled(active_grade.is_some() && !grade_targets.is_empty(), egui::Button::new("Apply").small())
+                                .on_hover_text("Put the active still's grade on the selected clips")
+                                .on_disabled_hover_text("Pick a still that kept its grade, and select the clips to grade")
+                                .clicked()
+                            {
+                                if let Some(idx) = active_grade {
+                                    all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone() });
+                                }
                             }
                             if ui.small_button("Grab").on_hover_text("Capture the current frame as a grade still").clicked() {
                                 let name = format!("Still {}", self.state.grade_stills.len() + 1);
@@ -40816,5 +40928,51 @@ mod paste_attributes_tests {
         }
         assert_eq!(sequences[0].tracks[0].clips[1].volume, b.volume);
         assert_eq!(sequences[0].tracks[0].clips[2].volume, c.volume);
+    }
+}
+
+#[cfg(test)]
+mod grade_still_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Sequence};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 25, rate: 25 }
+    }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_still_is_taken_from_the_selected_clip_only_when_it_is_under_the_playhead() {
+        let mut seq = Sequence::new_default();
+        let (a, b) = (clip(0, 4), clip(4, 8));
+        seq.tracks[0].clips = vec![a.clone(), b.clone()];
+        assert_eq!(still_source_clip(&seq, t(1), Some(a.id)).map(|c| c.id), Some(a.id));
+        // Selected elsewhere: the clip the viewer shows.
+        assert_eq!(still_source_clip(&seq, t(5), Some(a.id)).map(|c| c.id), Some(b.id));
+        assert!(still_source_clip(&seq, t(9), Some(a.id)).is_none(), "a gap has no clip");
+    }
+
+    #[test]
+    fn a_still_grade_goes_on_every_target_with_its_own_ids_and_undoes_as_one() {
+        let mut seq = Sequence::new_default();
+        let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
+        seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
+        let grade = klipp_nodes::NodeGraph::default();
+        let edits = grade_from_still_edits(&seq, &grade, &[a.id, c.id]);
+        assert_eq!(edits.len(), 2);
+        let ids = |e: &EditCommand| match e {
+            EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            _ => panic!("a graph edit"),
+        };
+        assert_ne!(ids(&edits[0]), ids(&edits[1]), "each clip gets fresh node ids");
+        assert_ne!(ids(&edits[0]), grade.nodes.iter().map(|n| n.id).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_record_timecode_reads_as_an_editor_would_say_it() {
+        assert_eq!(record_timecode(3723.48, 25.0), "01:02:03:12");
     }
 }

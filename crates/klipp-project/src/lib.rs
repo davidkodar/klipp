@@ -52,6 +52,6 @@ pub mod path_util;
 mod save;
 pub mod workspace;
 
-pub use grade_stills::{adopt_still, delete_grade_still_file, is_temp_still, temp_still_roots, load_grade_stills, save_freeze_frame_png, save_grade_stills, GradeStillData, GradeStillMeta};
+pub use grade_stills::{adopt_still, delete_grade_still_file, is_temp_still, load_grade_stills, save_freeze_frame_png, save_grade_stills, temp_still_roots, GradeStillData, GradeStillMeta, StillSource};
 pub use load::{load_looks, load_project};
 pub use save::{iso8601_now, save_looks, save_project, save_project_full, save_project_with_color, save_project_with_color_and_backups, ColorSettings};

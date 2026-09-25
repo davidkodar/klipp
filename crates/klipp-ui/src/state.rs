@@ -2549,6 +2549,11 @@ pub struct GradeStill {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    /// Which clip, and when, the still was grabbed from.
+    pub source: Option<klipp_project::StillSource>,
+    /// That clip's grade at the time: what Apply Grade from Still puts
+    /// on other clips. `None` for stills from before stills kept it.
+    pub grade: Option<klipp_nodes::NodeGraph>,
     pub texture: Option<egui::TextureHandle>,
 }
 

@@ -2808,6 +2808,9 @@ pub enum AppCommand {
     CaptureGradeStill { name: String },
     /// Delete a saved grade still by index.
     DeleteGradeStill { index: usize },
+    /// Put the grade a still was grabbed with on these clips, as one undo
+    /// step. Each gets its own node ids.
+    ApplyGradeFromStill { index: usize, clip_ids: Vec<ClipId> },
     /// Set the active grade still for comparison.
     SetActiveGradeStill { index: Option<usize> },
     /// Toggle split-view comparison with the active grade still.
