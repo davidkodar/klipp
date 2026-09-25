@@ -81,6 +81,74 @@ pub fn adopt_still(project_dir: &Path, file: &Path) -> std::io::Result<PathBuf> 
     Ok(dest)
 }
 
+/// What [`adopt_temp_stills`] did: how many paths now point into the
+/// project, and the temporary stills it could not copy, each with its
+/// error. Those paths are left as they were.
+#[derive(Debug, Default)]
+pub struct StillAdoption {
+    pub adopted: usize,
+    pub failed: Vec<(PathBuf, std::io::Error)>,
+}
+
+impl StillAdoption {
+    /// Whether nothing was under the temporary folders to begin with.
+    pub fn is_empty(&self) -> bool {
+        self.adopted == 0 && self.failed.is_empty()
+    }
+}
+
+/// Bring every still under [`temp_still_roots`] into `project_dir` and
+/// point whatever holds it there: media items in `pool`, and freeze
+/// frames, which are not pool items but `StillFrame` generator clips on a
+/// track, in every one of `sequences` (nested sequences and
+/// precompositions are sequences of their own in that slice). Nothing
+/// under the temporary folders means nothing is copied or changed, so this
+/// is cheap to run on every save. One file referenced twice is copied
+/// once, and reported once when it cannot be.
+pub fn adopt_temp_stills(
+    project_dir: &Path,
+    pool: &mut klipp_media::MediaPool,
+    sequences: &mut [klipp_timeline::Sequence],
+) -> StillAdoption {
+    let mut report = StillAdoption::default();
+    // Where each temporary file went, or `None` once its copy has failed
+    // and been reported.
+    let mut done: std::collections::HashMap<PathBuf, Option<PathBuf>> = Default::default();
+    let mut adopt = |path: &mut PathBuf, report: &mut StillAdoption| {
+        if !is_temp_still(path) {
+            return;
+        }
+        let to = match done.get(path.as_path()) {
+            Some(to) => to.clone(),
+            None => {
+                let to = match adopt_still(project_dir, path) {
+                    Ok(to) => Some(to),
+                    Err(e) => {
+                        warn!("could not bring {} into the project: {e}", path.display());
+                        report.failed.push((path.clone(), e));
+                        None
+                    }
+                };
+                done.insert(path.clone(), to.clone());
+                to
+            }
+        };
+        if let Some(to) = to {
+            *path = to;
+            report.adopted += 1;
+        }
+    };
+    for item in pool.all_mut() {
+        adopt(&mut item.path, &mut report);
+    }
+    for clip in sequences.iter_mut().flat_map(|s| s.all_clips_mut()) {
+        if let klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::StillFrame { png_path, .. }) = &mut clip.kind {
+            adopt(png_path, &mut report);
+        }
+    }
+    report
+}
+
 fn stills_index_path(project_dir: &Path) -> PathBuf {
     project_dir.join("media").join("stills.json")
 }
@@ -270,6 +338,112 @@ mod adopt_tests {
         assert!(!is_temp_still(&dest));
         std::fs::remove_dir_all(&project).ok();
         std::fs::remove_dir_all(root.join(format!("adopt-{}", std::process::id()))).ok();
+    }
+
+    use klipp_core::{Fps, MediaId, Timecode};
+    use klipp_media::{MediaItem, MediaItemKind};
+    use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+
+    fn file_item(path: &Path) -> MediaItem {
+        let mut m = MediaItem::new_synthetic_title(MediaId::new(), String::new(), Timecode::from_secs_f64(1.0, 24), Fps::film_24());
+        m.kind = MediaItemKind::File;
+        m.path = path.to_path_buf();
+        m.filename = path.file_name().unwrap().to_string_lossy().into_owned();
+        m
+    }
+
+    fn freeze_clip(png_path: &Path) -> Clip {
+        let t0 = Timecode::from_secs_f64(0.0, 24);
+        let t1 = Timecode::from_secs_f64(1.0, 24);
+        Clip {
+            kind: ClipKind::Generator(klipp_core::GeneratorData::StillFrame { png_path: png_path.to_path_buf(), width: 2, height: 2 }),
+            ..Clip::gap(t0, t1)
+        }
+    }
+
+    fn seq_with_clip(clip: Clip) -> Sequence {
+        let mut track = Track::new("V1", TrackKind::Video);
+        track.clips.push(clip);
+        let mut s = Sequence::new_default();
+        s.tracks = vec![track];
+        s
+    }
+
+    fn still_frame_path(seq: &Sequence) -> &Path {
+        match &seq.tracks[0].clips[0].kind {
+            ClipKind::Generator(klipp_core::GeneratorData::StillFrame { png_path, .. }) => png_path,
+            other => panic!("not a freeze frame: {other:?}"),
+        }
+    }
+
+    /// The #349 case: a freeze frame is a generator clip, not a pool item,
+    /// and it sits in a nested sequence as easily as in the main one.
+    #[test]
+    fn a_pool_item_and_a_freeze_frame_clip_both_move_into_the_project() {
+        let root = &temp_still_roots()[0];
+        let src_dir = root.join(format!("adopt-all-{}", std::process::id()));
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let extracted = src_dir.join("extract_1.png");
+        let freeze = src_dir.join("freeze_2.png");
+        let nested_freeze = src_dir.join("freeze_3.png");
+        for f in [&extracted, &freeze, &nested_freeze] {
+            std::fs::write(f, b"png").unwrap();
+        }
+        let project = std::env::temp_dir().join(format!("klipp-adopt-all-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&project);
+
+        let mut pool = klipp_media::MediaPool::new();
+        let item_id = pool.add(file_item(&extracted));
+        let mut sequences = vec![seq_with_clip(freeze_clip(&freeze)), seq_with_clip(freeze_clip(&nested_freeze))];
+
+        let report = adopt_temp_stills(&project, &mut pool, &mut sequences);
+        assert_eq!(report.adopted, 3);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+
+        let stills = project.join("media").join("stills");
+        let item_path = pool.get(&item_id).unwrap().path.clone();
+        assert_eq!(item_path, stills.join("extract_1.png"));
+        assert_eq!(still_frame_path(&sequences[0]), stills.join("freeze_2.png"));
+        assert_eq!(still_frame_path(&sequences[1]), stills.join("freeze_3.png"));
+        for p in [&item_path, still_frame_path(&sequences[0]), still_frame_path(&sequences[1])] {
+            assert!(!is_temp_still(p));
+            assert_eq!(std::fs::read(p).unwrap(), b"png", "{}", p.display());
+        }
+
+        std::fs::remove_dir_all(&project).ok();
+        std::fs::remove_dir_all(&src_dir).ok();
+    }
+
+    #[test]
+    fn stills_already_in_a_project_are_left_alone() {
+        let elsewhere = std::env::temp_dir().join("klipp-not-a-temp-still").join("media").join("stills").join("freeze_9.png");
+        let mut pool = klipp_media::MediaPool::new();
+        let item_id = pool.add(file_item(&elsewhere));
+        let mut sequences = vec![seq_with_clip(freeze_clip(&elsewhere))];
+        let project = std::env::temp_dir().join(format!("klipp-adopt-none-project-{}", std::process::id()));
+        let report = adopt_temp_stills(&project, &mut pool, &mut sequences);
+        assert!(report.is_empty());
+        assert_eq!(pool.get(&item_id).unwrap().path, elsewhere);
+        assert_eq!(still_frame_path(&sequences[0]), elsewhere);
+        assert!(!project.exists(), "an adoption with nothing to adopt made a folder");
+    }
+
+    #[test]
+    fn a_still_that_cannot_be_copied_is_reported_once_and_keeps_its_path() {
+        let root = &temp_still_roots()[1];
+        let missing = root.join(format!("adopt-missing-{}", std::process::id())).join("gone.png");
+        assert!(is_temp_still(&missing) && !missing.exists());
+        let project = std::env::temp_dir().join(format!("klipp-adopt-missing-project-{}", std::process::id()));
+        let mut pool = klipp_media::MediaPool::new();
+        let item_id = pool.add(file_item(&missing));
+        let mut sequences = vec![seq_with_clip(freeze_clip(&missing))];
+        let report = adopt_temp_stills(&project, &mut pool, &mut sequences);
+        assert_eq!(report.adopted, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, missing);
+        assert_eq!(pool.get(&item_id).unwrap().path, missing);
+        assert_eq!(still_frame_path(&sequences[0]), missing);
+        std::fs::remove_dir_all(&project).ok();
     }
 }
 
