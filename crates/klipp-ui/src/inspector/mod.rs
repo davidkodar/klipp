@@ -4385,16 +4385,48 @@ fn show_title_editor(
     if let Some(object) = target_oid.and_then(|id| td.object(id)).or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_)))) {
         let t = &object.transform;
         let mut w = t.size.x * 100.0;
+        let mut h = t.size.y * 100.0;
+        let mut rotation = t.rotation;
+        let mut anchor_x = t.anchor_norm.x * 100.0;
+        let mut anchor_y = t.anchor_norm.y * 100.0;
         let mut changed = false;
+        ui.label(egui::RichText::new("TRANSFORM").size(10.0).color(theme.text_dim));
         ui.horizontal(|ui| {
-            ui.label("Text box width");
-            changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=100.0).suffix("% W")).changed();
+            ui.label("W");
+            changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed();
+            ui.label("H");
+            changed |= ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Rotation");
+            changed |= ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Anchor");
+            changed |= ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed();
+            changed |= ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed();
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("Center").on_hover_text("Center this layer in the frame").clicked() {
+                cmds.push(AppCommand::SetTitleObjectTransform {
+                    clip_id, object_id: object.id.0, center_x: 0.5, center_y: 0.5,
+                    size_x: t.size.x, size_y: t.size.y, rotation: t.rotation,
+                    anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
+                });
+            }
+            if ui.small_button("Reset transform").clicked() {
+                cmds.push(AppCommand::SetTitleObjectTransform {
+                    clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                    size_x: t.size.x, size_y: t.size.y, rotation: 0.0,
+                    anchor_x: 0.5, anchor_y: 0.5,
+                });
+            }
         });
         if changed {
             cmds.push(AppCommand::SetTitleObjectTransform {
                 clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
-                size_x: w / 100.0, size_y: t.size.y, rotation: t.rotation,
-                anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
+                size_x: w / 100.0, size_y: h / 100.0, rotation,
+                anchor_x: anchor_x / 100.0, anchor_y: anchor_y / 100.0,
             });
         }
     }
