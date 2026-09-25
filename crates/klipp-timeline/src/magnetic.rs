@@ -447,7 +447,7 @@ impl MagneticEditor {
         sequence.purge_dangling_linked_clip_ids(&purged_ids);
 
         // Repack primary track
-        let rippled_clips = if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
+        let mut rippled_clips = if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
             repack_primary(sequence)
         } else {
             // For non-primary, ripple downstream clips on same track
@@ -469,11 +469,46 @@ impl MagneticEditor {
             records
         };
 
+        // The linked partner's track closes up too, by the same amount, so
+        // everything after the cut stays in sync with the track the clip
+        // was deleted from. A primary partner track is repacked before the
+        // cascade so clips connected to it follow.
+        let partner_track = removed_linked_clip
+            .as_ref()
+            .map(|(lc, lt_idx)| (lc.timeline_out, *lt_idx))
+            .filter(|&(_, lt_idx)| lt_idx != track_idx);
+        let partner_is_primary = partner_track
+            .is_some_and(|(_, lt_idx)| sequence.tracks[lt_idx].magnetic_role == TrackRole::Primary);
+        if partner_is_primary {
+            rippled_clips.extend(repack_primary(sequence));
+        }
+
         // Cascade connected clips
         let cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
 
+        if let (Some((partner_out, lt_idx)), false) = (partner_track, partner_is_primary) {
+            let shift = removed_clip.timeline_out - removed_clip.timeline_in;
+            for c in &mut sequence.tracks[lt_idx].clips {
+                // A clip the cascade already moved with its anchor has
+                // closed up once; moving it again would overshoot.
+                if c.timeline_in < partner_out || cascaded_clips.iter().any(|cr| cr.clip_id == c.id) {
+                    continue;
+                }
+                let (old_in, old_out) = (c.timeline_in, c.timeline_out);
+                c.timeline_in -= shift;
+                c.timeline_out -= shift;
+                rippled_clips.push(RippleRecord {
+                    clip_id: c.id,
+                    old_in,
+                    old_out,
+                    new_in: c.timeline_in,
+                    new_out: c.timeline_out,
+                });
+            }
+        }
+
         #[cfg(debug_assertions)]
-        if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
+        if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary || partner_is_primary {
             sequence.assert_primary_gapless();
         }
 
@@ -2230,6 +2265,50 @@ mod tests {
         // Clip 2 shifted left by 24 frames
         assert_eq!(track.clips[1].timeline_in, tc(24));
         assert_eq!(track.clips[1].timeline_out, tc(48));
+    }
+
+    /// Issue #251: deleting the middle of a bladed V+A clip closed the
+    /// picture track but only removed the audio, leaving every later
+    /// sound late by the deleted length.
+    #[test]
+    fn test_ripple_delete_ripples_the_linked_partners_track() {
+        // V (primary) and A (connected), three linked segments each.
+        let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
+        let mut audio = Track::new("Audio 1", TrackKind::Audio);
+        audio.magnetic_role = TrackRole::Connected;
+        for &(i, o) in &[(0, 24), (24, 48), (48, 72)] {
+            audio.clips.push(media_clip(i, o));
+        }
+        for k in 0..3 {
+            let (v, a) = (seq.tracks[0].clips[k].id, audio.clips[k].id);
+            seq.tracks[0].clips[k].linked_clip_id = Some(a);
+            audio.clips[k].linked_clip_id = Some(v);
+        }
+        seq.tracks.push(audio);
+        let before = seq.clone();
+        let middle = seq.tracks[0].clips[1].id;
+
+        let result = MagneticEditor::ripple_delete(&mut seq, middle);
+
+        let spans = |seq: &Sequence, ti: usize| -> Vec<(RationalTime, RationalTime)> {
+            seq.tracks[ti].clips.iter().map(|c| (c.timeline_in, c.timeline_out)).collect()
+        };
+        assert_eq!(spans(&seq, 0), vec![(tc(0), tc(24)), (tc(24), tc(48))]);
+        assert_eq!(spans(&seq, 1), spans(&seq, 0), "the audio did not ripple with its picture");
+
+        // One undo puts both tracks back, and redo closes both again.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(spans(&seq, 0), spans(&before, 0));
+        assert_eq!(spans(&seq, 1), spans(&before, 1));
+        MagneticEditor::apply_forward(&mut seq, &result.command);
+        assert_eq!(spans(&seq, 1), vec![(tc(0), tc(24)), (tc(24), tc(48))]);
+
+        // Deleting the audio half closes the primary track too.
+        let mut seq = before.clone();
+        let middle_audio = seq.tracks[1].clips[1].id;
+        MagneticEditor::ripple_delete(&mut seq, middle_audio);
+        assert_eq!(spans(&seq, 0), vec![(tc(0), tc(24)), (tc(24), tc(48))]);
+        assert_eq!(spans(&seq, 1), spans(&seq, 0));
     }
 
     #[test]
