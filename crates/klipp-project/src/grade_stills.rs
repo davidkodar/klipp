@@ -30,6 +30,33 @@ fn stills_dir(project_dir: &Path) -> PathBuf {
     project_dir.join("media").join("stills")
 }
 
+/// Where freeze frames and extracted stills go while there is no project
+/// folder to write them into — a project never saved, or one open
+/// read-only, whose folder belongs to someone else.
+pub fn temp_still_roots() -> [PathBuf; 2] {
+    let tmp = std::env::temp_dir();
+    [tmp.join("klipp_freeze"), tmp.join("klipp_extracts")]
+}
+
+/// Whether `file` is a still written under [`temp_still_roots`].
+pub fn is_temp_still(file: &Path) -> bool {
+    temp_still_roots().iter().any(|root| file.starts_with(root))
+}
+
+/// Copy a still from a temporary folder into `project_dir`'s stills, and
+/// return where it now is. A file of that name already there is kept, not
+/// overwritten: it is the same still from an earlier save.
+pub fn adopt_still(project_dir: &Path, file: &Path) -> std::io::Result<PathBuf> {
+    let dir = stills_dir(project_dir);
+    std::fs::create_dir_all(&dir)?;
+    let name = file.file_name().ok_or_else(|| std::io::Error::other("a still with no file name"))?;
+    let dest = dir.join(name);
+    if !dest.exists() {
+        std::fs::copy(file, &dest)?;
+    }
+    Ok(dest)
+}
+
 fn stills_index_path(project_dir: &Path) -> PathBuf {
     project_dir.join("media").join("stills.json")
 }
@@ -194,4 +221,26 @@ pub fn save_freeze_frame_png(
         .map_err(|e| format!("Failed to write freeze frame: {e}"))?;
     info!("Saved freeze frame to {:?}", png_path);
     Ok(png_path)
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::*;
+
+    #[test]
+    fn a_temporary_still_is_copied_into_the_project_it_is_saved_with() {
+        let root = &temp_still_roots()[0];
+        let src_dir = root.join(format!("adopt-{}", std::process::id())).join("media").join("stills");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("freeze_1.png");
+        std::fs::write(&src, b"png").unwrap();
+        assert!(is_temp_still(&src));
+        let project = std::env::temp_dir().join(format!("klipp-adopt-project-{}", std::process::id()));
+        let dest = adopt_still(&project, &src).unwrap();
+        assert_eq!(dest, project.join("media/stills/freeze_1.png"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"png");
+        assert!(!is_temp_still(&dest));
+        std::fs::remove_dir_all(&project).ok();
+        std::fs::remove_dir_all(root.join(format!("adopt-{}", std::process::id()))).ok();
+    }
 }
