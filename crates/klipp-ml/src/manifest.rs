@@ -278,6 +278,27 @@ pub enum ManifestError {
     Io(#[from] std::io::Error),
 }
 
+/// True the first time `id` is seen in this process.
+fn first_notice(id: &ModelId) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<ModelId>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+        .lock()
+        .map(|mut seen| seen.insert(id.clone()))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn a_model_is_noticed_once() {
+        let id: ModelId = "notice_test_model".to_string();
+        assert!(first_notice(&id));
+        assert!(!first_notice(&id));
+    }
+}
+
 impl ModelManifest {
     /// Parse a manifest from a TOML string. Validates schema version
     /// and per-entry invariants (non-empty id, https-only sources,
@@ -347,12 +368,18 @@ impl ModelManifest {
                     entry.id,
                 )));
             }
-            if entry.runtime.requires_unsafe_ffi() {
+            if entry.runtime.requires_unsafe_ffi() && first_notice(&entry.id) {
                 // Informational only at this layer. Later phases gate
                 // FFI runtimes behind a Cargo feature; this log lets
                 // the user / CI see that the manifest assumes the
                 // opt-in build before the build itself fails.
-                tracing::warn!(
+                //
+                // Once per model per process, at debug: this layer
+                // cannot tell whether the runtime was built in, and the
+                // manifest is validated on every load, which every
+                // analyser does for every file, so a warning here put
+                // a dozen lines in the log per imported clip.
+                tracing::debug!(
                     model_id = %entry.id,
                     runtime = ?entry.runtime,
                     "model entry requires an unsafe-FFI runtime; ensure the corresponding backend feature is enabled at build time"
