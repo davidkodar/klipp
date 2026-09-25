@@ -6864,7 +6864,7 @@ impl KlippApp {
         // 2. Work out the sidecar directory (saved project or temp fallback).
         let stills_root: std::path::PathBuf = match self.writable_project_dir() {
             Some(dir) => dir,
-            None => std::env::temp_dir().join("klipp_freeze"),
+            None => klipp_project::temp_still_roots()[0].clone(),
         };
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -8733,7 +8733,7 @@ impl KlippApp {
                     // project. save_freeze_frame_png appends media/stills/.
                     let stills_root: std::path::PathBuf = match self.writable_project_dir() {
                         Some(dir) => dir,
-                        None => std::env::temp_dir().join("klipp_extracts"),
+                        None => klipp_project::temp_still_roots()[1].clone(),
                     };
 
                     // Timecode-based filename + nanos suffix for uniqueness
@@ -24125,6 +24125,29 @@ impl KlippApp {
         }
     }
 
+    /// Copy every still under the temporary still folders into
+    /// `project_dir` and point its media item there.
+    fn adopt_temp_stills(&mut self, project_dir: &std::path::Path) {
+        let temp: Vec<(klipp_core::MediaId, PathBuf)> = self
+            .state
+            .media_pool
+            .all()
+            .filter(|m| klipp_project::is_temp_still(&m.path))
+            .map(|m| (m.id, m.path.clone()))
+            .collect();
+        for (id, from) in temp {
+            match klipp_project::adopt_still(project_dir, &from) {
+                Ok(to) => {
+                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        item.path = to;
+                    }
+                }
+                Err(e) => tracing::warn!("could not bring {} into the project: {e}", from.display()),
+            }
+        }
+        self.sync_media_pool_to_engine();
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
         if !self.may_write_project(path) {
             // The control socket waits on a project event for every save.
@@ -24140,6 +24163,14 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
         };
+        // Saved somewhere new (Save As, or a first save): stills made
+        // while there was no folder of our own to write to — a project
+        // never saved, or one open read-only — come along, or the new
+        // project would point into the temp folder.
+        let new_home = self.state.project_path.as_deref() != Some(path);
+        if new_home {
+            self.adopt_temp_stills(path);
+        }
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
@@ -24151,6 +24182,11 @@ impl KlippApp {
                     self.lock_seen_path = None;
                 }
                 self.state.project_path = Some(path.to_path_buf());
+                // Grade stills kept only in memory (no folder, or a
+                // read-only one) are written with the project's new home.
+                if new_home {
+                    self.persist_grade_stills();
+                }
                 self.state.dirty = false;
                 self.state.reset_ops_since_save();
                 tracing::info!("Project saved to {:?}", path);
