@@ -21,6 +21,7 @@ pub struct Denoiser {
     inverse: std::sync::Arc<dyn realfft::ComplexToReal<f32>>,
     spectrum: Vec<Complex32>,
     input: Vec<f32>,
+    mono_scratch: Vec<f32>,
 }
 
 static PARAM_DESCS: &[AudioParamDescriptor] = &[
@@ -46,6 +47,7 @@ impl Denoiser {
             learn_requested: false,
             spectrum: fft.make_output_vec(),
             input: vec![0.0; FFT_SIZE],
+            mono_scratch: Vec::new(),
             fft,
             inverse,
         }
@@ -53,13 +55,14 @@ impl Denoiser {
 
     fn learn_limit(&self) -> usize { (self.profile_seconds * self.sample_rate) as usize }
 
-    fn process_mono(&mut self, samples: &mut [f32], ctx: &AudioProcessContext) {
-        for block in samples.chunks_mut(FFT_SIZE) {
+    fn process_mono(&mut self, frames: usize, ctx: &AudioProcessContext) {
+        let learn_limit = self.learn_limit();
+        for block in self.mono_scratch[..frames].chunks_mut(FFT_SIZE) {
             self.input.fill(0.0);
             self.input[..block.len()].copy_from_slice(block);
             if self.fft.process(&mut self.input, &mut self.spectrum).is_err() { continue; }
             let frames = block.len();
-            let learning = self.learn_requested || self.learned_frames < self.learn_limit();
+            let learning = self.learn_requested || self.learned_frames < learn_limit;
             for (bin, value) in self.spectrum.iter_mut().enumerate() {
                 let magnitude = value.norm();
                 if learning {
@@ -79,7 +82,7 @@ impl Denoiser {
             self.learned_frames = self.learned_frames.saturating_add(frames);
             if learning {
                 self.profile_blocks = self.profile_blocks.saturating_add(1);
-                if self.learned_frames >= self.learn_limit() { self.learn_requested = false; }
+                if self.learned_frames >= learn_limit { self.learn_requested = false; }
             }
         }
         let _ = ctx;
@@ -106,9 +109,11 @@ impl AudioEffect for Denoiser {
         let channels = ctx.channels as usize;
         if channels == 0 { return; }
         for ch in 0..channels.min(2) {
-            let mut mono: Vec<f32> = buffer.iter().skip(ch).step_by(channels).copied().collect();
-            self.process_mono(&mut mono, ctx);
-            for (i, sample) in mono.into_iter().enumerate() { buffer[i * channels + ch] = sample; }
+            let frames = buffer.len() / channels;
+            self.mono_scratch.resize(frames, 0.0);
+            for i in 0..frames { self.mono_scratch[i] = buffer[i * channels + ch]; }
+            self.process_mono(frames, ctx);
+            for i in 0..frames { buffer[i * channels + ch] = self.mono_scratch[i]; }
         }
     }
     fn reset(&mut self) { self.profile.fill(0.0); self.learned_frames = 0; self.profile_blocks = 0; self.learn_requested = false; }
