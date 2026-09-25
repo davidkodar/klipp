@@ -2334,6 +2334,18 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
                     "cut around it, or take its speed change off first",
                 ));
             }
+            // A pair is cut together or not at all: splitting one half
+            // while the other stays put slips picture from sound.
+            if let Some((pti, _, p)) = c.linked_clip_id.and_then(|l| find_clip(seq, l)) {
+                if seq.tracks[pti].locked {
+                    let (mine, theirs) = (&seq.tracks[ti].name, &seq.tracks[pti].name);
+                    return Err(refuse(
+                        i,
+                        format!("{} is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p)),
+                        format!("unlock {theirs} or lock {mine} too"),
+                    ));
+                }
+            }
         }
     }
 
@@ -2350,6 +2362,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // Split at each edge. Halves of a linked pair split at the same edge
     // are linked to each other, as one split in the app links them.
     let mut split = 0;
+    let mut new_halves: std::collections::HashSet<ClipId> = std::collections::HashSet::new();
     for cut in [from, to] {
         let mut blades = Vec::new();
         for &ti in &open {
@@ -2370,6 +2383,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
         for (track_index, position, original_clip, clip_a, clip_b) in blades {
             split += 1;
+            new_halves.extend([clip_a.id, clip_b.id]);
             push(&mut sims, EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position });
         }
     }
@@ -2412,8 +2426,34 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
     }
 
-    if edits.is_empty() {
+    if split == 0 && removed == 0 && moved.is_empty() {
         return Err(refuse(i, format!("nothing on the unlocked tracks lies between {:.2} s and {:.2} s", secs(from), secs(to)), "check the range, or unlock the tracks"));
+    }
+
+    // Mend the links. A clip whose partner was taken out has none now,
+    // unless a half of that partner still points back at it from the
+    // same stretch of time. A half inherited its original's partner,
+    // which is its partner only while the two still lie together: the
+    // far half of an L-cut's sound, cut loose from its picture, is not
+    // linked to the picture that now sits over it.
+    let overlaps = |a: &Clip, b: &Clip| a.timeline_in < b.timeline_out && a.timeline_out > b.timeline_in;
+    let now = sims[0].clone();
+    let mut relinked = Vec::new();
+    for c in now.tracks.iter().flat_map(|t| t.clips.iter()) {
+        let Some(l) = c.linked_clip_id else { continue };
+        let want = match find_clip(&now, l) {
+            None => now.tracks.iter().flat_map(|t| t.clips.iter()).find(|p| p.linked_clip_id == Some(c.id) && overlaps(p, c)).map(|p| p.id),
+            Some((_, _, p)) if new_halves.contains(&c.id) || new_halves.contains(&l) => overlaps(p, c).then_some(l),
+            Some(_) => continue,
+        };
+        if want != c.linked_clip_id {
+            let mut new = c.clone();
+            new.linked_clip_id = want;
+            relinked.push(EditCommand::ReplaceClip { description: "Relink", old: Box::new(c.clone()), new: Box::new(new) });
+        }
+    }
+    for edit in relinked {
+        push(&mut sims, edit);
     }
     let what = format!(
         "cut {:.2}-{:.2} s ({:.2} s) from {} tracks: {split} clips split, {removed} taken out, {} moved up",
@@ -5933,10 +5973,78 @@ mod tests {
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
     }
 
+    /// An L-cut: the sound of the first shot runs on under the second.
+    /// V 0-10 s over A 0-11 s, V2 10-20 s over A2 11-20 s, each pair linked.
+    fn lcut_fixture() -> (Sequence, MediaPool, [ClipId; 4]) {
+        let (mut seq, pool, media_id, _, _) = fixture();
+        let mut v = Clip::media(media_id, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let mut a = Clip::media(media_id, tc(0.0), tc(11.0), tc(0.0), tc(11.0));
+        let mut v2 = Clip::media(media_id, tc(10.0), tc(20.0), tc(0.0), tc(10.0));
+        let mut a2 = Clip::media(media_id, tc(11.0), tc(20.0), tc(1.0), tc(10.0));
+        let ids = [v.id, a.id, v2.id, a2.id];
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        v2.linked_clip_id = Some(a2.id);
+        a2.linked_clip_id = Some(v2.id);
+        seq.tracks[0].clips = vec![v, v2];
+        seq.tracks[1].clips = vec![a, a2];
+        (seq, pool, ids)
+    }
+
+    fn spans_and_links(track: &Track) -> Vec<(Timecode, Timecode, Option<ClipId>)> {
+        track.clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.linked_clip_id)).collect()
+    }
+
+    #[test]
+    fn a_cut_is_refused_when_a_pair_s_other_half_is_on_a_locked_track() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[1].locked = true;
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap_err();
+        assert!(err.why.contains("A1, which is locked"), "{}", err.why);
+        assert_eq!(err.hint, "unlock A1 or lock V1 too");
+        // Locked both: nothing to cut, and no slip.
+        seq.tracks[0].locked = true;
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap_err();
+        assert!(err.why.contains("nothing on the unlocked tracks"), "{}", err.why);
+    }
+
+    #[test]
+    fn a_cut_through_an_l_cut_leaves_every_link_pointing_at_a_clip_it_lies_over() {
+        let (seq, pool, [v, a, v2, a2]) = lcut_fixture();
+        // 9.5-10.5: the tail of V, the head of V2, and the sound under both.
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(9.5), to: Anchor::Secs(10.5) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let (pic, snd) = (&seqs[0].tracks[0].clips, &seqs[0].tracks[1].clips);
+        assert_eq!(spans_and_links(&seqs[0].tracks[0]), vec![(tc(0.0), tc(9.5), Some(snd[0].id)), (tc(9.5), tc(19.0), Some(snd[2].id))]);
+        assert_eq!(
+            spans_and_links(&seqs[0].tracks[1]),
+            vec![
+                (tc(0.0), tc(9.5), Some(pic[0].id)),
+                // The half second of A's sound left under V2's picture:
+                // its picture is gone, and V2 is not its partner.
+                (tc(9.5), tc(10.0), None),
+                // A2 still lies under V2's remainder, so they stay a pair.
+                (tc(10.0), tc(19.0), Some(pic[1].id)),
+            ]
+        );
+        // Undo gives back the four clips and their pairs.
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(spans_and_links(&seqs[0].tracks[0]), vec![(tc(0.0), tc(10.0), Some(a)), (tc(10.0), tc(20.0), Some(a2))]);
+        assert_eq!(spans_and_links(&seqs[0].tracks[1]), vec![(tc(0.0), tc(11.0), Some(v)), (tc(11.0), tc(20.0), Some(v2))]);
+    }
+
     #[test]
     fn a_cut_leaves_a_locked_track_alone_and_refuses_through_a_retime() {
         let (mut seq, pool, _, _, _) = fixture();
         seq.tracks[1].locked = true;
+        // Sound of its own, not the picture's: a linked pair with a half
+        // on a locked track is refused instead.
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.linked_clip_id = None;
+        }
         let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
