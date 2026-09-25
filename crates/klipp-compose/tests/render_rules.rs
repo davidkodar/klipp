@@ -1259,6 +1259,9 @@ fn a_camera_over_the_sequence_moves_every_layer_at_once() {
     place(&mut right, (W as f32) * 0.25);
 
     let mut seq = sequence(vec![vec![left.clone()], vec![right.clone()]]);
+    // Positions here are written in the rendered buffer's pixels, so the
+    // sequence is the size rendered: a position scales with render/sequence.
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
     let mut src = Flat::default().linear(&left, [1.0, 0.0, 0.0]).linear(&right, [0.0, 1.0, 0.0]);
 
     // As composed, red is left of the middle and green right of it.
@@ -1295,6 +1298,9 @@ fn layers_at_different_depths_move_by_different_amounts_under_one_camera() {
     // Below the other two, so neither covers it.
     klipp_core::keyframe::upsert_keyframe(&mut far.transform_pos_y_keyframes, 0.0, 5.0);
     let mut seq = sequence(vec![vec![plane.clone()], vec![glass.clone()], vec![far.clone()]]);
+    // Positions here are written in the rendered buffer's pixels, so the
+    // sequence is the size rendered: a position scales with render/sequence.
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
     // Looking a quarter of the frame left: the plane moves 8 px right.
     klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.25);
     let mut src = Flat::default()
@@ -1428,6 +1434,9 @@ fn a_linked_clip_is_smeared_by_what_carries_it() {
             klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, 48.0);
         }
         let mut seq = sequence(vec![vec![card], vec![parent]]);
+        // Positions here are written in the rendered buffer's pixels, so the
+        // sequence is the size rendered: a position scales with render/sequence.
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
         seq.camera.shutter_deg = 360.0;
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(false);
@@ -1461,6 +1470,9 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
         klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, -48.0);
         klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 1.0, if moving { 48.0 } else { -48.0 });
         let mut seq = sequence(vec![vec![card]]);
+        // Positions here are written in the rendered buffer's pixels, so the
+        // sequence is the size rendered: a position scales with render/sequence.
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
         seq.camera.shutter_deg = shutter;
         [false, true].map(|gpu| {
             let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
@@ -1484,6 +1496,9 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
     let mut card = media(0.0, 1.0);
     klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
     let mut seq = sequence(vec![vec![card]]);
+    // Positions here are written in the rendered buffer's pixels, so the
+    // sequence is the size rendered: a position scales with render/sequence.
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
     seq.camera.shutter_deg = 360.0;
     klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.1);
     klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 1.0, 0.9);
@@ -1493,4 +1508,83 @@ fn a_moving_card_is_smeared_along_its_path_while_the_shutter_is_open() {
         let img = r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default());
         assert!(soft(&img) >= 6, "carried by the camera, smeared: {}", soft(&img));
     }
+}
+
+/// Media clips return a flat colour at whatever size is asked for, for
+/// the tests that render one sequence at two sizes — or, with `split`,
+/// the colour on the left half only, which gives a blur an edge to act on.
+#[derive(Default)]
+struct AnySize(HashMap<ClipId, [f32; 3]>, bool);
+
+impl FrameSource for AnySize {
+    fn frame(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let rgb = self.0.get(&clip.id)?;
+        let split = self.1;
+        let pixels: Vec<f32> = (0..width * height)
+            .flat_map(|i| if split && i % width >= width / 2 { [0.0, 0.0, 0.0, 1.0] } else { [rgb[0], rgb[1], rgb[2], 1.0] })
+            .collect();
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width, height, pts: None })
+    }
+}
+
+/// A clip's position is written in the sequence's pixels and lands at the
+/// same place in the picture whatever size is rendered: a half-size
+/// preview, or the 1080p frame the decoder makes of 4K media. It used to
+/// be taken as pixels of the buffer, so at half size a clip moved a
+/// quarter of the way right landed at the edge.
+#[test]
+fn a_moved_clip_lands_at_the_same_place_at_half_the_sequence_size() {
+    let mut card = media(0.0, 1.0);
+    klipp_core::keyframe::upsert_keyframe(&mut card.transform_scale_keyframes, 0.0, 0.25);
+    // A quarter of the frame right, in the pixels of a 64×36 sequence.
+    klipp_core::keyframe::upsert_keyframe(&mut card.transform_pos_x_keyframes, 0.0, 16.0);
+    let mut seq = sequence(vec![vec![card.clone()]]);
+    seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
+    let mut src = AnySize([(card.id, [1.0, 0.0, 0.0])].into_iter().collect(), false);
+
+    // Half size: the card's centre three quarters across, 24 of 32.
+    for img in [false, true].map(|gpu| {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default())
+    }) {
+        assert!(px(&img, 24, 9)[0] > 0.5, "the card sits three quarters across: {:?}", px(&img, 24, 9));
+        assert!(px(&img, 16, 9)[0] < 0.5, "and not in the middle: {:?}", px(&img, 16, 9));
+        assert!(px(&img, 31, 9)[0] < 0.5, "nor at the edge: {:?}", px(&img, 31, 9));
+    }
+    // The full size agrees: 48 of 64.
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let full = r.render(&seq, tc(0.5), 2 * W, 2 * H, &mut src, RenderOptions::default());
+        let at = |x: u32, y: u32| full[((y * 2 * W + x) * 4) as usize];
+        assert!(at(48, 18) > 0.5 && at(32, 18) < 0.5, "full size places it three quarters across too (gpu {gpu})");
+    }
+}
+
+/// A blur radius is in the sequence's pixels too: half the render, half
+/// the pixels, so a preview blurs the picture as much as the export.
+#[test]
+fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
+    let mut card = media(0.0, 1.0);
+    card.builtin_effects.push(BuiltinEffect::GaussianBlur { radius: 8.0 });
+    card.builtin_effects_enabled.push(true);
+    let mut seq = sequence(vec![vec![card.clone()]]);
+    seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
+    // Red on the left half of the picture, black on the right: one edge.
+    let mut src = AnySize([(card.id, [1.0, 0.0, 0.0])].into_iter().collect(), true);
+    let edge_at = |img: &[f32], w: u32, h: u32| -> Vec<f32> {
+        (0..w).map(|x| img[(((h / 2) * w + x) * 4) as usize]).collect()
+    };
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let full = edge_at(&r.render(&seq, tc(0.5), 2 * W, 2 * H, &mut src, RenderOptions::default()), 2 * W, 2 * H);
+    let half = edge_at(&r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()), W, H);
+    // How many samples across the row are part way between the card and
+    // the background: the blur's ramp. At half size it must be half as
+    // many samples wide; an unscaled radius makes it as wide as at full.
+    let ramp = |row: &[f32]| row.iter().filter(|v| **v > 0.05 && **v < 0.9).count() as f32;
+    let (h, f) = (ramp(&half), ramp(&full));
+    assert!(f >= 8.0, "the full-size blur is wide enough to measure: {full:?}");
+    assert!((h - f / 2.0).abs() <= 1.5, "half-size ramp {h} samples, full {f}\nhalf {half:?}\nfull {full:?}");
 }

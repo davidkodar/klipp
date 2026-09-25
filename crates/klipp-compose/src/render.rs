@@ -448,6 +448,9 @@ pub struct Renderer {
     /// This frame's motion blur: for each clip that moves while the
     /// sequence camera's shutter is open, its transform and clip time at
     /// each sample across the shutter. Filled with the transforms.
+    /// Render pixels per sequence pixel for the frame being rendered, for
+    /// the effect parameters measured in pixels. Set with the transforms.
+    px_scale: f32,
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
@@ -532,6 +535,7 @@ impl Renderer {
             warm_rx: None,
             glyph_cache: HashMap::new(),
             shutter: HashMap::new(),
+            px_scale: 1.0,
             working: WorkingColorspace::default(),
             last_gpu_stack_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
@@ -911,6 +915,8 @@ impl Renderer {
             clip, seq, time, fps, &mut transforms, &mut self.glyph_cache, &mut self.titles,
             seq.resolution.width, seq.resolution.height,
         );
+        let resolved = to_render_pixels(resolved, render_scale(seq, width, height));
+        self.px_scale = render_scale(seq, width, height).1;
         let resolved = match eval::camera_at(seq, time).and_then(|cam| eval::camera_at_depth(cam, clip.depth)) {
             Some(cam) => eval::apply_camera(resolved, cam, width, height),
             None => resolved,
@@ -1196,6 +1202,8 @@ impl Renderer {
                 );
             }
         }
+        in_render_pixels(seq, width, height, &mut transforms);
+        self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
         self.open_shutter(seq, time, fps, width, height, &transforms);
 
@@ -1282,14 +1290,15 @@ impl Renderer {
                 }
                 let s = st.matte_stencil.as_ref().unwrap();
                 let source = slot_of_clip.get(&st.id).copied();
-                if !self.stack_apply_matte(*slot, source, matte_channel_index(s.channel), s.invert, s.feather_px, s.choke_px) {
+                if !self.stack_apply_matte(*slot, source, matte_channel_index(s.channel), s.invert, s.feather_px * self.px_scale, s.choke_px * self.px_scale) {
                     return self.gpu_stack_declines("a stencil pass failed");
                 }
             }
             if let Some(b) = &c.matte_source {
                 let ct = eval_clip_time(c, time);
-                let feather = klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, ct, b.feather_px);
-                let choke = klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, ct, b.choke_px);
+                // In the rendered buffer's pixels, like every other size.
+                let feather = klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, ct, b.feather_px) * self.px_scale;
+                let choke = klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, ct, b.choke_px) * self.px_scale;
                 let source = slot_of_clip.get(&b.source_clip_id).copied();
                 if !self.stack_apply_matte(*slot, source, matte_channel_index(b.channel), b.invert, feather, choke) {
                     return self.gpu_stack_declines("a matte pass failed");
@@ -1397,6 +1406,7 @@ impl Renderer {
     ) -> Result<Option<Placed>, &'static str> {
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
         self.authored_colours(&mut fx);
+        self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
         let fx_on_gpu = fx.is_empty() || (klipp_effects::chain_supports_gpu(&fx) && !temporal);
         let clip_time = eval_clip_time(c, time);
@@ -1568,6 +1578,7 @@ impl Renderer {
         let clip_time = eval_clip_time(c, time);
         let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
         self.authored_colours(&mut fx);
+        self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
         if !fx.is_empty() && !(klipp_effects::chain_supports_gpu(&fx) && !temporal) {
             return Err("adjustment layer with a CPU-only effect");
@@ -1657,6 +1668,8 @@ impl Renderer {
                 );
             }
         }
+        in_render_pixels(seq, width, height, &mut transforms);
+        self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
         self.open_shutter(seq, time, fps, width, height, &transforms);
 
@@ -1740,8 +1753,8 @@ impl Renderer {
                     source_clip_id: st.id,
                     channel: s.channel,
                     invert: s.invert,
-                    feather_px: s.feather_px,
-                    choke_px: s.choke_px,
+                    feather_px: s.feather_px * self.px_scale,
+                    choke_px: s.choke_px * self.px_scale,
                 };
                 apply_matte(&mut layer.pixels, &rendered, &binding, width, height,
                     klipp_color::linear::luma_coefs(self.working));
@@ -1753,8 +1766,8 @@ impl Renderer {
                         source_clip_id: b.source_clip_id,
                         channel: b.channel,
                         invert: b.invert,
-                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, t, b.feather_px),
-                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px),
+                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, t, b.feather_px) * self.px_scale,
+                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px) * self.px_scale,
                     };
                     if self.inspect.matte_of == Some(c.id) {
                         self.found.matte_mask = matte_mask(&rendered, &binding, width, height,
@@ -1903,6 +1916,7 @@ impl Renderer {
         }
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         self.authored_colours(&mut fx);
+        self.at_render_scale(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
         let provider = if clip.effects.iter().any(|e| e.enabled && is_temporal_plugin(&e.plugin_name)) {
             src.temporal_frames(clip)
@@ -2013,6 +2027,14 @@ impl Renderer {
     /// An effect compares them against the picture it is given, so in
     /// another working space they have to be the same colour expressed
     /// there, or the key misses the green it was pointed at.
+    /// The pixel-sized parameters of `fx` in the pixels of the buffer being
+    /// rendered; see [`BuiltinEffect::at_render_scale`].
+    fn at_render_scale(&self, fx: &mut [BuiltinEffect]) {
+        for e in fx.iter_mut() {
+            *e = std::mem::replace(e, BuiltinEffect::Sharpen { amount: 0.0 }).at_render_scale(self.px_scale);
+        }
+    }
+
     fn authored_colours(&self, fx: &mut [BuiltinEffect]) {
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
             WorkingColorspace::Rec709Linear,
@@ -2405,15 +2427,18 @@ impl Renderer {
                     // the clip smears about half as far as it should.
                     let fine = time.rate.saturating_mul(1000);
                     let at_sample = Timecode::from_secs_f64(time.to_secs_f64() + o, fine);
+                    // In the sequence's pixels, as the frame resolves it,
+                    // then scaled with everything else.
                     let mut cache = HashMap::new();
                     eval::resolve_clip_transform(
                         c, seq, at_sample, fps, &mut cache,
-                        &mut self.glyph_cache, &mut self.titles, width, height,
+                        &mut self.glyph_cache, &mut self.titles, seq.resolution.width, seq.resolution.height,
                     )
                 } else {
                     let ctx = klipp_core::EvalContext { clip_time_secs: t, ..eval::eval_context(c, time, fps) };
                     eval::evaluate_clip_own_transform(c, t, &ctx)
                 };
+                let own = to_render_pixels(own, render_scale(seq, width, height));
                 let xf = match eval::camera_at_secs(seq, time.to_secs_f64() + o).and_then(|k| eval::camera_at_depth(k, c.depth)) {
                     Some(k) => eval::apply_camera(own, k, width, height),
                     None => own,
@@ -2585,7 +2610,8 @@ impl Renderer {
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(below)), clip_time, fps, width, height);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
-        let (fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        self.at_render_scale(&mut fx);
         let mut after = self.effects(&fx, graded, clip_time, width, height);
         if let Some(before) = before {
             for (a, b) in after.iter_mut().zip(&before) {
@@ -2698,6 +2724,41 @@ pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
         clip.speed_integral(elapsed, fps)
     };
     clip.source_in.to_secs_f64() + offset
+}
+
+/// How many render pixels one sequence pixel is, across and down: 1 when
+/// rendering at the sequence's size, ½ for a half-size preview, and
+/// whatever an export at another resolution makes it.
+pub fn render_scale(seq: &Sequence, width: u32, height: u32) -> (f32, f32) {
+    let (sw, sh) = (seq.resolution.width.max(1) as f32, seq.resolution.height.max(1) as f32);
+    (width as f32 / sw, height as f32 / sh)
+}
+
+/// A resolved transform moved from the sequence's pixels, where every
+/// position is written (the inspector, the viewer's handles, the pan and
+/// compose ops all work at the sequence's size), into the pixels of the
+/// buffer being rendered. Scale, rotation and anchor are already
+/// relative — the source is fitted to the buffer first — so only the
+/// offset changes. Without this a clip moved 400 px right in a 4K
+/// sequence landed 400 px right of centre in the 1080p preview the
+/// decoder hands 4K media down to: twice as far across the picture.
+pub fn to_render_pixels(t: ResolvedTransform, (kx, ky): (f32, f32)) -> ResolvedTransform {
+    let (px, py, sx, sy, ro, ax, ay) = t;
+    (px * kx, py * ky, sx, sy, ro, ax, ay)
+}
+
+/// [`to_render_pixels`] over the finished map. Like the camera it runs
+/// once the map is complete: the map is the resolver's cache, and a
+/// linked clip reads its target's entry during the walk, in the
+/// sequence's pixels, so the two scale together here exactly once.
+fn in_render_pixels(seq: &Sequence, width: u32, height: u32, transforms: &mut HashMap<ClipId, ResolvedTransform>) {
+    let k = render_scale(seq, width, height);
+    if k == (1.0, 1.0) {
+        return;
+    }
+    for t in transforms.values_mut() {
+        *t = to_render_pixels(*t, k);
+    }
 }
 
 /// Put every resolved layer behind the sequence's camera, once the map
