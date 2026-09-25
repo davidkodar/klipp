@@ -402,10 +402,7 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add(egui::Button::new("Split at Playhead").shortcut_text(kb.display_for("split_at_playhead"))).clicked() {
-                let ph = state.playhead;
-                for (ti, t) in state.sequence().tracks.iter().enumerate() {
-                    if let Some((_, c)) = t.clip_at_timecode(ph) { cmds.push(AppCommand::BladeClip { track_index: ti, clip_id: c.id, cut_at: ph }); }
-                }
+                cmds.extend(state.split_at_playhead_commands());
                 ui.close_menu();
             }
             if ui.add_enabled(has_clip, egui::Button::new("Close Gap")).clicked() {

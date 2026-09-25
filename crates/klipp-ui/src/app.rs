@@ -6955,6 +6955,14 @@ impl KlippApp {
         let cid = clip_id;
         let cut = cut_at;
 
+        // Blades are queued one per track, so by the time this runs the clip
+        // may already have been cut through its linked partner (it now ends
+        // on the cut, or is gone). Nothing is left to do then.
+        let inside = self.state.sequences[self.state.active_sequence_idx].tracks.get(ti)
+            .and_then(|t| t.find_clip(cid))
+            .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
+        if !inside { return; }
+
         // Find linked partner clip info BEFORE the blade modifies the sequence
         let linked_info = self.state.sequences[self.state.active_sequence_idx].tracks[ti]
             .find_clip(cid)
@@ -6969,10 +6977,11 @@ impl KlippApp {
 
         if self.is_magnetic_track(ti) {
             // Magnetic blade
-            let result = klipp_timeline::magnetic::MagneticEditor::blade(
-                &mut self.state.sequences[self.state.active_sequence_idx], cid, cut);
-            self.state.push_history(EditCommand::Magnetic(result.command));
-            self.state.dirty = true;
+            if let Some(result) = klipp_timeline::magnetic::MagneticEditor::blade(
+                &mut self.state.sequences[self.state.active_sequence_idx], cid, cut) {
+                self.state.push_history(EditCommand::Magnetic(result.command));
+                self.state.dirty = true;
+            }
         } else {
             // Legacy blade (existing code)
             if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
@@ -7004,9 +7013,10 @@ impl KlippApp {
 
             if partner_spans {
                 if partner_is_magnetic {
-                    let result = klipp_timeline::magnetic::MagneticEditor::blade(
-                        &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut);
-                    self.state.push_history(EditCommand::Magnetic(result.command));
+                    if let Some(result) = klipp_timeline::magnetic::MagneticEditor::blade(
+                        &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut) {
+                        self.state.push_history(EditCommand::Magnetic(result.command));
+                    }
                 } else {
                     let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[partner_track_i];
                     let original = track.find_clip(partner_id).cloned();
@@ -24813,16 +24823,7 @@ impl KlippApp {
             }
             // Split at playhead
             if kb.is_action_pressed("split_at_playhead", i) {
-                let ph = self.state.playhead;
-                for (track_index, track) in self.state.sequences[self.state.active_sequence_idx].tracks.iter().enumerate() {
-                    if let Some((_, clip)) = track.clip_at_timecode(ph) {
-                        cmds.push(AppCommand::BladeClip {
-                            track_index,
-                            clip_id: clip.id,
-                            cut_at: ph,
-                        });
-                    }
-                }
+                cmds.extend(self.state.split_at_playhead_commands());
             }
             // Freeze frame at playhead (default 2s duration).
             if kb.is_action_pressed("freeze_frame", i) {

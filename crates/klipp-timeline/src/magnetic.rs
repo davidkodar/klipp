@@ -714,22 +714,22 @@ impl MagneticEditor {
     // ───────────────────────────────────────────────────────────────
     // 8. blade
     // ───────────────────────────────────────────────────────────────
+    /// Returns `None`, changing nothing, when the clip is gone or the cut
+    /// is not strictly inside it. Callers queue blades per track, and a
+    /// clip bladed through its linked partner ends exactly on the cut by
+    /// the time its own blade runs: that is a no-op, not a crash.
     pub fn blade(
         sequence: &mut Sequence,
         clip_id: ClipId,
         at_time: RationalTime,
-    ) -> MagneticResult {
-        let (track_idx, clip_idx) = sequence
-            .find_clip(clip_id)
-            .expect("blade: clip not found");
+    ) -> Option<MagneticResult> {
+        let (track_idx, clip_idx) = sequence.find_clip(clip_id)?;
 
         let original = sequence.tracks[track_idx].clips[clip_idx].clone();
 
-        // Validate cut is inside the clip (at least 1 frame from edges)
-        assert!(
-            at_time > original.timeline_in && at_time < original.timeline_out,
-            "blade: cut point must be inside the clip"
-        );
+        if at_time <= original.timeline_in || at_time >= original.timeline_out {
+            return None;
+        }
 
         let offset = at_time - original.timeline_in;
 
@@ -770,7 +770,7 @@ impl MagneticEditor {
             sequence.assert_primary_gapless();
         }
 
-        MagneticResult {
+        Some(MagneticResult {
             command: MagneticEditCommand::Blade {
                 original_clip: original,
                 left_clip,
@@ -778,7 +778,7 @@ impl MagneticEditor {
                 track_index: track_idx,
                 position: clip_idx,
             },
-        }
+        })
     }
 
     // ───────────────────────────────────────────────────────────────
@@ -2437,7 +2437,7 @@ mod tests {
         let mut seq = make_sequence(&[(0, 48)]);
         let clip_id = seq.tracks[0].clips[0].id;
 
-        MagneticEditor::blade(&mut seq, clip_id, tc(24));
+        MagneticEditor::blade(&mut seq, clip_id, tc(24)).unwrap();
 
         let track = &seq.tracks[0];
         assert_eq!(track.clips.len(), 2);
@@ -2456,6 +2456,18 @@ mod tests {
     }
 
     #[test]
+    fn test_blade_on_edge_or_outside_is_a_noop() {
+        let mut seq = make_sequence(&[(0, 48)]);
+        let clip_id = seq.tracks[0].clips[0].id;
+
+        assert!(MagneticEditor::blade(&mut seq, clip_id, tc(0)).is_none());
+        assert!(MagneticEditor::blade(&mut seq, clip_id, tc(48)).is_none());
+        assert!(MagneticEditor::blade(&mut seq, clip_id, tc(60)).is_none());
+        assert!(MagneticEditor::blade(&mut seq, ClipId::new(), tc(24)).is_none());
+        assert_eq!(seq.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
     fn test_blade_preserves_source_offsets() {
         // Clip with non-zero source_in: timeline [0..48], source [12..60]
         let mut seq = make_sequence(&[]);
@@ -2463,7 +2475,7 @@ mod tests {
         seq.tracks[0].clips.push(clip);
         let clip_id = seq.tracks[0].clips[0].id;
 
-        MagneticEditor::blade(&mut seq, clip_id, tc(24));
+        MagneticEditor::blade(&mut seq, clip_id, tc(24)).unwrap();
 
         let track = &seq.tracks[0];
         // Left: source [12..36]
@@ -2906,7 +2918,7 @@ mod tests {
         let mut seq = make_sequence(&[(0, 48)]);
         let original_id = seq.tracks[0].clips[0].id;
 
-        MagneticEditor::blade(&mut seq, original_id, tc(24));
+        MagneticEditor::blade(&mut seq, original_id, tc(24)).unwrap();
 
         // Left half (index 0) must keep the original id so external
         // anchors pointing at it continue to resolve. Right half gets
@@ -3082,7 +3094,7 @@ mod tests {
         let mut seq = make_sequence(&[(0, 48)]);
         let clip_id = seq.tracks[0].clips[0].id;
 
-        let result = MagneticEditor::blade(&mut seq, clip_id, tc(24));
+        let result = MagneticEditor::blade(&mut seq, clip_id, tc(24)).unwrap();
 
         assert_eq!(seq.tracks[0].clips.len(), 2);
 
