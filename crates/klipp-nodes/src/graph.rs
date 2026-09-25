@@ -953,16 +953,74 @@ impl NodeGraph {
         true
     }
 
-    /// Regenerate all NodeIds and update edge/position references.
-    /// Used when pasting a copied graph onto a different clip.
+    /// Take every Input Transform node out, wiring what fed each one to
+    /// what it fed, so the rest runs unchanged. The Input Transform is
+    /// the clip's input colour space, not part of its grade: a grade
+    /// carried from one clip to another — a still's, a Look — must leave
+    /// it behind, or log footage is linearised twice, or with the other
+    /// camera's curve. A frame left with no members goes with it.
+    pub fn strip_input_transforms(&mut self) {
+        let transforms: Vec<NodeId> =
+            self.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).map(|n| n.id).collect();
+        for it in transforms {
+            let feed = self.edges.iter().find(|e| e.to_node == it && e.to_port == 0).map(|e| (e.from_node, e.from_port));
+            self.edges.retain(|e| e.to_node != it);
+            match feed {
+                Some((from_node, from_port)) => {
+                    for e in self.edges.iter_mut().filter(|e| e.from_node == it) {
+                        e.from_node = from_node;
+                        e.from_port = from_port;
+                    }
+                }
+                None => self.edges.retain(|e| e.from_node != it),
+            }
+            self.nodes.retain(|n| n.id != it);
+            self.node_positions.remove(&it);
+            for frame in &mut self.frames {
+                frame.contained_node_ids.remove(&it);
+            }
+            self.frames.retain(|f| !f.contained_node_ids.is_empty());
+        }
+    }
+
+    /// `other`'s grade in place of this one: `other`'s nodes with fresh
+    /// ids, less any Input Transform of its own, and this graph's Input
+    /// Transform kept, right after Source. The input colour space
+    /// belongs to the clip and stays; the grade is what travels, as a
+    /// still's grade or a Look applied to another shot.
+    pub fn with_grade_of(&self, other: &NodeGraph) -> NodeGraph {
+        let mut new = other.remap_ids();
+        new.strip_input_transforms();
+        let Some(own) = self.nodes.iter().find(|n| n.kind == NodeKind::InputTransform) else { return new };
+        let Some(src) = new.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return new };
+        let mut transform = own.clone();
+        transform.id = NodeId::new_v4();
+        transform.output_link = None;
+        transform.input_links.clear();
+        for e in new.edges.iter_mut().filter(|e| e.from_node == src) {
+            e.from_node = transform.id;
+            e.from_port = 0;
+        }
+        new.edges.push(Edge { from_node: src, from_port: 0, to_node: transform.id, to_port: 0 });
+        if let Some(p) = new.node_positions.get(&src).copied() {
+            new.node_positions.insert(transform.id, NodePos { x: p.x + 110.0, y: p.y });
+        }
+        let at = new.nodes.iter().position(|n| n.id == src).map_or(0, |i| i + 1);
+        new.nodes.insert(at, transform);
+        new
+    }
+
     /// Run `other` after this graph: its nodes, with fresh ids, go
     /// between whatever fed this graph's Output and the Output, wired as
     /// they were between its own Source and Output. This graph's nodes
     /// stay as they are, so a look put on after a clip's balance keeps
-    /// the balance. `false`, and nothing changed, when either graph has
-    /// no Source-to-Output path to splice into.
+    /// the balance. `other`'s Input Transform, if it has one, is left
+    /// behind (see [`Self::strip_input_transforms`]): this graph's own
+    /// already decoded the footage. `false`, and nothing changed, when
+    /// either graph has no Source-to-Output path to splice into.
     pub fn append(&mut self, other: &NodeGraph) -> bool {
-        let other = other.remap_ids();
+        let mut other = other.remap_ids();
+        other.strip_input_transforms();
         let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return false };
         let o_out = other.output_node_id;
         let out = self.output_node_id;
@@ -1001,6 +1059,8 @@ impl NodeGraph {
         true
     }
 
+    /// Regenerate all NodeIds and update edge/position references.
+    /// Used when pasting a copied graph onto a different clip.
     pub fn remap_ids(&self) -> NodeGraph {
         let id_map: HashMap<NodeId, NodeId> = self
             .nodes
@@ -1606,6 +1666,90 @@ mod append_tests {
         let feeding = clip.nodes_feeding_output();
         assert!(correctors.iter().all(|c| feeding.contains(c)), "both reach the Output");
         assert!(clip.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
+    }
+
+    /// An Input Transform decoding `format`, spliced in after Source the
+    /// way a clip gets one when it is added to the timeline.
+    fn with_input_transform(g: &mut NodeGraph, format: klipp_core::LogFormat) -> NodeId {
+        let src = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id).unwrap();
+        let id = NodeId::new_v4();
+        for e in g.edges.iter_mut().filter(|e| e.from_node == src) {
+            e.from_node = id;
+        }
+        g.edges.push(Edge { from_node: src, from_port: 0, to_node: id, to_port: 0 });
+        g.nodes.insert(1, Node {
+            id,
+            kind: NodeKind::InputTransform,
+            label: "Input Transform".into(),
+            enabled: true,
+            params: NodeParams { log_format: Some(format), ..Default::default() },
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        id
+    }
+
+    fn input_formats(g: &NodeGraph) -> Vec<klipp_core::LogFormat> {
+        g.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).filter_map(|n| n.params.log_format).collect()
+    }
+
+    fn chain_kinds(g: &NodeGraph) -> Vec<NodeKind> {
+        let feeding = g.nodes_feeding_output();
+        g.topo_sort()
+            .expect("no cycle")
+            .into_iter()
+            .filter(|id| feeding.contains(id))
+            .filter_map(|id| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind))
+            .collect()
+    }
+
+    /// A still grabbed on a LogC shot, added after a Sony shot's own
+    /// grade: the Sony shot keeps its one Input Transform, the still's
+    /// stays behind, and the look still runs.
+    #[test]
+    fn an_appended_grade_leaves_its_input_transform_behind() {
+        use klipp_core::LogFormat;
+        let mut clip = exposure_graph(0.4);
+        let own = with_input_transform(&mut clip, LogFormat::SLog3);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, LogFormat::LogC3);
+        assert!(clip.append(&look));
+        assert_eq!(input_formats(&clip), vec![LogFormat::SLog3], "the clip's own, and only that");
+        assert!(clip.nodes.iter().any(|n| n.id == own), "the clip's own transform node, untouched");
+        assert_eq!(
+            chain_kinds(&clip),
+            vec![NodeKind::Source, NodeKind::InputTransform, NodeKind::Corrector, NodeKind::Corrector, NodeKind::Output],
+        );
+    }
+
+    /// The same still applied in place of the Sony shot's grade: the
+    /// grade is the still's, the input colour space is still the shot's.
+    #[test]
+    fn a_grade_applied_in_place_keeps_the_clips_input_transform() {
+        use klipp_core::LogFormat;
+        let mut clip = exposure_graph(0.4);
+        with_input_transform(&mut clip, LogFormat::SLog3);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, LogFormat::LogC3);
+        let new = clip.with_grade_of(&look);
+        assert_eq!(input_formats(&new), vec![LogFormat::SLog3]);
+        assert_eq!(chain_kinds(&new), vec![NodeKind::Source, NodeKind::InputTransform, NodeKind::Corrector, NodeKind::Output]);
+        let exposure = new.nodes.iter().find(|n| n.kind == NodeKind::Corrector).and_then(|n| n.params.exposure);
+        assert_eq!(exposure, Some(-0.2), "the still's grade");
+        assert!(new.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
+    }
+
+    /// A Rec.709 shot has no Input Transform, and gets none from the
+    /// LogC still.
+    #[test]
+    fn a_grade_applied_to_a_clip_without_an_input_transform_brings_none() {
+        let clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, klipp_core::LogFormat::LogC3);
+        let new = clip.with_grade_of(&look);
+        assert!(input_formats(&new).is_empty());
+        assert_eq!(chain_kinds(&new), vec![NodeKind::Source, NodeKind::Corrector, NodeKind::Output]);
     }
 
     #[test]

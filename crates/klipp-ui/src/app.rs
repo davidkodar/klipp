@@ -712,7 +712,7 @@ fn grade_from_still_edits(
                 let mut g = c.node_graph.clone();
                 g.append(grade).then_some(g)?
             } else {
-                grade.remap_ids()
+                c.node_graph.with_grade_of(grade)
             };
             Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph })
         })
@@ -16026,15 +16026,16 @@ impl KlippApp {
                     for clip_id in clip_ids {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                             let old_graph = clip.node_graph.clone();
-                            // remap_ids gives the target a fresh set of NodeIds
-                            // so two clips applying the same Look don't collide;
-                            // append remaps as it splices.
+                            // Fresh node ids per clip, so two clips with the
+                            // same Look don't collide, and the clip's own
+                            // Input Transform kept: the Look's, if it has
+                            // one, is the shot it was saved on.
                             if *append {
                                 if !clip.node_graph.append(&look.node_graph) {
                                     continue;
                                 }
                             } else {
-                                clip.node_graph = look.node_graph.remap_ids();
+                                clip.node_graph = clip.node_graph.with_grade_of(&look.node_graph);
                             }
                             applied += 1;
                             history_pushes.push((*clip_id, old_graph, clip.node_graph.clone()));
