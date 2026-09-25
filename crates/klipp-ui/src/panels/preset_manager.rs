@@ -148,30 +148,29 @@ pub fn show_preset_manager_dialog(
                                 state.preset_manager_selected = None;
                             }
                             if ui.button("Export JSON\u{2026}").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_title("Export Preset")
-                                    .add_filter("Klipp preset (JSON)", &["json"])
-                                    .set_file_name(format!("{}.json", sanitize(&preset.name)))
-                                    .save_file()
-                                {
-                                    match serde_json::to_string_pretty(preset) {
-                                        Ok(s) => {
-                                            if let Err(e) = std::fs::write(&path, s) {
-                                                state.toast.show(format!(
-                                                    "Export failed: {e}"
-                                                ));
-                                            } else {
-                                                state.toast.show(format!(
-                                                    "Exported preset to {}",
-                                                    path.display()
-                                                ));
+                                // Serialized now, written once a place is chosen.
+                                match serde_json::to_string_pretty(preset) {
+                                    Ok(json) => {
+                                        let file_name = format!("{}.json", sanitize(&preset.name));
+                                        crate::file_dialog::spawn(move || {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_title("Export Preset")
+                                                .add_filter("Klipp preset (JSON)", &["json"])
+                                                .set_file_name(file_name)
+                                                .save_file()
+                                            {
+                                                crate::file_dialog::notify(match std::fs::write(&path, json) {
+                                                    Ok(()) => format!("Exported preset to {}", path.display()),
+                                                    Err(e) => format!("Export failed: {e}"),
+                                                });
                                             }
-                                        }
-                                        Err(e) => {
-                                            state
-                                                .toast
-                                                .show(format!("Serialize failed: {e}"));
-                                        }
+                                            Vec::new()
+                                        });
+                                    }
+                                    Err(e) => {
+                                        state
+                                            .toast
+                                            .show(format!("Serialize failed: {e}"));
                                     }
                                 }
                             }
@@ -206,31 +205,34 @@ pub fn show_preset_manager_dialog(
 
             // ── Footer: Import + Close ──
             ui.horizontal(|ui| {
+                let picker = egui::Id::new("preset-manager-import");
                 if ui.button("Import JSON\u{2026}").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Import Preset")
-                        .add_filter("Klipp preset (JSON)", &["json"])
-                        .pick_file()
-                    {
-                        match std::fs::read_to_string(&path) {
-                            Ok(s) => match serde_json::from_str::<ExportPreset>(&s) {
-                                Ok(mut p) => {
-                                    // Force a new id + mark as user preset so
-                                    // imports never collide with built-ins or
-                                    // existing custom entries.
-                                    p.id = format!("custom-{}", uuid::Uuid::new_v4());
-                                    p.built_in = false;
-                                    let name = p.name.clone();
-                                    custom_presets.push(p);
-                                    state.toast.show(format!("Imported \"{name}\""));
-                                }
-                                Err(e) => {
-                                    state.toast.show(format!("Import failed: {e}"));
-                                }
-                            },
-                            Err(e) => {
-                                state.toast.show(format!("Read failed: {e}"));
+                    crate::file_dialog::pick_path(picker, || {
+                        rfd::FileDialog::new()
+                            .set_title("Import Preset")
+                            .add_filter("Klipp preset (JSON)", &["json"])
+                            .pick_file()
+                    });
+                }
+                if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                    match std::fs::read_to_string(&path) {
+                        Ok(s) => match serde_json::from_str::<ExportPreset>(&s) {
+                            Ok(mut p) => {
+                                // Force a new id + mark as user preset so
+                                // imports never collide with built-ins or
+                                // existing custom entries.
+                                p.id = format!("custom-{}", uuid::Uuid::new_v4());
+                                p.built_in = false;
+                                let name = p.name.clone();
+                                custom_presets.push(p);
+                                state.toast.show(format!("Imported \"{name}\""));
                             }
+                            Err(e) => {
+                                state.toast.show(format!("Import failed: {e}"));
+                            }
+                        },
+                        Err(e) => {
+                            state.toast.show(format!("Read failed: {e}"));
                         }
                     }
                 }

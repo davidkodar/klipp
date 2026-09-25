@@ -2998,6 +2998,14 @@ fn show_hyperzoom_section(
                                 .and_then(|n| n.to_str())
                                 .map(|s| s.to_string())
                                 .unwrap_or_else(|| "Pick file\u{2026}".to_string());
+                            let picker = egui::Id::new("hyperzoom-whoosh-sample").with(clip_id);
+                            if let Some(crate::file_dialog::Picked::Path(picked)) = crate::file_dialog::take_path(picker) {
+                                let length = crate::hyperzoom::probe_wav_duration_secs(&picked);
+                                crate::hyperzoom::update_whoosh_custom(ui.ctx(), clip_id, |s| {
+                                    s.path = Some(picked);
+                                    s.length_secs = length;
+                                });
+                            }
                             if ui
                                 .button(label)
                                 .on_hover_text(
@@ -3009,17 +3017,12 @@ fn show_hyperzoom_section(
                                 )
                                 .clicked()
                             {
-                                if let Some(picked) = rfd::FileDialog::new()
-                                    .set_title("Pick custom whoosh sample")
-                                    .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
-                                    .pick_file()
-                                {
-                                    let length = crate::hyperzoom::probe_wav_duration_secs(&picked);
-                                    crate::hyperzoom::update_whoosh_custom(ui.ctx(), clip_id, |s| {
-                                        s.path = Some(picked);
-                                        s.length_secs = length;
-                                    });
-                                }
+                                crate::file_dialog::pick_path(picker, || {
+                                    rfd::FileDialog::new()
+                                        .set_title("Pick custom whoosh sample")
+                                        .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
+                                        .pick_file()
+                                });
                             }
                         });
                         // Soft length warning per audit note (v).

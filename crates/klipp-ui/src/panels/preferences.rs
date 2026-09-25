@@ -650,11 +650,15 @@ impl PreferencesPanel {
         });
 
         Self::setting_row(ui, "Default project folder", theme, |ui| {
+            let picker = egui::Id::new("prefs-default-project-dir");
             if ui.button("Browse...").clicked() {
-                if let Some(path) = rfd::FileDialog::new().set_title("Default Project Folder").pick_folder() {
-                    prefs.general.default_project_dir = Some(path);
-                    *dirty = true;
-                }
+                crate::file_dialog::pick_path(picker, || {
+                    rfd::FileDialog::new().set_title("Default Project Folder").pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                prefs.general.default_project_dir = Some(path);
+                *dirty = true;
             }
             let dir_text = prefs.general.default_project_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
@@ -1789,11 +1793,15 @@ impl PreferencesPanel {
                 egui::FontId::proportional(11.0),
                 theme.text_dim,
             );
+            let picker = egui::Id::new("prefs-default-export-dir");
             if btn_resp.clicked() {
-                if let Some(path) = rfd::FileDialog::new().set_title("Default Export Folder").pick_folder() {
-                    prefs.export.default_output_dir = Some(path);
-                    *dirty = true;
-                }
+                crate::file_dialog::pick_path(picker, || {
+                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                prefs.export.default_output_dir = Some(path);
+                *dirty = true;
             }
         }
 
@@ -1952,11 +1960,15 @@ impl PreferencesPanel {
                 egui::FontId::proportional(11.0),
                 theme.text_dim,
             );
+            let picker = egui::Id::new("prefs-proxy-cache-dir");
             if btn_resp.clicked() {
-                if let Some(path) = rfd::FileDialog::new().set_title("Proxy Cache Folder").pick_folder() {
-                    prefs.proxy.proxy_cache_dir = Some(path);
-                    *dirty = true;
-                }
+                crate::file_dialog::pick_path(picker, || {
+                    rfd::FileDialog::new().set_title("Proxy Cache Folder").pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                prefs.proxy.proxy_cache_dir = Some(path);
+                *dirty = true;
             }
         }
 
@@ -2864,10 +2876,15 @@ impl PreferencesPanel {
                 egui::FontId::proportional(11.0),
                 theme.text_dim,
             );
+            let picker = egui::Id::new("prefs-cache-dir").with(label);
             if btn_resp.clicked() {
-                if let Some(p) = rfd::FileDialog::new().set_title(label).pick_folder() {
-                    *path = Some(p); *dirty = true;
-                }
+                let title = label.to_string();
+                crate::file_dialog::pick_path(picker, move || {
+                    rfd::FileDialog::new().set_title(title).pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(p)) = crate::file_dialog::take_path(picker) {
+                *path = Some(p); *dirty = true;
             }
         };
 
@@ -3274,6 +3291,12 @@ impl PreferencesPanel {
             let display = prefs.color.viewer_lut_path.as_ref()
                 .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
                 .unwrap_or_else(|| "None".into());
+            // Collected outside the dropdown: it has closed by the time
+            // the picker answers.
+            let picker = egui::Id::new("prefs-viewer-lut");
+            if let Some(crate::file_dialog::Picked::Path(p)) = crate::file_dialog::take_path(picker) {
+                prefs.color.viewer_lut_path = Some(p); *dirty = true;
+            }
             egui::ComboBox::from_id_salt("viewer_lut")
                 .selected_text(&display)
                 .width(90.0)
@@ -3282,9 +3305,9 @@ impl PreferencesPanel {
                         prefs.color.viewer_lut_path = None; *dirty = true;
                     }
                     if ui.selectable_label(false, "Browse...").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file() {
-                            prefs.color.viewer_lut_path = Some(p); *dirty = true;
-                        }
+                        crate::file_dialog::pick_path(picker, || {
+                            rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file()
+                        });
                     }
                 });
         });

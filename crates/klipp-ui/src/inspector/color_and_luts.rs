@@ -120,21 +120,24 @@ pub fn show_color_and_luts(
             if ui.button(
                 egui::RichText::new("Bake Grade as .cube...").size(11.0)
             ).clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Save baked grade as .cube")
-                    .add_filter("3D LUT (.cube)", &["cube"])
-                    .set_file_name(format!("klipp_grade_{size}.cube"))
-                    .save_file()
-                {
+                crate::file_dialog::spawn(move || {
+                    let Some(path) = rfd::FileDialog::new()
+                        .set_title("Save baked grade as .cube")
+                        .add_filter("3D LUT (.cube)", &["cube"])
+                        .set_file_name(format!("klipp_grade_{size}.cube"))
+                        .save_file()
+                    else {
+                        return Vec::new();
+                    };
                     let output_path = if path.extension().is_some() {
                         path
                     } else {
                         path.with_extension("cube")
                     };
-                    cmds.push(AppCommand::BakeGradeToLut {
+                    vec![AppCommand::BakeGradeToLut {
                         clip_id, output_path, lut_size: size,
-                    });
-                }
+                    }]
+                });
             }
             ui.add_space(2.0);
             ui.label(egui::RichText::new(
@@ -182,25 +185,13 @@ pub fn show_color_and_luts(
             }
             ui.add_space(4.0);
             if ui.button("Load .cube LUT...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Load .cube LUT")
-                    .add_filter("LUT files", &["cube", "3dl", "csp"])
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::LoadGlobalLut { path });
-                }
+                crate::file_dialog::spawn(pick_global_lut);
             }
         } else {
             ui.label("No LUT loaded");
             ui.add_space(4.0);
             if ui.button("Load .cube LUT...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Load .cube LUT")
-                    .add_filter("LUT files", &["cube", "3dl", "csp"])
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::LoadGlobalLut { path });
-                }
+                crate::file_dialog::spawn(pick_global_lut);
             }
         }
 
@@ -428,6 +419,16 @@ pub(crate) fn input_colour_space_combo(
                 }
             }
         });
+}
+
+/// The picker behind both Load LUT buttons. Shaped for `file_dialog::spawn`.
+fn pick_global_lut() -> Vec<AppCommand> {
+    rfd::FileDialog::new()
+        .set_title("Load .cube LUT")
+        .add_filter("LUT files", &["cube", "3dl", "csp"])
+        .pick_file()
+        .map(|path| vec![AppCommand::LoadGlobalLut { path }])
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
