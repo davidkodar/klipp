@@ -157,7 +157,7 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
         (None, None)
     };
     let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace };
-    state.pending_doc_ops.push(("Captions from transcript".to_string(), vec![op]));
+    state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Captions from transcript".to_string(), ops: vec![op], independent: false });
     state.subtitle_editor.captions_form = None;
 }
 

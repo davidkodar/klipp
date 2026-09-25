@@ -1427,6 +1427,35 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
     Ok(Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs })
 }
 
+/// [`resolve_with`] for ops that stand on their own — a sweep of cuts,
+/// each at its own place: an op that is refused is left out and the
+/// rest are resolved as if it had not been asked for, rather than one
+/// refusal failing them all. The plan holds what resolved; the refusals
+/// say which did not, each with the index of its op.
+pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &dyn Transcripts) -> (Plan, Vec<Refusal>) {
+    let mut sims = vec![seq.clone()];
+    let mut sim_pool = pool.clone();
+    let mut sim_fps = seq.fps;
+    let mut steps = Vec::with_capacity(ops.len());
+    let mut refused = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        let sim = &sims[0];
+        let (what, edit, touched) = match resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts) {
+            Ok(resolved) => resolved,
+            Err(r) => {
+                refused.push(r);
+                continue;
+            }
+        };
+        let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
+        view.apply_forward(&edit);
+        let after = after_of(&sims[0], &touched);
+        steps.push(Step { op: op.clone(), what, edit, after });
+    }
+    let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
+    (Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
+}
+
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
         Op::Captions { track, from, to, max_chars, max_lines, replace } => {
@@ -5993,6 +6022,28 @@ mod tests {
 
     fn spans_and_links(track: &Track) -> Vec<(Timecode, Timecode, Option<ClipId>)> {
         track.clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.linked_clip_id)).collect()
+    }
+
+    #[test]
+    fn a_sweep_of_cuts_goes_on_past_one_that_is_refused() {
+        let (mut seq, pool, _, _, b) = fixture();
+        // b is retimed: a cut through it is refused, the other two are made.
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == b || c.linked_clip_id == Some(b)) {
+            c.speed = 2.0;
+        }
+        let ops = [
+            Op::Cut { from: Anchor::Secs(6.0), to: Anchor::Secs(7.0) },
+            Op::Cut { from: Anchor::Secs(2.0), to: Anchor::Secs(3.0) },
+            Op::Cut { from: Anchor::Secs(0.5), to: Anchor::Secs(1.0) },
+        ];
+        let (plan, refused) = resolve_each_with(&seq, &pool, &ops, &NoTranscripts);
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].step, 0);
+        assert!(refused[0].why.contains("retimed"), "{}", refused[0].why);
+        // 1.5 s taken out of 8, give or take the frame a half second snaps to.
+        assert!((plan.duration_secs - 6.5).abs() < 0.05, "{}", plan.duration_secs);
+        assert!(resolve(&seq, &pool, &ops).is_err(), "resolved together, the refusal stands");
     }
 
     #[test]

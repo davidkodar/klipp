@@ -142,6 +142,124 @@ pub fn word_at(words: &[HeardWord], secs: f64) -> Option<usize> {
     after.checked_sub(1)
 }
 
+/// What names a heard word across a change to the timeline: the clip
+/// it is heard from, where it starts within that clip, and its text.
+/// A word keeps its key when its clip is moved; it loses it when the
+/// clip is split, trimmed at the head or transcribed again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordKey {
+    clip_id: klipp_core::ClipId,
+    offset: f64,
+    text: String,
+}
+
+impl WordKey {
+    pub fn of(word: &HeardWord) -> Self {
+        Self { clip_id: word.clip_id, offset: word.start - word.clip_in, text: word.text.clone() }
+    }
+
+    /// The word this names among `words`, if it is still heard.
+    pub fn find(&self, words: &[HeardWord]) -> Option<usize> {
+        words.iter().position(|w| w.clip_id == self.clip_id && w.text == self.text && (w.start - w.clip_in - self.offset).abs() < 0.01)
+    }
+}
+
+/// A cut a sweep proposes: what it takes out, where, and whether it is
+/// ticked for cutting.
+#[derive(Debug, Clone)]
+pub struct Proposal {
+    pub label: String,
+    pub range: (f64, f64),
+    pub ticked: bool,
+    at: ProposalAt,
+}
+
+#[derive(Debug, Clone)]
+enum ProposalAt {
+    /// A filler word.
+    Word(WordKey),
+    /// The pause between two words.
+    Pause(WordKey, WordKey),
+}
+
+/// Every filler, or every long pause, offered as cuts to review and
+/// apply together. Each proposal knows the words it came from, so the
+/// sweep can be fitted again to the words after the timeline changes
+/// under it, instead of vanishing mid-review.
+#[derive(Debug, Clone)]
+pub struct Sweep {
+    pub title: String,
+    pub cuts: Vec<Proposal>,
+    longer_than: f64,
+    keep: f64,
+}
+
+impl Sweep {
+    /// Every filler among `words`.
+    pub fn fillers(words: &[HeardWord]) -> Self {
+        let mut sweep = Self { title: "Fillers".into(), cuts: Vec::new(), longer_than: 0.0, keep: 0.0 };
+        for i in fillers(words) {
+            let at = ProposalAt::Word(WordKey::of(&words[i]));
+            sweep.cuts.push(Proposal { label: String::new(), range: (0.0, 0.0), ticked: true, at });
+        }
+        sweep.refit(words);
+        sweep
+    }
+
+    /// Every pause among `words` longer than `longer_than`, each cut
+    /// down to `keep` seconds.
+    pub fn pauses(words: &[HeardWord], longer_than: f64, keep: f64) -> Self {
+        let mut sweep = Self { title: "Long pauses".into(), cuts: Vec::new(), longer_than, keep };
+        for w in words.windows(2).filter(|w| !long_pauses(w, longer_than, keep).is_empty()) {
+            let at = ProposalAt::Pause(WordKey::of(&w[0]), WordKey::of(&w[1]));
+            sweep.cuts.push(Proposal { label: String::new(), range: (0.0, 0.0), ticked: true, at });
+        }
+        sweep.refit(words);
+        sweep
+    }
+
+    /// Place every proposal again from its words, as `words` now has
+    /// them; one whose words are no longer heard, no longer next to each
+    /// other, or no longer a filler or a long pause, is dropped. Ticks
+    /// are kept. Returns how many were dropped.
+    pub fn refit(&mut self, words: &[HeardWord]) -> usize {
+        let before = self.cuts.len();
+        let (longer_than, keep) = (self.longer_than, self.keep);
+        self.cuts.retain_mut(|cut| {
+            let placed = match &cut.at {
+                ProposalAt::Word(key) => key.find(words).filter(|&i| is_filler(&words[i].text)).map(|i| {
+                    (format!("{}  \u{201C}{}\u{201D}", format_secs(words[i].start), words[i].text), cut_for_words(words, i, i))
+                }),
+                ProposalAt::Pause(a, b) => a.find(words).zip(b.find(words)).filter(|&(i, j)| j == i + 1).and_then(|(i, _)| {
+                    let (a, b) = long_pauses(&words[i..=i + 1], longer_than, keep).pop()?;
+                    Some((format!("{}  {:.1} s pause", format_secs(a), b - a + keep), (a, b)))
+                }),
+            };
+            match placed {
+                Some((label, range)) => {
+                    cut.label = label;
+                    cut.range = range;
+                    true
+                }
+                None => false,
+            }
+        });
+        before - self.cuts.len()
+    }
+
+    /// The ranges ticked for cutting.
+    pub fn ticked(&self) -> Vec<(f64, f64)> {
+        self.cuts.iter().filter(|c| c.ticked).map(|c| c.range).collect()
+    }
+}
+
+/// Timeline seconds as `mm:ss.ss`.
+pub fn format_secs(s: f64) -> String {
+    let s = s.max(0.0);
+    let m = (s / 60.0).floor();
+    format!("{:02}:{:05.2}", m as u64, s - m * 60.0)
+}
+
 /// The cuts for `ranges` as `Op::Cut`s, latest first: each is resolved
 /// on the timeline the ones before it left, and cutting from the end
 /// leaves the earlier times where they were.
@@ -246,6 +364,40 @@ mod tests {
         assert_eq!(word_at(&words, 2.0), Some(2));
         assert_eq!(word_at(&words, 3.5), Some(3), "between words, the last one said");
         assert_eq!(word_at(&words, 0.5), None);
+    }
+
+    #[test]
+    fn a_sweep_follows_its_words_when_the_timeline_moves_and_drops_what_is_gone() {
+        let words = said();
+        let mut fillers = Sweep::fillers(&words);
+        let mut pauses = Sweep::pauses(&words, 1.0, 0.4);
+        assert_eq!(fillers.cuts.len(), 1);
+        assert_eq!(pauses.cuts.len(), 1);
+        fillers.cuts[0].ticked = false;
+        assert!(fillers.ticked().is_empty() && pauses.ticked().len() == 1);
+
+        // The clip moved a second later: every proposal moves with it,
+        // and the tick stays.
+        let moved: Vec<HeardWord> = words
+            .iter()
+            .map(|w| HeardWord { start: w.start + 1.0, end: w.end + 1.0, clip_in: w.clip_in + 1.0, clip_out: w.clip_out + 1.0, ..w.clone() })
+            .collect();
+        assert_eq!(fillers.refit(&moved), 0);
+        assert_eq!(pauses.refit(&moved), 0);
+        let (a, b) = fillers.cuts[0].range;
+        assert!((a - 2.4).abs() < 1e-9 && (b - 2.75).abs() < 1e-9, "{a} {b}");
+        assert!(!fillers.cuts[0].ticked);
+        assert_eq!(pauses.cuts[0].label, "00:04.10  2.1 s pause");
+
+        // The filler cut out, and the pause closed up: both proposals go.
+        let without: Vec<HeardWord> = moved.iter().filter(|w| w.text != "um,").cloned().collect();
+        assert_eq!(fillers.refit(&without), 1);
+        assert!(fillers.cuts.is_empty());
+        let mut closed = moved.clone();
+        closed[4].start = 4.2;
+        closed[4].end = 4.6;
+        assert_eq!(pauses.refit(&closed), 1);
+        assert!(pauses.cuts.is_empty());
     }
 
     #[test]

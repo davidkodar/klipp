@@ -1807,22 +1807,43 @@ impl KlippApp {
     }
 
     /// Resolve and apply the document ops panels asked for, each request
-    /// one undo step. A refusal says why in a toast, and nothing changes.
+    /// one undo step. A refusal says why in a toast; a request of
+    /// independent ops applies the ones that resolve and names the rest.
     fn run_pending_doc_ops(&mut self) {
-        for (label, ops) in std::mem::take(&mut self.state.pending_doc_ops) {
+        use klipp_document::ops::{self, Anchor, Op, Refusal};
+        for crate::state::DocOpsRequest { label, ops, independent } in std::mem::take(&mut self.state.pending_doc_ops) {
             self.transcript_source.sync(self.state.analysis_generation);
             let seq = &self.state.sequences[self.state.active_sequence_idx];
-            match klipp_document::ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source) {
-                Ok(plan) => {
+            let resolved = if independent {
+                Ok(ops::resolve_each_with(seq, &self.state.media_pool, &ops, &self.transcript_source))
+            } else {
+                ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
+            };
+            // A refusal, as the person at the keyboard reads it: where, and why.
+            let said = |r: &Refusal| {
+                let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
+                match ops.get(r.step) {
+                    Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
+                    _ => format!("{}{hint}", r.why),
+                }
+            };
+            match resolved {
+                Ok((plan, refused)) if !plan.steps.is_empty() => {
                     let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                     self.apply_edits_as_one(&edits, &label);
                     let what: Vec<&str> = plan.steps.iter().map(|s| s.what.as_str()).collect();
-                    self.state.toast.show(format!("{label}: {}", what.join("; ")));
+                    let mut toast = format!("{label}: {}", what.join("; "));
+                    if !refused.is_empty() {
+                        let why: Vec<String> = refused.iter().map(said).collect();
+                        toast.push_str(&format!("; {} not done: {}", refused.len(), why.join("; ")));
+                    }
+                    self.state.toast.show(toast);
                 }
-                Err(r) => {
-                    let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
-                    self.state.toast.show(format!("{label}: not done, {}{hint}", r.why));
+                Ok((_, refused)) => {
+                    let why: Vec<String> = refused.iter().map(said).collect();
+                    self.state.toast.show(format!("{label}: not done, {}", why.join("; ")));
                 }
+                Err(r) => self.state.toast.show(format!("{label}: not done, {}", said(&r))),
             }
         }
     }

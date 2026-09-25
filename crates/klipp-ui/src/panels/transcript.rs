@@ -16,9 +16,9 @@
 use klipp_core::AppCommand;
 use klipp_document::ops::HeardWord;
 
-use crate::state::AppState;
+use crate::state::{AppState, DocOpsRequest};
 use crate::theme::KlippTheme;
-use crate::transcript::{self, TranscriptSource};
+use crate::transcript::{self, format_secs, Sweep, TranscriptSource};
 
 #[derive(Default)]
 pub struct TranscriptPanel {
@@ -34,11 +34,6 @@ pub struct TranscriptPanel {
     /// The sweep under review: each proposed cut, and whether it is ticked.
     sweep: Option<Sweep>,
     pause_longer_than: f64,
-}
-
-struct Sweep {
-    title: String,
-    cuts: Vec<(String, (f64, f64), bool)>,
 }
 
 impl TranscriptPanel {
@@ -66,7 +61,10 @@ impl TranscriptPanel {
     }
 
     /// Work the words out again when the timeline or the analyses changed.
-    fn refresh(&mut self, state: &AppState, source: &TranscriptSource) {
+    /// A sweep under review is fitted to the new words rather than
+    /// dropped: a transcription landing, or an agent's edit over the
+    /// socket, should not throw away forty ticks' worth of reviewing.
+    fn refresh(&mut self, state: &mut AppState, source: &TranscriptSource) {
         let key = fingerprint(state);
         if self.made_for == Some(key) {
             return;
@@ -80,7 +78,13 @@ impl TranscriptPanel {
         self.made_for = Some(key);
         // Indices into the old words mean nothing now.
         self.selection = None;
-        self.sweep = None;
+        if let Some(sweep) = &mut self.sweep {
+            let was = sweep.cuts.len();
+            let dropped = sweep.refit(&self.words);
+            if dropped > 0 {
+                state.toast.show(format!("{}: the timeline changed; {dropped} of the {was} cuts no longer apply and were dropped", sweep.title));
+            }
+        }
     }
 
     fn contents(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
@@ -181,23 +185,12 @@ impl TranscriptPanel {
                 self.cut_selection(state);
             }
             if ui.button("Fillers\u{2026}").on_hover_text("Every um and uh, to review and cut together").clicked() {
-                let cuts = transcript::fillers(&self.words)
-                    .into_iter()
-                    .map(|i| {
-                        let range = transcript::cut_for_words(&self.words, i, i);
-                        (format!("{}  \u{201C}{}\u{201D}", format_secs(self.words[i].start), self.words[i].text), range, true)
-                    })
-                    .collect();
-                self.sweep = Some(Sweep { title: "Fillers".into(), cuts });
+                self.sweep = Some(Sweep::fillers(&self.words));
             }
             ui.add(egui::DragValue::new(&mut self.pause_longer_than).range(0.5..=10.0).speed(0.05).suffix(" s"))
                 .on_hover_text("How long a pause has to be to count as long");
             if ui.button("Long Pauses\u{2026}").on_hover_text("Every pause longer than that, cut down to 0.4 s").clicked() {
-                let cuts = transcript::long_pauses(&self.words, self.pause_longer_than, 0.4)
-                    .into_iter()
-                    .map(|(a, b)| (format!("{}  {:.1} s pause", format_secs(a), b - a + 0.4), (a, b), true))
-                    .collect();
-                self.sweep = Some(Sweep { title: "Long pauses".into(), cuts });
+                self.sweep = Some(Sweep::pauses(&self.words, self.pause_longer_than, 0.4));
             }
             ui.checkbox(&mut self.follow, "Follow").on_hover_text("Keep the word being said in view while playing");
             ui.label(egui::RichText::new(format!("{} words", self.words.len())).size(10.0).color(theme.text_dim));
@@ -208,7 +201,7 @@ impl TranscriptPanel {
         let Some((a, b)) = self.selection.map(|(a, b)| (a.min(b), a.max(b))) else { return };
         let range = transcript::cut_for_words(&self.words, a, b);
         let label = if a == b { format!("Cut \u{201C}{}\u{201D}", self.words[a].text) } else { format!("Cut {} words", b - a + 1) };
-        state.pending_doc_ops.push((label, transcript::cut_ops(vec![range])));
+        state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(vec![range]), independent: false });
         self.selection = None;
     }
 }
@@ -223,9 +216,12 @@ fn review_sweep(ui: &mut egui::Ui, sweep: &mut Sweep, state: &mut AppState) -> b
     }
     let mut done = false;
     ui.horizontal(|ui| {
-        let ticked: Vec<(f64, f64)> = sweep.cuts.iter().filter(|c| c.2).map(|c| c.1).collect();
+        let ticked = sweep.ticked();
         if ui.add_enabled(!ticked.is_empty(), egui::Button::new(format!("Cut {} Ticked", ticked.len()))).clicked() {
-            state.pending_doc_ops.push((format!("Cut {} {}", ticked.len(), sweep.title.to_lowercase()), transcript::cut_ops(ticked)));
+            // Each cut stands on its own: one that is refused (through a
+            // retimed clip, say) is reported, and the rest are made.
+            let label = format!("Cut {} {}", ticked.len(), sweep.title.to_lowercase());
+            state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(ticked), independent: true });
             done = true;
         }
         if ui.button("Back").clicked() {
@@ -233,8 +229,8 @@ fn review_sweep(ui: &mut egui::Ui, sweep: &mut Sweep, state: &mut AppState) -> b
         }
     });
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for (label, _, tick) in &mut sweep.cuts {
-            ui.checkbox(tick, label.as_str());
+        for cut in &mut sweep.cuts {
+            ui.checkbox(&mut cut.ticked, cut.label.as_str());
         }
     });
     done
@@ -272,10 +268,4 @@ fn fingerprint(state: &AppState) -> u64 {
         }
     }
     h.finish()
-}
-
-fn format_secs(s: f64) -> String {
-    let s = s.max(0.0);
-    let m = (s / 60.0).floor();
-    format!("{:02}:{:05.2}", m as u64, s - m * 60.0)
 }

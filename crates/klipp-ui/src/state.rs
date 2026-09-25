@@ -1080,6 +1080,18 @@ impl TitlePositionPreset {
     }
 }
 
+/// Document ops a panel asks the app to run as one undo step.
+#[derive(Debug, Clone)]
+pub struct DocOpsRequest {
+    /// What history calls the step.
+    pub label: String,
+    pub ops: Vec<klipp_document::ops::Op>,
+    /// The ops stand on their own — a sweep of cuts, each at its own
+    /// place — so one that is refused is left out and reported while the
+    /// rest are applied. Otherwise one refusal stops the whole request.
+    pub independent: bool,
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -2161,11 +2173,11 @@ pub struct AppState {
     /// and the global Delete shortcut stands aside; both read this same
     /// value in a frame, so the key goes to one of them, never both.
     pub transcript_panel_hovered: bool,
-    /// Document ops a panel asked for (captions, transcript cuts), each
-    /// with its history label: resolved against the timeline and applied
-    /// as one undo step by the app on its next frame, through the same
-    /// resolver the assistant's ops use.
-    pub pending_doc_ops: Vec<(String, Vec<klipp_document::ops::Op>)>,
+    /// Document ops a panel asked for (captions, transcript cuts):
+    /// resolved against the timeline and applied as one undo step by
+    /// the app on its next frame, through the same resolver the
+    /// assistant's ops use.
+    pub pending_doc_ops: Vec<DocOpsRequest>,
     /// Per-session editing state for the subtitle editor panel.
     pub subtitle_editor: SubtitleEditorState,
     /// Live state for a running project-consolidation operation (None = no
