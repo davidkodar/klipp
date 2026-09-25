@@ -504,18 +504,21 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Bake Grade as 3D LUT (.cube)"), shortcut: Cow::Borrowed(""),
-        action: PaletteAction::Custom(|state, cmds| {
+        action: PaletteAction::Custom(|state, _cmds| {
             let Some(clip_id) = state.selected_clip else { return; };
             let size = state.bake_lut_size;
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save baked grade as .cube")
-                .add_filter("3D LUT (.cube)", &["cube"])
-                .set_file_name(format!("klipp_grade_{size}.cube"))
-                .save_file()
-            {
-                let output_path = if path.extension().is_some() { path } else { path.with_extension("cube") };
-                cmds.push(AppCommand::BakeGradeToLut { clip_id, output_path, lut_size: size });
-            }
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title("Save baked grade as .cube")
+                    .add_filter("3D LUT (.cube)", &["cube"])
+                    .set_file_name(format!("klipp_grade_{size}.cube"))
+                    .save_file()
+                    .map(|path| {
+                        let output_path = if path.extension().is_some() { path } else { path.with_extension("cube") };
+                        vec![AppCommand::BakeGradeToLut { clip_id, output_path, lut_size: size }]
+                    })
+                    .unwrap_or_default()
+            });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("Alt+V"),
@@ -1035,10 +1038,16 @@ pub fn pick_media_files() -> Vec<std::path::PathBuf> {
         .unwrap_or_default()
 }
 
+/// [`pick_media_files`], as the import commands for what was picked.
+/// Shaped for `file_dialog::spawn`.
+pub fn import_media_commands() -> Vec<AppCommand> {
+    pick_media_files().into_iter().map(|path| AppCommand::ImportMedia { path }).collect()
+}
+
 /// Resolve a [`DialogKind`] into `AppCommand`s by surfacing the
-/// matching system file picker. Blocks (modal) until the user picks
-/// or cancels — same behaviour as the menu-bar entries that opened
-/// these dialogs before. Empty on cancel; more than one command only
+/// matching system file picker. Blocks until the user picks or
+/// cancels, so callers run it through `file_dialog::spawn`, off the
+/// UI thread. Empty on cancel; more than one command only
 /// for pickers that take several files.
 pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
     let single = match kind {
@@ -1053,7 +1062,7 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
             .save_file()
             .map(|p| AppCommand::SaveProjectAs { path: p }),
         DialogKind::ImportMedia => {
-            return pick_media_files().into_iter().map(|path| AppCommand::ImportMedia { path }).collect();
+            return import_media_commands();
         }
         DialogKind::ImportSubtitles => rfd::FileDialog::new()
             .set_title("Import Subtitles")

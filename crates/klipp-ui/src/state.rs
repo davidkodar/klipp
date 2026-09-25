@@ -1124,6 +1124,10 @@ pub struct AppState {
     // Project
     pub sequences: Vec<Sequence>,
     pub active_sequence_idx: usize,
+    /// Moves every time a project is opened, created or closed. A file
+    /// picker opened under one epoch has its result discarded if it
+    /// closes under another (see `file_dialog`).
+    pub project_epoch: u64,
     /// Breadcrumb stack for navigating into compound clips. Each entry is
     /// (parent_sequence_idx, parent_playhead) so we can navigate back.
     pub compound_clip_stack: Vec<(usize, klipp_core::Timecode)>,
@@ -3483,6 +3487,7 @@ impl Default for AppState {
             workspace_manager_selected: None,
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
+            project_epoch: 0,
             compound_clip_stack: Vec::new(),
             media_pool: MediaPool::new(),
             whoosh_media_ids: std::collections::HashMap::new(),
@@ -4809,6 +4814,7 @@ mod per_sequence_history_tests {
     fn abandon_pending_drag_drops_envelope_without_pushing() {
         let mut state = AppState {
             active_sequence_idx: 0,
+            project_epoch: 0,
             ..Default::default()
         };
         let h = state.active_history_mut();

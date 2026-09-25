@@ -306,9 +306,8 @@ fn render_finding(
 }
 
 /// Translate a typed `FixAction` into one or more `AppCommand`s.
-/// The `RelinkMedia` arm pops a file picker synchronously — Klipp
-/// uses rfd from the UI thread everywhere already, and the Project
-/// Doctor dialog is modal so the brief blocking pick is fine.
+/// The `RelinkMedia` arm opens a file picker off the UI thread (see
+/// `file_dialog`); its relink command arrives on a later frame.
 fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
     match action {
         FixAction::RelinkMedia {
@@ -323,16 +322,15 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "media file".to_string());
-            if let Some(new_path) = rfd::FileDialog::new()
-                .set_title(format!("Relink: {original_name}"))
-                .set_directory(start_dir)
-                .pick_file()
-            {
-                cmds.push(AppCommand::RelinkMedia {
-                    media_id: *media_id,
-                    new_path,
-                });
-            }
+            let media_id = *media_id;
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title(format!("Relink: {original_name}"))
+                    .set_directory(start_dir)
+                    .pick_file()
+                    .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+                    .unwrap_or_default()
+            });
         }
         FixAction::RemoveAudioEffectFromClip {
             clip_id,

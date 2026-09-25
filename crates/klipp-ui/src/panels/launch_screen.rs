@@ -288,12 +288,13 @@ impl LaunchScreen {
             theme.text_primary,
         );
         if open_resp.clicked() {
-            if let Some(p) = rfd::FileDialog::new()
-                .set_title("Open Project")
-                .pick_folder()
-            {
-                cmds.push(AppCommand::OpenProject { path: p });
-            }
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title("Open Project")
+                    .pick_folder()
+                    .map(|p| vec![AppCommand::OpenProject { path: p }])
+                    .unwrap_or_default()
+            });
         }
 
         // No "Import Media" here.

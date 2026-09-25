@@ -22815,6 +22815,7 @@ impl KlippApp {
         let _ = self.cmd_tx.send(AppCommand::ResetEngine);
 
         // 2. Replace project-scoped data
+        self.state.project_epoch += 1;
         self.retire_project_media();
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
@@ -23752,6 +23753,7 @@ impl KlippApp {
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
+                self.state.project_epoch += 1;
                 self.retire_project_media();
                 self.state.media_pool = media_pool;
                 // Reopening a project brings its own media back.
@@ -24249,29 +24251,29 @@ impl KlippApp {
             }
             // Ctrl+Shift+S — Save As
             if kb.is_action_pressed("save_project_as", i) {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Save Project As")
-                    .add_filter("Klipp Project", &["klipp"])
-                    .set_file_name("project.klipp")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::SaveProjectAs { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Save Project As")
+                        .add_filter("Klipp Project", &["klipp"])
+                        .set_file_name("project.klipp")
+                        .save_file()
+                        .map(|path| vec![AppCommand::SaveProjectAs { path }])
+                        .unwrap_or_default()
+                });
             }
             // Ctrl+O — Open Project
             if kb.is_action_pressed("open_project", i) {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Open Project")
-                    .pick_folder()
-                {
-                    cmds.push(AppCommand::OpenProject { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Open Project")
+                        .pick_folder()
+                        .map(|path| vec![AppCommand::OpenProject { path }])
+                        .unwrap_or_default()
+                });
             }
             // Ctrl+I — Import Media
             if kb.is_action_pressed("import_media", i) {
-                for path in crate::command_palette::pick_media_files() {
-                    cmds.push(AppCommand::ImportMedia { path });
-                }
+                crate::file_dialog::spawn(crate::command_palette::import_media_commands);
             }
             // Ctrl+E — Export
             if kb.is_action_pressed("export", i) {
@@ -27597,7 +27599,25 @@ impl eframe::App for KlippApp {
             }
         }
 
-        let mut all_cmds = Vec::new();
+        // Pickers run off the UI thread (see `file_dialog`); what the
+        // ones that closed since the last frame chose starts this
+        // frame's commands. Their scope is the open project and the
+        // active sequence: a pick made for another is dropped.
+        let picker_scope = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.state.project_epoch.hash(&mut h);
+            self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.id.to_string()).hash(&mut h);
+            h.finish()
+        };
+        crate::file_dialog::install(ctx, picker_scope);
+        let picked = crate::file_dialog::take_ready();
+        if picked.stale > 0 {
+            self.state.toast.show("The project or sequence changed while the file dialog was open, so that choice was not applied".to_string());
+        } else if picked.refused > 0 {
+            self.state.toast.show("A file dialog is already open".to_string());
+        }
+        let mut all_cmds = picked.commands;
 
         // 2. Handle global keyboard shortcuts
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SHORTCUTS);
@@ -27898,7 +27918,8 @@ impl eframe::App for KlippApp {
                             f(&mut self.state);
                         }
                         PaletteAction::OpenDialog(kind) => {
-                            all_cmds.extend(dispatch_dialog(*kind));
+                            let kind = *kind;
+                            crate::file_dialog::spawn(move || dispatch_dialog(kind));
                         }
                         PaletteAction::Custom(f) => {
                             f(&mut self.state, &mut all_cmds);
@@ -28045,12 +28066,13 @@ impl eframe::App for KlippApp {
                         // Action buttons
                         ui.horizontal(|ui| {
                             if ui.button("Search Directory...").clicked() {
-                                if let Some(dir) = rfd::FileDialog::new()
-                                    .set_title("Select folder to search for media")
-                                    .pick_folder()
-                                {
-                                    all_cmds.push(AppCommand::RelinkAllFromDirectory { directory: dir });
-                                }
+                                crate::file_dialog::spawn(move || {
+                                    rfd::FileDialog::new()
+                                        .set_title("Select folder to search for media")
+                                        .pick_folder()
+                                        .map(|dir| vec![AppCommand::RelinkAllFromDirectory { directory: dir }])
+                                        .unwrap_or_default()
+                                });
                             }
                             if ui.button("Skip All").clicked() {
                                 self.state.show_relink_dialog = false;
@@ -28081,17 +28103,17 @@ impl eframe::App for KlippApp {
                                             .and_then(|e| e.to_str())
                                             .unwrap_or("")
                                             .to_string();
-                                        let mut dialog = rfd::FileDialog::new()
-                                            .set_title(format!("Locate {}", filename));
-                                        if !ext.is_empty() {
-                                            dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
-                                        }
-                                        if let Some(new_path) = dialog.pick_file() {
-                                            all_cmds.push(AppCommand::RelinkMedia {
-                                                media_id: *id,
-                                                new_path,
-                                            });
-                                        }
+                                        let media_id = *id;
+                                        let title = format!("Locate {}", filename);
+                                        crate::file_dialog::spawn(move || {
+                                            let mut dialog = rfd::FileDialog::new().set_title(title);
+                                            if !ext.is_empty() {
+                                                dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
+                                            }
+                                            dialog.pick_file()
+                                                .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+                                                .unwrap_or_default()
+                                        });
                                     }
                                 });
                             }
