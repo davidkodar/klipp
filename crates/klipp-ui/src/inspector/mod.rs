@@ -4443,22 +4443,28 @@ fn show_title_editor(
         let mut rotation = t.rotation;
         let mut anchor_x = t.anchor_norm.x * 100.0;
         let mut anchor_y = t.anchor_norm.y * 100.0;
-        let mut changed = false;
+        let mut property_changes: Vec<(klipp_core::TitleTransformProperty, f32)> = Vec::new();
+        let mut toggles: Vec<klipp_core::TitleTransformProperty> = Vec::new();
         ui.label(egui::RichText::new("TRANSFORM").size(10.0).color(theme.text_dim));
         ui.horizontal(|ui| {
             ui.label("W");
-            changed |= ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed();
+            if ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Width, w / 100.0)); }
+            if ui.small_button(if t.size_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate width at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Width); }
             ui.label("H");
-            changed |= ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed();
+            if ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Height, h / 100.0)); }
+            if ui.small_button(if t.size_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate height at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Height); }
         });
         ui.horizontal(|ui| {
             ui.label("Rotation");
-            changed |= ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed();
+            if ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Rotation, rotation)); }
+            if ui.small_button(if t.rotation_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate rotation at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Rotation); }
         });
         ui.horizontal(|ui| {
             ui.label("Anchor");
-            changed |= ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed();
-            changed |= ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed();
+            if ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorX, anchor_x / 100.0)); }
+            if ui.small_button(if t.anchor_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorX); }
+            if ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorY, anchor_y / 100.0)); }
+            if ui.small_button(if t.anchor_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorY); }
         });
         ui.horizontal(|ui| {
             if ui.small_button("Center").on_hover_text("Center this layer in the frame").clicked() {
@@ -4476,12 +4482,29 @@ fn show_title_editor(
                 });
             }
         });
-        if changed {
-            cmds.push(AppCommand::SetTitleObjectTransform {
-                clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
-                size_x: w / 100.0, size_y: h / 100.0, rotation,
-                anchor_x: anchor_x / 100.0, anchor_y: anchor_y / 100.0,
-            });
+        for property in toggles {
+            let exists = t.transform_keyframes_ref(property).iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6);
+            if exists {
+                cmds.push(AppCommand::RemoveTitleObjectTransformKeyframe { clip_id, object_id: object.id.0, property, time_secs: clip_time_secs });
+            } else {
+                let value = match property { klipp_core::TitleTransformProperty::Width => w / 100.0, klipp_core::TitleTransformProperty::Height => h / 100.0, klipp_core::TitleTransformProperty::Rotation => rotation, klipp_core::TitleTransformProperty::AnchorX => anchor_x / 100.0, klipp_core::TitleTransformProperty::AnchorY => anchor_y / 100.0 };
+                cmds.push(AppCommand::AddTitleObjectTransformKeyframe { clip_id, object_id: object.id.0, property, time_secs: clip_time_secs, value });
+            }
+        }
+        for (property, value) in property_changes {
+            let has_track = !t.transform_keyframes_ref(property).is_empty();
+            if has_track {
+                cmds.push(AppCommand::AddTitleObjectTransformKeyframe { clip_id, object_id: object.id.0, property, time_secs: clip_time_secs, value });
+            } else {
+                cmds.push(AppCommand::SetTitleObjectTransform {
+                    clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                    size_x: if property == klipp_core::TitleTransformProperty::Width { value } else { t.size.x },
+                    size_y: if property == klipp_core::TitleTransformProperty::Height { value } else { t.size.y },
+                    rotation: if property == klipp_core::TitleTransformProperty::Rotation { value } else { t.rotation },
+                    anchor_x: if property == klipp_core::TitleTransformProperty::AnchorX { value } else { t.anchor_norm.x },
+                    anchor_y: if property == klipp_core::TitleTransformProperty::AnchorY { value } else { t.anchor_norm.y },
+                });
+            }
         }
     }
 

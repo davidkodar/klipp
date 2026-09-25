@@ -16760,7 +16760,10 @@ impl KlippApp {
                                 center_y_keyframes: Vec::new(),
                                 size: klipp_timeline::TitlePosition { x: 0.5, y: 0.3 },
                                 rotation: 0.0,
+                                rotation_keyframes: Vec::new(),
                                 anchor_norm: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                                size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(),
+                                anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
                             };
                             let content = match kind {
                                 1 => klipp_timeline::TitleObjectContent::Shape(
@@ -16815,7 +16818,10 @@ impl KlippApp {
                                 center_y_keyframes: Vec::new(),
                                 size: klipp_timeline::TitlePosition { x: box_w, y: box_h },
                                 rotation: 0.0,
+                                rotation_keyframes: Vec::new(),
                                 anchor_norm: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                                size_x_keyframes: Vec::new(), size_y_keyframes: Vec::new(),
+                                anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
                             };
                             let content = klipp_timeline::TitleObjectContent::Image(klipp_timeline::ImageLayer {
                                 path: path.clone(),
@@ -17354,6 +17360,48 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Remove Position Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::AddTitleObjectTransformKeyframe {
+                clip_id, object_id, property, time_secs, value,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.upsert_transform_keyframe(*property, *time_secs, *value);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Add Transform Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::RemoveTitleObjectTransformKeyframe {
+                clip_id, object_id, property, time_secs,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.remove_transform_keyframe_at(*property, *time_secs);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Remove Transform Keyframe", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -35476,6 +35524,8 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::RemoveTitleObjectOpacityKeyframe { clip_id, .. }
         | C::AddTitleObjectPositionKeyframe { clip_id, .. }
         | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
+        | C::AddTitleObjectTransformKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectTransformKeyframe { clip_id, .. }
         | C::MoveTitleObjectPositionKeyframe { clip_id, .. }
         | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. }
         | C::SetTitleObjectPositionKeyframeTangent { clip_id, .. }

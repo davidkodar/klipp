@@ -3,6 +3,7 @@ use crate::modifier::{Modifier, ParamId};
 use crate::time::{Fps, RationalTime, Timecode};
 use crate::types::Resolution;
 use crate::TemplateValue;
+use crate::keyframe::TitleTransformProperty;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -2501,6 +2502,19 @@ pub enum AppCommand {
         axis: crate::keyframe::TitlePositionAxis,
         time_secs: f64,
         value: f32,
+    },
+    AddTitleObjectTransformKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        property: TitleTransformProperty,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveTitleObjectTransformKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        property: TitleTransformProperty,
+        time_secs: f64,
     },
     RemoveTitleObjectPositionKeyframe {
         clip_id: ClipId,

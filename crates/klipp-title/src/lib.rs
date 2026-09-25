@@ -1738,6 +1738,13 @@ impl TitleRenderer {
             !o.transform.center_x_keyframes.is_empty()
                 || !o.transform.center_y_keyframes.is_empty()
         });
+        let any_transform_keyframes = title.objects.iter().any(|o| {
+            !o.transform.size_x_keyframes.is_empty()
+                || !o.transform.size_y_keyframes.is_empty()
+                || !o.transform.rotation_keyframes.is_empty()
+                || !o.transform.anchor_x_keyframes.is_empty()
+                || !o.transform.anchor_y_keyframes.is_empty()
+        });
 
         // Per-effect keyframes: TextGlow's radius/intensity animate
         // when their respective vecs are non-empty. Same cache-bypass
@@ -1781,6 +1788,7 @@ impl TitleRenderer {
         let any_render_time_override = any_path_motion || any_char_anim || any_dressed_motion
             || any_glitch_active
             || any_position_keyframes
+            || any_transform_keyframes
             || any_glow_keyframes
             || any_shadow_keyframes
             || any_inner_shadow_keyframes
@@ -1968,14 +1976,9 @@ impl TitleRenderer {
             // static `center` for this frame. Empty keyframe vecs
             // short-circuit to the static value via `evaluated_center`,
             // so titles without animation pay nothing extra here.
-            let mut effective_transform = match time_secs {
-                Some(t) => {
-                    let mut t_xform = obj.transform.clone();
-                    t_xform.center = obj.transform.evaluated_center(t as f64);
-                    t_xform
-                }
-                None => obj.transform.clone(),
-            };
+            let mut effective_transform = time_secs
+                .map(|t| obj.transform.evaluated_at(t as f64))
+                .unwrap_or_else(|| obj.transform.clone());
             match &obj.content {
                 TitleObjectContent::TextBox(tb) => {
                     // Synthesise a one-object TitleData carrying just
@@ -5177,9 +5180,14 @@ mod tests {
                 center: TitlePosition { x: 0.5, y: 0.5 },
                 center_x_keyframes: Vec::new(),
                 center_y_keyframes: Vec::new(),
+                size_x_keyframes: Vec::new(),
+                size_y_keyframes: Vec::new(),
                 size: TitlePosition { x: 0.5, y: 0.5 },
                 rotation: 0.0,
+                rotation_keyframes: Vec::new(),
                 anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+                anchor_x_keyframes: Vec::new(),
+                anchor_y_keyframes: Vec::new(),
             },
         );
         // Plain text on top. Use a short string so it doesn't
