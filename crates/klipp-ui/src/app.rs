@@ -23132,7 +23132,7 @@ impl KlippApp {
         self.sync_sequence_to_engine();
         // The socket's clients are told, as for a save or an open: an
         // agent mid-edit found its media gone and nothing said why.
-        self.note_project_event(None);
+        self.note_project_event(ProjectEvent::Replaced, None);
     }
 
     /// Close the current project and return to the Project Manager (launch screen).
@@ -23142,7 +23142,7 @@ impl KlippApp {
         self.reset_project_state();
         self.state.fullscreen_viewer = false;
         self.sync_sequence_to_engine();
-        self.note_project_event(None);
+        self.note_project_event(ProjectEvent::Replaced, None);
     }
 
     /// Wipe all project-scoped state on both the UI and engine sides so the
@@ -24123,8 +24123,11 @@ impl KlippApp {
     /// close the project on the strength of this.
     /// Tell the control socket how a save or an open went: it waits for
     /// the generation to move, and reads the path and the error then.
-    fn note_project_event(&self, error: Option<String>) {
+    fn note_project_event(&self, event: ProjectEvent, error: Option<String>) {
         if let Ok(mut project) = self.state.control_shared.project.lock() {
+            if project_identity_moves(event, project.path.as_deref(), self.state.project_path.as_deref(), error.is_some()) {
+                project.identity += 1;
+            }
             project.path = self.state.project_path.clone();
             project.dirty = self.state.dirty;
             project.generation += 1;
@@ -24345,7 +24348,7 @@ impl KlippApp {
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
         if !self.may_write_project(path) {
             // The control socket waits on a project event for every save.
-            self.note_project_event(Some("not saved: the project is open read-only or locked by someone else".into()));
+            self.note_project_event(ProjectEvent::Saved, Some("not saved: the project is open read-only or locked by someone else".into()));
             return false;
         }
         let color = klipp_project::ColorSettings {
@@ -24384,7 +24387,7 @@ impl KlippApp {
                 self.state.dirty = false;
                 self.state.reset_ops_since_save();
                 tracing::info!("Project saved to {:?}", path);
-                self.note_project_event(None);
+                self.note_project_event(ProjectEvent::Saved, None);
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
                     // The project's own name, from the file on disk —
@@ -24437,7 +24440,7 @@ impl KlippApp {
             }
             Err(e) => {
                 tracing::error!("Failed to save project: {e}");
-                self.note_project_event(Some(format!("could not save: {e}")));
+                self.note_project_event(ProjectEvent::Saved, Some(format!("could not save: {e}")));
                 self.state.toast.show(format!("Could not save the project: {e}"));
                 false
             }
@@ -24793,7 +24796,7 @@ impl KlippApp {
                 }
 
                 tracing::info!("Project loaded from {:?}", path);
-                self.note_project_event(None);
+                self.note_project_event(ProjectEvent::Replaced, None);
 
                 // Show the frame the playhead is on.
                 //
@@ -24823,7 +24826,7 @@ impl KlippApp {
                 tracing::error!("Failed to load project: {e}");
                 // What was decided about its lock was for this open.
                 self.lock_decision = None;
-                self.note_project_event(Some(format!("could not open: {e}")));
+                self.note_project_event(ProjectEvent::Replaced, Some(format!("could not open: {e}")));
             }
         }
     }
@@ -40344,6 +40347,56 @@ mod last_seek_tests {
         let cmds = [AppCommand::Pause, AppCommand::SeekTo(a), AppCommand::Play, AppCommand::SeekTo(b)];
         assert_eq!(last_seek(&cmds), Some(b));
         assert_eq!(last_seek(&[AppCommand::Play]), None);
+    }
+}
+
+/// What happened to the open project, for the control socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectEvent {
+    /// Written to disk: the document is the same one, wherever it went.
+    Saved,
+    /// Replaced in memory: opened, reopened, made new or closed.
+    Replaced,
+}
+
+/// Whether a save or an open made this a different document for a
+/// control client. A save where it already was — Ctrl+S — keeps every
+/// id, and said "the project changed under you" to the next call for
+/// nothing; a save to another path is a different document. Anything
+/// that replaces the document in memory is, even the same file opened
+/// again (Revert to Saved): its timeline is the one on disk. Nothing
+/// moves for a save or an open that failed.
+fn project_identity_moves(event: ProjectEvent, before: Option<&std::path::Path>, after: Option<&std::path::Path>, failed: bool) -> bool {
+    !failed && (event == ProjectEvent::Replaced || before != after)
+}
+
+#[cfg(test)]
+mod project_identity_tests {
+    use super::{project_identity_moves, ProjectEvent::{Replaced, Saved}};
+    use std::path::Path;
+
+    #[test]
+    fn a_save_where_it_already_was_keeps_the_identity() {
+        let p = Path::new("/p/a.klipp");
+        assert!(!project_identity_moves(Saved, Some(p), Some(p), false));
+    }
+
+    #[test]
+    fn a_save_as_elsewhere_moves_it() {
+        assert!(project_identity_moves(Saved, Some(Path::new("/p/a.klipp")), Some(Path::new("/p/b.klipp")), false));
+        assert!(project_identity_moves(Saved, None, Some(Path::new("/p/a.klipp")), false));
+    }
+
+    #[test]
+    fn reopening_the_same_file_moves_it() {
+        let p = Path::new("/p/a.klipp");
+        assert!(project_identity_moves(Replaced, Some(p), Some(p), false));
+    }
+
+    #[test]
+    fn a_failed_save_or_open_moves_nothing() {
+        assert!(!project_identity_moves(Saved, Some(Path::new("/p/a.klipp")), Some(Path::new("/p/b.klipp")), true));
+        assert!(!project_identity_moves(Replaced, None, Some(Path::new("/p/a.klipp")), true));
     }
 }
 

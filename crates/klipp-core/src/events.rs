@@ -3961,6 +3961,13 @@ pub struct ProjectStatus {
     pub generation: u64,
     /// Why the last save or open failed, until the next one succeeds.
     pub last_error: Option<String>,
+    /// Which document this is: moves when the project itself changes —
+    /// made new, opened, saved to another path — and not when it is
+    /// saved where it already was. A client's timeline and media ids
+    /// stay good for as long as this does not move; `generation` moves
+    /// on every save, for a client waiting on one.
+    #[serde(default)]
+    pub identity: u64,
     /// What made the project unsaved, when it is: "edits", or something
     /// that changed it on its own, such as analysis markers arriving.
     #[serde(default)]
