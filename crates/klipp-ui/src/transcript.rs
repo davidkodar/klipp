@@ -66,20 +66,32 @@ impl Transcripts for TranscriptSource {
 /// A pause longer than this starts a new paragraph, as it ends a caption.
 pub const PARAGRAPH_PAUSE_SECS: f64 = 0.7;
 
+/// A cut never lands further than this from the word it takes out. The
+/// pause on either side of a word is a breath; anything longer is content
+/// the transcript does not describe.
+pub const MAX_PAD_SECS: f64 = 0.25;
+
 /// Where cutting the words `first..=last` out of `words` should cut, in
 /// timeline seconds: halfway into the pause on each side, so what is left
-/// keeps a natural breath rather than butting one word onto the next.
-/// At either end of the transcript it is a short margin instead.
+/// keeps a natural breath rather than butting one word onto the next —
+/// but no further than [`MAX_PAD_SECS`] from the word, and never past the
+/// clip the word is heard from. What lies between two words from
+/// different clips, or beyond a clip's edge, is not a pause but whatever
+/// the timeline puts there: a music bed, a montage, picture with no
+/// speech. At either end of the transcript it is a short margin instead.
 pub fn cut_for_words(words: &[HeardWord], first: usize, last: usize) -> (f64, f64) {
     const MARGIN_SECS: f64 = 0.05;
+    let (head, tail) = (&words[first], &words[last]);
     let from = match first.checked_sub(1).map(|p| &words[p]) {
-        Some(prev) if prev.end <= words[first].start => (prev.end + words[first].start) / 2.0,
-        _ => (words[first].start - MARGIN_SECS).max(0.0),
+        Some(prev) if prev.clip_id == head.clip_id && prev.end <= head.start => (prev.end + head.start) / 2.0,
+        _ => head.start - MARGIN_SECS,
     };
     let to = match words.get(last + 1) {
-        Some(next) if next.start >= words[last].end => (words[last].end + next.start) / 2.0,
-        _ => words[last].end + MARGIN_SECS,
+        Some(next) if next.clip_id == tail.clip_id && next.start >= tail.end => (tail.end + next.start) / 2.0,
+        _ => tail.end + MARGIN_SECS,
     };
+    let from = from.max(head.start - MAX_PAD_SECS).max(head.clip_in).max(0.0);
+    let to = to.min(tail.end + MAX_PAD_SECS).min(tail.clip_out);
     (from, to)
 }
 
@@ -100,11 +112,13 @@ pub fn fillers(words: &[HeardWord]) -> Vec<usize> {
 }
 
 /// Pauses between words longer than `longer_than`, each as the stretch to
-/// cut so that `keep` seconds of it remain, in timeline seconds.
+/// cut so that `keep` seconds of it remain, in timeline seconds. Only a
+/// gap between two words heard from the same clip is a pause: between
+/// clips lies whatever was put there, transcribed or not.
 pub fn long_pauses(words: &[HeardWord], longer_than: f64, keep: f64) -> Vec<(f64, f64)> {
     words
         .windows(2)
-        .filter(|w| w[1].start - w[0].end > longer_than.max(keep))
+        .filter(|w| w[0].clip_id == w[1].clip_id && w[1].start - w[0].end > longer_than.max(keep))
         .map(|w| (w[0].end + keep / 2.0, w[1].start - keep / 2.0))
         .collect()
 }
@@ -150,12 +164,28 @@ pub fn cut_ops(mut ranges: Vec<(f64, f64)>) -> Vec<klipp_document::ops::Op> {
 mod tests {
     use super::*;
 
-    fn w(start: f64, end: f64, text: &str) -> HeardWord {
-        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: klipp_core::ClipId::new() }
+    /// A word heard from `clip`: its id and its timeline span.
+    fn w_in(clip: &(klipp_core::ClipId, f64, f64), start: f64, end: f64, text: &str) -> HeardWord {
+        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: clip.0, clip_in: clip.1, clip_out: clip.2 }
     }
 
+    /// One clip, 0-10 s, with a pause before "Next".
     fn said() -> Vec<HeardWord> {
-        vec![w(1.0, 1.3, "So,"), w(1.5, 1.7, "um,"), w(1.8, 2.2, "the"), w(2.3, 2.9, "plan."), w(5.0, 5.4, "Next")]
+        let c = (klipp_core::ClipId::new(), 0.0, 10.0);
+        vec![w_in(&c, 1.0, 1.3, "So,"), w_in(&c, 1.5, 1.7, "um,"), w_in(&c, 1.8, 2.2, "the"), w_in(&c, 2.3, 2.9, "plan."), w_in(&c, 5.0, 5.4, "Next")]
+    }
+
+    /// An interview 0-10 s, a music montage with no transcript 10-15 s,
+    /// the interview again from 15 s.
+    fn montage() -> Vec<HeardWord> {
+        let before = (klipp_core::ClipId::new(), 0.0, 10.0);
+        let after = (klipp_core::ClipId::new(), 15.0, 25.0);
+        vec![
+            w_in(&before, 9.0, 9.3, "and"),
+            w_in(&before, 9.4, 9.8, "then."),
+            w_in(&after, 15.1, 15.3, "Um,"),
+            w_in(&after, 15.5, 15.9, "later"),
+        ]
     }
 
     #[test]
@@ -169,6 +199,29 @@ mod tests {
         // The last: a margin after it.
         let (_, to) = cut_for_words(&words, 4, 4);
         assert!((to - 5.45).abs() < 1e-9);
+        // Before a long pause: no further than the pad, not halfway.
+        let (_, to) = cut_for_words(&words, 3, 3);
+        assert!((to - (2.9 + MAX_PAD_SECS)).abs() < 1e-9, "{to}");
+    }
+
+    #[test]
+    fn a_cut_stays_out_of_what_lies_between_clips() {
+        let words = montage();
+        // The last word before the montage: the cut ends at its own margin,
+        // not halfway into the music.
+        let (_, to) = cut_for_words(&words, 1, 1);
+        assert!((to - 9.85).abs() < 1e-9, "{to}");
+        // The filler after it: the cut starts at its margin, inside its
+        // clip, and ends halfway to the next word as usual.
+        let (from, to) = cut_for_words(&words, 2, 2);
+        assert!((from - 15.05).abs() < 1e-9 && (to - 15.4).abs() < 1e-9, "{from} {to}");
+        // A word ending on its clip's edge: the cut ends there.
+        let mut words = montage();
+        words[1].end = 10.0;
+        let (_, to) = cut_for_words(&words, 1, 1);
+        assert!((to - 10.0).abs() < 1e-9, "{to}");
+        // The words either side of the montage are not a pause to shorten.
+        assert!(long_pauses(&montage(), 1.0, 0.4).is_empty());
     }
 
     #[test]

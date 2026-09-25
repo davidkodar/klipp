@@ -2297,9 +2297,7 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
     Ok((what, edit, vec![*clip_id]))
 }
 
-/// A word placed on the timeline, and whether a cut in the sound comes
-/// before it.
-/// A word as it is heard on the timeline.
+/// A word as it is heard on the timeline, and the clip it is heard from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeardWord {
     /// Timeline seconds.
@@ -2310,6 +2308,11 @@ pub struct HeardWord {
     pub after_cut: bool,
     /// The clip it is heard from.
     pub clip_id: ClipId,
+    /// Where that clip starts and ends on the timeline, in seconds: what
+    /// lies outside is not this word's pause but whatever the timeline
+    /// puts there.
+    pub clip_in: f64,
+    pub clip_out: f64,
 }
 
 /// [`Op::Cut`]: split every unlocked track at both edges, take out what
@@ -2460,7 +2463,7 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
                 }
                 let start = (t_in + (w.start_secs - s_in) / speed).max(t_in);
                 let end = (t_in + (w.end_secs - s_in) / speed).clamp(start, t_out);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id });
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, clip_in: t_in, clip_out: t_out });
                 first = false;
             }
         }
