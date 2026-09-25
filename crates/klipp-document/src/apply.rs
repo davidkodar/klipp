@@ -507,6 +507,9 @@ impl DocumentView<'_> {
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.remove(&subclip.id);
             }
+            EditCommand::SetMarkers { old, .. } => {
+                self.sequences[self.active].markers = old.clone();
+            }
             EditCommand::SetRange { old_in, old_out, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.in_point = *old_in;
@@ -1108,6 +1111,9 @@ impl DocumentView<'_> {
             }
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.add(subclip.clone());
+            }
+            EditCommand::SetMarkers { new, .. } => {
+                self.sequences[self.active].markers = new.clone();
             }
             EditCommand::SetRange { new_in, new_out, .. } => {
                 let seq = &mut self.sequences[self.active];

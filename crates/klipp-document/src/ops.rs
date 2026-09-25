@@ -2392,6 +2392,8 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // are linked to each other, as one split in the app links them.
     let mut split = 0;
     let mut new_halves: std::collections::HashSet<ClipId> = std::collections::HashSet::new();
+    // What each split clip became, so a transition can follow it.
+    let mut split_into: std::collections::HashMap<ClipId, (ClipId, ClipId)> = std::collections::HashMap::new();
     for cut in [from, to] {
         let mut blades = Vec::new();
         for &ti in &open {
@@ -2413,6 +2415,7 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         for (track_index, position, original_clip, clip_a, clip_b) in blades {
             split += 1;
             new_halves.extend([clip_a.id, clip_b.id]);
+            split_into.insert(original_clip.id, (clip_a.id, clip_b.id));
             push(&mut sims, EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position });
         }
     }
@@ -2459,6 +2462,45 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         return Err(refuse(i, format!("nothing on the unlocked tracks lies between {:.2} s and {:.2} s", secs(from), secs(to)), "check the range, or unlock the tracks"));
     }
 
+    // Transitions. One on a clip that was split follows the piece that
+    // survives on its side of the join: the outgoing clip's last piece,
+    // the incoming clip's first. One whose clip is gone, or whose clips
+    // no longer meet, goes; the engine would only skip it silently.
+    fn surviving(id: ClipId, split_into: &std::collections::HashMap<ClipId, (ClipId, ClipId)>, seq: &Sequence, last: bool) -> Option<ClipId> {
+        match split_into.get(&id) {
+            Some(&(a, b)) => {
+                let (near, far) = if last { (b, a) } else { (a, b) };
+                surviving(near, split_into, seq, last).or_else(|| surviving(far, split_into, seq, last))
+            }
+            None => find_clip(seq, id).map(|_| id),
+        }
+    }
+    let mut transition_edits = Vec::new();
+    for &ti in &open {
+        let now = &sims[0];
+        let track = &now.tracks[ti];
+        for t in &track.transitions {
+            let a = surviving(t.clip_a_id, &split_into, now, true);
+            let b = surviving(t.clip_b_id, &split_into, now, false);
+            let meet = a.zip(b).and_then(|(a, b)| Some(find_clip(now, a)?.2.timeline_out == find_clip(now, b)?.2.timeline_in)).unwrap_or(false);
+            if (a, b) == (Some(t.clip_a_id), Some(t.clip_b_id)) && meet {
+                continue;
+            }
+            let fade_out = |id: ClipId| find_clip(now, id).map(|(_, _, c)| c.fade_out_secs).unwrap_or(0.0);
+            let fade_in = |id: ClipId| find_clip(now, id).map(|(_, _, c)| c.fade_in_secs).unwrap_or(0.0);
+            transition_edits.push(EditCommand::RemoveTransition { track_index: ti, transition: *t, old_fade_out_a: fade_out(t.clip_a_id), old_fade_in_b: fade_in(t.clip_b_id) });
+            if let Some((a, b)) = a.zip(b).filter(|_| meet) {
+                let mut moved = *t;
+                moved.clip_a_id = a;
+                moved.clip_b_id = b;
+                transition_edits.push(EditCommand::AddTransition { track_index: ti, transition: moved, clip_a_id: a, clip_b_id: b, old_fade_out_a: fade_out(a), old_fade_in_b: fade_in(b), replaced: None });
+            }
+        }
+    }
+    for edit in transition_edits {
+        push(&mut sims, edit);
+    }
+
     // Mend the links. A clip whose partner was taken out has none now,
     // unless a half of that partner still points back at it from the
     // same stretch of time. A half inherited its original's partner,
@@ -2484,6 +2526,35 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     for edit in relinked {
         push(&mut sims, edit);
     }
+
+    // Sequence markers. One inside the range goes with what was there;
+    // one after it moves up with the clips; a range marker reaching into
+    // the cut loses what the cut took.
+    let old_markers = sims[0].markers.clone();
+    let mut new_markers = Vec::with_capacity(old_markers.len());
+    let mut markers_changed = false;
+    for m in &old_markers {
+        let mut m = m.clone();
+        if m.position >= to {
+            m.position -= len;
+            markers_changed = true;
+        } else if m.position >= from {
+            markers_changed = true;
+            continue;
+        } else if let Some(d) = m.duration {
+            let end = m.position + d;
+            if end > from {
+                let lost = end.min(to) - from;
+                m.duration = Some(d - lost);
+                markers_changed = true;
+            }
+        }
+        new_markers.push(m);
+    }
+    if markers_changed {
+        push(&mut sims, EditCommand::SetMarkers { old: old_markers, new: new_markers });
+    }
+
     let what = format!(
         "cut {:.2}-{:.2} s ({:.2} s) from {} tracks: {split} clips split, {removed} taken out, {} moved up",
         secs(from),
@@ -6044,6 +6115,80 @@ mod tests {
         // 1.5 s taken out of 8, give or take the frame a half second snaps to.
         assert!((plan.duration_secs - 6.5).abs() < 0.05, "{}", plan.duration_secs);
         assert!(resolve(&seq, &pool, &ops).is_err(), "resolved together, the refusal stands");
+    }
+
+    fn dissolve(a: ClipId, b: ClipId) -> klipp_timeline::Transition {
+        klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.5),
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: klipp_core::TransitionUserParams::default(),
+            alignment: klipp_core::TransitionAlignment::default(),
+        }
+    }
+
+    fn marker(secs: f64, label: &str, duration: Option<f64>) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: tc(secs),
+            label: label.into(),
+            color: klipp_core::MarkerColor::Blue,
+            duration: duration.map(tc),
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
+        }
+    }
+
+    fn marker_spans(seq: &Sequence) -> Vec<(String, Timecode, Option<Timecode>)> {
+        seq.markers.iter().map(|m| (m.label.clone(), m.position, m.duration)).collect()
+    }
+
+    #[test]
+    fn a_cut_moves_the_markers_up_and_carries_a_transition_across_it() {
+        let (mut seq, pool, _, a, b) = fixture();
+        // The fixture's "Intro" at 6 s; one inside the cut; a range
+        // marker 2-4 s reaching a second into it.
+        seq.markers.push(marker(3.5, "Gone", None));
+        seq.markers.push(marker(2.0, "Reach", Some(2.0)));
+        let dissolve = dissolve(a, b);
+        seq.tracks[0].transitions.push(dissolve);
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(4.0), None), ("Reach".to_string(), tc(2.0), Some(tc(1.0)))]);
+        // The dissolve was between a and b; it is now between what is
+        // left of each, which meet at 3 s.
+        let pic = &seqs[0].tracks[0].clips;
+        let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
+        assert_eq!(t, vec![(pic[0].id, pic[1].id)]);
+        assert_eq!(seqs[0].tracks[0].transitions[0].id, dissolve.id);
+        // Undo puts the markers and the transition back as they were.
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
+        let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
+        assert_eq!(t, vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_cut_that_takes_a_transition_s_clip_takes_the_transition() {
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.tracks[0].transitions.push(dissolve(a, b));
+        seq.tracks[0].clips[1].fade_in_secs = 0.5;
+        // All of a goes: nothing is left for the dissolve to go out from.
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(0.0), to: Anchor::Secs(4.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert!(seqs[0].tracks[0].transitions.is_empty());
+        assert_eq!(seqs[0].tracks[0].clips[0].fade_in_secs, 0.0, "the fade was the dissolve's");
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(seqs[0].tracks[0].transitions.len(), 1);
+        assert_eq!(seqs[0].tracks[0].clips[1].fade_in_secs, 0.5);
     }
 
     #[test]

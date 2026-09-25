@@ -408,6 +408,14 @@ pub enum EditCommand {
         parent_id: MediaId,
     },
 
+    /// The sequence's markers replaced whole: for an edit that moves or
+    /// drops many at once — a cut closing up the timeline — where one
+    /// snapshot either side is simpler than a command per marker.
+    SetMarkers {
+        old: Vec<klipp_timeline::Marker>,
+        new: Vec<klipp_timeline::Marker>,
+    },
+
     // === RANGE SELECTION ===
     SetRange {
         old_in: Option<RationalTime>,
@@ -727,6 +735,7 @@ impl EditCommand {
                 if changes.len() == 1 { "Rename Media Item" } else { "Batch Rename Media Items" }
             }
             EditCommand::CreateSubclip { .. } => "Create Subclip",
+            EditCommand::SetMarkers { .. } => "Edit Markers",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::RemoveTransition { .. } => "Remove Transition",
