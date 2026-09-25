@@ -11380,7 +11380,8 @@ impl KlippApp {
                 // Push undo if NOT in a coalescing drag
                 if let Some(old_fx) = old_effect {
                     let drag_key = format!("{:?}:builtin:{}", clip_id, index);
-                    if !self.state.active_history().is_dragging(&drag_key) {
+                    let history = self.state.active_history();
+                    if !history.is_dragging(&drag_key) && !history.is_dragging_builtin_effect(*clip_id, *index) {
                         self.state.push_history(EditCommand::EditBuiltinEffect {
                                 clip_id: *clip_id,
                                 effect_index: *index,

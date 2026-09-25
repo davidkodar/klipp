@@ -950,6 +950,20 @@ impl CommandHistory {
         self.pending_coalesce_key.as_deref() == Some(key)
     }
 
+    /// Whether an open drag is editing built-in effect `index` on
+    /// `clip_id`, whatever key it was opened under. The viewer's
+    /// transform gizmo and the inspector's transform rows each opened
+    /// theirs under a key of their own, which the effect-update handler
+    /// never matched, so every step of a drag pushed its own undo entry
+    /// (a short drag on the gizmo made over a hundred).
+    pub fn is_dragging_builtin_effect(&self, clip_id: ClipId, index: usize) -> bool {
+        self.pending_coalesce_key.is_some()
+            && matches!(
+                self.pending_old_entry.as_ref().map(|e| &e.command),
+                Some(EditCommand::EditBuiltinEffect { clip_id: c, effect_index: i, .. }) if *c == clip_id && *i == index
+            )
+    }
+
     /// Discard any pending drag-coalesce envelope without pushing.
     /// Called when the user navigates away (e.g. switches sequences)
     /// before releasing a drag — the gesture can never close in this
@@ -2431,6 +2445,23 @@ mod linked_import_tests {
             video: None, audio: None, created_video_track_at: None, created_audio_track_at: None, autoset: None,
         }]);
         assert_eq!(mixed.label(), "Add Clips");
+    }
+
+    /// #322: a drag opened under any key suppresses the per-step pushes
+    /// for the effect it is editing, and only that one.
+    #[test]
+    fn a_drag_on_an_effect_is_recognised_whatever_its_key() {
+        let t = |f: i64| klipp_core::RationalTime { value: f, rate: 30 };
+        let clip = Clip::media(klipp_core::MediaId::new(), t(0), t(30), t(0), t(30));
+        let effect = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+        let mut h = CommandHistory::new();
+        assert!(!h.is_dragging_builtin_effect(clip.id, 0));
+        h.begin_drag("viewer_transform_x".into(), HistoryEntry { command: EditCommand::EditBuiltinEffect {
+            clip_id: clip.id, effect_index: 0, old_effect: effect.clone(), new_effect: effect,
+        } });
+        assert!(h.is_dragging_builtin_effect(clip.id, 0));
+        assert!(!h.is_dragging_builtin_effect(clip.id, 1), "another effect on the clip is not being dragged");
+        assert!(!h.is_dragging_builtin_effect(klipp_core::ClipId::new(), 0), "nor is the same slot on another clip");
     }
 
     #[test]
