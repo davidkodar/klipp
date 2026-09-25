@@ -1354,10 +1354,17 @@ impl ViewerPanel {
             .find_map(|t| t.find_clip(clip_id))
             .and_then(|c| c.title_data())
             .cloned();
-        let td = match td_opt {
+        let mut td = match td_opt {
             Some(td) => td,
             None => return,
         };
+        let clip_time = state.sequence().tracks.iter()
+            .find_map(|t| t.find_clip(clip_id))
+            .map(|c| (state.playhead_smooth_secs - c.timeline_in.to_secs_f64()).max(0.0))
+            .unwrap_or(0.0);
+        for obj in &mut td.objects {
+            obj.transform.center = obj.transform.evaluated_center(clip_time);
+        }
 
         // Double-click on a TextBox object's bounding box → enter
         // inline edit for THAT object. Iterate top-down so the
@@ -1456,16 +1463,19 @@ impl ViewerPanel {
         let edit_id = ui.id().with("viewer_text_edit");
         let prev_buf = state.viewer_text_edit_buffer.clone();
         let Some(clip_id) = state.viewer_text_edit_clip else { return };
-        let Some(td) = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).and_then(|c| c.title_data()).cloned() else {
+        let Some(clip) = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return };
+        let Some(td) = clip.title_data().cloned() else {
             return;
         };
+        let clip_time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
         // The layer being edited: the targeted one, else the first
         // text layer.
         let obj = state
             .viewer_text_edit_object
             .and_then(|oid| td.object(oid).cloned())
             .or_else(|| td.objects.iter().find(|o| matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))).cloned());
-        let Some(obj) = obj else { return };
+        let Some(mut obj) = obj else { return };
+        obj.transform.center = obj.transform.evaluated_center(clip_time);
         if state.viewer_text_edit_object != Some(obj.id) {
             state.viewer_text_edit_object = Some(obj.id);
             state.viewer_char_positions.clear();
@@ -3744,21 +3754,17 @@ impl ViewerPanel {
             if Some(obj.id) == edit_oid {
                 continue;
             }
-            let cx = obj.transform.center.x;
-            let cy = obj.transform.center.y;
-            let half_w = obj.transform.size.x * 0.5;
-            let half_h = obj.transform.size.y * 0.5;
-            let bb = egui::Rect::from_min_max(
-                to_screen(cx - half_w, cy - half_h),
-                to_screen(cx + half_w, cy + half_h),
-            );
+            let points = object_screen_points(obj, image_rect);
+            let bb = object_screen_bb(obj, image_rect);
             let is_selected = state.selected_title_object == Some((clip_id, obj.id));
             let stroke = if is_selected {
                 egui::Stroke::new(2.0_f32, accent)
             } else {
                 egui::Stroke::new(1.0_f32, inactive_stroke)
             };
-            painter.rect_stroke(bb, 0.0, stroke);
+            for i in 0..4 {
+                painter.line_segment([points[i], points[(i + 1) % 4]], stroke);
+            }
 
             if !is_selected || is_fitted_shape(obj) {
                 continue;
@@ -3769,15 +3775,13 @@ impl ViewerPanel {
             let handle_stroke = egui::Stroke::new(1.5_f32, accent);
             let handle_rect = |p: egui::Pos2| egui::Rect::from_center_size(p, egui::vec2(handle_size, handle_size));
 
+            let mid_top = points[0].lerp(points[1], 0.5);
+            let mid_bottom = points[3].lerp(points[2], 0.5);
+            let mid_left = points[0].lerp(points[3], 0.5);
+            let mid_right = points[1].lerp(points[2], 0.5);
             for hp in [
-                bb.min,
-                egui::pos2(bb.max.x, bb.min.y),
-                egui::pos2(bb.min.x, bb.max.y),
-                bb.max,
-                egui::pos2(bb.center().x, bb.min.y),
-                egui::pos2(bb.center().x, bb.max.y),
-                egui::pos2(bb.min.x, bb.center().y),
-                egui::pos2(bb.max.x, bb.center().y),
+                points[0], points[1], points[3], points[2],
+                mid_top, mid_bottom, mid_left, mid_right,
             ] {
                 let r = handle_rect(hp);
                 painter.rect_filled(r, 1.5, handle_fill);
@@ -3785,9 +3789,10 @@ impl ViewerPanel {
             }
 
             // Rotation stalk above the top-centre handle.
-            let stalk_top = egui::pos2(bb.center().x, bb.min.y - 24.0);
+            let outward = (mid_top - bb.center()).normalized();
+            let stalk_top = mid_top + outward * 24.0;
             painter.line_segment(
-                [egui::pos2(bb.center().x, bb.min.y), stalk_top],
+                [mid_top, stalk_top],
                 handle_stroke,
             );
             painter.circle_filled(stalk_top, 5.0, accent);
@@ -3801,9 +3806,11 @@ impl ViewerPanel {
             // Positioned at the bbox-relative anchor; uses a small
             // crosshair shape so it reads as a separate affordance
             // from the corner / edge resize handles.
-            let an_x = bb.min.x + obj.transform.anchor_norm.x * bb.width();
-            let an_y = bb.min.y + obj.transform.anchor_norm.y * bb.height();
-            let an_p = egui::pos2(an_x, an_y);
+            let an_p = points[0]
+                + (points[1] - points[0]) * obj.transform.anchor_norm.x
+                + (points[3] - points[0]) * obj.transform.anchor_norm.y;
+            let an_x = an_p.x;
+            let an_y = an_p.y;
             let an_r = 4.5;
             painter.circle_filled(an_p, an_r, handle_fill);
             painter.circle_stroke(an_p, an_r, handle_stroke);
@@ -3995,8 +4002,7 @@ impl ViewerPanel {
                     if !obj.visible || obj.locked {
                         continue;
                     }
-                    let bb = object_screen_bb(obj, image_rect);
-                    if bb.contains(p) {
+                    if object_contains_screen_point(obj, image_rect, p) {
                         // Select this object and start a body drag.
                         cmds.push(AppCommand::SelectTitleObject {
                             clip_id,
@@ -4036,7 +4042,7 @@ impl ViewerPanel {
                     if !obj.visible || obj.locked {
                         continue;
                     }
-                    if object_screen_bb(obj, image_rect).contains(p) {
+                    if object_contains_screen_point(obj, image_rect, p) {
                         hit = Some(obj.id);
                         break;
                     }
@@ -4053,6 +4059,29 @@ impl ViewerPanel {
                         clip_id,
                         object_id: None,
                     });
+                }
+            }
+        }
+
+        // Make every title affordance discoverable before a drag begins.
+        if let Some(p) = pointer {
+            if let Some(obj) = state.selected_title_object
+                .filter(|(c, _)| *c == clip_id)
+                .and_then(|(_, oid)| td.object(oid))
+            {
+                if let Some(handle) = hit_test_handles(obj, image_rect, p) {
+                    let icon = match handle {
+                        crate::state::TitleObjectHandle::Rotation => egui::CursorIcon::Alias,
+                        crate::state::TitleObjectHandle::Anchor => egui::CursorIcon::Crosshair,
+                        crate::state::TitleObjectHandle::Body => egui::CursorIcon::Move,
+                        crate::state::TitleObjectHandle::EdgeLeft | crate::state::TitleObjectHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
+                        crate::state::TitleObjectHandle::EdgeTop | crate::state::TitleObjectHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
+                        crate::state::TitleObjectHandle::CornerTopLeft | crate::state::TitleObjectHandle::CornerBottomRight => egui::CursorIcon::ResizeNwSe,
+                        crate::state::TitleObjectHandle::CornerTopRight | crate::state::TitleObjectHandle::CornerBottomLeft => egui::CursorIcon::ResizeNeSw,
+                    };
+                    ui.ctx().set_cursor_icon(icon);
+                } else if object_contains_screen_point(obj, image_rect, p) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                 }
             }
         }
@@ -5436,18 +5465,48 @@ fn object_screen_bb(
     obj: &klipp_timeline::TitleObject,
     image_rect: egui::Rect,
 ) -> egui::Rect {
-    let cx = obj.transform.center.x;
-    let cy = obj.transform.center.y;
-    let half_w = obj.transform.size.x * 0.5;
-    let half_h = obj.transform.size.y * 0.5;
-    let to_screen = |nx: f32, ny: f32| egui::pos2(
-        image_rect.min.x + nx * image_rect.width(),
-        image_rect.min.y + ny * image_rect.height(),
+    let points = object_screen_points(obj, image_rect);
+    let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let max_x = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let max_y = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+    egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
+}
+
+fn object_screen_points(
+    obj: &klipp_timeline::TitleObject,
+    image_rect: egui::Rect,
+) -> [egui::Pos2; 4] {
+    let center = egui::pos2(
+        image_rect.min.x + obj.transform.center.x * image_rect.width(),
+        image_rect.min.y + obj.transform.center.y * image_rect.height(),
     );
-    egui::Rect::from_min_max(
-        to_screen(cx - half_w, cy - half_h),
-        to_screen(cx + half_w, cy + half_h),
-    )
+    let half = egui::vec2(
+        obj.transform.size.x * image_rect.width() * 0.5,
+        obj.transform.size.y * image_rect.height() * 0.5,
+    );
+    let angle = obj.transform.rotation.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let rotate = |v: egui::Vec2| egui::vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    [
+        center + rotate(egui::vec2(-half.x, -half.y)),
+        center + rotate(egui::vec2(half.x, -half.y)),
+        center + rotate(egui::vec2(half.x, half.y)),
+        center + rotate(egui::vec2(-half.x, half.y)),
+    ]
+}
+
+fn object_contains_screen_point(
+    obj: &klipp_timeline::TitleObject,
+    image_rect: egui::Rect,
+    p: egui::Pos2,
+) -> bool {
+    let points = object_screen_points(obj, image_rect);
+    (0..4).all(|i| {
+        let edge = points[(i + 1) % 4] - points[i];
+        let to_point = p - points[i];
+        edge.x * to_point.y - edge.y * to_point.x >= -0.5
+    })
 }
 
 /// Hit-test a click against a selected object's handle hot-spots.
@@ -5462,29 +5521,36 @@ fn hit_test_handles(
 ) -> Option<crate::state::TitleObjectHandle> {
     if is_fitted_shape(obj) { return None; }
     use crate::state::TitleObjectHandle as H;
+    let points = object_screen_points(obj, image_rect);
     let bb = object_screen_bb(obj, image_rect);
     let hit_radius = 10.0_f32;
     let inflate = egui::vec2(hit_radius, hit_radius);
     let near = |a: egui::Pos2| egui::Rect::from_center_size(a, inflate * 2.0).contains(p);
 
-    if near(egui::pos2(bb.center().x, bb.min.y - 24.0)) {
+    let mid_top = points[0].lerp(points[1], 0.5);
+    let mid_bottom = points[3].lerp(points[2], 0.5);
+    let mid_left = points[0].lerp(points[3], 0.5);
+    let mid_right = points[1].lerp(points[2], 0.5);
+    let outward = (mid_top - bb.center()).normalized();
+    if near(mid_top + outward * 24.0) {
         return Some(H::Rotation);
     }
     // Anchor dot — checked before the other handles so a near-
     // simultaneous overlap with an edge handle prefers the anchor.
-    let an_x = bb.min.x + obj.transform.anchor_norm.x * bb.width();
-    let an_y = bb.min.y + obj.transform.anchor_norm.y * bb.height();
-    if near(egui::pos2(an_x, an_y)) {
+    let anchor = points[0]
+        + (points[1] - points[0]) * obj.transform.anchor_norm.x
+        + (points[3] - points[0]) * obj.transform.anchor_norm.y;
+    if near(anchor) {
         return Some(H::Anchor);
     }
-    if near(bb.min) { return Some(H::CornerTopLeft); }
-    if near(egui::pos2(bb.max.x, bb.min.y)) { return Some(H::CornerTopRight); }
-    if near(egui::pos2(bb.min.x, bb.max.y)) { return Some(H::CornerBottomLeft); }
-    if near(bb.max) { return Some(H::CornerBottomRight); }
-    if near(egui::pos2(bb.center().x, bb.min.y)) { return Some(H::EdgeTop); }
-    if near(egui::pos2(bb.center().x, bb.max.y)) { return Some(H::EdgeBottom); }
-    if near(egui::pos2(bb.min.x, bb.center().y)) { return Some(H::EdgeLeft); }
-    if near(egui::pos2(bb.max.x, bb.center().y)) { return Some(H::EdgeRight); }
+    if near(points[0]) { return Some(H::CornerTopLeft); }
+    if near(points[1]) { return Some(H::CornerTopRight); }
+    if near(points[3]) { return Some(H::CornerBottomLeft); }
+    if near(points[2]) { return Some(H::CornerBottomRight); }
+    if near(mid_top) { return Some(H::EdgeTop); }
+    if near(mid_bottom) { return Some(H::EdgeBottom); }
+    if near(mid_left) { return Some(H::EdgeLeft); }
+    if near(mid_right) { return Some(H::EdgeRight); }
     None
 }
 
@@ -5635,6 +5701,31 @@ fn compute_drag_transform(
             let delta_deg = (a_cur - a_start).to_degrees();
             t.rotation = drag.initial_transform.rotation + delta_deg;
         }
+    }
+    // Corner handles are proportional by default. Preserve the authored
+    // aspect ratio even when the pointer moves farther on one axis; the
+    // opposite corner remains the fixed pivot for the resize.
+    if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight | H::CornerBottomLeft | H::CornerBottomRight) {
+        let iw = drag.initial_transform.size.x.max(0.01);
+        let ih = drag.initial_transform.size.y.max(0.01);
+        let sx = (t.size.x / iw).max(0.05);
+        let sy = (t.size.y / ih).max(0.05);
+        let scale = if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy };
+        let fixed_x = if matches!(drag.handle, H::CornerTopLeft | H::CornerBottomLeft) {
+            drag.initial_transform.center.x + iw * 0.5
+        } else {
+            drag.initial_transform.center.x - iw * 0.5
+        };
+        let fixed_y = if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight) {
+            drag.initial_transform.center.y + ih * 0.5
+        } else {
+            drag.initial_transform.center.y - ih * 0.5
+        };
+        let nw = iw * scale;
+        let nh = ih * scale;
+        t.size = klipp_timeline::TitlePosition { x: nw, y: nh };
+        t.center.x = if matches!(drag.handle, H::CornerTopLeft | H::CornerBottomLeft) { fixed_x - nw * 0.5 } else { fixed_x + nw * 0.5 };
+        t.center.y = if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight) { fixed_y - nh * 0.5 } else { fixed_y + nh * 0.5 };
     }
     t
 }
@@ -6037,6 +6128,20 @@ mod title_object_drag_tests {
         assert!((t.center.y - 0.475).abs() < 1e-5);
         assert!((t.size.x - 0.5).abs() < 1e-5);
         assert!((t.size.y - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn corner_resize_keeps_authored_aspect_when_pointer_is_off_axis() {
+        let t = compute_drag_transform(
+            &drag(TitleObjectHandle::CornerTopLeft),
+            -0.1,
+            -0.01,
+            (0.0, 0.0),
+            (-0.1, -0.01),
+        );
+        assert!((t.size.x / t.size.y - 2.0).abs() < 1e-5);
+        assert!((t.center.x - 0.45).abs() < 1e-5);
+        assert!((t.center.y - 0.475).abs() < 1e-5);
     }
 
     #[test]
