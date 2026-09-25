@@ -33074,6 +33074,8 @@ impl KlippApp {
                 let clip_id = self.state.selected_clip.unwrap();
                 let seq_idx = self.state.active_sequence_idx;
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
+                self.node_inspector_panel.input_colour_space =
+                    crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -34016,6 +34018,8 @@ impl KlippApp {
             if let Some(clip_id) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
+                self.node_inspector_panel.input_colour_space =
+                    crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {

@@ -64,44 +64,11 @@ pub fn show_color_and_luts(
 
         // Input Color Space selector
         if let Some(clip_id) = state.selected_clip {
-            let current_log = state.sequences.get(state.active_sequence_idx)
-                .and_then(|seq| seq.tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id))
-                .and_then(|c| c.node_graph.nodes.iter()
-                    .find_map(|n| n.params.log_format))
-                .unwrap_or_default();
-
+            let (current_log, detected) = clip_input_colour_space(state, clip_id);
             section_card(ui, "INPUT COLOUR SPACE", None, theme, |ui| {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                use klipp_core::LogFormat as LF;
-                let formats = [
-                    (LF::Srgb, "sRGB / Rec.709"), (LF::Linear, "Linear"),
-                    (LF::LogC3, "ARRI LogC3"), (LF::LogC4, "ARRI LogC4"),
-                    (LF::SLog2, "Sony S-Log2"), (LF::SLog3, "Sony S-Log3"),
-                    (LF::CanonLog, "Canon Log"), (LF::CanonLog3, "Canon Log 3"),
-                    (LF::VLog, "Panasonic V-Log"), (LF::NLog, "Nikon N-Log"),
-                    (LF::FLog, "Fuji F-Log"), (LF::DJIDLog, "DJI D-Log"),
-                    (LF::GoProFlat, "GoPro ProTune Flat"),
-                    (LF::AppleLog, "Apple Log"), (LF::LeicaLLog, "Leica L-Log"),
-                    (LF::RedLog3G10, "RED Log3G10"), (LF::BmdFilmGen5, "BMD Film Gen 5"),
-                    (LF::HLG, "HLG (BT.2100)"), (LF::PQ, "PQ (ST 2084)"),
-                ];
-                let current_label = formats.iter()
-                    .find(|(f, _)| *f == current_log)
-                    .map(|(_, l)| *l)
-                    .unwrap_or("sRGB / Rec.709");
-                egui::ComboBox::from_id_salt("color_tab_log_format")
-                    .selected_text(current_label)
-                    .width(ui.available_width() - 12.0)
-                    .show_ui(ui, |ui| {
-                        for &(fmt, label) in &formats {
-                            if ui.selectable_label(current_log == fmt, label).clicked() {
-                                cmds.push(AppCommand::SetClipLogFormat { clip_id, log_format: fmt });
-                            }
-                        }
-                    });
+                input_colour_space_combo(ui, "color_tab_log_format", clip_id, current_log, detected, cmds);
             });
             });
         }
@@ -400,3 +367,104 @@ fn find_bundled_luts_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+
+/// The input colour space a clip's file is decoded from, and whether
+/// detection chose it rather than the user.
+///
+/// Read from the media item, which is what the decoder converts from; the
+/// clip's InputTransform node only carries a copy made when the clip was
+/// added. Falls back to that copy for a clip with no media item.
+pub(crate) fn clip_input_colour_space(state: &AppState, clip_id: klipp_core::ClipId) -> (klipp_core::LogFormat, bool) {
+    let clip = state.sequences.get(state.active_sequence_idx)
+        .and_then(|seq| seq.all_clips().find(|c| c.id == clip_id));
+    let media = clip.and_then(|c| c.media_id()).and_then(|id| state.media_pool.get(&id));
+    if let Some(m) = media {
+        let format = m.effective_log_format();
+        let detected = !m.log_format_user_set && format != klipp_core::LogFormat::Srgb;
+        return (format, detected);
+    }
+    let node_format = clip
+        .and_then(|c| c.node_graph.nodes.iter().find_map(|n| n.params.log_format))
+        .unwrap_or_default();
+    (node_format, false)
+}
+
+/// The input colour space picker, shared by the Edit inspector's COLOUR
+/// tab and the Colour page's InputTransform node. A value detection chose
+/// says so, so a wrong guess can be told from a choice.
+pub(crate) fn input_colour_space_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    clip_id: klipp_core::ClipId,
+    current: klipp_core::LogFormat,
+    detected: bool,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_core::LogFormat as LF;
+    let formats = [
+        (LF::Srgb, "Rec.709 / sRGB (no conversion)"), (LF::Linear, "Linear"),
+        (LF::LogC3, "ARRI LogC3"), (LF::LogC4, "ARRI LogC4"),
+        (LF::SLog2, "Sony S-Log2"), (LF::SLog3, "Sony S-Log3"),
+        (LF::CanonLog, "Canon Log"), (LF::CanonLog3, "Canon Log 3"),
+        (LF::VLog, "Panasonic V-Log"), (LF::NLog, "Nikon N-Log"),
+        (LF::FLog, "Fuji F-Log"), (LF::DJIDLog, "DJI D-Log"),
+        (LF::GoProFlat, "GoPro ProTune Flat"),
+        (LF::AppleLog, "Apple Log"), (LF::LeicaLLog, "Leica L-Log"),
+        (LF::RedLog3G10, "RED Log3G10"), (LF::BmdFilmGen5, "BMD Film Gen 5"),
+        (LF::HLG, "HLG (BT.2100)"), (LF::PQ, "PQ (ST 2084)"),
+    ];
+    let label = formats.iter()
+        .find(|(f, _)| *f == current)
+        .map(|(_, l)| *l)
+        .unwrap_or(formats[0].1);
+    let selected_text = if detected { format!("{label} (detected)") } else { label.to_string() };
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(selected_text)
+        .width(ui.available_width() - 12.0)
+        .show_ui(ui, |ui| {
+            for &(fmt, label) in &formats {
+                if ui.selectable_label(current == fmt, label).clicked() {
+                    cmds.push(AppCommand::SetClipLogFormat { clip_id, log_format: fmt });
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::{LogFormat, RationalTime};
+
+    fn state_with_clip(edit: impl FnOnce(&mut klipp_media::MediaItem)) -> (AppState, klipp_core::ClipId) {
+        let mut state = AppState::default();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(std::path::PathBuf::from("/tmp/a6700.mp4"), None);
+        edit(&mut item);
+        let media_id = item.id;
+        state.media_pool.add(item);
+        let t = |v| RationalTime { value: v, rate: 24 };
+        let clip = klipp_timeline::Clip::media(media_id, t(0), t(24), t(0), t(24));
+        let clip_id = clip.id;
+        state.sequences[0].tracks[0].clips.push(clip);
+        (state, clip_id)
+    }
+
+    #[test]
+    fn a_detected_log_format_says_so_and_a_choice_does_not() {
+        let (state, clip) = state_with_clip(|m| m.detected_log_format = LogFormat::SLog3);
+        assert_eq!(clip_input_colour_space(&state, clip), (LogFormat::SLog3, true));
+
+        let (state, clip) = state_with_clip(|m| {
+            m.detected_log_format = LogFormat::SLog3;
+            m.log_format = LogFormat::SLog3;
+            m.log_format_user_set = true;
+        });
+        assert_eq!(clip_input_colour_space(&state, clip), (LogFormat::SLog3, false));
+
+        let (state, clip) = state_with_clip(|m| {
+            m.detected_log_format = LogFormat::SLog3;
+            m.log_format = LogFormat::Srgb;
+            m.log_format_user_set = true;
+        });
+        assert_eq!(clip_input_colour_space(&state, clip), (LogFormat::Srgb, false));
+    }
+}
