@@ -134,3 +134,15 @@ fn legacy_non_default_format_loads_as_a_choice() {
     assert!(m.log_format_user_set);
     assert_eq!(m.effective_log_format(), LogFormat::VLog);
 }
+
+/// Detection runs again on load, so a project saved while a Rec.709-tagged
+/// 10-bit Sony clip was being called S-Log3 opens with it as SDR.
+#[test]
+fn a_bt709_tagged_sony_clip_reloads_as_sdr() {
+    let m = round_trip("bt709", |m| {
+        m.color_transfer = Some("BT.709".into());
+        m.detected_log_format = LogFormat::SLog3;
+    });
+    assert_eq!(m.detected_log_format, LogFormat::Srgb);
+    assert_eq!(m.effective_log_format(), LogFormat::Srgb);
+}
