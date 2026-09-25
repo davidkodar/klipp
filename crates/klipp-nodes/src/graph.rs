@@ -10,7 +10,7 @@ pub type NodeId = Uuid;
 
 /// A directed acyclic graph of color processing nodes.
 /// Replaces ClipColorGrade entirely.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeGraph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
@@ -62,7 +62,7 @@ pub struct NodeGraph {
 /// the user doesn't have to manage it. v1 keeps width fixed via
 /// `width` (no resize handle); a future v2 could add a corner-
 /// drag resize gesture without a serde format change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStickyNote {
     /// Stable id for AppCommands targeting this specific note.
     pub id: NodeStickyNoteId,
@@ -94,7 +94,7 @@ fn default_sticky_width() -> f32 { 200.0 }
 /// metadata (label, colour). Empty `contained_node_ids` is illegal
 /// at rest — frames left with no members get pruned by the
 /// AppCommand layer's cleanup pass on `RemoveNode`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeFrame {
     /// Stable id used by AppCommands targeting this specific frame
     /// (rename / recolour / delete / member ops). Re-mapped alongside
@@ -134,7 +134,7 @@ impl Default for NodeGraph {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub kind: NodeKind,
@@ -163,7 +163,7 @@ pub struct Node {
 }
 
 /// A connection from one node's output to another node's input.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub from_node: NodeId,
     pub from_port: u8,
@@ -654,7 +654,7 @@ impl Node {
 }
 
 /// Screen position for the node editor UI.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct NodePos {
     pub x: f32,
     pub y: f32,
