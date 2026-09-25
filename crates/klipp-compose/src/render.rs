@@ -445,12 +445,12 @@ pub struct Renderer {
     warm_tx: Option<std::sync::mpsc::Sender<(klipp_timeline::TitleData, u32, u32)>>,
     warm_rx: Option<std::sync::mpsc::Receiver<(klipp_timeline::TitleData, u32, u32, klipp_title::RestingRender)>>,
     glyph_cache: HashMap<ClipId, klipp_title::GlyphCacheEntry>,
-    /// This frame's motion blur: for each clip that moves while the
-    /// sequence camera's shutter is open, its transform and clip time at
-    /// each sample across the shutter. Filled with the transforms.
     /// Render pixels per sequence pixel for the frame being rendered, for
     /// the effect parameters measured in pixels. Set with the transforms.
     px_scale: f32,
+    /// This frame's motion blur: for each clip that moves while the
+    /// sequence camera's shutter is open, its transform and clip time at
+    /// each sample across the shutter. Filled with the transforms.
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     working: WorkingColorspace,
     /// Why the GPU stack last declined a frame, so the log says it once.
@@ -2022,11 +2022,6 @@ impl Renderer {
         });
     }
 
-    /// The colours an effect carries as parameters — a chroma key's key
-    /// colour, a fade's colour — are picked in BT.709, like the titles.
-    /// An effect compares them against the picture it is given, so in
-    /// another working space they have to be the same colour expressed
-    /// there, or the key misses the green it was pointed at.
     /// The pixel-sized parameters of `fx` in the pixels of the buffer being
     /// rendered; see [`BuiltinEffect::at_render_scale`].
     fn at_render_scale(&self, fx: &mut [BuiltinEffect]) {
@@ -2035,6 +2030,11 @@ impl Renderer {
         }
     }
 
+    /// The colours an effect carries as parameters — a chroma key's key
+    /// colour, a fade's colour — are picked in BT.709, like the titles.
+    /// An effect compares them against the picture it is given, so in
+    /// another working space they have to be the same colour expressed
+    /// there, or the key misses the green it was pointed at.
     fn authored_colours(&self, fx: &mut [BuiltinEffect]) {
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
             WorkingColorspace::Rec709Linear,
