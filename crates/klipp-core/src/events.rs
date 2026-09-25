@@ -1958,6 +1958,8 @@ pub enum AppCommand {
     /// alpha of every pixel this object contributes during the
     /// title's compose pass; independent from clip-level fades.
     SetTitleObjectOpacity { clip_id: ClipId, object_id: u32, opacity: f32 },
+    AddTitleObjectOpacityKeyframe { clip_id: ClipId, object_id: u32, time_secs: f64, value: f32 },
+    RemoveTitleObjectOpacityKeyframe { clip_id: ClipId, object_id: u32, time_secs: f64 },
     /// Rename the layer-list label for an object.
     RenameTitleObject { clip_id: ClipId, object_id: u32, name: String },
     /// Reorder objects in the stack. `new_order` is the full list

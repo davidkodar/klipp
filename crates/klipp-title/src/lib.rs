@@ -1770,6 +1770,7 @@ impl TitleRenderer {
             }
         });
         let any_outline_keyframes = title.objects.iter().any(|o| o.fx().outlines.iter().any(|ol| !ol.width_keyframes.is_empty()));
+        let any_opacity_keyframes = title.objects.iter().any(|o| !o.opacity_keyframes.is_empty());
 
         // A shape or a picture with a live entrance, exit or loop is
         // posed on its own layer at raster time, so its frame is its
@@ -1785,6 +1786,8 @@ impl TitleRenderer {
             || any_inner_shadow_keyframes
             || any_extrusion_keyframes
             || any_outline_keyframes;
+
+        let any_render_time_override = any_render_time_override || any_opacity_keyframes;
 
         let mut gpu = gpu;
         if !any_render_time_override {
@@ -1957,6 +1960,10 @@ impl TitleRenderer {
             }
             let first_layer = buf_untouched;
             buf_untouched = false;
+            let opacity = time_secs
+                .map(|t| obj.evaluated_opacity(t as f64))
+                .unwrap_or(obj.opacity)
+                .clamp(0.0, 1.0);
             // Per-layer position keyframes: when present, override the
             // static `center` for this frame. Empty keyframe vecs
             // short-circuit to the static value via `evaluated_center`,
@@ -2012,9 +2019,9 @@ impl TitleRenderer {
                         );
                     }
                     self.loop_wave = None;
-                    if first_layer && (obj.opacity - 1.0).abs() < 0.001 {
+                    if first_layer && (opacity - 1.0).abs() < 0.001 {
                         buf = layer;
-                    } else if (obj.opacity - 1.0).abs() < 0.001 {
+                    } else if (opacity - 1.0).abs() < 0.001 {
                         over_blend(&mut buf, &layer);
                     } else {
                         // Per-object opacity: scale the layer's alpha
@@ -2022,7 +2029,7 @@ impl TitleRenderer {
                         // ~1.0 case keeps the common path identical to
                         // the pre-opacity rendering hot loop.
                         let mut faded = layer;
-                        scale_layer_alpha(&mut faded, obj.opacity);
+                        scale_layer_alpha(&mut faded, opacity);
                         over_blend(&mut buf, &faded);
                     }
                 }
@@ -2037,11 +2044,11 @@ impl TitleRenderer {
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
                         paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), None);
                         let mut layer = self.dress_layer(layer, fx, width, height, time_secs, window, &mut None);
-                        if (obj.opacity - 1.0).abs() >= 0.001 {
-                            scale_layer_alpha(&mut layer, obj.opacity);
+                        if (opacity - 1.0).abs() >= 0.001 {
+                            scale_layer_alpha(&mut layer, opacity);
                         }
                         over_blend(&mut buf, &layer);
-                    } else if (obj.opacity - 1.0).abs() < 0.001 {
+                    } else if (opacity - 1.0).abs() < 0.001 {
                         paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
                     } else {
                         // Render the shape into a fresh transparent
@@ -2050,7 +2057,7 @@ impl TitleRenderer {
                         // for TextBox layers.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
                         paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
-                        scale_layer_alpha(&mut layer, obj.opacity);
+                        scale_layer_alpha(&mut layer, opacity);
                         over_blend(&mut buf, &layer);
                     }
                 }
@@ -2061,8 +2068,8 @@ impl TitleRenderer {
                         if !obj.fx().is_default() {
                             layer = self.dress_layer(layer, obj.fx(), width, height, time_secs, window, &mut None);
                         }
-                        if (obj.opacity - 1.0).abs() >= 0.001 {
-                            scale_layer_alpha(&mut layer, obj.opacity);
+                        if (opacity - 1.0).abs() >= 0.001 {
+                            scale_layer_alpha(&mut layer, opacity);
                         }
                         over_blend(&mut buf, &layer);
                     }

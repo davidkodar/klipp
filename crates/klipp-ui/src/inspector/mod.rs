@@ -4695,10 +4695,32 @@ fn show_title_editor(
         };
         if let Some(obj) = target_obj {
             let object_id = obj.id.0;
-            let mut op = obj.opacity;
-            ui.label(egui::RichText::new("Layer Opacity").strong().size(11.0));
-            if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).step_by(0.01)).changed() {
-                cmds.push(AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity: op });
+            let keyframes = obj.opacity_keyframes.as_slice();
+            let mut op = obj.evaluated_opacity(clip_time_secs);
+            let keyframe_state = title_object_keyframe_state(keyframes, clip_time_secs, keyframe_tolerance);
+            let response = crate::widgets::scrubby_param::scrubby_param_row(
+                ui,
+                "Layer opacity",
+                &mut op,
+                0.0..=1.0,
+                1.0,
+                0.01,
+                2,
+                "",
+                Some(keyframe_state),
+            );
+            if response.keyframe_toggled {
+                if crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance).is_some() {
+                    cmds.push(AppCommand::RemoveTitleObjectOpacityKeyframe { clip_id, object_id, time_secs: clip_time_secs });
+                } else {
+                    cmds.push(AppCommand::AddTitleObjectOpacityKeyframe { clip_id, object_id, time_secs: clip_time_secs, value: op });
+                }
+            } else if response.changed {
+                if keyframes.is_empty() {
+                    cmds.push(AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity: op });
+                } else {
+                    cmds.push(AppCommand::AddTitleObjectOpacityKeyframe { clip_id, object_id, time_secs: clip_time_secs, value: op });
+                }
             }
             ui.add_space(8.0);
         }
