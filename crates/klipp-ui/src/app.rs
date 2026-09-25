@@ -32913,6 +32913,14 @@ impl KlippApp {
             // scope UI even when the grade tabs were all you wanted.)
             self.state.show_color_panel = to == Workspace::Color;
 
+            // Render the playhead's frame again for the new page. The
+            // Colour page opened on a black viewer until the playhead
+            // was moved; while parked this is a regrade of the parked
+            // frame, and a real seek only when there is none.
+            if self.state.playback != PlaybackState::Playing {
+                let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
+            }
+
             match browser_borrow_for(from, to) {
                 BrowserBorrow::Take => {
                     self.browser_before_workspace = Some(self.state.show_browser_panel);
