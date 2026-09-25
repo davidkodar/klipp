@@ -4013,6 +4013,23 @@ impl AppState {
     pub fn sequence_mut(&mut self) -> &mut Sequence {
         &mut self.sequences[self.active_sequence_idx]
     }
+    /// One `BladeClip` per clip under the playhead, for Split at Playhead.
+    /// A clip whose linked partner is already queued is left out: blading
+    /// a clip cuts its partner too, so queueing both would cut the partner
+    /// a second time exactly on its new edge.
+    pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
+        let ph = self.playhead;
+        let mut queued: Vec<ClipId> = Vec::new();
+        let mut cmds = Vec::new();
+        for (track_index, track) in self.sequence().tracks.iter().enumerate() {
+            let Some((_, clip)) = track.clip_at_timecode(ph) else { continue };
+            if clip.timeline_in >= ph { continue; }
+            if clip.linked_clip_id.is_some_and(|l| queued.contains(&l)) { continue; }
+            queued.push(clip.id);
+            cmds.push(klipp_core::AppCommand::BladeClip { track_index, clip_id: clip.id, cut_at: ph });
+        }
+        cmds
+    }
     pub fn sequence_duration(&self) -> Timecode {
         self.sequence().total_duration()
     }
@@ -5042,5 +5059,61 @@ mod focus_search_request_tests {
         s.active_panel = None;
         s.focus_search_request = s.active_panel;
         assert!(s.focus_search_request.is_none());
+    }
+}
+
+#[cfg(test)]
+mod split_at_playhead_tests {
+    use super::AppState;
+    use klipp_core::{AppCommand, MediaId, RationalTime};
+    use klipp_timeline::magnetic::MagneticEditor;
+    use klipp_timeline::TrackKind;
+
+    fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    /// Issue #250: Ctrl+B on a clip with linked audio queued a blade for
+    /// both clips. The first blade already cut the partner, so the
+    /// second landed exactly on the partner's new out edge and aborted.
+    #[test]
+    fn a_linked_pair_is_bladed_once_and_the_stale_partner_blade_is_a_noop() {
+        let mut state = AppState::default();
+        let media = MediaId::new();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        let v = seq.tracks[vi].append_clip(media, t(10));
+        let a = seq.tracks[ai].append_clip(media, t(10));
+        seq.tracks[vi].find_clip_mut(v).unwrap().linked_clip_id = Some(a);
+        seq.tracks[ai].find_clip_mut(a).unwrap().linked_clip_id = Some(v);
+        state.playhead = t(4);
+
+        let cmds = state.split_at_playhead_commands();
+        assert_eq!(cmds.len(), 1, "the linked partner was queued for a second blade");
+        assert!(matches!(cmds[0], AppCommand::BladeClip { clip_id, .. } if clip_id == v));
+
+        // What the handler does for the one command: the clip, then its
+        // partner. A stale blade of the partner's original id afterwards
+        // must change nothing rather than panic.
+        let seq = state.sequence_mut();
+        MagneticEditor::blade(seq, v, t(4)).unwrap();
+        MagneticEditor::blade(seq, a, t(4)).unwrap();
+        assert!(MagneticEditor::blade(seq, a, t(4)).is_none());
+        assert_eq!(seq.tracks[ai].clips.len(), 2);
+    }
+
+    #[test]
+    fn unlinked_clips_under_the_playhead_each_get_a_blade() {
+        let mut state = AppState::default();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        seq.tracks[vi].append_clip(MediaId::new(), t(10));
+        seq.tracks[ai].append_clip(MediaId::new(), t(10));
+        state.playhead = t(4);
+        assert_eq!(state.split_at_playhead_commands().len(), 2);
+
+        // On a clip's first frame there is nothing to cut.
+        state.playhead = t(0);
+        assert!(state.split_at_playhead_commands().is_empty());
     }
 }

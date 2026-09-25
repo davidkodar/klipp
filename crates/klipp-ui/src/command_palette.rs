@@ -285,19 +285,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::LiftEdit), enabled: has_in && has_out });
     e.push(PaletteEntry { label: Cow::Borrowed("Extract Edit"), shortcut: Cow::Borrowed("'"),
         action: PaletteAction::Cmd(AppCommand::ExtractEdit), enabled: has_in && has_out });
-    // Split at Playhead walks every track + clip under the playhead
-    // and pushes one BladeClip per hit; this matches the toolbar's
-    // Clip → Split at Playhead seam exactly.
+    // Split at Playhead pushes one BladeClip per clip under the playhead
+    // (linked partners ride along with their clip); this matches the
+    // toolbar's Clip → Split at Playhead seam exactly.
     e.push(PaletteEntry { label: Cow::Borrowed("Split at Playhead"), shortcut: Cow::Borrowed("S"),
         action: PaletteAction::Custom(|state, cmds| {
-            let ph = state.playhead;
-            for (ti, t) in state.sequence().tracks.iter().enumerate() {
-                if let Some((_, c)) = t.clip_at_timecode(ph) {
-                    cmds.push(AppCommand::BladeClip {
-                        track_index: ti, clip_id: c.id, cut_at: ph,
-                    });
-                }
-            }
+            cmds.extend(state.split_at_playhead_commands());
         }),
         enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Add Adjustment Layer"), shortcut: Cow::Borrowed(""),
