@@ -52,12 +52,15 @@ impl TranscriptPanel {
         let mut cmds = Vec::new();
         self.refresh(state, source);
         let mut open = state.show_transcript_panel;
-        egui::Window::new("Transcript")
+        let window = egui::Window::new("Transcript")
             .open(&mut open)
             .default_width(460.0)
             .default_height(520.0)
             .resizable(true)
             .show(ctx, |ui| self.contents(ui, state, theme, &mut cmds));
+        // For the next frame: the global shortcuts run before the panel
+        // draws, so they and the panel both go by the last frame's answer.
+        state.transcript_panel_hovered = open && window.is_some_and(|w| w.response.contains_pointer());
         state.show_transcript_panel = open;
         cmds
     }
@@ -152,8 +155,10 @@ impl TranscriptPanel {
             cmds.push(AppCommand::SeekTo(klipp_core::Timecode { value: frames * i64::from(fps.den), rate: fps.num }));
         }
 
-        // Delete / Backspace over the panel cuts the selection.
-        let delete = ui.ui_contains_pointer()
+        // Delete / Backspace over the panel cuts the selection. The
+        // global Delete shortcut, which ran earlier this frame, stood
+        // aside on the same flag, so the key is taken once.
+        let delete = state.transcript_panel_hovered
             && !ui.ctx().wants_keyboard_input()
             && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
         if delete {

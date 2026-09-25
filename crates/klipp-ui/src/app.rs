@@ -25622,6 +25622,12 @@ impl KlippApp {
     }
 
     fn shortcuts_delete(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        // Delete over the Transcript panel is the panel's: it cuts the
+        // selected words. Taking the selected clip as well would remove
+        // a clip the cut has just split.
+        if self.state.show_transcript_panel && self.state.transcript_panel_hovered {
+            return;
+        }
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
@@ -28951,6 +28957,8 @@ impl eframe::App for KlippApp {
         if self.state.show_transcript_panel {
             let cmds = self.transcript_panel.show(ctx, &mut self.state, &self.transcript_source, &self.theme);
             all_cmds.extend(cmds);
+        } else {
+            self.state.transcript_panel_hovered = false;
         }
         self.run_pending_doc_ops();
 

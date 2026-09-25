@@ -2156,6 +2156,11 @@ pub struct AppState {
     pub show_subtitle_editor: bool,
     /// Visibility of the Transcript panel.
     pub show_transcript_panel: bool,
+    /// Whether the pointer was over the Transcript panel on the last
+    /// frame it was drawn. Delete over the panel cuts the selected words,
+    /// and the global Delete shortcut stands aside; both read this same
+    /// value in a frame, so the key goes to one of them, never both.
+    pub transcript_panel_hovered: bool,
     /// Document ops a panel asked for (captions, transcript cuts), each
     /// with its history label: resolved against the timeline and applied
     /// as one undo step by the app on its next frame, through the same
@@ -3961,6 +3966,7 @@ impl Default for AppState {
             show_markers_panel: false,
             show_subtitle_editor: false,
             show_transcript_panel: false,
+            transcript_panel_hovered: false,
             pending_doc_ops: Vec::new(),
             show_project_notes: false,
             show_edit_plan: false,
