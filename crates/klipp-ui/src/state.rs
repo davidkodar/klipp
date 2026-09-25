@@ -1753,6 +1753,9 @@ pub struct AppState {
 
     // Color panel / node graph
     pub show_color_panel: bool,
+    /// The Colour workspace grades the timeline grade — the look over
+    /// the whole sequence — rather than the selected clip.
+    pub grade_timeline: bool,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -2549,6 +2552,11 @@ pub struct GradeStill {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    /// Which clip, and when, the still was grabbed from.
+    pub source: Option<klipp_project::StillSource>,
+    /// That clip's grade at the time: what Apply Grade from Still puts
+    /// on other clips. `None` for stills from before stills kept it.
+    pub grade: Option<klipp_nodes::NodeGraph>,
     pub texture: Option<egui::TextureHandle>,
 }
 
@@ -3405,6 +3413,89 @@ pub struct AttributesClipboard {
     pub speed_keyframes: Vec<klipp_core::Keyframe>,
 }
 
+/// Which parts of the attributes clipboard a paste writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PasteChoice {
+    pub effects: bool,
+    pub color_grade: bool,
+    pub audio: bool,
+    pub transform: bool,
+    pub speed: bool,
+}
+
+impl AttributesClipboard {
+    /// What Copy Attributes takes from `clip`.
+    pub fn of(clip: &klipp_timeline::Clip) -> Self {
+        Self {
+            builtin_effects: clip.builtin_effects.clone(),
+            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
+            effects: clip.effects.clone(),
+            node_graph: clip.node_graph.clone(),
+            volume: clip.volume,
+            pan: clip.pan,
+            gain: clip.gain,
+            fade_in_secs: clip.fade_in_secs,
+            fade_out_secs: clip.fade_out_secs,
+            fade_in_curve: clip.fade_in_curve,
+            fade_out_curve: clip.fade_out_curve,
+            volume_keyframes: clip.volume_keyframes.clone(),
+            pan_keyframes: clip.pan_keyframes.clone(),
+            gain_keyframes: clip.gain_keyframes.clone(),
+            audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+            opacity_keyframes: clip.opacity_keyframes.clone(),
+            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
+            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
+            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
+            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+            effect_keyframes: clip.effect_keyframes.clone(),
+            param_modifiers: clip.param_modifiers.clone(),
+            speed: clip.speed,
+            speed_keyframes: clip.speed_keyframes.clone(),
+        }
+    }
+
+    /// Write the chosen parts onto `clip`. A pasted grade gets fresh node
+    /// ids, so the clips it lands on do not share ids — the executor's
+    /// per-node caches are keyed by them.
+    pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
+        if what.effects {
+            clip.builtin_effects = self.builtin_effects.clone();
+            clip.builtin_effects_enabled = self.builtin_effects_enabled.clone();
+            clip.effects = self.effects.clone();
+            clip.effect_keyframes = self.effect_keyframes.clone();
+        }
+        if what.color_grade {
+            clip.node_graph = self.node_graph.remap_ids();
+        }
+        if what.audio {
+            clip.volume = self.volume;
+            clip.pan = self.pan;
+            clip.gain = self.gain;
+            clip.fade_in_secs = self.fade_in_secs;
+            clip.fade_out_secs = self.fade_out_secs;
+            clip.fade_in_curve = self.fade_in_curve;
+            clip.fade_out_curve = self.fade_out_curve;
+            clip.volume_keyframes = self.volume_keyframes.clone();
+            clip.pan_keyframes = self.pan_keyframes.clone();
+            clip.gain_keyframes = self.gain_keyframes.clone();
+            clip.audio_effects = self.audio_effects.clone();
+            clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
+        }
+        if what.transform {
+            clip.opacity_keyframes = self.opacity_keyframes.clone();
+            clip.transform_pos_x_keyframes = self.transform_pos_x_keyframes.clone();
+            clip.transform_pos_y_keyframes = self.transform_pos_y_keyframes.clone();
+            clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
+            clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
+            clip.param_modifiers = self.param_modifiers.clone();
+        }
+        if what.speed {
+            clip.speed = self.speed;
+        }
+    }
+}
+
 impl AppState {
     /// The scope dock under the viewer exists only in the Color
     /// workspace, where the timeline is hidden. Elsewhere it would take
@@ -3712,6 +3803,7 @@ impl Default for AppState {
             global_lut_enabled: true,
             bake_lut_size: 33,
             show_color_panel: false,
+            grade_timeline: false,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),

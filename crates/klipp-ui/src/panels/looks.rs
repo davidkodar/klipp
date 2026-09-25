@@ -215,6 +215,23 @@ pub fn show(
                             cmds.push(AppCommand::ApplyLook {
                                 look_id: look.id,
                                 clip_ids: apply_targets.clone(),
+                                append: false,
+                            });
+                        }
+                        // After each clip's own grade instead of in place
+                        // of it: one look over shots that each keep their
+                        // balance.
+                        let add_resp = ui.add_enabled(
+                            can_apply,
+                            egui::Button::new(
+                                egui::RichText::new("Add").size(10.0).color(theme.text_accent)
+                            ).frame(false),
+                        ).on_hover_text("Run this Look after each selected clip's own grade, keeping its balance");
+                        if add_resp.clicked() {
+                            cmds.push(AppCommand::ApplyLook {
+                                look_id: look.id,
+                                clip_ids: apply_targets.clone(),
+                                append: true,
                             });
                         }
                     });

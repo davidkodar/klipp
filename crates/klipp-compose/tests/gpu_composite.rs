@@ -212,6 +212,28 @@ fn a_title_with_an_effect_and_a_faded_layer_match() {
     assert_match("title effect", &seq, &mut src);
 }
 
+/// The timeline grade over the stack: the accumulator graded after the
+/// last layer, as `render_stack` grades it.
+#[test]
+fn a_timeline_grade_over_the_stack_matches() {
+    let (mut seq, mut src) = stack();
+    seq.timeline_graph = Some({
+        use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
+        let node = |kind: NodeKind, params: NodeParams| Node {
+            id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
+        };
+        let nodes = vec![
+            node(NodeKind::Source, NodeParams::default()),
+            node(NodeKind::Exposure, NodeParams { exposure: Some(-0.7), ..Default::default() }),
+            node(NodeKind::Output, NodeParams::default()),
+        ];
+        let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+        let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+        NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+    });
+    assert_match("timeline grade", &seq, &mut src);
+}
+
 /// The timeline's LUT over the stack: applied on the accumulator before
 /// the premultiply, where `render_stack` applies it.
 #[test]

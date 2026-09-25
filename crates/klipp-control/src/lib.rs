@@ -3376,11 +3376,19 @@ fn handle(
                 .flat_map(|t| t.clips.iter())
                 .find(|cl| cl.id == want)
                 .ok_or_else(|| format!("no clip with id {c}"))?;
+            // The timeline grade runs on every frame after the clip's own,
+            // so what the viewer shows is both; say so, or a reader of this
+            // graph alone would misjudge the picture.
+            let timeline = seq.timeline_graph.as_ref().filter(|g| !g.is_identity());
             Ok(json!({
                 "clip_id": c,
                 "is_identity": clip.node_graph.is_identity(),
                 "graph": serde_json::to_value(&clip.node_graph)
                     .map_err(|e| format!("serialising graph: {e}"))?,
+                "timeline_graph": timeline
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| format!("serialising the timeline graph: {e}"))?,
             }))
         }
 
@@ -3513,12 +3521,20 @@ fn handle(
                 ))
             });
             write_png(&out, &data, width, height)?;
-            Ok(json!({
+            let mut v = json!({
                 "path": out.to_string_lossy(),
                 "width": width,
                 "height": height,
                 "generation": generation,
-            }))
+            });
+            // The capture is always the whole graded frame. When the viewer
+            // is showing a compare split, what the person sees is not that,
+            // and a reader comparing notes with them needs to know.
+            if let Some(compare) = ctx.shared.viewer_compare.lock().ok().and_then(|c| c.clone()) {
+                v["viewer_compare"] = json!(compare);
+                v["note"] = json!("A compare split is on in the viewer; this image is the whole graded frame, not the split the viewer shows.");
+            }
+            Ok(v)
         }
 
         ControlCommand::Plan { ops, detail } => {

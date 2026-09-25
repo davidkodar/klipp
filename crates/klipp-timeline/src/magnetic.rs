@@ -2093,6 +2093,7 @@ mod tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: "Test".to_string(),
             fps: Fps::film_24(),
@@ -2125,6 +2126,7 @@ mod tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: "Test".to_string(),
             fps: Fps::film_24(),

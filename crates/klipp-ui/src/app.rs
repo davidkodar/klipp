@@ -649,6 +649,88 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
     }
 }
 
+/// The hidden track the timeline grade stands in on while the Colour
+/// workspace grades it; fixed for the sequence.
+fn timeline_grade_proxy_track_id(seq: &klipp_timeline::Sequence) -> klipp_core::TrackId {
+    const STAND_IN: u128 = 0x7374_616e_642d_696e_2074_7261_636b_0001;
+    klipp_core::TrackId(uuid::Uuid::from_u128(seq.id.0.as_u128() ^ STAND_IN))
+}
+
+/// Take the timeline grade's stand-in track off `seq`, if it is there,
+/// keeping its graph as the timeline grade.
+fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence) {
+    let track_id = timeline_grade_proxy_track_id(seq);
+    let Some(pos) = seq.tracks.iter().position(|t| t.id == track_id) else { return };
+    let track = seq.tracks.remove(pos);
+    if let Some(proxy) = track.clips.into_iter().next() {
+        seq.timeline_graph = Some(proxy.node_graph);
+    }
+}
+
+/// The clip a grade still is taken from: the selected clip when it is
+/// under the playhead, since that is the one the Colour panels show;
+/// otherwise the topmost visible video clip there, which is what the
+/// viewer shows. `None` over a gap.
+fn still_source_clip(
+    seq: &klipp_timeline::Sequence,
+    playhead: klipp_core::Timecode,
+    selected: Option<klipp_core::ClipId>,
+) -> Option<&klipp_timeline::Clip> {
+    let video = || seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video) && t.visible);
+    let selected_here = selected.and_then(|id| video().find_map(|t| t.clip_at_timecode(playhead).map(|(_, c)| c).filter(|c| c.id == id)));
+    selected_here.or_else(|| video().find_map(|t| t.clip_at_timecode(playhead).map(|(_, c)| c)))
+}
+
+/// `secs` as HH:MM:SS:FF at a nominal `fps`, for display.
+fn record_timecode(secs: f64, fps: f64) -> String {
+    let nominal = fps.round().max(1.0) as i64;
+    let frames = (secs.max(0.0) * fps).round() as i64;
+    let (ff, total) = (frames % nominal, frames / nominal);
+    format!("{:02}:{:02}:{:02}:{:02}", total / 3600, total / 60 % 60, total % 60, ff)
+}
+
+/// A still's grade onto each of `targets`, fresh node ids per clip, as
+/// graph edits to apply together: in place of each clip's grade, or with
+/// `append` after it, keeping the clip's own balance.
+fn grade_from_still_edits(
+    seq: &klipp_timeline::Sequence,
+    grade: &klipp_nodes::NodeGraph,
+    targets: &[klipp_core::ClipId],
+    append: bool,
+) -> Vec<EditCommand> {
+    seq.all_clips()
+        .filter(|c| targets.contains(&c.id))
+        .filter_map(|c| {
+            let new_graph = if append {
+                let mut g = c.node_graph.clone();
+                g.append(grade).then_some(g)?
+            } else {
+                grade.remap_ids()
+            };
+            Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph })
+        })
+        .collect()
+}
+
+/// The edits a Paste Attributes makes: each target clip replaced whole
+/// by itself with the chosen attributes written on. Free of the app so
+/// it can be tested without one.
+fn paste_attributes_edits(
+    seq: &klipp_timeline::Sequence,
+    targets: &[klipp_core::ClipId],
+    attrs: &crate::state::AttributesClipboard,
+    what: crate::state::PasteChoice,
+) -> Vec<EditCommand> {
+    seq.all_clips()
+        .filter(|c| targets.contains(&c.id))
+        .map(|c| {
+            let mut new = c.clone();
+            attrs.paste_onto(&mut new, what);
+            EditCommand::ReplaceClip { description: "Paste Attributes", old: Box::new(c.clone()), new: Box::new(new) }
+        })
+        .collect()
+}
+
 /// One camera key set or cleared, on the list the param names.
 ///
 /// Free of the app so it can be tested without one. The insert and the
@@ -1668,6 +1750,31 @@ impl KlippApp {
 
     /// Share the document revision and the render queue's state with the
     /// control socket.
+    /// Tell control-socket clients which compare the viewer is showing:
+    /// the frame they read is the whole graded picture, and the person is
+    /// looking at a split of it.
+    fn publish_viewer_compare(&self) {
+        let s = &self.state;
+        let still = s.grade_still_compare.then(|| s.active_grade_still.and_then(|i| s.grade_stills.get(i))).flatten();
+        let pct = (s.split_position * 100.0).round();
+        let compare = if let Some(still) = still {
+            Some(format!("grade still split: left {pct}% shows the still \"{}\", right shows the graded frame", still.name))
+        } else if s.before_after_active {
+            Some(format!("before/after split: left {pct}% shows the frame ungraded, right graded"))
+        } else if s.stabilization_compare_active {
+            Some(format!("stabilisation split: left {pct}% unstabilised"))
+        } else if s.split_compare_effect.is_some() {
+            Some(format!("effect split: left {pct}% with the effect toggled"))
+        } else {
+            None
+        };
+        if let Ok(mut shown) = s.control_shared.viewer_compare.lock() {
+            if *shown != compare {
+                *shown = compare;
+            }
+        }
+    }
+
     pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
         self.state.control_shared = std::sync::Arc::clone(&shared);
         // Histories made before this arrived point at the default counter.
@@ -4397,6 +4504,10 @@ impl KlippApp {
         // awareness. This mirrors the export path exactly: viewer and export
         // are consistent by construction.
         *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
+        // A command in the Colour workspace can sync while the timeline
+        // grade stands in as a clip: the engine gets the grade, never the
+        // stand-in.
+        settle_timeline_grade_proxy(&mut seq);
         klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
     }
 
@@ -4757,6 +4868,7 @@ impl KlippApp {
             // A new sequence starts without a camera; a nest that goes
             // back into its parent is moved by the parent's.
             camera: klipp_timeline::Camera::default(),
+            timeline_graph: None,
             drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
@@ -7981,90 +8093,38 @@ impl KlippApp {
                     let cid = *clip_id;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
-                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard {
-                            builtin_effects: clip.builtin_effects.clone(),
-                            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
-                            effects: clip.effects.clone(),
-                            node_graph: clip.node_graph.clone(),
-                            volume: clip.volume,
-                            pan: clip.pan,
-                            gain: clip.gain,
-                            fade_in_secs: clip.fade_in_secs,
-                            fade_out_secs: clip.fade_out_secs,
-                            fade_in_curve: clip.fade_in_curve,
-                            fade_out_curve: clip.fade_out_curve,
-                            volume_keyframes: clip.volume_keyframes.clone(),
-                            pan_keyframes: clip.pan_keyframes.clone(),
-                            gain_keyframes: clip.gain_keyframes.clone(),
-                            audio_effects: clip.audio_effects.clone(),
-                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                            opacity_keyframes: clip.opacity_keyframes.clone(),
-                            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-                            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-                            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-                            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-                            effect_keyframes: clip.effect_keyframes.clone(),
-                            param_modifiers: clip.param_modifiers.clone(),
-                            speed: clip.speed,
-                            speed_keyframes: clip.speed_keyframes.clone(),
-                        });
+                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(clip));
                         self.state.toast.show("Attributes copied".to_string());
                     }
                     true
                 }
                 // Paste Attributes: apply selected attribute categories to target clip(s)
                 AppCommand::PasteAttributes { effects, color_grade, audio, transform, speed } => {
-                    if let Some(ref attrs) = self.state.attributes_clipboard.clone() {
-                        // Collect target clip IDs
+                    // One whole-clip snapshot either side per target, as
+                    // one undo step. It used to write the clips in place
+                    // with no history, and to stop at the first clip in
+                    // the sequence that was not a target — so it pasted
+                    // to whichever targets came before that, skipped the
+                    // engine sync, and said nothing.
+                    if let Some(attrs) = self.state.attributes_clipboard.clone() {
+                        let what = crate::state::PasteChoice {
+                            effects: *effects,
+                            color_grade: *color_grade,
+                            audio: *audio,
+                            transform: *transform,
+                            speed: *speed,
+                        };
                         let mut targets = self.state.selected_clips.clone();
                         if let Some(primary) = self.state.selected_clip {
                             if !targets.contains(&primary) {
                                 targets.push(primary);
                             }
                         }
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        for clip in seq.all_clips_mut() {
-                            if !targets.contains(&clip.id) { return true; }
-                            if *effects {
-                                clip.builtin_effects = attrs.builtin_effects.clone();
-                                clip.builtin_effects_enabled = attrs.builtin_effects_enabled.clone();
-                                clip.effects = attrs.effects.clone();
-                                clip.effect_keyframes = attrs.effect_keyframes.clone();
-                            }
-                            if *color_grade {
-                                clip.node_graph = attrs.node_graph.clone();
-                            }
-                            if *audio {
-                                clip.volume = attrs.volume;
-                                clip.pan = attrs.pan;
-                                clip.gain = attrs.gain;
-                                clip.fade_in_secs = attrs.fade_in_secs;
-                                clip.fade_out_secs = attrs.fade_out_secs;
-                                clip.fade_in_curve = attrs.fade_in_curve;
-                                clip.fade_out_curve = attrs.fade_out_curve;
-                                clip.volume_keyframes = attrs.volume_keyframes.clone();
-                                clip.pan_keyframes = attrs.pan_keyframes.clone();
-                                clip.gain_keyframes = attrs.gain_keyframes.clone();
-                                clip.audio_effects = attrs.audio_effects.clone();
-                                clip.audio_effect_keyframes = attrs.audio_effect_keyframes.clone();
-                            }
-                            if *transform {
-                                clip.opacity_keyframes = attrs.opacity_keyframes.clone();
-                                clip.transform_pos_x_keyframes = attrs.transform_pos_x_keyframes.clone();
-                                clip.transform_pos_y_keyframes = attrs.transform_pos_y_keyframes.clone();
-                                clip.transform_scale_keyframes = attrs.transform_scale_keyframes.clone();
-                                clip.transform_rotation_keyframes = attrs.transform_rotation_keyframes.clone();
-                                clip.param_modifiers = attrs.param_modifiers.clone();
-                            }
-                            if *speed {
-                                clip.speed = attrs.speed;
-                            }
-                        }
-                        let count = targets.len();
+                        let edits = paste_attributes_edits(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let count = edits.len();
+                        self.apply_edits_as_one(&edits, "Paste Attributes");
                         self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
-                        self.state.dirty = true;
                     }
-                    self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::DuplicateClip { clip_id } => {
@@ -13141,6 +13201,58 @@ impl KlippApp {
     }
 
     fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        let stood_in = self.stand_in_timeline_grade();
+        let handled = self.handle_color_commands_inner(cmd, needs_refresh);
+        if self.stand_down_timeline_grade(stood_in) {
+            *needs_refresh = true;
+        }
+        handled
+    }
+
+    /// While the Colour workspace grades the timeline grade, put it on
+    /// the sequence as the clip it renders as, on a hidden track, and
+    /// select it: every node command, panel and history entry that works
+    /// on "the selected clip's graph" then works on it unchanged. Returns
+    /// what was selected before, for [`Self::stand_down_timeline_grade`];
+    /// `None` when not grading the timeline (nothing is done). Only the
+    /// Colour code runs in between — the stand-in is never saved, and
+    /// [`Self::sync_sequence_to_engine`] never sends it.
+    fn stand_in_timeline_grade(&mut self) -> Option<Option<klipp_core::ClipId>> {
+        if !self.state.grade_timeline || self.state.active_workspace != crate::state::Workspace::Color {
+            return None;
+        }
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let track_id = timeline_grade_proxy_track_id(seq);
+        if seq.tracks.iter().any(|t| t.id == track_id) {
+            return None;
+        }
+        let proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
+        let id = proxy.id;
+        let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
+        track.id = track_id;
+        track.visible = false;
+        track.muted = true;
+        track.clips.push(proxy);
+        seq.tracks.push(track);
+        Some(self.state.selected_clip.replace(id))
+    }
+
+    /// Take the stand-in off again, keeping its graph as the timeline
+    /// grade and restoring the selection. True when the grade changed.
+    fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> bool {
+        let Some(selected) = stood_in else { return false };
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let before = serde_json::to_vec(&seq.timeline_graph).unwrap_or_default();
+        settle_timeline_grade_proxy(seq);
+        let changed = serde_json::to_vec(&seq.timeline_graph).unwrap_or_default() != before;
+        self.state.selected_clip = selected;
+        if changed {
+            self.state.dirty = true;
+        }
+        changed
+    }
+
+    fn handle_color_commands_inner(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         if self.handle_color_sampling(cmd, needs_refresh) { return true; }
         if self.handle_color_node_ops(cmd, needs_refresh) { return true; }
         if self.handle_color_node_config(cmd, needs_refresh) { return true; }
@@ -15348,6 +15460,23 @@ impl KlippApp {
                 self.state.active_grade_still = *index;
                 true
             }
+            AppCommand::ApplyGradeFromStill { index, clip_ids, append } => {
+                let Some(still) = self.state.grade_stills.get(*index) else { return true };
+                let Some(grade) = still.grade.clone() else {
+                    self.state.toast.show("That still was grabbed before stills kept their grade; grab it again to use its grade");
+                    return true;
+                };
+                let name = still.name.clone();
+                let edits = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
+                if edits.is_empty() {
+                    self.state.toast.show("Select the clips to grade first");
+                    return true;
+                }
+                let n = edits.len();
+                self.apply_edits_as_one(&edits, "Apply Grade from Still");
+                self.state.toast.show(format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" }));
+                true
+            }
             AppCommand::ToggleGradeStillCompare => {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
                 true
@@ -15393,12 +15522,26 @@ impl KlippApp {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
+        let seq = self.state.sequences.get(self.state.active_sequence_idx)?;
+        let clip = still_source_clip(seq, self.state.playhead, self.state.selected_clip);
+        let source = clip.map(|c| klipp_project::StillSource {
+            clip_id: Some(c.id),
+            media_id: c.media_id(),
+            record_secs: self.state.playhead.to_secs_f64(),
+            clip_name: c
+                .media_id()
+                .and_then(|m| self.state.media_pool.get(&m))
+                .map(|m| m.filename.clone())
+                .unwrap_or_default(),
+        });
         Some(crate::state::GradeStill {
             name,
             filename,
             rgba,
             width: tw,
             height: th,
+            source,
+            grade: clip.map(|c| c.node_graph.clone()),
             texture: None,
         })
     }
@@ -15419,6 +15562,8 @@ impl KlippApp {
                 rgba: s.rgba.clone(),
                 width: s.width,
                 height: s.height,
+                source: s.source.clone(),
+                grade: s.grade.clone(),
             })
             .collect();
         if let Err(e) = klipp_project::save_grade_stills(&project_dir, &stills) {
@@ -15587,7 +15732,7 @@ impl KlippApp {
                 self.state.toast.show(format!("Saved Look \"{label}\""));
                 true
             }
-            AppCommand::ApplyLook { look_id, clip_ids } => {
+            AppCommand::ApplyLook { look_id, clip_ids, append } => {
                 let Some(look) = self.state.looks.iter().find(|l| l.id == *look_id).cloned() else {
                     self.state.toast.show("Look not found");
                     return true;
@@ -15602,8 +15747,15 @@ impl KlippApp {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                             let old_graph = clip.node_graph.clone();
                             // remap_ids gives the target a fresh set of NodeIds
-                            // so two clips applying the same Look don't collide.
-                            clip.node_graph = look.node_graph.remap_ids();
+                            // so two clips applying the same Look don't collide;
+                            // append remaps as it splices.
+                            if *append {
+                                if !clip.node_graph.append(&look.node_graph) {
+                                    continue;
+                                }
+                            } else {
+                                clip.node_graph = look.node_graph.remap_ids();
+                            }
                             applied += 1;
                             history_pushes.push((*clip_id, old_graph, clip.node_graph.clone()));
                         }
@@ -18744,6 +18896,7 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    timeline_graph: None,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
@@ -18839,6 +18992,7 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    timeline_graph: None,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(
                         klipp_core::Fps::new(*fps_num, *fps_den),
                     ),
@@ -24605,6 +24759,8 @@ impl KlippApp {
                         rgba: d.rgba,
                         width: d.width,
                         height: d.height,
+                        source: d.source,
+                        grade: d.grade,
                         texture: None,
                     })
                     .collect();
@@ -28049,6 +28205,8 @@ impl eframe::App for KlippApp {
         }
 
         self.sync_project_lock();
+
+        self.publish_viewer_compare();
 
         // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
@@ -33005,7 +33163,11 @@ impl KlippApp {
                     }
 
                     if self.state.show_inspector_panel {
+                        // Grading the timeline: the panels show and edit
+                        // its grade as the selected clip's.
+                        let stood_in = self.stand_in_timeline_grade();
                         self.render_inspector_panel(ui, inspector_rect, all_cmds);
+                        self.stand_down_timeline_grade(stood_in);
                     } else {
                         self.render_inspector_rail(ui, inspector_rect);
                     }
@@ -33120,6 +33282,7 @@ impl KlippApp {
                     // The render function gates the Color-only chrome
                     // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
                     if in_color_ws || show_scopes_bar {
+                        let stood_in = self.stand_in_timeline_grade();
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,
@@ -33140,6 +33303,7 @@ impl KlippApp {
                                 bottom_scope_cursor,
                             },
                         );
+                        self.stand_down_timeline_grade(stood_in);
                     }
 
                     self.handle_panel_resizers(
@@ -33784,15 +33948,20 @@ impl KlippApp {
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
+                let timeline_grade_id = self.state.sequences[seq_idx].timeline_grade_clip_id();
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let theme = self.theme.clone();
-                    let title = clip
-                        .media_id()
-                        .and_then(|m| self.state.media_pool.get(&m))
-                        .map(|m| m.filename.clone())
-                        .unwrap_or_else(|| "Clip".into());
+                    let title = if clip.id == timeline_grade_id {
+                        "Timeline Grade".to_string()
+                    } else {
+                        clip
+                            .media_id()
+                            .and_then(|m| self.state.media_pool.get(&m))
+                            .map(|m| m.filename.clone())
+                            .unwrap_or_else(|| "Clip".into())
+                    };
                     if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
                         collapse_requested = true;
                     }
@@ -33852,8 +34021,16 @@ impl KlippApp {
                             }
                         });
 
+                        // Apply Grade from Still goes to the timeline
+                        // selection, or the one selected clip, as Looks do.
+                        let grade_targets: Vec<klipp_core::ClipId> = if !self.state.selected_clips.is_empty() {
+                            self.state.selected_clips.clone()
+                        } else {
+                            self.state.selected_clip.into_iter().collect()
+                        };
                         caption_row(ui, "Stills", &mut |ui| {
                             let mut delete_idx = None;
+                            let mut apply_idx = None;
                             for (i, still) in self.state.grade_stills.iter_mut().enumerate() {
                                 let is_active = self.state.active_grade_still == Some(i);
                                 if still.texture.is_none() && !still.rgba.is_empty() {
@@ -33892,8 +34069,36 @@ impl KlippApp {
                                         index: if is_active { None } else { Some(i) },
                                     });
                                 }
-                                let resp = resp.on_hover_text(&still.name);
+                                let hover = match &still.source {
+                                    Some(src) => format!(
+                                        "{}\nFrom {} at {}",
+                                        still.name,
+                                        if src.clip_name.is_empty() { "a clip" } else { src.clip_name.as_str() },
+                                        record_timecode(src.record_secs, self.state.fps.as_f64()),
+                                    ),
+                                    None => still.name.clone(),
+                                };
+                                let resp = resp.on_hover_text(hover);
+                                let has_grade = still.grade.is_some();
                                 resp.context_menu(|ui| {
+                                    let why = if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" };
+                                    let can = has_grade && !grade_targets.is_empty();
+                                    if ui.add_enabled(can, egui::Button::new("Apply Grade to Selected Clips"))
+                                        .on_hover_text("In place of each clip's own grade")
+                                        .on_disabled_hover_text(why)
+                                        .clicked()
+                                    {
+                                        apply_idx = Some((i, false));
+                                        ui.close_menu();
+                                    }
+                                    if ui.add_enabled(can, egui::Button::new("Add Grade After Their Own"))
+                                        .on_hover_text("After each clip's own grade, keeping its balance")
+                                        .on_disabled_hover_text(why)
+                                        .clicked()
+                                    {
+                                        apply_idx = Some((i, true));
+                                        ui.close_menu();
+                                    }
                                     if ui.button("Delete").clicked() {
                                         delete_idx = Some(i);
                                         ui.close_menu();
@@ -33902,6 +34107,23 @@ impl KlippApp {
                             }
                             if let Some(idx) = delete_idx {
                                 all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
+                            }
+                            if let Some((idx, append)) = apply_idx {
+                                all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone(), append });
+                            }
+                            // The active still's grade onto the selection:
+                            // grab a finished shot, then grade the next ones
+                            // from the same setup from it.
+                            let active_grade = self.state.active_grade_still.filter(|&i| self.state.grade_stills.get(i).is_some_and(|s| s.grade.is_some()));
+                            if ui
+                                .add_enabled(active_grade.is_some() && !grade_targets.is_empty(), egui::Button::new("Apply").small())
+                                .on_hover_text("Put the active still's grade on the selected clips")
+                                .on_disabled_hover_text("Pick a still that kept its grade, and select the clips to grade")
+                                .clicked()
+                            {
+                                if let Some(idx) = active_grade {
+                                    all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone(), append: false });
+                                }
                             }
                             if ui.small_button("Grab").on_hover_text("Capture the current frame as a grade still").clicked() {
                                 let name = format!("Still {}", self.state.grade_stills.len() + 1);
@@ -33913,6 +34135,19 @@ impl KlippApp {
                                 .clicked()
                             {
                                 all_cmds.push(AppCommand::ToggleGradeStillCompare);
+                            }
+                            // Alt+B's split, shown and switchable here: the
+                            // viewer showing half a frame ungraded should
+                            // never be a state you cannot see is on.
+                            let before_after = self.state.before_after_active;
+                            if ui.selectable_label(before_after, "Before/After")
+                                .on_hover_text(format!(
+                                    "Split the viewer: left ungraded, right graded ({})",
+                                    self.key_bindings.display_for("toggle_before_after")
+                                ))
+                                .clicked()
+                            {
+                                all_cmds.push(AppCommand::ToggleBeforeAfter);
                             }
                         });
 
@@ -34540,6 +34775,28 @@ impl KlippApp {
                             ColorToolsPosition::Bottom
                         };
                     }
+                }
+                ui.separator();
+                // What the nodes and wheels grade: the selected clip, or
+                // the timeline grade over every clip after its own.
+                ui.label(egui::RichText::new("Grade").color(theme.text_dim));
+                if ui.selectable_label(!self.state.grade_timeline, "Clip")
+                    .on_hover_text("Grade the selected clip")
+                    .clicked()
+                {
+                    self.state.grade_timeline = false;
+                    self.state.graph_descent_path.clear();
+                    self.state.selected_node_id = None;
+                    self.state.selected_node_ids.clear();
+                }
+                if ui.selectable_label(self.state.grade_timeline, "Timeline")
+                    .on_hover_text("Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT")
+                    .clicked()
+                {
+                    self.state.grade_timeline = true;
+                    self.state.graph_descent_path.clear();
+                    self.state.selected_node_id = None;
+                    self.state.selected_node_ids.clear();
                 }
 
                 if self.state.show_scopes {
@@ -38230,6 +38487,7 @@ mod compound_clip_cycle_tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
@@ -40794,4 +41052,142 @@ mod sequence_camera_tests {
 fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod paste_attributes_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Sequence};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 25, rate: 25 }
+    }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_paste_reaches_every_target_as_one_undoable_step() {
+        let mut seq = Sequence::new_default();
+        let source = {
+            let mut c = clip(0, 2);
+            c.node_graph = klipp_nodes::NodeGraph::default();
+            c.volume = 0.25;
+            c
+        };
+        // The first clip in the sequence is not a target: the old handler
+        // stopped there and pasted nothing.
+        let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
+        let targets = vec![b.id, c.id];
+        seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
+        let attrs = crate::state::AttributesClipboard::of(&source);
+        let what = crate::state::PasteChoice { color_grade: true, audio: true, ..Default::default() };
+        let edits = paste_attributes_edits(&seq, &targets, &attrs, what);
+        assert_eq!(edits.len(), 2);
+
+        let mut sequences = vec![seq];
+        let mut pool = klipp_media::MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        let pasted: Vec<&Clip> = sequences[0].tracks[0].clips.iter().filter(|x| targets.contains(&x.id)).collect();
+        assert!(pasted.iter().all(|x| x.volume == 0.25));
+        // Fresh node ids on each clip, not the source's.
+        let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_ne!(ids(&pasted[0].node_graph), ids(&source.node_graph));
+        assert_ne!(ids(&pasted[0].node_graph), ids(&pasted[1].node_graph));
+        assert_eq!(sequences[0].tracks[0].clips[0].volume, a.volume, "a clip that was not a target is untouched");
+
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in edits.iter().rev() {
+            view.apply_inverse(e);
+        }
+        assert_eq!(sequences[0].tracks[0].clips[1].volume, b.volume);
+        assert_eq!(sequences[0].tracks[0].clips[2].volume, c.volume);
+    }
+}
+
+#[cfg(test)]
+mod grade_still_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Sequence};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 25, rate: 25 }
+    }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_still_is_taken_from_the_selected_clip_only_when_it_is_under_the_playhead() {
+        let mut seq = Sequence::new_default();
+        let (a, b) = (clip(0, 4), clip(4, 8));
+        seq.tracks[0].clips = vec![a.clone(), b.clone()];
+        assert_eq!(still_source_clip(&seq, t(1), Some(a.id)).map(|c| c.id), Some(a.id));
+        // Selected elsewhere: the clip the viewer shows.
+        assert_eq!(still_source_clip(&seq, t(5), Some(a.id)).map(|c| c.id), Some(b.id));
+        assert!(still_source_clip(&seq, t(9), Some(a.id)).is_none(), "a gap has no clip");
+    }
+
+    #[test]
+    fn a_still_grade_goes_on_every_target_with_its_own_ids_and_undoes_as_one() {
+        let mut seq = Sequence::new_default();
+        let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
+        seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
+        let grade = klipp_nodes::NodeGraph::default();
+        let edits = grade_from_still_edits(&seq, &grade, &[a.id, c.id], false);
+        assert_eq!(edits.len(), 2);
+        let ids = |e: &EditCommand| match e {
+            EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
+            _ => panic!("a graph edit"),
+        };
+        assert_ne!(ids(&edits[0]), ids(&edits[1]), "each clip gets fresh node ids");
+        assert_ne!(ids(&edits[0]), grade.nodes.iter().map(|n| n.id).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_added_still_grade_keeps_each_clips_own_balance() {
+        let mut seq = Sequence::new_default();
+        let mut a = clip(0, 2);
+        a.node_graph.ensure_corrector();
+        let own: Vec<_> = a.node_graph.nodes.iter().map(|n| n.id).collect();
+        seq.tracks[0].clips = vec![a.clone()];
+        let mut look = klipp_nodes::NodeGraph::default();
+        look.ensure_lut3d();
+        let edits = grade_from_still_edits(&seq, &look, &[a.id], true);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a graph edit") };
+        assert!(own.iter().all(|id| new_graph.nodes.iter().any(|n| n.id == *id)), "the clip's own nodes stay");
+        assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D), "the look is added");
+    }
+
+    #[test]
+    fn a_record_timecode_reads_as_an_editor_would_say_it() {
+        assert_eq!(record_timecode(3723.48, 25.0), "01:02:03:12");
+    }
+}
+
+#[cfg(test)]
+mod timeline_grade_stand_in_tests {
+    use super::*;
+
+    #[test]
+    fn the_stand_in_track_never_outlives_its_graph() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let tracks = seq.tracks.len();
+        let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(&seq);
+        proxy.node_graph.ensure_corrector();
+        let nodes = proxy.node_graph.nodes.len();
+        let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
+        track.id = timeline_grade_proxy_track_id(&seq);
+        track.clips.push(proxy);
+        seq.tracks.push(track);
+        settle_timeline_grade_proxy(&mut seq);
+        assert_eq!(seq.tracks.len(), tracks);
+        assert_eq!(seq.timeline_graph.map(|g| g.nodes.len()), Some(nodes));
+    }
 }

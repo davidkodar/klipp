@@ -44,6 +44,21 @@ impl Effects {
     }
 }
 
+/// A graph edit lands on the clip it names, or, under the sequence's
+/// timeline-grade id, on the timeline grade: the Colour workspace edits
+/// that through the same node commands as a clip's grade.
+fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &klipp_nodes::NodeGraph) {
+    for track in &mut seq.tracks {
+        if let Some(clip) = track.find_clip_mut(clip_id) {
+            clip.node_graph = graph.clone();
+            return;
+        }
+    }
+    if clip_id == seq.timeline_grade_clip_id() {
+        seq.timeline_graph = Some(graph.clone());
+    }
+}
+
 impl DocumentView<'_> {
     pub fn apply_inverse(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
@@ -522,13 +537,17 @@ impl DocumentView<'_> {
                     }
                 }
             }
-            EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
+            EditCommand::ReplaceClip { old, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.node_graph = old_graph.clone();
+                    if let Some(clip) = track.find_clip_mut(old.id) {
+                        *clip = (**old).clone();
                         break;
                     }
                 }
+                effects.sync_sequence = true;
+            }
+            EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
+                set_node_graph(&mut self.sequences[self.active], *clip_id, old_graph);
             }
             EditCommand::EditKeyframes { clip_id, linked_clip_id, old_state, old_linked_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
@@ -1123,13 +1142,17 @@ impl DocumentView<'_> {
                     }
                 }
             }
-            EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
+            EditCommand::ReplaceClip { new, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.node_graph = new_graph.clone();
+                    if let Some(clip) = track.find_clip_mut(new.id) {
+                        *clip = (**new).clone();
                         break;
                     }
                 }
+                effects.sync_sequence = true;
+            }
+            EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
+                set_node_graph(&mut self.sequences[self.active], *clip_id, new_graph);
             }
             EditCommand::EditKeyframes { clip_id, linked_clip_id, new_state, new_linked_state, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
@@ -1287,5 +1310,27 @@ impl DocumentView<'_> {
             }
             track.sort_clips();
         }
+    }
+}
+
+#[cfg(test)]
+mod timeline_grade_tests {
+    use super::*;
+
+    #[test]
+    fn a_graph_edit_under_the_timeline_grade_id_undoes_and_redoes_the_timeline_grade() {
+        let mut sequences = vec![Sequence::new_default()];
+        let id = sequences[0].timeline_grade_clip_id();
+        let mut new_graph = klipp_nodes::NodeGraph::default();
+        new_graph.ensure_corrector();
+        let edit = EditCommand::SetNodeGraph { clip_id: id, old_graph: klipp_nodes::NodeGraph::default(), new_graph: new_graph.clone() };
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        view.apply_forward(&edit);
+        let len = |s: &Sequence| s.timeline_graph.as_ref().map(|g| g.nodes.len());
+        assert_eq!(len(&view.sequences[0]), Some(new_graph.nodes.len()));
+        view.apply_inverse(&edit);
+        assert_eq!(len(&view.sequences[0]), Some(klipp_nodes::NodeGraph::default().nodes.len()));
     }
 }

@@ -73,6 +73,12 @@ pub struct Sequence {
     /// which is what every sequence made before this had.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
     pub camera: Camera,
+    /// A grade over the whole sequence, run on every frame after the
+    /// clips are graded and composited, in viewer and export alike: where
+    /// the overall look of a piece goes, rather than into every clip.
+    /// `None` is no timeline grade, as every sequence made before this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_graph: Option<klipp_nodes::NodeGraph>,
     /// Whether positions on this sequence are counted drop-frame.
     ///
     /// Only 29.97 and 59.94 have drop-frame at all — it skips frame
@@ -170,6 +176,14 @@ impl Camera {
 }
 
 impl Sequence {
+    /// The id the timeline grade runs under as a clip (see
+    /// [`Clip::timeline_grade_of`]): fixed for the sequence, and never a
+    /// real clip's.
+    pub fn timeline_grade_clip_id(&self) -> ClipId {
+        const TIMELINE: u128 = 0x7469_6d65_6c69_6e65_6772_6164_6521_0001;
+        ClipId(uuid::Uuid::from_u128(self.id.0.as_u128() ^ TIMELINE))
+    }
+
     /// Whether a sequence at `fps` counts drop-frame unless told
     /// otherwise: yes at 29.97 and 59.94, no everywhere else.
     ///
@@ -192,6 +206,7 @@ impl Sequence {
         Self {
             id: SequenceId::new(),
             camera: Camera::default(),
+            timeline_graph: None,
             drop_frame: Self::default_drop_frame(Fps::film_24()),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
@@ -2004,6 +2019,31 @@ impl Clip {
     }
 
     /// Create a media clip with the given source and timeline extents.
+    /// The sequence's timeline grade as the clip the grade stages already
+    /// run: an adjustment layer over the whole sequence holding the
+    /// graph, its time the sequence's own. Its id is fixed for the
+    /// sequence (see [`Sequence::timeline_grade_clip_id`]), so per-clip
+    /// caches keyed on it hold from frame to frame. `None` when there is
+    /// no timeline grade, or it changes nothing.
+    pub fn timeline_grade_of(seq: &Sequence) -> Option<Self> {
+        seq.timeline_graph.as_ref().filter(|g| !g.is_identity())?;
+        Some(Self::timeline_grade_proxy(seq))
+    }
+
+    /// [`Clip::timeline_grade_of`] whether or not there is a grade yet —
+    /// the default graph when there is none — for editing it as a clip.
+    pub fn timeline_grade_proxy(seq: &Sequence) -> Self {
+        let rate = seq.fps.rate();
+        let zero = Timecode { value: 0, rate };
+        // Far past any sequence: it covers every frame there is.
+        let end = Timecode { value: i64::from(rate) * 60 * 60 * 24 * 365, rate };
+        let mut clip = Self::media(MediaId::nil(), zero, end, zero, end);
+        clip.id = seq.timeline_grade_clip_id();
+        clip.kind = ClipKind::AdjustmentLayer;
+        clip.node_graph = seq.timeline_graph.clone().unwrap_or_default();
+        clip
+    }
+
     pub fn media(
         media_id: MediaId,
         timeline_in: Timecode,
@@ -3200,6 +3240,7 @@ mod tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: "test".to_string(),
             fps: Fps::new(24, 1),

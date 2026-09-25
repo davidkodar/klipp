@@ -360,6 +360,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         id: seq.id,
         name: seq.name.clone(),
         camera: seq.camera.clone(),
+        timeline_graph: seq.timeline_graph.clone(),
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,
@@ -844,6 +845,11 @@ impl Renderer {
         let global_lut_here = self.global_lut.is_some();
         if global_lut_here && opts.hdr_peak_nits.is_some() {
             return Single::Refused;
+        }
+        // A timeline grade runs on the composite, which a single-clip
+        // render does not have; the stack takes the frame instead.
+        if self.timeline_grade(seq).is_some() {
+            return Single::ForTheStack;
         }
         // The render and the encode have to be for the same delivery: the
         // target says whether the encoder wants HDR, `opts` says whether
@@ -1347,7 +1353,15 @@ impl Renderer {
             stats.composite_ms += ms_since(t);
         }
 
-        // ── 4. The timeline's LUT, then premultiply ──
+        // ── 4. The timeline grade, as `render_stack` runs it: the
+        // composite graded as an adjustment layer over everything ──
+        if let Some(tg) = self.timeline_grade(seq) {
+            if let Err(why) = self.stack_adjust(&tg, 1.0, time, fps, width, height, &transforms, &mut stats) {
+                return self.gpu_stack_declines(why);
+            }
+        }
+
+        // ── 4b. The timeline's LUT, then premultiply ──
         // The LUT goes over the composite while it is still straight
         // alpha, as `render_stack` applies it: the accumulator through
         // the chain and back.
@@ -1619,6 +1633,17 @@ impl Renderer {
         Ok(())
     }
 
+    /// The timeline grade to run over this composite, as a clip. Not
+    /// inside a precomposition's scene, which is one layer of the
+    /// sequence that holds it: the grade runs once, over the whole, as
+    /// the timeline's LUT does.
+    fn timeline_grade(&self, seq: &Sequence) -> Option<Clip> {
+        if self.nesting > 0 {
+            return None;
+        }
+        Clip::timeline_grade_of(seq)
+    }
+
     /// The stack cannot take this frame: `None`, and the reason in the
     /// log once, until it changes.
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
@@ -1787,6 +1812,14 @@ impl Renderer {
             composite_ms += ms_since(t);
         }
         let mut acc = acc.unwrap_or_else(canvas);
+
+        // The timeline grade: over the composite, before the timeline's
+        // LUT — the overall look, then the output transform.
+        if let Some(tg) = self.timeline_grade(seq) {
+            let t = Instant::now();
+            acc = self.apply_adjustment(&tg, acc, 1.0, time, fps, width, height, &transforms);
+            self.found.stats.grade_ms += ms_since(t);
+        }
 
         if let Some(lut) = self.global_lut.take() {
             let t = Instant::now();

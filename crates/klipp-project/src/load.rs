@@ -414,6 +414,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
         }
     }
     let mut sequence = Sequence {
+        timeline_graph: seq_json.timeline_graph.clone(),
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
         fps: sanitize_fps(seq_json.fps.num, seq_json.fps.den),

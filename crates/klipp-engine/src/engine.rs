@@ -910,7 +910,18 @@ pub fn apply_param_changes(
     };
     seq_write_holder_set(SeqWriteHolder::EngineParamDrain);
     let mut applied = 0usize;
+    let timeline_id = seq.timeline_grade_clip_id();
     while let Some(change) = queue.pop() {
+        // A drag on the timeline grade's node: its graph lives on the
+        // sequence, not on a clip.
+        if change.clip_id == timeline_id {
+            if let Some(graph) = seq.timeline_graph.as_mut() {
+                if apply_override_recursive(graph, change.node_id, &change.param, change.value) {
+                    applied += 1;
+                }
+            }
+            continue;
+        }
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
             if apply_override_recursive(
                 &mut clip.node_graph,
@@ -6224,7 +6235,7 @@ impl PlaybackEngine {
                 if clip.node_graph.is_identity() && clip.builtin_effects.is_empty() {
                     continue;
                 }
-                let grade_hash = self.render_key_hash(clip, track.opacity);
+                let grade_hash = self.render_key_hash(&seq, clip, track.opacity);
                 // Timeline positions are ticks; a frame is `fps.den` of them
                 // (1001 at the NTSC rates, 1 at integer rates). Counting
                 // ticks made every clip look 1001x longer than it is, so
@@ -6826,6 +6837,7 @@ impl PlaybackEngine {
                     | "HDR preview"
                     | "BT.1886 viewer transfer"
                     | "render keyframes on clip"
+                    | "timeline grade active"
             ) || (*b == "builtin effects on clip" && builtin_on_gpu)
         })
     }
@@ -7109,6 +7121,12 @@ impl PlaybackEngine {
         // transition, no other multicam angle. Asked of the renderer's own
         // stack, so the two cannot disagree about what is on screen.
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        // The timeline grade runs over the composite. The lean graded
+        // present runs one clip's graph and nothing after it; the stack
+        // present composites and so runs it.
+        if klipp_timeline::Clip::timeline_grade_of(&seq).is_some() {
+            blockers.push("timeline grade active");
+        }
         let layers = klipp_compose::active_layers(&seq, self.playhead);
         let primary = self.v1_clip_id(&seq);
         let (layer, clip) = match layers.as_slice() {

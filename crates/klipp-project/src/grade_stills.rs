@@ -7,11 +7,33 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
+/// Where a still was grabbed: the clip, its media, and the moment on the
+/// timeline. What the gallery shows on hover, and what says which shot a
+/// still's grade came from.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StillSource {
+    pub clip_id: Option<klipp_core::ClipId>,
+    pub media_id: Option<klipp_core::MediaId>,
+    /// The playhead when it was grabbed, in the sequence's seconds.
+    pub record_secs: f64,
+    /// The clip's media name, for display.
+    pub clip_name: String,
+}
+
 /// Header for one saved still — what gets written into `stills.json`.
+/// The source and grade are absent in projects saved before stills
+/// carried them, and read as none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeStillMeta {
     pub name: String,
     pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StillSource>,
+    /// The clip's grade when the still was grabbed: a still is a store
+    /// of grades as well as a picture to match against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<klipp_nodes::NodeGraph>,
 }
 
 /// Everything needed to reconstruct a runtime `GradeStill` after load.
@@ -22,6 +44,8 @@ pub struct GradeStillData {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub source: Option<StillSource>,
+    pub grade: Option<klipp_nodes::NodeGraph>,
 }
 
 use crate::path_util::atomic_write;
@@ -96,6 +120,8 @@ pub fn save_grade_stills(
         .map(|s| GradeStillMeta {
             name: s.name.clone(),
             filename: s.filename.clone(),
+            source: s.source.clone(),
+            grade: s.grade.clone(),
         })
         .collect();
     let index_json = serde_json::to_string_pretty(&metas)
@@ -174,6 +200,8 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
             rgba: img.into_raw(),
             width,
             height,
+            source: meta.source,
+            grade: meta.grade,
         });
     }
     info!("Loaded {} grade still(s) from {:?}", out.len(), stills_dir);
@@ -242,5 +270,41 @@ mod adopt_tests {
         assert!(!is_temp_still(&dest));
         std::fs::remove_dir_all(&project).ok();
         std::fs::remove_dir_all(root.join(format!("adopt-{}", std::process::id()))).ok();
+    }
+}
+
+#[cfg(test)]
+mod carry_tests {
+    use super::*;
+
+    #[test]
+    fn a_still_keeps_its_grade_and_source_through_save_and_load() {
+        let dir = std::env::temp_dir().join(format!("klipp-still-grade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let grade = klipp_nodes::NodeGraph::default();
+        let source = StillSource { clip_id: Some(klipp_core::ClipId::new()), media_id: None, record_secs: 12.5, clip_name: "A001C003.mov".into() };
+        let still = GradeStillData {
+            name: "Hero".into(),
+            filename: "still_1.png".into(),
+            rgba: vec![255; 4 * 4],
+            width: 2,
+            height: 2,
+            source: Some(source.clone()),
+            grade: Some(grade.clone()),
+        };
+        save_grade_stills(&dir, &[still]).unwrap();
+        let back = load_grade_stills(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].source.as_ref(), Some(&source));
+        let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(back[0].grade.as_ref().unwrap()), ids(&grade));
+    }
+
+    #[test]
+    fn a_stills_index_from_before_grades_still_loads() {
+        let old = r#"[{"name":"Still 1","filename":"still_1.png"}]"#;
+        let metas: Vec<GradeStillMeta> = serde_json::from_str(old).unwrap();
+        assert!(metas[0].grade.is_none() && metas[0].source.is_none());
     }
 }

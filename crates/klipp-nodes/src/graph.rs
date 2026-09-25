@@ -955,6 +955,52 @@ impl NodeGraph {
 
     /// Regenerate all NodeIds and update edge/position references.
     /// Used when pasting a copied graph onto a different clip.
+    /// Run `other` after this graph: its nodes, with fresh ids, go
+    /// between whatever fed this graph's Output and the Output, wired as
+    /// they were between its own Source and Output. This graph's nodes
+    /// stay as they are, so a look put on after a clip's balance keeps
+    /// the balance. `false`, and nothing changed, when either graph has
+    /// no Source-to-Output path to splice into.
+    pub fn append(&mut self, other: &NodeGraph) -> bool {
+        let other = other.remap_ids();
+        let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return false };
+        let o_out = other.output_node_id;
+        let out = self.output_node_id;
+        let Some(feed) = self.edges.iter().find(|e| e.to_node == out && e.to_port == 0).map(|e| (e.from_node, e.from_port)) else {
+            return false;
+        };
+        let middle: Vec<Node> = other.nodes.iter().filter(|n| n.id != src && n.id != o_out).cloned().collect();
+        if middle.is_empty() {
+            // An identity graph: nothing to run after.
+            return true;
+        }
+        // Laid out to the right of what is there, so the two read in order.
+        let right = self.node_positions.values().map(|p| p.x).fold(f32::MIN, f32::max);
+        let left = middle.iter().filter_map(|n| other.node_positions.get(&n.id)).map(|p| p.x).fold(f32::MAX, f32::min);
+        let shift = if right.is_finite() && left.is_finite() { right - left + 140.0 } else { 0.0 };
+        for n in &middle {
+            if let Some(p) = other.node_positions.get(&n.id) {
+                self.node_positions.insert(n.id, NodePos { x: p.x + shift, y: p.y });
+            }
+        }
+        // Past our Output's own position too, which the shift was taken from.
+        if let Some(p) = self.node_positions.get_mut(&out) {
+            p.x += middle.len() as f32 * 140.0;
+        }
+        self.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
+        let insert_at = self.nodes.iter().position(|n| n.id == out).unwrap_or(self.nodes.len());
+        self.nodes.splice(insert_at..insert_at, middle);
+        for e in &other.edges {
+            if e.to_node == src {
+                continue;
+            }
+            let (from_node, from_port) = if e.from_node == src { feed } else { (e.from_node, e.from_port) };
+            let to_node = if e.to_node == o_out { out } else { e.to_node };
+            self.edges.push(Edge { from_node, from_port, to_node, to_port: e.to_port });
+        }
+        true
+    }
+
     pub fn remap_ids(&self) -> NodeGraph {
         let id_map: HashMap<NodeId, NodeId> = self
             .nodes
@@ -1527,5 +1573,48 @@ mod window_tests {
         let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
         g.set_window_track(mask, &[], 9.0 / 16.0, 0.5);
         assert!(g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.is_none());
+    }
+}
+
+#[cfg(test)]
+mod append_tests {
+    use super::*;
+
+    fn exposure_graph(stops: f32) -> NodeGraph {
+        let mut g = NodeGraph::default();
+        let id = g.ensure_corrector();
+        if let Some(n) = g.nodes.iter_mut().find(|n| n.id == id) {
+            n.params.exposure = Some(stops);
+        }
+        g
+    }
+
+    #[test]
+    fn an_appended_look_runs_after_the_graph_it_joins() {
+        let mut clip = exposure_graph(0.4);
+        let balance = clip.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        let look = exposure_graph(-0.2);
+        assert!(clip.append(&look));
+        let order = clip.topo_sort().expect("no cycle");
+        let correctors: Vec<NodeId> = order
+            .iter()
+            .copied()
+            .filter(|id| clip.nodes.iter().any(|n| n.id == *id && n.kind == NodeKind::Corrector))
+            .collect();
+        assert_eq!(correctors.len(), 2, "the clip's own and the look's");
+        assert_eq!(correctors[0], balance, "the clip's balance first, the look after");
+        let feeding = clip.nodes_feeding_output();
+        assert!(correctors.iter().all(|c| feeding.contains(c)), "both reach the Output");
+        assert!(clip.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
+    }
+
+    #[test]
+    fn appending_an_identity_graph_changes_nothing() {
+        let mut clip = exposure_graph(0.4);
+        let before = clip.nodes.len();
+        let empty = NodeGraph::default();
+        let identity_nodes = empty.nodes.iter().filter(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output)).count();
+        assert!(clip.append(&empty));
+        assert_eq!(clip.nodes.len(), before + identity_nodes);
     }
 }

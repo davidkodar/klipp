@@ -609,6 +609,32 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
     assert!(d > 5, "the key made no difference to the export ({d} levels)");
 }
 
+/// The main timeline — graded clip, dissolve, scaled and faded layers —
+/// under a timeline grade: the viewer and the export both run it over
+/// the composite, and it changes the picture.
+#[test]
+fn a_timeline_grade_exports_as_the_viewer_shows_it() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = timeline();
+    t.seq.timeline_graph = Some(exposure(-0.8));
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("timeline-graded frame {n:3}"), &v, &e));
+    }
+    eprintln!("timeline grade, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 60), exported_frame(plain, 60));
+    let d = g.iter().zip(&p).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels: the timeline grade is not in the export");
+}
+
 /// One clip, coded `coded` and turned by `rotation`, over this landscape
 /// sequence's first two seconds. The source is red on its coded left half
 /// and blue on its right.

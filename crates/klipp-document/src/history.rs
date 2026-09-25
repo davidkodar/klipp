@@ -436,6 +436,15 @@ pub enum EditCommand {
         old_fade_in_b: f32,
     },
 
+    /// A clip replaced whole, in place: for an edit that touches many of
+    /// a clip's fields at once — Paste Attributes — where one snapshot
+    /// either side is simpler and safer than a command per field.
+    ReplaceClip {
+        description: &'static str,
+        old: Box<klipp_timeline::Clip>,
+        new: Box<klipp_timeline::Clip>,
+    },
+
     // === NODE GRAPH (color grading) ===
     SetNodeGraph {
         clip_id: ClipId,
@@ -701,6 +710,7 @@ impl EditCommand {
             EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::RemoveTransition { .. } => "Remove Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
+            EditCommand::ReplaceClip { description, .. } => description,
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
