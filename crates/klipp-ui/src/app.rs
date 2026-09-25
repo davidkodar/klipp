@@ -7612,6 +7612,18 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::SaveCompositionTemplate { sequence_id, name } => {
+                    let Some(sequence) = self.state.sequences.iter().find(|sequence| sequence.id.0 == *sequence_id).cloned() else {
+                        self.state.toast.show("The selected composition is missing");
+                        return true;
+                    };
+                    match crate::parameterized_templates::save_composition_as_template(&mut self.state.composition_templates, &sequence, name.clone()) {
+                        Ok(true) => self.state.toast.show(format!("Updated the template '{name}'")),
+                        Ok(false) => self.state.toast.show(format!("Saved '{name}' as a template")),
+                        Err(error) => self.state.toast.show(format!("Could not save template: {error}")),
+                    }
+                    true
+                }
                 AppCommand::SetSequenceShutter { sequence_idx, shutter_deg, samples } => {
                     if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
                         let old = seq.camera.clone();
