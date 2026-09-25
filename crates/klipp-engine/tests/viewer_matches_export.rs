@@ -79,9 +79,14 @@ fn ffmpeg_ok() -> bool {
 /// gets a truncated source — which shows up as a black export and looks
 /// like a pipeline bug rather than a test one.
 fn rgb_source(name: &str, r: &str, g: &str, b: &str) -> PathBuf {
+    rgb_source_sized(name, (W, H), r, g, b)
+}
+
+/// [`rgb_source`], coded at another size.
+fn rgb_source_sized(name: &str, (w, h): (u32, u32), r: &str, g: &str, b: &str) -> PathBuf {
     let out = tmp(&format!("{}-{}", uuid::Uuid::new_v4(), name));
     let filter = format!(
-        "color=c=black:s={W}x{H}:r={FPS}:d=10,format=rgb24,geq=r='{r}':g='{g}':b='{b}',\
+        "color=c=black:s={w}x{h}:r={FPS}:d=10,format=rgb24,geq=r='{r}':g='{g}':b='{b}',\
          setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     );
     let ok = std::process::Command::new("ffmpeg")
@@ -135,9 +140,10 @@ fn exposure(stops: f32) -> klipp_nodes::NodeGraph {
 struct Timeline {
     seq: Sequence,
     files: HashMap<MediaId, PathBuf>,
-    /// Media whose picture is turned (a phone's rotation matrix), by how
-    /// far; the rest are upright.
-    rotation: HashMap<MediaId, i32>,
+    /// Media not coded at the sequence's size, or turned (a phone's
+    /// rotation matrix): the coded size and the turn. The rest are coded
+    /// at the sequence's size, upright.
+    coded: HashMap<MediaId, (u32, u32, i32)>,
 }
 
 /// V1: a (flat, one stop up) dissolving over one second into b (changing
@@ -180,7 +186,7 @@ fn timeline() -> Timeline {
     let mut v1 = track("V1", vec![clip_a, clip_b]);
     v1.transitions.push(dissolve);
     seq.tracks = vec![track("V3", vec![clip_d]), track("V2", vec![clip_c]), v1];
-    Timeline { seq, files, rotation: HashMap::new() }
+    Timeline { seq, files, coded: HashMap::new() }
 }
 
 /// The timeline exported through the real `ExportJob`, H.264 near-lossless.
@@ -191,7 +197,7 @@ fn export(t: &Timeline, out: &Path) {
             .files
             .iter()
             .map(|(id, p)| {
-                let source_rotation = t.rotation.get(id).copied().unwrap_or(0);
+                let source_rotation = t.coded.get(id).map_or(0, |c| c.2);
                 (*id, MediaFile { path: p.clone(), log_format: None, source_rotation })
             })
             .collect(),
@@ -251,8 +257,8 @@ impl Viewer {
         let mut pool = MediaPool::default();
         for (id, path) in &t.files {
             // As an import records it: the upright size, and the turn.
-            let source_rotation = t.rotation.get(id).copied().unwrap_or(0);
-            let (width, height) = if source_rotation.rem_euclid(180) == 90 { (H, W) } else { (W, H) };
+            let (cw, ch, source_rotation) = t.coded.get(id).copied().unwrap_or((W, H, 0));
+            let (width, height) = if source_rotation.rem_euclid(180) == 90 { (ch, cw) } else { (cw, ch) };
             pool.add(MediaItem {
                 id: *id,
                 path: path.clone(),
@@ -548,7 +554,7 @@ fn secondary_timeline() -> Timeline {
     let mut v1 = Track::new("V1", TrackKind::Video);
     v1.clips = vec![clip];
     seq.tracks = vec![v1];
-    Timeline { seq, files, rotation: HashMap::new() }
+    Timeline { seq, files, coded: HashMap::new() }
 }
 
 #[test]
@@ -603,55 +609,160 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
     assert!(d > 5, "the key made no difference to the export ({d} levels)");
 }
 
-/// A phone clip shot upright: coded landscape with a quarter-turn matrix,
-/// in this landscape sequence. Red on the coded frame's left, blue on its
-/// right, so upright they are above and below each other.
-fn portrait_timeline() -> Timeline {
+/// One clip, coded `coded` and turned by `rotation`, over this landscape
+/// sequence's first two seconds. The source is red on its coded left half
+/// and blue on its right.
+fn one_clip_timeline(name: &str, coded: (u32, u32), rotation: i32) -> Timeline {
     let p = MediaId::new();
-    let files = HashMap::from([(p, rgb_source("portrait.mkv", "if(lt(X,W/2),200,40)", "40", "if(lt(X,W/2),40,200)"))]);
+    let file = rgb_source_sized(name, coded, "if(lt(X,W/2),200,40)", "40", "if(lt(X,W/2),40,200)");
     let mut seq = Sequence::new_default();
     seq.fps = Fps::new(FPS as u32, 1);
     seq.resolution = Resolution { width: W, height: H };
     let mut v1 = Track::new("V1", TrackKind::Video);
     v1.clips = vec![media_clip(p, 0, 50, 0)];
     seq.tracks = vec![v1];
-    Timeline { seq, files, rotation: HashMap::from([(p, 90)]) }
+    Timeline { seq, files: HashMap::from([(p, file)]), coded: HashMap::from([(p, (coded.0, coded.1, rotation))]) }
 }
 
-/// The viewer and the export both pillarbox a portrait clip in a landscape
-/// sequence. The export used to decode it straight to the frame's size,
-/// stretching it three times too wide, while the viewer — rendering in a
-/// frame the clip's own shape — showed it upright and narrow.
+/// What a frame should hold at a point.
+#[derive(Clone, Copy, Debug)]
+enum Expect {
+    /// A bar: black.
+    Bar,
+    /// Some of the picture, of either colour.
+    Picture,
+    /// The source's red half.
+    Red,
+    /// The source's blue half.
+    Blue,
+}
+
+fn holds(p: [i32; 3], e: Expect) -> bool {
+    match e {
+        Expect::Bar => p.iter().all(|c| *c <= 20),
+        Expect::Picture => holds(p, Expect::Red) || holds(p, Expect::Blue),
+        Expect::Red => p[0] > 150 && p[2] < 90,
+        Expect::Blue => p[2] > 150 && p[0] < 90,
+    }
+}
+
+/// Export `t` and check what its frames hold at `points`, then check the
+/// viewer shows the same; the exported frames, for more checks. The
+/// export is checked first and on its own, so a failure says which half
+/// is wrong: the viewer's frame size is asserted only after it.
+fn fits_alike(t: &Timeline, points: &[(&str, u32, u32, Expect)]) -> Vec<Vec<u8>> {
+    let out = exported(t);
+    let frames = [10, 30];
+    let exported: Vec<Vec<u8>> = frames.iter().map(|n| exported_frame(&out, *n)).collect();
+    for (n, e) in frames.iter().zip(&exported) {
+        for (name, x, y, want) in points {
+            let q = px(e, *x, *y);
+            eprintln!("export frame {n} {name:10}: {q:?}, want {want:?}");
+            assert!(holds(q, *want), "export frame {n}: the {name} is {q:?}, not {want:?}");
+        }
+    }
+    // `frame_at` asserts the viewer's frame is the sequence's size.
+    let viewer = Viewer::start(t);
+    for (n, e) in frames.iter().zip(&exported) {
+        let v = viewer.frame_at(*n);
+        for (name, x, y, _) in points {
+            let (p, q) = (px(&v, *x, *y), px(e, *x, *y));
+            let d = (0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap();
+            eprintln!("frame {n} {name:10}: viewer {p:?} export {q:?} diff {d}");
+            assert!(d <= 3, "frame {n}: the {name} differs by {d} levels (viewer {p:?}, export {q:?})");
+        }
+    }
+    exported
+}
+
+/// A phone clip shot upright — coded landscape with a quarter-turn matrix
+/// — in a landscape sequence is pillarboxed by both. The export used to
+/// decode it straight to the frame's size, stretching it three times too
+/// wide, while the viewer rendered in a frame the clip's own shape.
 #[test]
 fn a_portrait_clip_is_pillarboxed_in_the_viewer_and_the_export_alike() {
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
     }
-    let t = portrait_timeline();
-    let out = exported(&t);
+    let t = one_clip_timeline("portrait.mkv", (W, H), 90);
     // Upright, the picture is H * H / W = 202 pixels wide, centred.
     let picture_w = H * H / W;
     let (left, right) = ((W - picture_w) / 2, (W + picture_w) / 2);
-    let bar = [("left bar", left / 2, H / 2), ("right bar", (right + W) / 2, H / 2)];
-    let picture = [("upper", W / 2, H / 4), ("lower", W / 2, H * 3 / 4)];
-    // The viewer asserts its frame is the sequence's size.
+    let (upper, lower) = ((W / 2, H / 4), (W / 2, H * 3 / 4));
+    let exported = fits_alike(&t, &[
+        ("left bar", left / 2, H / 2, Expect::Bar),
+        ("right bar", (right + W) / 2, H / 2, Expect::Bar),
+        ("upper", upper.0, upper.1, Expect::Picture),
+        ("lower", lower.0, lower.1, Expect::Picture),
+    ]);
+    // Upright: the halves one above the other, not side by side.
+    for e in &exported {
+        let (u, l) = (px(e, upper.0, upper.1), px(e, lower.0, lower.1));
+        assert!((u[0] - l[0]).abs() > 100, "the halves are not above each other ({u:?}, {l:?})");
+    }
+}
+
+/// A picture wider than the sequence is letterboxed by both.
+#[test]
+fn a_wide_clip_is_letterboxed_in_the_viewer_and_the_export_alike() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    // 3.2:1: at the frame's width, 200 rows of picture, centred.
+    let t = one_clip_timeline("wide.mkv", (W, 200), 0);
+    let (top, bottom) = ((H - 200) / 2, (H + 200) / 2);
+    fits_alike(&t, &[
+        ("top bar", W / 2, top / 2, Expect::Bar),
+        ("bottom bar", W / 2, (bottom + H) / 2, Expect::Bar),
+        ("left", W / 4, H / 2, Expect::Red),
+        ("right", W * 3 / 4, H / 2, Expect::Blue),
+    ]);
+}
+
+/// A half turn keeps the frame's shape and fills it, turned over in both:
+/// the coded left half ends up on the right.
+#[test]
+fn a_half_turned_clip_is_turned_over_in_the_viewer_and_the_export_alike() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = one_clip_timeline("half-turn.mkv", (W, H), 180);
+    fits_alike(&t, &[
+        ("left", W / 4, H / 2, Expect::Blue),
+        ("right", W * 3 / 4, H / 2, Expect::Red),
+    ]);
+}
+
+/// An odd-sized picture keeps its odd side in both, so the bars end on
+/// the same row: 201 rows centred in 360 are rows 79 to 279. Read as the
+/// light of single pixels, since the export's 4:2:0 chroma is shared by
+/// row pairs and bleeds colour one row across an odd edge.
+#[test]
+fn an_odd_sized_clip_is_barred_on_the_same_rows_in_the_viewer_and_the_export() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = one_clip_timeline("odd.mkv", (W, 201), 0);
+    let (first, last) = ((H - 201) / 2, (H - 201) / 2 + 200);
+    let out = exported(&t);
+    let e = exported_frame(&out, 10);
+    let luma = |rgb: &[u8], y: u32| {
+        let i = ((y * W + W / 4) * 3) as usize;
+        0.2126 * rgb[i] as f32 + 0.7152 * rgb[i + 1] as f32 + 0.0722 * rgb[i + 2] as f32
+    };
+    let rows = [(first - 1, false), (first, true), (last, true), (last + 1, false)];
+    for (y, lit) in rows {
+        eprintln!("export row {y}: luma {:.0}", luma(&e, y));
+        assert_eq!(luma(&e, y) > 35.0, lit, "export row {y} (luma {:.0})", luma(&e, y));
+    }
     let viewer = Viewer::start(&t);
-    for n in [10, 30] {
-        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
-        for (name, x, y) in bar {
-            let (p, q) = (px(&v, x, y), px(&e, x, y));
-            eprintln!("frame {n} {name:9}: viewer {p:?} export {q:?}");
-            assert!(p.iter().chain(&q).all(|c| *c <= 20), "frame {n}: the {name} is not black (viewer {p:?}, export {q:?})");
-        }
-        for (name, x, y) in picture {
-            let (p, q) = (px(&v, x, y), px(&e, x, y));
-            let d = (0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap();
-            eprintln!("frame {n} {name:9}: viewer {p:?} export {q:?} diff {d}");
-            assert!(d <= 3, "frame {n}: the {name} half differs by {d} levels (viewer {p:?}, export {q:?})");
-        }
-        // Upright: one colour above the other, not side by side.
-        let (upper, lower) = (px(&e, W / 2, H / 4), px(&e, W / 2, H * 3 / 4));
-        assert!((upper[0] - lower[0]).abs() > 100, "frame {n}: the halves are not above each other ({upper:?}, {lower:?})");
+    let v = viewer.frame_at(10);
+    for (y, lit) in rows {
+        eprintln!("viewer row {y}: luma {:.0}", luma(&v, y));
+        assert_eq!(luma(&v, y) > 35.0, lit, "viewer row {y} (luma {:.0})", luma(&v, y));
     }
 }

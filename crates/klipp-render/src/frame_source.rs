@@ -371,7 +371,7 @@ fn seed_matrix(to_working: Option<[[f32; 3]; 3]>) -> [[f32; 4]; 3] {
 
 /// A picture of `sw`×`sh` fitted into a `fw`×`fh` frame, aspect kept:
 /// the frame itself when the two have the same shape (to within a pixel
-/// of rounding), else the frame's full height or width and even sides.
+/// of rounding), else the frame's full height or width.
 fn fitted_size(sw: u32, sh: u32, fw: u32, fh: u32) -> (u32, u32) {
     if sw == 0 || sh == 0 {
         return (fw, fh);
@@ -383,11 +383,13 @@ fn fitted_size(sw: u32, sh: u32, fw: u32, fh: u32) -> (u32, u32) {
     if w_at_fh.abs_diff(fw64) <= 1 || h_at_fw.abs_diff(fh64) <= 1 {
         return (fw, fh);
     }
-    let even = |v: u64| ((v as u32) & !1).max(2);
+    // Not rounded to even: an odd picture, 1920x803, decodes at its own
+    // 803 rows, as the viewer's does, so the bars fall on the same rows.
+    let side = |v: u64| (v as u32).max(1);
     if w_at_fh < fw64 {
-        (even(w_at_fh), fh)
+        (side(w_at_fh), fh)
     } else {
-        (fw, even(h_at_fw))
+        (fw, side(h_at_fw))
     }
 }
 
@@ -551,6 +553,8 @@ mod fitted_size_tests {
         assert_eq!(fitted_size(2160, 3840, 1920, 1080), (608, 1080));
         // Rounding that only moves a pixel is the same shape.
         assert_eq!(fitted_size(1280, 721, 1280, 720), (1280, 720));
+        // An odd picture keeps its odd side.
+        assert_eq!(fitted_size(1920, 803, 1920, 1080), (1920, 803));
     }
 }
 

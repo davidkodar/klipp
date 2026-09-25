@@ -1712,7 +1712,7 @@ mod hw_cap_tests {
 /// setting a 2160x3840 iPhone clip decoded at 1214x2160, and the viewer and
 /// every scope saw 56 % of it. Turned, the software path (sized after
 /// rotation) and the hardware path (sized before it) agree.
-fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
+pub(crate) fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
     let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
         (src_h, src_w)
     } else {

@@ -577,7 +577,8 @@ impl PlaybackEngine {
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
         if let Some(p) = primary.as_ref().filter(|_| !stack_only) {
-            let blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
+            let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
+            blockers.extend(self.picture_shape_blocker((p.width, p.height)));
             if !blockers.is_empty() {
                 tracing::debug!("paused present: full path because {}", blockers.join(", "));
             }
