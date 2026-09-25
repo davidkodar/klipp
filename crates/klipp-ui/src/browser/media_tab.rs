@@ -359,10 +359,7 @@ pub fn show(
             ui.separator();
 
             if ui.button("Import Media\u{2026}").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Media", super::media_extensions())
-                    .pick_file()
-                {
+                for path in crate::command_palette::pick_media_files() {
                     cmds.push(AppCommand::ImportMedia { path });
                 }
                 ui.close_menu();

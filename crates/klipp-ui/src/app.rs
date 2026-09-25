@@ -24269,12 +24269,7 @@ impl KlippApp {
             }
             // Ctrl+I — Import Media
             if kb.is_action_pressed("import_media", i) {
-                // Use the canonical Video list (the previous hardcoded one
-                // was missing "ts" which broke .ts file selection here).
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
-                    .pick_file()
-                {
+                for path in crate::command_palette::pick_media_files() {
                     cmds.push(AppCommand::ImportMedia { path });
                 }
             }
@@ -27903,9 +27898,7 @@ impl eframe::App for KlippApp {
                             f(&mut self.state);
                         }
                         PaletteAction::OpenDialog(kind) => {
-                            if let Some(cmd) = dispatch_dialog(*kind) {
-                                all_cmds.push(cmd);
-                            }
+                            all_cmds.extend(dispatch_dialog(*kind));
                         }
                         PaletteAction::Custom(f) => {
                             f(&mut self.state, &mut all_cmds);

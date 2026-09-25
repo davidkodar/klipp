@@ -170,13 +170,9 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Import Media...").shortcut_text(kb.display_for("import_media"))).clicked() {
                 ui.close_menu();
-                if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("All media", &klipp_core::media_extensions::all_media_extensions())
-                    .add_filter("Video", klipp_core::media_extensions::VIDEO_EXTENSIONS)
-                    .add_filter("Audio", klipp_core::media_extensions::AUDIO_EXTENSIONS)
-                    .add_filter("Image", klipp_core::media_extensions::IMAGE_EXTENSIONS)
-                    .pick_file()
-                { cmds.push(AppCommand::LoadMediaFile { path: p, media_id: klipp_core::MediaId::new() }); }
+                for path in crate::command_palette::pick_media_files() {
+                    cmds.push(AppCommand::ImportMedia { path });
+                }
             }
             if ui.button("Import Subtitles...").clicked() {
                 ui.close_menu();

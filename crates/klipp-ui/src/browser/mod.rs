@@ -5124,19 +5124,6 @@ impl BrowserPanel {
 }
 
 
-// Computed once at startup from the canonical klipp_core constants. The old
-// `pub(super) const MEDIA_EXTENSIONS: &[&str] = &[...]` was a hardcoded
-// duplicate of the union of the three category constants — it's now a
-// `OnceLock<Vec<&'static str>>` so the lists stay in sync automatically.
-//
-// Callers that previously did `MEDIA_EXTENSIONS.contains(&ext.as_str())`
-// continue to work because we expose it as a function returning `&[&str]`.
-pub(super) fn media_extensions() -> &'static [&'static str] {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Vec<&'static str>> = OnceLock::new();
-    CACHE.get_or_init(klipp_core::media_extensions::all_media_extensions).as_slice()
-}
-
 /// Read a directory with a timeout to protect against hung network mounts.
 fn read_directory_with_timeout(path: &std::path::Path) -> Result<Vec<FileEntry>, String> {
     use std::time::{Duration, Instant};
