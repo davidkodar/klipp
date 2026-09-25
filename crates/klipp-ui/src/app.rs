@@ -1502,7 +1502,9 @@ impl KlippApp {
                     }
                 }
             }
+            let mut sought = None;
             if refused.is_none() && !env.commands.is_empty() {
+                sought = last_seek(&env.commands);
                 self.suppress_fps_prompt = true;
                 let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
                 let cmds = expand_control_commands(env.commands, env.batch);
@@ -1527,6 +1529,12 @@ impl KlippApp {
                         project.changed_by = Some("edits".into());
                     }
                 }
+                // The playhead too. A seek goes on to the engine, and the
+                // UI's playhead follows only when the engine reports back,
+                // so a frame read straight after an acknowledged seek held
+                // the position from before it and put the playhead back
+                // there. What this envelope sought is where the user is.
+                self.publish_transport(sought);
                 let _ = ack.send(klipp_document::control::ControlAck { revision: self.state.control_shared.revision(), refused });
             }
         }
@@ -30534,6 +30542,17 @@ impl KlippApp {
         }
     }
 
+    /// Where the user's playhead is, for the control socket: a frame
+    /// read puts the playhead back here when it is done.
+    fn publish_transport(&self, sought: Option<klipp_core::Timecode>) {
+        if let Ok(mut transport) = self.state.control_shared.transport.lock() {
+            *transport = klipp_core::TransportStatus {
+                playhead: Some(sought.unwrap_or(self.state.playhead)),
+                playing: self.state.playback == PlaybackState::Playing,
+            };
+        }
+    }
+
     fn poll_render_queue(&mut self) {
         // #62: propagate the user's parallel-jobs pref into the queue each
         // frame. Pref is read at job-start time, so live updates just apply
@@ -30547,11 +30566,10 @@ impl KlippApp {
             project.dirty = self.state.dirty;
         }
         // And where the user is, so a frame read can put the playhead back.
-        if let Ok(mut transport) = self.state.control_shared.transport.lock() {
-            *transport = klipp_core::TransportStatus {
-                playhead: Some(self.state.playhead),
-                playing: self.state.playback == PlaybackState::Playing,
-            };
+        // Not while a seek is on its way: the playhead has not reached it
+        // yet, and this would publish where it was before.
+        if !self.state.awaiting_seek_frame {
+            self.publish_transport(None);
         }
         // The queue as the control socket sees it, refreshed every frame
         // the queue is polled; cheap, the queue is short.
@@ -40061,6 +40079,29 @@ mod retarget_drop_tests {
     fn a_duplicate_with_no_destination_places_nothing() {
         let mut pending = std::collections::HashMap::new();
         assert!(retarget_pending_drop(&mut pending, MediaId::new(), MediaId::new()).is_none());
+    }
+}
+
+/// The last absolute seek among a control envelope's commands: where the
+/// playhead is headed once they are applied.
+fn last_seek(cmds: &[AppCommand]) -> Option<klipp_core::Timecode> {
+    cmds.iter().rev().find_map(|c| match c {
+        AppCommand::SeekTo(t) => Some(*t),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod last_seek_tests {
+    use super::{last_seek, AppCommand};
+    use klipp_core::Timecode;
+
+    #[test]
+    fn the_last_seek_of_an_envelope_is_where_the_playhead_is_going() {
+        let (a, b) = (Timecode::from_frames(30, 30), Timecode::from_frames(90, 30));
+        let cmds = [AppCommand::Pause, AppCommand::SeekTo(a), AppCommand::Play, AppCommand::SeekTo(b)];
+        assert_eq!(last_seek(&cmds), Some(b));
+        assert_eq!(last_seek(&[AppCommand::Play]), None);
     }
 }
 
