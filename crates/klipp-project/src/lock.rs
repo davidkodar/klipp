@@ -39,11 +39,17 @@ pub const HEARTBEAT_SECS: u64 = 30;
 /// for a crash.
 pub const STALE_AFTER_SECS: u64 = HEARTBEAT_SECS * 4;
 
-/// What a lock file says.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// What a lock file says. Every field defaults, so a lock written by an
+/// older or newer build still reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LockInfo {
     pub user: String,
     pub host: String,
+    /// `/etc/machine-id`: what makes "this machine" certain. Two machines
+    /// can share a hostname (every fresh install is `archlinux`); they
+    /// do not share this.
+    pub machine: String,
     pub pid: u32,
     /// Unique per app session, so a process can tell its own lock from
     /// one a restarted process with the same pid left behind.
@@ -94,6 +100,7 @@ pub enum LockState {
 pub struct Holder {
     pub user: String,
     pub host: String,
+    pub machine: String,
     pub pid: u32,
     pub session: String,
 }
@@ -112,15 +119,21 @@ impl Holder {
             .filter(|h| !h.is_empty())
             .or_else(|| std::env::var("COMPUTERNAME").ok())
             .unwrap_or_else(|| "unknown-host".into());
+        let machine = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
+            .iter()
+            .find_map(|p| std::fs::read_to_string(p).ok())
+            .map(|m| m.trim().to_string())
+            .unwrap_or_default();
         let pid = std::process::id();
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        Self { user, host, pid, session: format!("{pid:x}-{nanos:x}") }
+        Self { user, host, machine, pid, session: format!("{pid:x}-{nanos:x}") }
     }
 
     fn info(&self, opened_at: u64, now: u64) -> LockInfo {
         LockInfo {
             user: self.user.clone(),
             host: self.host.clone(),
+            machine: self.machine.clone(),
             pid: self.pid,
             session: self.session.clone(),
             opened_at,
@@ -147,7 +160,11 @@ pub fn read(project: &Path) -> Option<LockInfo> {
 
 /// How the lock `info` looks from this machine at `now`.
 pub fn liveness(info: &LockInfo, me: &Holder, now: u64) -> Liveness {
-    if info.host == me.host && !process_exists(info.pid) {
+    // Only a lock from this very machine can be judged by its pid: a
+    // matching hostname is not enough, and without a machine id on both
+    // sides the heartbeat decides.
+    let this_machine = !info.machine.is_empty() && info.machine == me.machine;
+    if this_machine && !process_exists(info.pid) {
         return Liveness::Dead;
     }
     if info.quiet_for(now) > STALE_AFTER_SECS {
@@ -181,38 +198,46 @@ pub fn inspect(project: &Path, me: &Holder) -> LockState {
 
 /// Take the lock if nobody else holds it. `Err` names the holder.
 ///
-/// Creation is exclusive (`O_EXCL`), so two sessions on one machine, or
-/// on a filesystem that honours it, cannot both win. A lock file that
-/// cannot be parsed is replaced.
-pub fn acquire(project: &Path, me: &Holder) -> Result<(), (LockInfo, Liveness)> {
+/// The lock appears complete or not at all: it is written to a file of
+/// this session's own and hard-linked into place, which fails if a lock
+/// exists. So a second opener never reads a half-written lock, takes it
+/// for garbage and replaces it — both would think they had won. Where
+/// hard links are not supported (some SMB shares) it falls back to an
+/// exclusive create.
+///
+/// A lock file that cannot be read is replaced only once it is older
+/// than [`STALE_AFTER_SECS`]: a fresh one is somebody's lock being
+/// written, and counts as held.
+pub fn acquire(project: &Path, me: &Holder) -> Result<(), Box<(LockInfo, Liveness)>> {
     let now = now_secs();
     match inspect(project, me) {
-        LockState::Ours => return heartbeat(project, me).map_err(|lost| (lost, Liveness::Active)),
-        LockState::Held(info, l) => return Err((info, l)),
+        LockState::Ours => return heartbeat(project, me).map_err(|lost| Box::new((lost, Liveness::Active))),
+        LockState::Held(info, l) => return Err(Box::new((info, l))),
         LockState::Free => {}
     }
     let body = serde_json::to_vec_pretty(&me.info(now, now)).unwrap_or_default();
     let path = lock_path(project);
-    let created = std::fs::OpenOptions::new().write(true).create_new(true).open(&path);
-    match created {
-        Ok(mut f) => {
-            use std::io::Write;
-            if let Err(e) = f.write_all(&body).and_then(|()| f.sync_all()) {
-                tracing::warn!("project lock: could not write {}: {e}", path.display());
-            }
-            Ok(())
-        }
+    match place_exclusively(project, &path, &body, &me.session) {
+        Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match read(project) {
-            // Someone created it between the look and the create.
-            Some(info) => {
+            // Someone else holds it, or took it between the look and now.
+            Some(info) if info.session != me.session => {
                 let l = liveness(&info, me, now);
-                Err((info, l))
+                Err(Box::new((info, l)))
             }
-            // Unreadable: replace it.
-            None => {
-                write_atomic(&path, &body);
-                Ok(())
-            }
+            Some(_) => Ok(()),
+            None if file_age_secs(&path).is_some_and(|age| age > STALE_AFTER_SECS) => match write_atomic(&path, &body) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    tracing::warn!("project lock: could not replace an unreadable {}: {e}", path.display());
+                    Ok(())
+                }
+            },
+            // Fresh and unreadable: being written by someone right now.
+            None => Err(Box::new((
+                LockInfo { user: "someone".into(), host: "another session".into(), heartbeat_at: now, ..LockInfo::default() },
+                Liveness::Active,
+            ))),
         },
         Err(e) => {
             // A read-only share, say. Not being able to lock must not
@@ -224,9 +249,46 @@ pub fn acquire(project: &Path, me: &Holder) -> Result<(), (LockInfo, Liveness)> 
     }
 }
 
-/// Take the lock whoever holds it, and record that it was taken.
-pub fn take_over(project: &Path, me: &Holder, from: Option<&LockInfo>) {
+/// Put `body` at `path` only if nothing is there, all at once.
+fn place_exclusively(project: &Path, path: &Path, body: &[u8], session: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = project.join(format!(".{LOCK_FILE}.{session}"));
+    let write_tmp = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(body)?;
+        f.sync_all()
+    };
+    let linked = write_tmp().and_then(|()| std::fs::hard_link(&tmp, path));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported || e.raw_os_error() == Some(1) || e.raw_os_error() == Some(95) => {
+            // EPERM / EOPNOTSUPP: no hard links here. An exclusive create
+            // is the next best; a reader may briefly see it empty, which
+            // `acquire` treats as held rather than as garbage.
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+            f.write_all(body)?;
+            f.sync_all()
+        }
+        other => other,
+    }
+}
+
+fn file_age_secs(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    SystemTime::now().duration_since(modified).ok().map(|d| d.as_secs())
+}
+
+/// Take the lock whoever holds it, and record that it was taken. `Err`
+/// when the lock could not be written — then nothing was taken, and the
+/// caller must not act as if it holds the project.
+pub fn take_over(project: &Path, me: &Holder, from: Option<&LockInfo>) -> std::io::Result<()> {
     let now = now_secs();
+    let body = serde_json::to_vec_pretty(&me.info(now, now)).unwrap_or_default();
+    write_atomic(&lock_path(project), &body)?;
+    if read(project).is_none_or(|info| info.session != me.session) {
+        return Err(std::io::Error::other("the lock did not read back as ours"));
+    }
     if let Some(prev) = from {
         let line = format!(
             "{} {} took the lock from {} (pid {}, opened {}, last seen {} ago)\n",
@@ -239,23 +301,32 @@ pub fn take_over(project: &Path, me: &Holder, from: Option<&LockInfo>) {
         );
         append(&project.join(HISTORY_FILE), &line);
     }
-    let body = serde_json::to_vec_pretty(&me.info(now, now)).unwrap_or_default();
-    write_atomic(&lock_path(project), &body);
+    Ok(())
 }
 
 /// Refresh this session's heartbeat. `Err` with the new holder when the
 /// lock has been taken over, which means this session must stop saving.
 /// A lock file that has vanished is written again: the session still
 /// has the project open.
+///
+/// There is no compare-and-swap on a plain file, so a takeover landing
+/// between the check and the write would be overwritten. The check is
+/// made again immediately before writing, which leaves a window of
+/// microseconds; if it is ever lost, the taker's own next heartbeat finds
+/// this session's lock and it goes read-only — both stop saving, and
+/// nobody's work is replaced.
 pub fn heartbeat(project: &Path, me: &Holder) -> Result<(), LockInfo> {
     let now = now_secs();
-    let opened_at = match read(project) {
-        Some(info) if info.session != me.session => return Err(info),
-        Some(info) => info.opened_at,
-        None => now,
+    let current = || match read(project) {
+        Some(info) if info.session != me.session => Err(info),
+        Some(info) => Ok(info.opened_at),
+        None => Ok(now),
     };
-    let body = serde_json::to_vec_pretty(&me.info(opened_at, now)).unwrap_or_default();
-    write_atomic(&lock_path(project), &body);
+    current()?;
+    let body = serde_json::to_vec_pretty(&me.info(current()?, now)).unwrap_or_default();
+    if let Err(e) = write_atomic(&lock_path(project), &body) {
+        tracing::warn!("project lock: could not refresh {}: {e}", project.display());
+    }
     Ok(())
 }
 
@@ -353,10 +424,8 @@ impl Drop for Keeper {
     }
 }
 
-fn write_atomic(path: &Path, body: &[u8]) {
-    if let Err(e) = crate::path_util::atomic_write(path, body) {
-        tracing::warn!("project lock: could not write {}: {e}", path.display());
-    }
+fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    crate::path_util::atomic_write(path, body)
 }
 
 fn append(path: &Path, line: &str) {
@@ -406,7 +475,7 @@ mod tests {
     }
 
     fn other(host: &str, pid: u32) -> Holder {
-        Holder { user: "anna".into(), host: host.into(), pid, session: format!("anna-{pid}") }
+        Holder { user: "anna".into(), host: host.into(), machine: format!("{host}-machine-id"), pid, session: format!("anna-{pid}") }
     }
 
     #[test]
@@ -415,7 +484,7 @@ mod tests {
         let anna = other("laptop", 4242);
         let me = Holder::current();
         acquire(&p, &anna).unwrap();
-        let (info, l) = acquire(&p, &me).unwrap_err();
+        let (info, l) = *acquire(&p, &me).unwrap_err();
         assert_eq!(info.who(), "anna@laptop");
         assert_eq!(l, Liveness::Active);
         assert_eq!(inspect(&p, &anna), LockState::Ours);
@@ -433,9 +502,9 @@ mod tests {
         std::fs::write(p.join(LOCK_FILE), serde_json::to_vec(&info).unwrap()).unwrap();
 
         let me = Holder::current();
-        let (held, l) = acquire(&p, &me).unwrap_err();
+        let (held, l) = *acquire(&p, &me).unwrap_err();
         assert_eq!(l, Liveness::Stale);
-        take_over(&p, &me, Some(&held));
+        take_over(&p, &me, Some(&held)).unwrap();
         assert_eq!(inspect(&p, &me), LockState::Ours);
         let log = std::fs::read_to_string(p.join(HISTORY_FILE)).unwrap();
         assert!(log.contains("took the lock from anna@laptop"), "{log}");
@@ -451,7 +520,7 @@ mod tests {
         let p = project("dead");
         let me = Holder::current();
         // No process has pid u32::MAX - 1.
-        let ghost = Holder { host: me.host.clone(), ..other("", u32::MAX - 1) };
+        let ghost = Holder { host: me.host.clone(), machine: me.machine.clone(), ..other("", u32::MAX - 1) };
         acquire(&p, &ghost).unwrap();
         if cfg!(target_os = "linux") {
             assert_eq!(acquire(&p, &me).unwrap_err().1, Liveness::Dead);
@@ -474,12 +543,74 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_lock_file_does_not_lock_anyone_out() {
+    fn an_unreadable_lock_counts_as_held_while_fresh_and_is_replaced_once_old() {
         let p = project("garbage");
-        std::fs::write(p.join(LOCK_FILE), b"\0\0 not json").unwrap();
+        std::fs::write(p.join(LOCK_FILE), b"").unwrap();
         let me = Holder::current();
+        // Fresh: somebody's lock mid-write, not garbage to replace.
+        assert!(acquire(&p, &me).is_err());
+        let old = SystemTime::now() - std::time::Duration::from_secs(STALE_AFTER_SECS + 60);
+        std::fs::File::options().write(true).open(p.join(LOCK_FILE)).unwrap().set_modified(old).unwrap();
         acquire(&p, &me).unwrap();
         assert_eq!(inspect(&p, &me), LockState::Ours);
+        std::fs::remove_dir_all(&p).ok();
+    }
+
+    #[test]
+    fn of_many_simultaneous_openers_exactly_one_wins() {
+        let p = project("race");
+        let winners: usize = (0..16)
+            .map(|i| {
+                let p = p.clone();
+                std::thread::spawn(move || usize::from(acquire(&p, &other("racer", 1000 + i)).is_ok()))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .sum();
+        assert_eq!(winners, 1);
+        let leftovers: Vec<_> = std::fs::read_dir(&p).unwrap().flatten().filter(|e| e.file_name() != LOCK_FILE).collect();
+        assert!(leftovers.is_empty(), "temporary files left behind: {leftovers:?}");
+        std::fs::remove_dir_all(&p).ok();
+    }
+
+    #[test]
+    fn a_namesake_machine_is_not_judged_by_this_ones_pids() {
+        let p = project("namesake");
+        let me = Holder::current();
+        // Another machine with the same hostname, and a pid not running here.
+        let twin = Holder { host: me.host.clone(), machine: "some-other-machine".into(), ..other("", u32::MAX - 1) };
+        acquire(&p, &twin).unwrap();
+        assert_eq!(acquire(&p, &me).unwrap_err().1, Liveness::Active);
+        std::fs::remove_dir_all(&p).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_takeover_that_cannot_write_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = project("unwritable");
+        let anna = other("laptop", 4242);
+        acquire(&p, &anna).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let taken = take_over(&p, &Holder::current(), read(&p).as_ref());
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Root writes anywhere; the claim is about an ordinary user.
+        let root = std::env::var("USER").is_ok_and(|u| u == "root");
+        if root {
+            eprintln!("skipped: running with permission to write the folder anyway");
+        } else {
+            assert!(taken.is_err());
+            assert_eq!(read(&p).unwrap().who(), "anna@laptop");
+        }
+        std::fs::remove_dir_all(&p).ok();
+    }
+
+    #[test]
+    fn a_lock_from_another_build_still_reads() {
+        let p = project("compat");
+        std::fs::write(p.join(LOCK_FILE), br#"{"user":"anna","host":"laptop","pid":7,"session":"s","heartbeat_at":1}"#).unwrap();
+        assert_eq!(read(&p).unwrap().who(), "anna@laptop");
         std::fs::remove_dir_all(&p).ok();
     }
 
@@ -502,7 +633,7 @@ mod tests {
         let keeper = Keeper::start(p.clone(), me.clone());
         assert!(keeper.check_now().is_ok());
         let anna = other("laptop", 4242);
-        take_over(&p, &anna, read(&p).as_ref());
+        take_over(&p, &anna, read(&p).as_ref()).unwrap();
         assert_eq!(keeper.check_now().unwrap_err().who(), "anna@laptop");
         drop(keeper);
         // Dropping must not remove a lock that is no longer ours.
