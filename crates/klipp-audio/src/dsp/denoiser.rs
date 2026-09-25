@@ -117,3 +117,45 @@ impl AudioEffect for Denoiser {
     }
     fn deserialize_params(&mut self, params: &[(String, f32)]) { for (k, v) in params { self.set_param(k, *v); } }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> AudioProcessContext {
+        AudioProcessContext { sample_rate: 48_000, channels: 1, clip_time_secs: 0.0 }
+    }
+
+    #[test]
+    fn learns_profile_and_reduces_steady_noise() {
+        let mut fx = Denoiser::new(48_000);
+        fx.set_param("profile_seconds", 0.1);
+        let mut profile = vec![0.0f32; FFT_SIZE * 8];
+        for (i, sample) in profile.iter_mut().enumerate() {
+            *sample = (2.0 * std::f32::consts::PI * 180.0 * i as f32 / 48_000.0).sin() * 0.2;
+        }
+        fx.process(&mut profile, &ctx());
+        let mut mixed = vec![0.0f32; FFT_SIZE * 8];
+        for (i, sample) in mixed.iter_mut().enumerate() {
+            let t = i as f32 / 48_000.0;
+            *sample = (2.0 * std::f32::consts::PI * 180.0 * t).sin() * 0.2
+                + (2.0 * std::f32::consts::PI * 1000.0 * t).sin() * 0.5;
+        }
+        let before = mixed.iter().map(|v| v * v).sum::<f32>();
+        fx.process(&mut mixed, &ctx());
+        let after = mixed.iter().map(|v| v * v).sum::<f32>();
+        assert!(after < before, "denoiser should reduce learned broadband component");
+        assert!(mixed.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn learn_button_restarts_profile() {
+        let mut fx = Denoiser::new(48_000);
+        let mut input = vec![0.1; FFT_SIZE * 4];
+        fx.process(&mut input, &ctx());
+        assert!(fx.learned_frames > 0);
+        fx.set_param("learn", 1.0);
+        assert_eq!(fx.learned_frames, 0);
+        assert!(fx.learn_requested);
+    }
+}
