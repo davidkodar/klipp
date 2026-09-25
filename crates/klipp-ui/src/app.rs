@@ -7014,7 +7014,22 @@ impl KlippApp {
         self.sync_sequence_to_engine();
     }
 
+    /// Cut a clip, and its linked partner with it, as one undo step.
     fn blade_clip_at(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
+        // The clip and its partner are cut as two edits, one per track;
+        // without a batch that took two undos, and one left the video
+        // cut and its audio whole.
+        let owns_batch = !self.state.active_history_mut().is_batching();
+        if owns_batch {
+            self.state.active_history_mut().begin_batch();
+        }
+        self.blade_clip_and_partner(track_index, clip_id, cut_at);
+        if owns_batch {
+            self.state.active_history_mut().end_batch();
+        }
+    }
+
+    fn blade_clip_and_partner(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
         if self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).is_some_and(|t| t.locked) { return; }
         let ti = track_index;
         let cid = clip_id;
