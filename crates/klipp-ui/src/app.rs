@@ -371,6 +371,10 @@ pub struct KlippApp {
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
     markers: MarkersPanel,
+    transcript_panel: crate::panels::transcript::TranscriptPanel,
+    /// Transcripts read for the Transcript panel and the GUI's document
+    /// ops; kept until the analyses change.
+    transcript_source: crate::transcript::TranscriptSource,
     /// The Colour Check window's own state: the last reading of the
     /// displayed frame, and the last render-path self-check.
     colour_check: crate::panels::colour_check::ColourCheckPanel,
@@ -830,6 +834,8 @@ impl KlippApp {
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
             markers: MarkersPanel::default(),
+            transcript_panel: crate::panels::transcript::TranscriptPanel::new(),
+            transcript_source: Default::default(),
             colour_check: Default::default(),
             sound_over_time: Default::default(),
             preferences_panel: PreferencesPanel::default(),
@@ -1579,6 +1585,27 @@ impl KlippApp {
         self.sync_sequence_to_engine();
         let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
         tracing::info!("applied \"{label}\": {} edits", edits.len());
+    }
+
+    /// Resolve and apply the document ops panels asked for, each request
+    /// one undo step. A refusal says why in a toast, and nothing changes.
+    fn run_pending_doc_ops(&mut self) {
+        for (label, ops) in std::mem::take(&mut self.state.pending_doc_ops) {
+            self.transcript_source.sync(self.state.analysis_generation);
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            match klipp_document::ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source) {
+                Ok(plan) => {
+                    let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                    self.apply_edits_as_one(&edits, &label);
+                    let what: Vec<&str> = plan.steps.iter().map(|s| s.what.as_str()).collect();
+                    self.state.toast.show(format!("{label}: {}", what.join("; ")));
+                }
+                Err(r) => {
+                    let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
+                    self.state.toast.show(format!("{label}: not done, {}{hint}", r.why));
+                }
+            }
+        }
     }
 
     /// What the Edit Plan window asked for: approval recorded, the plan
@@ -28371,6 +28398,13 @@ impl eframe::App for KlippApp {
             let cmds = crate::panels::subtitle_editor::show(ctx, &mut self.state);
             all_cmds.extend(cmds);
         }
+
+        // Transcript panel
+        if self.state.show_transcript_panel {
+            let cmds = self.transcript_panel.show(ctx, &mut self.state, &self.transcript_source, &self.theme);
+            all_cmds.extend(cmds);
+        }
+        self.run_pending_doc_ops();
 
         // Project Notes panel
         if self.state.show_project_notes {

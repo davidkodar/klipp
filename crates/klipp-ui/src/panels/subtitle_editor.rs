@@ -121,6 +121,46 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
     }
 }
 
+/// The "Captions from Transcript" form: `Op::Captions`'s settings, run as
+/// one undo step through the same resolver the assistant uses. Captions go
+/// on the subtitle track selected in this editor, or the first one (made
+/// if there is none).
+fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
+    use klipp_document::ops::{Anchor, Op, TrackRef};
+    let Some(form) = state.subtitle_editor.captions_form.as_mut() else { return };
+    let mut make = false;
+    ui.group(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Characters per line");
+            ui.add(egui::DragValue::new(&mut form.max_chars).range(8..=80));
+            ui.label("Lines");
+            ui.add(egui::DragValue::new(&mut form.max_lines).range(1..=3));
+            ui.checkbox(&mut form.in_out_only, "In to out only");
+            ui.checkbox(&mut form.replace, "Replace captions already there")
+                .on_hover_text("After a re-cut or a better transcript: take the old captions in that range away first");
+            make = ui.button("Make Captions").clicked();
+        });
+    });
+    if !make {
+        return;
+    }
+    let form = form.clone();
+    let seq = state.sequence();
+    let track = state
+        .subtitle_editor
+        .selected_subtitle_track
+        .and_then(|id| seq.tracks.iter().position(|t| t.id == id))
+        .map(TrackRef::Index);
+    let (from, to) = if form.in_out_only {
+        (seq.in_point.map(|t| Anchor::Secs(t.to_secs_f64())), seq.out_point.map(|t| Anchor::Secs(t.to_secs_f64())))
+    } else {
+        (None, None)
+    };
+    let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace };
+    state.pending_doc_ops.push(("Captions from transcript".to_string(), vec![op]));
+    state.subtitle_editor.captions_form = None;
+}
+
 pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let mut open = state.show_subtitle_editor;
@@ -220,7 +260,19 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                             .unwrap_or_default()
                     });
                 }
+
+                ui.separator();
+                let open = state.subtitle_editor.captions_form.is_some();
+                if ui
+                    .selectable_label(open, "Captions from Transcript\u{2026}")
+                    .on_hover_text("Make captions from what is said on the timeline, from the clips' transcripts")
+                    .clicked()
+                {
+                    state.subtitle_editor.captions_form = if open { None } else { Some(Default::default()) };
+                }
             });
+
+            captions_form(ui, state);
 
             ui.separator();
 
