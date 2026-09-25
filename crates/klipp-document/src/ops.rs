@@ -168,6 +168,13 @@ pub enum Op {
     /// A clip's start to an anchor, its length unchanged; a linked audio
     /// or video partner goes with it. Refused into another clip.
     Move { clip_id: ClipRef, to: Anchor },
+    /// The stretch from `from` to `to` out of the timeline: taken from
+    /// every unlocked track, a clip across either edge split there (its
+    /// linked half with it), and everything after it on those tracks
+    /// moved up by its length, so picture and sound stay together. What
+    /// deleting words in a transcript does. Refused through a retimed
+    /// clip, whose source a split does not yet follow.
+    Cut { from: Anchor, to: Anchor },
     /// Captions for what is said on the timeline, from the transcripts of
     /// the clips whose sound is heard: each word lands where its clip
     /// puts it, words gather into cues of at most `max_lines` lines of
@@ -1868,6 +1875,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
         }
 
+        Op::Cut { from, to } => {
+            let from = resolve_anchor(seq, fps, from, i)?;
+            let to = resolve_anchor(seq, fps, to, i)?;
+            cut_range(seq, pool, i, from, to)
+        }
+
         Op::Move { clip_id: clip_ref, to } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
@@ -2275,18 +2288,135 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
 
 /// A word placed on the timeline, and whether a cut in the sound comes
 /// before it.
-struct HeardWord {
-    start: f64,
-    end: f64,
-    text: String,
-    after_cut: bool,
+/// A word as it is heard on the timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeardWord {
+    /// Timeline seconds.
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+    /// The first word heard from its clip.
+    pub after_cut: bool,
+    /// The clip it is heard from.
+    pub clip_id: ClipId,
+}
+
+/// [`Op::Cut`]: split every unlocked track at both edges, take out what
+/// lies between, move up what follows. Each edit is worked out on the
+/// timeline as the ones before it left it, and they go as one batch, so
+/// the cut is one undo step.
+fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Timecode) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if to <= from {
+        return Err(refuse(i, format!("the cut ends ({:.2} s) before it starts ({:.2} s)", secs(to), secs(from)), "give `to` after `from`"));
+    }
+    let len = to - from;
+    let open: Vec<usize> = (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect();
+    for &ti in &open {
+        for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_in < to && c.timeline_out > from) {
+            if c.speed != 1.0 || !c.speed_keyframes.is_empty() {
+                return Err(refuse(
+                    i,
+                    format!("{} is retimed, and a cut through it would land on the wrong frames", clip_name(seq, pool, c)),
+                    "cut around it, or take its speed change off first",
+                ));
+            }
+        }
+    }
+
+    let mut sims = vec![seq.clone()];
+    let mut sim_pool = pool.clone();
+    let mut sim_fps = seq.fps;
+    let mut edits: Vec<EditCommand> = Vec::new();
+    let mut push = |sims: &mut Vec<Sequence>, edit: EditCommand| {
+        let mut view = crate::apply::DocumentView { sequences: sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
+        view.apply_forward(&edit);
+        edits.push(edit);
+    };
+
+    // Split at each edge. Halves of a linked pair split at the same edge
+    // are linked to each other, as one split in the app links them.
+    let mut split = 0;
+    for cut in [from, to] {
+        let mut blades = Vec::new();
+        for &ti in &open {
+            let track = &sims[0].tracks[ti];
+            if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
+                let mut scratch = track.clone();
+                if let Some((a, b)) = scratch.split_at(c.id, cut) {
+                    blades.push((ti, ci, c.clone(), a, b));
+                }
+            }
+        }
+        let halves: std::collections::HashMap<ClipId, (ClipId, ClipId)> = blades.iter().map(|(_, _, o, a, b)| (o.id, (a.id, b.id))).collect();
+        for (_, _, original, a, b) in &mut blades {
+            if let Some(&(pa, pb)) = original.linked_clip_id.and_then(|l| halves.get(&l)) {
+                a.linked_clip_id = Some(pa);
+                b.linked_clip_id = Some(pb);
+            }
+        }
+        for (track_index, position, original_clip, clip_a, clip_b) in blades {
+            split += 1;
+            push(&mut sims, EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position });
+        }
+    }
+
+    // Take out what lies inside, last first so the positions hold.
+    let mut removed = 0;
+    for &ti in &open {
+        let inside: Vec<(usize, Clip)> = sims[0].tracks[ti]
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.timeline_in >= from && c.timeline_out <= to)
+            .map(|(ci, c)| (ci, c.clone()))
+            .collect();
+        for (position, clip) in inside.into_iter().rev() {
+            removed += 1;
+            push(&mut sims, EditCommand::LegacyRemoveClip { clip, track_index: ti, position });
+        }
+    }
+
+    // Move up what follows, earliest first: each lands where the one
+    // before it has already left.
+    let mut moved = Vec::new();
+    for &ti in &open {
+        let after: Vec<Clip> = sims[0].tracks[ti].clips.iter().filter(|c| c.timeline_in >= to).cloned().collect();
+        for c in after {
+            moved.push(c.id);
+            push(
+                &mut sims,
+                EditCommand::LegacyMoveClip {
+                    clip_id: c.id,
+                    old_timeline_in: c.timeline_in,
+                    old_timeline_out: c.timeline_out,
+                    new_timeline_in: c.timeline_in - len,
+                    new_timeline_out: c.timeline_out - len,
+                    // Every track is moved here on its own, partners too.
+                    linked_partner: None,
+                },
+            );
+        }
+    }
+
+    if edits.is_empty() {
+        return Err(refuse(i, format!("nothing on the unlocked tracks lies between {:.2} s and {:.2} s", secs(from), secs(to)), "check the range, or unlock the tracks"));
+    }
+    let what = format!(
+        "cut {:.2}-{:.2} s ({:.2} s) from {} tracks: {split} clips split, {removed} taken out, {} moved up",
+        secs(from),
+        secs(to),
+        secs(len),
+        open.len(),
+        moved.len()
+    );
+    Ok((what, EditCommand::Batch(edits), moved))
 }
 
 /// The words heard on the timeline, in order: every enabled clip whose
 /// sound plays — audio-track clips, and video clips with no audio clip
 /// linked to them — that is not muted, its transcript's words moved from
 /// the file's time to where the clip puts them.
-fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Vec<HeardWord> {
+pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Vec<HeardWord> {
     let mut cache: std::collections::HashMap<MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
     let mut out = Vec::new();
     for track in &seq.tracks {
@@ -2319,7 +2449,7 @@ fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) 
                 }
                 let start = (t_in + (w.start_secs - s_in) / speed).max(t_in);
                 let end = (t_in + (w.end_secs - s_in) / speed).clamp(start, t_out);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first });
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id });
                 first = false;
             }
         }
@@ -5614,6 +5744,58 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    #[test]
+    fn a_cut_takes_a_stretch_out_of_every_track_and_closes_up_together() {
+        let (seq, pool, _, a, b) = fixture();
+        // 3-5 s: the end of a, the cut, the start of b, on both tracks.
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        for track in &seqs[0].tracks {
+            let spans: Vec<(Timecode, Timecode, Timecode)> = track.clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.source_in)).collect();
+            // a keeps 0-3 s; b's remainder (source 5-8 s) now runs 3-6 s.
+            assert_eq!(spans, vec![(tc(0.0), tc(3.0), tc(0.0)), (tc(3.0), tc(6.0), tc(5.0))], "{}", track.name);
+        }
+        // Picture and sound halves are still linked to each other.
+        let (v, au) = (&seqs[0].tracks[0].clips, &seqs[0].tracks[1].clips);
+        for k in 0..2 {
+            assert_eq!(v[k].linked_clip_id, Some(au[k].id));
+            assert_eq!(au[k].linked_clip_id, Some(v[k].id));
+        }
+        // One step, and its inverse gives the timeline back.
+        assert_eq!(plan.steps.len(), 1);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_inverse(&plan.steps[0].edit);
+        let ids: Vec<ClipId> = seqs[0].tracks[0].clips.iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![a, b]);
+        assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    #[test]
+    fn a_cut_leaves_a_locked_track_alone_and_refuses_through_a_retime() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[1].locked = true;
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(seqs[0].tracks[1].clips.len(), 2, "the locked track is untouched");
+        assert_eq!(seqs[0].tracks[0].clips.last().unwrap().timeline_out, tc(7.0));
+
+        seq.tracks[1].locked = false;
+        seq.tracks[0].clips[0].speed = 2.0;
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap_err();
+        assert!(err.why.contains("retimed"), "{}", err.why);
+        let backwards = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(6.0), to: Anchor::Secs(5.0) }]).unwrap_err();
+        assert!(backwards.why.contains("before it starts"));
     }
 
     #[test]
