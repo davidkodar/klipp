@@ -49,6 +49,10 @@ pub struct NodeInspectorPanel {
     pub color_presets: Vec<ToolPreset>,
     pub preset_save_name_tool: String,
     pub preset_saving_tool: Option<ToolScope>,
+    /// The selected clip's input colour space and whether detection
+    /// chose it, set by the caller each frame: the InputTransform node
+    /// edits the media item's format, which this panel cannot see.
+    pub input_colour_space: (klipp_core::LogFormat, bool),
 }
 
 impl Default for NodeInspectorPanel {
@@ -71,6 +75,7 @@ impl Default for NodeInspectorPanel {
             color_presets: presets::load_tool_presets(&ToolScope::Color),
             preset_save_name_tool: String::new(),
             preset_saving_tool: None,
+            input_colour_space: (klipp_core::LogFormat::Srgb, false),
         }
     }
 }
@@ -180,6 +185,16 @@ impl NodeInspectorPanel {
         wide_layout: bool,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+
+        // The InputTransform node is the input colour space, not a grade:
+        // the tabs below would show Corrector sliders for it.
+        let idt_selected = selected_node
+            .and_then(|id| graph.nodes.iter().find(|n| n.id == id))
+            .is_some_and(|n| n.kind == NodeKind::InputTransform);
+        if idt_selected {
+            self.show_input_colour_space(ui, clip_id, &mut cmds, theme);
+            return cmds;
+        }
 
         // ── Tab row: the same strip as the Edit inspector ──
         let tabs = [
@@ -1525,6 +1540,28 @@ impl NodeInspectorPanel {
     // ── Inspector ───────────────────────────────────────────────────────────
 
     #[allow(clippy::too_many_arguments)]
+    /// The InputTransform node's editor: the clip's input colour space.
+    fn show_input_colour_space(&self, ui: &mut egui::Ui, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+        let (current, detected) = self.input_colour_space;
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("INPUT COLOUR SPACE").size(10.0).color(theme.text_dim));
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            crate::inspector::color_and_luts::input_colour_space_combo(
+                ui, "node_idt_log_format", clip_id, current, detected, cmds,
+            );
+        });
+        egui::Frame::none()
+            .inner_margin(egui::Margin { left: 12.0, right: 12.0, top: 4.0, bottom: 0.0 })
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("The encoding the file is converted from. Applies to every clip of this file.")
+                    .size(10.0).color(theme.text_dim));
+            });
+    }
+
     fn show_inspector(
         &mut self,
         ui: &mut egui::Ui,
@@ -2489,8 +2526,7 @@ impl NodeInspectorPanel {
                 }
             }
             NodeKind::InputTransform => {
-                ui.label("Input Device Transform");
-                ui.label(egui::RichText::new("Set via Inspector > Log Format").size(10.0).color(theme.text_dim));
+                self.show_input_colour_space(ui, clip_id, cmds, theme);
             }
             NodeKind::Qualifier => {
                 let qual = params.qualifier.get_or_insert_with(Default::default);
