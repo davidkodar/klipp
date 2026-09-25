@@ -135,6 +135,9 @@ fn exposure(stops: f32) -> klipp_nodes::NodeGraph {
 struct Timeline {
     seq: Sequence,
     files: HashMap<MediaId, PathBuf>,
+    /// Media whose picture is turned (a phone's rotation matrix), by how
+    /// far; the rest are upright.
+    rotation: HashMap<MediaId, i32>,
 }
 
 /// V1: a (flat, one stop up) dissolving over one second into b (changing
@@ -177,14 +180,21 @@ fn timeline() -> Timeline {
     let mut v1 = track("V1", vec![clip_a, clip_b]);
     v1.transitions.push(dissolve);
     seq.tracks = vec![track("V3", vec![clip_d]), track("V2", vec![clip_c]), v1];
-    Timeline { seq, files }
+    Timeline { seq, files, rotation: HashMap::new() }
 }
 
 /// The timeline exported through the real `ExportJob`, H.264 near-lossless.
 fn export(t: &Timeline, out: &Path) {
     let video = VideoTimeline {
         sequence: t.seq.clone(),
-        media: t.files.iter().map(|(id, p)| (*id, MediaFile { path: p.clone(), log_format: None, source_rotation: 0 })).collect(),
+        media: t
+            .files
+            .iter()
+            .map(|(id, p)| {
+                let source_rotation = t.rotation.get(id).copied().unwrap_or(0);
+                (*id, MediaFile { path: p.clone(), log_format: None, source_rotation })
+            })
+            .collect(),
         ..Default::default()
     };
     let snapshot = SequenceSnapshot {
@@ -240,11 +250,15 @@ impl Viewer {
         let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
         let mut pool = MediaPool::default();
         for (id, path) in &t.files {
+            // As an import records it: the upright size, and the turn.
+            let source_rotation = t.rotation.get(id).copied().unwrap_or(0);
+            let (width, height) = if source_rotation.rem_euclid(180) == 90 { (H, W) } else { (W, H) };
             pool.add(MediaItem {
                 id: *id,
                 path: path.clone(),
                 kind: klipp_media::MediaItemKind::File,
-                resolution: Resolution { width: W, height: H },
+                resolution: Resolution { width, height },
+                source_rotation,
                 ..MediaItem::new_synthetic_title(*id, path.display().to_string(), tc(250), Fps::new(FPS as u32, 1))
             });
         }
@@ -534,7 +548,7 @@ fn secondary_timeline() -> Timeline {
     let mut v1 = Track::new("V1", TrackKind::Video);
     v1.clips = vec![clip];
     seq.tracks = vec![v1];
-    Timeline { seq, files }
+    Timeline { seq, files, rotation: HashMap::new() }
 }
 
 #[test]
@@ -587,4 +601,57 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
         .unwrap();
     eprintln!("keyed vs unkeyed export: worst {d} levels apart");
     assert!(d > 5, "the key made no difference to the export ({d} levels)");
+}
+
+/// A phone clip shot upright: coded landscape with a quarter-turn matrix,
+/// in this landscape sequence. Red on the coded frame's left, blue on its
+/// right, so upright they are above and below each other.
+fn portrait_timeline() -> Timeline {
+    let p = MediaId::new();
+    let files = HashMap::from([(p, rgb_source("portrait.mkv", "if(lt(X,W/2),200,40)", "40", "if(lt(X,W/2),40,200)"))]);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![media_clip(p, 0, 50, 0)];
+    seq.tracks = vec![v1];
+    Timeline { seq, files, rotation: HashMap::from([(p, 90)]) }
+}
+
+/// The viewer and the export both pillarbox a portrait clip in a landscape
+/// sequence. The export used to decode it straight to the frame's size,
+/// stretching it three times too wide, while the viewer — rendering in a
+/// frame the clip's own shape — showed it upright and narrow.
+#[test]
+fn a_portrait_clip_is_pillarboxed_in_the_viewer_and_the_export_alike() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = portrait_timeline();
+    let out = exported(&t);
+    // Upright, the picture is H * H / W = 202 pixels wide, centred.
+    let picture_w = H * H / W;
+    let (left, right) = ((W - picture_w) / 2, (W + picture_w) / 2);
+    let bar = [("left bar", left / 2, H / 2), ("right bar", (right + W) / 2, H / 2)];
+    let picture = [("upper", W / 2, H / 4), ("lower", W / 2, H * 3 / 4)];
+    // The viewer asserts its frame is the sequence's size.
+    let viewer = Viewer::start(&t);
+    for n in [10, 30] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        for (name, x, y) in bar {
+            let (p, q) = (px(&v, x, y), px(&e, x, y));
+            eprintln!("frame {n} {name:9}: viewer {p:?} export {q:?}");
+            assert!(p.iter().chain(&q).all(|c| *c <= 20), "frame {n}: the {name} is not black (viewer {p:?}, export {q:?})");
+        }
+        for (name, x, y) in picture {
+            let (p, q) = (px(&v, x, y), px(&e, x, y));
+            let d = (0..3).map(|c| (p[c] - q[c]).abs()).max().unwrap();
+            eprintln!("frame {n} {name:9}: viewer {p:?} export {q:?} diff {d}");
+            assert!(d <= 3, "frame {n}: the {name} half differs by {d} levels (viewer {p:?}, export {q:?})");
+        }
+        // Upright: one colour above the other, not side by side.
+        let (upper, lower) = (px(&e, W / 2, H / 4), px(&e, W / 2, H * 3 / 4));
+        assert!((upper[0] - lower[0]).abs() > 100, "frame {n}: the halves are not above each other ({upper:?}, {lower:?})");
+    }
 }

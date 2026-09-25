@@ -1488,8 +1488,8 @@ impl PlaybackEngine {
                     if !clip.enabled || start < now - 0.1 || start > now + AHEAD_SECS {
                         continue;
                     }
-                    // The frame size the title is placed at: the video
-                    // under it, else the sequence's.
+                    // The frame size the title is placed at: the frame
+                    // the video under it is shown in, else the sequence's.
                     let (w, h) = seq
                         .tracks
                         .iter()
@@ -1497,7 +1497,10 @@ impl PlaybackEngine {
                         .find_map(|t| {
                             let (_, c) = t.clip_at_timecode(clip.timeline_in)?;
                             let item = pool.get(&c.media_id()?)?;
-                            Some((item.resolution.width, item.resolution.height))
+                            Some(view::viewer_canvas(
+                                (item.resolution.width, item.resolution.height),
+                                (seq.resolution.width, seq.resolution.height),
+                            ))
                         })
                         .unwrap_or((seq.resolution.width, seq.resolution.height));
                     if w == 0 || h == 0 {
@@ -7115,6 +7118,16 @@ impl PlaybackEngine {
         }
         if clip.consumed_as_matte {
             blockers.push("clip is a matte source");
+        }
+        // A picture of another shape from the sequence's is barred by the
+        // renderer, in a frame of the sequence's shape; the plain present
+        // would show it bare, at its own shape.
+        let shape = clip.media_id().and_then(|id| {
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            pool.get(&id).map(|item| (item.resolution.width, item.resolution.height))
+        });
+        if shape.is_some_and(|s| !view::same_shape(s, (seq.resolution.width, seq.resolution.height))) {
+            blockers.push("picture is not the sequence's shape");
         }
         if !clip.node_graph.is_identity() {
             blockers.push("grade graph is not an identity");
