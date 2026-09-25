@@ -2255,6 +2255,7 @@ mod title_text_coalesce_tests {
             visible: true,
             locked: false,
             opacity: 1.0,
+            opacity_keyframes: Vec::new(),
             content: klipp_timeline::TitleObjectContent::TextBox(tb_extra),
             fx: Some(klipp_timeline::LayerFx::default()),
         });

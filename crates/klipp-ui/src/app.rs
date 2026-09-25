@@ -16962,6 +16962,44 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::AddTitleObjectOpacityKeyframe { clip_id, object_id, time_secs, value } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(obj) = td.object_mut(target) {
+                                obj.upsert_opacity_keyframe(*time_secs, *value);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Add Title Opacity Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::RemoveTitleObjectOpacityKeyframe { clip_id, object_id, time_secs } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(obj) = td.object_mut(target) {
+                                obj.remove_opacity_keyframe_at(*time_secs);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Remove Title Opacity Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::RenameTitleObject { clip_id, object_id, name } => {
                 let target = klipp_timeline::TitleObjectId(*object_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -35434,6 +35472,8 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::SetTitleBackground { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
         | C::SetTitleGradient { clip_id, .. }
+        | C::AddTitleObjectOpacityKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectOpacityKeyframe { clip_id, .. }
         | C::AddTitleObjectPositionKeyframe { clip_id, .. }
         | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
         | C::MoveTitleObjectPositionKeyframe { clip_id, .. }

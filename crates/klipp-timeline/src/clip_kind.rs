@@ -364,6 +364,10 @@ pub struct TitleObject {
     /// be individually faded.
     #[serde(default = "default_one_f32")]
     pub opacity: f32,
+    /// Optional per-layer opacity animation, evaluated in clip-local time.
+    /// Empty by default so existing title files remain unchanged.
+    #[serde(default)]
+    pub opacity_keyframes: Vec<klipp_core::Keyframe>,
     pub content: TitleObjectContent,
     /// The layer's motion and effect stacks. `None` only in a file
     /// written before this field existed: the loader migrates it to
@@ -464,6 +468,27 @@ impl TitleObject {
     /// the loader migrates it.
     pub fn fx(&self) -> &LayerFx {
         self.fx.as_ref().unwrap_or(&STILL_FX)
+    }
+
+    /// Evaluate this layer's opacity at clip-local time.
+    pub fn evaluated_opacity(&self, time_secs: f64) -> f32 {
+        if self.opacity_keyframes.is_empty() {
+            self.opacity
+        } else {
+            klipp_core::keyframe::evaluate(&self.opacity_keyframes, time_secs, self.opacity)
+        }
+    }
+
+    pub fn upsert_opacity_keyframe(&mut self, time_secs: f64, value: f32) {
+        klipp_core::keyframe::upsert_keyframe(
+            &mut self.opacity_keyframes,
+            time_secs,
+            value.clamp(0.0, 1.0),
+        );
+    }
+
+    pub fn remove_opacity_keyframe_at(&mut self, time_secs: f64) {
+        klipp_core::keyframe::remove_keyframe_at(&mut self.opacity_keyframes, time_secs);
     }
 
     /// The layer's stack, to edit: an object without one gets an
@@ -1229,6 +1254,7 @@ impl TitleData {
             visible: true,
             locked: false,
             opacity: 1.0,
+            opacity_keyframes: Vec::new(),
             content,
             fx: Some(fx),
         });
@@ -2700,6 +2726,24 @@ mod tests {
         assert!(xform.center_y_keyframes.is_empty());
         assert_eq!(xform.center.x, 0.5);
         assert_eq!(xform.center.y, 0.5);
+    }
+
+    #[test]
+    fn title_object_opacity_keyframes_evaluate_and_round_trip() {
+        let mut td = TitleData::default();
+        let oid = td.add_object(
+            TitleObjectContent::TextBox(TextBox::default()),
+            default_text_transform(),
+        );
+        let obj = td.object_mut(oid).unwrap();
+        obj.upsert_opacity_keyframe(0.0, 0.0);
+        obj.upsert_opacity_keyframe(1.0, 1.0);
+        assert!((obj.evaluated_opacity(0.5) - 0.5).abs() < 1e-6);
+        let json = serde_json::to_string(&td).unwrap();
+        let restored: TitleData = serde_json::from_str(&json).unwrap();
+        let restored_obj = restored.object(oid).unwrap();
+        assert_eq!(restored_obj.opacity_keyframes.len(), 2);
+        assert!((restored_obj.evaluated_opacity(0.5) - 0.5).abs() < 1e-6);
     }
 
     /// `evaluated_radius` and `evaluated_intensity` short-circuit to
