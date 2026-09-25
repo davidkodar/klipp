@@ -39,6 +39,7 @@ klipp-audio = { workspace = true }
 klipp-core = { workspace = true }
 klipp-jobs = { path = "../klipp-jobs" }
 klipp-media = { workspace = true }
+realfft = "3"
 klipp-ml = { workspace = true, optional = true }
 klipp-ml-ort = { workspace = true, optional = true }
 serde = { workspace = true }

@@ -130,6 +130,301 @@ pub fn frames_to_timecode(frames: i64, fps: Fps, drop: bool) -> (i64, i64, i64, 
     (total_secs / 3600, (total_secs / 60) % 60, total_secs % 60, f)
 }
 
+/// How the angles of a multicam are put on one clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MulticamSync {
+    /// By each clip's start timecode only.
+    Timecode,
+    /// By sound only, against one reference angle.
+    Audio,
+    /// Timecode where a clip has it, sound for the rest.
+    TimecodeThenAudio,
+}
+
+impl MulticamSync {
+    pub fn label(self) -> &'static str {
+        match self {
+            MulticamSync::Timecode => "Sync by Timecode",
+            MulticamSync::Audio => "Sync by Audio",
+            MulticamSync::TimecodeThenAudio => "Sync by Timecode, Else Audio",
+        }
+    }
+}
+
+/// One clip to become an angle, as far as syncing is concerned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MulticamAngle {
+    pub media_id: MediaId,
+    pub name: String,
+    pub start_timecode: Option<String>,
+    pub fps: Fps,
+    pub duration_secs: f64,
+    pub has_audio: bool,
+}
+
+/// Where one angle goes, and how that was decided.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnglePlacement {
+    pub media_id: MediaId,
+    /// Seconds from the group's first frame.
+    pub start_secs: f64,
+    /// `None` when the angle could not be synced and was put at the
+    /// group's start for the editor to line up.
+    pub method: Option<SyncMethod>,
+    /// For an audio sync, how well the sound matched (0..1).
+    pub confidence: Option<f64>,
+    /// The sound the others were matched against.
+    pub is_reference: bool,
+}
+
+/// What syncing a multicam found: a place for every angle, and what the
+/// editor should know about it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MulticamPlan {
+    pub placements: Vec<AnglePlacement>,
+    pub notes: Vec<String>,
+}
+
+impl MulticamPlan {
+    /// Angles actually put on the shared clock.
+    pub fn synced(&self) -> usize {
+        self.placements.iter().filter(|p| p.method.is_some()).count()
+    }
+}
+
+/// The placed angles in groups whose spans overlap, directly or through
+/// one another.
+fn overlap_groups(start: &[Option<f64>], angles: &[MulticamAngle]) -> Vec<Vec<usize>> {
+    let placed: Vec<usize> = (0..start.len()).filter(|&i| start[i].is_some()).collect();
+    let span = |i: usize| {
+        let s = start[i].unwrap_or(0.0);
+        (s, s + angles[i].duration_secs)
+    };
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for &i in &placed {
+        let (a0, a1) = span(i);
+        let touching: Vec<usize> = (0..groups.len())
+            .filter(|&g| groups[g].iter().any(|&j| {
+                let (b0, b1) = span(j);
+                a0 < b1 && b0 < a1
+            }))
+            .collect();
+        let mut merged = vec![i];
+        for &g in touching.iter().rev() {
+            merged.extend(groups.remove(g));
+        }
+        merged.sort_unstable();
+        groups.push(merged);
+    }
+    groups
+}
+
+/// A match weaker than this is two recordings that share no sound.
+pub const MIN_AUDIO_CONFIDENCE: f64 = 0.3;
+
+/// Sound and timecode disagreeing by more than this means the timecode
+/// is not on the event's clock.
+pub const TIMECODE_DISAGREES_SECS: f64 = 0.5;
+
+/// How sure the sound must be to move an angle its timecode placed.
+/// Jam-synced timecode is right far more often than a sound match on
+/// repeated music or a PA loop, so a match that would place an angle
+/// with no timecode is only reported against one that has it.
+pub const OVERRULE_TIMECODE_CONFIDENCE: f64 = 0.7;
+
+/// What matching one angle's sound against the reference found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioMatch {
+    /// A moment `t` into the reference is `t + offset_secs` into the angle.
+    Matched { offset_secs: f64, confidence: f64 },
+    /// They share less sound than a match needs.
+    TooLittleOverlap,
+    /// The sound could not be read.
+    Unavailable(String),
+}
+
+/// Put `angles` on one clock.
+///
+/// Timecode first where `method` allows it and the clip carries one.
+/// Timecode is only trusted where the clips agree: the angles whose
+/// timecode spans overlap form groups, and those outside the largest are
+/// on another clock — a DSLR counting from zero beside cameras on time of
+/// day. Then sound: the reference is the longest angle with sound,
+/// preferring one placed by trusted timecode, and `audio_offset(reference,
+/// i)` matches angle `i` against it. With [`MulticamSync::TimecodeThenAudio`]
+/// the sound also checks every timecode placement, and moves an angle
+/// whose timecode it contradicts (two record-run cameras both starting at
+/// zero overlap each other, so only the sound can tell). An angle neither
+/// method can place goes at the group's start and is named in the notes.
+pub fn plan_multicam(
+    angles: &[MulticamAngle],
+    method: MulticamSync,
+    mut audio_offset: impl FnMut(usize, usize) -> AudioMatch,
+) -> MulticamPlan {
+    let n = angles.len();
+    let mut start: Vec<Option<f64>> = vec![None; n];
+    // Where timecode alone put each angle, for one set aside as another
+    // clock that the sound then cannot place either.
+    let mut tc_start: Vec<Option<f64>> = vec![None; n];
+    let mut how: Vec<Option<SyncMethod>> = vec![None; n];
+    let mut confidence: Vec<Option<f64>> = vec![None; n];
+    let mut notes = Vec::new();
+
+    if method != MulticamSync::Audio {
+        for (i, a) in angles.iter().enumerate() {
+            if let Some(t) = a.start_timecode.as_deref().and_then(|tc| timecode_to_secs(tc, a.fps)) {
+                start[i] = Some(t);
+                how[i] = Some(SyncMethod::Timecode);
+            }
+        }
+        let missing: Vec<&str> = angles.iter().zip(&start).filter(|(_, s)| s.is_none()).map(|(a, _)| a.name.as_str()).collect();
+        if method == MulticamSync::Timecode && !missing.is_empty() {
+            notes.push(format!("No timecode on {}", missing.join(", ")));
+        }
+        // Trust the largest group of angles whose timecodes agree.
+        tc_start = start.clone();
+        let groups = overlap_groups(&start, angles);
+        if groups.len() > 1 {
+            let main = groups
+                .iter()
+                .max_by(|a, b| {
+                    a.len().cmp(&b.len()).then_with(|| {
+                        let total = |g: &Vec<usize>| g.iter().map(|&i| angles[i].duration_secs).sum::<f64>();
+                        total(a).total_cmp(&total(b))
+                    })
+                })
+                .cloned()
+                .unwrap_or_default();
+            for g in groups.iter().filter(|g| **g != main) {
+                for &i in g {
+                    if method == MulticamSync::TimecodeThenAudio {
+                        notes.push(format!(
+                            "{}'s timecode is on another clock from the other angles, so it was synced by sound",
+                            angles[i].name
+                        ));
+                        start[i] = None;
+                        how[i] = None;
+                    } else {
+                        notes.push(format!(
+                            "{} shares no time with the other angles; its timecode may be on a different clock",
+                            angles[i].name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut reference = None;
+    let wants_sound = match method {
+        MulticamSync::Timecode => false,
+        MulticamSync::Audio => true,
+        // Also to check the timecode placements.
+        MulticamSync::TimecodeThenAudio => true,
+    };
+    if wants_sound {
+        let longest = |only_placed: bool| {
+            (0..n)
+                .filter(|&i| angles[i].has_audio && (!only_placed || start[i].is_some()))
+                .max_by(|&x, &y| angles[x].duration_secs.total_cmp(&angles[y].duration_secs))
+        };
+        reference = longest(true).or_else(|| longest(false));
+        match reference {
+            None if start.iter().any(Option::is_none) => notes.push("None of the clips has sound to sync by".to_string()),
+            None => {}
+            Some(r) => {
+                if start[r].is_none() {
+                    start[r] = Some(0.0);
+                    how[r] = Some(SyncMethod::Waveform);
+                }
+                let r_start = start[r].unwrap_or(0.0);
+                for i in (0..n).filter(|&i| i != r) {
+                    let name = &angles[i].name;
+                    let checking = start[i].is_some();
+                    if checking && method != MulticamSync::TimecodeThenAudio {
+                        continue;
+                    }
+                    if !angles[i].has_audio {
+                        if !checking {
+                            notes.push(format!("{name} has no timecode and no sound to sync by"));
+                        }
+                        continue;
+                    }
+                    match audio_offset(r, i) {
+                        AudioMatch::Matched { offset_secs, confidence: c } if c >= MIN_AUDIO_CONFIDENCE => {
+                            let by_sound = r_start - offset_secs;
+                            if let Some(by_tc) = start[i].filter(|_| checking) {
+                                if (by_tc - by_sound).abs() <= TIMECODE_DISAGREES_SECS {
+                                    continue;
+                                }
+                                if c < OVERRULE_TIMECODE_CONFIDENCE {
+                                    notes.push(format!(
+                                        "{name}'s sound suggests {:.1} s from its timecode (match {:.0}%); kept its timecode — check it",
+                                        by_sound - by_tc,
+                                        c * 100.0
+                                    ));
+                                    continue;
+                                }
+                                notes.push(format!(
+                                    "{name}'s timecode disagreed with its sound by {:.1} s, so it was placed by sound",
+                                    by_tc - by_sound
+                                ));
+                            }
+                            start[i] = Some(by_sound);
+                            how[i] = Some(SyncMethod::Waveform);
+                            confidence[i] = Some(c);
+                        }
+                        // A timecode placement the sound cannot confirm stands.
+                        _ if checking => {}
+                        AudioMatch::Matched { confidence: c, .. } => notes.push(format!(
+                            "{name} shares no clear sound with {} (match {:.0}%)",
+                            angles[r].name,
+                            c * 100.0
+                        )),
+                        AudioMatch::TooLittleOverlap => {
+                            notes.push(format!("{name} overlaps {} by too little to sync by sound", angles[r].name))
+                        }
+                        AudioMatch::Unavailable(why) => notes.push(format!("{name}'s sound could not be read: {why}")),
+                    }
+                }
+            }
+        }
+    }
+
+    // An angle set aside as another clock that the sound could not place
+    // either keeps its timecode: same-clock angles can simply not
+    // overlap, and a guess at the start is worse than the timecode.
+    for i in 0..n {
+        if start[i].is_none() {
+            if let Some(t) = tc_start[i] {
+                start[i] = Some(t);
+                how[i] = Some(SyncMethod::Timecode);
+                notes.push(format!("{} kept its timecode, which the sound could not confirm", angles[i].name));
+            }
+        }
+    }
+
+    let origin = start.iter().flatten().copied().fold(f64::INFINITY, f64::min);
+    let origin = if origin.is_finite() { origin } else { 0.0 };
+    let unsynced: Vec<&str> = angles.iter().zip(&start).filter(|(_, s)| s.is_none()).map(|(a, _)| a.name.as_str()).collect();
+    if !unsynced.is_empty() {
+        notes.push(format!("Placed at the start for you to line up: {}", unsynced.join(", ")));
+    }
+
+    let placements = angles
+        .iter()
+        .enumerate()
+        .map(|(i, a)| AnglePlacement {
+            media_id: a.media_id,
+            start_secs: start[i].map_or(0.0, |s| s - origin),
+            method: how[i],
+            confidence: confidence[i],
+            is_reference: reference == Some(i),
+        })
+        .collect();
+    MulticamPlan { placements, notes }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +494,142 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn angle(name: &str, tc: Option<&str>, secs: f64, audio: bool) -> MulticamAngle {
+        MulticamAngle {
+            media_id: MediaId::new(),
+            name: name.into(),
+            start_timecode: tc.map(Into::into),
+            fps: Fps::new(25, 1),
+            duration_secs: secs,
+            has_audio: audio,
+        }
+    }
+
+    #[test]
+    fn jam_synced_cameras_are_placed_by_timecode() {
+        let angles = [
+            angle("A", Some("10:00:05:00"), 60.0, true),
+            angle("B", Some("10:00:00:00"), 60.0, true),
+            angle("C", Some("10:00:12:12"), 30.0, false),
+        ];
+        let plan = plan_multicam(&angles, MulticamSync::Timecode, |_, _| panic!("no sound needed"));
+        let starts: Vec<f64> = plan.placements.iter().map(|p| p.start_secs).collect();
+        for (got, want) in starts.iter().zip([5.0, 0.0, 12.48]) {
+            assert!((got - want).abs() < 1e-6, "{starts:?}");
+        }
+        assert!(plan.placements.iter().all(|p| p.method == Some(SyncMethod::Timecode)));
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn half_jam_synced_falls_back_to_sound_on_the_same_clock() {
+        let angles = [
+            angle("A", Some("10:00:05:00"), 60.0, true),
+            angle("B", Some("10:00:00:00"), 90.0, true),
+            angle("phone", None, 40.0, true),
+        ];
+        // B is the reference (longest with timecode); the phone's sound
+        // matches 20 s into B.
+        // A's sound agrees with its timecode (5 s after B).
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |r, i| match (r, i) {
+            (1, 2) => matched(-20.0, 0.8),
+            (1, 0) => matched(-5.0, 0.9),
+            other => panic!("unexpected pair {other:?}"),
+        });
+        assert_eq!(plan.placements[0].method, Some(SyncMethod::Timecode));
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+        let phone = &plan.placements[2];
+        assert_eq!(phone.method, Some(SyncMethod::Waveform));
+        assert!((phone.start_secs - 20.0).abs() < 1e-9);
+        assert!(plan.placements[1].is_reference);
+        assert_eq!(plan.synced(), 3);
+    }
+
+    #[test]
+    fn an_angle_with_no_shared_sound_is_named_not_guessed() {
+        let angles = [angle("A", None, 60.0, true), angle("B", None, 30.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::Audio, |_, _| matched(5.0, 0.1));
+        assert_eq!(plan.placements[1].method, None);
+        assert!(plan.notes.iter().any(|n| n.contains("B shares no clear sound")), "{:?}", plan.notes);
+        assert!(plan.notes.iter().any(|n| n.contains("line up: B")), "{:?}", plan.notes);
+        assert_eq!(plan.synced(), 1);
+    }
+
+    #[test]
+    fn a_camera_on_another_clock_is_flagged() {
+        // Record-run timecode on one camera, time of day on the other.
+        let angles = [angle("A", Some("00:00:10:00"), 60.0, false), angle("B", Some("14:22:00:00"), 60.0, false)];
+        let plan = plan_multicam(&angles, MulticamSync::Timecode, |_, _| AudioMatch::TooLittleOverlap);
+        assert!(plan.notes.iter().any(|n| n.contains("different clock")), "{:?}", plan.notes);
+    }
+
+    fn matched(offset_secs: f64, confidence: f64) -> AudioMatch {
+        AudioMatch::Matched { offset_secs, confidence }
+    }
+
+    #[test]
+    fn a_record_run_camera_beside_time_of_day_ones_is_synced_by_sound() {
+        let angles = [
+            angle("A", Some("14:00:00:00"), 600.0, true),
+            angle("B", Some("14:00:30:00"), 500.0, true),
+            angle("dslr", Some("00:00:00:00"), 120.0, true),
+        ];
+        // The DSLR's sound starts 100 s into A.
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |r, i| match (r, i) {
+            (0, 1) => matched(-30.0, 0.9),
+            (0, 2) => matched(-100.0, 0.9),
+            other => panic!("unexpected pair {other:?}"),
+        });
+        let dslr = &plan.placements[2];
+        assert_eq!(dslr.method, Some(SyncMethod::Waveform));
+        assert!((dslr.start_secs - 100.0).abs() < 1e-6, "{plan:?}");
+        assert!(plan.notes.iter().any(|n| n.contains("dslr's timecode is on another clock")), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn two_record_run_cameras_both_at_zero_are_corrected_by_sound() {
+        // They overlap each other, so timecode alone looks consistent.
+        let angles = [angle("A", Some("00:00:00:00"), 300.0, true), angle("B", Some("00:00:00:00"), 200.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |_, _| matched(-42.0, 0.8));
+        assert!((plan.placements[1].start_secs - 42.0).abs() < 1e-6, "{plan:?}");
+        assert!(plan.notes.iter().any(|n| n.contains("disagreed with its sound by -42.0 s")), "{:?}", plan.notes);
+        // Timecode only has nothing to check against, and says nothing.
+        let tc_only = plan_multicam(&angles, MulticamSync::Timecode, |_, _| panic!("no sound"));
+        assert_eq!(tc_only.placements[1].start_secs, 0.0);
+    }
+
+    #[test]
+    fn unreadable_sound_is_reported_as_such() {
+        let angles = [angle("A", None, 60.0, true), angle("B", None, 60.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::Audio, |_, _| AudioMatch::Unavailable("ffmpeg failed".into()));
+        assert!(plan.notes.iter().any(|n| n.contains("'s sound could not be read: ffmpeg failed")), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn a_middling_sound_match_does_not_move_jammed_timecode() {
+        let angles = [angle("A", Some("10:00:00:00"), 300.0, true), angle("B", Some("10:00:10:00"), 200.0, true)];
+        // A PA loop: a match, but not a sure one, 30 s from the timecode.
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |_, _| matched(-40.0, 0.5));
+        assert_eq!(plan.placements[1].method, Some(SyncMethod::Timecode));
+        assert!((plan.placements[1].start_secs - 10.0).abs() < 1e-6);
+        assert!(plan.notes.iter().any(|n| n.contains("kept its timecode")), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn a_same_clock_angle_that_overlaps_nothing_keeps_its_timecode_when_sound_cannot_help() {
+        let angles = [
+            angle("A", Some("10:00:00:00"), 90.0, true),
+            angle("B", Some("10:00:30:00"), 60.0, true),
+            angle("C", Some("11:00:00:00"), 60.0, true),
+        ];
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |r, i| match (r, i) {
+            (_, 2) | (2, _) => AudioMatch::TooLittleOverlap,
+            _ => matched(-30.0, 0.9),
+        });
+        let c = &plan.placements[2];
+        assert_eq!(c.method, Some(SyncMethod::Timecode));
+        assert!((c.start_secs - 3600.0).abs() < 1e-6, "{plan:?}");
     }
 }

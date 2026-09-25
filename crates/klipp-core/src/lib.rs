@@ -83,7 +83,7 @@ pub use shot::ShotMetadata;
 pub use logging::ClipLog;
 pub use field::Field;
 pub use smart_bin::{RuleOp, SmartBin, SmartRule};
-pub use sync::{timecode_to_secs, SyncMethod, SyncedAudio};
+pub use sync::{plan_multicam, timecode_to_secs, AnglePlacement, AudioMatch, MulticamAngle, MulticamPlan, MulticamSync, SyncMethod, SyncedAudio};
 pub use media_marker::{MediaMarker, MediaMarkerKind};
 pub use span::ClipSpan;
 

@@ -1217,6 +1217,9 @@ pub enum AppCommand {
     CreateCompoundClip { name: String },
     /// Create a multicam clip from clips on different tracks at the playhead.
     CreateMulticamClip,
+    /// Sync these pool items onto one clock and lay them out as a
+    /// multicam at the playhead: each angle on its own tracks, grouped.
+    CreateSyncedMulticam { media_ids: Vec<MediaId>, method: crate::MulticamSync },
     /// Switch multicam angle (1-indexed).
     SwitchMulticamAngle { angle: usize },
     /// Set the audio mixer's pan law.
@@ -3499,6 +3502,10 @@ pub enum AppEvent {
     /// A pool pair was synced (see `AppCommand::SyncMediaPair`).
     MediaSyncComplete { video_id: MediaId, sync: crate::SyncedAudio },
     MediaSyncFailed { video_id: MediaId, error: String },
+    /// A multicam's angles were put on one clock (see
+    /// `AppCommand::CreateSyncedMulticam`), for the sequence and playhead
+    /// the request was made at.
+    MulticamSyncReady { plan: crate::MulticamPlan, sequence_id: crate::SequenceId, at_secs: f64 },
     AudioSyncComplete {
         clip_id: ClipId,
         offset_samples: i64,
