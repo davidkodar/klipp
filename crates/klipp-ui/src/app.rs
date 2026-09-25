@@ -447,6 +447,10 @@ pub struct KlippApp {
     /// Playhead position the Colour workspace last followed, so the
     /// follow fires on movement rather than every frame.
     last_graded_playhead: Option<klipp_core::Timecode>,
+    /// Where the playhead last sat inside each clip on the Colour
+    /// page, so selecting a shot again returns to the frame it was
+    /// graded on rather than its first frame.
+    graded_positions: std::collections::HashMap<klipp_core::ClipId, klipp_core::Timecode>,
     /// Browser visibility before a workspace borrowed its width,
     /// restored on leaving.
     ///
@@ -880,6 +884,7 @@ impl KlippApp {
             hb_input_events: 0,
             hb_max_batch: 0,
             last_graded_playhead: None,
+            graded_positions: std::collections::HashMap::new(),
             browser_before_workspace: None,
             last_workspace: crate::state::Workspace::default(),
             hb_max_gap: std::time::Duration::ZERO,
@@ -7559,6 +7564,30 @@ impl KlippApp {
                                 let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
                             }
                             self.render_title_to_viewer(clip_id);
+                        } else if newly_selected
+                            && self.state.active_workspace == crate::state::Workspace::Color
+                        {
+                            // On the Colour page the viewer and the scopes
+                            // must show the shot whose grade the panel is
+                            // editing. Selecting a clip the playhead is not
+                            // in brings the playhead to it.
+                            let picture = seq.tracks.iter()
+                                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+                                .find_map(|t| t.clips.iter().find(|c| c.id == clip_id));
+                            let seek = picture.and_then(|clip| {
+                                colour_seek_on_select(clip, self.state.playhead, self.graded_positions.get(&clip_id).copied())
+                            });
+                            if let Some(t) = seek {
+                                self.state.playhead = t;
+                                self.state.playhead_smooth_secs = t.to_secs_f64();
+                                self.state.playhead_anchor = t;
+                                self.state.playhead_anchor_wall = std::time::Instant::now();
+                                // The follow below must not re-pick the
+                                // clip from this position: a clip under a
+                                // higher track would lose the selection.
+                                self.last_graded_playhead = Some(t);
+                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
+                            }
                         }
                     } else {
                         // Deselecting — clear title overlay if not in edit mode
@@ -33377,6 +33406,9 @@ impl KlippApp {
             .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video) && t.visible)
             .find_map(|t| t.clip_at_timecode(now).map(|(_, c)| c.id));
 
+        if let Some(id) = found {
+            self.graded_positions.insert(id, now);
+        }
         match found {
             Some(id) if self.state.selected_clip != Some(id) => {
                 self.state.selected_clip = Some(id);
@@ -39891,6 +39923,57 @@ fn title_seek_on_select(
         return None;
     }
     title_rest_time(clip, fps_rate)
+}
+
+/// Where the playhead goes when a clip is selected on the Colour page:
+/// nowhere if it is already in the clip, else back to the frame the
+/// clip was last looked at there, else its first frame.
+fn colour_seek_on_select(
+    clip: &klipp_timeline::Clip,
+    playhead: klipp_core::RationalTime,
+    remembered: Option<klipp_core::RationalTime>,
+) -> Option<klipp_core::RationalTime> {
+    let inside = |t: klipp_core::RationalTime| t >= clip.timeline_in && t < clip.timeline_out;
+    if inside(playhead) {
+        return None;
+    }
+    Some(remembered.filter(|&t| inside(t)).unwrap_or(clip.timeline_in))
+}
+
+#[cfg(test)]
+mod colour_seek_tests {
+    use super::colour_seek_on_select;
+    use klipp_core::RationalTime;
+    use klipp_timeline::Clip;
+
+    fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_playhead_already_in_the_clip_stays_put() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(15), None), None);
+    }
+
+    #[test]
+    fn a_playhead_elsewhere_goes_to_the_first_frame() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), None), Some(t(10)));
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(20), None), Some(t(10)));
+    }
+
+    #[test]
+    fn returning_to_a_clip_goes_back_to_where_it_was_graded() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), Some(t(17))), Some(t(17)));
+    }
+
+    /// A remembered frame the clip no longer covers (it was trimmed)
+    /// is ignored rather than followed out of the clip.
+    #[test]
+    fn a_remembered_frame_outside_a_trimmed_clip_is_ignored() {
+        assert_eq!(colour_seek_on_select(&clip(10, 20), t(3), Some(t(25))), Some(t(10)));
+    }
 }
 
 #[cfg(test)]
