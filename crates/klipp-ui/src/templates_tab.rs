@@ -78,7 +78,7 @@ pub fn show(
     }
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Your templates").strong());
-    if ui.button("Save active sequence as template").clicked() {
+    if ui.button("Save active sequence as project template").clicked() {
         let sequence = state.sequence();
         let name = if sequence.name.trim().is_empty() { "My composition".to_string() } else { sequence.name.clone() };
         commands.push(klipp_core::AppCommand::SaveCompositionTemplate { sequence_id: sequence.id.0, name });

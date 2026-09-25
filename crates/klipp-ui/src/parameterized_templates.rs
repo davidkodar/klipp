@@ -868,6 +868,22 @@ mod tests {
     }
 
     #[test]
+    fn template_builder_exposes_the_first_text_object() {
+        let mut sequence = klipp_timeline::Sequence::new_default();
+        let mut clip = klipp_timeline::Clip::gap(
+            klipp_core::Timecode::from_frames(0, 24),
+            klipp_core::Timecode::from_frames(24, 24),
+        );
+        clip.kind = klipp_timeline::ClipKind::Title(terminal_card_composition());
+        sequence.tracks[0].clips.push(clip);
+        let template = template_from_sequence(&sequence, "Card");
+        assert_eq!(template.composition_id, sequence.id.0);
+        assert!(template.parameters.contains_key("text"));
+        assert_eq!(template.bindings[0].property, "object:1.text");
+        template.validate().unwrap();
+    }
+
+    #[test]
     fn invalid_binding_is_rejected() {
         let mut template = CompositionTemplate::new("Card", Uuid::new_v4());
         template.bindings.push(TemplateBinding {
