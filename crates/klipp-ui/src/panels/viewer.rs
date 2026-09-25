@@ -916,32 +916,29 @@ impl ViewerPanel {
         );
 
         // Labels
-        let label_font = egui::FontId::proportional(10.0);
+        let label_font = egui::FontId::proportional(11.0);
         let label_y = image_rect.min.y + 14.0;
         let (left_label, right_label) = if grade_still_active {
             let idx = state.active_grade_still.unwrap();
-            (state.grade_stills[idx].name.as_str(), "Graded")
+            (format!("Still: {}", state.grade_stills[idx].name), "Now".to_string())
         } else if stab_compare_active {
-            ("Raw", "Stabilized")
+            ("Raw".to_string(), "Stabilized".to_string())
         } else if effect_compare_active {
-            ("Without", "With")
+            ("Without".to_string(), "With".to_string())
         } else {
-            ("Original", "Graded")
+            ("Before".to_string(), "After".to_string())
         };
-        ui.painter().text(
-            egui::pos2(split_x - 8.0, label_y),
-            egui::Align2::RIGHT_CENTER,
-            left_label,
-            label_font.clone(),
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
-        );
-        ui.painter().text(
-            egui::pos2(split_x + 8.0, label_y),
-            egui::Align2::LEFT_CENTER,
-            right_label,
-            label_font,
-            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 180),
-        );
+        // On a dark pill each, so they read over any picture: bare white
+        // text vanished over a bright frame, and a split nobody can tell
+        // is on reads as a half-ungraded picture.
+        let pill = |ui: &egui::Ui, pos: egui::Pos2, align: egui::Align2, text: &str| {
+            let galley = ui.painter().layout_no_wrap(text.to_string(), label_font.clone(), egui::Color32::WHITE);
+            let rect = align.anchor_size(pos, galley.size() + egui::vec2(10.0, 4.0));
+            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 170));
+            ui.painter().galley(rect.min + egui::vec2(5.0, 2.0), galley, egui::Color32::WHITE);
+        };
+        pill(ui, egui::pos2(split_x - 8.0, label_y), egui::Align2::RIGHT_CENTER, &left_label);
+        pill(ui, egui::pos2(split_x + 8.0, label_y), egui::Align2::LEFT_CENTER, &right_label);
 
         // Small triangle arrows on the divider
         let arrow_y = image_rect.center().y;

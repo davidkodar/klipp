@@ -3521,12 +3521,20 @@ fn handle(
                 ))
             });
             write_png(&out, &data, width, height)?;
-            Ok(json!({
+            let mut v = json!({
                 "path": out.to_string_lossy(),
                 "width": width,
                 "height": height,
                 "generation": generation,
-            }))
+            });
+            // The capture is always the whole graded frame. When the viewer
+            // is showing a compare split, what the person sees is not that,
+            // and a reader comparing notes with them needs to know.
+            if let Some(compare) = ctx.shared.viewer_compare.lock().ok().and_then(|c| c.clone()) {
+                v["viewer_compare"] = json!(compare);
+                v["note"] = json!("A compare split is on in the viewer; this image is the whole graded frame, not the split the viewer shows.");
+            }
+            Ok(v)
         }
 
         ControlCommand::Plan { ops, detail } => {

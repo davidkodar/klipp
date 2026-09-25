@@ -2799,7 +2799,9 @@ pub enum AppCommand {
     /// Apply a saved Look to one or more target clips. The Look's
     /// node graph replaces each target's `node_graph` (with fresh
     /// node IDs via `remap_ids`).
-    ApplyLook { look_id: uuid::Uuid, clip_ids: Vec<ClipId> },
+    /// With `append`, the look runs after each clip's own grade rather
+    /// than replacing it, so a clip's balance survives the look.
+    ApplyLook { look_id: uuid::Uuid, clip_ids: Vec<ClipId>, append: bool },
     DeleteLook { look_id: uuid::Uuid },
     RenameLook { look_id: uuid::Uuid, new_name: String },
 
@@ -2809,8 +2811,9 @@ pub enum AppCommand {
     /// Delete a saved grade still by index.
     DeleteGradeStill { index: usize },
     /// Put the grade a still was grabbed with on these clips, as one undo
-    /// step. Each gets its own node ids.
-    ApplyGradeFromStill { index: usize, clip_ids: Vec<ClipId> },
+    /// step. Each gets its own node ids. With `append` it runs after each
+    /// clip's own grade instead of replacing it.
+    ApplyGradeFromStill { index: usize, clip_ids: Vec<ClipId>, append: bool },
     /// Set the active grade still for comparison.
     SetActiveGradeStill { index: Option<usize> },
     /// Toggle split-view comparison with the active grade still.
@@ -3933,6 +3936,10 @@ pub struct ControlShared {
     /// A frame read moves the viewer to the time it measures and puts
     /// it back here afterwards.
     pub transport: std::sync::Mutex<TransportStatus>,
+    /// The compare the viewer is showing, when one is on — a split
+    /// against the ungraded frame or a grade still — so a client reading
+    /// the viewer's frame knows the person is looking at something else.
+    pub viewer_compare: std::sync::Mutex<Option<String>>,
 }
 
 /// Where the user's playhead is, as the UI last saw it.

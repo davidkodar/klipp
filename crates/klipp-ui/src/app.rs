@@ -690,15 +690,25 @@ fn record_timecode(secs: f64, fps: f64) -> String {
 }
 
 /// A still's grade onto each of `targets`, fresh node ids per clip, as
-/// graph edits to apply together.
+/// graph edits to apply together: in place of each clip's grade, or with
+/// `append` after it, keeping the clip's own balance.
 fn grade_from_still_edits(
     seq: &klipp_timeline::Sequence,
     grade: &klipp_nodes::NodeGraph,
     targets: &[klipp_core::ClipId],
+    append: bool,
 ) -> Vec<EditCommand> {
     seq.all_clips()
         .filter(|c| targets.contains(&c.id))
-        .map(|c| EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph: grade.remap_ids() })
+        .filter_map(|c| {
+            let new_graph = if append {
+                let mut g = c.node_graph.clone();
+                g.append(grade).then_some(g)?
+            } else {
+                grade.remap_ids()
+            };
+            Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph })
+        })
         .collect()
 }
 
@@ -1740,6 +1750,31 @@ impl KlippApp {
 
     /// Share the document revision and the render queue's state with the
     /// control socket.
+    /// Tell control-socket clients which compare the viewer is showing:
+    /// the frame they read is the whole graded picture, and the person is
+    /// looking at a split of it.
+    fn publish_viewer_compare(&self) {
+        let s = &self.state;
+        let still = s.grade_still_compare.then(|| s.active_grade_still.and_then(|i| s.grade_stills.get(i))).flatten();
+        let pct = (s.split_position * 100.0).round();
+        let compare = if let Some(still) = still {
+            Some(format!("grade still split: left {pct}% shows the still \"{}\", right shows the graded frame", still.name))
+        } else if s.before_after_active {
+            Some(format!("before/after split: left {pct}% shows the frame ungraded, right graded"))
+        } else if s.stabilization_compare_active {
+            Some(format!("stabilisation split: left {pct}% unstabilised"))
+        } else if s.split_compare_effect.is_some() {
+            Some(format!("effect split: left {pct}% with the effect toggled"))
+        } else {
+            None
+        };
+        if let Ok(mut shown) = s.control_shared.viewer_compare.lock() {
+            if *shown != compare {
+                *shown = compare;
+            }
+        }
+    }
+
     pub fn set_control_shared(&mut self, shared: std::sync::Arc<klipp_core::ControlShared>) {
         self.state.control_shared = std::sync::Arc::clone(&shared);
         // Histories made before this arrived point at the default counter.
@@ -15425,14 +15460,14 @@ impl KlippApp {
                 self.state.active_grade_still = *index;
                 true
             }
-            AppCommand::ApplyGradeFromStill { index, clip_ids } => {
+            AppCommand::ApplyGradeFromStill { index, clip_ids, append } => {
                 let Some(still) = self.state.grade_stills.get(*index) else { return true };
                 let Some(grade) = still.grade.clone() else {
                     self.state.toast.show("That still was grabbed before stills kept their grade; grab it again to use its grade");
                     return true;
                 };
                 let name = still.name.clone();
-                let edits = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids);
+                let edits = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
                 if edits.is_empty() {
                     self.state.toast.show("Select the clips to grade first");
                     return true;
@@ -15697,7 +15732,7 @@ impl KlippApp {
                 self.state.toast.show(format!("Saved Look \"{label}\""));
                 true
             }
-            AppCommand::ApplyLook { look_id, clip_ids } => {
+            AppCommand::ApplyLook { look_id, clip_ids, append } => {
                 let Some(look) = self.state.looks.iter().find(|l| l.id == *look_id).cloned() else {
                     self.state.toast.show("Look not found");
                     return true;
@@ -15712,8 +15747,15 @@ impl KlippApp {
                         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
                             let old_graph = clip.node_graph.clone();
                             // remap_ids gives the target a fresh set of NodeIds
-                            // so two clips applying the same Look don't collide.
-                            clip.node_graph = look.node_graph.remap_ids();
+                            // so two clips applying the same Look don't collide;
+                            // append remaps as it splices.
+                            if *append {
+                                if !clip.node_graph.append(&look.node_graph) {
+                                    continue;
+                                }
+                            } else {
+                                clip.node_graph = look.node_graph.remap_ids();
+                            }
                             applied += 1;
                             history_pushes.push((*clip_id, old_graph, clip.node_graph.clone()));
                         }
@@ -28164,6 +28206,8 @@ impl eframe::App for KlippApp {
 
         self.sync_project_lock();
 
+        self.publish_viewer_compare();
+
         // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
         let op_threshold = self.prefs.general.auto_save_op_threshold;
@@ -34037,11 +34081,22 @@ impl KlippApp {
                                 let resp = resp.on_hover_text(hover);
                                 let has_grade = still.grade.is_some();
                                 resp.context_menu(|ui| {
-                                    let apply = ui
-                                        .add_enabled(has_grade && !grade_targets.is_empty(), egui::Button::new("Apply Grade to Selected Clips"))
-                                        .on_disabled_hover_text(if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" });
-                                    if apply.clicked() {
-                                        apply_idx = Some(i);
+                                    let why = if has_grade { "Select the clips to grade" } else { "This still was grabbed before stills kept their grade" };
+                                    let can = has_grade && !grade_targets.is_empty();
+                                    if ui.add_enabled(can, egui::Button::new("Apply Grade to Selected Clips"))
+                                        .on_hover_text("In place of each clip's own grade")
+                                        .on_disabled_hover_text(why)
+                                        .clicked()
+                                    {
+                                        apply_idx = Some((i, false));
+                                        ui.close_menu();
+                                    }
+                                    if ui.add_enabled(can, egui::Button::new("Add Grade After Their Own"))
+                                        .on_hover_text("After each clip's own grade, keeping its balance")
+                                        .on_disabled_hover_text(why)
+                                        .clicked()
+                                    {
+                                        apply_idx = Some((i, true));
                                         ui.close_menu();
                                     }
                                     if ui.button("Delete").clicked() {
@@ -34053,8 +34108,8 @@ impl KlippApp {
                             if let Some(idx) = delete_idx {
                                 all_cmds.push(AppCommand::DeleteGradeStill { index: idx });
                             }
-                            if let Some(idx) = apply_idx {
-                                all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone() });
+                            if let Some((idx, append)) = apply_idx {
+                                all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone(), append });
                             }
                             // The active still's grade onto the selection:
                             // grab a finished shot, then grade the next ones
@@ -34067,7 +34122,7 @@ impl KlippApp {
                                 .clicked()
                             {
                                 if let Some(idx) = active_grade {
-                                    all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone() });
+                                    all_cmds.push(AppCommand::ApplyGradeFromStill { index: idx, clip_ids: grade_targets.clone(), append: false });
                                 }
                             }
                             if ui.small_button("Grab").on_hover_text("Capture the current frame as a grade still").clicked() {
@@ -34080,6 +34135,19 @@ impl KlippApp {
                                 .clicked()
                             {
                                 all_cmds.push(AppCommand::ToggleGradeStillCompare);
+                            }
+                            // Alt+B's split, shown and switchable here: the
+                            // viewer showing half a frame ungraded should
+                            // never be a state you cannot see is on.
+                            let before_after = self.state.before_after_active;
+                            if ui.selectable_label(before_after, "Before/After")
+                                .on_hover_text(format!(
+                                    "Split the viewer: left ungraded, right graded ({})",
+                                    self.key_bindings.display_for("toggle_before_after")
+                                ))
+                                .clicked()
+                            {
+                                all_cmds.push(AppCommand::ToggleBeforeAfter);
                             }
                         });
 
@@ -41072,7 +41140,7 @@ mod grade_still_tests {
         let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
         seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
         let grade = klipp_nodes::NodeGraph::default();
-        let edits = grade_from_still_edits(&seq, &grade, &[a.id, c.id]);
+        let edits = grade_from_still_edits(&seq, &grade, &[a.id, c.id], false);
         assert_eq!(edits.len(), 2);
         let ids = |e: &EditCommand| match e {
             EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
@@ -41080,6 +41148,21 @@ mod grade_still_tests {
         };
         assert_ne!(ids(&edits[0]), ids(&edits[1]), "each clip gets fresh node ids");
         assert_ne!(ids(&edits[0]), grade.nodes.iter().map(|n| n.id).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_added_still_grade_keeps_each_clips_own_balance() {
+        let mut seq = Sequence::new_default();
+        let mut a = clip(0, 2);
+        a.node_graph.ensure_corrector();
+        let own: Vec<_> = a.node_graph.nodes.iter().map(|n| n.id).collect();
+        seq.tracks[0].clips = vec![a.clone()];
+        let mut look = klipp_nodes::NodeGraph::default();
+        look.ensure_lut3d();
+        let edits = grade_from_still_edits(&seq, &look, &[a.id], true);
+        let EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a graph edit") };
+        assert!(own.iter().all(|id| new_graph.nodes.iter().any(|n| n.id == *id)), "the clip's own nodes stay");
+        assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D), "the look is added");
     }
 
     #[test]
