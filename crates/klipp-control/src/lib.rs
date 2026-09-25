@@ -1186,6 +1186,7 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
 fn with_project_generation(ctx: &ControlContext, mut v: serde_json::Value) -> serde_json::Value {
     if let (Some(obj), Ok(p)) = (v.as_object_mut(), ctx.shared.project.lock()) {
         obj.insert("project_generation".into(), json!(p.generation));
+        obj.insert("project_identity".into(), json!(p.identity));
     }
     v
 }

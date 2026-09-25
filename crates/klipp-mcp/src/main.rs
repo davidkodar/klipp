@@ -681,8 +681,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     // The project changed under this session — made new, opened or saved
     // as — since its last call: said, so what it knew about the timeline
     // and the pool is not trusted a moment longer.
+    // By the project's identity, which a save where it already was does
+    // not move; the generation moves on every save, so a Ctrl+S in the
+    // app used to raise this for nothing.
     let mut notice: Option<String> = None;
-    if let Some(g) = result.get("project_generation").and_then(|v| v.as_u64()) {
+    if let Some(g) = result.get("project_identity").or_else(|| result.get("project_generation")).and_then(|v| v.as_u64()) {
         let seen = LAST_PROJECT_GENERATION.swap(g, std::sync::atomic::Ordering::Relaxed);
         if seen != u64::MAX && seen != g && !matches!(name, "klipp_open_project" | "klipp_save_project") {
             notice = Some("Note: the project changed under you since your last call (a new project, or one opened or saved as another) — the timeline, the media pool and their ids are not what they were. Read klipp_status, klipp_list_media and klipp_timeline again before going on.".into());
