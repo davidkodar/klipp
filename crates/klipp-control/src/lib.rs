@@ -398,7 +398,7 @@ struct HeldTransport {
 /// playhead, and the Colour page following it, somewhere else.
 fn hold_transport(ctx: &ControlContext) -> Result<HeldTransport, String> {
     let published = ctx.shared.transport.lock().map(|t| *t).unwrap_or_default();
-    let presented = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_presented();
+    let presented = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.shown_presented();
     Ok(held_from(published, presented))
 }
 
@@ -1891,7 +1891,7 @@ fn handle(
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
             let fps = seq.fps.as_f64();
-            let presented = fb.latest_presented().map(|t| t.to_secs_f64());
+            let presented = fb.shown_presented().map(|t| t.to_secs_f64());
             Ok(json!({
                 "build": build_json(),
                 "revision": ctx.shared.revision(),
@@ -3398,7 +3398,7 @@ fn handle(
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-            let presented = ctx.frame_buffer.lock().ok().and_then(|fb| fb.latest_presented()).map(|t| t.to_secs_f64());
+            let presented = ctx.frame_buffer.lock().ok().and_then(|fb| fb.shown_presented()).map(|t| t.to_secs_f64());
             let full = timeline_text(&seq, &pool, presented, ctx.shared.revision());
             let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(12_000));
             Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
@@ -3919,7 +3919,7 @@ reference:   {}",
                 Some(s) => s,
                 None => {
                     let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
-                    fb.latest_presented().map(|t| t.to_secs_f64()).unwrap_or(0.0)
+                    fb.shown_presented().map(|t| t.to_secs_f64()).unwrap_or(0.0)
                 }
             };
             let (data, w, h) = grab_scope(ctx, m, secs, timeout_ms)?;

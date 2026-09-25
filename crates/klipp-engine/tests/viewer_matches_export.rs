@@ -308,15 +308,17 @@ impl Viewer {
         rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
     }
 
-    /// [`Self::settled_frame`], with the frame the viewer says it is
-    /// showing. Taken under one lock: during playback the playhead moves
-    /// on while a frame is still on screen, so asking afterwards can name
-    /// a different frame — under load, a whole frame out.
+    /// The frame playback stopped on, once it has settled: the one the
+    /// viewer shows, which while playing is a zero-copy frame with no bytes
+    /// to read, so its bytes are asked for by parking on it. Reading the
+    /// bytes that happened to be there and trusting the frame the screen
+    /// names paired an older picture with a newer frame — under load, 165
+    /// levels out.
     fn settled_frame_at(&self) -> (Vec<u8>, i64) {
-        let rgb = self.settled_frame();
-        let fb = self.fb.lock().unwrap();
-        let at = fb.latest_presented().expect("the engine names the frame it presents");
-        (rgb, at.value * FPS / at.rate as i64)
+        let _ = self.settled_frame();
+        let at = self.fb.lock().unwrap().shown_presented().expect("the engine names the frame it presents");
+        let n = at.value * FPS / at.rate as i64;
+        (self.frame_at(n), n)
     }
 
     /// Park the playhead at frame `n` and return the frame the viewer
@@ -331,12 +333,21 @@ impl Viewer {
     fn frame_at(&self, n: i64) -> Vec<u8> {
         self.cmd.send(AppCommand::SetPlayhead(tc(n))).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
+        // The frame buffer names its bytes, never a zero-copy frame newer
+        // than them, so this waits for frame `n`'s own picture — and for a
+        // complete one: a frame rendered before every clip's stream had its
+        // picture says so, and under load the overlays' streams can take
+        // longer than the quiet window below to arrive. Frame 60 was read
+        // with only its bottom clip, 95 levels out where c and d belonged.
         loop {
-            let presented = self.fb.lock().unwrap().latest_presented().map(|at| at.value * FPS / at.rate as i64);
-            if presented == Some(n) {
+            let (presented, complete) = {
+                let fb = self.fb.lock().unwrap();
+                (fb.latest_presented().map(|at| at.value * FPS / at.rate as i64), fb.latest_complete())
+            };
+            if presented == Some(n) && complete {
                 break;
             }
-            assert!(Instant::now() < deadline, "the viewer never presented frame {n} (last: {presented:?})");
+            assert!(Instant::now() < deadline, "the viewer never presented a complete frame {n} (last: {presented:?}, complete {complete})");
             std::thread::sleep(Duration::from_millis(5));
         }
         self.settled_frame()
