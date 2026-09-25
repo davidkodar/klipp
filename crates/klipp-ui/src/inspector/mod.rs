@@ -30,6 +30,10 @@ pub struct NewInspectorPanel {
     pub last_duck_clip: Option<klipp_core::ClipId>,
     /// Chips for the Title tab, rendered by the title engine.
     pub title_chips: title_tab::TitleChips,
+    /// The last selected clip used for synthetic-tab routing. This keeps
+    /// title/generator clips opening on their useful tab once, without
+    /// overriding a user's later click on Video, Effects, or Info.
+    pub last_synthetic_clip: Option<klipp_core::ClipId>,
 }
 
 impl NewInspectorPanel {
@@ -68,6 +72,9 @@ impl NewInspectorPanel {
         // tracks-iter walk — closes (steady state
         // is one Track::find_clip rather than tracks × clips).
         let clip_info = state.selected_clip_loc();
+        let selected_clip_id = clip_info.map(|(_, clip)| clip.id);
+        let clip_changed = self.last_synthetic_clip != selected_clip_id;
+        self.last_synthetic_clip = selected_clip_id;
         let media = clip_info
             .and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
 
@@ -196,9 +203,9 @@ impl NewInspectorPanel {
         }
 
         // Auto-switch to Title/Generator tab when a synthetic clip is selected (and away when not)
-        if is_title_clip && *active_tab != InspectorTab::Title {
+        if clip_changed && is_title_clip && *active_tab != InspectorTab::Title {
             *active_tab = InspectorTab::Title;
-        } else if is_generator_clip && *active_tab != InspectorTab::Generator {
+        } else if clip_changed && is_generator_clip && *active_tab != InspectorTab::Generator {
             *active_tab = InspectorTab::Generator;
         } else if (!is_title_clip && *active_tab == InspectorTab::Title)
             || (!is_generator_clip && *active_tab == InspectorTab::Generator)
