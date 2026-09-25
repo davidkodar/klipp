@@ -3947,7 +3947,8 @@ impl KlippApp {
         self.state.source_live_texture_gen = gen;
     }
 
-    /// Upload title overlay texture if pending. Called from update() where ctx is available.
+    /// Refresh what in-place title editing needs (glyph positions) for a
+    /// pending title. Called from update() where ctx is available.
     fn upload_title_overlay(&mut self, ctx: &egui::Context) {
         // Explicit clear request (e.g. scrub passed beyond a title clip).
         if self.state.pending_title_overlay_clear {
@@ -3981,38 +3982,14 @@ impl KlippApp {
                 }
             }
             let (w, h) = (seq.resolution.width, seq.resolution.height);
-            let title_rgba = self.title_renderer.render(&td, w, h);
 
-            let pixels: Vec<egui::Color32> = title_rgba
-                .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
-                .collect();
-
-            let image = egui::ColorImage {
-                size: [w as usize, h as usize],
-                pixels,
-            };
-
-            // Title overlay can change size when title content or the
-            // clip's output res changes — route through the deferred
-            // drop so the old handle survives the current submit.
-            if let Some(old) = self.viewer.title_overlay_texture.take() {
-                self.defer_drop_texture(old);
-            }
-            self.viewer.title_overlay_texture = Some(alloc_texture_logged(
-                ctx,
-                "klipp-title-overlay",
-                image,
-                egui::TextureOptions::LINEAR,
-            ));
-            self.viewer.title_overlay_size = (w, h);
-
-            // Compute character positions for WYSIWYG text editing
+            // The title itself is the engine's frame; no raster of it is
+            // made here any more. What in-place editing still needs is
+            // where the glyphs fall.
             if self.state.viewer_text_edit {
                 self.state.viewer_char_positions = self.char_positions_for_edit(&td, w, h);
+                ctx.request_repaint();
             }
-
-            ctx.request_repaint();
         }
     }
 
@@ -7519,14 +7496,26 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SelectClip(id) => {
+                    let newly_selected = self.state.selected_clip != *id;
                     self.state.selected_clip = *id;
-                    // Show title overlay immediately when selecting a title clip
                     if let Some(clip_id) = *id {
-                        let is_title = self.state.sequences[self.state.active_sequence_idx]
-                            .tracks.iter()
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        let title = seq.tracks.iter()
                             .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
-                            .is_some_and(|c| c.title_data().is_some());
-                        if is_title {
+                            .filter(|c| c.title_data().is_some());
+                        if let Some(clip) = title {
+                            // The viewer shows a title only where the engine
+                            // draws it, at the playhead. Selecting one the
+                            // playhead is outside of brings the playhead to
+                            // it, so edits to it can be seen. Only on the
+                            // selection itself: moving the playhead away
+                            // afterwards is left alone.
+                            let seek = newly_selected
+                                .then(|| title_seek_on_select(clip, self.state.playhead, seq.fps.rate()))
+                                .flatten();
+                            if let Some(t) = seek {
+                                let _ = self.cmd_tx.send(AppCommand::SeekTo(t));
+                            }
                             self.render_title_to_viewer(clip_id);
                         }
                     } else {
@@ -15833,6 +15822,7 @@ impl KlippApp {
                     precomp: None,
                 };
                 let clip_id = clip.id;
+                let rest = title_rest_time(&clip, fps_rate);
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
                     track.clips.push(clip.clone());
                     track.clips.sort_by_key(|c| c.timeline_in.value);
@@ -15847,16 +15837,18 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 // The new title is the selection, the inspector opens on
-                // its text, and the playhead parks where the title rests,
-                // past its entrance, so the viewer shows it.
+                // its text, and the playhead goes where the title rests so
+                // the viewer shows it: past its entrance if it has one,
+                // else its first frame. A title made at the playhead with
+                // no entrance leaves the playhead where it was.
                 self.state.selected_clip = Some(clip_id);
                 self.state.selected_clips = vec![clip_id];
                 self.state.selected_title_object = None;
                 self.state.focus_title_text = 3;
                 self.render_title_to_viewer(clip_id);
-                let settle = (duration.to_secs_f64() / 3.0).min(1.0);
-                let park = klipp_core::RationalTime::from_secs_f64(timeline_in.to_secs_f64() + settle, fps_rate);
-                let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
+                if let Some(park) = rest.filter(|&t| t != self.state.playhead) {
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
+                }
                 true
             }
             AppCommand::ClearTitleOverlay => {
@@ -39341,6 +39333,76 @@ mod source_marks_range_tests {
         // Marks the wrong way round fall back to the whole clip.
         m.default_source_out = Some(t(5));
         assert_eq!(source_marks_range(&m), (t(140), None, None));
+    }
+}
+
+/// Where a title clip shows at rest: past its entrance when a layer has
+/// one (a third of the clip, at most a second in), else its first frame.
+/// `None` for a clip that is not a title.
+fn title_rest_time(clip: &klipp_timeline::Clip, fps_rate: u32) -> Option<klipp_core::RationalTime> {
+    let td = clip.title_data()?;
+    if !td.objects.iter().any(|o| o.fx().motion.enter.is_some()) {
+        return Some(clip.timeline_in);
+    }
+    let settle = ((clip.timeline_out - clip.timeline_in).to_secs_f64() / 3.0).min(1.0);
+    Some(klipp_core::RationalTime::from_secs_f64(clip.timeline_in.to_secs_f64() + settle, fps_rate))
+}
+
+/// Where to put the playhead when a title is selected: its rest pose if
+/// the playhead is outside the title, else nowhere (leave it).
+fn title_seek_on_select(
+    clip: &klipp_timeline::Clip,
+    playhead: klipp_core::RationalTime,
+    fps_rate: u32,
+) -> Option<klipp_core::RationalTime> {
+    if playhead >= clip.timeline_in && playhead < clip.timeline_out {
+        return None;
+    }
+    title_rest_time(clip, fps_rate)
+}
+
+#[cfg(test)]
+mod title_rest_tests {
+    use super::{title_rest_time, title_seek_on_select};
+    use klipp_core::RationalTime;
+    use klipp_core::title_motion::{Motion, TitleMotion};
+    use klipp_timeline::{Clip, ClipKind, TitleData};
+
+    fn t(secs: i64) -> RationalTime { RationalTime { value: secs * 30, rate: 30 } }
+
+    fn title(from: i64, to: i64, entrance: bool) -> Clip {
+        let mut td = TitleData::default();
+        if entrance {
+            td.objects[0].fx_mut().motion = TitleMotion::enter(Motion::default());
+        }
+        let mut c = Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from));
+        c.kind = ClipKind::Title(td);
+        c
+    }
+
+    #[test]
+    fn a_plain_title_rests_on_its_first_frame() {
+        assert_eq!(title_rest_time(&title(10, 15, false), 30), Some(t(10)));
+    }
+
+    #[test]
+    fn a_title_with_an_entrance_rests_past_it() {
+        assert_eq!(title_rest_time(&title(10, 15, true), 30), Some(t(11)));
+    }
+
+    #[test]
+    fn selecting_a_title_off_the_playhead_brings_the_playhead_to_it() {
+        let c = title(10, 15, false);
+        assert_eq!(title_seek_on_select(&c, t(2), 30), Some(t(10)));
+        assert_eq!(title_seek_on_select(&c, t(15), 30), Some(t(10)), "the out point is past the title");
+        assert_eq!(title_seek_on_select(&c, t(12), 30), None, "a playhead on the title stays put");
+        assert_eq!(title_seek_on_select(&c, t(10), 30), None);
+    }
+
+    #[test]
+    fn a_clip_that_is_not_a_title_has_no_rest_pose() {
+        let c = Clip::media(klipp_core::MediaId::new(), t(0), t(5), t(0), t(5));
+        assert_eq!(title_rest_time(&c, 30), None);
     }
 }
 
