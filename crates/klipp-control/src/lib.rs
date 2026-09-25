@@ -599,18 +599,9 @@ pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, S
 }
 
 /// Where the bundled LUT library sits: next to the executable, or in the
-/// source tree at build time. Mirrors the app's own lookup.
+/// source tree at build time. The one lookup the app and projects share.
 fn bundled_luts_dir() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let c = dir.join("assets").join("luts");
-            if c.exists() {
-                return Some(c);
-            }
-        }
-    }
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()).map(|p| p.join("assets").join("luts"));
-    src.filter(|p| p.exists())
+    klipp_core::assets::bundled_luts_dir().map(|p| p.to_path_buf())
 }
 
 const LOOK_CATEGORIES: &[(&str, &str)] = &[
