@@ -226,6 +226,11 @@ pub const MIN_AUDIO_CONFIDENCE: f64 = 0.3;
 /// is not on the event's clock.
 pub const TIMECODE_DISAGREES_SECS: f64 = 0.5;
 
+/// How far outside the synced angles a timecode may fall back to and
+/// still be believed: a long day's pause between setups, not a
+/// different clock.
+pub const MAX_TIMECODE_FALLBACK_GAP_SECS: f64 = 2.0 * 3600.0;
+
 /// How sure the sound must be to move an angle its timecode placed.
 /// Jam-synced timecode is right far more often than a sound match on
 /// repeated music or a PA loop, so a match that would place an angle
@@ -392,15 +397,30 @@ pub fn plan_multicam(
     }
 
     // An angle set aside as another clock that the sound could not place
-    // either keeps its timecode: same-clock angles can simply not
-    // overlap, and a guess at the start is worse than the timecode.
+    // either keeps its timecode when that is near the others: same-clock
+    // angles can simply not overlap, and then the timecode beats a guess.
+    // Hours away it is a different clock after all — a record-run camera
+    // at zero beside time-of-day ones — and would stretch the timeline
+    // across the gap, so it goes to the start for the editor instead.
+    let placed_span = (0..n)
+        .filter_map(|i| start[i].map(|s| (s, s + angles[i].duration_secs)))
+        .fold(None, |acc: Option<(f64, f64)>, (a, b)| Some(acc.map_or((a, b), |(x, y)| (x.min(a), y.max(b)))));
     for i in 0..n {
-        if start[i].is_none() {
-            if let Some(t) = tc_start[i] {
-                start[i] = Some(t);
-                how[i] = Some(SyncMethod::Timecode);
-                notes.push(format!("{} kept its timecode, which the sound could not confirm", angles[i].name));
-            }
+        if start[i].is_some() {
+            continue;
+        }
+        let Some(t) = tc_start[i] else { continue };
+        let gap = placed_span.map_or(0.0, |(from, to)| (from - (t + angles[i].duration_secs)).max(t - to).max(0.0));
+        if gap <= MAX_TIMECODE_FALLBACK_GAP_SECS {
+            start[i] = Some(t);
+            how[i] = Some(SyncMethod::Timecode);
+            notes.push(format!("{} kept its timecode, which the sound could not confirm", angles[i].name));
+        } else {
+            notes.push(format!(
+                "{}'s timecode is {:.1} hours from the other angles, too far to trust",
+                angles[i].name,
+                gap / 3600.0
+            ));
         }
     }
 
@@ -631,5 +651,24 @@ mod tests {
         let c = &plan.placements[2];
         assert_eq!(c.method, Some(SyncMethod::Timecode));
         assert!((c.start_secs - 3600.0).abs() < 1e-6, "{plan:?}");
+    }
+
+    #[test]
+    fn a_record_run_angle_the_sound_cannot_place_goes_to_the_start_not_hours_away() {
+        let angles = [
+            angle("A", Some("14:00:00:00"), 600.0, true),
+            angle("B", Some("14:00:30:00"), 500.0, true),
+            angle("dslr", Some("00:00:00:00"), 120.0, true),
+        ];
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |_, i| match i {
+            2 => AudioMatch::Unavailable("no audio stream".into()),
+            _ => matched(-30.0, 0.9),
+        });
+        let dslr = &plan.placements[2];
+        assert_eq!(dslr.method, None);
+        assert_eq!(dslr.start_secs, 0.0);
+        assert!(plan.notes.iter().any(|n| n.contains("hours from the other angles")), "{:?}", plan.notes);
+        // And the group itself was not stretched across fourteen hours.
+        assert!(plan.placements.iter().all(|p| p.start_secs < 3600.0), "{plan:?}");
     }
 }
