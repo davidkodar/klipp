@@ -1596,7 +1596,22 @@ fn render_grid_view(
                 if let Some((start_pos, _)) = state.browser_drag_start {
                     if let Some(current_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                         let dx = (current_pos.x - start_pos.x).abs();
-                        if dx > 8.0 && thumb_rect.contains(start_pos) {
+                        let from_thumb = thumb_rect.contains(start_pos);
+                        // A drag that starts on the thumbnail picks a range
+                        // only while it stays level with it (running past
+                        // either end selects to that end). One that leaves
+                        // it above or below is taking the clip somewhere,
+                        // the timeline: it drags the clip, and drops the
+                        // half-made range so the clip's In is not left
+                        // wherever the drag happened to start.
+                        let leaving_thumb = from_thumb && !thumb_rect.y_range().contains(current_pos.y);
+                        if leaving_thumb
+                            && state.dragging_media.is_none()
+                            && state.browser_range_selection.as_ref().is_some_and(|r| r.media_id == item.id)
+                        {
+                            state.browser_range_selection = None;
+                        }
+                        if dx > 8.0 && from_thumb && !leaving_thumb && state.dragging_media.is_none() {
                             // Range selection within thumbnail
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
                             let dur_secs = if item.duration.rate > 0 {
@@ -1620,7 +1635,7 @@ fn render_grid_view(
                                 0.0,
                                 egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60),
                             );
-                        } else if dx > 8.0 {
+                        } else if dx > 8.0 || leaving_thumb {
                             state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                             state.dragging_media = Some(item.id);
                         }

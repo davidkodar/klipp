@@ -12160,7 +12160,7 @@ impl KlippApp {
                             let dur = src_out - src_in;
                             (dur, Some(src_in), Some(src_out))
                         } else {
-                            (item.duration, None, None)
+                            source_marks_range(&item)
                         };
 
                         let has_video = !item.video_codec.is_empty();
@@ -39223,6 +39223,59 @@ mod insert_audio_media_clip_tests {
     }
 }
 
+
+/// What a pool clip puts on the timeline when no range was picked on its
+/// browser thumbnail: the In/Out marked in the source viewer, else the
+/// whole clip, as `(duration, source_in, source_out)`. The same rule as
+/// Insert and Overwrite; hover-skimming the tile never marks anything.
+fn source_marks_range(item: &klipp_media::MediaItem) -> (Timecode, Option<Timecode>, Option<Timecode>) {
+    if item.default_source_in.is_none() && item.default_source_out.is_none() {
+        return (item.duration, None, None);
+    }
+    let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
+    let raw_out = item.default_source_out.unwrap_or(item.duration);
+    if raw_in >= raw_out {
+        return (item.duration, None, None);
+    }
+    (raw_out - raw_in, Some(raw_in), Some(raw_out))
+}
+
+#[cfg(test)]
+mod source_marks_range_tests {
+    use super::source_marks_range;
+    use klipp_core::Timecode;
+
+    fn t(secs: i64) -> Timecode { Timecode { value: secs * 30, rate: 30 } }
+
+    fn item(secs: i64) -> klipp_media::MediaItem {
+        // Any item will do: only the duration and the marks are read.
+        klipp_media::MediaItem::new_synthetic_title(
+            klipp_core::MediaId::new(), "clip".into(), t(secs), klipp_core::Fps::new(30, 1),
+        )
+    }
+
+    /// Issue #261: an unmarked clip goes on whole.
+    #[test]
+    fn an_unmarked_clip_is_added_whole() {
+        assert_eq!(source_marks_range(&item(140)), (t(140), None, None));
+    }
+
+    #[test]
+    fn marked_in_and_out_are_used() {
+        let mut m = item(140);
+        m.default_source_in = Some(t(10));
+        m.default_source_out = Some(t(40));
+        assert_eq!(source_marks_range(&m), (t(30), Some(t(10)), Some(t(40))));
+
+        // Only an In: from there to the end.
+        m.default_source_out = None;
+        assert_eq!(source_marks_range(&m), (t(130), Some(t(10)), Some(t(140))));
+
+        // Marks the wrong way round fall back to the whole clip.
+        m.default_source_out = Some(t(5));
+        assert_eq!(source_marks_range(&m), (t(140), None, None));
+    }
+}
 
 #[cfg(test)]
 mod attach_linked_audio_tests {
