@@ -2022,8 +2022,11 @@ impl KlippApp {
                         // If this import asked for a timeline destination
                         // (the Audio Library's "Add at playhead" / "Add to
                         // timeline"), drop it now that it is in the pool.
+                        // Through the UI's own router: `cmd_tx` goes to the
+                        // engine, which has no handler for placing media,
+                        // so a send there was silently dropped.
                         if let Some(drop) = self.state.pending_media_drop.remove(&media_id) {
-                            let _ = self.cmd_tx.send(AppCommand::PlaceMedia { media_id, drop });
+                            self.send_commands(vec![AppCommand::PlaceMedia { media_id, drop }]);
                         }
 
                         // Start thumbnail (always) + optional filmstrip/audio/skim generation
@@ -11863,7 +11866,7 @@ impl KlippApp {
                 ));
                 self.state.source_media_id = Some(existing_id);
                 if let Some(place) = retarget_pending_drop(&mut self.state.pending_media_drop, *media_id, existing_id) {
-                    let _ = self.cmd_tx.send(place);
+                    self.send_commands(vec![place]);
                 }
                 return true;
             }
@@ -11878,7 +11881,7 @@ impl KlippApp {
                     ));
                     self.state.source_media_id = Some(existing_id);
                     if let Some(place) = retarget_pending_drop(&mut self.state.pending_media_drop, *media_id, existing_id) {
-                        let _ = self.cmd_tx.send(place);
+                        self.send_commands(vec![place]);
                     }
                     return true;
                 }
@@ -11917,10 +11920,13 @@ impl KlippApp {
                     if *drop != klipp_core::events::ClipDrop::PoolOnly {
                         self.state.pending_media_drop.insert(media_id, *drop);
                     }
-                    let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                    // Routed, not sent to the engine directly, so the
+                    // duplicate check runs: a file already in the pool is
+                    // placed from there instead of being imported twice.
+                    self.send_commands(vec![AppCommand::LoadMediaFile {
                         path: path.clone(),
                         media_id,
-                    });
+                    }]);
                     true
                 }
                 AppCommand::PlaceMedia { media_id, drop } => {
@@ -11929,19 +11935,19 @@ impl KlippApp {
                         klipp_core::events::ClipDrop::EndOfTimeline => {
                             // The existing linked-import path already appends
                             // onto V1/A1 and links video to its audio.
-                            let _ = self.cmd_tx.send(AppCommand::ImportMediaLinked {
+                            self.send_commands(vec![AppCommand::ImportMediaLinked {
                                 media_id: *media_id,
                                 on_new_tracks: false,
-                            });
+                            }]);
                         }
                         klipp_core::events::ClipDrop::AtPlayhead => {
                             self.place_media_at_playhead(*media_id);
                         }
                         klipp_core::events::ClipDrop::AppendToTrack { track_index } => {
-                            let _ = self.cmd_tx.send(AppCommand::AppendClipToTrack {
+                            self.send_commands(vec![AppCommand::AppendClipToTrack {
                                 media_id: *media_id,
                                 track_index: *track_index,
-                            });
+                            }]);
                         }
                     }
                     true
