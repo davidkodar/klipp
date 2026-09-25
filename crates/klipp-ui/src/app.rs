@@ -22815,6 +22815,7 @@ impl KlippApp {
         let _ = self.cmd_tx.send(AppCommand::ResetEngine);
 
         // 2. Replace project-scoped data
+        self.state.project_epoch += 1;
         self.retire_project_media();
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
@@ -23752,6 +23753,7 @@ impl KlippApp {
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
+                self.state.project_epoch += 1;
                 self.retire_project_media();
                 self.state.media_pool = media_pool;
                 // Reopening a project brings its own media back.
@@ -27599,9 +27601,23 @@ impl eframe::App for KlippApp {
 
         // Pickers run off the UI thread (see `file_dialog`); what the
         // ones that closed since the last frame chose starts this
-        // frame's commands.
-        crate::file_dialog::install(ctx);
-        let mut all_cmds = crate::file_dialog::take_ready();
+        // frame's commands. Their scope is the open project and the
+        // active sequence: a pick made for another is dropped.
+        let picker_scope = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.state.project_epoch.hash(&mut h);
+            self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.id.to_string()).hash(&mut h);
+            h.finish()
+        };
+        crate::file_dialog::install(ctx, picker_scope);
+        let picked = crate::file_dialog::take_ready();
+        if picked.stale > 0 {
+            self.state.toast.show("The project or sequence changed while the file dialog was open, so that choice was not applied".to_string());
+        } else if picked.refused > 0 {
+            self.state.toast.show("A file dialog is already open".to_string());
+        }
+        let mut all_cmds = picked.commands;
 
         // 2. Handle global keyboard shortcuts
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SHORTCUTS);

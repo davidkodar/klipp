@@ -504,18 +504,21 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Bake Grade as 3D LUT (.cube)"), shortcut: Cow::Borrowed(""),
-        action: PaletteAction::Custom(|state, cmds| {
+        action: PaletteAction::Custom(|state, _cmds| {
             let Some(clip_id) = state.selected_clip else { return; };
             let size = state.bake_lut_size;
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("Save baked grade as .cube")
-                .add_filter("3D LUT (.cube)", &["cube"])
-                .set_file_name(format!("klipp_grade_{size}.cube"))
-                .save_file()
-            {
-                let output_path = if path.extension().is_some() { path } else { path.with_extension("cube") };
-                cmds.push(AppCommand::BakeGradeToLut { clip_id, output_path, lut_size: size });
-            }
+            crate::file_dialog::spawn(move || {
+                rfd::FileDialog::new()
+                    .set_title("Save baked grade as .cube")
+                    .add_filter("3D LUT (.cube)", &["cube"])
+                    .set_file_name(format!("klipp_grade_{size}.cube"))
+                    .save_file()
+                    .map(|path| {
+                        let output_path = if path.extension().is_some() { path } else { path.with_extension("cube") };
+                        vec![AppCommand::BakeGradeToLut { clip_id, output_path, lut_size: size }]
+                    })
+                    .unwrap_or_default()
+            });
         }),
         enabled: state.selected_clip.is_some() });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("Alt+V"),
