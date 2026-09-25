@@ -3736,10 +3736,7 @@ fn transition(
     // much source beyond its edge, and to stay longer than the overlap.
     let half = dur.to_secs_f64() / 2.0;
     let half_tc = snap(half, fps);
-    let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
-    let a_room = media_dur(clip).is_none_or(|d| clip.source_out + half_tc <= d);
-    let _ = media_dur;
-    let b_room = next.source_in >= half_tc;
+    let (a_room, b_room) = handle_room(pool, clip, next, half_tc);
     if !a_room || !b_room {
         let who = if !a_room { clip_name(seq, pool, clip) } else { clip_name(seq, pool, next) };
         return Err(refuse(i, format!("{who} has no footage beyond the cut to make the {secs:.2} s overlap"), "shorten the transition, or trim the clip so there is a handle"));
@@ -3758,9 +3755,13 @@ fn transition(
         alignment: klipp_core::TransitionAlignment::default(),
     };
     let at = clip.timeline_out.to_secs_f64();
-    let what = format!(
+    // On an audio track every transition is a crossfade, whatever it was
+    // asked for as.
+    let audio = seq.tracks[ti].kind == TrackKind::Audio;
+    let name = if audio { "Crossfade" } else { spec.display_name };
+    let mut what = format!(
         "{} of {:.2} s between {} and {} at {at:.2} s",
-        spec.display_name,
+        name,
         dur.to_secs_f64(),
         clip_name(seq, pool, clip),
         clip_name(seq, pool, next),
@@ -3774,7 +3775,60 @@ fn transition(
         old_fade_in_b: next.fade_in_secs,
         replaced,
     };
+    // A picture transition between two clips whose sound is linked on an
+    // audio track crossfades that sound too, where it can: the fades it
+    // sets on the picture would otherwise dip it to silence at the cut.
+    if !audio {
+        if let Some(sound) = linked_crossfade(seq, pool, fps, clip, next, dur, spec) {
+            what.push_str(", crossfading their sound");
+            return Ok((what, EditCommand::Batch(vec![edit, sound]), vec![clip.id, next.id]));
+        }
+    }
     Ok((what, edit, vec![clip.id, next.id]))
+}
+
+/// Whether `a` has `half` of footage past its out point and `b` before
+/// its in point: what a transition of twice `half` centred on their cut
+/// plays.
+fn handle_room(pool: &MediaPool, a: &Clip, b: &Clip, half: Timecode) -> (bool, bool) {
+    let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
+    (media_dur(a).is_none_or(|d| a.source_out + half <= d), b.source_in >= half)
+}
+
+/// The crossfade between `a`'s and `b`'s linked sound clips, when they
+/// sit next to each other on one unlocked audio track and have the
+/// handles for it; `None` otherwise, leaving the dip.
+fn linked_crossfade(seq: &Sequence, pool: &MediaPool, fps: Fps, a: &Clip, b: &Clip, dur: Timecode, spec: &klipp_core::TransitionSpec) -> Option<EditCommand> {
+    let (pti, pa_idx, pa) = find_clip(seq, a.linked_clip_id?)?;
+    let (ptj, _, pb) = find_clip(seq, b.linked_clip_id?)?;
+    let track = &seq.tracks[pti];
+    if pti != ptj || track.kind != TrackKind::Audio || track.locked {
+        return None;
+    }
+    if track.clips.get(pa_idx + 1).map(|c| c.id) != Some(pb.id) || pa.timeline_out != pb.timeline_in {
+        return None;
+    }
+    let half = snap(dur.to_secs_f64() / 2.0, fps);
+    if handle_room(pool, pa, pb, half) != (true, true) {
+        return None;
+    }
+    Some(EditCommand::AddTransition {
+        track_index: pti,
+        transition: klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: spec.kind,
+            duration: dur,
+            clip_a_id: pa.id,
+            clip_b_id: pb.id,
+            user_params: klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),
+            alignment: klipp_core::TransitionAlignment::default(),
+        },
+        clip_a_id: pa.id,
+        clip_b_id: pb.id,
+        old_fade_out_a: pa.fade_out_secs,
+        old_fade_in_b: pb.fade_in_secs,
+        replaced: track.transitions.iter().find(|t| t.clip_a_id == pa.id && t.clip_b_id == pb.id).cloned(),
+    })
 }
 
 /// A transition spec from a name: its registry key (any case), or a
@@ -4959,7 +5013,9 @@ mod tests {
         // The two clips meet at 4 s and each is 4 s long with source beyond.
         let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4 }]).unwrap();
         assert!(plan.steps[0].what.starts_with("Cross Dissolve of 0.40 s") && plan.steps[0].what.contains("at 4.00 s"), "{}", plan.steps[0].what);
-        let EditCommand::AddTransition { transition, .. } = &plan.steps[0].edit else { panic!("a transition edit") };
+        // The picture's transition, and its linked sound crossfaded with it.
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch: {:?}", plan.steps[0].edit) };
+        let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!("a transition edit") };
         assert_eq!(transition.clip_a_id, a);
         assert_eq!(transition.clip_b_id, b);
         assert_eq!(transition.kind, klipp_core::TransitionKind::CrossDissolve);
@@ -4972,13 +5028,18 @@ mod tests {
         view.apply_forward(&plan.steps[0].edit);
         assert_eq!(view.sequences[0].tracks[0].transitions.len(), 1);
         assert!((view.sequences[0].tracks[0].clips[0].fade_out_secs - 0.4).abs() < 1e-6);
+        // The sound crossfades on its own track, and is not dipped there.
+        assert_eq!(view.sequences[0].tracks[1].transitions.len(), 1);
+        assert_eq!(view.sequences[0].tracks[1].clips[0].fade_out_secs, 0.0);
         view.apply_inverse(&plan.steps[0].edit);
         assert_eq!(view.sequences[0].tracks[0].transitions.len(), 0);
+        assert_eq!(view.sequences[0].tracks[1].transitions.len(), 0);
         assert_eq!(view.sequences[0].tracks[0].clips[0].fade_out_secs, 0.0);
 
         // A stylised name by its alias.
         let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4 }]).unwrap();
-        let EditCommand::AddTransition { transition, .. } = &plan.steps[0].edit else { panic!() };
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
+        let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
         assert_eq!(transition.kind, klipp_core::TransitionKind::CrossZoom);
 
         // Refusals: the last clip has no next; an unknown kind; too long.
@@ -4990,6 +5051,49 @@ mod tests {
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
         assert!(matches!(&ops[0], Op::Transition { kind, secs, .. } if kind == "cross_dissolve" && (*secs - 0.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_transition_on_an_audio_track_is_a_crossfade_and_fades_nothing() {
+        let (seq, pool, _, _, _) = fixture();
+        let sound_a = seq.tracks[1].clips[0].id;
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "dip_to_black".into(), secs: 0.4 }]).unwrap();
+        assert!(plan.steps[0].what.starts_with("Crossfade of 0.40 s"), "{}", plan.steps[0].what);
+        let EditCommand::AddTransition { track_index, .. } = &plan.steps[0].edit else { panic!("one transition, no batch") };
+        assert_eq!(*track_index, 1);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let t = &view.sequences[0].tracks[1];
+        assert_eq!(t.transitions.len(), 1);
+        assert_eq!((t.clips[0].fade_out_secs, t.clips[1].fade_in_secs), (0.0, 0.0), "a crossfade is not a dip");
+        let ext = klipp_timeline::crossfade::extent(t, &t.clips[0]);
+        assert!((ext.tail_secs - 0.2).abs() < 1e-9 && (ext.fade_out_secs - 0.4).abs() < 1e-9, "{ext:?}");
+
+        // Removing it undoes to it.
+        let tr = t.transitions[0];
+        let remove = EditCommand::RemoveTransition { track_index: 1, transition: tr, old_fade_out_a: 0.0, old_fade_in_b: 0.0 };
+        view.apply_forward(&remove);
+        assert!(view.sequences[0].tracks[1].transitions.is_empty());
+        view.apply_inverse(&remove);
+        assert_eq!(view.sequences[0].tracks[1].transitions.len(), 1);
+    }
+
+    #[test]
+    fn a_crossfade_without_handles_is_refused_and_a_picture_transition_then_keeps_its_dip() {
+        let (mut seq, pool, _, a, _) = fixture();
+        // The sound clips have no head before the second clip's in point.
+        let ab = &mut seq.tracks[1].clips[1];
+        ab.source_in = tc(0.0);
+        ab.source_out = tc(4.0);
+        let sound_a = seq.tracks[1].clips[0].id;
+        let err = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "crossfade".into(), secs: 0.4 }]).unwrap_err();
+        assert!(err.why.contains("no footage beyond the cut"), "{err}");
+        // The picture still dissolves, its sound dipped as before.
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4 }]).unwrap();
+        assert!(matches!(plan.steps[0].edit, EditCommand::AddTransition { track_index: 0, .. }), "{:?}", plan.steps[0].edit);
     }
 
     #[test]

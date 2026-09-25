@@ -360,11 +360,39 @@ fn mix_loop(
             continue;
         }
 
+        // A track's second lane (the other clip of an audio crossfade) is
+        // summed into its first before anything else: the mixer, the PDC
+        // delay lines and the meters see one buffer per track, so the two
+        // sides of a crossfade share the track's volume, pan, mute, solo
+        // and latency compensation exactly.
+        let mut lanes: Vec<(usize, usize)> = Vec::with_capacity(stagings.len());
+        for (i, staging) in stagings.iter().enumerate() {
+            let track = crate::engine::key_track(staging.track_index);
+            match lanes.iter().find(|(t, _)| *t == track).map(|(_, first)| *first) {
+                Some(first) => {
+                    let (into, from) = if first < i {
+                        let (a, b) = track_buffers.split_at_mut(i);
+                        (&mut a[first], &b[0])
+                    } else {
+                        let (a, b) = track_buffers.split_at_mut(first);
+                        (&mut b[0], &a[i])
+                    };
+                    if into.len() < from.len() {
+                        into.resize(from.len(), 0.0);
+                    }
+                    for (o, x) in into.iter_mut().zip(from.iter()) {
+                        *o += x;
+                    }
+                }
+                None => lanes.push((track, i)),
+            }
+        }
+
         // Mix via AudioMixer. Single critical section folds PDC
         // updates + per-track delay application + the existing mix
         // routine. Holding the lock once across all three avoids
         // double-locking on the audio thread.
-        let max_track_idx = stagings.iter().map(|s| s.track_index).max().unwrap_or(0);
+        let max_track_idx = lanes.iter().map(|(t, _)| *t).max().unwrap_or(0);
         let mixed = match mixer.lock() {
             Ok(mut m) => {
                 m.ensure_tracks(max_track_idx + 1);
@@ -378,7 +406,7 @@ fn mix_loop(
                     let advertised = staging.latency_advertise.load(Ordering::Acquire);
                     if advertised != staging.latency_last_seen {
                         m.set_track_latency_samples(
-                            staging.track_index,
+                            crate::engine::key_track(staging.track_index),
                             advertised,
                             chunk_samples / 2, // chunk_samples is interleaved L+R
                         );
@@ -405,14 +433,13 @@ fn mix_loop(
                 // lines are a no-op when the track has zero
                 // compensation needed (slot is None), so the common
                 // no-plugins case has zero per-block work.
-                for (i, staging) in stagings.iter().enumerate() {
-                    m.apply_per_track_pdc_delay(staging.track_index, &mut track_buffers[i]);
+                for &(track, i) in &lanes {
+                    m.apply_per_track_pdc_delay(track, &mut track_buffers[i]);
                 }
 
-                let refs: Vec<(usize, &[f32])> = stagings
+                let refs: Vec<(usize, &[f32])> = lanes
                     .iter()
-                    .zip(track_buffers.iter())
-                    .map(|(s, b)| (s.track_index, b.as_slice()))
+                    .map(|&(track, i)| (track, track_buffers[i].as_slice()))
                     .collect();
                 m.mix(&refs)
             }

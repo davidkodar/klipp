@@ -10793,6 +10793,21 @@ impl TimelinePanel {
                                 egui::Stroke::new(1.5_f32, acc),
                             );
                         }
+                        // On an audio track the transition is a crossfade:
+                        // draw what it does, the outgoing level falling and
+                        // the incoming one rising on their constant-power
+                        // curves, crossing where each is at -3 dB.
+                        if track.kind == TrackKind::Audio && trans_w > 8.0 {
+                            let steps = 24;
+                            let (top, bottom) = (indicator_rect.top() + 3.0, indicator_rect.bottom() - 3.0);
+                            let at = |t: f64, gain: f64| egui::pos2(trans_start_x + trans_w * t as f32, bottom - (bottom - top) * gain as f32);
+                            let cp = |t: f64| klipp_core::FadeCurve::ConstantPower.gain(t);
+                            let out: Vec<egui::Pos2> = (0..=steps).map(|i| i as f64 / steps as f64).map(|t| at(t, cp(1.0 - t))).collect();
+                            let inc: Vec<egui::Pos2> = (0..=steps).map(|i| i as f64 / steps as f64).map(|t| at(t, cp(t))).collect();
+                            let stroke = egui::Stroke::new(1.25_f32, tt.text_accent);
+                            painter.add(egui::Shape::line(out, stroke));
+                            painter.add(egui::Shape::line(inc, stroke));
+                        }
                         // Diamond marker sits on the cut, not the rect midpoint —
                         // for non-Center alignments those are different points.
                         let cx = content_rect.left() + (cut_secs * zoom as f64) as f32 - scroll;
@@ -10811,7 +10826,11 @@ impl TimelinePanel {
                         ));
                         // Label if wide enough
                         if trans_w > 40.0 {
-                            let kind_label = klipp_core::spec_for_kind(transition.kind).short_label;
+                            let kind_label = if track.kind == TrackKind::Audio {
+                                "Crossfade"
+                            } else {
+                                klipp_core::spec_for_kind(transition.kind).short_label
+                            };
                             painter.text(
                                 egui::pos2(cx, cy - d - 8.0),
                                 egui::Align2::CENTER_BOTTOM,
@@ -14067,17 +14086,22 @@ impl TimelinePanel {
         // is a real thing an editor wants to see and cannot otherwise,
         // and the triangles are then literally true.
         //
-        // A crossfade proper — the two overlapping, with no dip —
-        // needs an audio transition, which the timeline model does not
-        // have yet. When it does, that is what should be marked here.
+        // A crossfade proper — the two overlapping, with no dip — is an
+        // audio transition, and `draw_transition_overlays` draws it with
+        // its curves. A pair joined by one is not marked here as well:
+        // the crossfade replaces the fades at that join.
+        let crossfaded = |a: klipp_core::ClipId, b: klipp_core::ClipId| {
+            state.sequence().tracks.iter().any(|t| t.transitions.iter().any(|x| x.clip_a_id == a && x.clip_b_id == b))
+        };
         if track_kind == TrackKind::Audio && state.audio_show_crossfade_indicators {
             let frame_dur = 1.0 / fps.rate() as f64;
             for i in 0..clips.len().saturating_sub(1) {
                 if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
                 let end_secs = clips[i].timeline_out.to_secs_f64();
                 let start_secs = clips[i + 1].timeline_in.to_secs_f64();
-                let handoff =
-                    clips[i].fade_out_secs > 0.001 && clips[i + 1].fade_in_secs > 0.001;
+                let handoff = clips[i].fade_out_secs > 0.001
+                    && clips[i + 1].fade_in_secs > 0.001
+                    && !crossfaded(clips[i].id, clips[i + 1].id);
                 // Adjacent within 1 frame tolerance
                 if handoff && (end_secs - start_secs).abs() <= frame_dur * 1.5 {
                     let boundary_x = content_rect.left() + end_secs as f32 * zoom - scroll;

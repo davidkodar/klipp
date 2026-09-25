@@ -161,6 +161,15 @@ pub struct AudioClipShape {
     pub param_modifiers: HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
     /// The modifiers' random seed, the clip id's.
     pub seed: u64,
+    /// A crossfade at either end (see `klipp_timeline::crossfade`): the
+    /// snapshot's frames and source start already include the head and
+    /// tail, so `clip_pos` counts from the extended start; these say how
+    /// much of that is handle, and over how long the constant-power
+    /// crossfade runs at each end.
+    pub head_secs: f64,
+    pub tail_secs: f64,
+    pub crossfade_in_secs: f64,
+    pub crossfade_out_secs: f64,
 }
 
 impl Default for AudioClipShape {
@@ -180,6 +189,10 @@ impl Default for AudioClipShape {
             pan_keyframes: Vec::new(),
             param_modifiers: HashMap::new(),
             seed: 0,
+            head_secs: 0.0,
+            tail_secs: 0.0,
+            crossfade_in_secs: 0.0,
+            crossfade_out_secs: 0.0,
         }
     }
 }
@@ -214,7 +227,29 @@ impl AudioClipShape {
             pan_keyframes: clip.pan_keyframes.clone(),
             param_modifiers: clip.param_modifiers.clone(),
             seed: clip.id.0.as_u64_pair().0,
+            head_secs: 0.0,
+            tail_secs: 0.0,
+            crossfade_in_secs: 0.0,
+            crossfade_out_secs: 0.0,
         }
+    }
+
+    /// With the crossfades `e` at the clip's ends. A crossfade takes the
+    /// place of the clip's own fade at that end: the two would multiply
+    /// into a dip, and a fade to silence under the outgoing clip's tail
+    /// would silence the handle the crossfade plays.
+    pub fn with_crossfades(mut self, e: klipp_timeline::crossfade::Extent) -> Self {
+        self.head_secs = e.head_secs;
+        self.tail_secs = e.tail_secs;
+        self.crossfade_in_secs = e.fade_in_secs;
+        self.crossfade_out_secs = e.fade_out_secs;
+        if e.fade_in_secs > 0.0 {
+            self.fade_in_secs = 0.0;
+        }
+        if e.fade_out_secs > 0.0 {
+            self.fade_out_secs = 0.0;
+        }
+        self
     }
 
     /// Whether the clip can never be heard: volume zero with nothing
@@ -568,14 +603,18 @@ fn snapshot_audio_track(
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
-                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64());
+                    let xfade = klipp_timeline::crossfade::extent(track, clip);
+                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64()).with_crossfades(xfade);
                     if shape.is_silent() {
                         continue;
                     }
+                    // Stretched by the crossfades' handles: the incoming
+                    // clip starts sounding early, the outgoing one ends late.
+                    let frames = |secs: f64| (secs * fps).round() as u64;
                     clips.push(AudioClipSnapshot {
-                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
-                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
-                        source_start_secs: clip.source_in.to_secs_f64(),
+                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps).saturating_sub(frames(xfade.head_secs)),
+                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps) + frames(xfade.tail_secs),
+                        source_start_secs: clip.source_in.to_secs_f64() - xfade.head_secs,
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
                         audio_effect_keyframes: clip.audio_effect_keyframes.clone(),

@@ -1413,57 +1413,93 @@ type TrackAudioRow = (
     std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
 );
 
+/// Every audio source that should sound at `tc`: per track, the clip
+/// under it — an enabled clip on media with audio, and not the video
+/// half of a linked pair whose audio half sits on an audio track — and,
+/// inside an audio crossfade, the other clip of it too, playing from its
+/// handle. Each row is keyed by [`source_key`]: the track, and the lane
+/// the clip plays in, so a crossfade's two clips are two sources.
+/// `pcm_cache` swaps in an item's conformed PCM file where one exists.
+fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: Timecode, use_proxies: bool, pcm_cache: bool) -> Vec<TrackAudioRow> {
+    let mut rows = Vec::new();
+    for (track_idx, track) in seq.tracks.iter().enumerate() {
+        for sounding in klipp_timeline::crossfade::sounding_at(track, tc) {
+            let clip = sounding.clip;
+            if !clip.enabled {
+                continue;
+            }
+            let Some(media_id) = clip.media_id() else { continue };
+            let Some(item) = pool.get(&media_id) else { continue };
+            if !item.has_audio {
+                continue;
+            }
+            // Skip audio for video-track clips that have a linked audio-track partner
+            // (the audio track clip will produce audio instead)
+            if track.kind == klipp_timeline::TrackKind::Video {
+                if let Some(lid) = clip.linked_clip_id {
+                    let partner_on_audio = seq.tracks.iter().any(|t| {
+                        t.kind == klipp_timeline::TrackKind::Audio && t.clips.iter().any(|c| c.id == lid)
+                    });
+                    if partner_on_audio {
+                        continue;
+                    }
+                }
+            }
+            // Before an incoming clip's in point this reaches back into
+            // its head, past an outgoing clip's out point into its tail.
+            let source_secs = clip.source_in.to_secs_f64() + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
+            let decode_path = if use_proxies && item.proxy_ready {
+                item.proxy_path.as_ref().filter(|p| p.exists()).cloned().unwrap_or_else(|| item.path.clone())
+            } else {
+                item.path.clone()
+            };
+            let path = if pcm_cache {
+                item.audio_cache.as_ref().map(|c| c.pcm_path.clone()).filter(|p| p.exists()).unwrap_or(decode_path)
+            } else {
+                decode_path
+            };
+            rows.push((
+                source_key(track_idx, sounding.lane),
+                media_id,
+                path,
+                source_secs,
+                clip.audio_effects.clone(),
+                clip.audio_effect_keyframes.clone(),
+            ));
+        }
+    }
+    rows
+}
+
+/// A track's two sound lanes as source keys: lane 0 is the track index
+/// itself, lane 1 a key far above any track. The mix thread folds both
+/// back onto the track, so the track's volume, pan, mute, solo and
+/// meters are one.
+pub(crate) const LANE_STRIDE: usize = 1 << 16;
+
+pub(crate) fn source_key(track_index: usize, lane: u8) -> usize {
+    track_index + lane as usize * LANE_STRIDE
+}
+
+/// The track a source key belongs to.
+pub(crate) fn key_track(key: usize) -> usize {
+    key % LANE_STRIDE
+}
+
+/// The clip a source keyed `key` plays at `tc`, with its crossfades.
+fn sounding_for_key(seq: &klipp_timeline::Sequence, key: usize, tc: Timecode) -> Option<klipp_timeline::crossfade::Sounding<'_>> {
+    let track = seq.tracks.get(key_track(key))?;
+    let lane = (key / LANE_STRIDE) as u8;
+    klipp_timeline::crossfade::sounding_at(track, tc).into_iter().find(|s| s.lane == lane)
+}
+
 impl PlaybackEngine {
-    /// Every track with an audio clip under `tc` that should sound: an
-    /// enabled clip on media with audio, and not the video half of a
-    /// linked pair whose audio half sits on an audio track.
+    /// Every audio source that should sound at `tc`, keyed by track and
+    /// lane: see [`audio_rows`].
     fn audio_rows_at(&self, tc: Timecode) -> Vec<TrackAudioRow> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        seq.tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(track_idx, track)| {
-                let (_clip_idx, clip) = track.clip_at_timecode(tc)?;
-                if !clip.enabled { return None; }
-                let media_id = clip.media_id()?;
-                let item = pool.get(&media_id)?;
-                if !item.has_audio {
-                    return None;
-                }
-                // Skip audio for video-track clips that have a linked audio-track partner
-                // (the audio track clip will produce audio instead)
-                if track.kind == klipp_timeline::TrackKind::Video {
-                    if let Some(lid) = clip.linked_clip_id {
-                        let partner_on_audio = seq.tracks.iter().any(|t| {
-                            t.kind == klipp_timeline::TrackKind::Audio
-                                && t.clips.iter().any(|c| c.id == lid)
-                        });
-                        if partner_on_audio {
-                            return None;
-                        }
-                    }
-                }
-                let source_secs = clip.source_in.to_secs_f64()
-                    + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
-                let decode_path = if self.use_proxies && item.proxy_ready {
-                    item.proxy_path.as_ref()
-                        .filter(|p| p.exists())
-                        .cloned()
-                        .unwrap_or_else(|| item.path.clone())
-                } else {
-                    item.path.clone()
-                };
-                Some((
-                    track_idx,
-                    media_id,
-                    decode_path,
-                    source_secs,
-                    clip.audio_effects.clone(),
-                    clip.audio_effect_keyframes.clone(),
-                ))
-            })
-            .collect()
+        audio_rows(&seq, &pool, tc, self.use_proxies, false)
     }
 
     /// Titles about to start get their resting render made ahead on the
@@ -3516,27 +3552,7 @@ impl PlaybackEngine {
 
     /// How many sources `start_all_audio` would open at `tc`.
     fn audio_source_count_at(&self, tc: Timecode) -> usize {
-        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        seq.tracks
-            .iter()
-            .filter(|track| {
-                let Some((_, clip)) = track.clip_at_timecode(tc) else { return false };
-                if !clip.enabled { return false; }
-                let Some(media_id) = clip.media_id() else { return false };
-                let Some(item) = pool.get(&media_id) else { return false };
-                if !item.has_audio { return false; }
-                if track.kind == klipp_timeline::TrackKind::Video {
-                    if let Some(lid) = clip.linked_clip_id {
-                        let partner_on_audio = seq.tracks.iter().any(|t| {
-                            t.kind == klipp_timeline::TrackKind::Audio && t.clips.iter().any(|c| c.id == lid)
-                        });
-                        if partner_on_audio { return false; }
-                    }
-                }
-                true
-            })
-            .count()
+        self.audio_rows_at(tc).len()
     }
 
     fn start_all_audio(&mut self, tc: Timecode) {
@@ -3592,8 +3608,8 @@ impl PlaybackEngine {
         let mut clip_ch_config = 0u32;
 
         for active in &self.audio_sources {
-            if let Some(track) = seq.tracks.get(active.track_index) {
-                if let Some((_idx, audio_clip)) = track.clip_at_timecode(self.playhead) {
+            if seq.tracks.get(key_track(active.track_index)).is_some() {
+                if let Some(audio_clip) = sounding_for_key(&seq, active.track_index, self.playhead).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
@@ -3672,6 +3688,11 @@ impl PlaybackEngine {
                     break;
                 }
             }
+        }
+        // Every source inside a crossfade gets its own envelope, whichever
+        // one the loop above took: both sides of the join fade.
+        for active in &self.audio_sources {
+            set_crossfade_envelope(&seq, active, self.playhead);
         }
         drop(seq);
         if let Some(aout) = &self.audio_output {
@@ -3813,6 +3834,58 @@ impl PlaybackEngine {
     }
 }
 
+/// Put a source inside an audio crossfade on its crossfade envelope:
+/// the clip's range stretched by the handle the crossfade plays, the
+/// constant-power ramp in over the crossfade at its head, out at its
+/// tail. A crossfade takes the place of the clip's own fade at that end,
+/// as in the render (`AudioClipShape::with_crossfades`); the clip's own
+/// fade at the other end stays. The fade settings are the linked video
+/// clip's where there is one, as everywhere else in playback.
+///
+/// Only the PCM feeder applies an envelope; a source on the decoder
+/// fallback plays both sides of the join at full level.
+fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, active: &ActiveAudioSource, tc: Timecode) {
+    let Some(sounding) = sounding_for_key(seq, active.track_index, tc) else { return };
+    let e = sounding.extent;
+    if e.is_none() {
+        return;
+    }
+    let clip = sounding.clip;
+    let settings = clip
+        .linked_clip_id
+        .and_then(|lid| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == lid))
+        .unwrap_or(clip);
+    let constant_power = fade_curve_to_u32(klipp_timeline::FadeCurve::ConstantPower);
+    let (fade_in, in_curve) = if e.fade_in_secs > 0.0 {
+        (e.fade_in_secs, constant_power)
+    } else {
+        (settings.fade_in_secs as f64, fade_curve_to_u32(settings.fade_in_curve))
+    };
+    let (fade_out, out_curve) = if e.fade_out_secs > 0.0 {
+        (e.fade_out_secs, constant_power)
+    } else {
+        (settings.fade_out_secs as f64, fade_curve_to_u32(settings.fade_out_curve))
+    };
+    let clip_time = (tc - settings.timeline_in).to_secs_f64().max(0.0);
+    let ctx = klipp_core::EvalContext {
+        clip_time_secs: clip_time,
+        clip_duration_secs: settings.duration().to_secs_f64(),
+        timeline_time_secs: tc.to_secs_f64(),
+        fps: seq.fps.as_f64(),
+        seed: settings.id.0.as_u64_pair().0,
+    };
+    let gain = eval_with_modifiers(&settings.gain_keyframes, &settings.param_modifiers, &klipp_core::ParamId::Gain, clip_time, settings.gain, &ctx);
+    active.source.set_fade(
+        clip.source_in.to_secs_f64() - e.head_secs,
+        e.head_secs + clip.duration().to_secs_f64() + e.tail_secs,
+        fade_in,
+        fade_out,
+        in_curve,
+        out_curve,
+        gain,
+    );
+}
+
 /// Pure helper: hash the audio-relevant fields of a single clip.
 /// Extracted from `compute_audio_fingerprint` so the per-clip formula
 /// is unit-testable without standing up an Engine. Returns 0 for clips
@@ -3890,13 +3963,13 @@ pub(crate) fn audio_resync_needed(
     tc: Timecode,
     active: impl IntoIterator<Item = (usize, MediaId, u64)>,
 ) -> bool {
-    active.into_iter().any(|(track_index, media_id, fingerprint)| {
-        let Some(track) = seq.tracks.get(track_index) else {
+    active.into_iter().any(|(key, media_id, fingerprint)| {
+        if seq.tracks.get(key_track(key)).is_none() {
             // The source's track vanished — safest to resync.
             return true;
-        };
-        match track.clip_at_timecode(tc) {
-            Some((_, clip)) => {
+        }
+        match sounding_for_key(seq, key, tc).map(|s| s.clip) {
+            Some(clip) => {
                 if clip.media_id() != Some(media_id) {
                     return true;
                 }
@@ -4088,8 +4161,8 @@ impl PlaybackEngine {
     fn refresh_audio_fades(&self, tc: Timecode) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         for active_src in &self.audio_sources {
-            if let Some(track) = seq.tracks.get(active_src.track_index) {
-                if let Some((_idx, new_clip)) = track.clip_at_timecode(tc) {
+            if seq.tracks.get(key_track(active_src.track_index)).is_some() {
+                if let Some(new_clip) = sounding_for_key(&seq, active_src.track_index, tc).map(|s| s.clip) {
                     let new_source_in = new_clip.source_in.to_secs_f64();
                     let new_clip_dur = new_clip.duration().to_secs_f64();
                     active_src.source.set_fade(
@@ -4103,6 +4176,7 @@ impl PlaybackEngine {
                     );
                 }
             }
+            set_crossfade_envelope(&seq, active_src, tc);
         }
     }
 
@@ -4155,10 +4229,10 @@ impl PlaybackEngine {
         let chain_or_media_changed = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.audio_sources.iter().any(|active| {
-                let Some(track) = seq.tracks.get(active.track_index) else {
+                if seq.tracks.get(key_track(active.track_index)).is_none() {
                     return false;
-                };
-                let Some((_, clip)) = track.clip_at_timecode(tc) else {
+                }
+                let Some(clip) = sounding_for_key(&seq, active.track_index, tc).map(|s| s.clip) else {
                     // No clip at `tc` on this track: start_all_audio will
                     // drop the source, which is the correct outcome too.
                     return true;
@@ -4189,8 +4263,7 @@ impl PlaybackEngine {
             self.audio_sources
                 .iter()
                 .filter_map(|active| {
-                    let track = seq.tracks.get(active.track_index)?;
-                    let (_idx, clip) = track.clip_at_timecode(tc)?;
+                    let clip = sounding_for_key(&seq, active.track_index, tc)?.clip;
                     let source_secs = clip.source_in.to_secs_f64()
                         + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
                     Some((active.track_index, source_secs))
@@ -5241,61 +5314,7 @@ impl PlaybackEngine {
                 Vec<klipp_core::AudioEffectInstance>,
                 std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
             );
-            let track_audio: Vec<PreSeekRow> = seq
-                .tracks
-                .iter()
-                .enumerate()
-                .filter_map(|(track_idx, track)| {
-                    let (_, clip) = track.clip_at_timecode(tc)?;
-                    let media_id = clip.media_id()?;
-                    let item = pool.get(&media_id)?;
-                    if !item.has_audio {
-                        return None;
-                    }
-                    // Skip audio for linked video-track clips
-                    if track.kind == klipp_timeline::TrackKind::Video {
-                        if let Some(lid) = clip.linked_clip_id {
-                            let partner_on_audio = seq.tracks.iter().any(|t| {
-                                t.kind == klipp_timeline::TrackKind::Audio
-                                    && t.clips.iter().any(|c| c.id == lid)
-                            });
-                            if partner_on_audio {
-                                return None;
-                            }
-                        }
-                    }
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
-
-                    // Resolve path (proxy or original)
-                    let decode_path = if use_proxies && item.proxy_ready {
-                        item.proxy_path
-                            .as_ref()
-                            .filter(|p| p.exists())
-                            .cloned()
-                            .unwrap_or_else(|| item.path.clone())
-                    } else {
-                        item.path.clone()
-                    };
-
-                    // Try PCM cache first
-                    let path = item
-                        .audio_cache
-                        .as_ref()
-                        .map(|c| c.pcm_path.clone())
-                        .filter(|p| p.exists())
-                        .unwrap_or(decode_path);
-
-                    Some((
-                        track_idx,
-                        media_id,
-                        path,
-                        source_secs,
-                        clip.audio_effects.clone(),
-                        clip.audio_effect_keyframes.clone(),
-                    ))
-                })
-                .collect();
+            let track_audio: Vec<PreSeekRow> = audio_rows(&seq, &pool, tc, use_proxies, true);
             drop(pool);
             drop(seq);
 
@@ -11457,6 +11476,95 @@ mod cached_frame_display_tests {
                 "{op:?}: the cache-hit shortcut does not match the path it replaces",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_crossfade_schedule_tests {
+    //! Where playback schedules an audio crossfade's two sources. The
+    //! render mixes the same clips over the same window
+    //! (`klipp-render/tests/audio_crossfade.rs`); these pin the playback
+    //! half against the same shape of timeline.
+    use super::{audio_resync_needed, audio_rows, audio_chain_fingerprint_for, key_track, LANE_STRIDE};
+    use klipp_core::{MediaId, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind};
+    use klipp_media::{MediaItem, MediaPool};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind, Transition};
+
+    fn tc(frames: i64) -> Timecode {
+        RationalTime { value: frames, rate: 24 }
+    }
+
+    /// A1: A at 0–72 (source 24–96), B at 72–144 (source 48–120),
+    /// crossfaded over 12 frames centred on the cut: frames 66–78.
+    fn timeline() -> (Sequence, MediaPool, MediaId, MediaId) {
+        let mut pool = MediaPool::new();
+        let mut item = |name: &str| {
+            let mut m = MediaItem::synthetic_for_test(format!("/tmp/{name}.wav").into(), None);
+            m.has_audio = true;
+            pool.add(m)
+        };
+        let (am, bm) = (item("xfade-a"), item("xfade-b"));
+        let mut s = Sequence::new_default();
+        s.tracks.clear();
+        let mut t = Track::new("A1", TrackKind::Audio);
+        let a = Clip::media(am, tc(0), tc(72), tc(24), tc(96));
+        let b = Clip::media(bm, tc(72), tc(144), tc(48), tc(120));
+        t.transitions.push(Transition {
+            id: TransitionId::new(),
+            kind: TransitionKind::CrossDissolve,
+            duration: tc(12),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            user_params: Default::default(),
+            alignment: TransitionAlignment::Center,
+        });
+        t.clips = vec![a, b];
+        s.tracks.push(t);
+        (s, pool, am, bm)
+    }
+
+    #[test]
+    fn inside_the_window_both_clips_play_from_their_handles() {
+        let (s, pool, am, bm) = timeline();
+        let outside = audio_rows(&s, &pool, tc(60), false, false);
+        assert_eq!(outside.len(), 1);
+        let before_cut = audio_rows(&s, &pool, tc(69), false, false);
+        assert_eq!(before_cut.len(), 2);
+        let a = before_cut.iter().find(|r| r.1 == am).unwrap();
+        let b = before_cut.iter().find(|r| r.1 == bm).unwrap();
+        assert_ne!(a.0, b.0, "the two sides need two sources");
+        assert_eq!(key_track(a.0), 0);
+        assert_eq!(key_track(b.0), 0);
+        // B is three frames before its in point: its head, from source 45.
+        assert!((b.3 - 45.0 / 24.0).abs() < 1e-9, "B from {}", b.3);
+        let after_cut = audio_rows(&s, &pool, tc(75), false, false);
+        let a = after_cut.iter().find(|r| r.1 == am).unwrap();
+        // A three frames past its out point: its tail, source 99.
+        assert!((a.3 - 99.0 / 24.0).abs() < 1e-9, "A from {}", a.3);
+    }
+
+    #[test]
+    fn the_incoming_source_keeps_its_key_after_the_window() {
+        let (s, pool, _, bm) = timeline();
+        let in_window = audio_rows(&s, &pool, tc(70), false, false);
+        let after = audio_rows(&s, &pool, tc(100), false, false);
+        let key = |rows: &[super::TrackAudioRow]| rows.iter().find(|r| r.1 == bm).unwrap().0;
+        assert_eq!(key(&in_window), key(&after), "B would be reopened at full level as the window ends");
+        // And its source carries on: nothing to resync past the window.
+        let fp = audio_chain_fingerprint_for(&[], &Default::default());
+        assert!(!audio_resync_needed(&s, tc(100), [(key(&after), bm, fp)]));
+    }
+
+    #[test]
+    fn a_plain_cut_keeps_one_source_key() {
+        let (mut s, pool, am, bm) = timeline();
+        s.tracks[0].transitions.clear();
+        let a = audio_rows(&s, &pool, tc(70), false, false);
+        let b = audio_rows(&s, &pool, tc(75), false, false);
+        assert_eq!((a.len(), b.len()), (1, 1));
+        assert_eq!((a[0].1, b[0].1), (am, bm));
+        assert_eq!(a[0].0, b[0].0);
+        assert!(a[0].0 < LANE_STRIDE);
     }
 }
 
