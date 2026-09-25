@@ -447,6 +447,12 @@ mod transport_tests {
     }
 
     #[test]
+    fn an_empty_buffer_is_not_a_picture_but_a_black_frame_is() {
+        assert!(!has_picture(&[0u8; 16]));
+        assert!(has_picture(&[0, 0, 0, 255, 0, 0, 0, 255]), "an opaque black frame is a real picture");
+    }
+
+    #[test]
     fn a_read_during_playback_seeks_back_and_plays_on() {
         let t = Timecode::from_frames(90, 30);
         let cmds = restore_commands(HeldTransport { at: Some(t), playing: true });
@@ -457,6 +463,20 @@ mod transport_tests {
 /// Seek to `secs`, wait for the frame there, read its RGBA bytes, and
 /// put the user's playhead back — the picture as the viewer shows it,
 /// for measuring. Shares the one-grab lock and the wait with frame_at.
+/// How long a frame read waits by default. A window that is on screen
+/// renders a 4K frame in about a tenth of a second; one on a workspace
+/// that is not being shown renders the same frame in one to three
+/// seconds, and the old three-second default failed most reads there.
+const FRAME_READ_TIMEOUT_MS: u64 = 10_000;
+
+/// Whether a frame buffer holds a picture at all. A rendered frame is
+/// opaque; a buffer that is all zero, alpha included, is one nothing
+/// has been written to yet, and measuring it reported a black frame
+/// that was never on the timeline.
+fn has_picture(rgba: &[u8]) -> bool {
+    rgba.chunks_exact(4).any(|p| p[3] != 0)
+}
+
 fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
     static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
@@ -465,7 +485,7 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
     let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
     let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
     send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
-    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(FRAME_READ_TIMEOUT_MS));
     let deadline = std::time::Instant::now() + wait;
     loop {
         let (g, at, complete) = {
@@ -490,12 +510,15 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
             (d.to_vec(), w, h)
         };
         let expected = (width as usize) * (height as usize) * 4;
-        if width > 0 && height > 0 && data.len() >= expected {
+        if width > 0 && height > 0 && data.len() >= expected && has_picture(&data[..expected]) {
             break (data, width, height);
         }
         if std::time::Instant::now() >= deadline {
             restore_transport(ctx, held);
-            return Err("the viewer has no frame to measure yet".into());
+            return Err(format!(
+                "the viewer has no picture of {secs:.3} s to measure yet (its copy of the frame is empty); \
+                 a window that is not on screen renders slowly, so give a longer timeout_ms"
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
@@ -513,7 +536,7 @@ fn grab_scope(ctx: &ControlContext, mode: u8, secs: f64, timeout_ms: Option<u64>
     let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?
         .snapshot_scope_textures.get(&mode).map(|e| e.generation);
     send_envelope(ctx, vec![AppCommand::RenderScopeSnapshot { modes: vec![mode], rgba, width: w, height: h }], false)?;
-    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+    let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(FRAME_READ_TIMEOUT_MS));
     let deadline = std::time::Instant::now() + wait;
     loop {
         {
@@ -4681,7 +4704,7 @@ reference:   {}",
             // a frame shown before the other tracks' decoders had their
             // pictures — the engine fills those in when they arrive — was
             // handed back as the record of the timeline.
-            let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+            let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(FRAME_READ_TIMEOUT_MS));
             let deadline = std::time::Instant::now() + wait;
             let generation = loop {
                 let (g, at, complete) = {

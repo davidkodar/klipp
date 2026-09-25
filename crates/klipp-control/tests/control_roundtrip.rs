@@ -1220,3 +1220,28 @@ fn a_frame_read_puts_the_users_playhead_back_and_plays_on() {
     );
     assert!(matches!(seen.get(3), Some(AppCommand::Play)), "playback was not resumed: {seen:?}");
 }
+
+/// #344: a frame presented at the right time whose bytes are an empty
+/// buffer is not measured as a black frame; the read waits for a
+/// picture and, when none comes, says so.
+#[test]
+fn a_frame_read_does_not_measure_an_empty_buffer() {
+    use klipp_core::AppCommand;
+
+    let mut h = harness();
+    {
+        let (rx, fb) = (h.cmd_rx.clone(), Arc::clone(&h.frame_buffer));
+        std::thread::spawn(move || {
+            for c in rx {
+                if let AppCommand::SeekTo(t) = &c {
+                    let mut fb = fb.lock().unwrap();
+                    fb.set_presented(*t, true);
+                    fb.write_frame(vec![0; 64 * 32 * 4], 64, 32);
+                }
+            }
+        });
+    }
+    let reply = h.call(json!({ "method": "frame_stats", "secs": 1.0, "timeout_ms": 300 }));
+    assert_eq!(reply["ok"], json!(false), "an empty buffer was measured: {reply}");
+    assert!(reply["error"].as_str().unwrap().contains("empty"), "{}", reply["error"]);
+}
