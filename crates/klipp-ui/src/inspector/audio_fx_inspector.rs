@@ -743,6 +743,7 @@ pub fn show_content(
                     {
                         let descs = effect.param_descriptors();
                         for desc in descs {
+                            if inst.effect_type == "denoiser" && desc.name == "learn" { continue; }
                             let static_value = inst.params.iter()
                                 .find(|(k, _)| k == desc.name)
                                 .map(|(_, v)| *v)
@@ -805,6 +806,20 @@ pub fn show_content(
                                 keyframe_tolerance,
                             );
                         }
+                    }
+
+                    if inst.effect_type == "denoiser" {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("PROFILE WORKFLOW").size(10.0).strong().color(theme.text_dim));
+                        ui.label(egui::RichText::new("Place the playhead over a short section containing only the wind or room noise, then learn it before playing the dialogue.").size(10.0).color(theme.text_secondary));
+                        ui.horizontal(|ui| {
+                            if ui.button("Learn Noise Profile").on_hover_text("Relearn from the next profile window").clicked() {
+                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "learn".into(), value: 1.0 });
+                            }
+                            if ui.button("Reset Profile").clicked() {
+                                cmds.push(AppCommand::UpdateAudioEffectParam { clip_id, effect_index: idx, param_name: "learn".into(), value: 1.0 });
+                            }
+                        });
                     }
 
                     ui.add_space(4.0);

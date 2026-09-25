@@ -1,0 +1,119 @@
+use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
+use realfft::{num_complex::Complex32, RealFftPlanner};
+
+const FFT_SIZE: usize = 1024;
+const PROFILE_BINS: usize = FFT_SIZE / 2 + 1;
+
+/// Broadband spectral denoiser. The first `profile_seconds` of a clip are
+/// learned as a noise profile, then spectral subtraction is applied to each
+/// analysis block. The profile is deliberately kept in the effect instance
+/// so playback and export share the same deterministic state model.
+pub struct Denoiser {
+    sample_rate: f32,
+    strength: f32,
+    floor: f32,
+    profile_seconds: f32,
+    profile: Vec<f32>,
+    learned_frames: usize,
+    profile_blocks: usize,
+    learn_requested: bool,
+    fft: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
+    inverse: std::sync::Arc<dyn realfft::ComplexToReal<f32>>,
+    spectrum: Vec<Complex32>,
+    input: Vec<f32>,
+}
+
+static PARAM_DESCS: &[AudioParamDescriptor] = &[
+    AudioParamDescriptor { name: "strength", label: "Reduction", default: 0.75, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
+    AudioParamDescriptor { name: "floor", label: "Noise Floor", default: 0.08, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
+    AudioParamDescriptor { name: "profile_seconds", label: "Learn Window (s)", default: 0.5, min: 0.1, max: 5.0, unit: ParamUnit::None },
+    AudioParamDescriptor { name: "learn", label: "Learn Profile", default: 0.0, min: 0.0, max: 1.0, unit: ParamUnit::None },
+];
+
+impl Denoiser {
+    pub fn new(sample_rate: u32) -> Self {
+        let mut planner = RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let inverse = planner.plan_fft_inverse(FFT_SIZE);
+        Self {
+            sample_rate: sample_rate as f32,
+            strength: 0.75,
+            floor: 0.08,
+            profile_seconds: 0.5,
+            profile: vec![0.0; PROFILE_BINS],
+            learned_frames: 0,
+            profile_blocks: 0,
+            learn_requested: false,
+            spectrum: fft.make_output_vec(),
+            input: vec![0.0; FFT_SIZE],
+            fft,
+            inverse,
+        }
+    }
+
+    fn learn_limit(&self) -> usize { (self.profile_seconds * self.sample_rate) as usize }
+
+    fn process_mono(&mut self, samples: &mut [f32], ctx: &AudioProcessContext) {
+        for block in samples.chunks_mut(FFT_SIZE) {
+            self.input.fill(0.0);
+            self.input[..block.len()].copy_from_slice(block);
+            if self.fft.process(&mut self.input, &mut self.spectrum).is_err() { continue; }
+            let frames = block.len();
+            let learning = self.learn_requested || self.learned_frames < self.learn_limit();
+            for (bin, value) in self.spectrum.iter_mut().enumerate() {
+                let magnitude = value.norm();
+                if learning {
+                    let prior = self.profile[bin];
+                    let count = (self.profile_blocks + 1) as f32;
+                    self.profile[bin] = prior + (magnitude - prior) / count;
+                } else {
+                    let noise = self.profile[bin];
+                    let clean = (magnitude * magnitude - noise * noise * self.strength).max(0.0).sqrt();
+                    let gain = (clean / magnitude.max(1e-8)).max(self.floor).min(1.0);
+                    *value *= gain;
+                }
+            }
+            if self.inverse.process(&mut self.spectrum, &mut self.input).is_err() { continue; }
+            let scale = 1.0 / FFT_SIZE as f32;
+            for (dst, src) in block.iter_mut().zip(self.input.iter()) { *dst = *src * scale; }
+            self.learned_frames = self.learned_frames.saturating_add(frames);
+            if learning {
+                self.profile_blocks = self.profile_blocks.saturating_add(1);
+                if self.learned_frames >= self.learn_limit() { self.learn_requested = false; }
+            }
+        }
+        let _ = ctx;
+    }
+}
+
+impl AudioEffect for Denoiser {
+    fn type_id(&self) -> &'static str { "denoiser" }
+    fn name(&self) -> &'static str { "Broadband Denoiser" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { PARAM_DESCS }
+    fn get_param(&self, name: &str) -> Option<f32> {
+        match name { "strength" => Some(self.strength), "floor" => Some(self.floor), "profile_seconds" => Some(self.profile_seconds), _ => None }
+    }
+    fn set_param(&mut self, name: &str, value: f32) {
+        match name {
+            "strength" => self.strength = value.clamp(0.0, 1.0),
+            "floor" => self.floor = value.clamp(0.0, 1.0),
+            "profile_seconds" => { self.profile_seconds = value.clamp(0.1, 5.0); self.reset(); },
+            "learn" if value > 0.5 => { self.reset(); self.learn_requested = true; },
+            _ => {}
+        }
+    }
+    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
+        let channels = ctx.channels as usize;
+        if channels == 0 { return; }
+        for ch in 0..channels.min(2) {
+            let mut mono: Vec<f32> = buffer.iter().skip(ch).step_by(channels).copied().collect();
+            self.process_mono(&mut mono, ctx);
+            for (i, sample) in mono.into_iter().enumerate() { buffer[i * channels + ch] = sample; }
+        }
+    }
+    fn reset(&mut self) { self.profile.fill(0.0); self.learned_frames = 0; self.profile_blocks = 0; self.learn_requested = false; }
+    fn serialize_params(&self) -> Vec<(String, f32)> {
+        vec![("strength".into(), self.strength), ("floor".into(), self.floor), ("profile_seconds".into(), self.profile_seconds)]
+    }
+    fn deserialize_params(&mut self, params: &[(String, f32)]) { for (k, v) in params { self.set_param(k, *v); } }
+}
