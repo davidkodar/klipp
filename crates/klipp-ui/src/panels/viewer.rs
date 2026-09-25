@@ -265,7 +265,7 @@ impl ViewerPanel {
         ui.advance_cursor_after_rect(panel_rect);
 
         // Reserve space: scrub bar lane (16px — gives the playhead ball
-        // 14px of vertical room without being clipped by the letterbox above
+        // 14px of vertical room without being clipped by the picture above
         // or the playbar below) + playbar (40px). The visible track inside
         // the lane is still a thin 4px strip; the rest is breathing room.
         let scrub_h = 16.0;
@@ -711,21 +711,6 @@ impl ViewerPanel {
                 state.eyedropper_mode = crate::state::EyedropperMode::None;
             }
         }
-    }
-
-    fn draw_letterbox(&self, ui: &egui::Ui, viewer_rect: egui::Rect, lb_h: f32) {
-        // ── Letterbox bars (drawn ON TOP of video frame) ──
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(viewer_rect.min, egui::vec2(viewer_rect.width(), lb_h)),
-            0.0, egui::Color32::BLACK,
-        );
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(viewer_rect.min.x, viewer_rect.max.y - lb_h),
-                egui::vec2(viewer_rect.width(), lb_h),
-            ),
-            0.0, egui::Color32::BLACK,
-        );
     }
 
     fn draw_empty_state(&mut self, ui: &mut egui::Ui, viewer_rect: egui::Rect, theme: &KlippTheme) {
@@ -1674,7 +1659,6 @@ impl ViewerPanel {
     ) {
         let _ = cmds;
 
-        let lb_h = viewer_rect.height() * 0.08;
         let frame = match self.compute_video_layout(ui, state, viewer_rect, theme) {
             Some(f) => f,
             None => return,
@@ -1795,8 +1779,6 @@ impl ViewerPanel {
                 }
             });
         }
-
-        self.draw_letterbox(ui, viewer_rect, lb_h);
 
         self.handle_eyedropper_click(ui, state, image_rect, cmds);
         self.handle_ai_tools_capture(ui, state, image_rect);
