@@ -36,17 +36,17 @@ struct TrackSettings {
     solo: bool,
 }
 
-/// Per-track state: the clips and current decoder position.
+/// Per-track state: the clips and the decoded sound of those playing.
 struct TrackAudioState {
     clips: Vec<AudioClipSnapshot>,
-    /// Index into clips vec — which clip we're currently decoding.
-    current_clip_idx: usize,
-    /// Decoded audio for the current clip (interleaved stereo f32),
-    /// starting at the clip's source in point. A frame reads from it at
-    /// the offset its timeline position implies, never "wherever the
-    /// last read stopped": a ranged export begins mid-clip, and the
-    /// old read cursor started every clip from its first sample.
-    buffer: Vec<f32>,
+    /// Decoded audio (interleaved stereo f32) of the clips sounding now,
+    /// by index into `clips`, each starting at the clip's source start.
+    /// Usually one; two inside a crossfade, where the outgoing clip's
+    /// tail and the incoming clip's head overlap. A frame reads from each
+    /// at the offset its timeline position implies, never "wherever the
+    /// last read stopped": a ranged export begins mid-clip, and the old
+    /// read cursor started every clip from its first sample.
+    buffers: Vec<(usize, Vec<f32>)>,
 }
 
 impl AudioMixdown {
@@ -63,8 +63,7 @@ impl AudioMixdown {
         for track in &snapshot.audio_tracks {
             track_decoders.push(TrackAudioState {
                 clips: track.clips.clone(),
-                current_clip_idx: usize::MAX,
-                buffer: Vec::new(),
+                buffers: Vec::new(),
             });
             track_settings.push(TrackSettings {
                 volume: track.volume,
@@ -222,21 +221,27 @@ fn get_track_samples(
 ) -> Vec<f32> {
     let stereo_count = (end - first) as usize * 2;
 
-    // Find clip that covers this frame
-    let clip_idx = state
+    // The clips that cover this frame: one, or two where a crossfade
+    // overlaps the outgoing clip's tail with the incoming clip's head.
+    let covering: Vec<usize> = state
         .clips
         .iter()
-        .position(|c| frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame);
-
-    let clip_idx = match clip_idx {
-        Some(i) => i,
-        None => return vec![0.0; stereo_count],
-    };
-
-    // If we've moved to a different clip, decode the new clip
-    if state.current_clip_idx != clip_idx {
+        .enumerate()
+        .filter(|(_, c)| frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame)
+        .map(|(i, _)| i)
+        .collect();
+    if covering.is_empty() {
+        state.buffers.clear();
+        return vec![0.0; stereo_count];
+    }
+    // Keep the sound of the clips still playing, decode the ones starting.
+    state.buffers.retain(|(i, _)| covering.contains(i));
+    for &clip_idx in &covering {
+        if state.buffers.iter().any(|(i, _)| *i == clip_idx) {
+            continue;
+        }
         let clip = &state.clips[clip_idx];
-        match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
+        let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
             Ok(mut buf) => {
                 // Apply per-clip audio effects (EQ, compressor, reverb, etc.).
                 // `decode_clip_audio` is called with `source_start_secs`, so the
@@ -257,56 +262,57 @@ fn get_track_samples(
                     };
                     chain.process(&mut buf, &ctx);
                 }
-                state.buffer = buf;
-                state.current_clip_idx = clip_idx;
+                buf
             }
             Err(e) => {
                 warn!("AudioMixdown: failed to decode {:?}: {e}", clip.path);
-                state.buffer.clear();
-                state.current_clip_idx = clip_idx;
-                return vec![0.0; stereo_count];
+                Vec::new()
             }
+        };
+        state.buffers.push((clip_idx, buf));
+    }
+
+    let mut mixed = vec![0.0f32; stereo_count];
+    for (clip_idx, buffer) in &state.buffers {
+        let clip = &state.clips[*clip_idx];
+        // The frame's place in the clip: how far past the clip's start on
+        // the timeline it begins, in samples. The buffer starts at the
+        // clip's source start, which is what plays at that timeline start.
+        let clip_first = first_sample_of_frame(clip.timeline_start_frame, sample_rate, fps_num, fps_den);
+        let offset = first.saturating_sub(clip_first) as usize * 2;
+        let available = buffer.len().saturating_sub(offset);
+        let to_read = stereo_count.min(available);
+        if to_read == 0 {
+            continue;
+        }
+        let mut output = buffer[offset..offset + to_read].to_vec();
+
+        // Pad with silence if the decoded clip buffer ran short of the expected
+        // frame's worth of samples. This happens when the source file is shorter
+        // than the timeline says, or when source_end_secs exceeds the real
+        // duration. Without the warning the underrun is silent and looks like
+        // A/V drift to anyone debugging the export.
+        if output.len() < stereo_count {
+            tracing::warn!(
+                "audio_mixdown: clip underrun — padded {} samples of silence \
+                 (expected {}, decoded {})",
+                stereo_count - output.len(),
+                stereo_count,
+                output.len(),
+            );
+        }
+        output.resize(stereo_count, 0.0);
+        // The clip's own settings, as playback applies them: this frame's
+        // volume, gain and pan from the keyframes, the fade envelope per
+        // sample, then the channel layout.
+        let clip_pos_secs = (first - clip_first) as f64 / sample_rate as f64;
+        let timeline_secs = frame_num as f64 * fps_den as f64 / fps_num as f64;
+        shape_samples(&mut output, &clip.shape, clip_pos_secs, timeline_secs, fps, sample_rate);
+        for (m, o) in mixed.iter_mut().zip(&output) {
+            *m += o;
         }
     }
-
-    // The frame's place in the clip: how far past the clip's start on
-    // the timeline it begins, in samples. The buffer starts at the
-    // clip's source in point, which is what plays at that timeline
-    // start.
-    let clip_first =
-        first_sample_of_frame(state.clips[clip_idx].timeline_start_frame, sample_rate, fps_num, fps_den);
-    let offset = first.saturating_sub(clip_first) as usize * 2;
-    let available = state.buffer.len().saturating_sub(offset);
-    let to_read = stereo_count.min(available);
-
-    if to_read == 0 {
-        return vec![0.0; stereo_count];
-    }
-
-    let mut output = state.buffer[offset..offset + to_read].to_vec();
-
-    // Pad with silence if the decoded clip buffer ran short of the expected
-    // frame's worth of samples. This happens when the source file is shorter
-    // than the timeline says, or when source_end_secs exceeds the real
-    // duration. Without the warning the underrun is silent and looks like
-    // A/V drift to anyone debugging the export.
-    if output.len() < stereo_count {
-        tracing::warn!(
-            "audio_mixdown: clip underrun — padded {} samples of silence \
-             (expected {}, decoded {})",
-            stereo_count - output.len(),
-            stereo_count,
-            output.len(),
-        );
-    }
-    output.resize(stereo_count, 0.0);
-    // The clip's own settings, as playback applies them: this frame's
-    // volume, gain and pan from the keyframes, the fade envelope per
-    // sample, then the channel layout.
-    let clip_pos_secs = (first - clip_first) as f64 / sample_rate as f64;
-    let timeline_secs = frame_num as f64 * fps_den as f64 / fps_num as f64;
-    shape_samples(&mut output, &state.clips[clip_idx].shape, clip_pos_secs, timeline_secs, fps, sample_rate);
-    output
+    mixed
 }
 
 /// A clip's volume, gain and pan at `clip_pos` seconds into it.
@@ -354,9 +360,40 @@ fn fade_envelope(pos: f64, dur: f64, fade_in: f64, fade_out: f64, in_curve: u8, 
     g as f32
 }
 
+/// The crossfade gain `pos` seconds into a clip extended to `ext_dur`
+/// seconds by its crossfades' handles: constant power in over the first
+/// `xfade_in` seconds and out over the last `xfade_out`, so the outgoing
+/// and incoming gains' squares sum to one through the whole window.
+pub(crate) fn crossfade_gain(pos: f64, ext_dur: f64, xfade_in: f64, xfade_out: f64) -> f32 {
+    let cp = |t: f64| klipp_core::FadeCurve::ConstantPower.gain(t.clamp(0.0, 1.0));
+    let mut g = 1.0;
+    if xfade_in > 0.0 && pos < xfade_in {
+        g *= cp(pos / xfade_in);
+    }
+    if xfade_out > 0.0 && pos > ext_dur - xfade_out {
+        g *= cp((ext_dur - pos) / xfade_out);
+    }
+    g as f32
+}
+
+/// [`fade_envelope`] without the fade in or its anti-click ramp.
+fn fade_out_only(pos: f64, dur: f64, fade_out: f64, out_curve: u8) -> f32 {
+    if fade_out > 0.001 && pos > dur - fade_out {
+        fade_curve(((dur - pos) / fade_out).clamp(0.0, 1.0), out_curve) as f32
+    } else {
+        1.0
+    }
+}
+
 /// Apply `shape` to `samples`, interleaved stereo starting `clip_pos`
-/// seconds into the clip at timeline time `timeline_secs`.
-fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
+/// seconds into the clip at timeline time `timeline_secs`. `clip_pos`
+/// counts from the clip's extended start when a crossfade gives it a
+/// head: keyframes and the clip's own fades are placed by its in point.
+fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64, timeline_secs: f64, fps: f64, sample_rate: u32) {
+    let head = shape.head_secs;
+    let clip_pos = clip_pos_ext - head;
+    let crossfading = shape.crossfade_in_secs > 0.0 || shape.crossfade_out_secs > 0.0;
+    let ext_dur = head + shape.clip_duration_secs + shape.tail_secs;
     // The levels at the frame's first sample and at the next frame's,
     // and a straight line between: keyframes move a level across a
     // frame, and holding it for the frame turned a duck into a staircase
@@ -366,7 +403,7 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, tim
     let animated = !shape.volume_keyframes.is_empty() || !shape.gain_keyframes.is_empty() || !shape.pan_keyframes.is_empty() || !shape.param_modifiers.is_empty();
     let (vol_end, pan_end) = if animated { levels_at(shape, clip_pos + frame_secs, timeline_secs + frame_secs, fps) } else { (vol, pan) };
     let moving = (vol_end - vol).abs() > 1e-6 || (pan_end - pan).abs() > 1e-6;
-    let has_fade = shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
+    let has_fade = crossfading || shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
     if !has_fade && !moving && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
         return;
     }
@@ -378,7 +415,19 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos: f64, tim
     for (i, pair) in samples.chunks_mut(2).enumerate() {
         let fade = if has_fade {
             let pos = clip_pos + i as f64 / sample_rate as f64;
-            fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+            let own = if shape.crossfade_in_secs > 0.0 {
+                // Fading in from silence already: no click to ramp out,
+                // and the anti-click ramp at the in point would dip the
+                // middle of the crossfade.
+                fade_out_only(pos, dur, shape.fade_out_secs as f64, shape.fade_out_curve)
+            } else {
+                fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+            };
+            if crossfading {
+                own * crossfade_gain(pos + head, ext_dur, shape.crossfade_in_secs, shape.crossfade_out_secs)
+            } else {
+                own
+            }
         } else {
             1.0
         };

@@ -412,9 +412,12 @@ pub enum EditCommand {
     },
 
     // === TRANSITIONS ===
-    /// A transition added between two adjacent clips on a track, with
-    /// the audio crossfade it sets on them. Undo removes it, restores
-    /// the fades, and puts back any transition it replaced.
+    /// A transition added between two adjacent clips on a track. On a
+    /// picture track it also fades the clips' own sound out and in (the
+    /// dip under a dissolve, overridden where the linked sound has a
+    /// crossfade of its own); on an audio track it is the crossfade, and
+    /// the clips' fades are left alone. Undo removes it, restores the
+    /// fades, and puts back any transition it replaced.
     AddTransition {
         track_index: usize,
         transition: klipp_timeline::Transition,
@@ -423,6 +426,14 @@ pub enum EditCommand {
         old_fade_out_a: f32,
         old_fade_in_b: f32,
         replaced: Option<klipp_timeline::Transition>,
+    },
+    /// A transition taken away. On a picture track the fades it set on
+    /// its clips go with it; undo puts both back.
+    RemoveTransition {
+        track_index: usize,
+        transition: klipp_timeline::Transition,
+        old_fade_out_a: f32,
+        old_fade_in_b: f32,
     },
 
     // === NODE GRAPH (color grading) ===
@@ -688,6 +699,7 @@ impl EditCommand {
             EditCommand::CreateSubclip { .. } => "Create Subclip",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::AddTransition { .. } => "Add Transition",
+            EditCommand::RemoveTransition { .. } => "Remove Transition",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",

@@ -46,6 +46,7 @@
 mod brief;
 mod edit_plan;
 mod clip_kind;
+pub mod crossfade;
 pub mod flatten;
 pub mod insert_edit;
 pub mod magnetic;

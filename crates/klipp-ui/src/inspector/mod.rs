@@ -5016,6 +5016,13 @@ fn show_transition_inspector(
     state: &crate::state::AppState,
     cmds: &mut Vec<AppCommand>,
 ) {
+    // On an audio track a transition is a crossfade, whatever kind it
+    // carries: there is no look to choose and no look's parameters.
+    let is_crossfade = state
+        .sequence()
+        .tracks
+        .get(track_idx)
+        .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Audio);
     // Header
     let header_rect = egui::Rect::from_min_size(
         ui.cursor().min,
@@ -5037,7 +5044,7 @@ fn show_transition_inspector(
                     .color(theme.text_dim),
             );
             ui.label(
-                egui::RichText::new("Transition")
+                egui::RichText::new(if is_crossfade { "Crossfade" } else { "Transition" })
                     .size(13.0)
                     .strong()
                     .color(theme.text_primary),
@@ -5061,36 +5068,48 @@ fn show_transition_inspector(
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new("TRANSITION")
+                egui::RichText::new(if is_crossfade { "CROSSFADE" } else { "TRANSITION" })
                     .size(10.0)
                     .color(theme.text_dim),
             );
             ui.add_space(8.0);
 
-            // Kind dropdown
-            ui.horizontal(|ui| {
+            if is_crossfade {
                 ui.label(
-                    egui::RichText::new("Type")
-                        .color(theme.text_secondary)
-                        .size(11.0),
+                    egui::RichText::new(
+                        "Constant power: the outgoing sound plays on into its handle and falls as the incoming one rises from before its in point, holding the level through the join.",
+                    )
+                    .size(11.0)
+                    .color(theme.text_secondary),
                 );
-                egui::ComboBox::from_id_salt("transition_kind_picker")
-                    .selected_text(current_name)
-                    .show_ui(ui, |ui| {
-                        for (kid, name) in kinds {
-                            let mut selected = *kid == current_kind_id;
-                            if ui.selectable_value(&mut selected, true, *name).clicked()
-                                && *kid != current_kind_id
-                            {
-                                cmds.push(AppCommand::SetTransitionKind {
-                                    track_index: track_idx,
-                                    transition_id: transition.id,
-                                    kind_id: *kid,
-                                });
+            }
+
+            // Kind dropdown
+            if !is_crossfade {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Type")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    egui::ComboBox::from_id_salt("transition_kind_picker")
+                        .selected_text(current_name)
+                        .show_ui(ui, |ui| {
+                            for (kid, name) in kinds {
+                                let mut selected = *kid == current_kind_id;
+                                if ui.selectable_value(&mut selected, true, *name).clicked()
+                                    && *kid != current_kind_id
+                                {
+                                    cmds.push(AppCommand::SetTransitionKind {
+                                        track_index: track_idx,
+                                        transition_id: transition.id,
+                                        kind_id: *kid,
+                                    });
+                                }
                             }
-                        }
-                    });
-            });
+                        });
+                });
+            }
 
             ui.add_space(6.0);
 
@@ -5151,6 +5170,10 @@ fn show_transition_inspector(
                         }
                     });
             });
+
+            if is_crossfade {
+                return;
+            }
 
             // Per-kind parameters
             if matches!(

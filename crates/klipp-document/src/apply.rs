@@ -510,6 +510,18 @@ impl DocumentView<'_> {
                     }
                 }
             }
+            EditCommand::RemoveTransition { track_index, transition, old_fade_out_a, old_fade_in_b } => {
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.transitions.retain(|t| t.id != transition.id);
+                    track.transitions.push(*transition);
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_a_id) {
+                        c.fade_out_secs = *old_fade_out_a;
+                    }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_b_id) {
+                        c.fade_in_secs = *old_fade_in_b;
+                    }
+                }
+            }
             EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1086,11 +1098,28 @@ impl DocumentView<'_> {
                 if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
                     track.transitions.retain(|t| !(t.clip_a_id == *clip_a_id && t.clip_b_id == *clip_b_id));
                     track.transitions.push(*transition);
-                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
-                        c.fade_out_secs = dur_secs;
+                    // An audio track's transition is the crossfade itself:
+                    // fading the clips as well would dip the join.
+                    if track.kind != klipp_timeline::TrackKind::Audio {
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_a_id) {
+                            c.fade_out_secs = dur_secs;
+                        }
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_b_id) {
+                            c.fade_in_secs = dur_secs;
+                        }
                     }
-                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == *clip_b_id) {
-                        c.fade_in_secs = dur_secs;
+                }
+            }
+            EditCommand::RemoveTransition { track_index, transition, .. } => {
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.transitions.retain(|t| t.id != transition.id);
+                    if track.kind != klipp_timeline::TrackKind::Audio {
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_a_id) {
+                            c.fade_out_secs = 0.0;
+                        }
+                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_b_id) {
+                            c.fade_in_secs = 0.0;
+                        }
                     }
                 }
             }
