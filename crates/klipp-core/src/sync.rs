@@ -130,6 +130,181 @@ pub fn frames_to_timecode(frames: i64, fps: Fps, drop: bool) -> (i64, i64, i64, 
     (total_secs / 3600, (total_secs / 60) % 60, total_secs % 60, f)
 }
 
+/// How the angles of a multicam are put on one clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MulticamSync {
+    /// By each clip's start timecode only.
+    Timecode,
+    /// By sound only, against one reference angle.
+    Audio,
+    /// Timecode where a clip has it, sound for the rest.
+    TimecodeThenAudio,
+}
+
+impl MulticamSync {
+    pub fn label(self) -> &'static str {
+        match self {
+            MulticamSync::Timecode => "Sync by Timecode",
+            MulticamSync::Audio => "Sync by Audio",
+            MulticamSync::TimecodeThenAudio => "Sync by Timecode, Else Audio",
+        }
+    }
+}
+
+/// One clip to become an angle, as far as syncing is concerned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MulticamAngle {
+    pub media_id: MediaId,
+    pub name: String,
+    pub start_timecode: Option<String>,
+    pub fps: Fps,
+    pub duration_secs: f64,
+    pub has_audio: bool,
+}
+
+/// Where one angle goes, and how that was decided.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnglePlacement {
+    pub media_id: MediaId,
+    /// Seconds from the group's first frame.
+    pub start_secs: f64,
+    /// `None` when the angle could not be synced and was put at the
+    /// group's start for the editor to line up.
+    pub method: Option<SyncMethod>,
+    /// For an audio sync, how well the sound matched (0..1).
+    pub confidence: Option<f64>,
+    /// The sound the others were matched against.
+    pub is_reference: bool,
+}
+
+/// What syncing a multicam found: a place for every angle, and what the
+/// editor should know about it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MulticamPlan {
+    pub placements: Vec<AnglePlacement>,
+    pub notes: Vec<String>,
+}
+
+impl MulticamPlan {
+    /// Angles actually put on the shared clock.
+    pub fn synced(&self) -> usize {
+        self.placements.iter().filter(|p| p.method.is_some()).count()
+    }
+}
+
+/// A match weaker than this is two recordings that share no sound.
+pub const MIN_AUDIO_CONFIDENCE: f64 = 0.3;
+
+/// Put `angles` on one clock.
+///
+/// Timecode first where `method` allows it and the clip carries one.
+/// Then sound: the reference is the longest angle with sound, preferring
+/// one already placed by timecode so both kinds land on the same clock,
+/// and `audio_offset(reference, i)` gives `(offset, confidence)` where a
+/// moment `t` into the reference is `t + offset` into angle `i`. An angle
+/// neither method can place goes at the group's start and is named in the
+/// notes; so is one that shares no time with any other, which is what a
+/// camera on a different timecode clock looks like.
+pub fn plan_multicam(
+    angles: &[MulticamAngle],
+    method: MulticamSync,
+    mut audio_offset: impl FnMut(usize, usize) -> Option<(f64, f64)>,
+) -> MulticamPlan {
+    let n = angles.len();
+    let mut start: Vec<Option<f64>> = vec![None; n];
+    let mut how: Vec<Option<SyncMethod>> = vec![None; n];
+    let mut confidence: Vec<Option<f64>> = vec![None; n];
+    let mut notes = Vec::new();
+
+    if method != MulticamSync::Audio {
+        for (i, a) in angles.iter().enumerate() {
+            if let Some(t) = a.start_timecode.as_deref().and_then(|tc| timecode_to_secs(tc, a.fps)) {
+                start[i] = Some(t);
+                how[i] = Some(SyncMethod::Timecode);
+            }
+        }
+        let missing: Vec<&str> = angles.iter().zip(&start).filter(|(_, s)| s.is_none()).map(|(a, _)| a.name.as_str()).collect();
+        if method == MulticamSync::Timecode && !missing.is_empty() {
+            notes.push(format!("No timecode on {}", missing.join(", ")));
+        }
+    }
+
+    let mut reference = None;
+    if method != MulticamSync::Timecode && start.iter().any(Option::is_none) {
+        let longest = |only_placed: bool| {
+            (0..n)
+                .filter(|&i| angles[i].has_audio && (!only_placed || start[i].is_some()))
+                .max_by(|&x, &y| angles[x].duration_secs.total_cmp(&angles[y].duration_secs))
+        };
+        reference = longest(true).or_else(|| longest(false));
+        match reference {
+            None => notes.push("None of the clips has sound to sync by".to_string()),
+            Some(r) => {
+                if start[r].is_none() {
+                    start[r] = Some(0.0);
+                    how[r] = Some(SyncMethod::Waveform);
+                }
+                let r_start = start[r].unwrap_or(0.0);
+                for i in 0..n {
+                    if start[i].is_some() {
+                        continue;
+                    }
+                    let name = &angles[i].name;
+                    if !angles[i].has_audio {
+                        notes.push(format!("{name} has no timecode and no sound to sync by"));
+                        continue;
+                    }
+                    match audio_offset(r, i) {
+                        Some((offset, c)) if c >= MIN_AUDIO_CONFIDENCE => {
+                            start[i] = Some(r_start - offset);
+                            how[i] = Some(SyncMethod::Waveform);
+                            confidence[i] = Some(c);
+                        }
+                        Some((_, c)) => notes.push(format!(
+                            "{name} shares no clear sound with {} (match {:.0}%)",
+                            angles[r].name,
+                            c * 100.0
+                        )),
+                        None => notes.push(format!("{name} overlaps {} by too little to sync by sound", angles[r].name)),
+                    }
+                }
+            }
+        }
+    }
+
+    let origin = start.iter().flatten().copied().fold(f64::INFINITY, f64::min);
+    let origin = if origin.is_finite() { origin } else { 0.0 };
+    let unsynced: Vec<&str> = angles.iter().zip(&start).filter(|(_, s)| s.is_none()).map(|(a, _)| a.name.as_str()).collect();
+    if !unsynced.is_empty() {
+        notes.push(format!("Placed at the start for you to line up: {}", unsynced.join(", ")));
+    }
+
+    let span = |i: usize| start[i].map(|s| (s, s + angles[i].duration_secs));
+    for i in 0..n {
+        let Some((a0, a1)) = span(i) else { continue };
+        let overlaps = (0..n).filter(|&j| j != i).filter_map(span).any(|(b0, b1)| a0 < b1 && b0 < a1);
+        if !overlaps && start.iter().flatten().count() > 1 {
+            notes.push(format!(
+                "{} shares no time with the other angles; its timecode may be on a different clock",
+                angles[i].name
+            ));
+        }
+    }
+
+    let placements = angles
+        .iter()
+        .enumerate()
+        .map(|(i, a)| AnglePlacement {
+            media_id: a.media_id,
+            start_secs: start[i].map_or(0.0, |s| s - origin),
+            method: how[i],
+            confidence: confidence[i],
+            is_reference: reference == Some(i),
+        })
+        .collect();
+    MulticamPlan { placements, notes }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +374,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn angle(name: &str, tc: Option<&str>, secs: f64, audio: bool) -> MulticamAngle {
+        MulticamAngle {
+            media_id: MediaId::new(),
+            name: name.into(),
+            start_timecode: tc.map(Into::into),
+            fps: Fps::new(25, 1),
+            duration_secs: secs,
+            has_audio: audio,
+        }
+    }
+
+    #[test]
+    fn jam_synced_cameras_are_placed_by_timecode() {
+        let angles = [
+            angle("A", Some("10:00:05:00"), 60.0, true),
+            angle("B", Some("10:00:00:00"), 60.0, true),
+            angle("C", Some("10:00:12:12"), 30.0, false),
+        ];
+        let plan = plan_multicam(&angles, MulticamSync::Timecode, |_, _| panic!("no sound needed"));
+        let starts: Vec<f64> = plan.placements.iter().map(|p| p.start_secs).collect();
+        for (got, want) in starts.iter().zip([5.0, 0.0, 12.48]) {
+            assert!((got - want).abs() < 1e-6, "{starts:?}");
+        }
+        assert!(plan.placements.iter().all(|p| p.method == Some(SyncMethod::Timecode)));
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn half_jam_synced_falls_back_to_sound_on_the_same_clock() {
+        let angles = [
+            angle("A", Some("10:00:05:00"), 60.0, true),
+            angle("B", Some("10:00:00:00"), 90.0, true),
+            angle("phone", None, 40.0, true),
+        ];
+        // B is the reference (longest with timecode); the phone's sound
+        // matches 20 s into B.
+        let plan = plan_multicam(&angles, MulticamSync::TimecodeThenAudio, |r, i| {
+            assert_eq!((r, i), (1, 2));
+            Some((-20.0, 0.8))
+        });
+        let phone = &plan.placements[2];
+        assert_eq!(phone.method, Some(SyncMethod::Waveform));
+        assert!((phone.start_secs - 20.0).abs() < 1e-9);
+        assert!(plan.placements[1].is_reference);
+        assert_eq!(plan.synced(), 3);
+    }
+
+    #[test]
+    fn an_angle_with_no_shared_sound_is_named_not_guessed() {
+        let angles = [angle("A", None, 60.0, true), angle("B", None, 30.0, true)];
+        let plan = plan_multicam(&angles, MulticamSync::Audio, |_, _| Some((5.0, 0.1)));
+        assert_eq!(plan.placements[1].method, None);
+        assert!(plan.notes.iter().any(|n| n.contains("B shares no clear sound")), "{:?}", plan.notes);
+        assert!(plan.notes.iter().any(|n| n.contains("line up: B")), "{:?}", plan.notes);
+        assert_eq!(plan.synced(), 1);
+    }
+
+    #[test]
+    fn a_camera_on_another_clock_is_flagged() {
+        // Record-run timecode on one camera, time of day on the other.
+        let angles = [angle("A", Some("00:00:10:00"), 60.0, false), angle("B", Some("14:22:00:00"), 60.0, false)];
+        let plan = plan_multicam(&angles, MulticamSync::Timecode, |_, _| None);
+        assert!(plan.notes.iter().any(|n| n.contains("different clock")), "{:?}", plan.notes);
     }
 }

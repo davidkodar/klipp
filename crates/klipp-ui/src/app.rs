@@ -2174,7 +2174,8 @@ impl KlippApp {
                 AppEvent::AudioSyncComplete { .. }
                 | AppEvent::AudioSyncFailed { .. }
                 | AppEvent::MediaSyncComplete { .. }
-                | AppEvent::MediaSyncFailed { .. } => {}
+                | AppEvent::MediaSyncFailed { .. }
+                | AppEvent::MulticamSyncReady { .. } => {}
             }
         }
 
@@ -5423,6 +5424,10 @@ impl KlippApp {
                     self.state.toast.show(format!("Created multicam group with {} angles", angle_clips.len()));
                     self.state.dirty = true;
                     self.sync_sequence_to_engine();
+                    true
+                }
+                AppCommand::CreateSyncedMulticam { media_ids, method } => {
+                    self.spawn_multicam_sync(media_ids.clone(), *method);
                     true
                 }
                 // Switch multicam angle: record a cut in the multicam cut list
@@ -23118,20 +23123,36 @@ impl KlippApp {
     /// Audio Library's "Add at playhead" and the media pool's
     /// right-click equivalent.
     fn place_media_at_playhead(&mut self, media_id: klipp_core::MediaId) {
+        let start = self.state.playhead;
+        if let Some((_, entry)) = self.place_media_on_new_tracks(media_id, start) {
+            self.state.active_history_mut().push(crate::history::HistoryEntry { command: entry });
+        }
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
+    }
+
+    /// Put `media_id` at `start` on a new video track and, for its sound,
+    /// a new audio track, linked. Returns the video clip (when there is
+    /// picture) and the history entry that undoes the placement; the
+    /// caller pushes it, alone or in a batch.
+    fn place_media_on_new_tracks(
+        &mut self,
+        media_id: klipp_core::MediaId,
+        start: klipp_core::Timecode,
+    ) -> Option<(Option<klipp_core::ClipId>, crate::history::EditCommand)> {
         let Some(item) = self.state.media_pool.get(&media_id).cloned() else {
             self.state.toast.show("That clip is no longer in the media pool");
-            return;
+            return None;
         };
         if item.offline {
             self.state.toast.show(format!("Cannot add '{}' — media is offline", item.filename));
-            return;
+            return None;
         }
         let has_video = !item.video_codec.is_empty();
         let has_audio = item.has_audio;
         let rate = item.duration.rate;
         let source_in = klipp_core::Timecode { value: 0, rate };
         let source_out = item.duration;
-        let start = self.state.playhead;
         let end = start + item.duration;
         let seq_idx = self.state.active_sequence_idx;
 
@@ -23204,17 +23225,139 @@ impl KlippApp {
             self.state.selected_clip = Some(vid);
         }
 
-        if hist_video.is_some() || hist_audio.is_some() {
+        (hist_video.is_some() || hist_audio.is_some()).then_some((
+            video_clip_id,
+            crate::history::EditCommand::LinkedImport {
+                video: hist_video,
+                audio: hist_audio,
+                created_video_track_at,
+                created_audio_track_at,
+                autoset,
+            },
+        ))
+    }
+
+    /// Sync `media_ids` onto one clock, off the UI thread when sound is
+    /// involved; the plan comes back as `AppEvent::MulticamSyncReady`.
+    fn spawn_multicam_sync(&mut self, media_ids: Vec<klipp_core::MediaId>, method: klipp_core::MulticamSync) {
+        let mut items: Vec<klipp_media::MediaItem> = media_ids
+            .iter()
+            .filter_map(|id| self.state.media_pool.get(id))
+            .filter(|m| !m.offline && !m.video_codec.is_empty() && !m.is_still)
+            .cloned()
+            .collect();
+        if items.len() < 2 {
+            self.state.toast.show("A multicam needs two or more online video clips");
+            return;
+        }
+        // Angle numbers follow the names, which is how cameras label cards.
+        items.sort_by(|a, b| a.filename.cmp(&b.filename));
+        let angles: Vec<klipp_core::MulticamAngle> = items
+            .iter()
+            .map(|m| klipp_core::MulticamAngle {
+                media_id: m.id,
+                name: m.filename.clone(),
+                start_timecode: m.shot.start_timecode.clone(),
+                fps: m.fps,
+                duration_secs: m.duration.to_secs_f64(),
+                has_audio: m.has_audio,
+            })
+            .collect();
+        let paths: Vec<std::path::PathBuf> = items.iter().map(|m| m.path.clone()).collect();
+        let sequence_id = self.state.sequences[self.state.active_sequence_idx].id;
+        let at_secs = self.state.playhead.to_secs_f64();
+        let tx = self.proxy_event_tx.clone();
+        if method != klipp_core::MulticamSync::Timecode {
+            self.state.toast.show(format!("Syncing {} angles\u{2026}", angles.len()));
+        }
+        let spawned = std::thread::Builder::new().name("klipp-multicam-sync".into()).spawn(move || {
+            const SR: u32 = 8_000;
+            let ffmpeg = std::path::Path::new("ffmpeg");
+            let mut pcm: std::collections::HashMap<usize, Option<Vec<f32>>> = std::collections::HashMap::new();
+            let mut sound = |i: usize| -> Option<Vec<f32>> {
+                pcm.entry(i)
+                    .or_insert_with(|| match klipp_analysis::audio_sync::decode_mono_pcm(ffmpeg, &paths[i], SR, 0.0, 0.0) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            tracing::warn!("multicam sync: {e}");
+                            None
+                        }
+                    })
+                    .clone()
+            };
+            let plan = klipp_core::plan_multicam(&angles, method, |r, i| {
+                let (a, b) = (sound(r)?, sound(i)?);
+                klipp_analysis::audio_sync::find_long_offset(&a, &b, SR)
+            });
+            let _ = tx.send(AppEvent::MulticamSyncReady { plan, sequence_id, at_secs });
+        });
+        if let Err(e) = spawned {
+            self.state.toast.show(format!("Could not start the multicam sync: {e}"));
+        }
+    }
+
+    /// Lay out a synced multicam: each angle on its own tracks at its
+    /// place after `at_secs`, then grouped, as one undo step.
+    fn apply_multicam_plan(&mut self, plan: klipp_core::MulticamPlan, sequence_id: klipp_core::SequenceId, at_secs: f64) {
+        let seq_idx = self.state.active_sequence_idx;
+        if self.state.sequences[seq_idx].id != sequence_id {
+            self.state.toast.show("The sequence changed while the angles were syncing, so the multicam was not placed");
+            return;
+        }
+        if plan.synced() < 2 {
+            let why = if plan.notes.is_empty() { String::new() } else { format!(": {}", plan.notes.join("; ")) };
+            self.state.toast.show(format!("Could not put two angles on one clock{why}"));
+            return;
+        }
+        let fps = self.state.sequences[seq_idx].fps;
+        let mut entries = Vec::new();
+        let mut video_clips = Vec::new();
+        for p in &plan.placements {
+            // On a frame of the sequence: a sound match is finer than a
+            // frame, and a clip between frames is a clip nobody can cut.
+            let frames = ((at_secs + p.start_secs) * fps.as_f64()).round() as i64;
+            let start = klipp_core::RationalTime { value: frames * i64::from(fps.den), rate: fps.num };
+            if let Some((video, entry)) = self.place_media_on_new_tracks(p.media_id, start) {
+                entries.push(entry);
+                if let Some(v) = video {
+                    video_clips.push((v, p.is_reference));
+                }
+            }
+        }
+        if !entries.is_empty() {
             self.state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::LinkedImport {
-                    video: hist_video,
-                    audio: hist_audio,
-                    created_video_track_at,
-                    created_audio_track_at,
-                    autoset,
-                },
+                command: crate::history::EditCommand::Batch(entries),
             });
         }
+        // The reference angle first: angle 0 carries the cut list, and
+        // it is the sound the others were matched to.
+        video_clips.sort_by_key(|(_, is_ref)| !is_ref);
+        let group_id = klipp_core::GroupId::new();
+        let seq = &mut self.state.sequences[seq_idx];
+        for (angle, (clip_id, _)) in video_clips.iter().enumerate() {
+            for track in &mut seq.tracks {
+                if let Some(clip) = track.find_clip_mut(*clip_id) {
+                    clip.multicam_group = Some(group_id);
+                    clip.multicam_angle = angle as u8;
+                    break;
+                }
+            }
+        }
+        let by = |m| plan.placements.iter().filter(|p| p.method == Some(m)).count();
+        let (tc, snd) = (by(klipp_core::SyncMethod::Timecode), by(klipp_core::SyncMethod::Waveform));
+        let mut summary = format!("Multicam of {} angles", video_clips.len());
+        if tc > 0 {
+            summary.push_str(&format!(", {tc} by timecode"));
+        }
+        if snd > 0 {
+            summary.push_str(&format!(", {snd} by sound"));
+        }
+        for n in &plan.notes {
+            summary.push_str(". ");
+            summary.push_str(n);
+        }
+        tracing::info!("{summary}");
+        self.state.toast.show(summary);
         self.state.dirty = true;
         self.sync_sequence_to_engine();
     }
@@ -30109,6 +30252,9 @@ impl KlippApp {
                 AppEvent::MediaSyncFailed { video_id, error } => {
                     tracing::warn!("Media sync failed for {:?}: {}", video_id, error);
                     self.state.toast.show(format!("Sync failed: {error}"));
+                }
+                AppEvent::MulticamSyncReady { plan, sequence_id, at_secs } => {
+                    self.apply_multicam_plan(plan, sequence_id, at_secs);
                 }
                 AppEvent::AudioSyncComplete { clip_id, offset_samples, ref_timeline_in_secs } => {
                     self.apply_audio_sync_result(clip_id, offset_samples, ref_timeline_in_secs);

@@ -2185,6 +2185,8 @@ fn sync_pair_of(state: &AppState) -> Option<(MediaId, MediaId)> {
     }
 }
 
+use klipp_core::MulticamSync;
+
 fn show_multi_context_menu(
     ui: &mut egui::Ui,
     selected_ids: &std::collections::HashSet<MediaId>,
@@ -2204,6 +2206,21 @@ fn show_multi_context_menu(
         ui.close_menu();
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
     }
+    ui.menu_button("Create Synced Multicam", |ui| {
+        let ids = || selected_ids.iter().copied().collect::<Vec<_>>();
+        for (method, hint) in [
+            (MulticamSync::TimecodeThenAudio, "Timecode where a clip has it, the sound for the rest. The usual choice."),
+            (MulticamSync::Timecode, "Only the start timecode. For cameras jam-synced to one clock."),
+            (MulticamSync::Audio, "Only the sound, matched against the longest clip. For cameras with no shared timecode."),
+        ] {
+            if ui.button(method.label()).on_hover_text(hint).clicked() {
+                ui.close_menu();
+                cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method });
+            }
+        }
+    })
+    .response
+    .on_hover_text("Put these clips on one clock and lay them out at the playhead as a multicam, one angle per track.");
     if let Some((video_id, audio_id)) = sync_pair {
         if ui.button("Sync Video and Audio")
             .on_hover_text("Pair the clip with this recording: by timecode when both carry one, by the sound otherwise. The recording then goes under the clip when it is added to the timeline.")

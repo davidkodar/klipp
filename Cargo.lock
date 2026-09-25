@@ -2656,6 +2656,7 @@ dependencies = [
  "klipp-ml",
  "klipp-ml-ort",
  "libc",
+ "realfft",
  "serde",
  "serde_json",
  "tracing",
