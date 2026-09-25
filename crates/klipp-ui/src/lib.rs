@@ -51,6 +51,7 @@ pub mod ai_tools;
 pub mod cache_manager;
 pub mod command_palette;
 pub mod drag_drop;
+pub mod file_dialog;
 pub mod model_download;
 /// The edit history lives in the document crate now; the UI's paths
 /// (`crate::history::…`) still resolve.

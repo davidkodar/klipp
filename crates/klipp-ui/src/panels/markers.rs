@@ -97,14 +97,15 @@ impl MarkersPanel {
                                 .on_hover_text("Export markers as YouTube chapter timestamps")
                                 .clicked()
                             {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_title("Export YouTube Chapters")
-                                    .add_filter("Text file", &["txt"])
-                                    .set_file_name("chapters.txt")
-                                    .save_file()
-                                {
-                                    cmds.push(AppCommand::ExportYouTubeChapters { path });
-                                }
+                                crate::file_dialog::spawn(move || {
+                                    rfd::FileDialog::new()
+                                        .set_title("Export YouTube Chapters")
+                                        .add_filter("Text file", &["txt"])
+                                        .set_file_name("chapters.txt")
+                                        .save_file()
+                                        .map(|path| vec![AppCommand::ExportYouTubeChapters { path }])
+                                        .unwrap_or_default()
+                                });
                             }
                         },
                     );

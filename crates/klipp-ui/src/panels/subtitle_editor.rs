@@ -194,29 +194,31 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                 // Import one or more subtitle files (SRT/VTT/ASS/SSA).
                 // Each file becomes its own subtitle track named after the file stem.
                 if ui.button("\u{2191} Import Files\u{2026}").clicked() {
-                    if let Some(paths) = rfd::FileDialog::new()
-                        .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
-                        .pick_files()
-                    {
-                        for path in paths {
-                            cmds.push(AppCommand::ImportSubtitles { path });
-                        }
-                    }
+                    crate::file_dialog::spawn(|| {
+                        rfd::FileDialog::new()
+                            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
+                            .pick_files()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|path| AppCommand::ImportSubtitles { path })
+                            .collect()
+                    });
                 }
 
                 // Export (format selected by file extension)
                 if ui.button("\u{2193} Export\u{2026}").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Export Subtitles")
-                        .add_filter("SRT", &["srt"])
-                        .add_filter("WebVTT", &["vtt"])
-                        .add_filter("ASS", &["ass"])
-                        .add_filter("SSA", &["ssa"])
-                        .set_file_name("subtitles.srt")
-                        .save_file()
-                    {
-                        cmds.push(AppCommand::ExportSubtitles { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export Subtitles")
+                            .add_filter("SRT", &["srt"])
+                            .add_filter("WebVTT", &["vtt"])
+                            .add_filter("ASS", &["ass"])
+                            .add_filter("SSA", &["ssa"])
+                            .set_file_name("subtitles.srt")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportSubtitles { path }])
+                            .unwrap_or_default()
+                    });
                 }
             });
 
@@ -295,14 +297,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                         cmds.push(AppCommand::AddSubtitleTrack { name });
                     }
                     if ui.button("\u{2191} Import Files\u{2026}").clicked() {
-                        if let Some(paths) = rfd::FileDialog::new()
-                            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
-                            .pick_files()
-                        {
-                            for path in paths {
-                                cmds.push(AppCommand::ImportSubtitles { path });
-                            }
-                        }
+                        crate::file_dialog::spawn(|| {
+                            rfd::FileDialog::new()
+                                .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
+                                .pick_files()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|path| AppCommand::ImportSubtitles { path })
+                                .collect()
+                        });
                     }
                 });
             });

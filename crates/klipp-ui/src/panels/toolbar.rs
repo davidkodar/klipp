@@ -151,7 +151,16 @@ impl ToolbarPanel {
     fn file_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, recent: &[RecentProject], kb: &crate::keybindings::KeyBindings) {
         ui.menu_button(egui::RichText::new("File").size(crate::theme::type_scale::CONTROL), |ui| {
             if ui.add(egui::Button::new("New Project...").shortcut_text(kb.display_for("new_project"))).clicked() { cmds.push(AppCommand::NewProject); ui.close_menu(); }
-            if ui.add(egui::Button::new("Open Project...").shortcut_text(kb.display_for("open_project"))).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Open Project").pick_folder() { cmds.push(AppCommand::OpenProject { path: p }); } }
+            if ui.add(egui::Button::new("Open Project...").shortcut_text(kb.display_for("open_project"))).clicked() {
+                ui.close_menu();
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Open Project")
+                        .pick_folder()
+                        .map(|p| vec![AppCommand::OpenProject { path: p }])
+                        .unwrap_or_default()
+                });
+            }
             if !recent.is_empty() {
                 ui.menu_button("Open Recent", |ui| {
                     for rp in recent {
@@ -162,7 +171,18 @@ impl ToolbarPanel {
             }
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text(kb.display_for("save_project"))).clicked() { cmds.push(AppCommand::SaveProject); ui.close_menu(); }
-            if ui.add(egui::Button::new("Save As...").shortcut_text(kb.display_for("save_project_as"))).clicked() { ui.close_menu(); if let Some(p) = rfd::FileDialog::new().set_title("Save As").add_filter("Klipp Project", &["klipp"]).set_file_name("project.klipp").save_file() { cmds.push(AppCommand::SaveProjectAs { path: p }); } }
+            if ui.add(egui::Button::new("Save As...").shortcut_text(kb.display_for("save_project_as"))).clicked() {
+                ui.close_menu();
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Save As")
+                        .add_filter("Klipp Project", &["klipp"])
+                        .set_file_name("project.klipp")
+                        .save_file()
+                        .map(|p| vec![AppCommand::SaveProjectAs { path: p }])
+                        .unwrap_or_default()
+                });
+            }
             if ui.button("Revert to Saved").clicked() {
                 if let Some(path) = state.project_path.clone() { cmds.push(AppCommand::OpenProject { path }); }
                 ui.close_menu();
@@ -170,21 +190,29 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Import Media...").shortcut_text(kb.display_for("import_media"))).clicked() {
                 ui.close_menu();
-                for path in crate::command_palette::pick_media_files() {
-                    cmds.push(AppCommand::ImportMedia { path });
-                }
+                crate::file_dialog::spawn(crate::command_palette::import_media_commands);
             }
             if ui.button("Import Subtitles...").clicked() {
                 ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new().set_title("Import Subtitles").add_filter("Subtitles", &["srt","vtt"]).pick_file() {
-                    cmds.push(AppCommand::ImportSubtitles { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Import Subtitles")
+                        .add_filter("Subtitles", &["srt","vtt"])
+                        .pick_file()
+                        .map(|path| vec![AppCommand::ImportSubtitles { path }])
+                        .unwrap_or_default()
+                });
             }
             if ui.button("Import Metadata Sheet...").on_hover_text("A CSV or ALE: scene, shot, take, description, keywords, rating and the rest, matched to clips by file name.").clicked() {
                 ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new().set_title("Import Metadata Sheet").add_filter("Metadata sheet", &["csv", "ale", "txt"]).pick_file() {
-                    cmds.push(AppCommand::ImportMetadataSheet { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Import Metadata Sheet")
+                        .add_filter("Metadata sheet", &["csv", "ale", "txt"])
+                        .pick_file()
+                        .map(|path| vec![AppCommand::ImportMetadataSheet { path }])
+                        .unwrap_or_default()
+                });
             }
             // Timeline-format imports (foreign NLE projects → a new Sequence).
             // Grouped under a submenu so adding formats (OTIO, FCPXML, EDL, AAF)
@@ -192,98 +220,142 @@ impl ToolbarPanel {
             ui.menu_button("Import Timeline", |ui| {
                 if ui.button("Kdenlive Project...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Import Kdenlive Project")
-                        .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
-                        .pick_file()
-                    {
-                        cmds.push(AppCommand::ImportKdenlive { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Import Kdenlive Project")
+                            .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
+                            .pick_file()
+                            .map(|path| vec![AppCommand::ImportKdenlive { path }])
+                            .unwrap_or_default()
+                    });
                 }
                 if ui.button("OpenTimelineIO (.otio)...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Import OpenTimelineIO")
-                        .add_filter("OpenTimelineIO", &["otio"])
-                        .pick_file()
-                    {
-                        cmds.push(AppCommand::ImportOtio { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Import OpenTimelineIO")
+                            .add_filter("OpenTimelineIO", &["otio"])
+                            .pick_file()
+                            .map(|path| vec![AppCommand::ImportOtio { path }])
+                            .unwrap_or_default()
+                    });
                 }
                 if ui.button("Final Cut Pro XML (.fcpxml)...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Import FCPXML Project")
-                        .add_filter("Final Cut Pro XML", &["fcpxml", "xml"])
-                        .pick_file()
-                    {
-                        cmds.push(AppCommand::ImportFcpxml { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Import FCPXML Project")
+                            .add_filter("Final Cut Pro XML", &["fcpxml", "xml"])
+                            .pick_file()
+                            .map(|path| vec![AppCommand::ImportFcpxml { path }])
+                            .unwrap_or_default()
+                    });
                 }
             });
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text(kb.display_for("export"))).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
-            if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).add_filter("WebVTT", &["vtt"]).add_filter("ASS", &["ass"]).add_filter("SSA", &["ssa"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
+            if ui.button("Export Subtitles...").clicked() {
+                ui.close_menu();
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Export Subtitles")
+                        .add_filter("SRT", &["srt"])
+                        .add_filter("WebVTT", &["vtt"])
+                        .add_filter("ASS", &["ass"])
+                        .add_filter("SSA", &["ssa"])
+                        .set_file_name("subtitles.srt")
+                        .save_file()
+                        .map(|path| vec![AppCommand::ExportSubtitles { path }])
+                        .unwrap_or_default()
+                });
+            }
             if ui.button("YouTube Chapters\u{2026}").clicked() {
                 ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Export YouTube Chapters")
-                    .add_filter("Text file", &["txt"])
-                    .set_file_name("chapters.txt")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::ExportYouTubeChapters { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Export YouTube Chapters")
+                        .add_filter("Text file", &["txt"])
+                        .set_file_name("chapters.txt")
+                        .save_file()
+                        .map(|path| vec![AppCommand::ExportYouTubeChapters { path }])
+                        .unwrap_or_default()
+                });
             }
             if ui.button("Generate Render Script\u{2026}").clicked() {
                 ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Save Render Script")
-                    .add_filter("Shell script", &["sh"])
-                    .set_file_name("render.sh")
-                    .save_file()
-                {
-                    cmds.push(AppCommand::GenerateRenderScript { path });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Save Render Script")
+                        .add_filter("Shell script", &["sh"])
+                        .set_file_name("render.sh")
+                        .save_file()
+                        .map(|path| vec![AppCommand::GenerateRenderScript { path }])
+                        .unwrap_or_default()
+                });
             }
             // Timeline-format exports (current Sequence → interchange format).
             ui.menu_button("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new().set_title("Export FCPXML").add_filter("FCPXML", &["fcpxml"]).set_file_name("export.fcpxml").save_file() {
-                        cmds.push(AppCommand::ExportFcpxml { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export FCPXML")
+                            .add_filter("FCPXML", &["fcpxml"])
+                            .set_file_name("export.fcpxml")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportFcpxml { path }])
+                            .unwrap_or_default()
+                    });
                 }
                 if ui.button("Kdenlive Project...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Export as Kdenlive Project")
-                        .add_filter("Kdenlive project", &["kdenlive"])
-                        .set_file_name("project.kdenlive")
-                        .save_file()
-                    {
-                        cmds.push(AppCommand::ExportKdenlive { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export as Kdenlive Project")
+                            .add_filter("Kdenlive project", &["kdenlive"])
+                            .set_file_name("project.kdenlive")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportKdenlive { path }])
+                            .unwrap_or_default()
+                    });
                 }
                 if ui.button("EDL...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() {
-                        cmds.push(AppCommand::ExportEdl { path });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export EDL")
+                            .add_filter("EDL", &["edl"])
+                            .set_file_name("export.edl")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportEdl { path }])
+                            .unwrap_or_default()
+                    });
                 }
             });
             ui.menu_button("Export Metadata Sheet", |ui| {
                 if ui.button("CSV...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new().set_title("Export Metadata as CSV").add_filter("CSV", &["csv"]).set_file_name("metadata.csv").save_file() {
-                        cmds.push(AppCommand::ExportMetadataSheet { path, ale: false });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export Metadata as CSV")
+                            .add_filter("CSV", &["csv"])
+                            .set_file_name("metadata.csv")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportMetadataSheet { path, ale: false }])
+                            .unwrap_or_default()
+                    });
                 }
                 if ui.button("ALE (Avid Log Exchange)...").clicked() {
                     ui.close_menu();
-                    if let Some(path) = rfd::FileDialog::new().set_title("Export Metadata as ALE").add_filter("ALE", &["ale"]).set_file_name("metadata.ale").save_file() {
-                        cmds.push(AppCommand::ExportMetadataSheet { path, ale: true });
-                    }
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export Metadata as ALE")
+                            .add_filter("ALE", &["ale"])
+                            .set_file_name("metadata.ale")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportMetadataSheet { path, ale: true }])
+                            .unwrap_or_default()
+                    });
                 }
             });
             ui.separator();

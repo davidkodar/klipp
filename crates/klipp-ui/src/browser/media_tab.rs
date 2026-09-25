@@ -359,16 +359,17 @@ pub fn show(
             ui.separator();
 
             if ui.button("Import Media\u{2026}").clicked() {
-                for path in crate::command_palette::pick_media_files() {
-                    cmds.push(AppCommand::ImportMedia { path });
-                }
+                crate::file_dialog::spawn(crate::command_palette::import_media_commands);
                 ui.close_menu();
             }
 
             if ui.button("Import Folder\u{2026}").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    cmds.push(AppCommand::ImportMediaFolder { directory: dir });
-                }
+                crate::file_dialog::spawn(move || {
+                    rfd::FileDialog::new()
+                        .pick_folder()
+                        .map(|dir| vec![AppCommand::ImportMediaFolder { directory: dir }])
+                        .unwrap_or_default()
+                });
                 ui.close_menu();
             }
 
@@ -1982,14 +1983,16 @@ fn show_context_menu(
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_string();
-            let mut dialog = rfd::FileDialog::new()
-                .set_title(format!("Locate {}", filename));
-            if !ext.is_empty() {
-                dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
-            }
-            if let Some(new_path) = dialog.pick_file() {
-                cmds.push(AppCommand::RelinkMedia { media_id, new_path });
-            }
+            let title = format!("Locate {}", filename);
+            crate::file_dialog::spawn(move || {
+                let mut dialog = rfd::FileDialog::new().set_title(title);
+                if !ext.is_empty() {
+                    dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
+                }
+                dialog.pick_file()
+                    .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+                    .unwrap_or_default()
+            });
         }
         ui.separator();
     }
