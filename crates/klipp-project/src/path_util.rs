@@ -5,8 +5,15 @@ use std::path::{Component, Path, PathBuf};
 /// Relative to the project directory (the `.klipp/` folder).
 /// Falls back to absolute if the path is on a different drive/volume
 /// (e.g. Windows UNC paths, different mount points).
+///
+/// Both paths are normalised first. A media path read from another
+/// project folder (an auto-save being restored) can still carry that
+/// folder and its `..` in it; diffed as-is it was stored as
+/// `../X_autosave.klipp/../../Videos/a.mov`, which stops resolving once
+/// the auto-save folder is deleted.
 pub fn to_project_relative(project_dir: &Path, absolute: &Path) -> PathBuf {
-    pathdiff::diff_paths(absolute, project_dir).unwrap_or_else(|| absolute.to_path_buf())
+    let absolute = normalize_path(absolute);
+    pathdiff::diff_paths(&absolute, normalize_path(project_dir)).unwrap_or(absolute)
 }
 
 /// Resolve a stored path (possibly relative) to an absolute runtime path.
@@ -17,11 +24,17 @@ pub fn to_project_relative(project_dir: &Path, absolute: &Path) -> PathBuf {
 ///
 /// The caller should run `path.exists()` separately to set the offline flag.
 /// Never returns a bare relative path — always joins with project_dir.
+///
+/// The result is normalised lexically: `..` is collapsed on the path's
+/// text, as `to_project_relative` computed it, not by the filesystem,
+/// which cannot step out of a directory that no longer exists. That
+/// keeps projects saved with a path through a deleted auto-save folder
+/// opening.
 pub fn resolve_media_path(project_dir: &Path, stored: &Path) -> PathBuf {
     if stored.is_absolute() {
-        stored.to_path_buf()
+        normalize_path(stored)
     } else {
-        project_dir.join(stored)
+        normalize_path(&project_dir.join(stored))
     }
 }
 
