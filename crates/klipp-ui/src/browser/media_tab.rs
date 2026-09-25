@@ -316,8 +316,13 @@ pub fn show(
     // Ordered list of all visible IDs (used for Shift+click range selection)
     let all_ordered_ids: Vec<MediaId> = items.iter().map(|i| i.id).collect();
 
-    // Ctrl+A: select all visible items when browser is focused
-    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+    // Ctrl+A: select all visible items — unless a text field has the
+    // keyboard, where Ctrl+A selects its text. The browser draws before
+    // the inspector, so consuming the key here would steal it from the
+    // title text field.
+    if !ui.ctx().wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A))
+    {
         state.selected_media_ids = all_ordered_ids.iter().copied().collect();
     }
 

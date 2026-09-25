@@ -1697,18 +1697,12 @@ impl ViewerPanel {
             }
         }
 
-        // Draw title overlay (separate texture, alpha-blended on top of video)
-        // Show it even during text edit mode so style changes are visible in real-time
-        {
-            if let Some(tex) = &self.title_overlay_texture {
-                ui.painter_at(viewer_rect).image(
-                    tex.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
-        }
+        // No title overlay is drawn here: the engine composites titles
+        // into the frame above, paused as well as playing. Laying the
+        // UI's own raster of the selected title over it printed the text
+        // twice, the second copy at the raster's layout rather than the
+        // engine's. The raster is still made for the in-place editor's
+        // glyph positions.
 
         self.handle_text_edit_entry(ui, state, &frame, cmds);
         self.handle_text_edit_exit(ui, state, cmds);

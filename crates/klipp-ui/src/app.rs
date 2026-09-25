@@ -15768,6 +15768,7 @@ impl KlippApp {
                 let timeline_out = timeline_in + duration;
                 let title_data = self.state.pending_title_data.take()
                     .unwrap_or_default();
+                let has_entrance = title_data.objects.iter().any(|o| o.fx().motion.enter.is_some());
                 let clip = klipp_timeline::Clip {
                     id: klipp_core::ClipId::new(),
                     kind: klipp_timeline::ClipKind::Title(title_data),
@@ -15847,16 +15848,20 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 // The new title is the selection, the inspector opens on
-                // its text, and the playhead parks where the title rests,
-                // past its entrance, so the viewer shows it.
+                // its text, and, when it has an entrance, the playhead
+                // parks where the title rests so the viewer shows it. A
+                // title with no entrance is at rest on its first frame:
+                // the playhead stays where the title was put.
                 self.state.selected_clip = Some(clip_id);
                 self.state.selected_clips = vec![clip_id];
                 self.state.selected_title_object = None;
                 self.state.focus_title_text = 3;
                 self.render_title_to_viewer(clip_id);
-                let settle = (duration.to_secs_f64() / 3.0).min(1.0);
-                let park = klipp_core::RationalTime::from_secs_f64(timeline_in.to_secs_f64() + settle, fps_rate);
-                let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
+                if has_entrance {
+                    let settle = (duration.to_secs_f64() / 3.0).min(1.0);
+                    let park = klipp_core::RationalTime::from_secs_f64(timeline_in.to_secs_f64() + settle, fps_rate);
+                    let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
+                }
                 true
             }
             AppCommand::ClearTitleOverlay => {
