@@ -169,8 +169,9 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub masks: Option<MaskStack>,
 
-    // Lut3D
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Lut3D. Stored portably: a LUT from the bundled library by its
+    // place in the library, so a project opens anywhere (#331).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "klipp_core::assets::lut_path_serde")]
     pub lut_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lut_opacity: Option<f32>,
@@ -980,5 +981,33 @@ mod precision_review_tests {
         assert_eq!(t.keyframes.len(),1); assert_eq!(t.keyframes[0].time_secs,5.0/120.0);
         t.set_keyframe(0.7,1.0); t.set_keyframe(0.7005,2.0);
         assert_eq!(t.keyframes.len(),3);
+    }
+}
+
+#[cfg(test)]
+mod portable_lut_path_tests {
+    use super::NodeParams;
+
+    /// #331: a look from the bundled library is saved by its place in
+    /// the library, not by where the library was on this machine, and
+    /// loads back to the same file.
+    #[test]
+    fn a_bundled_look_saves_portably_and_loads_back() {
+        let Some(lib) = klipp_core::assets::bundled_luts_dir() else { return };
+        let path = lib.join("fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube");
+        let params = NodeParams { lut_path: Some(path.clone()), ..Default::default() };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"lut_path\":\"bundled:fuji-xtrans/fuji_xtrans_iii_classic_chrome.cube\""), "{json}");
+        assert!(!json.contains(&*lib.to_string_lossy()), "the machine's library path leaked into the project: {json}");
+        let back: NodeParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.lut_path, Some(path));
+    }
+
+    #[test]
+    fn no_look_is_still_no_look() {
+        let json = serde_json::to_string(&NodeParams::default()).unwrap();
+        assert!(!json.contains("lut_path"));
+        let back: NodeParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(back.lut_path, None);
     }
 }

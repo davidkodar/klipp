@@ -332,30 +332,10 @@ fn get_lut_preview(
     Some(handle)
 }
 
-/// Find the bundled LUTs directory. Checks:
-/// 1. Next to the executable (installed/packaged)
-/// 2. In the source tree (development)
+/// The bundled LUTs directory: next to the executable when installed,
+/// in the source tree in development. The lookup projects share.
 fn find_bundled_luts_dir() -> Option<std::path::PathBuf> {
-    // Next to executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("assets").join("luts");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    // Source tree (CARGO_MANIFEST_DIR at compile time)
-    let source_tree = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent() // crates/
-        .and_then(|p| p.parent()) // workspace root
-        .map(|p| p.join("assets").join("luts"));
-    if let Some(ref p) = source_tree {
-        if p.exists() {
-            return source_tree;
-        }
-    }
-    None
+    klipp_core::assets::bundled_luts_dir().map(|p| p.to_path_buf())
 }
 
 
