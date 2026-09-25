@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "framing";
 // Invalidate results derived from the previous shot-boundary selection.
-pub const VERSION: u32 = 7;
+// v8 records whether the face detector ran, so a person with no face in
+// view (walking away) is not read for skin by the back of their head.
+pub const VERSION: u32 = 8;
 
 /// The face detector, when downloaded: a face box with landmarks per
 /// face on every sampled frame.
@@ -62,6 +64,10 @@ pub struct Framing {
     /// measure reads skin in, and what a title keeps clear of.
     #[serde(default)]
     pub samples: Vec<FrameSample>,
+    /// The face detector that looked at the samples, when one did. With
+    /// one, a sample with people and no faces has no face in view.
+    #[serde(default)]
+    pub face_model: Option<String>,
 }
 
 /// The people in one sampled frame, as normalised boxes (x, y, w, h),
@@ -96,6 +102,14 @@ pub fn face_model_path() -> Option<std::path::PathBuf> {
 }
 
 impl Framing {
+    /// Whether a face detector looked at the samples. When one did, a
+    /// sample with people and no faces has no face in view — someone
+    /// walking away, a figure too small — and a person's head must not
+    /// stand in for one.
+    pub fn detects_faces(&self) -> bool {
+        self.face_model.is_some()
+    }
+
     /// The people nearest `secs` of the file, when a frame was looked at
     /// within `within` seconds of it.
     pub fn people_at(&self, secs: f64, within: f64) -> Option<&FrameSample> {
@@ -417,7 +431,8 @@ impl crate::Analyser for FramingAnalyser {
             t1.elapsed().as_millis()
         );
         let shots = chosen.iter().zip(&facts).map(|((a, b), f)| shot_framing(*a, *b, f)).collect();
-        let out = Framing { duration_secs: duration, model: model_id.into(), frames_looked_at: times.len() as u32, shots, samples };
+        let face_model = faces_model.as_ref().map(|_| FACE_MODEL_ID.to_string());
+        let out = Framing { duration_secs: duration, model: model_id.into(), frames_looked_at: times.len() as u32, shots, samples, face_model };
         serde_json::to_value(out).map_err(|e| e.to_string())
     }
 }

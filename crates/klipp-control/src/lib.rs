@@ -1256,7 +1256,7 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     }
 
     fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
-        klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
+        klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(&f, s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
     }
     fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<klipp_document::ops::ScreenBeats> {
         let bs = klipp_analysis::report::MediaAnalysis::load(&item.path).beatsheet?;
@@ -1307,10 +1307,15 @@ fn media_path_and_duration(ctx: &ControlContext, media_id: &str) -> Result<(std:
 }
 
 /// An absolute output path the caller gave, or one in the temp dir.
-/// A sample's faces as boxes, else its people's heads.
-fn face_or_head_regions(s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4]> {
+/// A sample's faces as boxes. Its people's heads stand in only when no
+/// face detector looked; when one did and found no face, there is none
+/// to read — the back of a head measured as a face failed every skin
+/// check on hair (#326).
+fn face_or_head_regions(framing: &klipp_analysis::framing::Framing, s: &klipp_analysis::framing::FrameSample) -> Vec<[f32; 4]> {
     if !s.faces.is_empty() {
         s.faces.iter().map(|f| [f.x, f.y, f.w, f.h]).collect()
+    } else if framing.detects_faces() {
+        Vec::new()
     } else {
         s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()
     }
@@ -1341,6 +1346,12 @@ fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) ->
             .iter()
             .map(|f| klipp_color::measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72]))
             .collect();
+    }
+    // A face detector looked and saw no face: someone walking away, or
+    // too small. There is no skin to read, and the back of a head read
+    // as one failed every skin check on hair.
+    if framing.detects_faces() {
+        return Vec::new();
     }
     sample.people.iter().map(|p| { let p = [p.0, p.1, p.2, p.3]; klipp_color::measure::skin_region(data, w, h, p).unwrap_or_else(|| klipp_color::measure::head_region(p)) }).collect()
 }
@@ -1376,7 +1387,7 @@ fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::W
             // The biggest face in the sample: the subject. A window on
             // a face in the background would leave the subject's own
             // face outside the correction.
-            let b = face_or_head_regions(s).into_iter().max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))?;
+            let b = face_or_head_regions(&framing, s).into_iter().max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))?;
             Some(klipp_document::ops::WindowKey { at: (s.secs - s_in) / speed, x: b[0], y: b[1], w: b[2], h: b[3] })
         })
         .collect();
@@ -2201,8 +2212,7 @@ fn handle(
                             let faces: Vec<[f32; 4]> = report
                                 .framing
                                 .as_ref()
-                                .and_then(|f| f.people_at(t, 1.5))
-                                .map(face_or_head_regions)
+                                .and_then(|f| f.people_at(t, 1.5).map(|s| face_or_head_regions(f, s)))
                                 .unwrap_or_default();
                             measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
                         }
@@ -2693,7 +2703,7 @@ fn handle(
                             .iter()
                             .filter(|s| s.secs >= s_in && s.secs < s_out)
                             .filter_map(|s| {
-                                let area = face_or_head_regions(s).into_iter().map(|b| b[2] * b[3]).fold(0.0f32, f32::max);
+                                let area = face_or_head_regions(&f, s).into_iter().map(|b| b[2] * b[3]).fold(0.0f32, f32::max);
                                 (area > 0.0).then_some((s.secs, area))
                             })
                             .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -3976,7 +3986,7 @@ reference:   {}",
             for i in 0..n {
                 let t = (i as f64 + 0.5) / n as f64 * dur;
                 if let Ok((data, w, h)) = decode_frame_rgba(&path, t) {
-                    let faces: Vec<[f32; 4]> = report.framing.as_ref().and_then(|f| f.people_at(t, 1.5)).map(|s| s.people.iter().map(|p| klipp_color::measure::head_region([p.0, p.1, p.2, p.3])).collect()).unwrap_or_default();
+                    let faces: Vec<[f32; 4]> = report.framing.as_ref().and_then(|f| f.people_at(t, 1.5).map(|s| face_or_head_regions(f, s))).unwrap_or_default();
                     measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
                     let st = frame_stats(&data, w, h, t);
                     let g = |a: &str, b: &str| st.get(a).and_then(|x| x.get(b)).and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -4851,5 +4861,39 @@ mod tests {
         }
         assert_eq!(seen.len(), 19, "wire_name has 19 arms; every one must be listed");
         assert!(parse_log_format("slog3").is_err(), "names are case-sensitive");
+    }
+}
+
+#[cfg(test)]
+mod face_region_tests {
+    use super::face_or_head_regions;
+    use klipp_analysis::framing::{FaceBox, FrameSample, Framing};
+
+    fn walking_away() -> FrameSample {
+        FrameSample { secs: 1.0, people: vec![(0.4, 0.2, 0.2, 0.6)], faces: Vec::new() }
+    }
+
+    /// #326: the face detector looked, saw a person and no face — their
+    /// back is to the camera. No head stands in for the face.
+    #[test]
+    fn a_person_with_no_face_in_view_gives_no_face() {
+        let framing = Framing { face_model: Some("yunet_face_2023mar".into()), ..Default::default() };
+        assert!(face_or_head_regions(&framing, &walking_away()).is_empty());
+    }
+
+    #[test]
+    fn a_detected_face_is_the_face() {
+        let framing = Framing { face_model: Some("yunet_face_2023mar".into()), ..Default::default() };
+        let mut s = walking_away();
+        s.faces.push(FaceBox { x: 0.45, y: 0.22, w: 0.1, h: 0.12, score: 0.9, landmarks: Vec::new() });
+        assert_eq!(face_or_head_regions(&framing, &s), vec![[0.45, 0.22, 0.1, 0.12]]);
+    }
+
+    /// An analysis made without the face detector still reads the head,
+    /// as before: it cannot tell a face from a back.
+    #[test]
+    fn without_a_face_detector_the_head_stands_in() {
+        let framing = Framing::default();
+        assert_eq!(face_or_head_regions(&framing, &walking_away()).len(), 1);
     }
 }
