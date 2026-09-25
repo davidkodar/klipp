@@ -666,6 +666,12 @@ pub fn apply_insert_edit_forward(
 }
 
 impl EditCommand {
+    /// A cut of one clip into two, on a legacy or a magnetic track.
+    fn is_blade(&self) -> bool {
+        matches!(self, EditCommand::LegacyBladeClip { .. })
+            || matches!(self, EditCommand::Magnetic(cmd) if cmd.label() == "Blade")
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             EditCommand::AddTitleClip { .. } => "Add Title",
@@ -692,6 +698,10 @@ impl EditCommand {
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::LegacyInsertEdit { .. } => "Insert Edit",
+            // A blade through a clip and its linked audio is one cut, and
+            // undoes under the blade's name. Anything else batched is the
+            // multi-drop this was first made for.
+            EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(EditCommand::is_blade) => cmds[0].label(),
             EditCommand::Batch(..) => "Add Clips",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
@@ -786,6 +796,14 @@ impl CommandHistory {
     /// track — should take one ctrl+z, not one per clip.
     pub fn begin_batch(&mut self) {
         self.batch = Some(Vec::new());
+    }
+
+    /// Whether a batch is open. A gesture that batches its own edits
+    /// opens one only when none is: `begin_batch` starts afresh, and
+    /// opening a second inside the first would drop what the first had
+    /// collected.
+    pub fn is_batching(&self) -> bool {
+        self.batch.is_some()
     }
 
     /// Close the batch: nothing collected pushes nothing, one edit pushes
@@ -2393,6 +2411,36 @@ mod linked_import_tests {
         assert_eq!(fps_change, Some(new_fps));
         assert_eq!(seq.resolution, new_res);
         assert_eq!(seq.fps, new_fps);
+    }
+
+    /// #324: a blade through a clip and its linked audio is one gesture,
+    /// batched, and it undoes under the blade's own name.
+    #[test]
+    fn a_batch_of_one_kind_of_edit_takes_that_kinds_name() {
+        let t = |f: i64| klipp_core::RationalTime { value: f, rate: 30 };
+        let clip = || Clip::media(klipp_core::MediaId::new(), t(0), t(30), t(0), t(30));
+        let blade = |i: usize| EditCommand::LegacyBladeClip {
+            track_index: i,
+            original_clip: clip(),
+            clip_a: clip(),
+            clip_b: clip(),
+            position: 0,
+        };
+        assert_eq!(EditCommand::Batch(vec![blade(0), blade(1)]).label(), "Blade Clip");
+        let mixed = EditCommand::Batch(vec![blade(0), EditCommand::LinkedImport {
+            video: None, audio: None, created_video_track_at: None, created_audio_track_at: None, autoset: None,
+        }]);
+        assert_eq!(mixed.label(), "Add Clips");
+    }
+
+    #[test]
+    fn a_batch_says_when_it_is_open() {
+        let mut h = CommandHistory::new();
+        assert!(!h.is_batching());
+        h.begin_batch();
+        assert!(h.is_batching());
+        h.end_batch();
+        assert!(!h.is_batching());
     }
 
     #[test]
