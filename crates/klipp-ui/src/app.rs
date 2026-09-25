@@ -697,6 +697,15 @@ fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fresh: Option
 }
 
 
+/// What standing the timeline grade's stand-in down did to the grade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineGradeSettled {
+    Unchanged,
+    Changed,
+    /// A grade where the sequence had none.
+    Begun,
+}
+
 /// The clip a grade still is taken from: the selected clip when it is
 /// under the playhead, since that is the one the Colour panels show;
 /// otherwise the topmost visible video clip there, which is what the
@@ -721,26 +730,40 @@ fn record_timecode(secs: f64, fps: f64) -> String {
 
 /// A still's grade onto each of `targets`, fresh node ids per clip, as
 /// graph edits to apply together: in place of each clip's grade, or with
-/// `append` after it, keeping the clip's own balance.
+/// `append` after it, keeping the clip's own balance. With the edits,
+/// why any target was passed over, once per reason.
 fn grade_from_still_edits(
     seq: &klipp_timeline::Sequence,
     grade: &klipp_nodes::NodeGraph,
     targets: &[klipp_core::ClipId],
     append: bool,
-) -> Vec<EditCommand> {
-    seq.all_clips()
+) -> (Vec<EditCommand>, Vec<klipp_nodes::CannotAppend>) {
+    let mut refused = Vec::new();
+    let edits = seq
+        .all_clips()
         .filter(|c| targets.contains(&c.id))
         .filter_map(|c| {
             let new_graph = if append {
                 let mut g = c.node_graph.clone();
-                g.append(grade).ok()?;
+                if let Err(why) = g.append(grade) {
+                    if !refused.contains(&why) {
+                        refused.push(why);
+                    }
+                    return None;
+                }
                 g
             } else {
                 c.node_graph.with_grade_of(grade)
             };
             Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.node_graph.clone(), new_graph })
         })
-        .collect()
+        .collect();
+    (edits, refused)
+}
+
+/// One line for a toast out of the reasons targets were passed over.
+fn refusals_line(refused: &[klipp_nodes::CannotAppend]) -> String {
+    refused.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("; ")
 }
 
 /// The edits a Paste Attributes makes: each target clip replaced whole
@@ -13496,8 +13519,16 @@ impl KlippApp {
     fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         let stood_in = self.stand_in_timeline_grade();
         let handled = self.handle_color_commands_inner(cmd, needs_refresh);
-        if self.stand_down_timeline_grade(stood_in) {
-            *needs_refresh = true;
+        // A slider step reaches the engine through the param queue, which
+        // it applies to the timeline grade as it does to a clip's; a full
+        // sync per step would flatten the sequence at drag rate and throw
+        // the queued steps away. Except the step that begins the grade:
+        // the engine has to be given the graph once before the queue can
+        // carry steps to it.
+        match self.stand_down_timeline_grade(stood_in) {
+            TimelineGradeSettled::Unchanged => {}
+            TimelineGradeSettled::Changed if matches!(cmd, AppCommand::SetNodeParam { .. }) => {}
+            TimelineGradeSettled::Changed | TimelineGradeSettled::Begun => *needs_refresh = true,
         }
         handled
     }
@@ -13539,18 +13570,19 @@ impl KlippApp {
     }
 
     /// Take the stand-in off again, keeping its graph as the timeline
-    /// grade if it was edited, and restoring the selection. True when the
-    /// grade changed.
-    fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> bool {
-        let Some(selected) = stood_in else { return false };
+    /// grade if it was edited, and restoring the selection.
+    fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> TimelineGradeSettled {
+        let Some(selected) = stood_in else { return TimelineGradeSettled::Unchanged };
         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let had_grade = seq.timeline_graph.is_some();
         let fresh = self.timeline_grade_fresh.as_ref().filter(|(id, _)| *id == seq.id).map(|(_, g)| g);
         let changed = settle_timeline_grade_proxy(seq, fresh);
         self.state.selected_clip = selected;
-        if changed {
-            self.state.dirty = true;
+        if !changed {
+            return TimelineGradeSettled::Unchanged;
         }
-        changed
+        self.state.dirty = true;
+        if had_grade { TimelineGradeSettled::Changed } else { TimelineGradeSettled::Begun }
     }
 
     fn handle_color_commands_inner(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
@@ -15780,14 +15812,22 @@ impl KlippApp {
                     return true;
                 };
                 let name = still.name.clone();
-                let edits = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
+                let (edits, refused) = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
                 if edits.is_empty() {
-                    self.state.toast.show("Select the clips to grade first");
+                    if refused.is_empty() {
+                        self.state.toast.show("Select the clips to grade first");
+                    } else {
+                        self.state.toast.show(format!("Could not add the grade of \"{name}\": {}", refusals_line(&refused)));
+                    }
                     return true;
                 }
                 let n = edits.len();
                 self.apply_edits_as_one(&edits, "Apply Grade from Still");
-                self.state.toast.show(format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" }));
+                let mut told = format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
+                if !refused.is_empty() {
+                    told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
+                }
+                self.state.toast.show(told);
                 true
             }
             AppCommand::ToggleGradeStillCompare => {
@@ -16051,6 +16091,7 @@ impl KlippApp {
                     return true;
                 };
                 let mut applied = 0_usize;
+                let mut refused: Vec<klipp_nodes::CannotAppend> = Vec::new();
                 // Collect old/new graphs first (mutable borrow on seq); push history
                 // entries afterwards (mutable borrow on state.command_histories).
                 let mut history_pushes: Vec<(klipp_core::ClipId, klipp_nodes::NodeGraph, klipp_nodes::NodeGraph)> = Vec::new();
@@ -16064,7 +16105,10 @@ impl KlippApp {
                             // Input Transform kept: the Look's, if it has
                             // one, is the shot it was saved on.
                             if *append {
-                                if clip.node_graph.append(&look.node_graph).is_err() {
+                                if let Err(why) = clip.node_graph.append(&look.node_graph) {
+                                    if !refused.contains(&why) {
+                                        refused.push(why);
+                                    }
                                     continue;
                                 }
                             } else {
@@ -16084,12 +16128,16 @@ impl KlippApp {
                 }
                 if applied > 0 {
                     self.state.dirty = true;
-                    self.state.toast.show(format!(
-                        "Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" }
-                    ));
+                    let mut told = format!("Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" });
+                    if !refused.is_empty() {
+                        told = format!("{told}; not to {}: {}", clip_ids.len() - applied, refusals_line(&refused));
+                    }
+                    self.state.toast.show(told);
                     *needs_refresh = true;
-                } else {
+                } else if refused.is_empty() {
                     self.state.toast.show("No matching clips selected");
+                } else {
+                    self.state.toast.show(format!("Could not add \"{}\": {}", look.name, refusals_line(&refused)));
                 }
                 true
             }
@@ -41723,7 +41771,7 @@ mod grade_still_tests {
         let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
         seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
         let grade = klipp_nodes::NodeGraph::default();
-        let edits = grade_from_still_edits(&seq, &grade, &[a.id, c.id], false);
+        let (edits, _) = grade_from_still_edits(&seq, &grade, &[a.id, c.id], false);
         assert_eq!(edits.len(), 2);
         let ids = |e: &EditCommand| match e {
             EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
@@ -41742,10 +41790,28 @@ mod grade_still_tests {
         seq.tracks[0].clips = vec![a.clone()];
         let mut look = klipp_nodes::NodeGraph::default();
         look.ensure_lut3d();
-        let edits = grade_from_still_edits(&seq, &look, &[a.id], true);
+        let (edits, _) = grade_from_still_edits(&seq, &look, &[a.id], true);
         let EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a graph edit") };
         assert!(own.iter().all(|id| new_graph.nodes.iter().any(|n| n.id == *id)), "the clip's own nodes stay");
         assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D), "the look is added");
+    }
+
+    /// A target that cannot take the grade is passed over with a reason
+    /// to show, not counted as "nothing selected".
+    #[test]
+    fn a_still_grade_that_cannot_be_added_says_why() {
+        use klipp_core::WorkingColorspace as Ws;
+        let mut seq = Sequence::new_default();
+        let mut a = clip(0, 2);
+        a.node_graph.working_space_override = Some(Ws::Rec709Linear);
+        seq.tracks[0].clips = vec![a.clone()];
+        let mut look = klipp_nodes::NodeGraph::default();
+        look.ensure_lut3d();
+        look.working_space_override = Some(Ws::AcesCG);
+        let (edits, refused) = grade_from_still_edits(&seq, &look, &[a.id], true);
+        assert!(edits.is_empty());
+        assert_eq!(refused, vec![klipp_nodes::CannotAppend::WorkingSpace { ours: Ws::Rec709Linear, theirs: Ws::AcesCG }]);
+        assert!(refusals_line(&refused).contains("working space"));
     }
 
     #[test]

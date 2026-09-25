@@ -951,10 +951,11 @@ pub fn apply_param_changes(
         // A drag on the timeline grade's node: its graph lives on the
         // sequence, not on a clip.
         if change.clip_id == timeline_id {
-            if let Some(graph) = seq.timeline_graph.as_mut() {
-                if apply_override_recursive(graph, change.node_id, &change.param, change.value) {
-                    applied += 1;
-                }
+            // The first drag after the toggle can arrive before any command
+            // has settled a graph into the engine's copy: it starts one.
+            let graph = seq.timeline_graph.get_or_insert_with(Default::default);
+            if apply_override_recursive(graph, change.node_id, &change.param, change.value) {
+                applied += 1;
             }
             continue;
         }
