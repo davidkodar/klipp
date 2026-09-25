@@ -610,6 +610,29 @@ fn a_global_lut_over_a_composite_agrees_with_the_renderer() {
     assert!(d > 20, "only {d}: the LUT is not reaching the exported composite");
 }
 
+/// A single graded clip under a timeline grade: the single-clip path has
+/// no composite for the timeline grade to run on, so it hands the frame
+/// to the stack, and what comes out is the renderer's frame with the
+/// timeline grade in it — not the clip's grade alone.
+#[test]
+fn a_timeline_grade_over_a_single_clip_agrees_with_the_renderer() {
+    let a = graded(0.0, 1.0, 0.3);
+    let mut seq = sequence(vec![vec![a.clone()]]);
+    seq.timeline_graph = Some(graded(0.0, 1.0, -1.0).node_graph);
+    let mut src = Flat::default().with(&a, [190, 110, 70]).on_gpu();
+    let Some(got) = gpu_planes(&seq, 0.5, &mut src) else {
+        eprintln!("skipping: the GPU path declined (no usable GPU?)");
+        return;
+    };
+    let want = cpu_luma(&seq, 0.5, &mut src);
+    let worst = got[..want.len()].iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the timeline-graded frame differs from the renderer by {worst} levels");
+    seq.timeline_graph = None;
+    let ungraded = gpu_planes(&seq, 0.5, &mut src).expect("the same clip without a timeline grade");
+    let d = got.iter().zip(ungraded.iter()).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d}: the timeline grade is not reaching the export");
+}
+
 /// The render and the encode must be for the same delivery.
 ///
 /// The target says whether the *encoder* wants HDR and `RenderOptions`

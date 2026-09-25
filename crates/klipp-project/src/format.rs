@@ -110,6 +110,10 @@ pub struct SequenceJson {
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]
     pub camera: klipp_timeline::Camera,
+    /// The grade over the whole sequence. Absent when there is none,
+    /// which is every project saved before there could be one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_graph: Option<klipp_nodes::NodeGraph>,
     /// Whether positions are counted drop-frame; see
     /// `Sequence::drop_frame`.
     ///

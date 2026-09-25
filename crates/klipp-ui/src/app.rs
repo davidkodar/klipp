@@ -649,6 +649,24 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
     }
 }
 
+/// The hidden track the timeline grade stands in on while the Colour
+/// workspace grades it; fixed for the sequence.
+fn timeline_grade_proxy_track_id(seq: &klipp_timeline::Sequence) -> klipp_core::TrackId {
+    const STAND_IN: u128 = 0x7374_616e_642d_696e_2074_7261_636b_0001;
+    klipp_core::TrackId(uuid::Uuid::from_u128(seq.id.0.as_u128() ^ STAND_IN))
+}
+
+/// Take the timeline grade's stand-in track off `seq`, if it is there,
+/// keeping its graph as the timeline grade.
+fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence) {
+    let track_id = timeline_grade_proxy_track_id(seq);
+    let Some(pos) = seq.tracks.iter().position(|t| t.id == track_id) else { return };
+    let track = seq.tracks.remove(pos);
+    if let Some(proxy) = track.clips.into_iter().next() {
+        seq.timeline_graph = Some(proxy.node_graph);
+    }
+}
+
 /// The clip a grade still is taken from: the selected clip when it is
 /// under the playhead, since that is the one the Colour panels show;
 /// otherwise the topmost visible video clip there, which is what the
@@ -4451,6 +4469,10 @@ impl KlippApp {
         // awareness. This mirrors the export path exactly: viewer and export
         // are consistent by construction.
         *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
+        // A command in the Colour workspace can sync while the timeline
+        // grade stands in as a clip: the engine gets the grade, never the
+        // stand-in.
+        settle_timeline_grade_proxy(&mut seq);
         klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
     }
 
@@ -4811,6 +4833,7 @@ impl KlippApp {
             // A new sequence starts without a camera; a nest that goes
             // back into its parent is moved by the parent's.
             camera: klipp_timeline::Camera::default(),
+            timeline_graph: None,
             drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
@@ -13143,6 +13166,58 @@ impl KlippApp {
     }
 
     fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        let stood_in = self.stand_in_timeline_grade();
+        let handled = self.handle_color_commands_inner(cmd, needs_refresh);
+        if self.stand_down_timeline_grade(stood_in) {
+            *needs_refresh = true;
+        }
+        handled
+    }
+
+    /// While the Colour workspace grades the timeline grade, put it on
+    /// the sequence as the clip it renders as, on a hidden track, and
+    /// select it: every node command, panel and history entry that works
+    /// on "the selected clip's graph" then works on it unchanged. Returns
+    /// what was selected before, for [`Self::stand_down_timeline_grade`];
+    /// `None` when not grading the timeline (nothing is done). Only the
+    /// Colour code runs in between — the stand-in is never saved, and
+    /// [`Self::sync_sequence_to_engine`] never sends it.
+    fn stand_in_timeline_grade(&mut self) -> Option<Option<klipp_core::ClipId>> {
+        if !self.state.grade_timeline || self.state.active_workspace != crate::state::Workspace::Color {
+            return None;
+        }
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let track_id = timeline_grade_proxy_track_id(seq);
+        if seq.tracks.iter().any(|t| t.id == track_id) {
+            return None;
+        }
+        let proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
+        let id = proxy.id;
+        let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
+        track.id = track_id;
+        track.visible = false;
+        track.muted = true;
+        track.clips.push(proxy);
+        seq.tracks.push(track);
+        Some(self.state.selected_clip.replace(id))
+    }
+
+    /// Take the stand-in off again, keeping its graph as the timeline
+    /// grade and restoring the selection. True when the grade changed.
+    fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> bool {
+        let Some(selected) = stood_in else { return false };
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let before = serde_json::to_vec(&seq.timeline_graph).unwrap_or_default();
+        settle_timeline_grade_proxy(seq);
+        let changed = serde_json::to_vec(&seq.timeline_graph).unwrap_or_default() != before;
+        self.state.selected_clip = selected;
+        if changed {
+            self.state.dirty = true;
+        }
+        changed
+    }
+
+    fn handle_color_commands_inner(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         if self.handle_color_sampling(cmd, needs_refresh) { return true; }
         if self.handle_color_node_ops(cmd, needs_refresh) { return true; }
         if self.handle_color_node_config(cmd, needs_refresh) { return true; }
@@ -18779,6 +18854,7 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    timeline_graph: None,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
@@ -18874,6 +18950,7 @@ impl KlippApp {
                     // A new sequence starts without a camera; a nest that goes
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
+                    timeline_graph: None,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(
                         klipp_core::Fps::new(*fps_num, *fps_den),
                     ),
@@ -33042,7 +33119,11 @@ impl KlippApp {
                     }
 
                     if self.state.show_inspector_panel {
+                        // Grading the timeline: the panels show and edit
+                        // its grade as the selected clip's.
+                        let stood_in = self.stand_in_timeline_grade();
                         self.render_inspector_panel(ui, inspector_rect, all_cmds);
+                        self.stand_down_timeline_grade(stood_in);
                     } else {
                         self.render_inspector_rail(ui, inspector_rect);
                     }
@@ -33157,6 +33238,7 @@ impl KlippApp {
                     // The render function gates the Color-only chrome
                     // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
                     if in_color_ws || show_scopes_bar {
+                        let stood_in = self.stand_in_timeline_grade();
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,
@@ -33177,6 +33259,7 @@ impl KlippApp {
                                 bottom_scope_cursor,
                             },
                         );
+                        self.stand_down_timeline_grade(stood_in);
                     }
 
                     self.handle_panel_resizers(
@@ -33821,15 +33904,20 @@ impl KlippApp {
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
+                let timeline_grade_id = self.state.sequences[seq_idx].timeline_grade_clip_id();
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let theme = self.theme.clone();
-                    let title = clip
-                        .media_id()
-                        .and_then(|m| self.state.media_pool.get(&m))
-                        .map(|m| m.filename.clone())
-                        .unwrap_or_else(|| "Clip".into());
+                    let title = if clip.id == timeline_grade_id {
+                        "Timeline Grade".to_string()
+                    } else {
+                        clip
+                            .media_id()
+                            .and_then(|m| self.state.media_pool.get(&m))
+                            .map(|m| m.filename.clone())
+                            .unwrap_or_else(|| "Clip".into())
+                    };
                     if crate::widgets::inspector_group::panel_title_row(ui, &title, false, &theme) {
                         collapse_requested = true;
                     }
@@ -34619,6 +34707,28 @@ impl KlippApp {
                             ColorToolsPosition::Bottom
                         };
                     }
+                }
+                ui.separator();
+                // What the nodes and wheels grade: the selected clip, or
+                // the timeline grade over every clip after its own.
+                ui.label(egui::RichText::new("Grade").color(theme.text_dim));
+                if ui.selectable_label(!self.state.grade_timeline, "Clip")
+                    .on_hover_text("Grade the selected clip")
+                    .clicked()
+                {
+                    self.state.grade_timeline = false;
+                    self.state.graph_descent_path.clear();
+                    self.state.selected_node_id = None;
+                    self.state.selected_node_ids.clear();
+                }
+                if ui.selectable_label(self.state.grade_timeline, "Timeline")
+                    .on_hover_text("Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT")
+                    .clicked()
+                {
+                    self.state.grade_timeline = true;
+                    self.state.graph_descent_path.clear();
+                    self.state.selected_node_id = None;
+                    self.state.selected_node_ids.clear();
                 }
 
                 if self.state.show_scopes {
@@ -38309,6 +38419,7 @@ mod compound_clip_cycle_tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
@@ -40974,5 +41085,26 @@ mod grade_still_tests {
     #[test]
     fn a_record_timecode_reads_as_an_editor_would_say_it() {
         assert_eq!(record_timecode(3723.48, 25.0), "01:02:03:12");
+    }
+}
+
+#[cfg(test)]
+mod timeline_grade_stand_in_tests {
+    use super::*;
+
+    #[test]
+    fn the_stand_in_track_never_outlives_its_graph() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let tracks = seq.tracks.len();
+        let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(&seq);
+        proxy.node_graph.ensure_corrector();
+        let nodes = proxy.node_graph.nodes.len();
+        let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
+        track.id = timeline_grade_proxy_track_id(&seq);
+        track.clips.push(proxy);
+        seq.tracks.push(track);
+        settle_timeline_grade_proxy(&mut seq);
+        assert_eq!(seq.tracks.len(), tracks);
+        assert_eq!(seq.timeline_graph.map(|g| g.nodes.len()), Some(nodes));
     }
 }

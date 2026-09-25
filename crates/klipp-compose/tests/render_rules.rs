@@ -619,6 +619,29 @@ fn an_adjustment_layer_grades_what_is_below_it() {
     }
 }
 
+/// The timeline grade runs over every clip, after each clip's own
+/// grade: a clip brightened a stop by its own graph, and another with no
+/// grade, are both darkened a stop again by the sequence's.
+#[test]
+fn a_timeline_grade_grades_every_clip_after_its_own() {
+    let mut graded = media(0.0, 2.0);
+    graded.node_graph = exposure(1.0);
+    let plain = media(2.0, 4.0);
+    let mut src = Flat::default().grey(&graded, 0.2).grey(&plain, 0.3);
+    let mut seq = sequence(vec![vec![graded, plain]]);
+    seq.timeline_graph = Some(exposure(-1.0));
+    for (t, want) in [(1.0, 0.2), (3.0, 0.15)] {
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 0.005);
+        }
+    }
+    // An identity timeline grade is no grade at all.
+    seq.timeline_graph = Some(NodeGraph::default());
+    for (i, img) in render(&seq, 3.0, &mut src).iter().enumerate() {
+        assert_px(&format!("identity, run {i}"), px(img, 16, 9), [0.3; 3], 0.005);
+    }
+}
+
 /// A multicam group shows the angle its primary clip's cut list chooses:
 /// angle 0 until the first cut, then the cut's angle. (Only export used
 /// to honour cut lists; the viewer showed whichever angle came first.)

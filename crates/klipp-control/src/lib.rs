@@ -3376,11 +3376,19 @@ fn handle(
                 .flat_map(|t| t.clips.iter())
                 .find(|cl| cl.id == want)
                 .ok_or_else(|| format!("no clip with id {c}"))?;
+            // The timeline grade runs on every frame after the clip's own,
+            // so what the viewer shows is both; say so, or a reader of this
+            // graph alone would misjudge the picture.
+            let timeline = seq.timeline_graph.as_ref().filter(|g| !g.is_identity());
             Ok(json!({
                 "clip_id": c,
                 "is_identity": clip.node_graph.is_identity(),
                 "graph": serde_json::to_value(&clip.node_graph)
                     .map_err(|e| format!("serialising graph: {e}"))?,
+                "timeline_graph": timeline
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|e| format!("serialising the timeline graph: {e}"))?,
             }))
         }
 

@@ -166,3 +166,22 @@ fn a_file_without_roles_gets_a_new_sequences_roles() {
     assert_eq!(back.tracks[0].magnetic_role, TrackRole::Primary);
     assert_eq!(back.tracks[1].magnetic_role, TrackRole::Connected);
 }
+
+#[test]
+fn a_timeline_grade_comes_back() {
+    let mut seq = Sequence::new_default();
+    seq.tracks[0].clips.push(media_clip(0, 48));
+    let mut graph = klipp_nodes::NodeGraph::default();
+    let corrector = graph.ensure_corrector();
+    if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == corrector) {
+        n.label = "Show look".into();
+    }
+    seq.timeline_graph = Some(graph.clone());
+    let back = round_trip("timeline-grade", seq);
+    let got = back.timeline_graph.expect("the timeline grade");
+    let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| (n.id, n.label.clone())).collect::<Vec<_>>();
+    assert_eq!(ids(&got), ids(&graph));
+
+    let none = round_trip("no-timeline-grade", Sequence::new_default());
+    assert!(none.timeline_graph.is_none(), "a sequence with none reads back with none");
+}

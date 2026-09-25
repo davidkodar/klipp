@@ -564,6 +564,7 @@ mod tests {
         Sequence {
             drop_frame: false,
             camera: Default::default(),
+            timeline_graph: None,
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),

@@ -1753,6 +1753,9 @@ pub struct AppState {
 
     // Color panel / node graph
     pub show_color_panel: bool,
+    /// The Colour workspace grades the timeline grade — the look over
+    /// the whole sequence — rather than the selected clip.
+    pub grade_timeline: bool,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -3800,6 +3803,7 @@ impl Default for AppState {
             global_lut_enabled: true,
             bake_lut_size: 33,
             show_color_panel: false,
+            grade_timeline: false,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),

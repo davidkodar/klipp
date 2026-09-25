@@ -346,21 +346,31 @@ impl PlaybackEngine {
             return None;
         }
         let track_opacity = seq.tracks.get(layer.track).map(|t| t.opacity).unwrap_or(1.0);
-        let grade_hash = self.render_key_hash(clip, track_opacity);
+        let grade_hash = self.render_key_hash(seq, clip, track_opacity);
         Some(crate::render_cache::RenderCacheKey { clip_id: clip.id, frame_number: self.playhead.value, grade_hash, size })
     }
 
     /// The render cache's hash for a clip's frames: the clip, the global
     /// LUT, its track's opacity, and the render environment (working
     /// space, LUT interpolation, proxy decode, the media's log format).
-    pub(super) fn render_key_hash(&mut self, clip: &Clip, track_opacity: f32) -> u64 {
+    pub(super) fn render_key_hash(&mut self, seq: &klipp_timeline::Sequence, clip: &Clip, track_opacity: f32) -> u64 {
         let environment = crate::render_cache::render_environment_hash(
             self.color_pipeline.use_tetrahedral,
             crate::video_decoder::working_colorspace(),
             self.use_proxies,
             self.current_file.as_deref().and_then(crate::video_decoder::registered_log_format),
         );
-        self.clip_render_hash(clip) ^ self.lut_hash() ^ (track_opacity.to_bits() as u64).rotate_left(17) ^ environment.rotate_left(29)
+        self.clip_render_hash(clip) ^ self.lut_hash() ^ self.timeline_grade_hash(seq) ^ (track_opacity.to_bits() as u64).rotate_left(17) ^ environment.rotate_left(29)
+    }
+
+    /// The timeline grade, for the cache key: it runs over every frame,
+    /// so a change to it is a change to every cached frame. Hashed as the
+    /// clip it renders as, so it is cached and cleared with the others.
+    fn timeline_grade_hash(&mut self, seq: &klipp_timeline::Sequence) -> u64 {
+        match Clip::timeline_grade_of(seq) {
+            Some(tg) => self.clip_render_hash(&tg).rotate_left(41),
+            None => 0,
+        }
     }
 
     /// A hash of everything about a clip that its rendered frames depend
