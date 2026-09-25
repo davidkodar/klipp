@@ -98,12 +98,51 @@ pub struct LaunchScreen {
     /// from disk every few seconds rather than every repaint.
     newer_autosave: HashMap<PathBuf, bool>,
     autosave_checked_at: Option<std::time::Instant>,
+    /// The check in flight. It stats every listed project, and a stat on
+    /// a dead network mount can block for minutes, so it runs on its own
+    /// thread (as the FILES browser reads directories) and a new one is
+    /// not started while one is still out.
+    autosave_rx: Option<std::sync::mpsc::Receiver<HashMap<PathBuf, bool>>>,
 }
 
 impl LaunchScreen {
     /// Remove a cached thumbnail texture so it gets reloaded on next draw.
     pub fn invalidate_thumbnail(&mut self, path: &std::path::Path) {
         self.thumbnail_textures.remove(path);
+    }
+
+    /// Take the last auto-save check's result, and start the next one
+    /// every few seconds when none is running.
+    fn refresh_newer_autosaves(&mut self, ctx: &egui::Context, recent: &[RecentProject]) {
+        if let Some(rx) = &self.autosave_rx {
+            match rx.try_recv() {
+                Ok(found) => {
+                    self.newer_autosave = found;
+                    self.autosave_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.autosave_rx = None,
+            }
+        }
+        if self.autosave_checked_at.is_some_and(|t| t.elapsed().as_secs() < 3) {
+            return;
+        }
+        self.autosave_checked_at = Some(std::time::Instant::now());
+        let paths: Vec<PathBuf> = recent.iter().map(|rp| rp.path.clone()).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("launch-autosave-check".into())
+            .spawn(move || {
+                let found = paths.into_iter()
+                    .map(|p| { let newer = crate::app::has_newer_autosave(&p); (p, newer) })
+                    .collect();
+                let _ = tx.send(found);
+                ctx.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.autosave_rx = Some(rx);
+        }
     }
 
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
@@ -123,12 +162,7 @@ impl LaunchScreen {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         self.ensure_logo_texture(ctx);
-        if self.autosave_checked_at.is_none_or(|t| t.elapsed().as_secs() >= 3) {
-            self.newer_autosave = recent.iter()
-                .map(|rp| (rp.path.clone(), crate::app::has_newer_autosave(&rp.path)))
-                .collect();
-            self.autosave_checked_at = Some(std::time::Instant::now());
-        }
+        self.refresh_newer_autosaves(ctx, recent);
         let full_rect = ui.max_rect();
 
         // Fill background
