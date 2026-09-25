@@ -1492,6 +1492,19 @@ pub fn optimised_playback_mode() -> u8 {
     OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Playback Quality: the viewer renders at `1 / divisor` of its size while
+/// playing — 1 full, 2 half, 4 quarter. Paused frames stay full size, and
+/// export never reads it.
+static PLAYBACK_QUALITY_DIVISOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+pub fn set_playback_quality_divisor(divisor: u8) {
+    PLAYBACK_QUALITY_DIVISOR.store(divisor.clamp(1, 4), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn playback_quality_divisor() -> u8 {
+    PLAYBACK_QUALITY_DIVISOR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Working colorspace the decoder lands frames in. u8 tag matches
 /// `klipp_core::WorkingColorspace::as_u8`:
 ///   0 = Rec709Linear (default — pre-upgrade pipeline behaviour)

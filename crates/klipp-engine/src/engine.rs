@@ -1511,6 +1511,8 @@ impl PlaybackEngine {
                             Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
                         })
                         .unwrap_or((seq.resolution.width, seq.resolution.height));
+                    // Warmed for playback, so at Playback Quality's size.
+                    let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
                     if w == 0 || h == 0 {
                         continue;
                     }

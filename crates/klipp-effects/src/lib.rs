@@ -916,6 +916,55 @@ pub fn chain_supports_gpu(effects: &[BuiltinEffect]) -> bool {
     !effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
 }
 
+impl BuiltinEffect {
+    /// The effect as it should run on a buffer `k` times the sequence's
+    /// size: every parameter measured in pixels scaled by `k`, the rest
+    /// untouched.
+    ///
+    /// A blur radius or a streak length is authored against the picture
+    /// the editor sees at the sequence's size. Rendered into a half-size
+    /// preview — or into the 1080p frame the decoder makes of 4K media —
+    /// the same number of pixels covers twice as much of the picture, so
+    /// a 20 px blur looked like a 40 px one. Parameters already written
+    /// as fractions of the frame (crop edges, centres, shadow distances)
+    /// and those scaled by `/1080` internally (film grain, old film) need
+    /// nothing. An integer radius stays at least 1 where it was, so a
+    /// small erode does not vanish at a quarter size.
+    pub fn at_render_scale(mut self, k: f32) -> Self {
+        if (k - 1.0).abs() < 1e-6 || !k.is_finite() || k <= 0.0 {
+            return self;
+        }
+        let px = |v: &mut f32| *v *= k;
+        let whole = |v: &mut u32| {
+            if *v > 0 {
+                *v = ((*v as f32 * k).round() as u32).max(1);
+            }
+        };
+        match &mut self {
+            BuiltinEffect::Crop { feather, .. } => px(feather),
+            BuiltinEffect::GaussianBlur { radius }
+            | BuiltinEffect::Bloom { radius, .. }
+            | BuiltinEffect::Glow { radius, .. }
+            | BuiltinEffect::Diffusion { radius, .. }
+            | BuiltinEffect::FilmHalation { radius, .. }
+            | BuiltinEffect::TiltShift { radius, .. } => px(radius),
+            BuiltinEffect::LightWrap { width, .. } => px(width),
+            BuiltinEffect::AnamorphicStreak { length, .. } => px(length),
+            // A block never smaller than a pixel.
+            BuiltinEffect::Mosaic { block_size } => *block_size = (*block_size * k).max(1.0),
+            BuiltinEffect::DirectionalBlur { distance, .. } => px(distance),
+            BuiltinEffect::ChromaticAberration { red_shift, blue_shift, .. } => {
+                px(red_shift);
+                px(blue_shift);
+            }
+            BuiltinEffect::Dilate { radius } | BuiltinEffect::Erode { radius } | BuiltinEffect::MedianFilter { radius } => whole(radius),
+            BuiltinEffect::Denoise { spatial_sigma, .. } => px(spatial_sigma),
+            _ => {}
+        }
+        self
+    }
+}
+
 /// Whether the effect draws outside the picture, in the margin a
 /// transform leaves around a placed layer. Those run after the
 /// transform that made the margin; see [`crate::layer`].
@@ -1402,5 +1451,21 @@ mod tests {
             let r = apply_effects(std::slice::from_ref(effect), rgba.clone(), 1, 1);
             assert_eq!(r.len(), 4, "1x1 output should be 4 bytes for {:?}", effect);
         }
+    }
+
+    #[test]
+    fn pixel_sized_parameters_follow_the_render_size_and_fractions_do_not() {
+        let half = |e: BuiltinEffect| e.at_render_scale(0.5);
+        assert_eq!(half(BuiltinEffect::GaussianBlur { radius: 20.0 }), BuiltinEffect::GaussianBlur { radius: 10.0 });
+        assert_eq!(
+            half(BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 8.0 }),
+            BuiltinEffect::Crop { left: 0.25, right: 0.0, top: 0.0, bottom: 0.0, feather: 4.0 }
+        );
+        assert_eq!(half(BuiltinEffect::Erode { radius: 1 }), BuiltinEffect::Erode { radius: 1 }, "never rounded away");
+        assert_eq!(half(BuiltinEffect::Dilate { radius: 6 }), BuiltinEffect::Dilate { radius: 3 });
+        assert_eq!(half(BuiltinEffect::Mosaic { block_size: 1.5 }), BuiltinEffect::Mosaic { block_size: 1.0 });
+        let sharpen = BuiltinEffect::Sharpen { amount: 1.2 };
+        assert_eq!(half(sharpen.clone()), sharpen);
+        assert_eq!(BuiltinEffect::GaussianBlur { radius: 20.0 }.at_render_scale(1.0), BuiltinEffect::GaussianBlur { radius: 20.0 });
     }
 }
