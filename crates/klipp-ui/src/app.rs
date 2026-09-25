@@ -23713,7 +23713,11 @@ impl KlippApp {
         use crate::file_dialog::{await_path, Awaited, Picked};
         let path = match self.state.project_path.clone() {
             Some(p) if clicked => p,
-            Some(_) => return None,
+            Some(_) => {
+                // Saved before, so nothing to wait for.
+                self.unsaved_save_waiting = false;
+                return None;
+            }
             None => {
                 let step = await_path(UNSAVED_SAVE_PICKER.into(), self.unsaved_save_waiting, clicked, || {
                     rfd::FileDialog::new().set_title("Save Project").pick_folder()
@@ -27652,14 +27656,21 @@ impl eframe::App for KlippApp {
         };
         crate::file_dialog::install(ctx, picker_scope);
         let picked = crate::file_dialog::take_ready();
+        // Everything the pickers had to say this frame, in one toast: a
+        // refusal must not hide a worker's "Frame saved".
+        let mut said: Vec<String> = Vec::new();
         if picked.stale > 0 {
-            self.state.toast.show("The project or sequence changed while the file dialog was open, so that choice was not applied".to_string());
-        } else if picked.refused > 0 {
-            self.state.toast.show("A file dialog is already open".to_string());
-        } else if picked.expired > 0 {
-            self.state.toast.show("The file dialog answered after its panel had closed, so that choice was not applied".to_string());
-        } else if !picked.notices.is_empty() {
-            self.state.toast.show(picked.notices.join(" \u{2022} "));
+            said.push("The project or sequence changed while the file dialog was open, so that choice was not applied".into());
+        }
+        if picked.refused > 0 {
+            said.push("A file dialog is already open".into());
+        }
+        if picked.expired > 0 {
+            said.push("The file dialog answered after its panel had closed, so that choice was not applied".into());
+        }
+        said.extend(picked.notices);
+        if !said.is_empty() {
+            self.state.toast.show(said.join(" \u{2022} "));
         }
         let mut all_cmds = picked.commands;
 
