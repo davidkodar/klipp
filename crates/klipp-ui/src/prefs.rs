@@ -104,14 +104,36 @@ where
     let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
     // Try new format first
     if let Ok(projects) = serde_json::from_value::<Vec<RecentProject>>(value.clone()) {
-        return Ok(projects);
+        return Ok(without_autosaves(projects));
     }
     // Fall back to old Vec<PathBuf> format
     if let Ok(paths) = serde_json::from_value::<Vec<PathBuf>>(value) {
-        return Ok(paths.into_iter().map(RecentProject::from_path).collect());
+        return Ok(without_autosaves(paths.into_iter().map(RecentProject::from_path).collect()));
     }
     // If neither works, return empty
     Ok(Vec::new())
+}
+
+/// The recent list with each auto-save replaced by the project it belongs
+/// to, or dropped when that project is already listed.
+///
+/// Restoring an auto-save used to put its folder in the list, and every
+/// reader of the list (the project browser, Open Recent, reopening the
+/// last project at startup) then opened the auto-save as if it were the
+/// project. Opening the project instead offers the auto-save to restore.
+fn without_autosaves(projects: Vec<RecentProject>) -> Vec<RecentProject> {
+    let mut out: Vec<RecentProject> = Vec::with_capacity(projects.len());
+    for mut rp in projects {
+        if crate::app::is_autosave_path(&rp.path) {
+            let Some(main) = crate::app::project_for_autosave(&rp.path) else { continue };
+            rp.name = main.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(rp.name);
+            rp.path = main;
+        }
+        if !out.iter().any(|p| p.path == rp.path) {
+            out.push(rp);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1050,6 +1072,11 @@ impl Preferences {
 
     /// Add a project to the recent projects list (most recent first, max 20).
     pub fn add_recent_project(&mut self, project: RecentProject) {
+        // Restoring an auto-save opens its folder; the project it belongs
+        // to is what goes in the list.
+        if crate::app::is_autosave_path(&project.path) {
+            return;
+        }
         self.general.recent_projects.retain(|p| p.path != project.path);
         self.general.recent_projects.insert(0, project);
         self.general.recent_projects.truncate(20);
@@ -1907,6 +1934,54 @@ fn default_media_list_columns() -> Vec<klipp_media::Field> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_recent_list_is_read_without_autosaves() {
+        let json = serde_json::json!({ "general": { "recent_projects": [
+            { "path": "/p/X_autosave.klipp", "name": "X_autosave" },
+            { "path": "/p/Y_autosave.klipp", "name": "Y_autosave" },
+            { "path": "/p/Y.klipp", "name": "Y" },
+            { "path": "/p/Z.klipp", "name": "Z" },
+        ] } });
+        let mut prefs = serde_json::to_value(Preferences::default()).unwrap();
+        prefs["general"]["recent_projects"] = json["general"]["recent_projects"].clone();
+        let prefs: Preferences = serde_json::from_value(prefs).unwrap();
+        let listed: Vec<_> = prefs.general.recent_projects.iter()
+            .map(|r| (r.path.to_string_lossy().into_owned(), r.name.clone()))
+            .collect();
+        assert_eq!(listed, vec![
+            ("/p/X.klipp".to_string(), "X".to_string()),
+            ("/p/Y.klipp".to_string(), "Y".to_string()),
+            ("/p/Z.klipp".to_string(), "Z".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn an_autosave_never_enters_the_recent_list() {
+        let mut prefs = Preferences::default();
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/X_autosave.klipp")));
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/X.klipp")));
+        let paths: Vec<_> = prefs.general.recent_projects.iter().map(|r| r.path.clone()).collect();
+        assert_eq!(paths, vec![PathBuf::from("/p/X.klipp")]);
+    }
+
+    #[test]
+    fn a_newer_autosave_is_found_and_an_older_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("klipp-newer-autosave-{}", std::process::id()));
+        let project = dir.join("X.klipp");
+        let autosave = crate::app::autosave_path_for(&project);
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(!crate::app::has_newer_autosave(&project), "no auto-save at all");
+        std::fs::create_dir_all(&autosave).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&project).unwrap().set_modified(old).unwrap();
+        assert!(crate::app::has_newer_autosave(&project));
+        // Keep Saved Version marks it seen, and leaves it on disk.
+        crate::app::retire_autosave(&project);
+        assert!(!crate::app::has_newer_autosave(&project));
+        assert!(autosave.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Helper: serialize to JSON string and deserialize back.
     fn round_trip(prefs: &Preferences) -> Preferences {

@@ -31567,6 +31567,7 @@ impl KlippApp {
                             if let Some(original_path) = self.state.autosave_original_path.take() {
                                 self.state.autosave_recovery_path = None;
                                 self.state.show_autosave_recovery = false;
+                                retire_autosave(&original_path);
                                 self.do_open_project_inner(&original_path);
                             }
                         }
@@ -32227,7 +32228,12 @@ impl KlippApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(self.theme.bg_void))
                 .show(ctx, |ui| {
-                    let recent = self.prefs.general.recent_projects.clone();
+                    // Auto-saves are recovery copies, not projects: they are
+                    // offered from their project's card and open prompt.
+                    let recent: Vec<_> = self.prefs.general.recent_projects.iter()
+                        .filter(|rp| !is_autosave_path(&rp.path))
+                        .cloned()
+                        .collect();
                     let panel_cmds = self.launch_screen.show(ctx, ui, &recent, &self.theme);
                     all_cmds.extend(panel_cmds);
                 });
@@ -34759,9 +34765,44 @@ pub fn detect_image_sequence(paths: &[PathBuf]) -> Option<(String, u32, u32)> {
 }
 
 /// Returns the autosave path for a given project path: `<stem>_autosave.klipp`
-fn autosave_path_for(project_path: &Path) -> PathBuf {
+pub(crate) fn autosave_path_for(project_path: &Path) -> PathBuf {
     let stem = project_path.file_stem().unwrap_or_default().to_string_lossy();
     project_path.with_file_name(format!("{stem}_autosave.klipp"))
+}
+
+/// Whether a path is an auto-save folder rather than a project.
+pub(crate) fn is_autosave_path(path: &Path) -> bool {
+    path.file_stem().is_some_and(|s| s.to_string_lossy().ends_with("_autosave"))
+}
+
+/// The project an auto-save folder belongs to: `X_autosave.klipp` → `X.klipp`.
+pub(crate) fn project_for_autosave(path: &Path) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_string_lossy();
+    let main = stem.strip_suffix("_autosave").filter(|m| !m.is_empty())?;
+    Some(path.with_file_name(format!("{main}.klipp")))
+}
+
+/// Mark a project's auto-save as seen after the user chose the saved
+/// version over it: the project folder's time moves past the auto-save's,
+/// so neither the open prompt nor the browser's "Unsaved work recovered"
+/// badge offers it again. The auto-save itself is left on disk, and goes
+/// the way it always has, on the next clean save or close.
+pub(crate) fn retire_autosave(project_path: &Path) {
+    let now = std::time::SystemTime::now();
+    if let Err(e) = std::fs::File::open(project_path).and_then(|f| f.set_modified(now)) {
+        tracing::warn!("Could not mark the auto-save of {project_path:?} as seen: {e}");
+    }
+}
+
+/// Whether a project has an auto-save newer than its last save: work
+/// that was never saved, usually because Klipp closed unexpectedly.
+pub(crate) fn has_newer_autosave(project_path: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(project_path), modified(&autosave_path_for(project_path))) {
+        (Some(saved), Some(auto)) => auto > saved,
+        (None, Some(_)) => true,
+        _ => false,
+    }
 }
 
 /// Generate an ISO 8601 UTC timestamp string.
