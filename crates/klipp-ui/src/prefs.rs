@@ -291,6 +291,15 @@ pub enum OptimisedPlayback {
     AlwaysOptimized,
 }
 
+/// Playback Quality as the engine's divisor of the viewer size.
+pub fn playback_quality_divisor(q: klipp_core::PlaybackQuality) -> u8 {
+    match q {
+        klipp_core::PlaybackQuality::Full => 1,
+        klipp_core::PlaybackQuality::Half => 2,
+        klipp_core::PlaybackQuality::Quarter => 4,
+    }
+}
+
 impl OptimisedPlayback {
     /// Map onto the engine-side u8 atomic. Kept as a method so the
     /// numbering can shift without touching every call site.

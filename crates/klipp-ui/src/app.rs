@@ -1071,6 +1071,9 @@ impl KlippApp {
         klipp_engine::video_decoder::set_optimised_playback_mode(
             app.prefs.playback.optimised_playback.to_engine_mode(),
         );
+        klipp_engine::video_decoder::set_playback_quality_divisor(crate::prefs::playback_quality_divisor(
+            app.prefs.playback.playback_quality,
+        ));
         klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
         // TODO: background_render pref — when true, pre-render complex timeline
         // sections in a background thread. No background render system exists yet;
@@ -27964,6 +27967,9 @@ impl eframe::App for KlippApp {
             klipp_engine::video_decoder::set_optimised_playback_mode(
                 self.prefs.playback.optimised_playback.to_engine_mode(),
             );
+            klipp_engine::video_decoder::set_playback_quality_divisor(crate::prefs::playback_quality_divisor(
+                self.prefs.playback.playback_quality,
+            ));
             let _ = self.cmd_tx.send(AppCommand::SetLutTetrahedral(
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));

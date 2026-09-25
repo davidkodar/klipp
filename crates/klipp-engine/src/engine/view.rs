@@ -84,6 +84,26 @@ pub(super) fn viewer_canvas(picture: (u32, u32), sequence: (u32, u32)) -> (u32, 
     if w > sw || h > sh { sequence } else { (w, h) }
 }
 
+/// The viewer's frame reduced for Playback Quality: `size` divided by
+/// `divisor`, kept even and the same shape, and never below [`MIN_REDUCED_HEIGHT`]
+/// lines — a quarter of a 480p sequence is not a picture anyone can judge
+/// motion on. Clip positions and pixel-sized effects follow the render
+/// size (`klipp_compose::render::render_scale`), so the reduced frame is
+/// the same picture, only coarser.
+pub(super) fn reduced_for_quality(size: (u32, u32), divisor: u8) -> (u32, u32) {
+    let (w, h) = size;
+    if divisor <= 1 || h <= MIN_REDUCED_HEIGHT {
+        return size;
+    }
+    let d = u32::from(divisor);
+    let rh = (h / d).max(MIN_REDUCED_HEIGHT).min(h);
+    let rw = ((w as u64 * rh as u64 + h as u64 / 2) / h as u64) as u32;
+    ((rw & !1).max(2), (rh & !1).max(2))
+}
+
+/// The fewest lines Playback Quality reduces the viewer to.
+pub(super) const MIN_REDUCED_HEIGHT: u32 = 180;
+
 fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
@@ -294,7 +314,12 @@ impl PlaybackEngine {
     /// The render cache's key for this frame, when the frame is one it can
     /// hold: the primary clip alone on screen, graded, and nothing on that
     /// the cache does not key (a grade tool's view, a split, a drag).
-    fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>) -> Option<crate::render_cache::RenderCacheKey> {
+    /// `size` is the frame's rendered size, part of the key: a half-size
+    /// frame and a full-size one of the same clip and grade are different
+    /// pictures, and the disk cache is looked up by name alone, so without
+    /// it a frame cached at one Playback Quality stopped the other ever
+    /// being rendered ahead.
+    fn render_cache_key(&mut self, seq: &Sequence, primary: Option<ClipId>, size: (u32, u32)) -> Option<crate::render_cache::RenderCacheKey> {
         if self.in_node_param_edit
             || self.solo_node.is_some()
             || self.matte_preview
@@ -319,7 +344,12 @@ impl PlaybackEngine {
             return None;
         }
         let track_opacity = seq.tracks.get(layer.track).map(|t| t.opacity).unwrap_or(1.0);
-        let grade_hash = self.render_key_hash(clip, track_opacity);
+        let grade_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.render_key_hash(clip, track_opacity), size).hash(&mut h);
+            h.finish()
+        };
         Some(crate::render_cache::RenderCacheKey { clip_id: clip.id, frame_number: self.playhead.value, grade_hash })
     }
 
@@ -488,6 +518,13 @@ impl PlaybackEngine {
             Some(p) => viewer_canvas((p.width, p.height), seq_size),
             None => seq_size,
         };
+        // Playback Quality applies while playing: a parked frame is for
+        // judging, and renders full size.
+        let (w, h) = if self.state == PlaybackState::Playing {
+            reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor())
+        } else {
+            (w, h)
+        };
         if w == 0 || h == 0 {
             return false;
         }
@@ -525,7 +562,7 @@ impl PlaybackEngine {
                 ((pw, ph) == (w, h)).then_some(published);
         }
 
-        let cache_key = if progress || stack_only { None } else { self.render_cache_key(&seq, primary_clip) };
+        let cache_key = if progress || stack_only { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
@@ -1005,8 +1042,12 @@ impl PlaybackEngine {
             klipp_compose::frame_snapshot(&seq, self.playhead)
         };
         let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
-        let (w, h) = viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height));
-        let rendered = match self.render_cache_key(&seq, primary) {
+        // Ahead of playback, so at the size playback will ask for.
+        let (w, h) = reduced_for_quality(
+            viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height)),
+            crate::video_decoder::playback_quality_divisor(),
+        );
+        let rendered = match self.render_cache_key(&seq, primary, (w, h)) {
             // Already cached at this size, in memory or on disk: nothing to
             // render. Without this the scan rendered its nearest candidate
             // again on every idle tick, forever — a full render, a readback,
@@ -1067,4 +1108,24 @@ fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) 
 /// of it.
 fn inspect_is_plain(i: &Inspect) -> bool {
     !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none()
+}
+
+#[cfg(test)]
+mod playback_quality_tests {
+    use super::*;
+
+    #[test]
+    fn half_and_quarter_keep_the_shape_and_stop_at_a_watchable_size() {
+        assert_eq!(reduced_for_quality((3840, 2160), 1), (3840, 2160));
+        assert_eq!(reduced_for_quality((3840, 2160), 2), (1920, 1080));
+        assert_eq!(reduced_for_quality((3840, 2160), 4), (960, 540));
+        // A 1080p frame at a quarter would be 270 lines: fine. A 480p one
+        // stops at the floor, and one already below it is left alone.
+        assert_eq!(reduced_for_quality((1920, 1080), 4), (480, 270));
+        assert_eq!(reduced_for_quality((854, 480), 4), (320, 180));
+        assert_eq!(reduced_for_quality((320, 180), 2), (320, 180));
+        // Odd shapes stay even, for the encoder-shaped buffers downstream.
+        let (w, h) = reduced_for_quality((2048, 858), 2);
+        assert!(w % 2 == 0 && h % 2 == 0 && (w as f64 / h as f64 - 2048.0 / 858.0).abs() < 0.01, "{w}x{h}");
+    }
 }
