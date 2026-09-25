@@ -3,6 +3,7 @@ use realfft::{num_complex::Complex32, RealFftPlanner};
 
 const FFT_SIZE: usize = 1024;
 const PROFILE_BINS: usize = FFT_SIZE / 2 + 1;
+const CROSSFADE: usize = 64;
 
 /// Broadband spectral denoiser. The first `profile_seconds` of a clip are
 /// learned as a noise profile, then spectral subtraction is applied to each
@@ -22,6 +23,8 @@ pub struct Denoiser {
     spectrum: Vec<Complex32>,
     input: Vec<f32>,
     mono_scratch: Vec<f32>,
+    boundary_tail: [f32; CROSSFADE],
+    has_boundary_tail: bool,
 }
 
 static PARAM_DESCS: &[AudioParamDescriptor] = &[
@@ -48,6 +51,8 @@ impl Denoiser {
             spectrum: fft.make_output_vec(),
             input: vec![0.0; FFT_SIZE],
             mono_scratch: Vec::new(),
+            boundary_tail: [0.0; CROSSFADE],
+            has_boundary_tail: false,
             fft,
             inverse,
         }
@@ -78,7 +83,19 @@ impl Denoiser {
             }
             if self.inverse.process(&mut self.spectrum, &mut self.input).is_err() { continue; }
             let scale = 1.0 / FFT_SIZE as f32;
-            for (dst, src) in block.iter_mut().zip(self.input.iter()) { *dst = *src * scale; }
+            for (i, dst) in block.iter_mut().enumerate() {
+                let processed = self.input[i] * scale;
+                if self.has_boundary_tail && i < CROSSFADE {
+                    let t = i as f32 / CROSSFADE as f32;
+                    *dst = self.boundary_tail[i] * (1.0 - t) + processed * t;
+                } else {
+                    *dst = processed;
+                }
+            }
+            if frames >= CROSSFADE {
+                self.boundary_tail.copy_from_slice(&block[frames - CROSSFADE..frames]);
+                self.has_boundary_tail = true;
+            }
             self.learned_frames = self.learned_frames.saturating_add(frames);
             if learning {
                 self.profile_blocks = self.profile_blocks.saturating_add(1);
@@ -116,7 +133,7 @@ impl AudioEffect for Denoiser {
             for i in 0..frames { buffer[i * channels + ch] = self.mono_scratch[i]; }
         }
     }
-    fn reset(&mut self) { self.profile.fill(0.0); self.learned_frames = 0; self.profile_blocks = 0; self.learn_requested = false; }
+    fn reset(&mut self) { self.profile.fill(0.0); self.learned_frames = 0; self.profile_blocks = 0; self.learn_requested = false; self.boundary_tail = [0.0; CROSSFADE]; self.has_boundary_tail = false; }
     fn serialize_params(&self) -> Vec<(String, f32)> {
         vec![("strength".into(), self.strength), ("floor".into(), self.floor), ("profile_seconds".into(), self.profile_seconds)]
     }
