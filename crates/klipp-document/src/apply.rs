@@ -522,6 +522,15 @@ impl DocumentView<'_> {
                     }
                 }
             }
+            EditCommand::ReplaceClip { old, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(old.id) {
+                        *clip = (**old).clone();
+                        break;
+                    }
+                }
+                effects.sync_sequence = true;
+            }
             EditCommand::SetNodeGraph { clip_id, old_graph, .. } => {
                 for track in &mut self.sequences[self.active].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1122,6 +1131,15 @@ impl DocumentView<'_> {
                         }
                     }
                 }
+            }
+            EditCommand::ReplaceClip { new, .. } => {
+                for track in &mut self.sequences[self.active].tracks {
+                    if let Some(clip) = track.find_clip_mut(new.id) {
+                        *clip = (**new).clone();
+                        break;
+                    }
+                }
+                effects.sync_sequence = true;
             }
             EditCommand::SetNodeGraph { clip_id, new_graph, .. } => {
                 for track in &mut self.sequences[self.active].tracks {

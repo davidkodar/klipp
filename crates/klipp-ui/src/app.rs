@@ -649,6 +649,25 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
     }
 }
 
+/// The edits a Paste Attributes makes: each target clip replaced whole
+/// by itself with the chosen attributes written on. Free of the app so
+/// it can be tested without one.
+fn paste_attributes_edits(
+    seq: &klipp_timeline::Sequence,
+    targets: &[klipp_core::ClipId],
+    attrs: &crate::state::AttributesClipboard,
+    what: crate::state::PasteChoice,
+) -> Vec<EditCommand> {
+    seq.all_clips()
+        .filter(|c| targets.contains(&c.id))
+        .map(|c| {
+            let mut new = c.clone();
+            attrs.paste_onto(&mut new, what);
+            EditCommand::ReplaceClip { description: "Paste Attributes", old: Box::new(c.clone()), new: Box::new(new) }
+        })
+        .collect()
+}
+
 /// One camera key set or cleared, on the list the param names.
 ///
 /// Free of the app so it can be tested without one. The insert and the
@@ -7981,90 +8000,38 @@ impl KlippApp {
                     let cid = *clip_id;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
-                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard {
-                            builtin_effects: clip.builtin_effects.clone(),
-                            builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
-                            effects: clip.effects.clone(),
-                            node_graph: clip.node_graph.clone(),
-                            volume: clip.volume,
-                            pan: clip.pan,
-                            gain: clip.gain,
-                            fade_in_secs: clip.fade_in_secs,
-                            fade_out_secs: clip.fade_out_secs,
-                            fade_in_curve: clip.fade_in_curve,
-                            fade_out_curve: clip.fade_out_curve,
-                            volume_keyframes: clip.volume_keyframes.clone(),
-                            pan_keyframes: clip.pan_keyframes.clone(),
-                            gain_keyframes: clip.gain_keyframes.clone(),
-                            audio_effects: clip.audio_effects.clone(),
-                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                            opacity_keyframes: clip.opacity_keyframes.clone(),
-                            transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-                            transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-                            transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-                            transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-                            effect_keyframes: clip.effect_keyframes.clone(),
-                            param_modifiers: clip.param_modifiers.clone(),
-                            speed: clip.speed,
-                            speed_keyframes: clip.speed_keyframes.clone(),
-                        });
+                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(clip));
                         self.state.toast.show("Attributes copied".to_string());
                     }
                     true
                 }
                 // Paste Attributes: apply selected attribute categories to target clip(s)
                 AppCommand::PasteAttributes { effects, color_grade, audio, transform, speed } => {
-                    if let Some(ref attrs) = self.state.attributes_clipboard.clone() {
-                        // Collect target clip IDs
+                    // One whole-clip snapshot either side per target, as
+                    // one undo step. It used to write the clips in place
+                    // with no history, and to stop at the first clip in
+                    // the sequence that was not a target — so it pasted
+                    // to whichever targets came before that, skipped the
+                    // engine sync, and said nothing.
+                    if let Some(attrs) = self.state.attributes_clipboard.clone() {
+                        let what = crate::state::PasteChoice {
+                            effects: *effects,
+                            color_grade: *color_grade,
+                            audio: *audio,
+                            transform: *transform,
+                            speed: *speed,
+                        };
                         let mut targets = self.state.selected_clips.clone();
                         if let Some(primary) = self.state.selected_clip {
                             if !targets.contains(&primary) {
                                 targets.push(primary);
                             }
                         }
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        for clip in seq.all_clips_mut() {
-                            if !targets.contains(&clip.id) { return true; }
-                            if *effects {
-                                clip.builtin_effects = attrs.builtin_effects.clone();
-                                clip.builtin_effects_enabled = attrs.builtin_effects_enabled.clone();
-                                clip.effects = attrs.effects.clone();
-                                clip.effect_keyframes = attrs.effect_keyframes.clone();
-                            }
-                            if *color_grade {
-                                clip.node_graph = attrs.node_graph.clone();
-                            }
-                            if *audio {
-                                clip.volume = attrs.volume;
-                                clip.pan = attrs.pan;
-                                clip.gain = attrs.gain;
-                                clip.fade_in_secs = attrs.fade_in_secs;
-                                clip.fade_out_secs = attrs.fade_out_secs;
-                                clip.fade_in_curve = attrs.fade_in_curve;
-                                clip.fade_out_curve = attrs.fade_out_curve;
-                                clip.volume_keyframes = attrs.volume_keyframes.clone();
-                                clip.pan_keyframes = attrs.pan_keyframes.clone();
-                                clip.gain_keyframes = attrs.gain_keyframes.clone();
-                                clip.audio_effects = attrs.audio_effects.clone();
-                                clip.audio_effect_keyframes = attrs.audio_effect_keyframes.clone();
-                            }
-                            if *transform {
-                                clip.opacity_keyframes = attrs.opacity_keyframes.clone();
-                                clip.transform_pos_x_keyframes = attrs.transform_pos_x_keyframes.clone();
-                                clip.transform_pos_y_keyframes = attrs.transform_pos_y_keyframes.clone();
-                                clip.transform_scale_keyframes = attrs.transform_scale_keyframes.clone();
-                                clip.transform_rotation_keyframes = attrs.transform_rotation_keyframes.clone();
-                                clip.param_modifiers = attrs.param_modifiers.clone();
-                            }
-                            if *speed {
-                                clip.speed = attrs.speed;
-                            }
-                        }
-                        let count = targets.len();
+                        let edits = paste_attributes_edits(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let count = edits.len();
+                        self.apply_edits_as_one(&edits, "Paste Attributes");
                         self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
-                        self.state.dirty = true;
                     }
-                    self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::DuplicateClip { clip_id } => {
@@ -40794,4 +40761,60 @@ mod sequence_camera_tests {
 fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod paste_attributes_tests {
+    use super::*;
+    use klipp_timeline::{Clip, Sequence};
+
+    fn t(secs: i64) -> klipp_core::Timecode {
+        klipp_core::Timecode { value: secs * 25, rate: 25 }
+    }
+
+    fn clip(from: i64, to: i64) -> Clip {
+        Clip::media(klipp_core::MediaId::new(), t(from), t(to), t(0), t(to - from))
+    }
+
+    #[test]
+    fn a_paste_reaches_every_target_as_one_undoable_step() {
+        let mut seq = Sequence::new_default();
+        let source = {
+            let mut c = clip(0, 2);
+            c.node_graph = klipp_nodes::NodeGraph::default();
+            c.volume = 0.25;
+            c
+        };
+        // The first clip in the sequence is not a target: the old handler
+        // stopped there and pasted nothing.
+        let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
+        let targets = vec![b.id, c.id];
+        seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
+        let attrs = crate::state::AttributesClipboard::of(&source);
+        let what = crate::state::PasteChoice { color_grade: true, audio: true, ..Default::default() };
+        let edits = paste_attributes_edits(&seq, &targets, &attrs, what);
+        assert_eq!(edits.len(), 2);
+
+        let mut sequences = vec![seq];
+        let mut pool = klipp_media::MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in &edits {
+            view.apply_forward(e);
+        }
+        let pasted: Vec<&Clip> = sequences[0].tracks[0].clips.iter().filter(|x| targets.contains(&x.id)).collect();
+        assert!(pasted.iter().all(|x| x.volume == 0.25));
+        // Fresh node ids on each clip, not the source's.
+        let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_ne!(ids(&pasted[0].node_graph), ids(&source.node_graph));
+        assert_ne!(ids(&pasted[0].node_graph), ids(&pasted[1].node_graph));
+        assert_eq!(sequences[0].tracks[0].clips[0].volume, a.volume, "a clip that was not a target is untouched");
+
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in edits.iter().rev() {
+            view.apply_inverse(e);
+        }
+        assert_eq!(sequences[0].tracks[0].clips[1].volume, b.volume);
+        assert_eq!(sequences[0].tracks[0].clips[2].volume, c.volume);
+    }
 }
