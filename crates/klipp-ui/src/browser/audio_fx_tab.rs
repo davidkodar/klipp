@@ -127,6 +127,7 @@ fn description_for(entry: &EffectEntry) -> String {
             "eq" => "6-band parametric equaliser".into(),
             "limiter" => "Peak protection".into(),
             "gate" => "Silence low-level noise".into(),
+            "high_pass" => "Remove low-frequency rumble and wind".into(),
             "deesser" => "Reduce sibilance in vocals".into(),
             "normalize" => "Set target loudness (LUFS)".into(),
             "noise_reduction" => "Per-band noise gating".into(),
