@@ -571,6 +571,13 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.show_history_panel = !s.show_history_panel), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Subtitle Editor"), shortcut: Cow::Borrowed("Ctrl+Shift+T"),
         action: PaletteAction::ToggleState(|s| s.show_subtitle_editor = !s.show_subtitle_editor), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Transcript"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.show_transcript_panel = !s.show_transcript_panel), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Captions from Transcript\u{2026}"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| {
+            s.show_subtitle_editor = true;
+            s.subtitle_editor.captions_form.get_or_insert_with(Default::default);
+        }), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Performance Overlay"), shortcut: Cow::Borrowed("P"),
         action: PaletteAction::ToggleState(|s| s.show_perf_overlay = !s.show_perf_overlay), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Zebras"), shortcut: Cow::Borrowed("Z"),

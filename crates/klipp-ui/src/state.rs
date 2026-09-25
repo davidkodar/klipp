@@ -2147,6 +2147,13 @@ pub struct AppState {
     pub show_markers_panel: bool,
     /// Visibility of the dedicated subtitle editor panel.
     pub show_subtitle_editor: bool,
+    /// Visibility of the Transcript panel.
+    pub show_transcript_panel: bool,
+    /// Document ops a panel asked for (captions, transcript cuts), each
+    /// with its history label: resolved against the timeline and applied
+    /// as one undo step by the app on its next frame, through the same
+    /// resolver the assistant's ops use.
+    pub pending_doc_ops: Vec<(String, Vec<klipp_document::ops::Op>)>,
     /// Per-session editing state for the subtitle editor panel.
     pub subtitle_editor: SubtitleEditorState,
     /// Live state for a running project-consolidation operation (None = no
@@ -2647,6 +2654,26 @@ pub struct SubtitleEditorState {
     /// Track being renamed inline (header double-click). Name edit buffer.
     pub editing_track_name: Option<klipp_core::TrackId>,
     pub track_name_buf: String,
+    /// The "Captions from Transcript" form, when open.
+    pub captions_form: Option<CaptionsForm>,
+}
+
+/// How to make captions from the transcript: the settings of
+/// `Op::Captions`, as the subtitle editor's form holds them.
+#[derive(Debug, Clone)]
+pub struct CaptionsForm {
+    pub max_chars: usize,
+    pub max_lines: usize,
+    /// Only between the sequence's in and out points.
+    pub in_out_only: bool,
+    /// Make them again over captions already there.
+    pub replace: bool,
+}
+
+impl Default for CaptionsForm {
+    fn default() -> Self {
+        Self { max_chars: 42, max_lines: 2, in_out_only: false, replace: false }
+    }
 }
 
 /// Per-viewer zoom + pan state. `zoom == 0.0` is the "Fit" sentinel
@@ -3837,6 +3864,8 @@ impl Default for AppState {
             confirm_remove_track: None,
             show_markers_panel: false,
             show_subtitle_editor: false,
+            show_transcript_panel: false,
+            pending_doc_ops: Vec::new(),
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,

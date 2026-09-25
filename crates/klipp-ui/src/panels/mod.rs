@@ -40,3 +40,4 @@ pub mod workspace_manager;
 
 pub mod title_curve;
 pub mod relink;
+pub mod transcript;

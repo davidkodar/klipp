@@ -75,6 +75,7 @@ pub mod effect_presets;
 pub mod title_templates;
 pub mod state;
 pub mod theme;
+pub mod transcript;
 pub mod timeline;
 pub mod ui_util;
 pub mod widgets;
