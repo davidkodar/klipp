@@ -75,14 +75,76 @@ pub(crate) fn quiet_alsa() {
 pub fn probe_sample_rate() -> u32 {
     static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        use cpal::traits::{DeviceTrait, HostTrait};
+        use cpal::traits::HostTrait;
         quiet_alsa();
         let host = cpal::default_host();
         host.default_output_device()
-            .and_then(|d| d.default_output_config().ok())
+            .and_then(|d| output_config_for(&d))
             .map(|c| c.sample_rate().0)
             .unwrap_or(48000)
     })
+}
+
+/// The rate Klipp's playback runs at. Every PCM cache and every effect
+/// chain is 48 kHz, so that is the rate to open a device at when it offers
+/// it; anything else means converting every sample. A device's *default*
+/// config is often not 48 kHz even when it takes it: PipeWire's ALSA
+/// bridge reports 44.1 kHz and then converts back to its own 48 kHz graph,
+/// which converted each sample twice.
+const PREFERRED_OUTPUT_RATE: u32 = 48_000;
+
+/// Pick the output rate: [`PREFERRED_OUTPUT_RATE`] when one of the
+/// device's supported ranges covers it with the default config's channel
+/// count and the same (or f32) sample format, otherwise the default rate.
+/// A range that would also change the channel layout never wins.
+pub(crate) fn choose_output_rate(
+    default_rate: u32,
+    default_channels: u16,
+    default_format: cpal::SampleFormat,
+    ranges: &[(u16, cpal::SampleFormat, u32, u32)],
+) -> u32 {
+    let offers_preferred = ranges.iter().any(|&(channels, format, min, max)| {
+        channels == default_channels
+            && (format == default_format || format == cpal::SampleFormat::F32)
+            && (min..=max).contains(&PREFERRED_OUTPUT_RATE)
+    });
+    if offers_preferred { PREFERRED_OUTPUT_RATE } else { default_rate }
+}
+
+/// The config to open `device` with: its default config at the rate
+/// [`choose_output_rate`] picks. A rate other than the default is tried
+/// by building (not playing) a stream first, since some ALSA plugins list
+/// rates they then refuse; on refusal the default config is used, so the
+/// choice never costs the user their sound.
+fn output_config_for(device: &cpal::Device) -> Option<cpal::SupportedStreamConfig> {
+    use cpal::traits::DeviceTrait;
+    let default = device.default_output_config().ok()?;
+    let ranges: Vec<(u16, cpal::SampleFormat, u32, u32)> = device
+        .supported_output_configs()
+        .map(|it| it.map(|r| (r.channels(), r.sample_format(), r.min_sample_rate().0, r.max_sample_rate().0)).collect())
+        .unwrap_or_default();
+    let rate = choose_output_rate(default.sample_rate().0, default.channels(), default.sample_format(), &ranges);
+    if rate == default.sample_rate().0 {
+        return Some(default);
+    }
+    let candidate = cpal::SupportedStreamConfig::new(
+        default.channels(),
+        cpal::SampleRate(rate),
+        *default.buffer_size(),
+        default.sample_format(),
+    );
+    let trial = cpal::StreamConfig {
+        channels: candidate.channels(),
+        sample_rate: candidate.sample_rate(),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    match device.build_output_stream(&trial, |_: &mut [f32], _: &cpal::OutputCallbackInfo| {}, |_| {}, None) {
+        Ok(_) => Some(candidate),
+        Err(e) => {
+            tracing::warn!("audio device lists {rate} Hz but refused it ({e}); using its default {} Hz", default.sample_rate().0);
+            Some(default)
+        }
+    }
 }
 
 /// Check if an audio output device is available.
@@ -329,9 +391,17 @@ impl AudioOutput {
                 .ok_or(AudioOutputError::NoDevice)?
         };
 
-        let supported_config = device
-            .default_output_config()
-            .map_err(|e| AudioOutputError::Config(e.to_string()))?;
+        // The same rate choice the engine's pipeline was built for (see
+        // `probe_sample_rate`): the default device's is cached from there.
+        let supported_config = if preferred_device.is_none() {
+            let rate = probe_sample_rate();
+            let default = device
+                .default_output_config()
+                .map_err(|e| AudioOutputError::Config(e.to_string()))?;
+            cpal::SupportedStreamConfig::new(default.channels(), cpal::SampleRate(rate), *default.buffer_size(), default.sample_format())
+        } else {
+            output_config_for(&device).ok_or_else(|| AudioOutputError::Config("no output config".into()))?
+        };
 
         let sample_rate = supported_config.sample_rate().0;
         let channels = supported_config.channels();
@@ -699,6 +769,7 @@ impl std::fmt::Display for AudioOutputError {
 
 #[cfg(test)]
 mod device_enum_tests {
+
     //! Tests for the audio device enumeration helpers. These run against
     //! whatever cpal sees on the host machine, so we keep the assertions
     //! shape-based rather than depending on specific device names. CI
@@ -808,5 +879,22 @@ mod device_enum_tests {
         prime_audio_devices_cache();
         prime_audio_devices_cache();
         let _ = cached_output_devices();
+    }
+
+    #[test]
+    fn output_rate_prefers_48k_without_changing_the_layout() {
+        use cpal::SampleFormat::{F32, I16};
+        // PipeWire's ALSA bridge: default 44.1 kHz, takes anything.
+        assert_eq!(choose_output_rate(44_100, 2, F32, &[(2, F32, 8_000, 192_000)]), 48_000);
+        // Only a mono or 8-channel 48k: keep the default stereo rate.
+        assert_eq!(choose_output_rate(44_100, 2, F32, &[(1, F32, 48_000, 48_000), (8, F32, 48_000, 48_000)]), 44_100);
+        // 48k only in another integer format while the default is f32: keep.
+        assert_eq!(choose_output_rate(44_100, 2, F32, &[(2, I16, 48_000, 48_000)]), 44_100);
+        // An integer default may move to f32 at 48k (the stream is f32).
+        assert_eq!(choose_output_rate(44_100, 2, I16, &[(2, F32, 48_000, 48_000)]), 48_000);
+        // A device that cannot do 48k at all stays at its default.
+        assert_eq!(choose_output_rate(44_100, 2, F32, &[(2, F32, 44_100, 44_100)]), 44_100);
+        // Already 48k.
+        assert_eq!(choose_output_rate(48_000, 2, F32, &[]), 48_000);
     }
 }

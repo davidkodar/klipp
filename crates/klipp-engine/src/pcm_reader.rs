@@ -359,10 +359,12 @@ fn pcm_feed_thread(
 
     // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
+        // Effects run at the PCM's own 48 kHz, before any conversion to
+        // the device rate, on both paths.
         let mut chain = AudioEffectChain::from_instances_with_kfs(
             &audio_effects,
             &audio_effect_keyframes,
-            output_rate,
+            SAMPLE_RATE,
         );
         // Start costly effects now, while paused, not on the first block
         // after Play, where it would starve the sound card.
@@ -378,13 +380,14 @@ fn pcm_feed_thread(
     };
 
     let mut paused = true;
+    // Conversion to the device rate on the slow path; rebuilt after a seek.
+    let mut resampler: Option<PlaybackResampler> = None;
     let mut eof = false;
     // Current read position in the samples array (in floats, i.e., sample_index * CHANNELS)
     let mut read_pos: usize = 0;
 
-    // For resampling: if output_rate != 48000, we need to adjust the stride.
-    // Simple approach: nearest-neighbor resampling (no interpolation).
-    // For most systems output_rate == 48000, so this is a rare path.
+    // Source frames per device frame, when the device is not at 48 kHz
+    // (the slow path below resamples with a windowed sinc).
     let rate_ratio = SAMPLE_RATE as f64 / output_rate as f64;
 
     // How many output stereo frames to produce per iteration.
@@ -423,6 +426,7 @@ fn pcm_feed_thread(
                     if let Some(ref mut chain) = effect_chain {
                         chain.reset();
                     }
+                    resampler = None;
 
                     debug!("pcm_feed: seek to {secs:.3}s → pos={read_pos} ({actual_secs:.3}s)");
                 }
@@ -549,7 +553,7 @@ fn pcm_feed_thread(
                 if let Some(ref mut chain) = effect_chain {
                     let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
                     let fx_ctx = AudioProcessContext {
-                        sample_rate: output_rate,
+                        sample_rate: SAMPLE_RATE,
                         channels: CHANNELS as u32,
                         clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
                     };
@@ -561,52 +565,127 @@ fn pcm_feed_thread(
             }
             read_pos += to_push;
         } else {
-            // Slow path: nearest-neighbor resample from 48kHz to output_rate
-            let frames_to_produce = chunk_frames.min(vacant / CHANNELS);
-            let mut buf = Vec::with_capacity(frames_to_produce * CHANNELS);
-
-            for i in 0..frames_to_produce {
-                let src_frame = ((read_pos / CHANNELS) as f64 + i as f64 * rate_ratio) as usize;
-                let src_idx = src_frame * CHANNELS;
-                if src_idx + CHANNELS > total_floats {
-                    eof = true;
-                    break;
-                }
-                let pos_secs = src_frame as f64 / SAMPLE_RATE as f64;
-                let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
-                let mult = vol * fade;
-                for ch in 0..CHANNELS {
-                    let s = samples[src_idx + ch];
-                    if is_muted {
-                        buf.push(0.0);
-                    } else {
-                        buf.push(s * mult);
-                    }
-                }
+            // Slow path: the device runs at another rate (44.1 kHz is
+            // common). Volume, fades and effects run at 48 kHz exactly as
+            // on the fast path; the result then goes through a windowed-
+            // sinc resampler to the device rate. Picking the nearest
+            // source sample instead aliased everything that played.
+            let resampler = resampler.get_or_insert_with(|| PlaybackResampler::new(output_rate));
+            // Whole source frames, as many as fit in the ring once converted.
+            // Two frames of headroom: a chunk can come out one frame longer
+            // than the ratio says, and the ring would drop what does not fit.
+            let fit = ((vacant / CHANNELS).saturating_sub(2) as f64 * rate_ratio) as usize;
+            let frames = chunk_frames.min(fit).min((total_floats - read_pos) / CHANNELS);
+            if frames == 0 {
+                eof = read_pos + CHANNELS > total_floats;
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
             }
+            let to_take = frames * CHANNELS;
+            let mut scaled: Vec<f32> = samples[read_pos..read_pos + to_take]
+                .chunks(CHANNELS)
+                .enumerate()
+                .flat_map(|(i, pair)| {
+                    let frame_idx = (read_pos / CHANNELS) + i;
+                    let pos_secs = frame_idx as f64 / SAMPLE_RATE as f64;
+                    let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
+                    let mult = if is_muted { 0.0 } else { vol * fade };
+                    pair.iter().map(move |s| s * mult)
+                })
+                .collect();
+            if let Some(ref mut chain) = effect_chain {
+                let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
+                let fx_ctx = AudioProcessContext {
+                    sample_rate: SAMPLE_RATE,
+                    channels: CHANNELS as u32,
+                    clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
+                };
+                chain.process_aligned(&mut scaled, &fx_ctx);
+            }
+            let out = resampler.process(&scaled);
+            producer.push_slice(&out);
+            read_pos += to_take;
+        }
+    }
+}
 
-            if !buf.is_empty() {
-                // Source frames consumed, counted before the chain can
-                // trim its latency off the head of the output.
-                let produced_frames = buf.len() / CHANNELS;
-                // Apply audio effects chain after resample + volume/fade.
-                // Time domain matches the fast path: source-position seconds
-                // minus clip's source_in.
-                if let Some(ref mut chain) = effect_chain {
-                    let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
-                    let fx_ctx = AudioProcessContext {
-                        sample_rate: output_rate,
-                        channels: CHANNELS as u32,
-                        clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
-                    };
-                    chain.process_aligned(&mut buf, &fx_ctx);
-                }
-                producer.push_slice(&buf);
-                // Advance read_pos by the source frames consumed
-                let source_frames_consumed = produced_frames as f64 * rate_ratio;
-                read_pos += (source_frames_consumed as usize) * CHANNELS;
-                read_pos = read_pos.min(total_floats);
+/// Stereo 48 kHz → device-rate conversion for the playback feed, aligned:
+/// the resampler's own delay (well under a millisecond) is dropped from the
+/// head of the output once, so what plays lines up with the source
+/// position, as the effect chain's latency is (`process_aligned`).
+struct PlaybackResampler {
+    channels: Vec<klipp_audio::dsp::resample::Resampler>,
+    trim_frames: usize,
+    planar_out: Vec<Vec<f32>>,
+}
+
+impl PlaybackResampler {
+    fn new(output_rate: u32) -> Self {
+        let make = || klipp_audio::dsp::resample::Resampler::new(SAMPLE_RATE, output_rate)
+            .expect("48 kHz to a device rate is a supported conversion");
+        // Pad the delay onto a whole device sample (in the resampler's own
+        // fine steps), so trimming it leaves no fractional offset.
+        let to_out = output_rate as f64 / SAMPLE_RATE as f64;
+        let probe = make();
+        let delay_out = probe.delay() * to_out;
+        let whole = delay_out.ceil();
+        let steps = ((whole - delay_out) / (probe.delay_step() * to_out)).round() as u64;
+        let channels: Vec<_> = (0..CHANNELS).map(|_| make().with_extra_delay(steps)).collect();
+        Self { trim_frames: whole as usize, channels, planar_out: vec![Vec::new(); CHANNELS] }
+    }
+
+    /// Convert interleaved stereo 48 kHz to interleaved device-rate audio.
+    fn process(&mut self, interleaved: &[f32]) -> Vec<f32> {
+        let frames = interleaved.len() / CHANNELS;
+        for (ch, r) in self.channels.iter_mut().enumerate() {
+            let input: Vec<f32> = (0..frames).map(|i| interleaved[i * CHANNELS + ch]).collect();
+            self.planar_out[ch].clear();
+            r.push(&input, &mut self.planar_out[ch]);
+        }
+        let n = self.planar_out.iter().map(Vec::len).min().unwrap_or(0);
+        let skip = self.trim_frames.min(n);
+        self.trim_frames -= skip;
+        let mut out = Vec::with_capacity((n - skip) * CHANNELS);
+        for i in skip..n {
+            for ch in 0..CHANNELS {
+                out.push(self.planar_out[ch][i]);
             }
         }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #421: the slow path converts to the device rate with a windowed
+    /// sinc and trims the conversion's delay, so a tone arrives on time and
+    /// clean; nearest-neighbour picking left an error around -20 dB.
+    #[test]
+    fn playback_resampler_delivers_a_clean_tone_on_time_at_44_1_khz() {
+        let out_rate = 44_100u32;
+        let hz = 1000.0f64;
+        let tone: Vec<f32> = (0..SAMPLE_RATE as usize)
+            .flat_map(|i| {
+                let v = ((2.0 * std::f64::consts::PI * hz * i as f64 / SAMPLE_RATE as f64).sin() * 0.5) as f32;
+                [v, v]
+            })
+            .collect();
+        let mut r = PlaybackResampler::new(out_rate);
+        let mut out = Vec::new();
+        for block in tone.chunks(2048 * CHANNELS) {
+            out.extend(r.process(block));
+        }
+        let frames = out.len() / CHANNELS;
+        assert!((frames as i64 - out_rate as i64).abs() < 40, "{frames} frames for one second");
+        let (mut err, mut sig) = (0.0f64, 0.0f64);
+        for n in 2000..frames - 100 {
+            let want = (2.0 * std::f64::consts::PI * hz * n as f64 / out_rate as f64).sin() * 0.5;
+            err += (out[n * CHANNELS] as f64 - want).powi(2);
+            sig += want * want;
+        }
+        let db = 10.0 * (err / sig).log10();
+        assert!(db < -40.0, "the tone should arrive on time and clean, residual {db:.1} dB");
     }
 }
