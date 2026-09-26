@@ -3962,6 +3962,16 @@ pub(crate) fn audio_chain_fingerprint_for(
             fp = fp.wrapping_mul(31).wrapping_add(b as u64);
         }
         fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
+        // Settings too: a running chain holds the values it was built
+        // with, so without them a slider, preset or mix change is never
+        // heard in playback (export reads them fresh and did hear it).
+        fp = fp.wrapping_mul(31).wrapping_add(ae.wet_dry.to_bits() as u64);
+        for (name, value) in &ae.params {
+            for b in name.bytes() {
+                fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+            }
+            fp = fp.wrapping_mul(31).wrapping_add(value.to_bits() as u64);
+        }
     }
     // Sort kf-track keys before hashing so HashMap iteration order
     // doesn't leak nondeterminism into the fingerprint.
@@ -11383,6 +11393,26 @@ mod audio_fingerprint_kf_tests {
              must have different chain fingerprints — without this the \
              engine reuses clip A's chain for clip B and the user hears \
              reverb on the dry clip");
+    }
+
+    /// A running chain holds the settings it was built with, so a changed
+    /// setting must change the fingerprint or playback never hears it.
+    #[test]
+    fn audio_chain_fingerprint_changes_with_a_setting() {
+        use crate::engine::audio_chain_fingerprint_for;
+        let kfs = std::collections::HashMap::new();
+        let chain = |reduction: f32, wet_dry: f32| {
+            vec![AudioEffectInstance {
+                effect_type: "voice_isolation".into(),
+                enabled: true,
+                wet_dry,
+                params: vec![("reduction".into(), reduction), ("mode".into(), 0.0)],
+            }]
+        };
+        let base = audio_chain_fingerprint_for(&chain(30.0, 1.0), &kfs);
+        assert_eq!(base, audio_chain_fingerprint_for(&chain(30.0, 1.0), &kfs));
+        assert_ne!(base, audio_chain_fingerprint_for(&chain(12.0, 1.0), &kfs), "a preset or slider change must rebuild the chain");
+        assert_ne!(base, audio_chain_fingerprint_for(&chain(30.0, 0.5), &kfs), "a wet/dry change must rebuild the chain");
     }
 
     /// Pin the parity: two clips with the same chain produce the same
