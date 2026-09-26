@@ -479,8 +479,50 @@ fn playing_through_a_dissolve_shows_the_exported_frames() {
         let (v, n) = viewer.settled_frame_at();
         assert!(n > from, "playback did not move: from {from}, at {n}");
         worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(out, n)));
+        // And back into what was just played: the frames cached and the
+        // streams left where playback took them must not stand in for it.
+        let back = n - 4;
+        worst = worst.max(compare(&format!("back to {back:3}"), &viewer.frame_at(back), &exported_frame(out, back)));
     }
     eprintln!("viewer vs export, after playing: worst {worst} levels");
+    assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}
+
+/// Playing through the dissolve with decoders slower than the timeline,
+/// as a loaded machine makes them. The dissolve's other side then lags
+/// its stream while playing, and a frame drawn from the one before was
+/// published as complete; after the pause it stayed on screen until the
+/// parked refresh replaced it, so a read in between took it (#411, 75
+/// to 165 levels out under load). Slowing the decoders makes that
+/// happen every time instead of one gate run in ten.
+#[test]
+fn a_slow_decoder_after_playing_still_shows_the_exported_frames() {
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            klipp_engine::video_decoder::set_decode_delay_for_tests(0);
+        }
+    }
+    let (t, out) = main_fixture();
+    let viewer = Viewer::start(t);
+    let _restore = Restore;
+    klipp_engine::video_decoder::set_decode_delay_for_tests(60);
+    let mut worst = 0;
+    for (from, play_ms) in [(80, 800), (90, 700), (70, 1500)] {
+        viewer.frame_at(from);
+        viewer.cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(Duration::from_millis(play_ms));
+        viewer.cmd.send(AppCommand::Pause).unwrap();
+        let (v, n) = viewer.settled_frame_at();
+        worst = worst.max(compare(&format!("slow, played {from}->{n:3}"), &v, &exported_frame(out, n)));
+        let back = n - 4;
+        worst = worst.max(compare(&format!("slow, back to {back:3}"), &viewer.frame_at(back), &exported_frame(out, back)));
+    }
+    eprintln!("viewer vs export with a slow decoder: worst {worst} levels");
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
 }
 

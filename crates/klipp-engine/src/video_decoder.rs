@@ -1492,6 +1492,17 @@ pub fn optimised_playback_mode() -> u8 {
     OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A delay added to every decoded frame, for tests: a decoder slower than
+/// the timeline is what a loaded machine makes, and the frames that race
+/// ahead of their streams under load only show up then. Zero outside
+/// tests.
+static DECODE_DELAY_FOR_TESTS_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Slow every decoder by `ms` per frame (0 to stop). For tests only.
+pub fn set_decode_delay_for_tests(ms: u64) {
+    DECODE_DELAY_FOR_TESTS_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Playback Quality: the viewer renders at `1 / divisor` of its size while
 /// playing — 1 full, 2 half, 4 quarter. Paused frames stay full size, and
 /// export never reads it.
@@ -2749,6 +2760,10 @@ fn decode_thread_main(
             let (frame_w, frame_h) = (linear_frame.width, linear_frame.height);
 
             let t_queue = std::time::Instant::now();
+            let delay = DECODE_DELAY_FOR_TESTS_MS.load(std::sync::atomic::Ordering::Relaxed);
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(linear_frame);
             perf_queue_us += t_queue.elapsed().as_micros() as u64;
             drained_any = true;
