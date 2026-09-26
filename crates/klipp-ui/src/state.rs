@@ -197,6 +197,10 @@ pub struct ViewerCornerPinDrag {
     pub effect_index: usize,
     pub corner: usize,
     pub corners: [[f32; 2]; 4],
+    pub drag_start_pos: egui::Pos2,
+    /// Whether the pointer has moved far enough for this to be a drag;
+    /// the undo gesture opens only once it has.
+    pub started: bool,
 }
 
 /// Which part of a Title-object's bounding box is being dragged.
