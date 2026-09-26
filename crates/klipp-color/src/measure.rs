@@ -486,10 +486,25 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
 /// the frame has no such surface, and then there is nothing a white
 /// balance can honestly be read from.
 pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3]> {
+    neutral_pick(rgba, width, height, false)
+}
+
+/// The white reference to *act* on, as Auto White Balance does: what
+/// [`neutral_reference`] reads, but a least-coloured quarter counts only
+/// when it is nearly grey and not skin coloured. Pale skin, beige sand
+/// and a cream wall are smooth surfaces of one colour, as a grey wall
+/// under a lamp is, and colour alone cannot tell them apart; reporting
+/// that as a possible cast is fine, greying a face is not (#403). A
+/// strong cast is then refused rather than guessed at.
+pub fn balance_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3]> {
+    neutral_pick(rgba, width, height, true)
+}
+
+fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f32; 3]> {
     let total = (width as usize) * (height as usize);
     let step = (total / 250_000).max(1);
-    // (chroma, a*, b*, linear rgb) of the mid-lightness pixels.
-    let mut mids: Vec<(f32, f32, f32, [f32; 3])> = Vec::new();
+    // (chroma, a*, b*, linear rgb, skin coloured) of the mid-lightness pixels.
+    let mut mids: Vec<(f32, f32, f32, [f32; 3], bool)> = Vec::new();
     let mut n = 0usize;
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
@@ -497,23 +512,27 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
         let c = srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]);
         if c.l >= 20.0 && c.l <= 90.0 {
             let lin = [rgba[p], rgba[p + 1], rgba[p + 2]].map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
-            mids.push((c.chroma(), c.a, c.b, lin));
+            mids.push((c.chroma(), c.a, c.b, lin, skin_candidate(c)));
         }
         n += 1;
         i += step;
     }
-    let solid: Vec<&(f32, f32, f32, [f32; 3])> = mids.iter().filter(|m| m.0 < 8.0).collect();
+    // Skin can never be the white reference of a balance that is
+    // applied: it would grey the face.
+    let candidates: Vec<_> = mids.iter().filter(|m| !(acting && m.4)).collect();
+    let solid: Vec<_> = candidates.iter().copied().filter(|m| m.0 < 8.0).collect();
     let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
-    let picked: Vec<&(f32, f32, f32, [f32; 3])> = if enough {
+    let picked: Vec<_> = if enough {
+        if acting && against_the_frame(&solid, &mids) {
+            return None;
+        }
         solid
     } else {
-        let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
-        chroma_sorted.sort_by(|a, b| a.total_cmp(b));
-        let gate = percentile(&chroma_sorted, 0.25).clamp(6.0, 25.0);
-        let quarter: Vec<_> = mids.iter().filter(|m| m.0 <= gate).collect();
+        let quarter = least_coloured_quarter(&candidates, 25.0);
         let (mut a, mut b): (Vec<f32>, Vec<f32>) = quarter.iter().map(|m| (m.1, m.2)).unzip();
         let chroma = median(&mut a.iter().zip(&b).map(|(a, b)| (a * a + b * b).sqrt()).collect::<Vec<_>>());
-        if quarter.is_empty() || iqr(&mut a) >= 6.0 || iqr(&mut b) >= 6.0 || chroma >= 18.0 {
+        let ceiling = if acting { 10.0 } else { 18.0 };
+        if quarter.is_empty() || iqr(&mut a) >= 6.0 || iqr(&mut b) >= 6.0 || chroma >= ceiling {
             return None;
         }
         quarter
@@ -533,6 +552,39 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
         .iter()
         .min_by(|x, y| ((x.1 - ma).powi(2) + (x.2 - mb).powi(2)).total_cmp(&((y.1 - ma).powi(2) + (y.2 - mb).powi(2))))
         .map(|m| m.3)
+}
+
+type Mid = (f32, f32, f32, [f32; 3], bool);
+
+/// The least-coloured quarter of `mids`: every pixel at or under the
+/// quarter-way chroma, held between 6 and `most`.
+fn least_coloured_quarter<'a>(mids: &[&'a Mid], most: f32) -> Vec<&'a Mid> {
+    let mut chroma_sorted: Vec<f32> = mids.iter().map(|m| m.0).collect();
+    chroma_sorted.sort_by(|a, b| a.total_cmp(b));
+    let gate = percentile(&chroma_sorted, 0.25).clamp(6.0, most);
+    mids.iter().copied().filter(|m| m.0 <= gate).collect()
+}
+
+/// Whether the near-grey pixels lean the opposite way to the frame's
+/// least-coloured surface when that surface is all one colour. Under a
+/// strong tungsten cast the grey wall is too orange to count as grey
+/// and a pair of jeans lands near neutral, a little blue; balancing on
+/// the jeans would warm a frame that is already orange (#403). A cream
+/// wall beside a truly grey card looks the same in colour, but a grey
+/// card asks for almost nothing, so only a clear lean is refused.
+fn against_the_frame(solid: &[&Mid], mids: &[Mid]) -> bool {
+    let all: Vec<&Mid> = mids.iter().collect();
+    // A strong cast puts a grey wall past chroma 25, so this looks
+    // further than the fallback does.
+    let quarter = least_coloured_quarter(&all, 45.0);
+    let (mut qa, mut qb): (Vec<f32>, Vec<f32>) = quarter.iter().map(|m| (m.1, m.2)).unzip();
+    if quarter.is_empty() || iqr(&mut qa) >= 6.0 || iqr(&mut qb) >= 6.0 {
+        return false;
+    }
+    let (mut sa, mut sb): (Vec<f32>, Vec<f32>) = solid.iter().map(|m| (m.1, m.2)).unzip();
+    let (sa, sb, qa, qb) = (median(&mut sa), median(&mut sb), median(&mut qa), median(&mut qb));
+    let (s_len, q_len) = (sa.hypot(sb), qa.hypot(qb));
+    s_len >= 2.0 && q_len > s_len && (sa * qa + sb * qb) / (s_len * q_len) < -0.3
 }
 
 /// The flat parts of a picture, where noise and banding show: the

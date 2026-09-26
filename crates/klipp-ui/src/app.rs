@@ -15556,8 +15556,8 @@ impl KlippApp {
                     self.state.toast.show("Auto White Balance: the viewer has no picture to read yet");
                 } else if reading == Some(None) {
                     self.state.toast.show(
-                        "Auto White Balance: no grey surface in the mid-tones to balance from \
-                         — the balance is left as it was",
+                        "Auto White Balance: nothing in this frame is surely grey (skin, sand \
+                         and a strong cast are not trusted) — the balance is left as it was",
                     );
                 } else if let Some(Some((temp_adj, tint_adj))) = reading {
                     // Apply to the clip's ColorBalance node. Snapshot the graph

@@ -9,8 +9,8 @@
 /// neutral surfaces neutral, or `None` when it has none to read.
 ///
 /// `rgba` is a displayed frame (sRGB bytes). The reference is
-/// [`crate::measure::neutral_reference`] — the walls, paper and road
-/// under the scene's light — and the slider values come from
+/// [`crate::measure::balance_reference`] — the walls, paper and road
+/// under the scene's light, never skin or sand — and the slider values come from
 /// [`crate::white_balance::white_balance_to_neutralise`], solved against
 /// the balance the grade actually applies.
 ///
@@ -19,7 +19,7 @@
 /// pushed the balance a long way toward magenta: the neutrals came out
 /// further from grey than they went in.
 pub fn auto_white_balance(rgba: &[u8], width: u32, height: u32) -> Option<(f32, f32)> {
-    let mean = crate::measure::neutral_reference(rgba, width, height)?;
+    let mean = crate::measure::balance_reference(rgba, width, height)?;
     Some(crate::white_balance::white_balance_to_neutralise(mean, klipp_core::WorkingColorspace::Rec709Linear))
 }
 
@@ -39,22 +39,71 @@ mod tests {
 
     /// Auto white balance on a frame with a blue cast asks for a warmer
     /// balance, and the values it returns really do neutralise the
-    /// average — they are solved against the balance the grade applies,
+    /// wall — they are solved against the balance the grade applies,
     /// not scaled from the channel differences.
     #[test]
     fn auto_white_balance_neutralises_a_cast() {
-        let cool: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
-        let (temperature, tint) = auto_white_balance(&cool, 20, 20).expect("a grey wall under a blue light is a white reference");
-        assert!(temperature > 5.0, "a blue cast should ask for warmth, got {temperature}");
-        let mean = [110f32, 120.0, 150.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
+        // A grey wall under a bluish light, beside a red sofa.
+        let wall = [118u8, 124, 138];
+        let px: Vec<u8> = (0..400).flat_map(|i| if i < 300 { [wall[0], wall[1], wall[2], 255] } else { [170, 40, 45, 255] }).collect();
+        let (temperature, tint) = auto_white_balance(&px, 20, 20).expect("a grey wall under a blue light is a white reference");
+        assert!(temperature > 2.0, "a blue cast should ask for warmth, got {temperature}");
+        let wall = wall.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
         let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-        let out = m.map(|row| row[0] * mean[0] + row[1] * mean[1] + row[2] * mean[2]);
+        let out = m.map(|row| row[0] * wall[0] + row[1] * wall[1] + row[2] * wall[2]);
         let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
         assert!((mx - mn) / mx < 0.02, "still a cast: {out:?}");
         // A neutral frame needs no correction.
         let grey: Vec<u8> = (0..400).flat_map(|_| [128u8, 128, 128, 255]).collect();
         let (t, g) = auto_white_balance(&grey, 20, 20).expect("a grey frame is its own reference");
         assert!(t.abs() < 0.5 && g.abs() < 0.5, "a neutral frame asked for ({t}, {g})");
+    }
+
+    /// #403: a frame of one clear colour is not evidence of a cast. A
+    /// blue-grey wall and a blue-grey card look the same; balancing on
+    /// either would grey whatever it is.
+    #[test]
+    fn a_frame_of_one_colour_is_left_alone() {
+        let px: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
+        assert_eq!(auto_white_balance(&px, 20, 20), None);
+    }
+
+    /// #403: a pale face against a saturated backdrop, and a beach under
+    /// a blue sky. The skin and the sand were the least-coloured quarter
+    /// and one press greyed them.
+    #[test]
+    fn skin_and_sand_are_not_a_white_reference() {
+        let portrait: Vec<u8> = (0..400).flat_map(|i| if i < 160 { [225u8, 190, 170, 255] } else { [30, 90, 170, 255] }).collect();
+        assert_eq!(auto_white_balance(&portrait, 20, 20), None, "the face was greyed");
+        let beach: Vec<u8> = (0..400).flat_map(|i| if i < 200 { [215u8, 196, 160, 255] } else { [70, 140, 220, 255] }).collect();
+        assert_eq!(auto_white_balance(&beach, 20, 20), None, "the sand was greyed");
+        // With a small true grey in the shot, that is the reference, and
+        // it is already grey.
+        let w = 100u32;
+        let with_card: Vec<u8> = (0..w * w)
+            .flat_map(|i| if i % 100 < 5 { [128u8, 128, 128, 255] } else if i % 100 < 60 { [225, 190, 170, 255] } else { [30, 90, 170, 255] })
+            .collect();
+        let (t, g) = auto_white_balance(&with_card, w, w).expect("the card is a white reference");
+        assert!(t.abs() < 0.5 && g.abs() < 0.5, "balanced on the skin, not the card: ({t}, {g})");
+    }
+
+    /// #403: under a strong tungsten cast the grey wall is too orange
+    /// to be read as grey, and a small pair of jeans lands near neutral,
+    /// a little blue. Balancing on the jeans warmed an orange frame by
+    /// 18; the press is refused instead, as it is with no jeans at all.
+    #[test]
+    fn a_strong_cast_is_not_guessed_at() {
+        let w = 100u32;
+        let wall = [168u8, 126, 86];
+        let lamp_only: Vec<u8> = (0..w * w).flat_map(|i| if i % 100 < 70 { [wall[0], wall[1], wall[2], 255] } else { [60, 40, 30, 255] }).collect();
+        assert_eq!(auto_white_balance(&lamp_only, w, w), None, "the tungsten wall was taken for grey");
+        let with_jeans: Vec<u8> = (0..w * w)
+            .flat_map(|i| if i % 100 < 4 { [96u8, 98, 104, 255] } else if i % 100 < 74 { [wall[0], wall[1], wall[2], 255] } else { [60, 40, 30, 255] })
+            .collect();
+        assert_eq!(auto_white_balance(&with_jeans, w, w), None, "the jeans set the balance");
+        // Reporting still names what the jeans say: the reading is not
+        // what refuses, acting on it is.
+        assert!(crate::measure::neutral_reference(&with_jeans, w, w).is_some());
     }
 
     /// #318: a street of pink brick under a blue sky, with a strip of
