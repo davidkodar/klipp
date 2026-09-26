@@ -41813,6 +41813,87 @@ mod paste_attributes_tests {
         assert_eq!(sequences[0].tracks[0].clips[1].volume, b.volume);
         assert_eq!(sequences[0].tracks[0].clips[2].volume, c.volume);
     }
+
+    /// A clip graded by `stops` of exposure on its Corrector.
+    fn graded(mut c: Clip, stops: f32) -> Clip {
+        let id = c.node_graph.ensure_corrector();
+        if let Some(n) = c.node_graph.nodes.iter_mut().find(|n| n.id == id) {
+            n.params.exposure = Some(stops);
+        }
+        c
+    }
+
+    fn input_transforms(g: &klipp_nodes::NodeGraph) -> Vec<&klipp_nodes::Node> {
+        g.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::InputTransform).collect()
+    }
+
+    fn exposure(g: &klipp_nodes::NodeGraph) -> Option<f32> {
+        g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).and_then(|n| n.params.exposure)
+    }
+
+    /// A grade copied from a LogC shot, pasted onto a Sony shot: the
+    /// Sony shot's decode stays its own, and the grade is the LogC
+    /// shot's. It used to take the whole graph, ARRI curve included.
+    #[test]
+    fn a_pasted_grade_leaves_the_targets_input_transform_alone() {
+        use klipp_core::LogFormat;
+        let mut source = graded(clip(0, 2), -0.2);
+        source.set_input_log_format(LogFormat::LogC3);
+        let mut target = graded(clip(2, 4), 0.4);
+        target.set_input_log_format(LogFormat::SLog3);
+        let own = input_transforms(&target.node_graph)[0].clone();
+
+        let attrs = crate::state::AttributesClipboard::of(&source);
+        let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
+        attrs.paste_onto(&mut target, what);
+
+        let kept = input_transforms(&target.node_graph);
+        assert_eq!(kept.len(), 1, "one Input Transform, the clip's own");
+        assert_eq!(kept[0].kind, klipp_nodes::NodeKind::InputTransform);
+        assert_eq!(kept[0].params, own.params, "the Sony decode, not ARRI's");
+        assert_eq!(kept[0].params.log_format, Some(LogFormat::SLog3));
+        assert_eq!(exposure(&target.node_graph), Some(-0.2), "the source's grade");
+        assert!(
+            target.node_graph.nodes.iter().all(|n| !source.node_graph.nodes.iter().any(|s| s.id == n.id)),
+            "fresh ids"
+        );
+        assert!(target.node_graph.topo_sort().is_ok(), "still a graph the executor can run");
+    }
+
+    /// A grade copied from a Rec.709 shot has no Input Transform; the
+    /// log shot it is pasted onto keeps its own rather than losing it.
+    #[test]
+    fn a_pasted_grade_without_an_input_transform_keeps_the_targets() {
+        use klipp_core::LogFormat;
+        let source = graded(clip(0, 2), -0.2);
+        assert!(input_transforms(&source.node_graph).is_empty());
+        let mut target = graded(clip(2, 4), 0.4);
+        target.set_input_log_format(LogFormat::SLog3);
+        let own = input_transforms(&target.node_graph)[0].clone();
+
+        let attrs = crate::state::AttributesClipboard::of(&source);
+        let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
+        attrs.paste_onto(&mut target, what);
+
+        let kept = input_transforms(&target.node_graph);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].params, own.params);
+        assert_eq!(exposure(&target.node_graph), Some(-0.2));
+    }
+
+    /// The other way round: a Rec.709 shot pasted a LogC shot's grade
+    /// gets the grade and no decode it does not need.
+    #[test]
+    fn a_pasted_grade_brings_no_input_transform_to_a_clip_without_one() {
+        let mut source = graded(clip(0, 2), -0.2);
+        source.set_input_log_format(klipp_core::LogFormat::LogC3);
+        let mut target = graded(clip(2, 4), 0.4);
+        let attrs = crate::state::AttributesClipboard::of(&source);
+        let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
+        attrs.paste_onto(&mut target, what);
+        assert!(input_transforms(&target.node_graph).is_empty());
+        assert_eq!(exposure(&target.node_graph), Some(-0.2));
+    }
 }
 
 #[cfg(test)]
