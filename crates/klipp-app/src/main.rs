@@ -112,6 +112,25 @@ fn main() -> Result<()> {
         env!("KLIPP_BUILD_PROFILE"),
     ));
 
+    // The command line, before any of the start-up work: `--version` and
+    // `--help` answer and exit.
+    match klipp_ui::cli::parse(std::env::args_os().skip(1)) {
+        klipp_ui::cli::Cli::Version => {
+            println!("klipp {}", klipp_core::build_info::get().label());
+            return Ok(());
+        }
+        klipp_ui::cli::Cli::Help => {
+            println!("{}", klipp_ui::cli::USAGE);
+            return Ok(());
+        }
+        klipp_ui::cli::Cli::Unknown(opt) => {
+            eprintln!("klipp: no option {opt}\n\n{}", klipp_ui::cli::USAGE);
+            std::process::exit(2);
+        }
+        // Opening paths at startup is #178's other half.
+        klipp_ui::cli::Cli::Run(_) => {}
+    }
+
     // ── Auto-configured env vars ─────────────────────────────
     // Set BEFORE any thread spawns so `std::thread`'s lazy
     // RUST_MIN_STACK read picks up our value, and ort's

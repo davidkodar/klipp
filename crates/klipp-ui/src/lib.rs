@@ -49,6 +49,7 @@ pub mod audio_plugins_disabled;
 pub mod browser;
 pub mod ai_tools;
 pub mod cache_manager;
+pub mod cli;
 pub mod command_palette;
 pub mod drag_drop;
 pub mod file_dialog;
