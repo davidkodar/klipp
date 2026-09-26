@@ -157,6 +157,56 @@ if ! "$ROOT/scripts/check-signoff.sh"; then
     exit 1
 fi
 
+# One gate at a time, across every worktree and every session.
+#
+# Several agents work on this repository at once, each in its own
+# worktree, and each push runs the whole gate. Four of them together
+# exhaust memory: rustc is OOM-killed, background jobs are reaped, and
+# the timing-sensitive engine tests fail with nothing wrong in the
+# change. So the gate queues on a lock in the git common directory,
+# which every worktree of this clone shares.
+#
+# The lock is held on a file descriptor, so a killed gate releases it
+# and cannot wedge the queue. That holds only while nothing else has
+# the descriptor: every child inherits it, and a cargo orphaned by a
+# killed hook went on holding the lock for every session. So the
+# long-running children below are started with fd 9 closed (`9>&-`).
+# It covers the checks, not the network push that follows.
+# KLIPP_GATE_NO_WAIT=1 refuses instead of waiting.
+#
+# The name is deliberately not klipp-gate.lock, the file sessions wrapped
+# `git push` in by hand before this existed: a hook waiting on a lock its
+# own parent holds would wait forever.
+_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _common=
+if [ -n "$_common" ] && [ -d "$_common" ] && command -v flock >/dev/null 2>&1; then
+    _lock="$_common/klipp-pre-push.lock"
+    _holder="$_common/klipp-pre-push.holder"
+    exec 9>>"$_lock"
+    if ! flock -n 9; then
+        _who=$(cat "$_holder" 2>/dev/null || true)
+        _pid=${_who%% *}
+        _since=$(echo "$_who" | awk '{print $NF}')
+        case "$_since" in
+            ''|*[!0-9]*) ;;
+            *) _who="${_who% *}, held for $(( ($(date +%s) - _since) / 60 )) min" ;;
+        esac
+        if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
+            _who="$_who (that process is gone; a child of it still holds the lock)"
+        fi
+        printf '\n  pre-push: another gate is running: %s\n' "${_who:-unknown}" >&2
+        if [ "$KLIPP_GATE_NO_WAIT" = "1" ]; then
+            printf '            KLIPP_GATE_NO_WAIT=1 set — refusing instead of waiting.\n\n' >&2
+            exit 1
+        fi
+        printf '            Waiting for it to finish. Ctrl-C to stop waiting;\n' >&2
+        printf '            KLIPP_GATE_NO_WAIT=1 git push   refuses instead of waiting,\n' >&2
+        printf '            KLIPP_SKIP_TESTS=1 git push     skips the gate and the queue.\n\n' >&2
+        flock 9
+    fi
+    printf '%s %s %s %s\n' "$$" "$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)" \
+        "$ROOT" "$(date +%s)" >"$_holder"
+fi
+
 # Match klipp_testing::scratch, and keep compiler/linker temporary files
 # off a small system tmpfs too. A deliberate TMPDIR always wins.
 TMPDIR=${TMPDIR:-${CARGO_TARGET_DIR:-$ROOT/target}/test-scratch}
@@ -186,7 +236,7 @@ case "$_available" in
     fi ;;
 esac
 
-if ! cargo clippy --workspace --all-targets -- -D warnings; then
+if ! cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
     printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
     printf '            it with a reason: in place with #[allow], or for the\n' >&2
@@ -194,7 +244,7 @@ if ! cargo clippy --workspace --all-targets -- -D warnings; then
     exit 1
 fi
 
-if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps; then
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-; then
     printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
     printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
     printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
@@ -204,7 +254,7 @@ fi
 # Built first and separately, so a compile error is reported as one
 # rather than as "tests FAILED" — which sends you reading test names
 # for a problem that is not in any of them.
-if ! cargo test --workspace --no-run; then
+if ! cargo test --workspace --no-run 9>&-; then
     printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
     printf '            Nothing ran. This is a compile or link error, not a\n' >&2
     printf '            failing assertion.\n\n' >&2
@@ -215,7 +265,7 @@ if ! cargo test --workspace --no-run; then
     exit 1
 fi
 
-if cargo test --workspace; then
+if cargo test --workspace 9>&-; then
     printf '\n  pre-push: tests pass.\n\n'
     exit 0
 fi
