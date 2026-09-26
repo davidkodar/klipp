@@ -486,7 +486,19 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
 /// the frame has no such surface, and then there is nothing a white
 /// balance can honestly be read from.
 pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3]> {
-    neutral_pick(rgba, width, height, false)
+    neutral_pick(rgba, width, height, false, &[]).ok()
+}
+
+/// Why [`balance_reference`] found nothing to act on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoReference {
+    /// Nothing in the frame is surely grey.
+    NothingGrey,
+    /// The near-greys lean against the frame's one-coloured surface:
+    /// a strong cast and a small object that happens to look grey
+    /// under it, or a coloured surface beside a grey that is not quite.
+    /// Colour cannot tell which.
+    LeansAgainstTheFrame,
 }
 
 /// The white reference to *act* on, as Auto White Balance does: what
@@ -496,15 +508,25 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
 /// under a lamp is, and colour alone cannot tell them apart; reporting
 /// that as a possible cast is fine, greying a face is not (#403). A
 /// strong cast is then refused rather than guessed at.
-pub fn balance_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3]> {
-    neutral_pick(rgba, width, height, true)
+///
+/// `faces` are face regions (x, y, w, h as fractions of the frame), from
+/// the framing analysis when there is one: a face is never the frame's
+/// surface a cast is judged against, so a close-up under a cool light
+/// balances on the shirt beside it. Without them such a frame is refused.
+pub fn balance_reference(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> Result<[f32; 3], NoReference> {
+    neutral_pick(rgba, width, height, true, faces)
 }
 
-fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f32; 3]> {
+fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool, faces: &[[f32; 4]]) -> Result<[f32; 3], NoReference> {
     let total = (width as usize) * (height as usize);
     let step = (total / 250_000).max(1);
-    // (chroma, a*, b*, linear rgb, skin coloured) of the mid-lightness pixels.
-    let mut mids: Vec<(f32, f32, f32, [f32; 3], bool)> = Vec::new();
+    // (chroma, a*, b*, linear rgb, skin coloured, in a face) of the
+    // mid-lightness pixels.
+    let mut mids: Vec<Mid> = Vec::new();
+    let in_face = |i: usize| {
+        let (x, y) = ((i % width as usize) as f32 / width as f32, (i / width as usize) as f32 / height as f32);
+        faces.iter().any(|f| x >= f[0] && x < f[0] + f[2] && y >= f[1] && y < f[1] + f[3])
+    };
     let mut n = 0usize;
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
@@ -512,7 +534,7 @@ fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f
         let c = srgb8_to_lab(rgba[p], rgba[p + 1], rgba[p + 2]);
         if c.l >= 20.0 && c.l <= 90.0 {
             let lin = [rgba[p], rgba[p + 1], rgba[p + 2]].map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
-            mids.push((c.chroma(), c.a, c.b, lin, skin_candidate(c)));
+            mids.push((c.chroma(), c.a, c.b, lin, skin_candidate(c), in_face(i)));
         }
         n += 1;
         i += step;
@@ -524,7 +546,7 @@ fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f
     let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
     let picked: Vec<_> = if enough {
         if acting && against_the_frame(&solid, &mids) {
-            return None;
+            return Err(NoReference::LeansAgainstTheFrame);
         }
         solid
     } else {
@@ -533,12 +555,12 @@ fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f
         let chroma = median(&mut a.iter().zip(&b).map(|(a, b)| (a * a + b * b).sqrt()).collect::<Vec<_>>());
         let ceiling = if acting { 10.0 } else { 18.0 };
         if quarter.is_empty() || iqr(&mut a) >= 6.0 || iqr(&mut b) >= 6.0 || chroma >= ceiling {
-            return None;
+            return Err(NoReference::NothingGrey);
         }
         quarter
     };
     if picked.is_empty() {
-        return None;
+        return Err(NoReference::NothingGrey);
     }
     // The picked pixel nearest their median a*/b*: the reference is the
     // typical neutral, as the cast reading is. Averaging them in linear
@@ -552,9 +574,20 @@ fn neutral_pick(rgba: &[u8], width: u32, height: u32, acting: bool) -> Option<[f
         .iter()
         .min_by(|x, y| ((x.1 - ma).powi(2) + (x.2 - mb).powi(2)).total_cmp(&((y.1 - ma).powi(2) + (y.2 - mb).powi(2))))
         .map(|m| m.3)
+        .ok_or(NoReference::NothingGrey)
 }
 
-type Mid = (f32, f32, f32, [f32; 3], bool);
+type Mid = (f32, f32, f32, [f32; 3], bool, bool);
+
+/// Whether a surface's colour could be a grey under some light: up to
+/// chroma 40 in any direction, and beyond that only amber (Lab hue
+/// 40–100°), where tungsten and sodium light put a grey wall. A green
+/// screen or a deep blue sky at chroma 50 is its own colour, and a
+/// shirt leaning away from it is no sign of a cast.
+fn could_be_grey_under_a_cast(m: &Mid) -> bool {
+    let hue = m.2.atan2(m.1).to_degrees().rem_euclid(360.0);
+    m.0 <= 40.0 || (40.0..=100.0).contains(&hue)
+}
 
 /// The least-coloured quarter of `mids`: every pixel at or under the
 /// quarter-way chroma, held between 6 and `most`.
@@ -572,11 +605,24 @@ fn least_coloured_quarter<'a>(mids: &[&'a Mid], most: f32) -> Vec<&'a Mid> {
 /// the jeans would warm a frame that is already orange (#403). A cream
 /// wall beside a truly grey card looks the same in colour, but a grey
 /// card asks for almost nothing, so only a clear lean is refused.
+///
+/// However coloured the surface, if its colour could be a cast (see
+/// [`could_be_grey_under_a_cast`]): a wall at chroma 16 under a mild
+/// cast and one at 52 under a strong one are refused alike. A face is left
+/// out of the surface when the framing analysis found one — a close-up
+/// under a cool light is otherwise the same shape as the tungsten wall,
+/// the face at chroma 15 and the white shirt leaning cool beside it,
+/// and colour alone cannot tell the two apart.
+///
+/// Skin-hued candidates are left out of the fallback, so a warm cast
+/// that leaves no solid grey (a wall at chroma 8–10 under tungsten) is
+/// refused where the same cast toward blue would be balanced. That is
+/// the side to err on: a warm near-grey is as likely to be skin or sand.
 fn against_the_frame(solid: &[&Mid], mids: &[Mid]) -> bool {
-    let all: Vec<&Mid> = mids.iter().collect();
-    // A strong cast puts a grey wall past chroma 25, so this looks
-    // further than the fallback does.
-    let quarter = least_coloured_quarter(&all, 45.0);
+    let surface: Vec<&Mid> = mids.iter().filter(|m| !m.5 && could_be_grey_under_a_cast(m)).collect();
+    // A strong cast puts a grey wall past chroma 25, so this looks as
+    // far as the frame goes.
+    let quarter = least_coloured_quarter(&surface, f32::INFINITY);
     let (mut qa, mut qb): (Vec<f32>, Vec<f32>) = quarter.iter().map(|m| (m.1, m.2)).unzip();
     if quarter.is_empty() || iqr(&mut qa) >= 6.0 || iqr(&mut qb) >= 6.0 {
         return false;

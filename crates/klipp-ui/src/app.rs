@@ -15547,19 +15547,36 @@ impl KlippApp {
                 let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 let (bytes, fw, fh, _) = fb.latest_frame();
                 let has_picture = fw > 0 && fh > 0 && bytes.chunks_exact(4).any(|p| p[3] != 0);
-                let refusal = auto_wb_frame_refusal(fb.gpu_output_live, self.state.hdr_monitor.renders_hdr(), fb.latest_presented(), clip_span);
-                let reading = (has_picture && refusal.is_none()).then(|| klipp_color::auto_white_balance(bytes, fw, fh));
+                let refusal = auto_wb_frame_refusal(
+                    fb.gpu_output_live,
+                    self.state.hdr_monitor.renders_hdr(),
+                    fb.latest_complete(),
+                    fb.latest_presented(),
+                    clip_span,
+                );
+                // The framing analysis's faces, when there is one: a face
+                // is never the surface a cast is judged against, so a
+                // close-up under a cool light balances on the shirt.
+                let faces = crate::panels::colour_check::faces_at_playhead(&self.state);
+                let reading = (has_picture && refusal.is_none()).then(|| klipp_color::auto_white_balance(bytes, fw, fh, &faces));
                 drop(fb);
                 if let Some(why) = refusal {
                     self.state.toast.show(format!("Auto White Balance: {why}"));
                 } else if !has_picture {
                     self.state.toast.show("Auto White Balance: the viewer has no picture to read yet");
-                } else if reading == Some(None) {
+                } else if reading == Some(Err(klipp_color::measure::NoReference::NothingGrey)) {
                     self.state.toast.show(
                         "Auto White Balance: nothing in this frame is surely grey (skin, sand \
                          and a strong cast are not trusted) — the balance is left as it was",
                     );
-                } else if let Some(Some((temp_adj, tint_adj))) = reading {
+                } else if reading == Some(Err(klipp_color::measure::NoReference::LeansAgainstTheFrame)) {
+                    self.state.toast.show(
+                        "Auto White Balance: the greys here lean against the frame's main colour — \
+                         a strong cast, or a coloured wall beside a grey that is not quite, and \
+                         colour alone cannot tell which. The balance is left as it was: set \
+                         Temperature and Tint by hand, or run Analyze so faces are known",
+                    );
+                } else if let Some(Ok((temp_adj, tint_adj))) = reading {
                     // Apply to the clip's ColorBalance node. Snapshot the graph
                     // before applying so we can push a single SetNodeGraph undo
                     // entry covering the whole auto-WB gesture.
@@ -40977,6 +40994,7 @@ mod add_on_rail_tests {
 fn auto_wb_frame_refusal(
     gpu_output_live: bool,
     hdr_monitor: bool,
+    complete: bool,
     bytes_at: Option<klipp_core::RationalTime>,
     clip_span: Option<(klipp_core::RationalTime, klipp_core::RationalTime)>,
 ) -> Option<&'static str> {
@@ -40985,6 +41003,11 @@ fn auto_wb_frame_refusal(
     }
     if hdr_monitor {
         return Some("turn the HDR monitor off first — the viewer shows an HDR preview or false colour, not the picture it balances");
+    }
+    // A progress frame, or one drawn while a stream lagged, is published
+    // under the playhead without every clip's picture in it.
+    if !complete {
+        return Some("the frame is still being drawn — press again in a moment");
     }
     match (bytes_at, clip_span) {
         (Some(at), Some((a, b))) if at >= a && at < b => None,
@@ -41002,25 +41025,30 @@ mod auto_wb_frame_tests {
 
     #[test]
     fn a_parked_frame_of_the_clip_is_read() {
-        assert_eq!(auto_wb_frame_refusal(false, false, Some(t(15)), Some((t(10), t(40)))), None);
+        assert_eq!(auto_wb_frame_refusal(false, false, true, Some(t(15)), Some((t(10), t(40)))), None);
     }
 
     /// #404: while the GPU stack presents without bytes, the buffer holds
     /// an older parked frame.
     #[test]
     fn a_zero_copy_frame_on_screen_is_refused() {
-        assert!(auto_wb_frame_refusal(true, false, Some(t(15)), Some((t(10), t(40)))).is_some());
+        assert!(auto_wb_frame_refusal(true, false, true, Some(t(15)), Some((t(10), t(40)))).is_some());
     }
 
     #[test]
     fn bytes_of_another_clip_are_refused() {
-        assert!(auto_wb_frame_refusal(false, false, Some(t(45)), Some((t(10), t(40)))).is_some());
-        assert!(auto_wb_frame_refusal(false, false, None, Some((t(10), t(40)))).is_some());
+        assert!(auto_wb_frame_refusal(false, false, true, Some(t(45)), Some((t(10), t(40)))).is_some());
+        assert!(auto_wb_frame_refusal(false, false, true, None, Some((t(10), t(40)))).is_some());
     }
 
     #[test]
     fn an_hdr_monitor_frame_is_not_read() {
-        assert!(auto_wb_frame_refusal(false, true, Some(t(15)), Some((t(10), t(40)))).is_some());
+        assert!(auto_wb_frame_refusal(false, true, true, Some(t(15)), Some((t(10), t(40)))).is_some());
+    }
+
+    #[test]
+    fn a_frame_still_being_drawn_is_not_read() {
+        assert!(auto_wb_frame_refusal(false, false, false, Some(t(15)), Some((t(10), t(40)))).is_some());
     }
 }
 

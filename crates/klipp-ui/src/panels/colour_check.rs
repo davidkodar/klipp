@@ -473,7 +473,7 @@ impl ColourCheckPanel {
 /// The face regions the analysis found for the clip under the playhead,
 /// as fractions of the frame. Empty when there is no analysis, and the
 /// measurement then falls back to skin-coloured pixels.
-fn faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
+pub(crate) fn faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
     let seq = state.sequence();
     let tc = seq.last_playhead.unwrap_or_else(|| klipp_core::Timecode::from_secs_f64(0.0, seq.fps.rate()));
     let Some((_, clip)) = seq
