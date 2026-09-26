@@ -2355,24 +2355,29 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let len = to - from;
     let open: Vec<usize> = (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect();
     for &ti in &open {
-        for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_in < to && c.timeline_out > from) {
-            if c.speed != 1.0 || !c.speed_keyframes.is_empty() {
+        // Every clip the cut touches: one it crosses is split or taken
+        // out, one after it is moved up.
+        for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_out > from) {
+            let crossed = c.timeline_in < to;
+            if crossed && (c.speed != 1.0 || !c.speed_keyframes.is_empty()) {
                 return Err(refuse(
                     i,
                     format!("{} is retimed, and a cut through it would land on the wrong frames", clip_name(seq, pool, c)),
                     "cut around it, or take its speed change off first",
                 ));
             }
-            // A pair is cut together or not at all: splitting one half
-            // while the other stays put slips picture from sound.
+            // A pair is cut together, and moved up together, or not at
+            // all: touching one half while the other stays put slips
+            // picture from sound.
             if let Some((pti, _, p)) = c.linked_clip_id.and_then(|l| find_clip(seq, l)) {
                 if seq.tracks[pti].locked {
                     let (mine, theirs) = (&seq.tracks[ti].name, &seq.tracks[pti].name);
-                    return Err(refuse(
-                        i,
-                        format!("{} is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p)),
-                        format!("unlock {theirs} or lock {mine} too"),
-                    ));
+                    let why = if crossed {
+                        format!("{} is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p))
+                    } else {
+                        format!("{} would move up, but it is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p))
+                    };
+                    return Err(refuse(i, why, format!("unlock {theirs} or lock {mine} too")));
                 }
             }
         }
@@ -6226,6 +6231,23 @@ mod tests {
         seq.tracks[0].locked = true;
         let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap_err();
         assert!(err.why.contains("nothing on the unlocked tracks"), "{}", err.why);
+    }
+
+    #[test]
+    fn a_cut_is_refused_when_a_pair_after_it_has_its_other_half_on_a_locked_track() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[1].locked = true;
+        // a ends at 2 s, so 2.5-3.5 s crosses only a gap on V1; b, at 4 s,
+        // would move up while its sound on A1 stays put.
+        seq.tracks[0].clips[0].timeline_out = tc(2.0);
+        seq.tracks[0].clips[0].source_out = tc(2.0);
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(2.5), to: Anchor::Secs(3.5) }]).unwrap_err();
+        assert!(err.why.contains("would move up") && err.why.contains("A1, which is locked"), "{}", err.why);
+        assert_eq!(err.hint, "unlock A1 or lock V1 too");
+        // Sound of its own: b moves up and nothing slips.
+        seq.tracks[0].clips[1].linked_clip_id = None;
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(2.5), to: Anchor::Secs(3.5) }]).unwrap();
+        assert!(plan.steps[0].what.contains("1 moved up"), "{}", plan.steps[0].what);
     }
 
     #[test]
