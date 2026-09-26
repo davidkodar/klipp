@@ -603,6 +603,13 @@ pub enum ControlCommand {
     MatchGrade {
         clip_id: String,
         reference_clip_id: String,
+        /// The target's frame to read, in timeline seconds; by default
+        /// the middle of the clip's longest detected shot.
+        #[serde(default)]
+        secs: Option<f64>,
+        /// The reference's frame, likewise.
+        #[serde(default)]
+        reference_secs: Option<f64>,
     },
     /// Cut a long take down to its selects: the runs of speech between
     /// the real pauses, so the good takes are kept and the dead air and
