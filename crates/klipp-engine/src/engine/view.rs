@@ -255,6 +255,26 @@ impl PlaybackEngine {
         }
     }
 
+    /// Whether the frame being published shows every clip at the playhead,
+    /// which is what a reader of the viewer waits for (the control
+    /// socket's frame reads, the parity tests):
+    ///
+    /// - not a paused frame still waiting on the other clips' streams;
+    /// - not a progress frame, the one short of the playhead shown while a
+    ///   slow seek decodes, published under the playhead only for want of
+    ///   its own time;
+    /// - while playing, only when every stream held its frame for this
+    ///   time. Playback does not wait for them, so a slow stream's clip is
+    ///   drawn from the frame before. That frame was published as
+    ///   complete, and after a pause it stayed on screen until the parked
+    ///   refresh replaced it, so a read taken in between got a dissolve
+    ///   with its other side a frame or more behind.
+    pub(super) fn published_complete(&self) -> bool {
+        !self.pending_stream_refresh
+            && !self.presenting_progress
+            && (self.state != PlaybackState::Playing || self.streams.ready(self.fps.frame_duration_secs()))
+    }
+
     /// Re-render once the clip streams a paused frame was waiting on have
     /// their frames. Called every paused tick; nothing to do otherwise.
     pub(super) fn tick_stream_refresh(&mut self) {
@@ -965,11 +985,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
-            // A progress frame is one short of the playhead, shown while a
-            // slow seek decodes: it is published under the playhead only
-            // for want of its own time, so it goes out as not complete,
-            // and nothing waiting for this playhead's picture takes it.
-            fb.set_presented(self.playhead, !self.pending_stream_refresh && !self.presenting_progress);
+            fb.set_presented(self.playhead, self.published_complete());
             match nits {
                 Some((map, mw, mh, step)) => {
                     fb.nit_map = map;
@@ -993,7 +1009,7 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.note_gpu_frame();
-            fb.set_presented(self.playhead, !self.pending_stream_refresh);
+            fb.set_presented(self.playhead, self.published_complete());
             if !fb.nit_map.is_empty() {
                 fb.nit_map = Vec::new();
                 (fb.nit_map_w, fb.nit_map_h) = (0, 0);
