@@ -5,9 +5,10 @@
 //!
 //! One rule for every caller, whichever kind of track the clips are
 //! on: the cut must lie more than a frame inside a clip to cut it, and
-//! a linked pair is cut together or not at all — a pair across a lock
-//! is refused whole, so a lock never leaves picture and sound out of
-//! step.
+//! a linked pair the cut runs through is cut together or not at all — a
+//! pair like that across a lock is refused whole, so a lock never leaves
+//! picture and sound out of step. A partner the cut misses is not cut
+//! either way, so a lock over it refuses nothing.
 
 use crate::history::EditCommand;
 use klipp_core::{ClipId, Fps, RationalTime};
@@ -28,7 +29,8 @@ pub enum BladeRefusal {
         /// The locked track's name.
         track: String,
     },
-    /// The clip and the clip it is linked to lie either side of a lock.
+    /// The clip and the clip it is linked to would both be cut, and they
+    /// lie either side of a lock.
     LockedAcrossPair {
         /// The locked track's name.
         locked: String,
@@ -100,14 +102,19 @@ pub fn blade_linked(
 
     let partner = clip.linked_clip_id.and_then(|pid| seq.find_clip(pid)).map(|(pti, pci)| (pti, seq.tracks[pti].clips[pci].clone()));
 
+    // Only a partner the cut lies inside would be split, and only a
+    // split partner can put the gesture either side of a lock: sound
+    // that ends before the cut — a J-cut's tail — would not change at
+    // all, so a lock over it has nothing to protect.
+    let cut_partner: Option<usize> = partner.as_ref().filter(|(_, p)| cut_is_inside(p, cut, fps)).map(|(pti, _)| *pti);
     let name = |ti: usize| seq.tracks[ti].name.clone();
     let locked = seq.tracks[track_index].locked;
-    match (locked, partner.as_ref().map(|(pti, _)| seq.tracks[*pti].locked)) {
+    match (locked, cut_partner.map(|pti| seq.tracks[pti].locked)) {
         (true, Some(false)) => {
-            return Err(BladeRefusal::LockedAcrossPair { locked: name(track_index), unlocked: name(partner.as_ref().unwrap().0) });
+            return Err(BladeRefusal::LockedAcrossPair { locked: name(track_index), unlocked: name(cut_partner.unwrap()) });
         }
         (false, Some(true)) => {
-            return Err(BladeRefusal::LockedAcrossPair { locked: name(partner.as_ref().unwrap().0), unlocked: name(track_index) });
+            return Err(BladeRefusal::LockedAcrossPair { locked: name(cut_partner.unwrap()), unlocked: name(track_index) });
         }
         (true, _) => return Err(BladeRefusal::Locked { track: name(track_index) }),
         (false, _) => {}
@@ -420,6 +427,40 @@ mod tests {
         seq.tracks[1].locked = true;
         assert_eq!(blade_linked(&mut seq, 0, vid, tc(125), |_| false).err(), Some(BladeRefusal::Locked { track: "V1".into() }));
         assert_eq!(shape(&seq), before);
+    }
+
+    /// #435: a lock over a partner the cut does not reach protects
+    /// nothing — that clip was never going to be cut — so the blade goes
+    /// ahead on the clicked clip alone. V1 0-10 s over A1 0-4 s, a J-cut
+    /// tail on a locked track, bladed at 6 s: the sound is nowhere near
+    /// the cut.
+    #[test]
+    fn a_locked_partner_the_cut_misses_refuses_nothing() {
+        for magnetic in [false, true] {
+            let (mut seq, _, aid) = pair((0, 250), (0, 100));
+            seq.tracks[1].locked = true;
+            let mut history = CommandHistory::new();
+            blade(&mut seq, &mut history, 150, magnetic).unwrap_or_else(|r| panic!("the blade went ahead (magnetic {magnetic}): {r:?}"));
+            let s = shape(&seq);
+            assert_eq!(s[0].len(), 2, "the picture was cut: {s:?}");
+            assert_eq!(s[1].len(), 1, "the locked sound was not: {s:?}");
+            assert_eq!((s[1][0].1, s[1][0].2), (0, 100), "and did not move: {s:?}");
+            assert_eq!(s[0][0].3, Some(aid), "the left half still links the sound: {s:?}");
+            assert_eq!(s[0][1].3, None, "the right half lies past it: {s:?}");
+            assert_eq!(s[1][0].3, Some(s[0][0].0), "the sound links the half over it: {s:?}");
+
+            // The clicked clip's own track locked is still a refusal, and
+            // one about that track alone: no pair is being cut.
+            let (mut seq, vid, _) = pair((0, 250), (0, 100));
+            seq.tracks[0].locked = true;
+            let before = shape(&seq);
+            assert_eq!(
+                blade_linked(&mut seq, 0, vid, tc(150), |_| magnetic).err(),
+                Some(BladeRefusal::Locked { track: "V1".into() }),
+                "magnetic {magnetic}"
+            );
+            assert_eq!(shape(&seq), before, "nothing was cut (magnetic {magnetic})");
+        }
     }
 
     /// #407: the edge rule is the legacy blade's — more than a frame
