@@ -702,6 +702,9 @@ impl EditCommand {
             // undoes under the blade's name. Anything else batched is the
             // multi-drop this was first made for.
             EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(EditCommand::is_blade) => cmds[0].label(),
+            // An effect added or removed together with the clip speed it
+            // sets (a speed ramp) undoes under the effect's name.
+            EditCommand::Batch(cmds) if matches!(cmds.first(), Some(EditCommand::SetBuiltinEffects { .. })) => cmds[0].label(),
             EditCommand::Batch(..) => "Add Clips",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
@@ -724,7 +727,11 @@ impl EditCommand {
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
-            EditCommand::SetBuiltinEffects { .. } => "Effects",
+            EditCommand::SetBuiltinEffects { old_effects, new_effects, .. } => match new_effects.len().cmp(&old_effects.len()) {
+                std::cmp::Ordering::Greater => "Add Effect",
+                std::cmp::Ordering::Less => "Remove Effect",
+                std::cmp::Ordering::Equal => "Effects",
+            },
             EditCommand::ToggleBuiltinEffectEnabled { .. } => "Toggle Effect",
             EditCommand::SetOFXEffectEnabled { .. } => "Toggle Effect",
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
