@@ -1749,15 +1749,11 @@ impl PlaybackEngine {
         info!("PlaybackEngine: initializing (ffmpeg-next backend)");
 
         // Probe cpal sample rate (don't start the stream yet — we start it per-clip)
+        // One rate decision for the pipeline and the device (48 kHz when
+        // the device takes it), cached so the stream opens at the same rate.
         let cpal_sample_rate = {
             let _t = klipp_core::startup_timer::LogTimer::new("engine: cpal default device probe");
-            use cpal::traits::{DeviceTrait, HostTrait};
-            crate::audio_output::quiet_alsa();
-            let host = cpal::default_host();
-            host.default_output_device()
-                .and_then(|d| d.default_output_config().ok())
-                .map(|c| c.sample_rate().0)
-                .unwrap_or(48000)
+            crate::audio_output::probe_sample_rate()
         };
         info!("PlaybackEngine: cpal sample rate = {cpal_sample_rate}");
 
