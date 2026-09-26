@@ -1272,7 +1272,7 @@ fn frame_tc(frames: i64, fps: Fps) -> Timecode {
 }
 
 fn one_frame(fps: Fps) -> Timecode {
-    frame_tc(1, fps)
+    klipp_timeline::one_frame(fps)
 }
 
 fn secs(t: Timecode) -> f64 {
@@ -1864,7 +1864,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             let cut = resolve_anchor(seq, fps, at, i)?;
             let mut scratch = seq.tracks[ti].clone();
-            let Some((mut a, mut b)) = scratch.blade_at(*clip_id, cut) else {
+            let Some((mut a, mut b)) = scratch.blade_at(*clip_id, cut, fps) else {
                 return Err(refuse(
                     i,
                     format!("{:.2} s is not inside {} ({:.2}-{:.2} s) by at least a frame", secs(cut), clip_name(seq, pool, clip), secs(clip.timeline_in), secs(clip.timeline_out)),
@@ -1878,7 +1878,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if let Some((pti, pci, partner)) = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)) {
                 if !seq.tracks[pti].locked {
                     let mut pscratch = seq.tracks[pti].clone();
-                    if let Some((mut pa, mut pb)) = pscratch.blade_at(partner.id, cut) {
+                    if let Some((mut pa, mut pb)) = pscratch.blade_at(partner.id, cut, fps) {
                         a.linked_clip_id = Some(pa.id);
                         pa.linked_clip_id = Some(a.id);
                         b.linked_clip_id = Some(pb.id);
@@ -2417,12 +2417,9 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
             let track = &sims[0].tracks[ti];
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
                 let mut scratch = track.clone();
-                if let Some((mut a, mut b)) = scratch.split_at(c.id, cut) {
-                    // A split gives both pieces both fades; a fade at
-                    // the join would dip the picture and the sound at
-                    // every cut. The clip's own fades stay at its ends.
-                    a.fade_out_secs = 0.0;
-                    b.fade_in_secs = 0.0;
+                if let Some((a, b)) = scratch.split_at(c.id, cut) {
+                    // `split_at` leaves no fade at the join it makes, so
+                    // there is nothing to clear here (#429).
                     blades.push((ti, ci, c.clone(), a, b));
                 }
             }

@@ -69,7 +69,7 @@ pub use brief::{Brief, CastMember, Feature, TitleMotionSpec, TypeStyle};
 pub use edit_plan::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 pub use marker::Marker;
 pub use sequence::{
-    effective_timeline_duration_for_keyframes, speed_at_keyframes, speed_integral_keyframes,
+    effective_timeline_duration_for_keyframes, one_frame, speed_at_keyframes, speed_integral_keyframes,
     AnchorAlignment, Camera, ChannelConfig, Clip, ClipMarker, ClipRole, FadeCurve, GradeVersion, LinkMode,
     Look, MagneticAnchor, MatteBinding, Sequence, StencilSettings, Track, TrackKind, TrackRole,
     Transition, TransitionKind, TransformLink, TransformLinkTarget, SPEED_MAX, SPEED_MIN,

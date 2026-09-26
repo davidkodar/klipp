@@ -6,6 +6,15 @@ use std::collections::HashMap;
 
 pub use klipp_core::types::{ChannelConfig, FadeCurve};
 
+/// One frame at `fps`, as a time at the sequence's own rate. `rate` is
+/// the fps numerator, so a frame is `den` ticks: one at a whole rate,
+/// 1001 at an NTSC one. Taking the frame as a single tick — which is
+/// the same thing only at a whole rate — makes any rule written in
+/// frames a thousand times looser at 23.976, 29.97 or 59.94.
+pub fn one_frame(fps: Fps) -> Timecode {
+    Timecode { value: fps.den.max(1) as i64, rate: fps.rate() }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Magnetic Timeline Types
 // ═══════════════════════════════════════════════════════════════════
@@ -1006,11 +1015,12 @@ impl Track {
     /// The blade tool: [`Self::split_at`], refusing a cut within a frame of
     /// either edge. That is a click-tolerance rule — a blade landing a
     /// hair inside a clip is almost always meant for the edge — and it
-    /// belongs to the tool, not to the split.
-    pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
+    /// belongs to the tool, not to the split. The frame is the
+    /// sequence's own, so `fps` comes from the sequence the track is in.
+    pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode, fps: Fps) -> Option<(Clip, Clip)> {
         let clip = self.clips.iter().find(|c| c.id == clip_id)?;
-        let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
-        if cut_at <= clip.timeline_in + one_frame || cut_at >= clip.timeline_out - one_frame {
+        let frame = one_frame(fps);
+        if cut_at <= clip.timeline_in + frame || cut_at >= clip.timeline_out - frame {
             return None;
         }
         self.split_at(clip_id, cut_at)
@@ -1021,6 +1031,11 @@ impl Track {
     /// of source and the keyframes, markers and effect keyframes before
     /// the cut; the right takes the rest, re-timed from its own start.
     /// Both get new ids. Returns `(left, right)`.
+    ///
+    /// The fades stay at the clip's own ends — the left keeps its fade in
+    /// and the right its fade out — and the two edges the cut makes have
+    /// no fade at all, so a split never dips the join it creates. A fade
+    /// longer than the half it lands on is shortened to it.
     pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
         let clip = self.clips[pos].clone();
@@ -1030,6 +1045,11 @@ impl Track {
 
         let offset = cut_at - clip.timeline_in;
         let cut_secs = offset.to_secs_f64();
+        // A fade cannot outlast the piece it is left on: the left half may
+        // be shorter than the clip's fade in, the right shorter than its
+        // fade out.
+        let left_secs = cut_secs as f32;
+        let right_secs = (clip.timeline_out - cut_at).to_secs_f64() as f32;
 
         // Split keyframes at the cut point
         let split_kfs = |kfs: &[klipp_core::Keyframe]| -> (Vec<klipp_core::Keyframe>, Vec<klipp_core::Keyframe>) {
@@ -1116,8 +1136,10 @@ impl Track {
             gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
-            fade_in_secs: clip.fade_in_secs,
-            fade_out_secs: clip.fade_out_secs,
+            fade_in_secs: clip.fade_in_secs.min(left_secs),
+            // The cut is not an edge of the clip: a fade out here would
+            // dip the join to nothing on a cut that should pass unheard.
+            fade_out_secs: 0.0,
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
@@ -1180,8 +1202,9 @@ impl Track {
             gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
-            fade_in_secs: clip.fade_in_secs,
-            fade_out_secs: clip.fade_out_secs,
+            // The other side of the join: no fade in here either.
+            fade_in_secs: 0.0,
+            fade_out_secs: clip.fade_out_secs.min(right_secs),
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
@@ -2327,6 +2350,11 @@ mod tests {
         RationalTime::from_frames(frames, RATE)
     }
 
+    /// The rate `tc` counts in, as the sequence's fps.
+    fn test_fps() -> Fps {
+        Fps::new(RATE, 1)
+    }
+
     fn make_clip(timeline_in: i64, timeline_out: i64, src_in: i64, src_out: i64) -> Clip {
         Clip::media(MediaId::new(), tc(timeline_in), tc(timeline_out), tc(src_in), tc(src_out))
     }
@@ -2533,7 +2561,7 @@ mod tests {
         let id = c.id;
         let mut track = make_track(vec![c]);
 
-        let (a, b) = track.blade_at(id, tc(12)).expect("split");
+        let (a, b) = track.blade_at(id, tc(12), test_fps()).expect("split");
         for half in [&a, &b] {
             assert_eq!(half.blend_mode, klipp_core::BlendMode::Multiply);
             assert!(half.consumed_as_matte);
@@ -2688,7 +2716,7 @@ mod tests {
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
 
-        let result = track.blade_at(id0, tc(24));
+        let result = track.blade_at(id0, tc(24), test_fps());
         assert!(result.is_some());
 
         assert_eq!(track.clips.len(), 2);
@@ -2698,6 +2726,41 @@ mod tests {
         assert_eq!(track.clips[1].source_in, tc(24));
     }
 
+    /// #429: the cut is not an end of the clip, so neither half fades at
+    /// it. A blade through a clip with a fade out used to leave a fade
+    /// out on the left half and a fade in on the right, dipping to
+    /// nothing at a join that should pass unnoticed.
+    #[test]
+    fn split_keeps_each_half_only_its_own_outer_fade() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.fade_in_secs = 0.5;
+        c.fade_out_secs = 0.75;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        let (a, b) = track.split_at(id, tc(48)).expect("split");
+        assert_eq!((a.fade_in_secs, a.fade_out_secs), (0.5, 0.0), "the left half keeps its fade in and does not fade out at the cut");
+        assert_eq!((b.fade_in_secs, b.fade_out_secs), (0.0, 0.75), "the right half keeps its fade out and does not fade in at the cut");
+        assert_eq!((track.clips[0].fade_out_secs, track.clips[1].fade_in_secs), (0.0, 0.0), "the clips on the track carry the same fades");
+    }
+
+    /// A fade that no longer fits the half it is left on is shortened to
+    /// it: `Op::Audio` refuses a fade longer than its clip, so a split
+    /// must not make one. A 4 s clip fading in over 3 s and out over
+    /// 3.5 s, cut a second in, leaves a 1 s head and a 3 s tail.
+    #[test]
+    fn split_shortens_a_fade_that_outlasts_its_half() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.fade_in_secs = 3.0;
+        c.fade_out_secs = 3.5;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        let (a, b) = track.split_at(id, tc(24)).expect("split");
+        assert_eq!((a.fade_in_secs, a.fade_out_secs), (1.0, 0.0), "the left half fades in over the whole second it has");
+        assert_eq!((b.fade_in_secs, b.fade_out_secs), (0.0, 3.0), "the right half fades out over the three seconds it has");
+    }
+
     #[test]
     fn blade_at_edge_returns_none() {
         let c0 = make_clip(0, 48, 0, 48);
@@ -2705,9 +2768,29 @@ mod tests {
         let mut track = make_track(vec![c0]);
 
         // Cut at 1 frame from start (within 1-frame guard)
-        assert!(track.blade_at(id0, tc(1)).is_none());
+        assert!(track.blade_at(id0, tc(1), test_fps()).is_none());
         // Cut at 1 frame from end
-        assert!(track.blade_at(id0, tc(47)).is_none());
+        assert!(track.blade_at(id0, tc(47), test_fps()).is_none());
+    }
+
+    /// #434: the guard is a frame of the sequence, not a tick of the
+    /// clip's rate. At 29.97 a frame is 1001 ticks of the 30000 rate, so
+    /// a cut a frame from the head used to clear a guard a thousandth of
+    /// that wide and leave a sliver of a frame nobody can trim.
+    #[test]
+    fn blade_at_measures_its_edge_guard_in_frames_at_a_fractional_rate() {
+        let fps = Fps::ntsc_29970();
+        assert_eq!(one_frame(fps), Timecode { value: 1001, rate: 30000 }, "a frame at 29.97 is 1001 ticks");
+        let f = |frames: i64| Timecode { value: frames * 1001, rate: 30000 };
+        let c = Clip::media(MediaId::new(), f(0), f(100), f(0), f(100));
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        assert!(track.blade_at(id, f(1), fps).is_none(), "a cut one frame from the head is meant for the head");
+        assert!(track.blade_at(id, f(99), fps).is_none(), "and one frame from the tail for the tail");
+        assert_eq!(track.clips.len(), 1, "nothing was cut");
+        assert!(track.blade_at(id, f(2), fps).is_some(), "two frames in is a cut");
+        assert_eq!(track.clips.len(), 2);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2746,7 +2829,7 @@ mod tests {
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
 
-        let result = track.blade_at(id0, tc(24));
+        let result = track.blade_at(id0, tc(24), test_fps());
         assert!(result.is_some(), "blade should succeed at frame 24");
         assert_eq!(track.clips.len(), 2);
 
@@ -2779,7 +2862,7 @@ mod tests {
         let c0 = make_clip(0, 48, 0, 48);
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
-        track.blade_at(id0, tc(24));
+        track.blade_at(id0, tc(24), test_fps());
         assert!(track.clips[0].audio_effect_keyframes.is_empty());
         assert!(track.clips[1].audio_effect_keyframes.is_empty());
     }
