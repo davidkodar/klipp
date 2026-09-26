@@ -970,12 +970,22 @@ impl NodeGraph {
     /// the clip's input colour space, not part of its grade: a grade
     /// carried from one clip to another — a still's, a Look — must leave
     /// it behind, or log footage is linearised twice, or with the other
-    /// camera's curve. A frame left with no members goes with it.
+    /// camera's curve. What fed it may itself be a wireless link, and a
+    /// node reading it wirelessly reads its feed instead, as a drawn
+    /// edge, since a wireless link carries only an output's port 0 and
+    /// the feed need not be one. A frame the removal leaves with no
+    /// members goes with it.
     pub fn strip_input_transforms(&mut self) {
         let transforms: Vec<NodeId> =
             self.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).map(|n| n.id).collect();
         for it in transforms {
-            let feed = self.edges.iter().find(|e| e.to_node == it && e.to_port == 0).map(|e| (e.from_node, e.from_port));
+            let feed = self
+                .edges
+                .iter()
+                .find(|e| e.to_node == it && e.to_port == 0)
+                .map(|e| (e.from_node, e.from_port))
+                .or_else(|| self.input_of(it, 0).map(|sender| (sender, 0)));
+            let label = self.nodes.iter().find(|n| n.id == it).and_then(|n| n.output_link.clone());
             self.edges.retain(|e| e.to_node != it);
             match feed {
                 Some((from_node, from_port)) => {
@@ -986,12 +996,26 @@ impl NodeGraph {
                 }
                 None => self.edges.retain(|e| e.from_node != it),
             }
+            if let Some(label) = label {
+                let mut drawn = Vec::new();
+                for recv in self.nodes.iter_mut().filter(|n| n.id != it) {
+                    for (port, slot) in recv.input_links.iter_mut().enumerate() {
+                        if slot.as_ref() != Some(&label) {
+                            continue;
+                        }
+                        *slot = None;
+                        let port = port as u8;
+                        let wired = self.edges.iter().any(|e| e.to_node == recv.id && e.to_port == port);
+                        if let Some((from_node, from_port)) = feed.filter(|_| !wired) {
+                            drawn.push(Edge { from_node, from_port, to_node: recv.id, to_port: port });
+                        }
+                    }
+                }
+                self.edges.extend(drawn);
+            }
             self.nodes.retain(|n| n.id != it);
             self.node_positions.remove(&it);
-            for frame in &mut self.frames {
-                frame.contained_node_ids.remove(&it);
-            }
-            self.frames.retain(|f| !f.contained_node_ids.is_empty());
+            self.frames.retain_mut(|f| !f.contained_node_ids.remove(&it) || !f.contained_node_ids.is_empty());
         }
     }
 
@@ -1788,6 +1812,69 @@ mod append_tests {
         let exposure = new.nodes.iter().find(|n| n.kind == NodeKind::Corrector).and_then(|n| n.params.exposure);
         assert_eq!(exposure, Some(-0.2), "the still's grade");
         assert!(new.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
+    }
+
+    /// A node reading the Input Transform wirelessly reads what fed it
+    /// once the transform is gone, and one the transform read
+    /// wirelessly is what its edges are wired to.
+    #[test]
+    fn stripping_an_input_transform_repoints_its_wireless_links() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let src = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id).unwrap();
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        // Source → Input Transform goes wireless, and a Corrector reads
+        // the transform wirelessly on a port nothing is drawn to.
+        g.edges.retain(|e| !(e.from_node == src && e.to_node == it));
+        g.nodes.iter_mut().find(|n| n.id == src).unwrap().output_link = Some("src".into());
+        let transform = g.nodes.iter_mut().find(|n| n.id == it).unwrap();
+        transform.input_links = vec![Some("src".into())];
+        transform.output_link = Some("it".into());
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().input_links = vec![None, Some("it".into())];
+        assert_eq!(g.input_of(corrector, 1), Some(it));
+
+        g.strip_input_transforms();
+        assert!(g.nodes.iter().all(|n| n.kind != NodeKind::InputTransform));
+        assert_eq!(g.input_of(corrector, 0), Some(src), "the drawn edge, wired to the wireless feed");
+        assert_eq!(g.input_of(corrector, 1), Some(src), "the wireless read, now a drawn edge from the feed");
+        assert!(g.nodes.iter().all(|n| n.input_links.iter().all(|l| l.as_deref() != Some("it"))), "no slot names it");
+        assert!(g.topo_sort().is_ok());
+    }
+
+    /// A wireless read of an Input Transform nothing fed reads nothing,
+    /// as it did through the transform.
+    #[test]
+    fn stripping_an_unfed_input_transform_clears_its_wireless_readers() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        g.edges.retain(|e| e.to_node != it);
+        g.nodes.iter_mut().find(|n| n.id == it).unwrap().output_link = Some("it".into());
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().input_links = vec![None, Some("it".into())];
+        g.strip_input_transforms();
+        assert_eq!(g.input_of(corrector, 1), None);
+        assert_eq!(g.nodes.iter().find(|n| n.id == corrector).unwrap().input_links, vec![None, None]);
+    }
+
+    /// Only a frame the removal empties goes: one that was empty
+    /// already, and one with other members, stay.
+    #[test]
+    fn stripping_an_input_transform_prunes_only_the_frame_it_empties() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        let frame = |label: &str, members: &[NodeId]| NodeFrame {
+            id: NodeFrameId::new_v4(),
+            label: label.into(),
+            description: String::new(),
+            color_rgba: 0,
+            contained_node_ids: members.iter().copied().collect(),
+        };
+        g.frames = vec![frame("Input", &[it]), frame("Both", &[it, corrector]), frame("Empty", &[])];
+        g.strip_input_transforms();
+        let labels: Vec<&str> = g.frames.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(labels, vec!["Both", "Empty"]);
+        assert_eq!(g.frames[0].contained_node_ids, [corrector].into_iter().collect());
     }
 
     /// A Rec.709 shot has no Input Transform, and gets none from the

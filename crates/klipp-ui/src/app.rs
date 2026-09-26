@@ -579,10 +579,8 @@ pub struct KlippApp {
     /// when no gesture is in progress.
     node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
     /// The default graph the timeline grade's stand-in shows while the
-    /// sequence has no grade of its own, kept so it has the same node
-    /// ids each time it stands in: the inspector dispatches on the ids
-    /// it drew, and the sequence takes the graph only once something is
-    /// done to it.
+    /// sequence has no grade of its own; see
+    /// [`stand_in_timeline_grade_on`] and [`stand_down_timeline_grade_on`].
     timeline_grade_fresh: Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
     /// Last wall time `sync_and_refresh_frame` ran while a
     /// node-param-edit gesture was in flight. Used to throttle the
@@ -696,6 +694,60 @@ fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fresh: Option
     true
 }
 
+/// Put the timeline grade's stand-in on `seq`, on its hidden track, and
+/// say which clip it is; `None` when it is already there. While the
+/// sequence has no grade the stand-in shows `fresh`, made the first
+/// time and kept for this sequence, so it has the same node ids each
+/// time it stands in: the inspector dispatches on the ids it drew.
+fn stand_in_timeline_grade_on(
+    seq: &mut klipp_timeline::Sequence,
+    fresh: &mut Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
+) -> Option<klipp_core::ClipId> {
+    let track_id = timeline_grade_proxy_track_id(seq);
+    if seq.tracks.iter().any(|t| t.id == track_id) {
+        return None;
+    }
+    let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
+    if seq.timeline_graph.is_none() {
+        let given = match fresh {
+            Some((id, g)) if *id == seq.id => g,
+            _ => &fresh.insert((seq.id, klipp_nodes::NodeGraph::default())).1,
+        };
+        proxy.node_graph = given.clone();
+    }
+    let id = proxy.id;
+    let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
+    track.id = track_id;
+    track.visible = false;
+    track.muted = true;
+    track.clips.push(proxy);
+    seq.tracks.push(track);
+    Some(id)
+}
+
+/// Take the stand-in off `seq` again, keeping its graph as the timeline
+/// grade if it was edited. The stand-in is measured against `fresh`
+/// only while the sequence has no grade, and `fresh` is let go the
+/// moment one begins: from then on the stand-in carries the sequence's
+/// own grade, and that is what a visit that changes nothing must match.
+/// Measured against the fresh graph instead, an existing grade would
+/// differ on every command, if only by its node ids, and looking at it
+/// would be an edit again (#368).
+fn stand_down_timeline_grade_on(
+    seq: &mut klipp_timeline::Sequence,
+    fresh: &mut Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
+) -> TimelineGradeSettled {
+    let had_grade = seq.timeline_graph.is_some();
+    let given = fresh.as_ref().filter(|(id, _)| *id == seq.id && !had_grade).map(|(_, g)| g);
+    match (settle_timeline_grade_proxy(seq, given), had_grade) {
+        (false, _) => TimelineGradeSettled::Unchanged,
+        (true, true) => TimelineGradeSettled::Changed,
+        (true, false) => {
+            *fresh = None;
+            TimelineGradeSettled::Begun
+        }
+    }
+}
 
 /// What standing the timeline grade's stand-in down did to the grade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13546,26 +13598,7 @@ impl KlippApp {
             return None;
         }
         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        let track_id = timeline_grade_proxy_track_id(seq);
-        if seq.tracks.iter().any(|t| t.id == track_id) {
-            return None;
-        }
-        let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
-        if seq.timeline_graph.is_none() {
-            // The same fresh graph every time, until the sequence has one.
-            let fresh = match &self.timeline_grade_fresh {
-                Some((id, g)) if *id == seq.id => g,
-                _ => &self.timeline_grade_fresh.insert((seq.id, klipp_nodes::NodeGraph::default())).1,
-            };
-            proxy.node_graph = fresh.clone();
-        }
-        let id = proxy.id;
-        let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
-        track.id = track_id;
-        track.visible = false;
-        track.muted = true;
-        track.clips.push(proxy);
-        seq.tracks.push(track);
+        let id = stand_in_timeline_grade_on(seq, &mut self.timeline_grade_fresh)?;
         Some(self.state.selected_clip.replace(id))
     }
 
@@ -13574,15 +13607,12 @@ impl KlippApp {
     fn stand_down_timeline_grade(&mut self, stood_in: Option<Option<klipp_core::ClipId>>) -> TimelineGradeSettled {
         let Some(selected) = stood_in else { return TimelineGradeSettled::Unchanged };
         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        let had_grade = seq.timeline_graph.is_some();
-        let fresh = self.timeline_grade_fresh.as_ref().filter(|(id, _)| *id == seq.id).map(|(_, g)| g);
-        let changed = settle_timeline_grade_proxy(seq, fresh);
+        let settled = stand_down_timeline_grade_on(seq, &mut self.timeline_grade_fresh);
         self.state.selected_clip = selected;
-        if !changed {
-            return TimelineGradeSettled::Unchanged;
+        if settled != TimelineGradeSettled::Unchanged {
+            self.state.dirty = true;
         }
-        self.state.dirty = true;
-        if had_grade { TimelineGradeSettled::Changed } else { TimelineGradeSettled::Begun }
+        settled
     }
 
     fn handle_color_commands_inner(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
@@ -41882,6 +41912,48 @@ mod timeline_grade_stand_in_tests {
         seq.timeline_graph = Some(grade.clone());
         let (_, _) = stand_in(&mut seq);
         assert!(!settle_timeline_grade_proxy(&mut seq, None));
+        assert_eq!(seq.timeline_graph, Some(grade));
+    }
+
+    /// The whole round, as [`KlippApp::stand_in_timeline_grade`] and
+    /// [`KlippApp::stand_down_timeline_grade`] make it: a first visit
+    /// that edits begins the grade, and the next visit that only looks
+    /// leaves it as it is. The fresh graph the first stand-in was made
+    /// with must not be what the second is measured against, or the
+    /// grade, with its own node ids, differs from it on every command.
+    #[test]
+    fn a_visit_after_the_grade_began_is_not_an_edit() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut fresh = None;
+        let id = stand_in_timeline_grade_on(&mut seq, &mut fresh).expect("stood in");
+        assert!(fresh.as_ref().is_some_and(|(seq_id, _)| *seq_id == seq.id));
+        let track_id = timeline_grade_proxy_track_id(&seq);
+        let graph = &mut seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips[0].node_graph;
+        let corrector = graph.ensure_corrector();
+        graph.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
+        let grade = seq.timeline_graph.clone().expect("the grade began");
+        assert!(fresh.is_none(), "the fresh graph is let go once the grade begins");
+
+        assert_eq!(stand_in_timeline_grade_on(&mut seq, &mut fresh), Some(id));
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
+        assert_eq!(seq.timeline_graph, Some(grade), "the grade is as it was");
+        assert!(!seq.tracks.iter().any(|t| t.id == track_id));
+    }
+
+    /// The same, for a grade the sequence already had when the fresh
+    /// graph was made for it: only a sequence without a grade is
+    /// measured against the fresh graph.
+    #[test]
+    fn a_stale_fresh_graph_is_not_held_against_an_existing_grade() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let corrector = grade.ensure_corrector();
+        grade.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
+        seq.timeline_graph = Some(grade.clone());
+        let mut fresh = Some((seq.id, klipp_nodes::NodeGraph::default()));
+        stand_in_timeline_grade_on(&mut seq, &mut fresh).expect("stood in");
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
         assert_eq!(seq.timeline_graph, Some(grade));
     }
 }
