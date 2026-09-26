@@ -1123,16 +1123,27 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
     let pct = |q: f32| lumas.get(((lumas.len() as f32 * q) as usize).min(lumas.len().saturating_sub(1))).copied().unwrap_or(0.0);
     let nn = n.max(1) as f64;
     let (rb, gb, bb) = (r_sum / nn / 255.0, g_sum / nn / 255.0, b_sum / nn / 255.0);
-    let grey = (rb + gb + bb) / 3.0;
-    // The cast, if any: which channel leads and by how much, in percent
-    // of the grey level — what "warm" or "cool" means as a number.
-    let cast = |name: &'static str, v: f64| (name, ((v - grey) / grey.max(1e-6) * 100.0) as f32);
-    let mut casts = [cast("red", rb), cast("green", gb), cast("blue", bb)];
-    casts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    let balance_note = if casts[0].1 - casts[2].1 < 4.0 {
-        "neutral".to_string()
-    } else {
-        format!("{} cast, {:.0}% over {}", casts[0].0, casts[0].1 - casts[2].1, casts[2].0)
+    // The cast, if any: which channel leads on the frame's neutral
+    // surfaces and by how much, in percent of their grey level — what
+    // "warm" or "cool" means as a number. Read off the neutrals, as the
+    // Lab reading and Auto WB are: the whole frame's average is the
+    // sky and the brick, and on one frame it called a blue cast while
+    // the neutrals leaned warm (#327). `rb`/`gb`/`bb` stay the frame's
+    // average colour, which the scene matchers compare.
+    let balance_note = match klipp_color::measure::neutral_reference(data, width, height) {
+        None => "no neutral surface to read a cast from".to_string(),
+        Some(lin) => {
+            let [nr, ng, nb] = lin.map(|v| klipp_color::transfer::linear_to_srgb(v) as f64);
+            let grey = (nr + ng + nb) / 3.0;
+            let cast = |name: &'static str, v: f64| (name, ((v - grey) / grey.max(1e-6) * 100.0) as f32);
+            let mut casts = [cast("red", nr), cast("green", ng), cast("blue", nb)];
+            casts.sort_by(|a, b| b.1.total_cmp(&a.1));
+            if casts[0].1 - casts[2].1 < 4.0 {
+                "neutral".to_string()
+            } else {
+                format!("{} cast, {:.0}% over {}", casts[0].0, casts[0].1 - casts[2].1, casts[2].0)
+            }
+        }
     };
     let clip_hi_pct = clip_hi as f64 / nn * 100.0;
     let clip_lo_pct = clip_lo as f64 / nn * 100.0;
@@ -1144,7 +1155,7 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
     let text = format!(
         "Frame at {secs:.2} s, scope readings (luma in IRE, 0 black to 100 white):\n\
          black point {:.0}, mid {:.0}, white point {:.0}\n\
-         RGB balance: {balance_note}\n\
+         RGB balance on the neutral surfaces: {balance_note}\n\
          average saturation {:.0}% of full\n\
          clipping: {clip_hi_pct:.1}% at white, {clip_lo_pct:.1}% at black\n\
          skin: {skin_note}",
