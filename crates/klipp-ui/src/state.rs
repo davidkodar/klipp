@@ -3462,7 +3462,11 @@ impl AttributesClipboard {
 
     /// Write the chosen parts onto `clip`. A pasted grade gets fresh node
     /// ids, so the clips it lands on do not share ids — the executor's
-    /// per-node caches are keyed by them.
+    /// per-node caches are keyed by them. The clip keeps its own Input
+    /// Transform, and takes none from the source: the input colour space
+    /// is the footage's, not part of the grade. A clip without one (a
+    /// Rec.709 shot, audio, a title, the timeline grade's stand-in) gets
+    /// the grade alone.
     pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
         if what.effects {
             clip.builtin_effects = self.builtin_effects.clone();
@@ -3471,7 +3475,7 @@ impl AttributesClipboard {
             clip.effect_keyframes = self.effect_keyframes.clone();
         }
         if what.color_grade {
-            clip.node_graph = self.node_graph.remap_ids();
+            clip.node_graph = clip.node_graph.with_grade_of(&self.node_graph);
         }
         if what.audio {
             clip.volume = self.volume;
