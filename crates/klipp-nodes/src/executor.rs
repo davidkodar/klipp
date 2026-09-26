@@ -848,6 +848,7 @@ impl GraphExecutor {
         lut_size: u32,
         opacity: f32,
         tetrahedral: bool,
+        bracket: klipp_effects::gpu::LutBracket,
     ) -> bool {
         let Some(slot_a) = self.output_on_gpu else { return false };
         let Some(gpu) = self.gpu.as_mut() else { return false };
@@ -855,7 +856,7 @@ impl GraphExecutor {
         // fresh one for the single pass. `begin_chain` resets the params
         // ring, which the LUT dispatch draws a slot from.
         gpu.begin_chain();
-        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral, (None, None));
+        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral, bracket);
         gpu.submit_chain();
         // The pass reads one slot and writes the other.
         self.output_on_gpu = Some(!slot_a);
