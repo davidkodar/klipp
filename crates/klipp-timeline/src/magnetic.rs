@@ -781,10 +781,12 @@ impl MagneticEditor {
         left_clip.source_out = original.source_in + offset;
         // The fades belong to the clip's own ends, not to the cut: the
         // left keeps its fade in and loses the fade out, or the join
-        // would dip to nothing on a cut that should pass unheard. The
+        // would dip to nothing on a cut that should pass unheard. A fade
+        // longer than the half it is left on is shortened to it. The
         // legacy `Track::split_at` does the same, so the two blades
         // agree.
         left_clip.fade_out_secs = 0.0;
+        left_clip.fade_in_secs = left_clip.fade_in_secs.min(offset.to_secs_f64() as f32);
         // Left keeps magnetic_anchor (and its id).
 
         let mut right_clip = original.clone();
@@ -792,6 +794,7 @@ impl MagneticEditor {
         right_clip.timeline_in = at_time;
         right_clip.source_in = original.source_in + offset;
         right_clip.fade_in_secs = 0.0;
+        right_clip.fade_out_secs = right_clip.fade_out_secs.min((original.timeline_out - at_time).to_secs_f64() as f32);
         // Right keeps magnetic_anchor too (the anchor is a relationship
         // TO some other clip — both halves sit at the anchored location,
         // so both should stay connected). Dropping it on the right half
@@ -2560,6 +2563,21 @@ mod tests {
         let track = &seq.tracks[0];
         assert_eq!((track.clips[0].fade_in_secs, track.clips[0].fade_out_secs), (0.5, 0.0));
         assert_eq!((track.clips[1].fade_in_secs, track.clips[1].fade_out_secs), (0.0, 0.75));
+    }
+
+    /// The magnetic blade shortens an over-long fade to its half too, so
+    /// it and the legacy blade still agree.
+    #[test]
+    fn test_blade_shortens_a_fade_that_outlasts_its_half() {
+        let mut seq = make_sequence(&[(0, 96)]);
+        seq.tracks[0].clips[0].fade_in_secs = 3.0;
+        seq.tracks[0].clips[0].fade_out_secs = 3.5;
+        let clip_id = seq.tracks[0].clips[0].id;
+
+        MagneticEditor::blade(&mut seq, clip_id, tc(24)).unwrap();
+        let track = &seq.tracks[0];
+        assert_eq!((track.clips[0].fade_in_secs, track.clips[0].fade_out_secs), (1.0, 0.0), "the left half has a second to fade in over");
+        assert_eq!((track.clips[1].fade_in_secs, track.clips[1].fade_out_secs), (0.0, 3.0), "the right half has three seconds to fade out over");
     }
 
     #[test]

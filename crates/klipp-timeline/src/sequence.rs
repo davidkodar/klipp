@@ -1034,7 +1034,8 @@ impl Track {
     ///
     /// The fades stay at the clip's own ends — the left keeps its fade in
     /// and the right its fade out — and the two edges the cut makes have
-    /// no fade at all, so a split never dips the join it creates.
+    /// no fade at all, so a split never dips the join it creates. A fade
+    /// longer than the half it lands on is shortened to it.
     pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
         let clip = self.clips[pos].clone();
@@ -1044,6 +1045,11 @@ impl Track {
 
         let offset = cut_at - clip.timeline_in;
         let cut_secs = offset.to_secs_f64();
+        // A fade cannot outlast the piece it is left on: the left half may
+        // be shorter than the clip's fade in, the right shorter than its
+        // fade out.
+        let left_secs = cut_secs as f32;
+        let right_secs = (clip.timeline_out - cut_at).to_secs_f64() as f32;
 
         // Split keyframes at the cut point
         let split_kfs = |kfs: &[klipp_core::Keyframe]| -> (Vec<klipp_core::Keyframe>, Vec<klipp_core::Keyframe>) {
@@ -1130,7 +1136,7 @@ impl Track {
             gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
-            fade_in_secs: clip.fade_in_secs,
+            fade_in_secs: clip.fade_in_secs.min(left_secs),
             // The cut is not an edge of the clip: a fade out here would
             // dip the join to nothing on a cut that should pass unheard.
             fade_out_secs: 0.0,
@@ -1198,7 +1204,7 @@ impl Track {
             pan: clip.pan,
             // The other side of the join: no fade in here either.
             fade_in_secs: 0.0,
-            fade_out_secs: clip.fade_out_secs,
+            fade_out_secs: clip.fade_out_secs.min(right_secs),
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
@@ -2736,6 +2742,23 @@ mod tests {
         assert_eq!((a.fade_in_secs, a.fade_out_secs), (0.5, 0.0), "the left half keeps its fade in and does not fade out at the cut");
         assert_eq!((b.fade_in_secs, b.fade_out_secs), (0.0, 0.75), "the right half keeps its fade out and does not fade in at the cut");
         assert_eq!((track.clips[0].fade_out_secs, track.clips[1].fade_in_secs), (0.0, 0.0), "the clips on the track carry the same fades");
+    }
+
+    /// A fade that no longer fits the half it is left on is shortened to
+    /// it: `Op::Audio` refuses a fade longer than its clip, so a split
+    /// must not make one. A 4 s clip fading in over 3 s and out over
+    /// 3.5 s, cut a second in, leaves a 1 s head and a 3 s tail.
+    #[test]
+    fn split_shortens_a_fade_that_outlasts_its_half() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.fade_in_secs = 3.0;
+        c.fade_out_secs = 3.5;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        let (a, b) = track.split_at(id, tc(24)).expect("split");
+        assert_eq!((a.fade_in_secs, a.fade_out_secs), (1.0, 0.0), "the left half fades in over the whole second it has");
+        assert_eq!((b.fade_in_secs, b.fade_out_secs), (0.0, 3.0), "the right half fades out over the three seconds it has");
     }
 
     #[test]

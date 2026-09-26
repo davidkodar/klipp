@@ -351,6 +351,33 @@ mod tests {
         }
     }
 
+    /// A fade the cut leaves stranded on too short a half is shortened to
+    /// it, on either kind of track, and undo brings the clip's own fades
+    /// back at their full length. A 10 s clip fading in over 8 s and out
+    /// over 9 s, cut in the middle, leaves 5 s of each.
+    #[test]
+    fn a_fade_too_long_for_its_half_is_shortened_to_it() {
+        for magnetic in [false, true] {
+            let (mut seq, _, _) = pair((0, 250), (0, 250));
+            for t in seq.tracks.iter_mut() {
+                t.clips[0].fade_in_secs = 8.0;
+                t.clips[0].fade_out_secs = 9.0;
+            }
+            let mut history = CommandHistory::new();
+            blade(&mut seq, &mut history, 125, magnetic).unwrap();
+            for t in &seq.tracks {
+                assert_eq!((t.clips[0].fade_in_secs, t.clips[0].fade_out_secs), (5.0, 0.0), "the left half fades in over its whole length (magnetic {magnetic})");
+                assert_eq!((t.clips[1].fade_in_secs, t.clips[1].fade_out_secs), (0.0, 5.0), "the right half fades out over its whole length (magnetic {magnetic})");
+            }
+
+            undo(&mut seq, &mut history);
+            for t in &seq.tracks {
+                assert_eq!(t.clips.len(), 1, "magnetic {magnetic}");
+                assert_eq!((t.clips[0].fade_in_secs, t.clips[0].fade_out_secs), (8.0, 9.0), "undo restores the fades at their own length (magnetic {magnetic})");
+            }
+        }
+    }
+
     /// #406: the halves pair by position, not by an equal out-time, so a
     /// sound that runs on past its picture is still re-linked.
     #[test]
