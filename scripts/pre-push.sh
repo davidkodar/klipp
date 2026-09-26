@@ -157,7 +157,8 @@ if ! "$ROOT/scripts/check-signoff.sh"; then
     exit 1
 fi
 
-# One gate at a time, across every worktree and every session.
+# One gate at a time, across every worktree and every session, and in
+# the order the sessions arrived.
 #
 # Several agents work on this repository at once, each in its own
 # worktree, and each push runs the whole gate. Four of them together
@@ -166,45 +167,254 @@ fi
 # change. So the gate queues on a lock in the git common directory,
 # which every worktree of this clone shares.
 #
-# The lock is held on a file descriptor, so a killed gate releases it
-# and cannot wedge the queue. That holds only while nothing else has
+# That lock alone was not enough. flock promises nothing about who gets
+# it next, so with four sessions pushing the kernel can hand it to
+# whoever happens to ask first and pass the same session over again and
+# again. On screen being starved looks exactly like waiting — one line,
+# then silence, no position and no cap — and one push waited forty
+# minutes that way. So the turn is now taken explicitly:
+#
+#   * each session appends one line — pid, branch, worktree, arrival
+#     time — to klipp-pre-push.queue, under a second lock
+#     (klipp-pre-push.queue.lock) held for that append or read and never
+#     across the gate itself, so joining the queue is never a wait;
+#   * it waits until its own pid is at the head of the queue AND the
+#     gate lock is free, then takes the gate, leaving its line in place
+#     so the sessions behind it can name what is running;
+#   * it drops its line on the way out, in a trap that covers Ctrl-C and
+#     a kill as well as a normal exit, and every read of the queue also
+#     drops entries whose pid is gone, so a waiter killed with -9 cannot
+#     wedge the line;
+#   * while it waits it prints its position and who is ahead, refreshed
+#     as the queue moves, so a long wait can be told from a lost one.
+#
+# The queue decides the ORDER; the lock still decides who runs. The head
+# of the queue takes the gate only once it also holds the lock, because
+# not every gate has a ticket: a branch from before #432 carries a copy
+# of this script with no queue in it, and the installed hook runs that
+# one under `flock -o` on the same lock. Such a gate cannot be given a
+# position — it knows nothing about the queue — so it is waited for as
+# what it is, a gate outside the queue, named from the holder file it
+# writes just as this one does.
+#
+# The gate lock is held on a file descriptor, so a killed gate releases
+# it and cannot wedge the queue. That holds only while nothing else has
 # the descriptor: every child inherits it, and a cargo orphaned by a
 # killed hook went on holding the lock for every session. So the
 # long-running children below are started with fd 9 closed (`9>&-`).
 # It covers the checks, not the network push that follows.
-# KLIPP_GATE_NO_WAIT=1 refuses instead of waiting.
+# KLIPP_GATE_NO_WAIT=1 refuses instead of queueing or waiting.
 #
 # The name is deliberately not klipp-gate.lock, the file sessions wrapped
 # `git push` in by hand before this existed: a hook waiting on a lock its
 # own parent holds would wait forever.
+
+# Is that pid still there? `kill -0` also fails with EPERM, for a live
+# process owned by somebody else, and reading that as "gone" would drop
+# a live waiter and let this session jump the line — so where /proc can
+# tell the two apart, ask it. A pid may have been reused by the time we
+# look, which here only means an entry outlives its waiter by one poll.
+_alive() {
+    if kill -0 "$1" 2>/dev/null; then
+        return 0
+    fi
+    [ -d "/proc/$1" ]
+}
+
+_ordinal() {
+    case "$1" in
+        11|12|13) printf '%sth' "$1" ;;
+        *1) printf '%sst' "$1" ;;
+        *2) printf '%snd' "$1" ;;
+        *3) printf '%srd' "$1" ;;
+        *) printf '%sth' "$1" ;;
+    esac
+}
+
+# "<branch> on <worktree>" out of a queue line, which is
+# "<pid> <branch> <worktree> <arrival>". A branch name cannot contain a
+# space and a worktree path can, so the path is whatever is left in the
+# middle.
+_where() {
+    _rest=${1#* }
+    _br=${_rest%% *}
+    _wt=${_rest#* }
+    printf '%s on %s' "$_br" "${_wt% *}"
+}
+
+# Read the queue under the meta lock, dropping entries whose pid is
+# gone, write it back and print it. The action says what to do with this
+# session's own entry: `keep` (the default) gives it exactly one, at the
+# back if it had none; `remove` drops it; `peek` neither adds nor drops.
+_queue_sync() {
+    _action=${1:-keep}
+    (
+        flock 8 2>/dev/null || exit 1
+        _out=
+        _mine=0
+        if [ -f "$_queue" ]; then
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _pid=${_line%% *}
+                case "$_pid" in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                if [ "$_pid" = "$$" ]; then
+                    if [ "$_action" = remove ]; then
+                        continue
+                    fi
+                    _mine=1
+                elif ! _alive "$_pid"; then
+                    continue
+                fi
+                _out=$_out$_line'
+'
+            done < "$_queue"
+        fi
+        if [ "$_action" = keep ] && [ "$_mine" -eq 0 ]; then
+            _out=$_out$_entry'
+'
+        fi
+        printf '%s' "$_out" >"$_queue" || exit 1
+        printf '%s' "$_out"
+    ) 8>>"$_qlock"
+}
+
+# Leave the queue, whatever ends this process, without touching the exit
+# status the gate meant to report.
+_leave_queue() {
+    _status=$?
+    if [ -n "$_queue" ]; then
+        _queue_sync remove >/dev/null 2>&1 || true
+    fi
+    return "$_status"
+}
+
+# What the holder file says about whoever holds the gate lock, or nothing
+# if it says nothing useful. It is a record left by the last gate to take
+# the lock, queued or not, and it is never cleaned up, so it is reported
+# as a record: if the pid in it is gone, that is said rather than dressed
+# up as a conclusion about who holds the lock now.
+_describe_holder() {
+    _who=$(cat "$_holder" 2>/dev/null || true)
+    if [ -z "$_who" ]; then
+        return 0
+    fi
+    _hpid=${_who%% *}
+    _since=$(printf '%s\n' "$_who" | awk '{print $NF}')
+    case "$_since" in
+        ''|*[!0-9]*) ;;
+        *) _who="${_who% *}, held for $(( ($(date +%s) - _since) / 60 )) min" ;;
+    esac
+    if [ -n "$_hpid" ] && ! _alive "$_hpid"; then
+        _who="$_who (that pid is gone, so the record may be stale)"
+    fi
+    printf '%s' "$_who"
+}
+
+_queue=
 _common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || _common=
 if [ -n "$_common" ] && [ -d "$_common" ] && command -v flock >/dev/null 2>&1; then
     _lock="$_common/klipp-pre-push.lock"
     _holder="$_common/klipp-pre-push.holder"
+    _queue="$_common/klipp-pre-push.queue"
+    _qlock="$_common/klipp-pre-push.queue.lock"
+    _branch=$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD) || _branch=
+    _entry="$$ ${_branch:-?} $ROOT $(date +%s)"
     exec 9>>"$_lock"
-    if ! flock -n 9; then
-        _who=$(cat "$_holder" 2>/dev/null || true)
-        _pid=${_who%% *}
-        _since=$(echo "$_who" | awk '{print $NF}')
-        case "$_since" in
-            ''|*[!0-9]*) ;;
-            *) _who="${_who% *}, held for $(( ($(date +%s) - _since) / 60 )) min" ;;
-        esac
-        if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
-            _who="$_who (that process is gone; a child of it still holds the lock)"
-        fi
-        printf '\n  pre-push: another gate is running: %s\n' "${_who:-unknown}" >&2
-        if [ "$KLIPP_GATE_NO_WAIT" = "1" ]; then
+
+    if [ "$KLIPP_GATE_NO_WAIT" = "1" ]; then
+        # Refuse on the spot rather than join the queue, and leave no
+        # entry behind: not even a place in the line is taken. Queued
+        # sessions count, because taking a free lock ahead of them is
+        # exactly the queue-jumping this file is here to stop.
+        _waiting=$(_queue_sync peek | awk 'END {print NR}')
+        if ! flock -n 9; then
+            _who=$(_describe_holder)
+            printf '\n  pre-push: another gate is running: %s\n' "${_who:-unknown}" >&2
+            if [ "${_waiting:-0}" -gt 0 ]; then
+                printf '            %s session(s) queued behind it.\n' "$_waiting" >&2
+            fi
             printf '            KLIPP_GATE_NO_WAIT=1 set — refusing instead of waiting.\n\n' >&2
             exit 1
         fi
-        printf '            Waiting for it to finish. Ctrl-C to stop waiting;\n' >&2
-        printf '            KLIPP_GATE_NO_WAIT=1 git push   refuses instead of waiting,\n' >&2
-        printf '            KLIPP_SKIP_TESTS=1 git push     skips the gate and the queue.\n\n' >&2
-        flock 9
+        if [ "${_waiting:-0}" -gt 0 ]; then
+            printf '\n  pre-push: %s session(s) are already queued for the gate.\n' "$_waiting" >&2
+            printf '            KLIPP_GATE_NO_WAIT=1 set — refusing instead of taking\n' >&2
+            printf '            the gate ahead of them.\n\n' >&2
+            exit 1
+        fi
+    else
+        trap '_leave_queue' EXIT
+        trap '_leave_queue; exit 130' INT
+        trap '_leave_queue; exit 143' TERM
+        _waited=0
+        _shown=
+        _joined=$(date +%s)
+        while :; do
+            _q=$(_queue_sync) || _q=
+            _pos=0
+            _n=0
+            _prev=
+            _ahead=
+            while IFS= read -r _line; do
+                if [ -z "$_line" ]; then
+                    continue
+                fi
+                _n=$(( _n + 1 ))
+                if [ "$_pos" -eq 0 ] && [ "${_line%% *}" = "$$" ]; then
+                    _pos=$_n
+                    _ahead=$_prev
+                fi
+                _prev=$_line
+            done <<QUEUE
+$_q
+QUEUE
+            if [ "$_pos" -eq 0 ]; then
+                # The queue could not be read or written. Better an
+                # unfair gate than no gate: wait on the lock alone, as
+                # this hook did before the queue existed.
+                printf '\n  pre-push: cannot keep a place in %s;\n' "$_queue" >&2
+                printf '            waiting on the gate lock alone, out of turn.\n\n' >&2
+                flock 9
+                break
+            fi
+            if [ "$_pos" -eq 1 ] && flock -n 9; then
+                if [ "$_waited" -eq 1 ]; then
+                    printf '            got the gate after %s s of waiting.\n\n' \
+                        "$(( $(date +%s) - _joined ))" >&2
+                fi
+                break
+            fi
+            if [ "$_pos" -eq 1 ]; then
+                # Nothing ahead of us in the queue, so whatever holds the
+                # lock holds no ticket: a pre-#432 branch wrapped by the
+                # installed hook, a KLIPP_GATE_NO_WAIT gate, or a child
+                # outliving a gate that was killed.
+                _who=$(_describe_holder)
+                _msg="1st in the queue, waiting for a gate outside the queue"
+                if [ -n "$_who" ]; then
+                    _msg="$_msg: $_who"
+                else
+                    _msg="$_msg (nothing recorded about it)"
+                fi
+            else
+                _msg="$(_ordinal "$_pos") in the queue, behind $(_where "$_ahead")"
+            fi
+            if [ "$_waited" -eq 0 ]; then
+                _waited=1
+                printf '\n  pre-push: waiting for the gate. One gate runs at a time, in the\n' >&2
+                printf '            order sessions arrived. Ctrl-C to stop waiting;\n' >&2
+                printf '            KLIPP_GATE_NO_WAIT=1 git push   refuses instead of waiting,\n' >&2
+                printf '            KLIPP_SKIP_TESTS=1 git push     skips the gate and the queue.\n\n' >&2
+            fi
+            if [ "$_msg" != "$_shown" ]; then
+                printf '            %s\n' "$_msg" >&2
+                _shown=$_msg
+            fi
+            sleep 1
+        done
     fi
-    printf '%s %s %s %s\n' "$$" "$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)" \
-        "$ROOT" "$(date +%s)" >"$_holder"
+    printf '%s %s %s %s\n' "$$" "${_branch:-?}" "$ROOT" "$(date +%s)" >"$_holder"
 fi
 
 # Match klipp_testing::scratch, and keep compiler/linker temporary files
