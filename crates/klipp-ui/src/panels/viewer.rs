@@ -4467,6 +4467,12 @@ impl ViewerPanel {
                     ui.ctx().request_repaint();
                 }
                 GizmoStep::End => {
+                    // Apply before closing the gesture: EndEffectDrag only
+                    // writes history, so without this a release frame's
+                    // movement is recorded and never applied — a flick
+                    // added an identity Transform and an undo entry for a
+                    // move that never happened.
+                    cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: idx, effect: transform_now.clone() });
                     cmds.push(AppCommand::EndEffectDrag { key: drag_key, clip_id, effect_index: idx, new_effect: transform_now });
                 }
                 GizmoStep::Abandon => {
