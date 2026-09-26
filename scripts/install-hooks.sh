@@ -16,7 +16,7 @@ TARGET="$HOOKS/pre-push"
 MARKER='scripts/pre-push.sh'
 # Bumped whenever the block below changes, so a re-run replaces an older
 # block instead of reporting it installed.
-VERSION='klipp-gate-block v3'
+VERSION='klipp-gate-block v5'
 BLOCK_START='# --- Klipp test gate (scripts/pre-push.sh) ---'
 
 mkdir -p "$HOOKS"
@@ -62,13 +62,61 @@ cat >> "$NEW" <<'HOOK'
 # `$?` here is still git-lfs's status: comments and blank lines do not
 # change it. Preserved so an LFS refusal above is not overridden by the
 # tests passing.
-# klipp-gate-block v3
+# klipp-gate-block v5
 klipp_lfs_status=$?
 klipp_gate="$(git rev-parse --show-toplevel)/scripts/pre-push.sh"
 if [ ! -x "$klipp_gate" ]; then
     printf '\n  pre-push: %s is missing — push refused.\n\n' "$klipp_gate" >&2
     exit 1
 fi
+# The gate runs in a session of its own, watched: when git, this hook's
+# parent, is gone — a push killed by its pid — the watcher ends the
+# gate's whole group, cargo and test binaries with it. Otherwise a killed
+# push left its gate building for nobody, holding the queue meanwhile.
+# Ctrl-C and a kill of this hook end the group too.
+klipp_git=$PPID
+klipp_gate_pid=
+klipp_run_gate() {
+    if ! command -v setsid >/dev/null 2>&1; then
+        "$klipp_gate"
+        return
+    fi
+    # Without job control a background job is not a group leader, so
+    # setsid makes the new session in place and $! is the gate's pid and
+    # group; with it on, setsid would fork and $! be a wrapper whose exit
+    # status says nothing about the gate's.
+    set +m
+    # And a background job's stdin is /dev/null, so git's list of refs is
+    # handed over on another descriptor first.
+    exec 3<&0
+    setsid "$klipp_gate" <&3 3<&- &
+    klipp_gate_pid=$!
+    exec 3<&-
+    # The watcher is a process of its own, in a session of its own: a
+    # forked subshell would keep this shell's saved copy of the lock's fd
+    # 9, and die with the push's group when that is killed whole. Git
+    # gone shows as this hook being handed to another parent — a dead git
+    # lingers as a zombie until its own parent reaps it, and a zombie
+    # still answers kill -0 — and this hook gone as its /proc entry going,
+    # or showing it a zombie.
+    setsid sh -c '
+        trap "" INT
+        while kill -0 "$3" 2>/dev/null; do
+            read -r _ _ state parent _ < "/proc/$1/stat" 2>/dev/null || break
+            [ "$state" != Z ] && [ "$parent" = "$2" ] || break
+            sleep 1
+        done
+        kill -0 "$3" 2>/dev/null && kill -TERM -- "-$3" 2>/dev/null
+    ' klipp-gate-watcher "$$" "$klipp_git" "$klipp_gate_pid" </dev/null 9>&- &
+    klipp_watch_pid=$!
+    wait "$klipp_gate_pid"
+    klipp_status=$?
+    kill "$klipp_watch_pid" 2>/dev/null
+    klipp_gate_pid=
+    return "$klipp_status"
+}
+trap '[ -n "$klipp_gate_pid" ] && kill -TERM -- "-$klipp_gate_pid" 2>/dev/null; exit 130' INT TERM HUP
+
 # Git runs the worktree's own copy of the gate, and a branch from before
 # the gate queued itself (#432) carries one that never queues: several of
 # those at once ran the machine out of memory. Such a gate is queued
@@ -85,14 +133,14 @@ if [ "$KLIPP_SKIP_TESTS" != "1" ] && [ -n "$klipp_common" ] && [ -d "$klipp_comm
     flock 9
     if grep -q klipp-pre-push.lock "$klipp_gate"; then
         exec 9>&-
-        "$klipp_gate" || exit 1
+        klipp_run_gate || exit 1
     else
         printf '%s %s %s %s\n' "$$" "$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)" \
             "$(git rev-parse --show-toplevel)" "$(date +%s)" > "$klipp_common/klipp-pre-push.holder"
-        "$klipp_gate" 9>&- || exit 1
+        klipp_run_gate 9>&- || exit 1
     fi
 else
-    "$klipp_gate" || exit 1
+    klipp_run_gate || exit 1
 fi
 exit $klipp_lfs_status
 HOOK
