@@ -6,11 +6,11 @@
 //! [`crate::camera_log`].
 
 /// Auto white balance: the temperature and tint that make the frame's
-/// neutral surfaces neutral, or `None` when it has none to read.
+/// neutral surfaces neutral, or why it has none to act on.
 ///
 /// `rgba` is a displayed frame (sRGB bytes). The reference is
-/// [`crate::measure::neutral_reference`] — the walls, paper and road
-/// under the scene's light — and the slider values come from
+/// [`crate::measure::balance_reference`] — the walls, paper and road
+/// under the scene's light, never skin or sand — and the slider values come from
 /// [`crate::white_balance::white_balance_to_neutralise`], solved against
 /// the balance the grade actually applies.
 ///
@@ -18,9 +18,18 @@
 /// brick under a blue sky that "neutralised" the brick and the sky, and
 /// pushed the balance a long way toward magenta: the neutrals came out
 /// further from grey than they went in.
-pub fn auto_white_balance(rgba: &[u8], width: u32, height: u32) -> Option<(f32, f32)> {
-    let mean = crate::measure::neutral_reference(rgba, width, height)?;
-    Some(crate::white_balance::white_balance_to_neutralise(mean, klipp_core::WorkingColorspace::Rec709Linear))
+///
+/// `faces` are the framing analysis's face regions, if any (see
+/// [`crate::measure::balance_reference`]); the error says why nothing
+/// was balanced.
+pub fn auto_white_balance(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    faces: &[[f32; 4]],
+) -> Result<(f32, f32), crate::measure::NoReference> {
+    let reference = crate::measure::balance_reference(rgba, width, height, faces)?;
+    Ok(crate::white_balance::white_balance_to_neutralise(reference, klipp_core::WorkingColorspace::Rec709Linear))
 }
 
 /// Camera log / HDR transfer → scene-linear, from a normalised 10-bit code
@@ -35,26 +44,76 @@ pub fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::measure::NoReference::{LeansAgainstTheFrame, NothingGrey};
     use crate::transfer::linear_to_srgb;
 
     /// Auto white balance on a frame with a blue cast asks for a warmer
     /// balance, and the values it returns really do neutralise the
-    /// average — they are solved against the balance the grade applies,
+    /// wall — they are solved against the balance the grade applies,
     /// not scaled from the channel differences.
     #[test]
     fn auto_white_balance_neutralises_a_cast() {
-        let cool: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
-        let (temperature, tint) = auto_white_balance(&cool, 20, 20).expect("a grey wall under a blue light is a white reference");
-        assert!(temperature > 5.0, "a blue cast should ask for warmth, got {temperature}");
-        let mean = [110f32, 120.0, 150.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
+        // A grey wall under a bluish light, beside a red sofa.
+        let wall = [118u8, 124, 138];
+        let px: Vec<u8> = (0..400).flat_map(|i| if i < 300 { [wall[0], wall[1], wall[2], 255] } else { [170, 40, 45, 255] }).collect();
+        let (temperature, tint) = auto_white_balance(&px, 20, 20, &[]).expect("a grey wall under a blue light is a white reference");
+        assert!(temperature > 2.0, "a blue cast should ask for warmth, got {temperature}");
+        let wall = wall.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
         let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-        let out = m.map(|row| row[0] * mean[0] + row[1] * mean[1] + row[2] * mean[2]);
+        let out = m.map(|row| row[0] * wall[0] + row[1] * wall[1] + row[2] * wall[2]);
         let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
         assert!((mx - mn) / mx < 0.02, "still a cast: {out:?}");
         // A neutral frame needs no correction.
         let grey: Vec<u8> = (0..400).flat_map(|_| [128u8, 128, 128, 255]).collect();
-        let (t, g) = auto_white_balance(&grey, 20, 20).expect("a grey frame is its own reference");
+        let (t, g) = auto_white_balance(&grey, 20, 20, &[]).expect("a grey frame is its own reference");
         assert!(t.abs() < 0.5 && g.abs() < 0.5, "a neutral frame asked for ({t}, {g})");
+    }
+
+    /// #403: a frame of one clear colour is not evidence of a cast. A
+    /// blue-grey wall and a blue-grey card look the same; balancing on
+    /// either would grey whatever it is.
+    #[test]
+    fn a_frame_of_one_colour_is_left_alone() {
+        let px: Vec<u8> = (0..400).flat_map(|_| [110u8, 120, 150, 255]).collect();
+        assert_eq!(auto_white_balance(&px, 20, 20, &[]), Err(NothingGrey));
+    }
+
+    /// #403: a pale face against a saturated backdrop, and a beach under
+    /// a blue sky. The skin and the sand were the least-coloured quarter
+    /// and one press greyed them.
+    #[test]
+    fn skin_and_sand_are_not_a_white_reference() {
+        let portrait: Vec<u8> = (0..400).flat_map(|i| if i < 160 { [225u8, 190, 170, 255] } else { [30, 90, 170, 255] }).collect();
+        assert_eq!(auto_white_balance(&portrait, 20, 20, &[]), Err(NothingGrey), "the face was greyed");
+        let beach: Vec<u8> = (0..400).flat_map(|i| if i < 200 { [215u8, 196, 160, 255] } else { [70, 140, 220, 255] }).collect();
+        assert_eq!(auto_white_balance(&beach, 20, 20, &[]), Err(NothingGrey), "the sand was greyed");
+        // With a small true grey in the shot, that is the reference, and
+        // it is already grey.
+        let w = 100u32;
+        let with_card: Vec<u8> = (0..w * w)
+            .flat_map(|i| if i % 100 < 5 { [128u8, 128, 128, 255] } else if i % 100 < 60 { [225, 190, 170, 255] } else { [30, 90, 170, 255] })
+            .collect();
+        let (t, g) = auto_white_balance(&with_card, w, w, &[]).expect("the card is a white reference");
+        assert!(t.abs() < 0.5 && g.abs() < 0.5, "balanced on the skin, not the card: ({t}, {g})");
+    }
+
+    /// #403: under a strong tungsten cast the grey wall is too orange
+    /// to be read as grey, and a small pair of jeans lands near neutral,
+    /// a little blue. Balancing on the jeans warmed an orange frame by
+    /// 18; the press is refused instead, as it is with no jeans at all.
+    #[test]
+    fn a_strong_cast_is_not_guessed_at() {
+        let w = 100u32;
+        let wall = [168u8, 126, 86];
+        let lamp_only: Vec<u8> = (0..w * w).flat_map(|i| if i % 100 < 70 { [wall[0], wall[1], wall[2], 255] } else { [60, 40, 30, 255] }).collect();
+        assert_eq!(auto_white_balance(&lamp_only, w, w, &[]), Err(NothingGrey), "the tungsten wall was taken for grey");
+        let with_jeans: Vec<u8> = (0..w * w)
+            .flat_map(|i| if i % 100 < 4 { [96u8, 98, 104, 255] } else if i % 100 < 74 { [wall[0], wall[1], wall[2], 255] } else { [60, 40, 30, 255] })
+            .collect();
+        assert_eq!(auto_white_balance(&with_jeans, w, w, &[]), Err(LeansAgainstTheFrame), "the jeans set the balance");
+        // Reporting still names what the jeans say: the reading is not
+        // what refuses, acting on it is.
+        assert!(crate::measure::neutral_reference(&with_jeans, w, w).is_some());
     }
 
     /// #318: a street of pink brick under a blue sky, with a strip of
@@ -71,7 +130,7 @@ mod tests {
                 px.extend_from_slice(&[c[0], c[1], c[2], 255]);
             }
         }
-        let (temperature, tint) = auto_white_balance(&px, w, h).expect("the wall is a white reference");
+        let (temperature, tint) = auto_white_balance(&px, w, h, &[]).expect("the wall is a white reference");
         assert!(temperature < 0.0, "a warm wall asks for a cooler balance, got {temperature}");
         assert!(tint.abs() < 8.0, "no magenta push from the brick: tint {tint}");
         // And the answer does what it is for: the wall comes out grey.
@@ -87,7 +146,7 @@ mod tests {
     #[test]
     fn auto_white_balance_declines_a_frame_with_no_neutrals() {
         let px: Vec<u8> = (0..400).flat_map(|i| if i < 200 { [60u8, 150, 50, 255] } else { [80, 140, 235, 255] }).collect();
-        assert_eq!(auto_white_balance(&px, 20, 20), None);
+        assert_eq!(auto_white_balance(&px, 20, 20, &[]), Err(NothingGrey));
     }
 
     /// #405: a warm grey room with one bright, cool-white door. The door
@@ -99,7 +158,7 @@ mod tests {
         let px: Vec<u8> = (0..w * h)
             .flat_map(|i| if i % 100 < 25 { [206u8, 211, 222, 255] } else { [120, 113, 103, 255] })
             .collect();
-        let (temperature, tint) = auto_white_balance(&px, w, h).expect("a white reference");
+        let (temperature, tint) = auto_white_balance(&px, w, h, &[]).expect("a white reference");
         // The room is warm, so the balance cools it; the door alone would
         // have warmed it.
         assert!(temperature < 0.0, "the door set the balance: {temperature}");
@@ -108,6 +167,51 @@ mod tests {
         let out = m.map(|row| row[0] * room[0] + row[1] * room[1] + row[2] * room[2]);
         let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
         assert!((mx - mn) / mx < 0.02, "the room is not neutral after one press: {out:?}");
+    }
+
+    /// Review of #428: a close-up face under a cool light, a white
+    /// shirt, a saturated backdrop. The face is the frame's least-
+    /// coloured surface and the shirt leans against it, the shape of the
+    /// jeans against a tungsten wall. With the framing analysis's face
+    /// region the face is not the surface and the shirt is the reference;
+    /// without it colour cannot tell, and the press is refused.
+    #[test]
+    fn a_cool_cast_portrait_balances_on_the_shirt_once_the_face_is_known() {
+        let w = 100u32;
+        let shirt = [163u8, 168, 178];
+        // Columns: shirt 0–5, face 6–65, backdrop the rest.
+        let px: Vec<u8> = (0..w * w)
+            .flat_map(|i| match i % 100 {
+                0..=5 => [shirt[0], shirt[1], shirt[2], 255],
+                6..=65 => [196, 165, 150, 255],
+                _ => [30, 110, 60, 255],
+            })
+            .collect();
+        assert_eq!(auto_white_balance(&px, w, w, &[]), Err(LeansAgainstTheFrame));
+        let face = [0.06, 0.0, 0.60, 1.0];
+        let (temperature, tint) = auto_white_balance(&px, w, w, &[face]).expect("the shirt is a white reference");
+        assert!(temperature > 5.0, "a cool cast asks for warmth, got {temperature}");
+        let shirt = shirt.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
+        let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = m.map(|row| row[0] * shirt[0] + row[1] * shirt[1] + row[2] * shirt[2]);
+        let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
+        assert!((mx - mn) / mx < 0.02, "the shirt is not neutral after one press: {out:?}");
+    }
+
+    /// Review of #428: the jeans are refused against a wall under a mild
+    /// cast (chroma about 16) and under a very strong one (about 50) as
+    /// they are against the chroma 30 one. A threshold on the wall's
+    /// colour let the first through; a cap on how coloured a surface
+    /// could be, the second.
+    #[test]
+    fn the_jeans_are_refused_under_a_mild_cast_and_a_very_strong_one() {
+        let w = 100u32;
+        for wall in [[153u8, 128, 106], [215, 135, 65]] {
+            let px: Vec<u8> = (0..w * w)
+                .flat_map(|i| if i % 100 < 4 { [96u8, 98, 104, 255] } else if i % 100 < 74 { [wall[0], wall[1], wall[2], 255] } else { [60, 40, 30, 255] })
+                .collect();
+            assert_eq!(auto_white_balance(&px, w, w, &[]), Err(LeansAgainstTheFrame), "wall {wall:?}: the jeans set the balance");
+        }
     }
 
     // ─── Film grain CPU tests ─────────────────────────────────────────
