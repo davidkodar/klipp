@@ -181,9 +181,12 @@ struct ColorTags {
 /// HDR delivery, and for SDR the output transform actually applied. The
 /// DCI-P3 D65 transform writes P3 primaries with a pure 2.6 gamma, which
 /// has no transfer code (SMPTE 428 is the XYZ encoding), so its transfer
-/// is left unspecified rather than claimed as BT.709. The sRGB transform
-/// writes the sRGB curve. The matrix is the one the scalers convert with
-/// (BT.709 for SDR), since a P3 file is still Y'CbCr by that matrix.
+/// is left unspecified rather than claimed as BT.709. Every other SDR
+/// export says BT.709, the sRGB-curve ones included: Match Viewer in a
+/// Rec.709 or BT.2020 project writes the same curve as the sRGB transform,
+/// and the two must not be tagged apart. The matrix is the one the
+/// scalers convert with (BT.709 for SDR), since a P3 file is still
+/// Y'CbCr by that matrix.
 fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> ColorTags {
     use ffmpeg_next::ffi::{AVColorPrimaries as P, AVColorSpace as M, AVColorTransferCharacteristic as T};
     match delivery {
@@ -193,12 +196,6 @@ fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> Colo
                 transfer: T::AVCOL_TRC_UNSPECIFIED,
                 matrix: M::AVCOL_SPC_BT709,
                 x265: "colorprim=smpte432:transfer=unknown:colormatrix=bt709",
-            },
-            klipp_core::OdtChoice::Srgb => ColorTags {
-                primaries: P::AVCOL_PRI_BT709,
-                transfer: T::AVCOL_TRC_IEC61966_2_1,
-                matrix: M::AVCOL_SPC_BT709,
-                x265: "colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709",
             },
             _ => ColorTags {
                 primaries: P::AVCOL_PRI_BT709,
@@ -2144,7 +2141,9 @@ mod tests {
 
     /// The tags follow the output transform applied, not only the
     /// delivery: a DCI-P3 D65 export says P3 primaries and claims no
-    /// transfer (2.6 gamma has no code), an sRGB one the sRGB curve. H.265
+    /// transfer (2.6 gamma has no code). The sRGB-curve exports, the sRGB
+    /// transform and Match Viewer in a Rec.709 project, are tagged alike,
+    /// as are Match Viewer and Rec.709 in ACEScg. H.265
     /// is checked as well as H.264 because libx265 takes its tags from
     /// x265-params. Skips without ffprobe.
     #[test]
@@ -2152,18 +2151,22 @@ mod tests {
     fn sdr_tags_follow_the_output_transform() {
         let dir = std::env::temp_dir().join("klipp_render_test");
         let _ = std::fs::create_dir_all(&dir);
+        use klipp_core::{OdtChoice as O, WorkingColorspace as W};
         let cases = [
-            (klipp_core::OdtChoice::DciP3D65_48, "smpte432", "unknown"),
-            (klipp_core::OdtChoice::Srgb, "bt709", "iec61966-2-1"),
-            (klipp_core::OdtChoice::Rec709Sdr, "bt709", "bt709"),
+            (O::DciP3D65_48, W::AcesCG, "smpte432", "unknown"),
+            (O::Srgb, W::Rec709Linear, "bt709", "bt709"),
+            (O::MatchViewer, W::Rec709Linear, "bt709", "bt709"),
+            (O::MatchViewer, W::AcesCG, "bt709", "bt709"),
+            (O::Rec709Sdr, W::AcesCG, "bt709", "bt709"),
         ];
         for codec in [ExportVideoCodec::H264, ExportVideoCodec::H265] {
-            for (odt, primaries, transfer) in cases {
-                let path = dir.join(format!("tags_{odt:?}_{codec:?}.mp4"));
+            for (odt, working, primaries, transfer) in cases {
+                let path = dir.join(format!("tags_{odt:?}_{working:?}_{codec:?}.mp4"));
                 let mut settings = make_settings(codec, path.to_str().unwrap());
                 settings.audio_codec = ExportAudioCodec::Copy;
                 settings.odt = odt;
-                let mut enc = Encoder::open(&path, &settings, &make_snapshot()).unwrap();
+                let snapshot = SequenceSnapshot { working_colorspace: working, ..make_snapshot() };
+                let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
                 let rgba = [90u8, 120, 150, 255].repeat(320 * 240);
                 for _ in 0..3 {
                     enc.encode_video_frame(&rgba, 320, 240).unwrap();
@@ -2180,7 +2183,7 @@ mod tests {
                 let tags = String::from_utf8_lossy(&probe.stdout).to_string();
                 let _ = std::fs::remove_file(&path);
                 for want in [format!("color_primaries={primaries}"), format!("color_transfer={transfer}"), "color_space=bt709".to_string()] {
-                    assert!(tags.contains(&want), "{codec:?} {odt:?} lacks {want}: {tags}");
+                    assert!(tags.contains(&want), "{codec:?} {odt:?} in {working:?} lacks {want}: {tags}");
                 }
             }
         }
