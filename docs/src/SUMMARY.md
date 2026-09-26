@@ -65,7 +65,7 @@
 
 - [Exporting Projects](./export/exporting.md)
 - [Export Formats](./export/formats.md)
-- [FCPXML & EDL](./export/interchange.md)
+- [Timeline Interchange](./export/interchange.md)
 
 # Preferences
 

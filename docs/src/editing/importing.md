@@ -32,8 +32,14 @@ Audio is resampled to the project sample rate on the fly with a recreate-on-seek
 
 ## Supported Image Formats
 
-- PNG, JPEG, TIFF, BMP, WebP, OpenEXR
+- PNG, JPEG, TIFF, BMP, WebP, OpenEXR, HEIC / HEIF, AVIF, JPEG XL
 - Images are imported as still clips with a configurable default duration
+
+## Camera RAW
+
+Klipp does not support proprietary camera RAW video: REDCODE (`.r3d`), ARRIRAW and Blackmagic RAW (`.braw`). Decoding them needs each maker's closed SDK, and Klipp decodes video through FFmpeg. This is a deliberate choice, not a planned feature. Transcode the footage first in the maker's free tool (REDCINE-X PRO, ARRI Reference Tool, or DaVinci Resolve for Blackmagic RAW) to ProRes or DNxHR, and import that.
+
+Still-image RAW files (`.cr2`, `.nef`, `.arw`, `.dng` and others) import as stills, without developing the sensor data. See [Camera RAW](../reference/formats.md#camera-raw) for the details and the limits.
 
 ## Image Sequences
 
@@ -48,7 +54,7 @@ Klipp auto-detects log-encoded source material at import time using a four-layer
 3. IDT colour transform splice
 4. User override stored in the project on save
 
-Detected log curves include Sony S-Log3, Canon Log, Panasonic V-Log, ARRI Log-C, Apple Log, RED Log3G10. See [Source Colourspace & Log](../color/source-colorspace.md) for the full table and override mechanics.
+Klipp decodes ARRI LogC3 and LogC4, Sony S-Log2 and S-Log3, Canon Log and Canon Log 3, Panasonic V-Log, Nikon N-Log, Fuji F-Log, DJI D-Log, GoPro ProTune Flat, Apple Log, Leica L-Log, RED Log3G10 and BMD Film Gen 5. See [Supported Formats](../reference/formats.md#import-camera-log-encodings) for the gamut of each, and [Source Colourspace & Log](../color/source-colorspace.md) for detection and the override.
 
 ## What Klipp reads about a shot
 

@@ -1,94 +1,78 @@
-# FCPXML & EDL
+# Timeline Interchange
 
-Klipp supports exporting and importing project timelines in interchange formats for use in other editing applications.
+Klipp reads and writes timelines in four interchange formats. Each one carries the edit (which clips, where, and which part of the source) and loses most of what Klipp does on top of it: grades, effects and most titles stay behind.
+
+| Format | Import | Export |
+|---|---|---|
+| OpenTimelineIO (`.otio`) | yes | yes |
+| Kdenlive / MLT (`.kdenlive`) | yes | yes |
+| FCPXML 1.9 (`.fcpxml`) | yes | yes |
+| CMX 3600 EDL (`.edl`) | no | yes |
+
+**Import:** **File → Import Timeline** has Kdenlive Project, OpenTimelineIO and Final Cut Pro XML. An import adds a new sequence to the current project and switches to it; its media is added to the media pool. What the importer could not bring in is listed in a file beside the one you imported, named `<name>.import_warnings.txt`, and a message says how many there were.
+
+**Export:** **File → Export Timeline** has FCPXML, Kdenlive Project and EDL. OpenTimelineIO export is in the command palette, as **Export OpenTimelineIO (.otio)…**. Every export writes the active sequence.
+
+All four formats refer to media by its file path. The receiving system needs the same files at the same paths, or has to relink them.
+
+## OpenTimelineIO
+
+OTIO has adapters to many other applications, so an `.otio` file is the most general way out of Klipp. Only plain `.otio` JSON is read and written, not `.otiod` bundles or `.otioz` archives.
+
+**Export** writes:
+
+- every video and audio track, in order, with gaps where the track is empty
+- media clips with their source range, enabled state and clip markers
+- sequence markers, with their colour and duration
+- an offline clip as a missing reference, so the receiving application knows the file is gone
+
+Titles, generators, adjustment layers and compound clips become gaps of the same length, so everything after them stays in place. Subtitle and text tracks are not exported. Transitions, grades and effects are not written. Clips that overlap on one track cannot be expressed in OTIO, where a track is a sequence of items; the later clip is moved to follow the earlier one. Everything dropped or moved is listed in `<name>.export_warnings.txt` beside the exported file.
+
+**Import** reads video and audio tracks, clips with their media (a missing or unlinked reference becomes an offline item), gaps, and timeline and clip markers. Transitions and effects, including speed changes, are skipped with a warning.
+
+## Kdenlive (MLT)
+
+**Export** writes a `.kdenlive` project that Kdenlive and `melt` open: every video and audio track, and each media clip's position and source range. Titles, generators, adjustment layers and compound clips become blanks of the same length. Transitions, effects, keyframes, grades and markers are not written.
+
+**Import** reads:
+
+- tracks, media clips and blanks
+- solid-colour clips, as generators, and Kdenlive titles, as text
+- dissolve-type transitions (`luma`, `mix`, `composite`, `frei0r.cairoblend`), as cross dissolves; any other transition becomes a cut
+- position, scale and opacity keyframes from the `qtblend` and `affine` filters, rotation from `qtblend`, and volume keyframes from the `volume` filter
+
+Other filters are dropped with a warning.
 
 ## FCPXML 1.9
 
-Final Cut Pro XML version 1.9 — supported by Final Cut Pro and DaVinci Resolve, partially by Premiere Pro.
+**Export** walks the **first video track only**. It writes:
 
-### What is exported
-- Timeline structure (sequence, tracks)
-- Clip positions and durations
-- In / out points
-- Basic transitions (cross dissolves)
-- Audio levels
-- Markers
-- Clip metadata (resolution, frame rate)
+- media clips on that track, with their position, length, source in point and enabled state
+- the clips' markers
+- titles on that track, as FCPXML titles carrying their text
+- sequence markers, with their duration and comment
 
-### What is not exported
-- GPU effects and colour grades (application-specific representations)
-- Compound clip internal structure
-- Audio effects (EQ, compressor)
-- Keyframe animation outside of basic opacity / transform
-- AI-generated mattes (the matte PNGs are external; references would not survive in another NLE)
+Gaps on that track stay gaps; compound clips, generators and adjustment layers become named gaps. Other video tracks, audio tracks, transitions, audio levels, grades and effects are not exported.
 
-### Exporting
-
-1. **File → Export**
-2. Select the **Interchange** tab
-3. Choose **FCPXML 1.9**
-4. Pick the output file location
-5. **Export**
-
-### Importing
-
-1. **File → Import FCPXML**
-2. Pick the FCPXML file
-3. Klipp creates a new sequence in the current project mirroring the FCPXML structure
-
-Klipp's importer is verified against real exports from Final Cut Pro and DaVinci Resolve — not just spec / docs. This matters because in practice both applications take liberties with the FCPXML schema; matching their actual output is more useful than matching the spec.
-
-### Notes
-
-FCPXML references media files by their original file paths. Ensure the receiving system has access to the same media files, or relink media after import.
+**Import** reads the primary storyline (the `spine`) onto one video track: asset clips and clips with their in points and enabled state, gaps, clip markers and sequence markers. Titles, transitions, compound clips, multicam clips, synchronised clips, auditions, connected clips and effects are skipped with a warning.
 
 ## CMX 3600 EDL
 
-Industry-standard text-based interchange format. Single-track only.
+**Export** lists every enabled clip on every video and audio track, one event per clip:
 
-### What is exported
-- Cut edit points (in / out timecodes for source and record)
-- Dissolve transitions with duration
-- Source file references by reel name
+- source in and out, and record in and out, in timecode
+- the channel: `V` for video, `A1` to `A4` for the first four audio tracks, and `A` after that
+- a reel name of up to eight characters, taken from the clip's logged reel, then the reel the camera recorded, then the file name; two sources that shorten to the same name are numbered apart, with a comment saying so
+- `* FROM CLIP NAME:` with the file name
+- transitions on the incoming clip: horizontal and vertical wipes as SMPTE wipes `W001` and `W002`, everything else as a dissolve `D`, with its length in frames and a `* EFFECT NAME:` comment
 
-### What is not exported
-- Multiple video tracks (EDL is single-track by definition)
-- Effects, colour grades, audio mixing
-- Markers
+The header says `DROP FRAME` at 29.97 and 59.94 fps and `NON-DROP FRAME` otherwise, and every timecode is counted the same way. Effects, grades, levels and markers are not written.
 
-### Exporting
-
-1. **File → Export**
-2. Select the **Interchange** tab
-3. Choose **CMX 3600 EDL**
-4. Configure the timecode frame rate (drop-frame / non-drop-frame)
-5. Pick the output file
-6. **Export**
-
-### EDL Format
-
-Output follows standard CMX 3600 conventions:
-
-```
-TITLE: My Project
-FCM: NON-DROP FRAME
-
-001  AX       V     C        01:00:00:00 01:00:05:12 01:00:00:00 01:00:05:12
-* FROM CLIP NAME: interview_01.mp4
-
-002  AX       V     D    030 01:00:10:00 01:00:15:00 01:00:05:12 01:00:10:12
-* FROM CLIP NAME: broll_02.mp4
-```
-
-### Compatibility
-
-CMX 3600 EDL is supported by virtually all major NLEs — DaVinci Resolve, Avid Media Composer, Premiere Pro, Final Cut Pro. The most reliable interchange format for simple, single-track timelines.
-
-## When to Use Which
+## Which to Use
 
 | Need | Use |
 |---|---|
-| Round-trip a multi-track edit to FCP / Resolve | FCPXML |
-| Send a colourist a cut list against camera reels | EDL |
-| Archive a timeline with effect parameters | Klipp's native `.klipp` directory format |
-| Hand off to a sound engineer | Export OMF (planned) or stems |
+| Hand a multitrack edit to another application | OpenTimelineIO, or Kdenlive for Kdenlive itself |
+| Send a conform list against camera reels | EDL |
+| Hand a single-track cut to Final Cut Pro | FCPXML |
+| Keep everything, including grades and effects | Klipp's own project file |
