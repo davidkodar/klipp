@@ -1498,7 +1498,10 @@ pub fn optimised_playback_mode() -> u8 {
 /// tests.
 static DECODE_DELAY_FOR_TESTS_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Slow every decoder by `ms` per frame (0 to stop). For tests only.
+/// Slow every decoder in the process by `ms` per frame (0 to stop). For
+/// tests only, and a test that sets it must keep the other engines in its
+/// binary from running meanwhile: it slows them too.
+#[doc(hidden)]
 pub fn set_decode_delay_for_tests(ms: u64) {
     DECODE_DELAY_FOR_TESTS_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
 }
