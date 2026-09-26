@@ -3894,6 +3894,18 @@ fn slider_interact(
     let (lo, hi) = (*range.start(), *range.end());
     let span = (hi - lo).abs().max(f32::EPSILON);
     let mut changed = false;
+    // A one-shot change (a click, a reset, a typed value) is its own undo
+    // step: Begin goes out with it and End at the row's next frame, after
+    // the caller's SetNodeParam, as a drag's End follows its last step.
+    let pending_end = id.with("one_shot_end");
+    if ui.data_mut(|d| d.remove_temp::<bool>(pending_end)).unwrap_or(false) {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
+    let one_shot = |ui: &egui::Ui, cmds: &mut Vec<AppCommand>| {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        ui.data_mut(|d| d.insert_temp(pending_end, true));
+        ui.ctx().request_repaint();
+    };
 
     // The track's hit area stops short of the value field, so a drag
     // that starts on the number is the number's.
@@ -3914,6 +3926,7 @@ fn slider_interact(
     } else if track.clicked() {
         let thumb_x = g.x + g.w * ((*value - lo) / span).clamp(0.0, 1.0);
         if let Some(t) = track.interact_pointer_pos().and_then(|p| track_click_target(p.x, thumb_x, g.x, g.w)) {
+            one_shot(ui, cmds);
             *value = lo + t * span;
             changed = true;
         }
@@ -3936,6 +3949,7 @@ fn slider_interact(
             ui.data_mut(|d| d.remove::<String>(edit_id));
             let keep = ui.input(|i| !i.key_pressed(egui::Key::Escape));
             if let Some(v) = keep.then(|| text.trim().parse::<f32>().ok()).flatten().filter(|v| v.is_finite()) {
+                one_shot(ui, cmds);
                 *value = v.clamp(lo, hi);
                 changed = true;
             }
@@ -3957,12 +3971,18 @@ fn slider_interact(
         if val.double_clicked() {
             ui.data_mut(|d| d.insert_temp(edit_id, format!("{:.2}", *value)));
         } else if val.secondary_clicked() {
+            one_shot(ui, cmds);
             *value = default;
             changed = true;
         }
         val.on_hover_text("Drag to adjust (Shift fine, Ctrl coarse) · double-click to type · right-click to reset");
     }
     if track.double_clicked() || track.secondary_clicked() {
+        // A double-click's first click may already have opened a step for
+        // its jump; the reset joins it rather than opening another.
+        if !ui.data(|d| d.get_temp::<bool>(pending_end).unwrap_or(false)) {
+            one_shot(ui, cmds);
+        }
         *value = default;
         changed = true;
     }
@@ -4525,6 +4545,47 @@ mod slider_behaviour {
         );
         rig.frame(Vec::new(), egui::Modifiers::NONE);
         assert!((rig.value + 0.35).abs() < 1e-6, "Escape changed the value to {}", rig.value);
+    }
+
+    /// A reset and a typed value are each one undo step: Begin before
+    /// the change and End after it, as a drag is.
+    #[test]
+    fn a_reset_and_a_typed_value_are_each_an_undo_step() {
+        let begins_and_ends = |cmds: &[AppCommand]| -> Vec<char> {
+            cmds.iter()
+                .filter_map(|c| match c {
+                    AppCommand::BeginNodeParamEdit { .. } => Some('('),
+                    AppCommand::EndNodeParamEdit { .. } => Some(')'),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut rig = Rig::new(0.4);
+        let at = rig.number();
+        rig.button(at, egui::PointerButton::Secondary, true, egui::Modifiers::NONE);
+        rig.button(at, egui::PointerButton::Secondary, false, egui::Modifiers::NONE);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(rig.value, 0.0);
+        assert_eq!(begins_and_ends(&rig.cmds), vec!['(', ')'], "the reset is not one undo step");
+
+        rig.cmds.clear();
+        rig.time += 1.0;
+        let at = rig.number();
+        rig.click(at);
+        rig.click(at);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }],
+            egui::Modifiers::COMMAND,
+        );
+        rig.frame(vec![egui::Event::Text("0.25".into())], egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            egui::Modifiers::NONE,
+        );
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert!((rig.value - 0.25).abs() < 1e-6);
+        assert_eq!(begins_and_ends(&rig.cmds), vec!['(', ')'], "the typed value is not one undo step");
     }
 
     #[test]
