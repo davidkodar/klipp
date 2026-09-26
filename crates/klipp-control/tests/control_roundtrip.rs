@@ -902,10 +902,27 @@ fn frame_stats_reads_the_scopes_of_a_frame() {
     assert_eq!(v["rgb_balance"]["note"], "neutral");
     assert!(v["text"].as_str().unwrap().contains("mid 50"));
 
-    let warm: Vec<u8> = std::iter::repeat_n([200u8, 150, 120, 255], 320 * 180).flatten().collect();
+    // A grey wall under a warm lamp: the neutrals carry a red cast.
+    let warm: Vec<u8> = std::iter::repeat_n([175u8, 150, 128, 255], 320 * 180).flatten().collect();
     let v = klipp_control::frame_stats(&warm, 320, 180, 2.0);
     assert!(v["rgb_balance"]["note"].as_str().unwrap().contains("red cast"), "{v}");
     assert!(v["luma_ire"]["black"].as_f64().unwrap() > 55.0, "a bright field lifts the black point: {v}");
+
+    // #327: blue sky over a warm-lit grey wall. The frame's average is
+    // blue, but the cast is read on the wall — warm — and says so, as
+    // the Lab reading does.
+    let (w, h) = (100usize, 100usize);
+    let street: Vec<u8> = (0..w * h)
+        .flat_map(|i| if i / w < 60 { [90u8, 150, 230, 255] } else { [158, 148, 134, 255] })
+        .collect();
+    let v = klipp_control::frame_stats(&street, w as u32, h as u32, 3.0);
+    assert!(v["rgb_balance"]["blue"].as_f64().unwrap() > v["rgb_balance"]["red"].as_f64().unwrap(), "the average is the sky's: {v}");
+    assert!(v["rgb_balance"]["note"].as_str().unwrap().contains("red cast"), "the cast is the wall's, not the sky's: {v}");
+
+    // Nothing neutral in the frame: no cast is named.
+    let grass: Vec<u8> = std::iter::repeat_n([60u8, 150, 50, 255], 320 * 180).flatten().collect();
+    let v = klipp_control::frame_stats(&grass, 320, 180, 4.0);
+    assert_eq!(v["rgb_balance"]["note"], "no neutral surface to read a cast from", "{v}");
 }
 
 /// The colour faults read a frame's stats: a blown, over-saturated,
