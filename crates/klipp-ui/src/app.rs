@@ -7224,120 +7224,29 @@ impl KlippApp {
         }
     }
 
+    /// The cut itself: `klipp_document::blade::blade_linked`, which cuts
+    /// the clip and the clip it is linked to together, or refuses the
+    /// whole gesture — a pair across a lock is neither cut. Blades are
+    /// queued one per track, so by the time one runs its clip may
+    /// already have been cut through its partner (it now ends on the
+    /// cut, or is gone); that refusal has nothing to say.
     fn blade_clip_and_partner(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
-        if self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index).is_some_and(|t| t.locked) { return; }
-        let ti = track_index;
-        let cid = clip_id;
-        let cut = cut_at;
-
-        // Blades are queued one per track, so by the time this runs the clip
-        // may already have been cut through its linked partner (it now ends
-        // on the cut, or is gone). Nothing is left to do then.
-        let inside = self.state.sequences[self.state.active_sequence_idx].tracks.get(ti)
-            .and_then(|t| t.find_clip(cid))
-            .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
-        if !inside { return; }
-
-        // Find linked partner clip info BEFORE the blade modifies the sequence
-        let linked_info = self.state.sequences[self.state.active_sequence_idx].tracks[ti]
-            .find_clip(cid)
-            .and_then(|c| c.linked_clip_id)
-            .and_then(|lid| {
-                self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                    .enumerate()
-                    .find_map(|(track_i, track)| {
-                        track.find_clip(lid).map(|_| (track_i, lid))
-                    })
-            });
-
-        if self.is_magnetic_track(ti) {
-            // Magnetic blade
-            if let Some(result) = klipp_timeline::magnetic::MagneticEditor::blade(
-                &mut self.state.sequences[self.state.active_sequence_idx], cid, cut) {
-                self.state.push_history(EditCommand::Magnetic(result.command));
+        let magnetic: Vec<bool> = (0..self.state.sequence().tracks.len()).map(|ti| self.is_magnetic_track(ti)).collect();
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        match klipp_document::blade::blade_linked(seq, track_index, clip_id, cut_at, |ti| magnetic.get(ti).copied().unwrap_or(false)) {
+            Ok(edits) => {
+                for edit in edits {
+                    self.state.push_history(edit);
+                }
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
             }
-        } else {
-            // Legacy blade (existing code)
-            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
-                let original = track.find_clip(cid).cloned();
-                let position = track.clips.iter().position(|c| c.id == cid);
-                if let (Some(original), Some(pos)) = (original, position) {
-                    if let Some((clip_a, clip_b)) = track.blade_at(cid, cut) {
-                        self.state.push_history(EditCommand::LegacyBladeClip {
-                            track_index: ti,
-                            original_clip: original,
-                            clip_a,
-                            clip_b,
-                            position: pos,
-                        });
-                        self.state.dirty = true;
-                    }
+            Err(refusal) => {
+                if let Some(message) = refusal.message() {
+                    self.state.toast.show(message);
                 }
             }
         }
-
-        // Blade the linked partner clip at the same cut point and re-link
-        if let Some((partner_track_i, partner_id)) = linked_info {
-            // Check partner clip spans the cut point and get track role
-            let partner_spans = self.state.sequences[self.state.active_sequence_idx]
-                .tracks[partner_track_i]
-                .find_clip(partner_id)
-                .is_some_and(|c| c.timeline_in < cut && c.timeline_out > cut);
-            let partner_is_magnetic = self.is_magnetic_track(partner_track_i);
-
-            if partner_spans {
-                if partner_is_magnetic {
-                    if let Some(result) = klipp_timeline::magnetic::MagneticEditor::blade(
-                        &mut self.state.sequences[self.state.active_sequence_idx], partner_id, cut) {
-                        self.state.push_history(EditCommand::Magnetic(result.command));
-                    }
-                } else {
-                    let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[partner_track_i];
-                    let original = track.find_clip(partner_id).cloned();
-                    let position = track.clips.iter().position(|c| c.id == partner_id);
-                    if let (Some(original), Some(pos)) = (original, position) {
-                        if let Some((pa, pb)) = track.blade_at(partner_id, cut) {
-                            self.state.push_history(EditCommand::LegacyBladeClip {
-                                track_index: partner_track_i,
-                                original_clip: original,
-                                clip_a: pa,
-                                clip_b: pb,
-                                position: pos,
-                            });
-                        }
-                    }
-                }
-
-                // Re-link: find the two halves on each track and cross-link them
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                let video_halves: Vec<ClipId> = seq.tracks[ti].clips.iter()
-                    .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
-                    .map(|c| c.id)
-                    .collect();
-                let audio_halves: Vec<ClipId> = seq.tracks[partner_track_i].clips.iter()
-                    .filter(|c| c.timeline_out == cut || c.timeline_in == cut)
-                    .map(|c| c.id)
-                    .collect();
-
-                for vid_id in &video_halves {
-                    let vid_out = seq.tracks[ti].find_clip(*vid_id).map(|c| c.timeline_out);
-                    for aud_id in &audio_halves {
-                        let aud_out = seq.tracks[partner_track_i].find_clip(*aud_id).map(|c| c.timeline_out);
-                        if vid_out == aud_out {
-                            if let Some(vc) = seq.tracks[ti].find_clip_mut(*vid_id) {
-                                vc.linked_clip_id = Some(*aud_id);
-                            }
-                            if let Some(ac) = seq.tracks[partner_track_i].find_clip_mut(*aud_id) {
-                                ac.linked_clip_id = Some(*vid_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.sync_sequence_to_engine();
     }
 
     fn handle_clip_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {

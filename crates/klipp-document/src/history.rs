@@ -666,10 +666,12 @@ pub fn apply_insert_edit_forward(
 }
 
 impl EditCommand {
-    /// A cut of one clip into two, on a legacy or a magnetic track.
+    /// A cut of one clip into two, on a legacy or a magnetic track, or
+    /// the relink of a partner the cut left whole (`blade::blade_linked`).
     fn is_blade(&self) -> bool {
         matches!(self, EditCommand::LegacyBladeClip { .. })
             || matches!(self, EditCommand::Magnetic(cmd) if cmd.label() == "Blade")
+            || matches!(self, EditCommand::ReplaceClip { description: "Blade Clip", .. })
     }
 
     pub fn label(&self) -> &'static str {

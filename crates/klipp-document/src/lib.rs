@@ -21,6 +21,7 @@
 //! the same path.
 
 pub mod apply;
+pub mod blade;
 pub mod control;
 pub mod edit_plan;
 pub mod history;

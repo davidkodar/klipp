@@ -4146,14 +4146,19 @@ impl AppState {
     /// One `BladeClip` per clip under the playhead, for Split at Playhead.
     /// A clip whose linked partner is already queued is left out: blading
     /// a clip cuts its partner too, so queueing both would cut the partner
-    /// a second time exactly on its new edge.
+    /// a second time exactly on its new edge. A locked track is left
+    /// alone, and a clip the playhead sits within a frame of an edge of
+    /// is not cut, by the blade's own rule (`klipp_document::blade`); a
+    /// pair across a lock is queued from its unlocked side so the blade
+    /// refuses it whole, with a word on which track to unlock.
     pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
         let ph = self.playhead;
         let mut queued: Vec<ClipId> = Vec::new();
         let mut cmds = Vec::new();
         for (track_index, track) in self.sequence().tracks.iter().enumerate() {
+            if track.locked { continue; }
             let Some((_, clip)) = track.clip_at_timecode(ph) else { continue };
-            if clip.timeline_in >= ph { continue; }
+            if !klipp_document::blade::cut_is_inside(clip, ph) { continue; }
             if clip.linked_clip_id.is_some_and(|l| queued.contains(&l)) { continue; }
             queued.push(clip.id);
             cmds.push(klipp_core::AppCommand::BladeClip { track_index, clip_id: clip.id, cut_at: ph });
@@ -5243,8 +5248,44 @@ mod split_at_playhead_tests {
         state.playhead = t(4);
         assert_eq!(state.split_at_playhead_commands().len(), 2);
 
-        // On a clip's first frame there is nothing to cut.
+        // On a clip's first frame there is nothing to cut, nor within a
+        // frame of it: that is the blade's edge rule.
         state.playhead = t(0);
         assert!(state.split_at_playhead_commands().is_empty());
+        state.playhead = RationalTime { value: 1, rate: 30 };
+        assert!(state.split_at_playhead_commands().is_empty());
+    }
+
+    /// #407: a locked track is not split. A pair across a lock is queued
+    /// from its unlocked side, so the blade refuses it whole and says
+    /// which track to unlock, rather than cutting one side.
+    #[test]
+    fn a_locked_track_is_left_alone_and_a_pair_across_a_lock_is_queued_once() {
+        let mut state = AppState::default();
+        let seq = state.sequence_mut();
+        let vi = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Video).unwrap();
+        let ai = seq.tracks.iter().position(|tr| tr.kind == TrackKind::Audio).unwrap();
+        seq.tracks[vi].append_clip(MediaId::new(), t(10));
+        seq.tracks[ai].append_clip(MediaId::new(), t(10));
+        seq.tracks[vi].locked = true;
+        state.playhead = t(4);
+        let cmds = state.split_at_playhead_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], AppCommand::BladeClip { track_index, .. } if track_index == ai));
+
+        let seq = state.sequence_mut();
+        let v = seq.tracks[vi].clips[0].id;
+        let a = seq.tracks[ai].clips[0].id;
+        seq.tracks[vi].find_clip_mut(v).unwrap().linked_clip_id = Some(a);
+        seq.tracks[ai].find_clip_mut(a).unwrap().linked_clip_id = Some(v);
+        let cmds = state.split_at_playhead_commands();
+        assert_eq!(cmds.len(), 1, "the pair is queued once, from the unlocked side");
+        assert!(matches!(cmds[0], AppCommand::BladeClip { clip_id, .. } if clip_id == a));
+        let seq = state.sequence_mut();
+        assert_eq!(
+            klipp_document::blade::blade_linked(seq, ai, a, t(4), |_| true).err(),
+            Some(klipp_document::blade::BladeRefusal::LockedAcrossPair { locked: seq.tracks[vi].name.clone(), unlocked: seq.tracks[ai].name.clone() })
+        );
+        assert_eq!(seq.tracks[ai].clips.len(), 1, "nothing was cut");
     }
 }
