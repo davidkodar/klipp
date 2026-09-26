@@ -717,9 +717,40 @@ struct FrameCache {
 
 struct FrameCacheEntry {
     pixels: Pregrade,    // pre-grade pixels (Arc-shared either way)
+    /// The clip the primary decoder was reading. Inside a transition the
+    /// same playhead has two: playing through a cut keeps the outgoing
+    /// clip on the primary decoder, running into its handle, while a seek
+    /// there opens the incoming one. A frame of one served as the other
+    /// put the wrong side of a dissolve on screen (#411).
+    clip: Option<klipp_core::ClipId>,
     width: u32,
     height: u32,
     bytes: usize,
+}
+
+#[cfg(test)]
+mod frame_cache_tests {
+    use super::{FrameCache, Pregrade, PregradePixels};
+
+    fn px(v: u8) -> Pregrade {
+        Pregrade::new(PregradePixels::Srgb8(std::sync::Arc::new(vec![v; 16])))
+    }
+
+    /// #411: inside a dissolve one playhead has two primary clips — the
+    /// outgoing one played into its handle, the incoming one a seek
+    /// opens. A frame cached for one is not served as the other.
+    #[test]
+    fn a_frame_is_served_only_as_the_clip_it_was_read_from() {
+        let (a, b) = (Some(klipp_core::ClipId::new()), Some(klipp_core::ClipId::new()));
+        let mut cache = FrameCache::new(8);
+        cache.insert_if_absent(99, a, px(1), 2, 2);
+        assert!(cache.get(99, a).is_some());
+        assert!(cache.get(99, b).is_none(), "the outgoing clip's frame served as the incoming one's");
+        // The incoming clip's own frame replaces it, and is then served.
+        cache.insert_if_absent(99, b, px(2), 2, 2);
+        assert!(cache.get(99, b).is_some());
+        assert!(cache.get(99, a).is_none());
+    }
 }
 
 /// How much CPU memory the pre-grade cache may hold.
@@ -747,10 +778,11 @@ impl FrameCache {
     }
 
     /// Insert a frame into the cache, replacing what the key held.
-    fn insert(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
+    /// `clip` is the clip the primary decoder read it from.
+    fn insert(&mut self, frame_number: i64, clip: Option<klipp_core::ClipId>, pixels: Pregrade, width: u32, height: u32) {
         self.remove(frame_number);
         let bytes = pregrade_bytes(&pixels);
-        self.entries.insert(frame_number, FrameCacheEntry { pixels, width, height, bytes });
+        self.entries.insert(frame_number, FrameCacheEntry { pixels, clip, width, height, bytes });
         self.order.push_back(frame_number);
         self.bytes += bytes;
         while (self.entries.len() > self.capacity || self.bytes > self.budget_bytes) && self.order.len() > 1 {
@@ -772,16 +804,17 @@ impl FrameCache {
     /// would drop the ungraded picture the held copy has already made
     /// (`Pregrade::display`), which the decode-ahead paths did to every
     /// frame the viewer had just shown.
-    fn insert_if_absent(&mut self, frame_number: i64, pixels: Pregrade, width: u32, height: u32) {
-        if self.entries.contains_key(&frame_number) {
+    fn insert_if_absent(&mut self, frame_number: i64, clip: Option<klipp_core::ClipId>, pixels: Pregrade, width: u32, height: u32) {
+        if self.entries.get(&frame_number).is_some_and(|e| e.clip == clip) {
             return;
         }
-        self.insert(frame_number, pixels, width, height);
+        self.insert(frame_number, clip, pixels, width, height);
     }
 
-    /// Look up a frame by number. Returns (pixels, width, height) if found.
-    fn get(&self, frame_number: i64) -> Option<(Pregrade, u32, u32)> {
-        self.entries.get(&frame_number).map(|e| (e.pixels.clone(), e.width, e.height))
+    /// Look up the frame at `frame_number` read from `clip`, the clip it
+    /// will be shown as. Returns (pixels, width, height) if held.
+    fn get(&self, frame_number: i64, clip: Option<klipp_core::ClipId>) -> Option<(Pregrade, u32, u32)> {
+        self.entries.get(&frame_number).filter(|e| e.clip == clip).map(|e| (e.pixels.clone(), e.width, e.height))
     }
 
     /// Frame numbers currently held — the only frames that can be graded
@@ -5856,7 +5889,7 @@ impl PlaybackEngine {
                 // Shown before and still held: the picture is at hand, and
                 // the decoder — already sent after it above, for the
                 // frames around it — can idle until the next position.
-                let cached = self.frame_cache.get(tc.value);
+                let cached = self.frame_cache.get(tc.value, self.primary_clip_now());
                 let got_frame = match cached {
                     Some((pixels, cw, ch)) if !self.presenting_progress => {
                         self.present_frame(Some(streams::HeldFrame::from_pregrade(&pixels, cw, ch)));
@@ -5977,7 +6010,7 @@ impl PlaybackEngine {
 
         // Check frame cache first (works for both forward AND backward).
         // The cache stores sRGB u8 — bridge at this viewer seam.
-        if let Some((pixels, w, h)) = self.frame_cache.get(target_frame) {
+        if let Some((pixels, w, h)) = self.frame_cache.get(target_frame, self.primary_clip_now()) {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             self.present_frame(Some(streams::HeldFrame::from_pregrade(&pixels, w, h)));
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -6016,7 +6049,8 @@ impl PlaybackEngine {
                 if frame.hdr.is_none() {
                     frame.ensure_cpu_data();
                 }
-                self.frame_cache.insert_if_absent(self.playhead.value, Pregrade::from_frame(&frame), w, h);
+                let clip = self.primary_clip_now();
+                self.frame_cache.insert_if_absent(self.playhead.value, clip, Pregrade::from_frame(&frame), w, h);
                 self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                 // Frame step chirp (~20ms). Chirps on a scrub are gated on
                 // the scrub-audio preference; non-scrub frame steps keep theirs.
@@ -6073,7 +6107,8 @@ impl PlaybackEngine {
                     if frame.hdr.is_none() {
                         frame.ensure_cpu_data();
                     }
-                    self.frame_cache.insert_if_absent(self.playhead.value, Pregrade::from_frame(&frame), w, h);
+                    let clip = self.primary_clip_now();
+                    self.frame_cache.insert_if_absent(self.playhead.value, clip, Pregrade::from_frame(&frame), w, h);
                     self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
                     // Frame step chirp (~20ms). Same gating as the primary
                     // frame-step path above — skip during a silenced scrub.
@@ -6148,7 +6183,8 @@ impl PlaybackEngine {
                     if frame.hdr.is_none() {
                         frame.ensure_cpu_data();
                     }
-                    self.frame_cache.insert_if_absent(frame_num, Pregrade::from_frame(&frame), w, h);
+                    let clip = self.primary_clip_now();
+                    self.frame_cache.insert_if_absent(frame_num, clip, Pregrade::from_frame(&frame), w, h);
 
                     // When we reach the target frame, display it
                     if frame_num >= target_frame && !found_target {
@@ -6210,7 +6246,7 @@ impl PlaybackEngine {
         candidates.sort_by_key(|f| (f - current).abs());
         let candidate_count = candidates.len();
         for (scanned, frame_num) in candidates.into_iter().enumerate() {
-            let Some((pixels, w, h)) = self.frame_cache.get(frame_num) else { continue };
+            let Some((pixels, w, h)) = self.frame_cache.get(frame_num, self.primary_clip_now()) else { continue };
             if self.prerender_frame(frame_num, streams::HeldFrame::from_pregrade(&pixels, w, h)) {
                 let ms = t_call.elapsed().as_secs_f64() * 1000.0;
                 if ms > 20.0 {
@@ -6282,7 +6318,8 @@ impl PlaybackEngine {
                     continue;
                 };
                 drop(seq);
-                self.frame_cache.insert_if_absent(frame_num, pixels, w, h);
+                let clip = self.primary_clip_now();
+                self.frame_cache.insert_if_absent(frame_num, clip, pixels, w, h);
             }
         }
 
@@ -6290,7 +6327,7 @@ impl PlaybackEngine {
         let current = self.playhead.value;
         let backward_needed = (1..=30).any(|i| {
             let f = current - i;
-            f >= 0 && self.frame_cache.get(f).is_none()
+            f >= 0 && self.frame_cache.get(f, self.primary_clip_now()).is_none()
         });
 
         if backward_needed {
@@ -6327,7 +6364,8 @@ impl PlaybackEngine {
                             (clip.timeline_in + elapsed_tc).value
                         } else { break; }
                     };
-                    self.frame_cache.insert_if_absent(frame_num, pixels, w, h);
+                    let clip = self.primary_clip_now();
+                    self.frame_cache.insert_if_absent(frame_num, clip, pixels, w, h);
                     // Stop a few frames past current (forward will be handled by decoder resume)
                     if frame_num > current + 5 { break; }
                     continue;
@@ -6346,6 +6384,13 @@ impl PlaybackEngine {
         if let Some(dec) = &self.v1_decoder {
             dec.resume();
         }
+    }
+
+    /// The clip the primary decoder reads: what a frame from it, or from
+    /// the frame cache, is shown as.
+    fn primary_clip_now(&self) -> Option<klipp_core::ClipId> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        self.v1_clip_id(&seq)
     }
 
     /// The primary clip's source time at the playhead.

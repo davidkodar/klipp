@@ -569,7 +569,7 @@ impl PlaybackEngine {
             self.cached_pregrade_frame = Some((pregrade.clone(), pw, ph));
             self.cached_pregrade_at = Some(self.playhead);
             let published = std::sync::Arc::new(pregrade.clone());
-            self.frame_cache.insert(self.playhead.value, pregrade, pw, ph);
+            self.frame_cache.insert(self.playhead.value, primary_clip, pregrade, pw, ph);
             // The frame, not its picture: only the UI's scope preview reads
             // this, and only while a grade is being dragged. Encoding it here
             // cost an HDR 4K frame 20 to 30 ms on every paused frame, for
