@@ -7309,6 +7309,30 @@ impl KlippApp {
         }
     }
 
+    /// Close an effect gesture whose release was never seen: as one
+    /// undo entry from its "before" snapshot to the effect as it is
+    /// now, or, when the effect has not moved (or the gesture is not
+    /// an effect edit), by dropping it, so nothing bogus is pushed.
+    fn close_open_effect_drag(&mut self) {
+        let pending = self.state.active_history().pending_old_entry_ref().map(|e| e.command.clone());
+        let Some(EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, .. }) = pending else {
+            self.state.active_history_mut().abandon_pending_drag();
+            return;
+        };
+        let now = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.builtin_effects.get(effect_index).cloned());
+        match now {
+            Some(new_effect) if new_effect != old_effect => {
+                self.state.active_history_mut().end_drag(HistoryEntry {
+                    command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect, new_effect },
+                });
+            }
+            _ => self.state.active_history_mut().abandon_pending_drag(),
+        }
+    }
+
     /// Cut a clip, and its linked partner with it, as one undo step.
     fn blade_clip_at(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
         // The clip and its partner are cut as two edits, one per track;
@@ -11629,6 +11653,13 @@ impl KlippApp {
 
             // Effect drag gestures
             AppCommand::BeginEffectDrag { ref key, clip_id, effect_index, ref old_effect } => {
+                // A gesture left open, its release never seen (#409), is
+                // closed here rather than overwritten: as one entry when
+                // its effect has moved since, silently when it has not.
+                if self.state.active_history().is_any_drag_in_progress() {
+                    tracing::warn!(key, "BeginEffectDrag with a drag still open: closing the open one first");
+                    self.close_open_effect_drag();
+                }
                 self.state.active_history_mut().begin_drag(
                     key.clone(),
                     HistoryEntry {
@@ -11640,6 +11671,49 @@ impl KlippApp {
                         },
                     },
                 );
+                true
+            }
+            AppCommand::AbandonEffectDrag { clip_id, effect_index, added } => {
+                let old_effect = self.state.active_history().pending_old_entry_ref()
+                    .and_then(|e| match &e.command {
+                        EditCommand::EditBuiltinEffect { clip_id: c, effect_index: i, old_effect, .. }
+                            if *c == *clip_id && *i == *effect_index => Some(old_effect.clone()),
+                        _ => None,
+                    });
+                let history = self.state.active_history_mut();
+                history.abandon_pending_drag();
+                // The add that opened this gesture is the last edit on the
+                // stack, the drag's own steps having pushed nothing. Retract
+                // it, and the effect with it: nobody asked for an identity
+                // Transform (#408).
+                let retracted = *added
+                    && history.retract_last(|last| is_add_of_effect(last, *clip_id, *effect_index));
+                let mut changed = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if retracted {
+                            if *effect_index < clip.builtin_effects.len() {
+                                clip.builtin_effects.remove(*effect_index);
+                                changed = true;
+                            }
+                            if *effect_index < clip.builtin_effects_enabled.len() {
+                                clip.builtin_effects_enabled.remove(*effect_index);
+                            }
+                        } else if let Some(old) = old_effect {
+                            if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
+                                changed = *fx != old;
+                                *fx = old;
+                            }
+                        }
+                        break;
+                    }
+                }
+                if changed {
+                    self.sync_sequence_to_engine();
+                    if self.state.playback != PlaybackState::Playing {
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                }
                 true
             }
             AppCommand::EndEffectDrag { ref key, clip_id, effect_index, ref new_effect } => {
@@ -40810,6 +40884,15 @@ fn effects_change_edits(clip_id: klipp_core::ClipId, before: &ClipEffectsState, 
         });
     }
     edits
+}
+
+/// Whether `last` is the add that appended effect `index` to `clip_id`.
+fn is_add_of_effect(last: &EditCommand, clip_id: klipp_core::ClipId, index: usize) -> bool {
+    matches!(
+        last,
+        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
+            if *c == clip_id && new_effects.len() == old_effects.len() + 1 && index + 1 == new_effects.len()
+    )
 }
 
 /// Fold a finished drag of effect `index` into the history's last edit

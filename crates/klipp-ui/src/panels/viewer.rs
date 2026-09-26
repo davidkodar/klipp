@@ -4412,11 +4412,27 @@ impl ViewerPanel {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let pointer_released = ui.input(|i| i.pointer.primary_released());
         let shift_held = ui.input(|i| i.modifiers.shift);
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
         let hit_radius = 10.0;
 
         // Handle ongoing drag
         if let Some(drag) = state.viewer_transform_drag.take() {
-            if pointer_released && !drag.started {
+            // A gesture whose release will never be seen here — Escape,
+            // the pointer gone from the window, or the pointer neither
+            // down nor released because the gizmo was not drawn on the
+            // release frame (a workspace or modal opened by shortcut
+            // mid-drag) — is taken back rather than left open, where it
+            // swallowed every later inspector edit's undo entry (#409).
+            let dropped = escape || pointer_pos.is_none() || (!pointer_down && !pointer_released);
+            if dropped {
+                if drag.started {
+                    cmds.push(AppCommand::AbandonEffectDrag {
+                        clip_id,
+                        effect_index: effect_index.unwrap_or(drag.effect_index),
+                        added: drag.added,
+                    });
+                }
+            } else if pointer_released && !drag.started {
                 // A click on a handle, not a drag: nothing to record.
             } else if pointer_released {
                 // Drag ended — emit EndEffectDrag for undo coalescing
@@ -4445,6 +4461,7 @@ impl ViewerPanel {
                             clip_id,
                             effect: drag.initial_transform.to_builtin_effect(),
                         });
+                        drag.added = true;
                     }
                     cmds.push(AppCommand::BeginEffectDrag {
                         key: format!("viewer_transform_{}", clip_id.0),
@@ -4487,7 +4504,6 @@ impl ViewerPanel {
                 state.viewer_transform_drag = Some(drag);
                 ui.ctx().request_repaint();
             }
-            // If pointer is neither down nor released (shouldn't happen), drop drag
         } else if let Some(pointer) = pointer_pos {
             // Check for new drag start
             if pointer_down && ui.input(|i| i.pointer.primary_pressed()) {
@@ -4512,6 +4528,7 @@ impl ViewerPanel {
                             initial_transform: transform,
                             drag_start_pos: pointer,
                             started: false,
+                            added: false,
                         });
                     }
                 }

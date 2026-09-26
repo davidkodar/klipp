@@ -2739,6 +2739,17 @@ pub enum AppCommand {
         effect_index: usize,
         new_effect: klipp_effects::BuiltinEffect,
     },
+    /// Take a drag gesture back without recording it: the effect
+    /// returns to what it was when the gesture opened, or, when the
+    /// gesture added it (`added`), is removed again along with the
+    /// history entry for the add. For a gesture that ended where it
+    /// began, or lost its release (Escape, the pointer leaving the
+    /// window, the gizmo hidden mid-drag).
+    AbandonEffectDrag {
+        clip_id: ClipId,
+        effect_index: usize,
+        added: bool,
+    },
 
     // Video stabilization
     AnalyzeStabilization { clip_id: ClipId },

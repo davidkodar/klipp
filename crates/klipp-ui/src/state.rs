@@ -183,6 +183,10 @@ pub struct ViewerTransformDrag {
     /// A press alone changes nothing: the Transform effect is added, and
     /// the undo gesture opened, only once it has.
     pub started: bool,
+    /// Whether this drag added the Transform effect: the clip had none
+    /// when the pointer crossed the threshold. A drag taken back then
+    /// removes it again.
+    pub added: bool,
 }
 
 /// A corner-pin handle being dragged in the viewer: which corner, and
