@@ -2,6 +2,12 @@
 //! to cut with it, as one gesture. The halves are linked crosswise —
 //! left with left, right with right — and the recorded edits carry
 //! the halves as linked, so a redo brings the pair back linked too.
+//!
+//! One rule for every caller, whichever kind of track the clips are
+//! on: the cut must lie more than a frame inside a clip to cut it, and
+//! a linked pair is cut together or not at all — a pair across a lock
+//! is refused whole, so a lock never leaves picture and sound out of
+//! step.
 
 use crate::history::EditCommand;
 use klipp_core::{ClipId, RationalTime};
@@ -12,14 +18,22 @@ use klipp_timeline::{Clip, Sequence};
 /// Why a blade did not happen. Nothing changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BladeRefusal {
-    /// The clip is gone, or the cut is not inside it. A blade queued
-    /// for a clip already cut through its partner lands on the new
-    /// edge: that is not worth a word.
+    /// The clip is gone, or the cut is not more than a frame inside it.
+    /// A blade that close to an edge is meant for the edge, and a blade
+    /// queued for a clip already cut through its partner lands on the
+    /// new edge: neither is worth a word.
     NotInside,
-    /// The clip's track is locked.
+    /// The clip's track is locked, and no unlocked partner is affected.
     Locked {
         /// The locked track's name.
         track: String,
+    },
+    /// The clip and the clip it is linked to lie either side of a lock.
+    LockedAcrossPair {
+        /// The locked track's name.
+        locked: String,
+        /// The other track's name.
+        unlocked: String,
     },
 }
 
@@ -29,13 +43,19 @@ impl BladeRefusal {
         match self {
             BladeRefusal::NotInside => None,
             BladeRefusal::Locked { track } => Some(format!("{track} is locked")),
+            BladeRefusal::LockedAcrossPair { locked, unlocked } => Some(format!(
+                "{locked} is locked and its clip is linked to one on {unlocked}: unlock {locked} or lock {unlocked} too"
+            )),
         }
     }
 }
 
-/// Whether `cut` lies strictly inside `clip`.
+/// Whether `cut` lies inside `clip` by more than a frame: the blade's
+/// edge rule, the same on a legacy and a magnetic track, so a pair
+/// split across the two kinds is cut on both or on neither.
 pub fn cut_is_inside(clip: &Clip, cut: RationalTime) -> bool {
-    cut > clip.timeline_in && cut < clip.timeline_out
+    let one_frame = RationalTime { value: 1, rate: clip.timeline_in.rate };
+    cut > clip.timeline_in + one_frame && cut < clip.timeline_out - one_frame
 }
 
 fn overlaps(a: &Clip, b: &Clip) -> bool {
@@ -75,10 +95,20 @@ pub fn blade_linked(
         .cloned()
         .ok_or(BladeRefusal::NotInside)?;
 
-    if seq.tracks[track_index].locked {
-        return Err(BladeRefusal::Locked { track: seq.tracks[track_index].name.clone() });
-    }
     let partner = clip.linked_clip_id.and_then(|pid| seq.find_clip(pid)).map(|(pti, pci)| (pti, seq.tracks[pti].clips[pci].clone()));
+
+    let name = |ti: usize| seq.tracks[ti].name.clone();
+    let locked = seq.tracks[track_index].locked;
+    match (locked, partner.as_ref().map(|(pti, _)| seq.tracks[*pti].locked)) {
+        (true, Some(false)) => {
+            return Err(BladeRefusal::LockedAcrossPair { locked: name(track_index), unlocked: name(partner.as_ref().unwrap().0) });
+        }
+        (false, Some(true)) => {
+            return Err(BladeRefusal::LockedAcrossPair { locked: name(partner.as_ref().unwrap().0), unlocked: name(track_index) });
+        }
+        (true, _) => return Err(BladeRefusal::Locked { track: name(track_index) }),
+        (false, _) => {}
+    }
 
     let mut edits = Vec::new();
     let (mut edit, a, b) = cut_one(seq, track_index, clip_id, cut, magnetic(track_index)).ok_or(BladeRefusal::NotInside)?;
@@ -337,6 +367,45 @@ mod tests {
             assert_eq!(s[1][0].3, Some(s[0][1].0), "the sound points at the right half: {s:?}");
             assert_eq!(history.undo_count(), 1);
         }
+    }
+
+    /// #407: a pair across a lock is refused whole, whichever side is
+    /// locked, and the toast names both tracks.
+    #[test]
+    fn a_pair_across_a_lock_is_refused_whole() {
+        let (mut seq, vid, _) = pair((0, 250), (0, 250));
+        let before = shape(&seq);
+        seq.tracks[1].locked = true;
+        let r = blade_linked(&mut seq, 0, vid, tc(125), |_| false).err();
+        assert_eq!(r, Some(BladeRefusal::LockedAcrossPair { locked: "A1".into(), unlocked: "V1".into() }));
+        assert_eq!(r.unwrap().message().as_deref(), Some("A1 is locked and its clip is linked to one on V1: unlock A1 or lock V1 too"));
+        assert_eq!(shape(&seq), before, "nothing was cut");
+
+        seq.tracks[1].locked = false;
+        seq.tracks[0].locked = true;
+        let r = blade_linked(&mut seq, 0, vid, tc(125), |_| true).err();
+        assert_eq!(r, Some(BladeRefusal::LockedAcrossPair { locked: "V1".into(), unlocked: "A1".into() }));
+        assert_eq!(shape(&seq), before);
+
+        seq.tracks[1].locked = true;
+        assert_eq!(blade_linked(&mut seq, 0, vid, tc(125), |_| false).err(), Some(BladeRefusal::Locked { track: "V1".into() }));
+        assert_eq!(shape(&seq), before);
+    }
+
+    /// #407: the edge rule is the legacy blade's — more than a frame
+    /// inside — on both kinds of track, so a pair across the two kinds
+    /// is never cut on one side only.
+    #[test]
+    fn a_cut_within_a_frame_of_an_edge_is_refused_on_every_kind_of_track() {
+        let (mut seq, vid, _) = pair((0, 250), (0, 250));
+        let before = shape(&seq);
+        // Video magnetic, audio legacy; the cut a frame from the head.
+        let kinds = |ti: usize| ti == 0;
+        assert_eq!(blade_linked(&mut seq, 0, vid, tc(1), kinds).err(), Some(BladeRefusal::NotInside));
+        assert_eq!(blade_linked(&mut seq, 0, vid, tc(249), kinds).err(), Some(BladeRefusal::NotInside));
+        assert_eq!(shape(&seq), before, "neither track was cut");
+        assert!(blade_linked(&mut seq, 0, vid, tc(2), kinds).is_ok());
+        assert_cross_linked(&seq, 2);
     }
 
     /// A stale blade of a partner's original id, queued before the pair
