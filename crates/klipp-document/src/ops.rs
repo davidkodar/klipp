@@ -522,13 +522,24 @@ pub enum Op {
         clip_id: ClipRef,
         speed: f64,
     },
-    /// Clean a clip's sound. Each flag adds the tool for it: `wind` a
-    /// broadband reducer for wind and rumble, `hiss` the same lighter
-    /// for tape or air hiss, `hum` a notch for 50/60 Hz mains buzz,
-    /// `deess` a de-esser for harsh sibilance. Set on the clip whose
-    /// sound plays (a linked video clip's, as elsewhere).
+    /// Clean a clip's sound. Each flag adds the tool for it: `voice`
+    /// Voice Isolation, the AI model that separates speech from wind,
+    /// traffic and room noise (the best cleanup for dialogue; it also
+    /// takes the ambience of a clip without speech, so leave it off
+    /// there), lowering the rest by `reduction_db` (default 24; 12 keeps
+    /// the place audible, 60 removes all it can); `wind` the Broadband
+    /// Denoiser's wind preset (gusts and rumble); `hiss` its hiss preset
+    /// (tape, preamp or air hiss); `hum` a notch for 50/60 Hz mains buzz;
+    /// `deess` a de-esser for harsh sibilance. With `voice`, wind and hiss
+    /// are left to Voice Isolation rather than stacking a second reducer.
+    /// Set on the clip whose sound plays (a linked video clip's, as
+    /// elsewhere).
     CleanAudio {
         clip_id: ClipRef,
+        #[serde(default)]
+        voice: bool,
+        #[serde(default)]
+        reduction_db: Option<f32>,
         #[serde(default)]
         wind: bool,
         #[serde(default)]
@@ -1543,9 +1554,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             retime(seq, pool, fps, i, ti, ci, clip, *speed)
         }
-        Op::CleanAudio { clip_id, wind, hiss, hum, deess } => {
+        Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            clean_audio(seq, pool, i, clip, *wind, *hiss, *hum, *deess)
+            clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
         }
         Op::Grade { clip_id, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3653,13 +3664,24 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: u
     Ok((what, edit, vec![clip.id]))
 }
 
-fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, wind: bool, hiss: bool, hum: bool, deess: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// What `clean_audio` was asked to fix.
+struct CleanFlags {
+    voice: bool,
+    reduction_db: Option<f32>,
+    wind: bool,
+    hiss: bool,
+    hum: bool,
+    deess: bool,
+}
+
+fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, flags: CleanFlags) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let CleanFlags { voice, reduction_db, wind, hiss, hum, deess } = flags;
     let clip = sound_settings_clip(seq, given);
     if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) {
         return Err(refuse(i, format!("{} has no sound", clip_name(seq, pool, clip)), "name a clip whose media has audio"));
     }
-    if !(wind || hiss || hum || deess) {
-        return Err(refuse(i, "nothing to clean", "set wind, hiss, hum or deess"));
+    if !(voice || wind || hiss || hum || deess) {
+        return Err(refuse(i, "nothing to clean", "set voice, wind, hiss, hum or deess"));
     }
     let mk = |effect_type: &str, params: Vec<(&str, f32)>| klipp_core::AudioEffectInstance {
         effect_type: effect_type.to_string(),
@@ -3669,21 +3691,31 @@ fn clean_audio(seq: &Sequence, pool: &MediaPool, i: usize, given: &Clip, wind: b
     };
     let mut chain = clip.audio_effects.clone();
     let has = |chain: &[klipp_core::AudioEffectInstance], t: &str| chain.iter().any(|e| e.effect_type == t);
-    let mut said = Vec::new();
-    // Wind and hiss both go to the broadband reducer, wind stronger; one
-    // of it, so two flags do not stack two reducers.
-    if (wind || hiss) && !has(&chain, "noise_reduction") {
-        let reduction = if wind { 0.7 } else { 0.4 };
-        chain.push(mk("noise_reduction", vec![("reduction", reduction), ("sensitivity", 0.5), ("smoothing", 0.5)]));
-        said.push(if wind { "wind and rumble reduced" } else { "hiss reduced" });
+    let mut said: Vec<String> = Vec::new();
+    if voice && !has(&chain, "voice_isolation") {
+        let db = reduction_db.unwrap_or(24.0).clamp(0.0, 60.0);
+        chain.push(mk("voice_isolation", vec![("reduction", db), ("mode", 0.0)]));
+        said.push(if wind || hiss {
+            format!("speech isolated from the noise, wind and hiss included (Voice Isolation, {db:.0} dB)")
+        } else {
+            format!("speech isolated from the noise (Voice Isolation, {db:.0} dB)")
+        });
+    }
+    // Wind and hiss go to the Broadband Denoiser's presets, wind the
+    // stronger; one of it, so two flags do not stack two reducers. With
+    // Voice Isolation on the clip it has them covered.
+    if (wind || hiss) && !voice && !has(&chain, "denoiser") {
+        let (strength, floor, wind_amount, window) = if wind { (1.0, 0.03, 1.0, 1.0) } else { (0.85, 0.06, 0.0, 0.5) };
+        chain.push(mk("denoiser", vec![("strength", strength), ("floor", floor), ("wind", wind_amount), ("profile_seconds", window)]));
+        said.push(if wind { "wind and rumble reduced".into() } else { "hiss reduced".into() });
     }
     if hum && !has(&chain, "hum_removal") {
         chain.push(mk("hum_removal", vec![("fundamental_hz", 50.0), ("harmonics", 4.0), ("q", 30.0)]));
-        said.push("mains hum removed");
+        said.push("mains hum removed".into());
     }
     if deess && !has(&chain, "deesser") {
         chain.push(mk("deesser", vec![("frequency", 6500.0), ("threshold", -24.0), ("reduction", 6.0), ("bandwidth", 1.0)]));
-        said.push("sibilance tamed");
+        said.push("sibilance tamed".into());
     }
     if said.is_empty() {
         return Err(refuse(i, "the sound already has these cleaners", "nothing to add"));
@@ -5423,17 +5455,33 @@ mod tests {
         assert!(plan.steps[0].what.contains("overlaps"), "{}", plan.steps[0].what);
 
         // Clean audio adds the DSP for each flag, on the clip's own sound.
-        let plan = resolve(&seq, &pool, &[Op::CleanAudio { clip_id: ClipRef::Id(a), wind: true, hiss: false, hum: true, deess: true }]).unwrap();
-        assert!(plan.steps[0].what.contains("wind and rumble") && plan.steps[0].what.contains("hum") && plan.steps[0].what.contains("sibilance"), "{}", plan.steps[0].what);
-        let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!("audio edit") };
-        let types: Vec<&str> = new_state.audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
-        assert!(types.contains(&"noise_reduction") && types.contains(&"hum_removal") && types.contains(&"deesser"), "{types:?}");
+        let clean = |voice: bool, reduction_db: Option<f32>, wind: bool, hum: bool, deess: bool| {
+            let plan = resolve(&seq, &pool, &[Op::CleanAudio { clip_id: ClipRef::Id(a), voice, reduction_db, wind, hiss: false, hum, deess }]).unwrap();
+            let EditCommand::EditAudioChain { new_state, .. } = &plan.steps[0].edit else { panic!("audio edit") };
+            (plan.steps[0].what.clone(), new_state.audio_effects.clone())
+        };
+        let param = |fx: &klipp_core::AudioEffectInstance, k: &str| fx.params.iter().find(|(n, _)| n == k).map(|(_, v)| *v);
+        let (what, chain) = clean(false, None, true, true, true);
+        assert!(what.contains("wind and rumble") && what.contains("hum") && what.contains("sibilance"), "{what}");
+        let types: Vec<&str> = chain.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(types, ["denoiser", "hum_removal", "deesser"], "wind is the Broadband Denoiser now, not the multi-band gate");
+        assert_eq!(param(&chain[0], "wind"), Some(1.0), "with its wind preset");
+
+        // Voice isolates speech, at 24 dB unless asked, and takes the wind
+        // itself instead of stacking the denoiser under it.
+        let (what, chain) = clean(true, None, true, false, false);
+        let types: Vec<&str> = chain.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(types, ["voice_isolation"], "{what}");
+        assert_eq!(param(&chain[0], "reduction"), Some(24.0));
+        assert!(what.contains("Voice Isolation, 24 dB"), "{what}");
+        let (_, chain) = clean(true, Some(12.0), false, false, false);
+        assert_eq!(param(&chain[0], "reduction"), Some(12.0));
 
         // Refusals and the JSON shape.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
         assert!(bad(Op::Effect { clip_id: ClipRef::Id(a), kind: "sparkle".into(), amount: None }).why.contains("not an effect"));
-        assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
-        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true}]"#).unwrap();
+        assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
+        let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;
     }
 

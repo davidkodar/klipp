@@ -367,9 +367,9 @@ impl Detector {
 }
 
 static PARAM_DESCS: &[AudioParamDescriptor] = &[
-    AudioParamDescriptor { name: "strength", label: "Reduction", default: 0.75, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
-    AudioParamDescriptor { name: "floor", label: "Noise Floor", default: 0.08, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
-    AudioParamDescriptor { name: "wind", label: "Wind Reduction", default: 0.0, min: 0.0, max: 1.0, unit: ParamUnit::Percent },
+    AudioParamDescriptor { name: "strength", label: "Reduction", default: 0.75, min: 0.0, max: 1.0, unit: ParamUnit::Fraction },
+    AudioParamDescriptor { name: "floor", label: "Noise Floor", default: 0.08, min: 0.0, max: 1.0, unit: ParamUnit::Fraction },
+    AudioParamDescriptor { name: "wind", label: "Wind Reduction", default: 0.0, min: 0.0, max: 1.0, unit: ParamUnit::Fraction },
     AudioParamDescriptor { name: "profile_seconds", label: "Learn Window (s)", default: 0.5, min: 0.1, max: 5.0, unit: ParamUnit::None },
 ];
 

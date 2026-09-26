@@ -1326,3 +1326,68 @@ fn chain_total_latency_total_caps_at_one_second() {
     chain.push_test_slot(Box::new(LatencyStub(half)), true, 1.0);
     assert_eq!(chain.total_latency_samples(SR), SR);
 }
+
+/// Test-only effect that really delays interleaved audio by its reported
+/// latency, like a lookahead effect.
+struct DelayStub {
+    frames: usize,
+    line: std::collections::VecDeque<f32>,
+}
+impl DelayStub {
+    fn new(frames: usize) -> Self {
+        Self { frames, line: std::collections::VecDeque::new() }
+    }
+}
+impl AudioEffect for DelayStub {
+    fn type_id(&self) -> &'static str { "test_delay_stub" }
+    fn name(&self) -> &'static str { "Delay Stub" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { &[] }
+    fn get_param(&self, _: &str) -> Option<f32> { None }
+    fn set_param(&mut self, _: &str, _: f32) {}
+    fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext) {
+        let delay = self.frames * ctx.channels as usize;
+        while self.line.len() < delay {
+            self.line.push_back(0.0);
+        }
+        for s in buffer.iter_mut() {
+            self.line.push_back(*s);
+            *s = self.line.pop_front().unwrap_or(0.0);
+        }
+    }
+    fn reset(&mut self) { self.line.clear(); }
+    fn latency_samples(&self) -> u32 { self.frames as u32 }
+    fn serialize_params(&self) -> Vec<(String, f32)> { vec![] }
+    fn deserialize_params(&mut self, _: &[(String, f32)]) {}
+}
+
+#[test]
+fn process_aligned_removes_the_chain_latency_from_a_stream() {
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(DelayStub::new(1920)), true, 1.0);
+    let ctx = AudioProcessContext { sample_rate: SR, channels: 2, clip_time_secs: 0.0 };
+    let input: Vec<f32> = (0..20_000 * 2).map(|i| i as f32).collect();
+
+    let run = |chain: &mut AudioEffectChain, from: usize| {
+        let mut out = Vec::new();
+        let mut pos = from;
+        // Uneven blocks, smaller and larger than the latency.
+        for block in [700usize, 4096, 1500, 8192].iter().cycle() {
+            if pos >= input.len() { break; }
+            let end = (pos + block * 2).min(input.len());
+            let mut buf = input[pos..end].to_vec();
+            chain.process_aligned(&mut buf, &ctx);
+            out.extend(buf);
+            pos = end;
+        }
+        out
+    };
+    let out = run(&mut chain, 0);
+    assert_eq!(out.len(), input.len() - 1920 * 2, "the latency is dropped once, not per block");
+    assert_eq!(&out[..], &input[..out.len()], "output lines up with the input position");
+
+    // A seek resets the chain and the alignment starts over.
+    chain.reset();
+    let from = 6_000 * 2;
+    let out = run(&mut chain, from);
+    assert_eq!(&out[..], &input[from..from + out.len()]);
+}

@@ -2341,7 +2341,7 @@ fn handle(
                 "rate": spec.rate,
                 "findings": found.iter().map(|(sev, what, fix)| json!({ "severity": sev, "what": what, "fix": fix })).collect::<Vec<_>>(),
                 "bands": bands,
-                "next": "clean_audio on the clip whose sound plays takes wind, hiss, hum and deess; run audio_spectrum again to see whether it worked.",
+                "next": "clean_audio on the clip whose sound plays takes voice (Voice Isolation, for dialogue), wind, hiss, hum and deess; run audio_spectrum again to see whether it worked.",
             }))
         }
 
@@ -3752,6 +3752,10 @@ fn handle(
             v["duration_secs"] = json!(plan.duration_secs);
             if let Some(next) = next_after_ops(&ops) {
                 v["next"] = json!(next);
+            }
+            let wants_voice = ops.iter().any(|o| matches!(o, klipp_document::ops::Op::CleanAudio { voice: true, .. }));
+            if wants_voice && !klipp_audio::dsp::voice_isolation::model_installed() {
+                v["next"] = json!("Voice Isolation is on the clip, but its model (8 MB) is not downloaded, so the sound passes through unchanged until it is. Klipp downloads it only when the user asks: tell them to press Download model on the effect in the Audio inspector, or use Preferences → AI → Manage models.");
             }
             Ok(v)
         }

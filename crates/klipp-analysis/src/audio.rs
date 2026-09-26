@@ -93,10 +93,10 @@ impl AudioEnvelope {
         if self.hum_is_a_tone(full) {
             out.push(("a mains hum near 50/60 Hz runs under the sound".to_string(), "clean_audio with hum on this clip".to_string()));
         } else if lf_strong {
-            out.push(("a strong low-frequency rumble — wind or handling — sits under the sound".to_string(), "clean_audio with wind on this clip".to_string()));
+            out.push(("a strong low-frequency rumble — wind or handling — sits under the sound".to_string(), "clean_audio with voice on this clip if someone speaks, else wind".to_string()));
         }
         if high - full > -12.0 {
-            out.push(("high-frequency hiss or air is loud against the sound".to_string(), "clean_audio with hiss on this clip".to_string()));
+            out.push(("high-frequency hiss or air is loud against the sound".to_string(), "clean_audio with voice on this clip if someone speaks, else hiss".to_string()));
         }
         if let Some(floor) = self.noise_floor_db {
             if floor > -40.0 && !lf_strong && high - full <= -12.0 {

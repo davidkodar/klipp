@@ -286,22 +286,22 @@ fn audio_decode_thread(
 
     // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
-        let chain = AudioEffectChain::from_instances_with_kfs(
+        let mut chain = AudioEffectChain::from_instances_with_kfs(
             &audio_effects,
             &audio_effect_keyframes,
             output_rate,
         );
+        // Start costly effects now, not on the first block after Play.
+        chain.prepare(2);
         debug!(
             "audio_decode_thread: {} audio effects active ({} kf tracks)",
             chain.slot_count(),
             audio_effect_keyframes.len(),
         );
-        // Advertise the chain's total latency so the mix-thread can
-        // configure per-track PDC delay-line compensation.
-        // klipp_audio::AudioMixer reads this atomic, sums against
-        // other tracks' reports, and sizes each track's delay line
-        // to (max - own) for forward PDC alignment.
-        latency_advertise.store(chain.total_latency_samples(output_rate), Ordering::Release);
+        // The chain trims its own latency (`process_aligned`), so this
+        // track already lines up with the picture; advertising it too would
+        // make the mixer delay every other track by the same amount.
+        latency_advertise.store(0, Ordering::Release);
         Some(chain)
     } else {
         // No plugins → no latency. (The atomic was initialised to 0
@@ -496,7 +496,7 @@ fn audio_decode_thread(
                     channels: 2,
                     clip_time_secs,
                 };
-                chain.process(&mut fx_accum, &ctx);
+                chain.process_aligned(&mut fx_accum, &ctx);
                 fx_accum_start_pts_secs = None;
 
                 let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
@@ -562,7 +562,7 @@ fn audio_decode_thread(
                     channels: 2,
                     clip_time_secs,
                 };
-                chain.process(&mut fx_accum, &ctx);
+                chain.process_aligned(&mut fx_accum, &ctx);
                 fx_accum_start_pts_secs = None;
                 let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
                 let is_muted = muted.load(Ordering::Relaxed);
