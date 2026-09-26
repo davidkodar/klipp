@@ -67,6 +67,58 @@ The parade scope displays separate waveforms for red, green, and blue channels s
 
 Particularly useful for white-balance correction: adjust temperature and tint until highlight areas show equal levels across all three channels.
 
+## Choosing a Scope
+
+Each pane of the scope window, and of the docked scopes when they show a grid, has a type menu in its header. Besides the four scopes above it offers the CIE chromaticity diagram, false colour and four audio scopes.
+
+## CIE Chromaticity
+
+A CIE 1931 xy diagram: every point on it is a colour, not a code value. It is outlined by the spectral locus and marked with the project's working space: its gamut triangle and its own white point (D60 in an ACES project, D65 otherwise), so a colour outside the triangle is outside the working gamut.
+
+It plots the picture itself, not the view of it: the engine samples the frame in the working space, linear, before the display transform, on a grid at most 384 samples on its long side, and each sample is placed by the working space's own RGB-to-XYZ matrix. The dots are weighted and tinted by their own colour, and near-black samples, which have no chromaticity to speak of, are left out. The scope cursor marks the colour under the pointer on the diagram. It has no settings.
+
+## False Colour
+
+The picture as shown, repainted by exposure, so a glance says where the light is. Each pixel's CIELAB lightness (L*) picks a flat colour:
+
+| L* from | Colour | Meaning |
+|---|---|---|
+| 0 | Purple | At black: detail gone |
+| 3 | Dark blue | Deep shadow |
+| 12 | Teal | Shadow |
+| 30 | Mid grey | Mid grey |
+| 70 | Light grey | Highlight |
+| 92 | Amber | Near white |
+| 98 | Red | At white: detail gone |
+
+Skin is pink, as on an ARRI or a Blackmagic camera: a band ±5 L* around the skin level of the look in the sequence's brief, or L* 62 (the *broadcast_neutral* look) when the brief names none. A face exposed as the look asks turns pink; a stop either side stays grey. It has no settings.
+
+### HDR false colour
+
+A separate false colour belongs to HDR monitoring. The **HDR** button in the viewer's top-right corner steps through *off*, *preview* and *false colour*. In false colour the viewer paints each pixel by the light of its brightest channel, measured in BT.2020 display light (cd/m²) whatever the project works in:
+
+| cd/m² from | Colour |
+|---|---|
+| 0 | Black |
+| 0.1 | Blue (deep shadow) |
+| 5 | Cyan (shadow) |
+| 20 | Grey (around an 18 % grey card at 26) |
+| 32 | Green (mid-tones) |
+| 180 | Near white (around diffuse white at 203) |
+| 230 | Amber (specular) |
+| 900 | Red (at the master's 1 000 cd/m² peak) |
+
+The bands sit around the BT.2408 reference levels rather than on them, so a face lit to grey or a shirt at diffuse white does not flicker between two colours. The readout under the button gives the light under the pointer.
+
+## Audio Scopes
+
+Four scopes read the audio instead of the picture. They read the mixed audio as it plays and redraw at most about 30 times a second; the scope cursor has nothing to show on them.
+
+- **Audio Spectrum** — level against frequency: 20 Hz to Nyquist on a log scale, −96 to 0 dBFS, with guide lines at −12, −24, −48 and −72 dBFS.
+- **Audio Correlation** — a goniometer: left against right as a Lissajous figure, rotated 45°, over a strip meter of the correlation between the channels from −1 to +1. Identical channels read +1; a reading near −1 means the channels cancel when summed to mono.
+- **Loudness History** — short-term loudness in LUFS over the last minute or so, with a band of ±1 LU around the loudness target: −23 LUFS for EBU R128, −24 for ATSC A/85, set by the loudness standard in the audio preferences.
+- **Spectrogram** — a scrolling waterfall of about ten seconds: time across (oldest on the left), frequency up on a log scale, level as colour. Its one setting, **dB floor** (−96 to −12 dBFS, default −72), sets the quietest level shown.
+
 ## Working Colourspace
 
 The vectorscope measures Y′CbCr in the project's working space, with that space's own luminance weights, so its targets sit where the space's primaries land. The waveform, parade and histogram measure the delivered levels described above.
