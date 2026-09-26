@@ -144,10 +144,15 @@ pub struct AudioEffectChain {
     /// Output frames still to drop for [`Self::process_aligned`]; `None`
     /// until the first aligned call after construction or `reset`.
     align_trim_frames: Option<usize>,
+    /// Effect types of the instances the chain was built from, in order
+    /// (an instance whose effect could not load has no slot).
+    built_from: Vec<String>,
 }
 
 struct ChainSlot {
     effect: Box<dyn AudioEffect>,
+    /// Index of the instance this slot was built from.
+    instance_index: usize,
     enabled: bool,
     wet_dry: f32,
     /// Keyframe tracks for individual params (name → kfs). Time domain is
@@ -175,6 +180,7 @@ impl AudioEffectChain {
             slots: Vec::new(),
             dry_buffer: Vec::new(),
             align_trim_frames: None,
+            built_from: Vec::new(),
         }
     }
 
@@ -199,6 +205,7 @@ impl AudioEffectChain {
         sample_rate: u32,
     ) -> Self {
         let mut chain = Self::new();
+        chain.built_from = instances.iter().map(|i| i.effect_type.clone()).collect();
         for (idx, inst) in instances.iter().enumerate() {
             if let Some(mut effect) = create_effect(&inst.effect_type, sample_rate) {
                 effect.deserialize_params(
@@ -225,6 +232,7 @@ impl AudioEffectChain {
                 }
                 chain.slots.push(ChainSlot {
                     effect,
+                    instance_index: idx,
                     enabled: inst.enabled,
                     wet_dry: inst.wet_dry,
                     param_kfs,
@@ -378,6 +386,30 @@ impl AudioEffectChain {
         self.align_trim_frames = None;
     }
 
+    /// Change the settings (parameters and wet/dry) of a running chain in
+    /// place, without rebuilding or resetting it: a slider moved during
+    /// playback is heard at once, with no gap. `instances` must describe
+    /// this chain's effects in order; a chain of another shape (an effect
+    /// added, removed or toggled) is left alone and false returned, since
+    /// that needs a rebuild.
+    pub fn apply_settings(&mut self, instances: &[AudioEffectInstance]) -> bool {
+        let same_shape = instances.len() == self.built_from.len()
+            && instances.iter().zip(&self.built_from).all(|(i, t)| &i.effect_type == t);
+        if !same_shape {
+            return false;
+        }
+        for slot in &mut self.slots {
+            let inst = &instances[slot.instance_index];
+            slot.wet_dry = inst.wet_dry;
+            for (name, value) in &inst.params {
+                if slot.effect.get_param(name) != Some(*value) {
+                    slot.effect.set_param(name, *value);
+                }
+            }
+        }
+        true
+    }
+
     /// Let every effect do its costly start now rather than on the first
     /// block. See [`AudioEffect::prepare`].
     pub fn prepare(&mut self, channels: usize) {
@@ -446,8 +478,10 @@ impl AudioEffectChain {
     /// Test-only: push a pre-built effect into the chain. Production code
     /// goes through `from_instances` / the factory.
     pub(crate) fn push_test_slot(&mut self, effect: Box<dyn AudioEffect>, enabled: bool, wet_dry: f32) {
+        let instance_index = self.slots.len();
         self.slots.push(ChainSlot {
             effect,
+            instance_index,
             enabled,
             wet_dry,
             param_kfs: std::collections::HashMap::new(),
@@ -467,8 +501,10 @@ impl AudioEffectChain {
         bypass_kfs: Vec<klipp_core::Keyframe>,
         wet_dry_kfs: Vec<klipp_core::Keyframe>,
     ) {
+        let instance_index = self.slots.len();
         self.slots.push(ChainSlot {
             effect,
+            instance_index,
             enabled,
             wet_dry,
             param_kfs,
