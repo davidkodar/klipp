@@ -24603,26 +24603,30 @@ impl KlippApp {
     }
 
     /// Copy every still under the temporary still folders into
-    /// `project_dir` and point its media item there.
+    /// `project_dir` and point whatever holds it there: media items, and
+    /// the freeze frames on any sequence's tracks, which are generator
+    /// clips rather than pool items. A still that could not be copied is
+    /// said so in a toast, since the save itself still goes through and
+    /// would otherwise report a clean success for a project pointing
+    /// into `/tmp`.
     fn adopt_temp_stills(&mut self, project_dir: &std::path::Path) {
-        let temp: Vec<(klipp_core::MediaId, PathBuf)> = self
-            .state
-            .media_pool
-            .all()
-            .filter(|m| klipp_project::is_temp_still(&m.path))
-            .map(|m| (m.id, m.path.clone()))
-            .collect();
-        for (id, from) in temp {
-            match klipp_project::adopt_still(project_dir, &from) {
-                Ok(to) => {
-                    if let Some(item) = self.state.media_pool.get_mut(&id) {
-                        item.path = to;
-                    }
-                }
-                Err(e) => tracing::warn!("could not bring {} into the project: {e}", from.display()),
-            }
+        let report = klipp_project::adopt_temp_stills(project_dir, &mut self.state.media_pool, &mut self.state.sequences);
+        if report.is_empty() {
+            return;
         }
-        self.sync_media_pool_to_engine();
+        if report.adopted > 0 {
+            self.sync_media_pool_to_engine();
+            self.sync_sequence_to_engine();
+        }
+        if let Some((path, e)) = report.failed.first() {
+            let n = report.failed.len();
+            self.state.toast.show(format!(
+                "Could not copy {n} still{} into the project ({}: {e}); {} still in the temp folder",
+                if n == 1 { "" } else { "s" },
+                path.display(),
+                if n == 1 { "it is" } else { "they are" },
+            ));
+        }
     }
 
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
@@ -24640,14 +24644,16 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
         };
-        // Saved somewhere new (Save As, or a first save): stills made
-        // while there was no folder of our own to write to — a project
-        // never saved, or one open read-only — come along, or the new
-        // project would point into the temp folder.
+        // Stills made while there was no folder of our own to write to —
+        // a project never saved, or one open read-only — come along, or
+        // the project would point into the temp folder. On every save,
+        // not only one to a new place: an extracted frame reaches the
+        // pool only when its probe lands, which can be after the Save As
+        // that should have brought it, and an undo can put a clip with a
+        // temp path back. With nothing under the temp folders this does
+        // nothing.
         let new_home = self.state.project_path.as_deref() != Some(path);
-        if new_home {
-            self.adopt_temp_stills(path);
-        }
+        self.adopt_temp_stills(path);
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
