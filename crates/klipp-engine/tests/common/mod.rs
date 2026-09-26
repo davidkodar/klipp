@@ -251,6 +251,13 @@ impl Parked {
         self.fb.lock().unwrap().latest_frame().0.to_vec()
     }
 
+    /// Frames shown on the GPU without their bytes (zero-copy), and the
+    /// display bytes' generation.
+    pub fn gpu_frames_and_generation(&self) -> (u64, u64) {
+        let fb = self.fb.lock().unwrap();
+        (fb.gpu_output_frame, fb.latest_generation())
+    }
+
     /// The scope texture the engine last published for `mode`.
     pub fn scope_texture(&self, mode: u8) -> Option<klipp_engine::texture::ScopeTextureEntry> {
         self.fb.lock().unwrap().scope_textures.get(&mode).cloned()

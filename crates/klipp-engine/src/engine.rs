@@ -7177,14 +7177,15 @@ impl PlaybackEngine {
     /// What the layers are is the stack's own business; it declines
     /// what it cannot do and the CPU path takes over.
     /// Whether the GPU stack would show a playing frame without a
-    /// readback: the viewer's texture is its to write, nothing this
-    /// frame wants the bytes for (a scope pass), and the stack takes
-    /// this project's picture (Rec.709 SDR). The stack itself still
-    /// decides per frame; this is what makes it worth asking first.
+    /// readback: the viewer's texture is its to write, and the stack
+    /// takes this project's picture (Rec.709 SDR). A scope pass no
+    /// longer wants the bytes — the scopes measure the frame where the
+    /// encode left it (#333) — so it does not send the frame to a path
+    /// that reads it back. The stack itself still decides per frame;
+    /// this is what makes it worth asking first.
     fn stack_presents_zero_copy(&self) -> bool {
         self.state == PlaybackState::Playing
             && should_publish_gpu_viewer()
-            && !self.should_render_scope()
             && !self.hdr_monitor.renders_hdr()
             && crate::video_decoder::working_colorspace() == klipp_core::WorkingColorspace::Rec709Linear
             && self.gpu_composite_allowed()
@@ -7905,6 +7906,49 @@ impl PlaybackEngine {
         }
     }
 
+    /// [`Self::draw_due_scopes`] for a frame the GPU stack encoded for
+    /// the screen and kept on the device: measured where the encode left
+    /// it, with no readback. Call it straight after that encode, before
+    /// anything encodes another frame. Its bytes are in the working
+    /// space's primaries, as the stack encodes them. The cost in ms, 0
+    /// when not drawn.
+    fn draw_due_scopes_from_gpu_display(&mut self, w: u32, h: u32) -> f64 {
+        if !(self.should_render_scope() && !self.hdr_monitor.renders_hdr()) {
+            self.scope_render_owed |= self.scopes_visible;
+            return 0.0;
+        }
+        let t = std::time::Instant::now();
+        let modes = self.scope_modes_to_draw();
+        let luma = klipp_color::primaries::luminance_weights(crate::video_decoder::working_colorspace());
+        let step = self.scope_sample_step();
+        let jobs = self.scope_jobs(&modes);
+        let low_pass = self.scope_low_pass_enabled;
+        let renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>)> = match self
+            .renderer
+            .executor()
+            .gpu_pipeline_or_init()
+            .and_then(|gpu| {
+                gpu.scopes().set_low_pass(low_pass);
+                gpu.render_scopes_from_display(w, h, luma, step, &jobs)
+            })
+        {
+            Some(results) => modes
+                .iter()
+                .zip(jobs.iter().zip(results))
+                .map(|(&mode, (job, r))| (mode, r.map(|bytes| (bytes, job.out_size().0, job.out_size().1))))
+                .collect(),
+            None => Vec::new(),
+        };
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            Self::apply_scope_renders(&mut fb, renders);
+        }
+        self.last_scope_cost = t.elapsed();
+        self.last_scope_render = std::time::Instant::now();
+        self.scope_render_owed = false;
+        self.last_scope_cost.as_secs_f64() * 1000.0
+    }
+
     /// Draw every mode in `(active_scope_modes ∪ {scope_render_mode})` on
     /// the GPU and return per-mode RGBA outputs. Does NOT touch the
     /// framebuffer; pair with [`Self::apply_scope_renders`] to write the
@@ -7929,22 +7973,11 @@ impl PlaybackEngine {
         // texture, even when the floating window's active set excludes
         // the dock mode (e.g. four parade panes while dock shows
         // vectorscope).
-        let dock_mode = self.scope_render_mode;
-        let mut to_render: std::collections::BTreeSet<u8> = self.active_scope_modes.clone();
-        to_render.insert(dock_mode);
-        // The CIE scope is in the active set but is not a filter graph —
-        // it asks for sample data instead. See `cie_samples_pending`.
-        to_render.remove(&crate::scopes::CIE_SAMPLES_MODE);
-
-        let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>)> = Vec::with_capacity(to_render.len());
-
-        let wanted: Vec<u8> = to_render.iter().copied().filter(|m| *m <= 3).collect();
+        let wanted = self.scope_modes_to_draw();
+        let mut rendered: Vec<(u8, Option<(Vec<u8>, u32, u32)>)> = Vec::with_capacity(wanted.len());
         if !wanted.is_empty() {
             if let Some(results) = self.render_scopes_on_gpu(linear, display, src_w, src_h, &wanted) {
-                for (mode, result) in wanted.iter().zip(results) {
-                    rendered.push((*mode, result));
-                    to_render.remove(mode);
-                }
+                rendered.extend(wanted.iter().copied().zip(results));
             }
         }
         // A mode the GPU did not draw (no GPU, or nothing to measure) keeps
@@ -7952,61 +7985,28 @@ impl PlaybackEngine {
         rendered
     }
 
-    /// The waveform (mode 0), parade (1), vectorscope (2) and histogram
-    /// (3) from the GPU scope renderer, one result with its size per entry
-    /// of `modes`.
-    /// `None` when there is no GPU or nothing to measure.
-    ///
-    /// The picture is measured as it is delivered: the linear frame is
-    /// encoded with the viewer's SDR transfer in the working space's own
-    /// primaries, or with PQ in BT.2020 while HDR monitoring shows
-    /// display light; display bytes are binned as the codes they are. Each
-    /// is drawn at the physical size the UI shows it at.
-    fn render_scopes_on_gpu(
-        &mut self,
-        linear: Option<&[f32]>,
-        display: Option<DisplayScopeFrame<'_>>,
-        src_w: u32,
-        src_h: u32,
-        modes: &[u8],
-    ) -> Option<Vec<Option<(Vec<u8>, u32, u32)>>> {
-        use klipp_effects::gpu_scopes::{HistogramJob, ScopeInput, ScopeJob, ScopeTransfer, VectorscopeJob, WaveformJob, WaveformMode};
+    /// The scope modes a pass draws: every active one and the dock's,
+    /// waveform (0), parade (1), vectorscope (2) and histogram (3). The
+    /// CIE scope is in the active set but asks for sample data instead;
+    /// see `cie_samples_pending`.
+    fn scope_modes_to_draw(&self) -> Vec<u8> {
+        let mut modes: std::collections::BTreeSet<u8> = self.active_scope_modes.clone();
+        modes.insert(self.scope_render_mode);
+        modes.into_iter().filter(|m| *m <= 3).collect()
+    }
+
+    /// Paused, a frame is studied rather than watched: every pixel is
+    /// measured. The quality setting paces the scopes during playback.
+    fn scope_sample_step(&self) -> u32 {
+        if self.state == PlaybackState::Playing { self.scope_settings.quality.sample_step() as u32 } else { 1 }
+    }
+
+    /// One GPU scope job per mode, at the size the UI shows it.
+    fn scope_jobs(&self, modes: &[u8]) -> Vec<klipp_effects::gpu_scopes::ScopeJob> {
+        use klipp_effects::gpu_scopes::{HistogramJob, ScopeJob, VectorscopeJob, WaveformJob, WaveformMode};
         let settings = self.scope_settings;
         let glow = self.scope_bloom_enabled;
-        let ws = crate::video_decoder::working_colorspace();
-        let hdr = self.hdr_monitor.renders_hdr();
-        let sdr_transfer = self.sdr_transfer;
-        let input = match (display, linear) {
-            (Some(d), _) => ScopeInput::Display {
-                rgba: d.rgba,
-                width: src_w,
-                height: src_h,
-                luma: d.luma,
-            },
-            (None, Some(rgba)) if hdr => ScopeInput::Linear {
-                rgba,
-                width: src_w,
-                height: src_h,
-                matrix: klipp_color::primaries::working_to_bt2020(ws),
-                luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Bt2020Linear),
-                transfer: ScopeTransfer::Pq,
-                scale: klipp_color::hdr::HDR_REFERENCE_WHITE_NITS / 10_000.0,
-            },
-            (None, Some(rgba)) => ScopeInput::Linear {
-                rgba,
-                width: src_w,
-                height: src_h,
-                matrix: klipp_color::primaries::IDENTITY,
-                luma: klipp_color::primaries::luminance_weights(ws),
-                transfer: match sdr_transfer {
-                    klipp_core::SdrTransfer::Srgb => ScopeTransfer::Srgb,
-                    klipp_core::SdrTransfer::Bt1886 => ScopeTransfer::Bt1886,
-                },
-                scale: 1.0,
-            },
-            (None, None) => return None,
-        };
-        let jobs: Vec<ScopeJob> = modes
+        modes
             .iter()
             .map(|&mode| {
                 let (out_w, out_h) = crate::scopes::scope_out_size(&self.scope_sizes, mode);
@@ -8050,20 +8050,66 @@ impl PlaybackEngine {
                     out_h,
                 })
             })
-            .collect();
-        // Paused, a frame is studied rather than watched: every pixel is
-        // measured. The quality setting paces the scopes during playback.
-        let step = if self.state == PlaybackState::Playing { settings.quality.sample_step() as u32 } else { 1 };
+            .collect()
+    }
+
+    /// The waveform (mode 0), parade (1), vectorscope (2) and histogram
+    /// (3) from the GPU scope renderer, one result with its size per entry
+    /// of `modes`.
+    /// `None` when there is no GPU or nothing to measure.
+    ///
+    /// The picture is measured as it is delivered: the linear frame is
+    /// encoded with the viewer's SDR transfer in the working space's own
+    /// primaries, or with PQ in BT.2020 while HDR monitoring shows
+    /// display light; display bytes are binned as the codes they are. Each
+    /// is drawn at the physical size the UI shows it at.
+    fn render_scopes_on_gpu(
+        &mut self,
+        linear: Option<&[f32]>,
+        display: Option<DisplayScopeFrame<'_>>,
+        src_w: u32,
+        src_h: u32,
+        modes: &[u8],
+    ) -> Option<Vec<Option<(Vec<u8>, u32, u32)>>> {
+        use klipp_effects::gpu_scopes::{ScopeInput, ScopeJob, ScopeTransfer};
+        let ws = crate::video_decoder::working_colorspace();
+        let hdr = self.hdr_monitor.renders_hdr();
+        let sdr_transfer = self.sdr_transfer;
+        let input = match (display, linear) {
+            (Some(d), _) => ScopeInput::Display {
+                rgba: d.rgba,
+                width: src_w,
+                height: src_h,
+                luma: d.luma,
+            },
+            (None, Some(rgba)) if hdr => ScopeInput::Linear {
+                rgba,
+                width: src_w,
+                height: src_h,
+                matrix: klipp_color::primaries::working_to_bt2020(ws),
+                luma: klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Bt2020Linear),
+                transfer: ScopeTransfer::Pq,
+                scale: klipp_color::hdr::HDR_REFERENCE_WHITE_NITS / 10_000.0,
+            },
+            (None, Some(rgba)) => ScopeInput::Linear {
+                rgba,
+                width: src_w,
+                height: src_h,
+                matrix: klipp_color::primaries::IDENTITY,
+                luma: klipp_color::primaries::luminance_weights(ws),
+                transfer: match sdr_transfer {
+                    klipp_core::SdrTransfer::Srgb => ScopeTransfer::Srgb,
+                    klipp_core::SdrTransfer::Bt1886 => ScopeTransfer::Bt1886,
+                },
+                scale: 1.0,
+            },
+            (None, None) => return None,
+        };
+        let jobs = self.scope_jobs(modes);
+        let step = self.scope_sample_step();
         let low_pass = self.scope_low_pass_enabled;
         let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
-        let sizes: Vec<(u32, u32)> = jobs
-            .iter()
-            .map(|j| match j {
-                ScopeJob::Waveform(w) => (w.out_w, w.out_h),
-                ScopeJob::Vectorscope(v) => (v.out_w, v.out_h),
-                ScopeJob::Histogram(h) => (h.out_w, h.out_h),
-            })
-            .collect();
+        let sizes: Vec<(u32, u32)> = jobs.iter().map(ScopeJob::out_size).collect();
         gpu.scopes().set_low_pass(low_pass);
         let results = gpu.scopes().render(&input, step, &jobs);
         Some(results.into_iter().zip(sizes).map(|(r, (w, h))| r.map(|bytes| (bytes, w, h))).collect())

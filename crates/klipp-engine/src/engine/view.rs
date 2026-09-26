@@ -686,13 +686,14 @@ impl PlaybackEngine {
         // The GPU stack: the composite and the display encode on the
         // GPU, into the viewer's texture when the UI shares the device.
         // Bytes come back only for a reader: the UI's paused-frame
-        // consumers (reference frame, eyedroppers, histogram), a scope
-        // pass that is due, or a viewer without the texture. The stack
-        // declines what it cannot do yet and the full path below takes
-        // the frame.
+        // consumers (reference frame, eyedroppers, histogram) or a viewer
+        // without the texture. A scope pass that is due measures the
+        // frame where the encode left it instead of reading 33 MB back
+        // (#333). The stack declines what it cannot do yet and the full
+        // path below takes the frame.
         if !progress && inspect_is_plain(&inspect) && self.gpu_composite_allowed() {
             let target = self.gpu_viewer_target(w, h);
-            let want_bytes = target.is_none() || self.state != PlaybackState::Playing || self.should_render_scope();
+            let want_bytes = target.is_none() || self.state != PlaybackState::Playing;
             let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };
             if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h, out) {
                 match bytes {
@@ -705,6 +706,7 @@ impl PlaybackEngine {
                     }
                     None => {
                         self.note_composite_path("GPU stack, zero-copy");
+                        self.draw_due_scopes_from_gpu_display(w, h);
                         self.show_on_gpu(w, h, stats, t_frame);
                     }
                 }

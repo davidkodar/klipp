@@ -2056,6 +2056,30 @@ impl GpuEffectsPipeline {
         self.scopes.as_mut().expect("just made")
     }
 
+    /// The scopes measured from the frame the last display encode
+    /// ([`Self::encode_chain_to_display`]) left on the device, `width ×
+    /// height` packed RGBA8, without reading it back. `None` when there
+    /// is no such frame; call it before anything else encodes one.
+    pub fn render_scopes_from_display(
+        &mut self,
+        width: u32,
+        height: u32,
+        luma: [f32; 3],
+        step: u32,
+        jobs: &[crate::gpu_scopes::ScopeJob],
+    ) -> Option<Vec<Option<Vec<u8>>>> {
+        if self.is_device_lost() {
+            return None;
+        }
+        if self.scopes.is_none() {
+            self.scopes = Some(crate::gpu_scopes::ScopeRenderer::new(self.device.clone(), self.queue.clone()));
+        }
+        let buffer = self.bridge_u8_out_buf.as_ref()?;
+        let scopes = self.scopes.as_mut().expect("just made");
+        let input = crate::gpu_scopes::ScopeInput::DisplayOnGpu { buffer, width, height, luma };
+        Some(scopes.render(&input, step, jobs))
+    }
+
     pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
         self.flush();
         std::sync::Arc::clone(&self.device)
