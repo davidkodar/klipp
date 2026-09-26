@@ -548,23 +548,23 @@ pub fn apply_3d_lut_tetrahedral(rgba: &mut [u8], lut: &LutData, opacity: f32) {
 ///   1. If `working_space != lut.input_space`, convert each pixel
 ///      from the working space to the LUT's input space via the
 ///      primaries-conversion matrix.
-///   2. Trilinear-interpolate the LUT (input clamped to `[0, 1]` for
-///      the lookup; output is the LUT's natural range).
+///   2. Encode to sRGB, interpolate the LUT (tetrahedral or trilinear),
+///      decode the result from sRGB — the GPU LUT shader's order, and
+///      the encoding a `.cube` look is built for. Input and output are
+///      clamped to `[0, 1]` around the lookup, as on the GPU.
 ///   3. If `working_space != lut.output_space`, convert the LUT
 ///      output back into the working space.
 ///   4. Mix with the original input by `opacity`, in the working
 ///      space.
 ///
 /// `rgba_linear` is `&mut [f32]` RGBA in linear-light values, with
-/// alpha left untouched. Values outside `[0, 1]` are tolerated on the
-/// way in (clamped only for the LUT lookup itself); the post-LUT
-/// signal can re-overshoot if the LUT is bake-graded into headroom.
+/// alpha left untouched.
 ///
 /// For untagged LUTs (the common case — both `input_space` and
 /// `output_space` default to `Rec709Linear` after parsing) and a
-/// `Rec709Linear` working space, this reduces to the trilinear LUT
-/// apply you already had — no matmul cost. The bracketing kicks in
-/// only when one of the three colorspaces differs.
+/// `Rec709Linear` working space, the primaries matrices are skipped.
+/// The bracketing kicks in only when one of the three colorspaces
+/// differs; the GPU path does not bracket yet.
 pub fn apply_3d_lut_linear_ws(
     rgba_linear: &mut [f32],
     lut: &LutData,
@@ -610,11 +610,17 @@ pub fn apply_3d_lut_linear_ws_with_overrides(
     for pixel in rgba_linear.chunks_exact_mut(4) {
         let original = [pixel[0], pixel[1], pixel[2]];
 
-        let lut_in = if let Some(m) = pre {
+        let lut_in_linear = if let Some(m) = pre {
             crate::primaries::matrix3_mul_vec(m, original)
         } else {
             original
         };
+        // Looked up on the sRGB encoding, as the GPU LUT shader does and
+        // as a `.cube` look is built: it expects display-encoded input.
+        // Indexing linear values put everything below mid-grey into the
+        // first cells of a 13³ LUT, so the look read its curve in the
+        // wrong place and banded (#414).
+        let lut_in = lut_in_linear.map(|c| crate::transfer::linear_to_srgb(c.clamp(0.0, 1.0)));
 
         let r_idx = (lut_in[0] * n1).clamp(0.0, n1);
         let g_idx = (lut_in[1] * n1).clamp(0.0, n1);
@@ -671,6 +677,7 @@ pub fn apply_3d_lut_linear_ws_with_overrides(
             };
         }
 
+        let lut_out = lut_out.map(|c| crate::transfer::srgb_to_linear(c.clamp(0.0, 1.0)));
         let post_rgb = if let Some(m) = post {
             crate::primaries::matrix3_mul_vec(m, lut_out)
         } else {
@@ -1061,9 +1068,12 @@ mod tests {
         };
         let mut pixels: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0];
         apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear, false);
-        assert!(approx_eq(pixels[0], 0.5, 1e-3), "got {}", pixels[0]);
-        assert!(approx_eq(pixels[1], 0.5, 1e-3));
-        assert!(approx_eq(pixels[2], 0.5, 1e-3));
+        // The LUT's 0.5 is an sRGB-encoded value, as a `.cube` look's
+        // output is: linear 0.214, what the GPU shader gives.
+        let want = crate::transfer::srgb_to_linear(0.5);
+        assert!(approx_eq(pixels[0], want, 1e-3), "got {} want {want}", pixels[0]);
+        assert!(approx_eq(pixels[1], want, 1e-3));
+        assert!(approx_eq(pixels[2], want, 1e-3));
         assert_eq!(pixels[3], 1.0);
     }
 
