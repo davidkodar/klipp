@@ -16,7 +16,7 @@ TARGET="$HOOKS/pre-push"
 MARKER='scripts/pre-push.sh'
 # Bumped whenever the block below changes, so a re-run replaces an older
 # block instead of reporting it installed.
-VERSION='klipp-gate-block v4'
+VERSION='klipp-gate-block v5'
 BLOCK_START='# --- Klipp test gate (scripts/pre-push.sh) ---'
 
 mkdir -p "$HOOKS"
@@ -62,7 +62,7 @@ cat >> "$NEW" <<'HOOK'
 # `$?` here is still git-lfs's status: comments and blank lines do not
 # change it. Preserved so an LFS refusal above is not overridden by the
 # tests passing.
-# klipp-gate-block v4
+# klipp-gate-block v5
 klipp_lfs_status=$?
 klipp_gate="$(git rev-parse --show-toplevel)/scripts/pre-push.sh"
 if [ ! -x "$klipp_gate" ]; then
@@ -81,26 +81,33 @@ klipp_run_gate() {
         "$klipp_gate"
         return
     fi
-    # A background job of a shell without job control is not a group
-    # leader, so setsid makes the new session in place: its pid is the
-    # gate's, and the group's.
+    # Without job control a background job is not a group leader, so
+    # setsid makes the new session in place and $! is the gate's pid and
+    # group; with it on, setsid would fork and $! be a wrapper whose exit
+    # status says nothing about the gate's.
+    set +m
     # And a background job's stdin is /dev/null, so git's list of refs is
     # handed over on another descriptor first.
     exec 3<&0
     setsid "$klipp_gate" <&3 3<&- &
     klipp_gate_pid=$!
     exec 3<&-
-    # Git gone shows as this hook being handed to another parent: a dead
-    # git lingers as a zombie until its own parent reaps it, and a zombie
-    # still answers kill -0.
-    klipp_hook=$$
-    ( trap '' INT
-      while kill -0 "$klipp_gate_pid" 2>/dev/null; do
-          read -r _ _ _ klipp_parent _ < "/proc/$klipp_hook/stat" 2>/dev/null || klipp_parent=$klipp_git
-          [ "$klipp_parent" = "$klipp_git" ] || break
-          sleep 1
-      done
-      kill -TERM -- "-$klipp_gate_pid" 2>/dev/null ) &
+    # The watcher is a process of its own, in a session of its own: a
+    # forked subshell would keep this shell's saved copy of the lock's fd
+    # 9, and die with the push's group when that is killed whole. Git
+    # gone shows as this hook being handed to another parent — a dead git
+    # lingers as a zombie until its own parent reaps it, and a zombie
+    # still answers kill -0 — and this hook gone as its /proc entry going,
+    # or showing it a zombie.
+    setsid sh -c '
+        trap "" INT
+        while kill -0 "$3" 2>/dev/null; do
+            read -r _ _ state parent _ < "/proc/$1/stat" 2>/dev/null || break
+            [ "$state" != Z ] && [ "$parent" = "$2" ] || break
+            sleep 1
+        done
+        kill -0 "$3" 2>/dev/null && kill -TERM -- "-$3" 2>/dev/null
+    ' klipp-gate-watcher "$$" "$klipp_git" "$klipp_gate_pid" </dev/null 9>&- &
     klipp_watch_pid=$!
     wait "$klipp_gate_pid"
     klipp_status=$?

@@ -73,7 +73,7 @@ class InstallHooksTests(unittest.TestCase):
         text = self.hook.read_text()
         self.assertTrue(text.startswith(LFS_HOOK))
         self.assertEqual(text.count("Klipp test gate"), 1)
-        self.assertIn("klipp-gate-block v4", text)
+        self.assertIn("klipp-gate-block v5", text)
         self.assertEqual((self.root / ".git/hooks/pre-push.klipp-backup").read_text(), LFS_HOOK + V1_BLOCK)
 
     def test_a_stale_gate_waits_for_the_lock_and_names_itself(self):
@@ -238,6 +238,58 @@ class InstallHooksTests(unittest.TestCase):
                                 input="refs/heads/x abc refs/heads/x def\n", capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "stdin").read_text(), "refs/heads/x abc refs/heads/x def\n")
+
+    def test_a_killed_hook_takes_its_gate_with_it(self):
+        self.install()
+        self.gate_that_lingers()
+        hook = subprocess.Popen(["sh", str(self.hook)], cwd=self.root, env=self.env)
+        self.addCleanup(hook.wait)
+        child = self.wait_for_child()
+        self.addCleanup(lambda: self.alive(child) and os.kill(child, 9))
+        hook.kill()
+        for _ in range(100):
+            if not self.alive(child):
+                break
+            time.sleep(0.05)
+        self.assertFalse(self.alive(child), "the gate outlived its killed hook")
+
+    def test_the_watcher_does_not_hold_the_lock(self):
+        # A stale gate: the hook holds the queue's lock on fd 9 while it
+        # runs. The watcher must not keep a copy, or a killed hook would
+        # leave the queue locked.
+        self.install()
+        self.gate_that_lingers()
+        hook = subprocess.Popen(["sh", str(self.hook)], cwd=self.root, env=self.env)
+        self.addCleanup(hook.wait)
+        self.addCleanup(hook.kill)
+        child = self.wait_for_child()
+        self.addCleanup(lambda: self.alive(child) and os.kill(child, 9))
+        lock = str(self.root / ".git/klipp-pre-push.lock")
+        watchers = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                cmd = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+            except OSError:
+                continue
+            if b"klipp-gate-watcher" in cmd and str(hook.pid).encode() in cmd:
+                watchers.append(pid)
+        self.assertEqual(len(watchers), 1, watchers)
+        held = []
+        for fd in os.listdir(f"/proc/{watchers[0]}/fd"):
+            try:
+                if os.readlink(f"/proc/{watchers[0]}/fd/{fd}") == lock:
+                    held.append(fd)
+            except OSError:
+                pass
+        self.assertEqual(held, [], "the watcher holds the queue's lock")
+
+    def test_a_refused_gate_refuses_with_job_control_on(self):
+        self.install()
+        self.gate("exit 1")
+        self.env["SHELLOPTS"] = "monitor"
+        self.assertEqual(self.run_hook().returncode, 1)
 
 if __name__ == "__main__":
     unittest.main()
