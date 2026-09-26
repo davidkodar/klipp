@@ -7128,6 +7128,37 @@ impl KlippApp {
         self.sync_sequence_to_engine();
     }
 
+    /// A clip's built-in effects, their enabled flags, speed and length,
+    /// before an edit that may change them.
+    fn clip_effects_state(&self, clip_id: klipp_core::ClipId) -> Option<ClipEffectsState> {
+        self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .map(ClipEffectsState::of)
+    }
+
+    /// Record an effect added or removed as one undo step: the effects
+    /// list, and the clip's speed and length when a speed ramp moved them.
+    fn record_effects_change(&mut self, clip_id: klipp_core::ClipId, before: Option<ClipEffectsState>) {
+        let (Some(before), Some(after)) = (before, self.clip_effects_state(clip_id)) else { return };
+        let edits = effects_change_edits(clip_id, &before, &after);
+        if edits.is_empty() {
+            return;
+        }
+        self.state.dirty = true;
+        let history = self.state.active_history_mut();
+        let owns_batch = edits.len() > 1 && !history.is_batching();
+        if owns_batch {
+            history.begin_batch();
+        }
+        for e in edits {
+            self.state.push_history(e);
+        }
+        if owns_batch {
+            self.state.active_history_mut().end_batch();
+        }
+    }
+
     /// Cut a clip, and its linked partner with it, as one undo step.
     fn blade_clip_at(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
         // The clip and its partner are cut as two edits, one per track;
@@ -11372,10 +11403,16 @@ impl KlippApp {
 
             // Built-in effects
             AppCommand::AddBuiltinEffect { clip_id, ref effect } => {
+                let before = self.clip_effects_state(*clip_id);
                 let mut is_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         clip.builtin_effects.push(effect.clone());
+                        // Its enabled flag with it, where the clip keeps
+                        // flags for the effects before it.
+                        if clip.builtin_effects_enabled.len() + 1 == clip.builtin_effects.len() {
+                            clip.builtin_effects_enabled.push(true);
+                        }
                         // SpeedRamp: apply speed change on add
                         if let klipp_effects::BuiltinEffect::SpeedRamp { speed, freeze, .. } = effect {
                             is_speed_ramp = true;
@@ -11389,6 +11426,7 @@ impl KlippApp {
                         break;
                     }
                 }
+                self.record_effects_change(*clip_id, before);
                 self.sync_sequence_to_engine();
                 if is_speed_ramp {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -11398,6 +11436,7 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveBuiltinEffect { clip_id, index } => {
+                let before = self.clip_effects_state(*clip_id);
                 let mut was_speed_ramp = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -11407,6 +11446,12 @@ impl KlippApp {
                                 was_speed_ramp = true;
                             }
                             clip.builtin_effects.remove(*index);
+                            // The enabled flags run parallel to the
+                            // effects: leaving this one in place gave
+                            // every effect after it its neighbour's flag.
+                            if *index < clip.builtin_effects_enabled.len() {
+                                clip.builtin_effects_enabled.remove(*index);
+                            }
                         }
                         // Reset clip speed if SpeedRamp was removed and no other SpeedRamp remains
                         if was_speed_ramp && !clip.builtin_effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::SpeedRamp { .. })) {
@@ -11437,6 +11482,7 @@ impl KlippApp {
                         }
                     }
                 }
+                self.record_effects_change(*clip_id, before);
                 self.sync_sequence_to_engine();
                 if was_speed_ramp {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(self.state.playhead));
@@ -11546,6 +11592,16 @@ impl KlippApp {
                         _ => None,
                     })
                     .unwrap_or_else(|| new_effect.clone());
+                // The gizmo's first drag adds the Transform and then moves
+                // it. When the add is the last edit on the stack, the move
+                // is folded into it, so one undo takes both back.
+                let folded = self.state.active_history_mut().merge_into_last(|last| {
+                    fold_drag_into_add(last, *clip_id, *effect_index, &old_effect, new_effect)
+                });
+                if folded {
+                    self.state.active_history_mut().abandon_pending_drag();
+                    return true;
+                }
                 self.state.active_history_mut().end_drag(HistoryEntry {
                     command: EditCommand::EditBuiltinEffect {
                         clip_id: *clip_id,
@@ -40539,6 +40595,134 @@ mod retarget_drop_tests {
     fn a_duplicate_with_no_destination_places_nothing() {
         let mut pending = std::collections::HashMap::new();
         assert!(retarget_pending_drop(&mut pending, MediaId::new(), MediaId::new()).is_none());
+    }
+}
+
+/// A clip's built-in effects as an undo step sees them.
+#[derive(Debug, Clone, PartialEq)]
+struct ClipEffectsState {
+    effects: Vec<klipp_effects::BuiltinEffect>,
+    enabled: Vec<bool>,
+    speed: f64,
+    timeline_out: klipp_core::RationalTime,
+}
+
+impl ClipEffectsState {
+    fn of(clip: &klipp_timeline::Clip) -> Self {
+        Self {
+            effects: clip.builtin_effects.clone(),
+            enabled: clip.builtin_effects_enabled.clone(),
+            speed: clip.speed,
+            timeline_out: clip.timeline_out,
+        }
+    }
+}
+
+/// The history edits that take a clip from `before` to `after`: the
+/// effects list when it changed, and the speed and length when a speed
+/// ramp moved them. Adding or removing a built-in effect recorded
+/// nothing, so it could not be undone (#391).
+fn effects_change_edits(clip_id: klipp_core::ClipId, before: &ClipEffectsState, after: &ClipEffectsState) -> Vec<EditCommand> {
+    let mut edits = Vec::new();
+    if before.effects != after.effects || before.enabled != after.enabled {
+        edits.push(EditCommand::SetBuiltinEffects {
+            clip_id,
+            old_effects: before.effects.clone(),
+            old_enabled: before.enabled.clone(),
+            new_effects: after.effects.clone(),
+            new_enabled: after.enabled.clone(),
+        });
+    }
+    if before.speed != after.speed || before.timeline_out != after.timeline_out {
+        edits.push(EditCommand::SetClipSpeed {
+            clip_id,
+            old_speed: before.speed,
+            new_speed: after.speed,
+            old_timeline_out: before.timeline_out,
+            new_timeline_out: after.timeline_out,
+        });
+    }
+    edits
+}
+
+/// Fold a finished drag of effect `index` into the history's last edit
+/// when that edit is the add that made the effect, with the effect as
+/// the drag found it: the add then records the effect as the drag left
+/// it, and one undo takes both back.
+fn fold_drag_into_add(
+    last: &mut EditCommand,
+    clip_id: klipp_core::ClipId,
+    index: usize,
+    dragged_from: &klipp_effects::BuiltinEffect,
+    dragged_to: &klipp_effects::BuiltinEffect,
+) -> bool {
+    match last {
+        EditCommand::SetBuiltinEffects { clip_id: c, old_effects, new_effects, .. }
+            if *c == clip_id
+                && new_effects.len() == old_effects.len() + 1
+                && index + 1 == new_effects.len()
+                && new_effects[index] == *dragged_from =>
+        {
+            new_effects[index] = dragged_to.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod effects_undo_tests {
+    use super::*;
+
+    fn crop(left: f32) -> klipp_effects::BuiltinEffect {
+        klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 }
+    }
+
+    fn state(effects: Vec<klipp_effects::BuiltinEffect>, speed: f64) -> ClipEffectsState {
+        let enabled = vec![true; effects.len()];
+        ClipEffectsState { effects, enabled, speed, timeline_out: klipp_core::RationalTime { value: 300, rate: 30 } }
+    }
+
+    #[test]
+    fn adding_an_effect_is_one_undoable_edit() {
+        let id = klipp_core::ClipId::new();
+        let edits = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.1)], 1.0));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].label(), "Add Effect");
+    }
+
+    #[test]
+    fn removing_one_says_so_and_nothing_changed_records_nothing() {
+        let id = klipp_core::ClipId::new();
+        let edits = effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![], 1.0));
+        assert_eq!(edits[0].label(), "Remove Effect");
+        assert!(effects_change_edits(id, &state(vec![crop(0.1)], 1.0), &state(vec![crop(0.1)], 1.0)).is_empty());
+    }
+
+    #[test]
+    fn a_speed_ramp_brings_its_speed_with_it() {
+        let id = klipp_core::ClipId::new();
+        let mut after = state(vec![crop(0.1)], 2.0);
+        after.timeline_out = klipp_core::RationalTime { value: 150, rate: 30 };
+        let edits = effects_change_edits(id, &state(vec![], 1.0), &after);
+        assert_eq!(edits.len(), 2);
+        assert!(matches!(edits[1], EditCommand::SetClipSpeed { new_speed, .. } if new_speed == 2.0));
+    }
+
+    /// The gizmo's first drag: the add of an identity effect, then a
+    /// drag of it, becomes one add of the dragged effect.
+    #[test]
+    fn a_drag_of_the_effect_just_added_folds_into_the_add() {
+        let id = klipp_core::ClipId::new();
+        let mut last = effects_change_edits(id, &state(vec![], 1.0), &state(vec![crop(0.0)], 1.0)).remove(0);
+        assert!(fold_drag_into_add(&mut last, id, 0, &crop(0.0), &crop(0.3)));
+        let EditCommand::SetBuiltinEffects { new_effects, old_effects, .. } = &last else { panic!() };
+        assert!(old_effects.is_empty());
+        assert_eq!(new_effects, &vec![crop(0.3)]);
+        // Not another clip's, not another effect, not one that was changed since.
+        assert!(!fold_drag_into_add(&mut last.clone(), klipp_core::ClipId::new(), 0, &crop(0.3), &crop(0.5)));
+        assert!(!fold_drag_into_add(&mut last.clone(), id, 1, &crop(0.3), &crop(0.5)));
+        assert!(!fold_drag_into_add(&mut last.clone(), id, 0, &crop(0.9), &crop(0.5)));
     }
 }
 
