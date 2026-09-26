@@ -1423,6 +1423,92 @@ fn shot_span(ctx: &ControlContext, clip_id: &str) -> Option<(f64, f64)> {
 /// A clip read the way a colourist checks a shot: three frames across
 /// it, not one. One frame lies — a flash, a passer-by, a cloud — and
 /// the drift between them is itself a finding.
+/// A clip's detected shots in timeline seconds: the clip cut at the shot
+/// boundaries its media's analysis found. Slivers under half a second
+/// are dropped; when there are more than `max`, the longest `max` are
+/// kept, longest first. A clip with no analysis is one span, itself.
+fn clip_shot_spans(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool, max: usize) -> Vec<(f64, f64)> {
+    let boundaries = clip
+        .media_id()
+        .and_then(|m| pool.get(&m))
+        .and_then(|item| klipp_analysis::report::MediaAnalysis::load(&item.path).shots)
+        .map(|s| s.boundaries)
+        .unwrap_or_default();
+    shot_spans(
+        clip.timeline_in.to_secs_f64(),
+        clip.timeline_out.to_secs_f64(),
+        clip.source_in.to_secs_f64(),
+        clip.speed.max(0.001),
+        &boundaries,
+        max,
+    )
+}
+
+/// [`clip_shot_spans`] on numbers: the timeline span `from..to` of a
+/// clip starting `source_in` into its media at `speed`, cut at the
+/// media's shot `boundaries` (source seconds).
+fn shot_spans(from: f64, to: f64, source_in: f64, speed: f64, boundaries: &[f64], max: usize) -> Vec<(f64, f64)> {
+    let mut cuts: Vec<f64> = boundaries
+        .iter()
+        .map(|b| from + (b - source_in) / speed)
+        .filter(|t| *t > from && *t < to)
+        .collect();
+    cuts.sort_by(|a, b| a.total_cmp(b));
+    let mut edges = vec![from];
+    edges.extend(cuts);
+    edges.push(to);
+    let mut spans: Vec<(f64, f64)> = edges.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b - a >= 0.5).collect();
+    if spans.is_empty() {
+        spans.push((from, to));
+    }
+    spans.sort_by(|a, b| (b.1 - b.0).total_cmp(&(a.1 - a.0)));
+    spans.truncate(max.max(1));
+    spans
+}
+
+#[cfg(test)]
+mod shot_span_tests {
+    use super::shot_spans;
+
+    /// #329: a clip with a cut in it is two shots, and the longest is
+    /// read first — not the clip's middle, which here is past the cut.
+    #[test]
+    fn a_clip_with_a_cut_is_read_inside_its_longest_shot() {
+        // Clip at 23.6..84.1 s of the timeline, from the media's start; the
+        // media cuts at 44 s.
+        let spans = shot_spans(23.6, 84.1, 0.0, 1.0, &[44.0], 6);
+        assert_eq!(spans.len(), 2);
+        let (a, b) = spans[0];
+        assert!((a - 23.6).abs() < 1e-9 && (b - 67.6).abs() < 1e-9, "the longest shot first: {spans:?}");
+        let mid = (a + b) / 2.0;
+        assert!(mid < 67.6, "its middle is inside the first shot, not past the cut");
+    }
+
+    #[test]
+    fn boundaries_outside_the_clip_and_slivers_are_ignored() {
+        // Trimmed to source 10..20 s; cuts at 5 (before), 10.2 (a sliver), 15 and 30 (after).
+        let spans = shot_spans(0.0, 10.0, 10.0, 1.0, &[5.0, 10.2, 15.0, 30.0], 6);
+        let want = [(5.0, 10.0), (0.2, 5.0)];
+        assert_eq!(spans.len(), want.len(), "{spans:?}");
+        for ((a, b), (x, y)) in spans.iter().zip(want) {
+            assert!((a - x).abs() < 1e-9 && (b - y).abs() < 1e-9, "{spans:?}");
+        }
+    }
+
+    #[test]
+    fn many_shots_keep_the_longest_and_none_is_the_whole_clip() {
+        let cuts: Vec<f64> = (1..30).map(|i| i as f64 * 10.0 + (i % 3) as f64).collect();
+        assert_eq!(shot_spans(0.0, 300.0, 0.0, 1.0, &cuts, 6).len(), 6);
+        assert_eq!(shot_spans(5.0, 9.0, 0.0, 1.0, &[], 6), vec![(5.0, 9.0)]);
+    }
+
+    #[test]
+    fn a_sped_up_clip_maps_its_cuts_onto_the_timeline() {
+        // Twice speed from source 0: the cut at source 10 s is 5 s in.
+        assert_eq!(shot_spans(0.0, 10.0, 0.0, 2.0, &[10.0], 6), vec![(0.0, 5.0), (5.0, 10.0)]);
+    }
+}
+
 fn measure_clip(ctx: &ControlContext, from: f64, to: f64, timeout_ms: Option<u64>) -> Result<(Vec<(f64, klipp_color::measure::FrameMeasure)>, Option<String>), String> {
     let span = (to - from).max(0.05);
     let times: Vec<f64> = if span < 0.6 {
@@ -3737,7 +3823,7 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::MatchGrade { clip_id: c, reference_clip_id: r } => {
+        ControlCommand::MatchGrade { clip_id: c, reference_clip_id: r, secs, reference_secs } => {
             if in_batch {
                 return Err("match_grade applies a grade; send it on its own, not in a batch".into());
             }
@@ -3755,9 +3841,23 @@ fn handle(
                         return Err(format!("the {which} clip is not a picture clip; match the grade of two shots"));
                     }
                 }
-                let mid = |cl: &klipp_timeline::Clip| (cl.timeline_in.to_secs_f64() + cl.timeline_out.to_secs_f64()) / 2.0;
+                // The frame to read: the one asked for, inside the clip;
+                // else the middle of the clip's longest detected shot. The
+                // clip's own middle could fall past a cut inside it, and
+                // then the "reference" was a different shot (#329).
+                let at = |cl: &klipp_timeline::Clip, asked: Option<f64>, which: &str| -> Result<f64, String> {
+                    let (a, b) = (cl.timeline_in.to_secs_f64(), cl.timeline_out.to_secs_f64());
+                    match asked {
+                        Some(t) if t >= a && t < b => Ok(t),
+                        Some(t) => Err(format!("{which} secs {t:.2} is outside the clip ({a:.2}–{b:.2} s)")),
+                        None => {
+                            let spans = clip_shot_spans(cl, &pool, 1);
+                            Ok(spans.first().map(|(x, y)| (x + y) / 2.0).unwrap_or((a + b) / 2.0))
+                        }
+                    }
+                };
                 let name = pool.get(&tc.media_id().unwrap_or(klipp_core::MediaId(uuid::Uuid::nil()))).map(|m| m.filename.clone()).unwrap_or_else(|| "the clip".into());
-                (mid(&tc), mid(&rc), name)
+                (at(&tc, secs, "the target's")?, at(&rc, reference_secs, "the reference's")?, name)
             };
             let (td, tw, th) = grab_frame_rgba(ctx, t_mid, Some(4000))?;
             let target_stats = frame_stats(&td, tw, th, t_mid);
@@ -4351,15 +4451,17 @@ reference:   {}",
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
-                // One time per picture clip on the top video track: its
-                // middle, where the grade is fairly judged.
+                // Each detected shot of each picture clip on the top video
+                // track, read on its own — a clip holding a cut, or a long
+                // walk through changing light, is several shots, and one
+                // median across them all judged none of them (#329). At
+                // most six per clip (the longest) and 24 in all.
                 let times: Vec<(f64, (f64, f64))> = if color {
                     seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
                         .map(|t| t.clips.iter().filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
-                            .map(|c| {
-                                let (a, b) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
-                                ((a + b) / 2.0, (a, b))
-                            }).take(24).collect())
+                            .flat_map(|c| clip_shot_spans(c, &pool, 6))
+                            .map(|(a, b)| ((a + b) / 2.0, (a, b)))
+                            .take(24).collect())
                         .unwrap_or_default()
                 } else {
                     Vec::new()

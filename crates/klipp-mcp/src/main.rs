@@ -587,7 +587,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_style_profile" => json!({ "method": "style_profile", "media_id": arg_str(args, "media_id")? }),
-        "klipp_match_grade" => json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? }),
+        "klipp_match_grade" => {
+            let mut v = json!({ "method": "match_grade", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? });
+            for k in ["secs", "reference_secs"] {
+                if let Some(x) = args.get(k).and_then(|v| v.as_f64()) { v[k] = json!(x); }
+            }
+            v
+        }
         "klipp_align_audio" => {
             let mut v = json!({ "method": "align_audio", "clip_id": arg_str(args, "clip_id")?, "reference_clip_id": arg_str(args, "reference_clip_id")? });
             if let Some(x) = args.get("max_offset_secs").and_then(|v| v.as_f64()) { v["max_offset_secs"] = json!(x); }
@@ -1634,10 +1640,13 @@ fn tool_definitions() -> Vec<Value> {
              "Match one shot's grade to another's. It reads a frame of each clip through the \
               scopes and sets the target's exposure, lift, gain, temperature and tint to bring \
               its black, mid and white points and its colour balance toward the reference — the \
-              continuity grade, so shots that sit next to each other look like one scene. A \
-              first pass, applied as one undo step; verify with klipp_check color or \
-              klipp_frame_stats and refine with grade. Both must be picture clips.",
-             json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" } }),
+              continuity grade, so shots that sit next to each other look like one scene. The \
+              frames are secs and reference_secs when given (timeline seconds, inside each \
+              clip), else the middle of each clip's longest detected shot — so a clip with a \
+              cut in it is read inside one shot, not across the cut. A first pass, applied as \
+              one undo step; verify with klipp_check color or klipp_frame_stats and refine \
+              with grade. Both must be picture clips.",
+             json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" }, "secs": { "type": "number", "description": "the target frame to read, timeline seconds inside the clip" }, "reference_secs": { "type": "number", "description": "the reference frame to read, timeline seconds inside it" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_align_audio",
              "Line a clip's sound up with another's — dual-system sound, a separate recorder \
