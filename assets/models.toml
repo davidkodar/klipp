@@ -286,3 +286,17 @@ sources = [
 kind = "face_detector"
 runtime = "ort"
 prompts = ""
+
+[[model]]
+id = "deepfilternet3"
+display_name = "DeepFilterNet3 — voice isolation"
+size_bytes = 7983136
+sha256 = "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
+license = "MIT OR Apache-2.0"
+attribution = "Hendrik Schröter et al., DeepFilterNet (Rikorose/DeepFilterNet v0.5.6)"
+sources = [
+    { url = "https://github.com/Rikorose/DeepFilterNet/raw/v0.5.6/models/DeepFilterNet3_onnx.tar.gz" },
+]
+kind = "speech_enhancer"
+runtime = "tract"
+prompts = ""

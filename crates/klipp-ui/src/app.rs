@@ -1144,6 +1144,13 @@ impl KlippApp {
         klipp_analysis::set_subject_detection_enabled(app.prefs.ai.subject_detection);
         klipp_analysis::set_screen_text_enabled(app.prefs.ai.screen_text);
         klipp_analysis::transcript::set_transcribe_on_cpu(app.prefs.ai.transcribe_on_cpu);
+        // Unpack the Voice Isolation model off the audio path, if the
+        // user has downloaded it.
+        if klipp_audio::dsp::voice_isolation::model_installed() {
+            let _ = std::thread::Builder::new()
+                .name("klipp-voice-isolation-load".into())
+                .spawn(klipp_audio::dsp::voice_isolation::prewarm);
+        }
         let _ = app.cmd_tx.send(AppCommand::SetPanLaw(app.prefs.audio.pan_law));
         klipp_engine::pcm_reader::set_anti_click_fade_ms(app.prefs.advanced.anti_click_fade_ms);
         klipp_engine::video_decoder::set_hardware_decode(app.prefs.system.hardware_decode);
@@ -6927,6 +6934,9 @@ impl KlippApp {
                 self.state.toast.show(format!(
                     "Downloaded {entry_label} ({})", path.display(),
                 ));
+                // Voice Isolation effects already in a chain pass audio
+                // through until their model exists; let them load it.
+                klipp_audio::dsp::voice_isolation::notify_model_installed();
                 self.state.model_download = ModelDownloadState::Idle;
             }
         }

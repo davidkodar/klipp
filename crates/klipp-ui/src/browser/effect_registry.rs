@@ -685,6 +685,14 @@ impl EffectRegistry {
                 grouping: "Restoration".into(),
             },
             EffectEntry {
+                name: "Voice Isolation".into(),
+                category: EffectCategory::AudioRestoration,
+                source: EffectSource::Audio("voice_isolation".into()),
+                source_label: "Built-in",
+                description: "Separate speech from wind, traffic and room noise (AI)".into(),
+                grouping: "Restoration".into(),
+            },
+            EffectEntry {
                 name: "De-Esser".into(),
                 category: EffectCategory::AudioRestoration,
                 source: EffectSource::Audio("deesser".into()),

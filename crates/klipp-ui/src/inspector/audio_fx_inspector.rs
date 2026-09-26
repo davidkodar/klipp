@@ -743,7 +743,9 @@ pub fn show_content(
                     {
                         let descs = effect.param_descriptors();
                         for desc in descs {
-                                                        let static_value = inst.params.iter()
+                            // Voice Isolation's mode is a two-way switch, drawn below.
+                            if inst.effect_type == "voice_isolation" && desc.name == "mode" { continue; }
+                            let static_value = inst.params.iter()
                                 .find(|(k, _)| k == desc.name)
                                 .map(|(_, v)| *v)
                                 .unwrap_or(desc.default);
@@ -809,6 +811,9 @@ pub fn show_content(
 
                     if inst.effect_type == "denoiser" {
                         show_denoiser_controls(ui, theme, clip_id, idx, inst, clip_time_secs, cmds);
+                    }
+                    if inst.effect_type == "voice_isolation" {
+                        show_voice_isolation_controls(ui, theme, clip_id, idx, inst, cmds);
                     }
 
                     ui.add_space(4.0);
@@ -1209,6 +1214,81 @@ fn render_clap_params(
 // (state lookup, kf evaluation, has-kfs check) so the diamond's
 // behavior is correct even when the visual smoke test isn't run.
 // ═══════════════════════════════════════════════════════════════════
+/// Voice Isolation presets: (name, hint, Reduction dB).
+const VOICE_ISOLATION_PRESETS: &[(&str, &str, f32)] = &[
+    ("Natural", "Lowers the background by 12 dB: the voice leads, the place is still there", 12.0),
+    ("Clean", "Lowers the background by 24 dB: broadcast-clean dialogue with a hint of room", 24.0),
+    ("Full", "Removes all it can: studio-dry voice, for rescue jobs and voice-over", klipp_audio::dsp::voice_isolation::FULL_REDUCTION_DB),
+];
+
+fn show_voice_isolation_controls(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    idx: usize,
+    inst: &AudioEffectInstance,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_audio::dsp::voice_isolation as vi;
+    let param = |name: &str, default: f32| {
+        inst.params.iter().find(|(k, _)| k == name).map(|(_, v)| *v).unwrap_or(default)
+    };
+    let reduction = param("reduction", 30.0);
+    let remove_voice = param("mode", 0.0) > 0.5;
+
+    ui.add_space(4.0);
+    if !vi::model_installed() {
+        ui.label(
+            egui::RichText::new("Needs the DeepFilterNet3 model (8 MB). Klipp downloads it only when you ask; until then this effect leaves the sound as it is.")
+                .size(10.0)
+                .color(egui::Color32::from_rgb(200, 140, 60)),
+        );
+        if ui.button("Download model\u{2026}").clicked() {
+            cmds.push(AppCommand::OpenModelDownloadDialog { model_id: vi::MODEL_ID.to_string() });
+        }
+        ui.add_space(4.0);
+    }
+
+    ui.label(egui::RichText::new("MODE").size(10.0).strong().color(theme.text_dim));
+    ui.horizontal(|ui| {
+        for (label, hint, value) in [
+            ("Isolate voice", "Keep the speech, lower everything else", 0.0),
+            ("Remove voice", "Keep everything else, lower the speech", 1.0),
+        ] {
+            let active = (value > 0.5) == remove_voice;
+            if ui.selectable_label(active, label).on_hover_text(hint).clicked() && !active {
+                cmds.push(AppCommand::SetAudioEffectParams {
+                    clip_id,
+                    effect_index: idx,
+                    params: vec![("mode".into(), value)],
+                });
+            }
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("PRESETS").size(10.0).strong().color(theme.text_dim));
+    ui.horizontal_wrapped(|ui| {
+        for (name, hint, db) in VOICE_ISOLATION_PRESETS {
+            let active = (reduction - db).abs() < 0.05;
+            if ui.selectable_label(active, *name).on_hover_text(*hint).clicked() {
+                cmds.push(AppCommand::SetAudioEffectParams {
+                    clip_id,
+                    effect_index: idx,
+                    params: vec![("reduction".into(), *db)],
+                });
+            }
+        }
+    });
+    let what = if remove_voice { "speech" } else { "background" };
+    let amount = if reduction >= vi::FULL_REDUCTION_DB {
+        format!("The {what} is removed as far as the model can.")
+    } else {
+        format!("The {what} is lowered by up to {reduction:.0} dB.")
+    };
+    ui.label(egui::RichText::new(format!("{amount} Adds 40 ms of delay, compensated on export.")).size(10.0).color(theme.text_secondary));
+}
+
 /// Broadband Denoiser presets: (name, hint, Reduction, Noise Floor gain,
 /// Wind Reduction, Learn Window seconds). The floor is the deepest a
 /// noise-only bin is pulled down (0.12 ≈ -18 dB), which is what keeps

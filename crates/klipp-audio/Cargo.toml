@@ -35,6 +35,12 @@ clack-extensions = { version = "0.1", features = [
 ] }
 tracing = { workspace = true }
 dirs = { workspace = true }
+# Voice Isolation: DeepFilterNet3 speech enhancement (vendored in
+# crates/klipp-deepfilter, pure Rust, no unsafe). The model itself is
+# not bundled; it downloads on request through klipp-ml's verified cache.
+klipp-deepfilter = { workspace = true }
+ndarray = "0.15"
+klipp-ml = { workspace = true }
 
 [lints]
 workspace = true
