@@ -48,8 +48,8 @@ class InstallHooksTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
 
-    def install(self):
-        return subprocess.run(["sh", "scripts/install-hooks.sh"], cwd=self.root, env=self.env, text=True, capture_output=True, check=True)
+    def install(self, check=True):
+        return subprocess.run(["sh", "scripts/install-hooks.sh"], cwd=self.root, env=self.env, text=True, capture_output=True, check=check)
 
     def run_hook(self, timeout=10):
         return subprocess.run(["sh", str(self.hook)], cwd=self.root, env=self.env, text=True, capture_output=True, timeout=timeout)
@@ -73,7 +73,8 @@ class InstallHooksTests(unittest.TestCase):
         text = self.hook.read_text()
         self.assertTrue(text.startswith(LFS_HOOK))
         self.assertEqual(text.count("Klipp test gate"), 1)
-        self.assertIn("klipp-gate-block v2", text)
+        self.assertIn("klipp-gate-block v3", text)
+        self.assertEqual((self.root / ".git/hooks/pre-push.klipp-backup").read_text(), LFS_HOOK + V1_BLOCK)
 
     def test_a_stale_gate_waits_for_the_lock_and_names_itself(self):
         self.install()
@@ -135,6 +136,50 @@ class InstallHooksTests(unittest.TestCase):
         self.env["KLIPP_SKIP_TESTS"] = "1"
         self.assertEqual(self.run_hook(timeout=5).returncode, 0)
 
+
+    def test_the_hook_is_replaced_not_rewritten_in_place(self):
+        # A running hook reads its file by offset; rewriting it in place
+        # spliced old offsets into new text.
+        self.hook.write_text(LFS_HOOK + V1_BLOCK)
+        before = self.hook.stat().st_ino
+        self.install()
+        self.assertNotEqual(self.hook.stat().st_ino, before)
+
+    def test_an_edited_block_header_is_left_alone(self):
+        edited = LFS_HOOK + V1_BLOCK.replace("# --- Klipp test gate", "# --- my gate")
+        self.hook.write_text(edited)
+        result = self.install(check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("edited", result.stderr)
+        self.assertEqual(self.hook.read_text(), edited)
+
+    def test_a_missing_gate_refuses_at_once(self):
+        self.install()
+        result = self.run_hook(timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is missing", result.stderr)
+
+    def test_a_branch_rebased_while_it_waits_queues_itself(self):
+        # Stale when the push began, queue-aware by the time the lock is
+        # free: it must not wait on the lock its own hook holds.
+        self.install()
+        self.gate('echo gate-ran >> "$(git rev-parse --show-toplevel)/calls"')
+        lock = self.root / ".git/klipp-pre-push.lock"
+        holder = subprocess.Popen(["flock", "-o", str(lock), "sleep", "30"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        time.sleep(0.2)
+        hook = subprocess.Popen(["sh", str(self.hook)], cwd=self.root, env=self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(hook.kill)
+        time.sleep(0.5)
+        self.gate(f'# takes klipp-pre-push.lock itself\nexec 9>>"{lock}"\nflock -w 5 9 || exit 3\n'
+                  'echo gate-ran >> "$(git rev-parse --show-toplevel)/calls"')
+        holder.kill()
+        holder.wait()
+        _, err = hook.communicate(timeout=15)
+        self.assertEqual(hook.returncode, 0, err)
+        self.assertIn("gate-ran", self.calls())
 
 if __name__ == "__main__":
     unittest.main()
