@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Per-channel RGB curves. Each channel is a list of control points [x, y] in 0..1.
 /// Default has endpoints `[[0,0],[1,1]]` (identity).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct CurveSet {
     #[serde(default = "default_curve_points")]
     pub master: Vec<[f32; 2]>,
@@ -33,7 +33,7 @@ impl Default for CurveSet {
 /// Six Hue/Sat curves. Each curve: Vec of [x, y] control points.
 /// x = 0..1 (input range), y = 0..1 (0.5 = identity for relative curves).
 /// Empty Vec = identity (no change).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HueSatCurves {
     #[serde(default)]
     pub hue_vs_hue: Vec<[f32; 2]>,
@@ -66,7 +66,7 @@ pub struct HueSatCurves {
 /// HSL qualifier for secondary color correction.
 /// Selects a range of hue/saturation/luminance to isolate specific colors.
 /// The matte (0-1 per pixel) determines how much the secondary grade is applied.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct QualifierSettings {
     pub enabled: bool,
     /// Hue center in degrees (0-360)
@@ -144,7 +144,7 @@ impl Default for QualifierSettings {
 /// colorspace) — they should be approximately `0.272/0.674/0.054`
 /// there. Matches [`QualifierSettings`]'s behaviour today; both will
 /// be re-tuned per working_colorspace in a post-Phase-E follow-up.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct LumaKeySettings {
     pub enabled: bool,
     /// Lower luminance bound (0–1). Pixels brighter than `low` enter
@@ -205,7 +205,7 @@ pub enum DifferenceKeyMatchSpace {
 /// there. Matches [`LumaKeySettings`]'s and [`QualifierSettings`]'s
 /// behaviour today; both will be re-tuned per working_colorspace in a
 /// post-Phase-E follow-up.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DifferenceKeySettings {
     pub enabled: bool,
     /// Path to the clean-plate image on disk. `None` → matte is empty
@@ -266,7 +266,7 @@ impl Default for DifferenceKeySettings {
 /// at extreme highlights is the filmic look. A hue-preserving
 /// variant (scale the entire RGB vector) is a possible follow-up
 /// but not v1.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SoftClipSettings {
     pub enabled: bool,
     /// Point at which rolloff starts (0..1). Values below this pass
@@ -289,7 +289,7 @@ impl Default for SoftClipSettings {
 }
 
 /// Shape-based mask for regional color grading (power windows).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum MaskShape {
     Circle {
         center_x: f32, // normalized 0-1
@@ -320,7 +320,7 @@ pub enum MaskShape {
 /// Keyframe tracks for animating mask parameters over time.
 /// Each `Vec<Keyframe>` is empty by default (static mask). When non-empty,
 /// the keyframes override the corresponding static parameter at render time.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaskKeyframes {
     #[serde(default)]
     pub center_x: Vec<Keyframe>,
@@ -419,7 +419,7 @@ impl MaskKeyframes {
 }
 
 /// A single mask with shape, feathering, and blend controls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Mask {
     pub shape: MaskShape,
     pub feather: f32,   // 0-1, soft edge width
@@ -550,7 +550,7 @@ impl Mask {
 }
 
 /// Stack of masks applied to a clip's color grade.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MaskStack {
     pub masks: Vec<Mask>,
 }
@@ -578,7 +578,7 @@ impl MaskStack {
 }
 
 /// Film grain overlay settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct FilmGrainSettings {
     pub enabled: bool,
     /// Grain intensity (0.0 = off, 1.0 = maximum)
@@ -608,7 +608,7 @@ impl Default for FilmGrainSettings {
 
 /// Color Warper parameters: 12 hue sectors at 30-degree intervals.
 /// Each sector can shift hue (degrees) and saturation (relative offset).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ColorWarperParams {
     /// Per-sector hue shifts in degrees. Index 0 = red (0deg), 1 = orange (30deg), etc.
     #[serde(default)]
@@ -690,7 +690,7 @@ impl ColorMatchSettings {
 /// without inverting the crate dependency. Blend mode reuses the
 /// existing `crate::types::BlendMode` (13 modes) used by the timeline
 /// compositor, so adding a mode in one place lights it up in both.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct LayerMixerInput {
     /// 0.0..=1.0 — how strongly this layer contributes when mixed
     /// over the layer beneath it.

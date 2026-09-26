@@ -35,12 +35,16 @@ pub struct LooksPanelState {
 }
 
 
+/// `timeline_grade`: the selected clip is the timeline grade's stand-in,
+/// so a Look applied or added goes to the timeline grade, and the
+/// buttons say so.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut LooksPanelState,
     looks: &[Look],
     selected_clip: Option<ClipId>,
     selected_clips: &[ClipId],
+    timeline_grade: bool,
     theme: &KlippTheme,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
@@ -58,10 +62,12 @@ pub fn show(
         // rows above. This one pushed its action to the far edge, so
         // three rows that are one group read as three different things.
         let label = if state.save_field_open { "Cancel" } else { "Save current" };
-        let resp = ui.small_button(label).on_hover_text(
+        let resp = ui.small_button(label).on_hover_text(if timeline_grade {
+            "Snapshot the timeline grade as a reusable Look."
+        } else {
             "Snapshot this clip's whole grade as a reusable Look.\n\
              Tool presets, under the tab strip, save one tool instead."
-        );
+        });
         if resp.clicked() {
             state.save_field_open = !state.save_field_open;
             if !state.save_field_open {
@@ -196,13 +202,16 @@ pub fn show(
                             state.renaming = Some((look.id, look.name.clone()));
                         }
                         ui.add_space(2.0);
+                        let apply_label = if timeline_grade { "Apply to Timeline Grade" } else { "Apply" };
                         let apply_resp = ui.add_enabled(
                             can_apply,
                             egui::Button::new(
-                                egui::RichText::new("Apply").size(10.0).color(theme.text_accent)
+                                egui::RichText::new(apply_label).size(10.0).color(theme.text_accent)
                             ).frame(false),
                         );
-                        let apply_resp = if can_apply {
+                        let apply_resp = if timeline_grade {
+                            apply_resp.on_hover_text("In place of the timeline grade")
+                        } else if can_apply {
                             apply_resp.on_hover_text(format!(
                                 "Apply to {} selected clip{}",
                                 apply_targets.len(),
@@ -221,12 +230,17 @@ pub fn show(
                         // After each clip's own grade instead of in place
                         // of it: one look over shots that each keep their
                         // balance.
+                        let (add_label, add_hover) = if timeline_grade {
+                            ("Add to Timeline Grade", "Run this Look after the timeline grade, keeping it")
+                        } else {
+                            ("Add", "Run this Look after each selected clip's own grade, keeping its balance")
+                        };
                         let add_resp = ui.add_enabled(
                             can_apply,
                             egui::Button::new(
-                                egui::RichText::new("Add").size(10.0).color(theme.text_accent)
+                                egui::RichText::new(add_label).size(10.0).color(theme.text_accent)
                             ).frame(false),
-                        ).on_hover_text("Run this Look after each selected clip's own grade, keeping its balance");
+                        ).on_hover_text(add_hover);
                         if add_resp.clicked() {
                             cmds.push(AppCommand::ApplyLook {
                                 look_id: look.id,

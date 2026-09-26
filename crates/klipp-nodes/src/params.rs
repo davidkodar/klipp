@@ -9,7 +9,7 @@ use klipp_core::{
 
 /// All possible parameter values a node can have.
 /// Each node kind uses only a subset of these fields.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeParams {
     // InputTransform
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,7 +359,7 @@ impl MatteChannel {
 /// `LayerMixerInput` + `BlendMode` themselves live in `klipp_core` so
 /// that `AppCommand` (also in klipp-core) can reference them without
 /// inverting the crate dependency.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LayerMixerParams {
     /// One entry per input port. `inputs[0]` is port 0 (top of stack).
     pub inputs: Vec<LayerMixerInput>,
@@ -639,14 +639,14 @@ impl NodeParams {
 
 /// Keyframe tracks for a single node.
 /// Each track identifies a parameter by name string.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeKeyframeTracks {
     #[serde(default)]
     pub tracks: Vec<NodeKeyframeTrack>,
 }
 
 /// A single keyframe track animating one parameter of a node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeKeyframeTrack {
     /// e.g. "exposure", "lift_x"
     pub param_name: String,

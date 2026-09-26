@@ -10,7 +10,7 @@ pub type NodeId = Uuid;
 
 /// A directed acyclic graph of color processing nodes.
 /// Replaces ClipColorGrade entirely.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeGraph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
@@ -62,7 +62,7 @@ pub struct NodeGraph {
 /// the user doesn't have to manage it. v1 keeps width fixed via
 /// `width` (no resize handle); a future v2 could add a corner-
 /// drag resize gesture without a serde format change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStickyNote {
     /// Stable id for AppCommands targeting this specific note.
     pub id: NodeStickyNoteId,
@@ -94,7 +94,7 @@ fn default_sticky_width() -> f32 { 200.0 }
 /// metadata (label, colour). Empty `contained_node_ids` is illegal
 /// at rest — frames left with no members get pruned by the
 /// AppCommand layer's cleanup pass on `RemoveNode`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct NodeFrame {
     /// Stable id used by AppCommands targeting this specific frame
     /// (rename / recolour / delete / member ops). Re-mapped alongside
@@ -134,7 +134,7 @@ impl Default for NodeGraph {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub kind: NodeKind,
@@ -163,7 +163,7 @@ pub struct Node {
 }
 
 /// A connection from one node's output to another node's input.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub from_node: NodeId,
     pub from_port: u8,
@@ -654,7 +654,7 @@ impl Node {
 }
 
 /// Screen position for the node editor UI.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct NodePos {
     pub x: f32,
     pub y: f32,
@@ -664,6 +664,18 @@ pub struct NodePos {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("cycle detected in node graph")]
 pub struct CycleError;
+
+/// Why [`NodeGraph::append`] would not run one graph after another.
+/// Worded for the person who asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CannotAppend {
+    #[error("the grade to add has no Source node")]
+    NoSource,
+    #[error("nothing feeds this grade's Output, so there is nowhere to add after")]
+    NothingFeedsOutput,
+    #[error("the grade to add is pinned to the {theirs:?} working space and this one to {ours:?}; convert one first")]
+    WorkingSpace { ours: klipp_core::WorkingColorspace, theirs: klipp_core::WorkingColorspace },
+}
 
 impl NodeGraph {
     /// The nodes with a path to the output node, over drawn edges and
@@ -953,26 +965,122 @@ impl NodeGraph {
         true
     }
 
-    /// Regenerate all NodeIds and update edge/position references.
-    /// Used when pasting a copied graph onto a different clip.
+    /// Take every Input Transform node out, wiring what fed each one to
+    /// what it fed, so the rest runs unchanged. The Input Transform is
+    /// the clip's input colour space, not part of its grade: a grade
+    /// carried from one clip to another — a still's, a Look — must leave
+    /// it behind, or log footage is linearised twice, or with the other
+    /// camera's curve. What fed it may itself be a wireless link, and a
+    /// node reading it wirelessly reads its feed instead, as a drawn
+    /// edge, since a wireless link carries only an output's port 0 and
+    /// the feed need not be one. A frame the removal leaves with no
+    /// members goes with it.
+    pub fn strip_input_transforms(&mut self) {
+        let transforms: Vec<NodeId> =
+            self.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).map(|n| n.id).collect();
+        for it in transforms {
+            let feed = self
+                .edges
+                .iter()
+                .find(|e| e.to_node == it && e.to_port == 0)
+                .map(|e| (e.from_node, e.from_port))
+                .or_else(|| self.input_of(it, 0).map(|sender| (sender, 0)));
+            let label = self.nodes.iter().find(|n| n.id == it).and_then(|n| n.output_link.clone());
+            self.edges.retain(|e| e.to_node != it);
+            match feed {
+                Some((from_node, from_port)) => {
+                    for e in self.edges.iter_mut().filter(|e| e.from_node == it) {
+                        e.from_node = from_node;
+                        e.from_port = from_port;
+                    }
+                }
+                None => self.edges.retain(|e| e.from_node != it),
+            }
+            if let Some(label) = label {
+                let mut drawn = Vec::new();
+                for recv in self.nodes.iter_mut().filter(|n| n.id != it) {
+                    for (port, slot) in recv.input_links.iter_mut().enumerate() {
+                        if slot.as_ref() != Some(&label) {
+                            continue;
+                        }
+                        *slot = None;
+                        let port = port as u8;
+                        let wired = self.edges.iter().any(|e| e.to_node == recv.id && e.to_port == port);
+                        if let Some((from_node, from_port)) = feed.filter(|_| !wired) {
+                            drawn.push(Edge { from_node, from_port, to_node: recv.id, to_port: port });
+                        }
+                    }
+                }
+                self.edges.extend(drawn);
+            }
+            self.nodes.retain(|n| n.id != it);
+            self.node_positions.remove(&it);
+            self.frames.retain_mut(|f| !f.contained_node_ids.remove(&it) || !f.contained_node_ids.is_empty());
+        }
+    }
+
+    /// `other`'s grade in place of this one: `other`'s nodes with fresh
+    /// ids, less any Input Transform of its own, and this graph's Input
+    /// Transform kept, right after Source. The input colour space
+    /// belongs to the clip and stays; the grade is what travels, as a
+    /// still's grade or a Look applied to another shot.
+    pub fn with_grade_of(&self, other: &NodeGraph) -> NodeGraph {
+        let mut new = other.remap_ids();
+        new.strip_input_transforms();
+        let Some(own) = self.nodes.iter().find(|n| n.kind == NodeKind::InputTransform) else { return new };
+        let Some(src) = new.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return new };
+        let mut transform = own.clone();
+        transform.id = NodeId::new_v4();
+        transform.output_link = None;
+        transform.input_links.clear();
+        for e in new.edges.iter_mut().filter(|e| e.from_node == src) {
+            e.from_node = transform.id;
+            e.from_port = 0;
+        }
+        new.edges.push(Edge { from_node: src, from_port: 0, to_node: transform.id, to_port: 0 });
+        if let Some(p) = new.node_positions.get(&src).copied() {
+            new.node_positions.insert(transform.id, NodePos { x: p.x + 110.0, y: p.y });
+        }
+        let at = new.nodes.iter().position(|n| n.id == src).map_or(0, |i| i + 1);
+        new.nodes.insert(at, transform);
+        new
+    }
+
     /// Run `other` after this graph: its nodes, with fresh ids, go
     /// between whatever fed this graph's Output and the Output, wired as
-    /// they were between its own Source and Output. This graph's nodes
-    /// stay as they are, so a look put on after a clip's balance keeps
-    /// the balance. `false`, and nothing changed, when either graph has
-    /// no Source-to-Output path to splice into.
-    pub fn append(&mut self, other: &NodeGraph) -> bool {
-        let other = other.remap_ids();
-        let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return false };
+    /// they were between its own Source and Output, and its frames and
+    /// notes come along, laid out to the right. This graph's nodes stay
+    /// as they are, so a look put on after a clip's balance keeps the
+    /// balance. `other`'s Input Transform, if it has one, is left behind
+    /// (see [`Self::strip_input_transforms`]): this graph's own already
+    /// decoded the footage.
+    ///
+    /// Refused, and nothing changed, when either graph has no
+    /// Source-to-Output path to splice into, or when the two are pinned
+    /// to different working spaces: `other`'s luma-weighted nodes would
+    /// run in this graph's space, a colour shift. A graph pinned to
+    /// nothing follows the project, and joins or takes a pinned one as
+    /// it is; the pin, if any, stays this graph's.
+    pub fn append(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
+        if let (Some(ours), Some(theirs)) = (self.working_space_override, other.working_space_override) {
+            if ours != theirs {
+                return Err(CannotAppend::WorkingSpace { ours, theirs });
+            }
+        }
+        let mut other = other.remap_ids();
+        other.strip_input_transforms();
+        let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else {
+            return Err(CannotAppend::NoSource);
+        };
         let o_out = other.output_node_id;
         let out = self.output_node_id;
         let Some(feed) = self.edges.iter().find(|e| e.to_node == out && e.to_port == 0).map(|e| (e.from_node, e.from_port)) else {
-            return false;
+            return Err(CannotAppend::NothingFeedsOutput);
         };
         let middle: Vec<Node> = other.nodes.iter().filter(|n| n.id != src && n.id != o_out).cloned().collect();
         if middle.is_empty() {
             // An identity graph: nothing to run after.
-            return true;
+            return Ok(());
         }
         // Laid out to the right of what is there, so the two read in order.
         let right = self.node_positions.values().map(|p| p.x).fold(f32::MIN, f32::max);
@@ -989,6 +1097,7 @@ impl NodeGraph {
         }
         self.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
         let insert_at = self.nodes.iter().position(|n| n.id == out).unwrap_or(self.nodes.len());
+        let spliced: HashSet<NodeId> = middle.iter().map(|n| n.id).collect();
         self.nodes.splice(insert_at..insert_at, middle);
         for e in &other.edges {
             if e.to_node == src {
@@ -998,9 +1107,26 @@ impl NodeGraph {
             let to_node = if e.to_node == o_out { out } else { e.to_node };
             self.edges.push(Edge { from_node, from_port, to_node, to_port: e.to_port });
         }
-        true
+        // A frame around the other graph's Source or Output has no such
+        // node here: it keeps the members that came.
+        for mut frame in other.frames {
+            frame.contained_node_ids.retain(|id| spliced.contains(id));
+            if !frame.contained_node_ids.is_empty() {
+                self.frames.push(frame);
+            }
+        }
+        for mut note in other.sticky_notes {
+            note.pos.x += shift;
+            self.sticky_notes.push(note);
+        }
+        Ok(())
     }
 
+    /// This graph with fresh ids throughout: every node, and every edge,
+    /// position and frame membership that names one; frames and notes
+    /// get new ids of their own. For a copied graph pasted onto another
+    /// clip, so the two share nothing the executor's per-node caches are
+    /// keyed by.
     pub fn remap_ids(&self) -> NodeGraph {
         let id_map: HashMap<NodeId, NodeId> = self
             .nodes
@@ -1021,6 +1147,14 @@ impl NodeGraph {
             .iter()
             .map(|(old_id, pos)| (id_map[old_id], *pos))
             .collect();
+        for frame in &mut new_graph.frames {
+            frame.id = NodeFrameId::new_v4();
+            // A member the graph no longer has is not one the copy has.
+            frame.contained_node_ids = frame.contained_node_ids.iter().filter_map(|id| id_map.get(id).copied()).collect();
+        }
+        for note in &mut new_graph.sticky_notes {
+            note.id = NodeStickyNoteId::new_v4();
+        }
         new_graph
     }
 }
@@ -1594,7 +1728,7 @@ mod append_tests {
         let mut clip = exposure_graph(0.4);
         let balance = clip.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
         let look = exposure_graph(-0.2);
-        assert!(clip.append(&look));
+        assert!(clip.append(&look).is_ok());
         let order = clip.topo_sort().expect("no cycle");
         let correctors: Vec<NodeId> = order
             .iter()
@@ -1608,13 +1742,242 @@ mod append_tests {
         assert!(clip.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
     }
 
+    /// An Input Transform decoding `format`, spliced in after Source the
+    /// way a clip gets one when it is added to the timeline.
+    fn with_input_transform(g: &mut NodeGraph, format: klipp_core::LogFormat) -> NodeId {
+        let src = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id).unwrap();
+        let id = NodeId::new_v4();
+        for e in g.edges.iter_mut().filter(|e| e.from_node == src) {
+            e.from_node = id;
+        }
+        g.edges.push(Edge { from_node: src, from_port: 0, to_node: id, to_port: 0 });
+        g.nodes.insert(1, Node {
+            id,
+            kind: NodeKind::InputTransform,
+            label: "Input Transform".into(),
+            enabled: true,
+            params: NodeParams { log_format: Some(format), ..Default::default() },
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        id
+    }
+
+    fn input_formats(g: &NodeGraph) -> Vec<klipp_core::LogFormat> {
+        g.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).filter_map(|n| n.params.log_format).collect()
+    }
+
+    fn chain_kinds(g: &NodeGraph) -> Vec<NodeKind> {
+        let feeding = g.nodes_feeding_output();
+        g.topo_sort()
+            .expect("no cycle")
+            .into_iter()
+            .filter(|id| feeding.contains(id))
+            .filter_map(|id| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind))
+            .collect()
+    }
+
+    /// A still grabbed on a LogC shot, added after a Sony shot's own
+    /// grade: the Sony shot keeps its one Input Transform, the still's
+    /// stays behind, and the look still runs.
+    #[test]
+    fn an_appended_grade_leaves_its_input_transform_behind() {
+        use klipp_core::LogFormat;
+        let mut clip = exposure_graph(0.4);
+        let own = with_input_transform(&mut clip, LogFormat::SLog3);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, LogFormat::LogC3);
+        assert!(clip.append(&look).is_ok());
+        assert_eq!(input_formats(&clip), vec![LogFormat::SLog3], "the clip's own, and only that");
+        assert!(clip.nodes.iter().any(|n| n.id == own), "the clip's own transform node, untouched");
+        assert_eq!(
+            chain_kinds(&clip),
+            vec![NodeKind::Source, NodeKind::InputTransform, NodeKind::Corrector, NodeKind::Corrector, NodeKind::Output],
+        );
+    }
+
+    /// The same still applied in place of the Sony shot's grade: the
+    /// grade is the still's, the input colour space is still the shot's.
+    #[test]
+    fn a_grade_applied_in_place_keeps_the_clips_input_transform() {
+        use klipp_core::LogFormat;
+        let mut clip = exposure_graph(0.4);
+        with_input_transform(&mut clip, LogFormat::SLog3);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, LogFormat::LogC3);
+        let new = clip.with_grade_of(&look);
+        assert_eq!(input_formats(&new), vec![LogFormat::SLog3]);
+        assert_eq!(chain_kinds(&new), vec![NodeKind::Source, NodeKind::InputTransform, NodeKind::Corrector, NodeKind::Output]);
+        let exposure = new.nodes.iter().find(|n| n.kind == NodeKind::Corrector).and_then(|n| n.params.exposure);
+        assert_eq!(exposure, Some(-0.2), "the still's grade");
+        assert!(new.nodes.iter().all(|n| !look.nodes.iter().any(|l| l.id == n.id)), "fresh ids");
+    }
+
+    /// A node reading the Input Transform wirelessly reads what fed it
+    /// once the transform is gone, and one the transform read
+    /// wirelessly is what its edges are wired to.
+    #[test]
+    fn stripping_an_input_transform_repoints_its_wireless_links() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let src = g.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id).unwrap();
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        // Source → Input Transform goes wireless, and a Corrector reads
+        // the transform wirelessly on a port nothing is drawn to.
+        g.edges.retain(|e| !(e.from_node == src && e.to_node == it));
+        g.nodes.iter_mut().find(|n| n.id == src).unwrap().output_link = Some("src".into());
+        let transform = g.nodes.iter_mut().find(|n| n.id == it).unwrap();
+        transform.input_links = vec![Some("src".into())];
+        transform.output_link = Some("it".into());
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().input_links = vec![None, Some("it".into())];
+        assert_eq!(g.input_of(corrector, 1), Some(it));
+
+        g.strip_input_transforms();
+        assert!(g.nodes.iter().all(|n| n.kind != NodeKind::InputTransform));
+        assert_eq!(g.input_of(corrector, 0), Some(src), "the drawn edge, wired to the wireless feed");
+        assert_eq!(g.input_of(corrector, 1), Some(src), "the wireless read, now a drawn edge from the feed");
+        assert!(g.nodes.iter().all(|n| n.input_links.iter().all(|l| l.as_deref() != Some("it"))), "no slot names it");
+        assert!(g.topo_sort().is_ok());
+    }
+
+    /// A wireless read of an Input Transform nothing fed reads nothing,
+    /// as it did through the transform.
+    #[test]
+    fn stripping_an_unfed_input_transform_clears_its_wireless_readers() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        g.edges.retain(|e| e.to_node != it);
+        g.nodes.iter_mut().find(|n| n.id == it).unwrap().output_link = Some("it".into());
+        g.nodes.iter_mut().find(|n| n.id == corrector).unwrap().input_links = vec![None, Some("it".into())];
+        g.strip_input_transforms();
+        assert_eq!(g.input_of(corrector, 1), None);
+        assert_eq!(g.nodes.iter().find(|n| n.id == corrector).unwrap().input_links, vec![None, None]);
+    }
+
+    /// Only a frame the removal empties goes: one that was empty
+    /// already, and one with other members, stay.
+    #[test]
+    fn stripping_an_input_transform_prunes_only_the_frame_it_empties() {
+        let mut g = exposure_graph(0.4);
+        let it = with_input_transform(&mut g, klipp_core::LogFormat::LogC3);
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        let frame = |label: &str, members: &[NodeId]| NodeFrame {
+            id: NodeFrameId::new_v4(),
+            label: label.into(),
+            description: String::new(),
+            color_rgba: 0,
+            contained_node_ids: members.iter().copied().collect(),
+        };
+        g.frames = vec![frame("Input", &[it]), frame("Both", &[it, corrector]), frame("Empty", &[])];
+        g.strip_input_transforms();
+        let labels: Vec<&str> = g.frames.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(labels, vec!["Both", "Empty"]);
+        assert_eq!(g.frames[0].contained_node_ids, [corrector].into_iter().collect());
+    }
+
+    /// A Rec.709 shot has no Input Transform, and gets none from the
+    /// LogC still.
+    #[test]
+    fn a_grade_applied_to_a_clip_without_an_input_transform_brings_none() {
+        let clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        with_input_transform(&mut look, klipp_core::LogFormat::LogC3);
+        let new = clip.with_grade_of(&look);
+        assert!(input_formats(&new).is_empty());
+        assert_eq!(chain_kinds(&new), vec![NodeKind::Source, NodeKind::Corrector, NodeKind::Output]);
+    }
+
+    /// A frame around `g`'s Corrector, and a note beside it.
+    fn with_frame_and_note(g: &mut NodeGraph) -> (NodeId, f32) {
+        let corrector = g.nodes.iter().find(|n| n.kind == NodeKind::Corrector).map(|n| n.id).unwrap();
+        g.frames.push(NodeFrame {
+            id: NodeFrameId::new_v4(),
+            label: "Look".into(),
+            description: String::new(),
+            color_rgba: 0,
+            contained_node_ids: [corrector].into_iter().collect(),
+        });
+        let note_x = 220.0;
+        g.sticky_notes.push(NodeStickyNote {
+            id: NodeStickyNoteId::new_v4(),
+            pos: NodePos { x: note_x, y: -80.0 },
+            width: 200.0,
+            text: "warm it".into(),
+            color_rgba: 0,
+        });
+        (corrector, note_x)
+    }
+
+    #[test]
+    fn grades_pinned_to_different_working_spaces_do_not_join() {
+        use klipp_core::WorkingColorspace as Ws;
+        let mut clip = exposure_graph(0.4);
+        clip.working_space_override = Some(Ws::Rec709Linear);
+        let mut look = exposure_graph(-0.2);
+        look.working_space_override = Some(Ws::AcesCG);
+        let before = clip.nodes.len();
+        assert_eq!(
+            clip.append(&look),
+            Err(CannotAppend::WorkingSpace { ours: Ws::Rec709Linear, theirs: Ws::AcesCG }),
+        );
+        assert_eq!(clip.nodes.len(), before, "nothing changed");
+        assert!(!clip.append(&look).unwrap_err().to_string().is_empty(), "a reason to show");
+    }
+
+    #[test]
+    fn a_pinned_grade_joins_an_unpinned_graph_which_stays_unpinned() {
+        let mut clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        look.working_space_override = Some(klipp_core::WorkingColorspace::AcesCG);
+        assert!(clip.append(&look).is_ok());
+        assert_eq!(clip.working_space_override, None);
+        assert_eq!(count(&clip, NodeKind::Corrector), 2);
+    }
+
+    #[test]
+    fn an_appended_grade_brings_its_frames_and_notes_on_the_new_ids() {
+        let mut clip = exposure_graph(0.4);
+        let mut look = exposure_graph(-0.2);
+        let (old_corrector, note_x) = with_frame_and_note(&mut look);
+        assert!(clip.append(&look).is_ok());
+        assert_eq!(clip.frames.len(), 1);
+        let members: Vec<NodeId> = clip.frames[0].contained_node_ids.iter().copied().collect();
+        assert_eq!(members.len(), 1);
+        assert_ne!(members[0], old_corrector, "the frame follows the fresh id");
+        assert!(clip.nodes.iter().any(|n| n.id == members[0] && n.kind == NodeKind::Corrector));
+        assert_ne!(clip.frames[0].id, look.frames[0].id);
+        assert_eq!(clip.sticky_notes.len(), 1);
+        assert!(clip.sticky_notes[0].pos.x > note_x, "moved right with the nodes it sat beside");
+    }
+
+    #[test]
+    fn remapped_ids_keep_frame_membership() {
+        let mut g = exposure_graph(0.4);
+        let (old_corrector, _) = with_frame_and_note(&mut g);
+        g.frames[0].contained_node_ids.insert(NodeId::new_v4()); // a stale member
+        let new = g.remap_ids();
+        let ids: HashSet<NodeId> = new.nodes.iter().map(|n| n.id).collect();
+        assert_eq!(new.frames.len(), 1);
+        assert_eq!(new.frames[0].contained_node_ids.len(), 1, "the stale member is dropped");
+        assert!(new.frames[0].contained_node_ids.iter().all(|id| ids.contains(id)));
+        assert!(!new.frames[0].contained_node_ids.contains(&old_corrector));
+        assert_ne!(new.frames[0].id, g.frames[0].id);
+        assert_ne!(new.sticky_notes[0].id, g.sticky_notes[0].id);
+    }
+
+    fn count(g: &NodeGraph, kind: NodeKind) -> usize {
+        g.nodes.iter().filter(|n| n.kind == kind).count()
+    }
+
     #[test]
     fn appending_an_identity_graph_changes_nothing() {
         let mut clip = exposure_graph(0.4);
         let before = clip.nodes.len();
         let empty = NodeGraph::default();
         let identity_nodes = empty.nodes.iter().filter(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output)).count();
-        assert!(clip.append(&empty));
+        assert!(clip.append(&empty).is_ok());
         assert_eq!(clip.nodes.len(), before + identity_nodes);
     }
 }
