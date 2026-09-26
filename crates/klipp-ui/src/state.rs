@@ -1083,7 +1083,9 @@ impl TitlePositionPreset {
 /// Document ops a panel asks the app to run as one undo step.
 #[derive(Debug, Clone)]
 pub struct DocOpsRequest {
-    /// What history calls the step.
+    /// What history calls the step. `{n}` in it is written as the
+    /// number of ops applied, so a sweep says how many cuts were made,
+    /// not how many were ticked.
     pub label: String,
     pub ops: Vec<klipp_document::ops::Op>,
     /// The ops stand on their own — a sweep of cuts, each at its own

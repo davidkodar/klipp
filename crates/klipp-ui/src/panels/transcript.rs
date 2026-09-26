@@ -220,7 +220,7 @@ fn review_sweep(ui: &mut egui::Ui, sweep: &mut Sweep, state: &mut AppState) -> b
         if ui.add_enabled(!ticked.is_empty(), egui::Button::new(format!("Cut {} Ticked", ticked.len()))).clicked() {
             // Each cut stands on its own: one that is refused (through a
             // retimed clip, say) is reported, and the rest are made.
-            let label = format!("Cut {} {}", ticked.len(), sweep.title.to_lowercase());
+            let label = format!("Cut {{n}} {}", sweep.title.to_lowercase());
             state.pending_doc_ops.push(DocOpsRequest { label, ops: transcript::cut_ops(ticked), independent: true });
             done = true;
         }

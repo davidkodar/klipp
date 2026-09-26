@@ -1229,12 +1229,24 @@ impl Plan {
 }
 
 /// Why a plan could not be made: the step (0-based), the reason, and
-/// what would make it possible.
+/// what would make it possible. `code` names the reasons a caller may
+/// act on itself, so it need not read `why`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Refusal {
     pub step: usize,
     pub why: String,
     pub hint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<RefusalCode>,
+}
+
+/// A refusal a caller can tell apart without reading its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalCode {
+    /// [`Op::Captions`]: a caption would land on a clip already on the
+    /// track, one `replace` did not take away.
+    CaptionsOverlap,
 }
 
 impl std::fmt::Display for Refusal {
@@ -1244,7 +1256,7 @@ impl std::fmt::Display for Refusal {
 }
 
 fn refuse(step: usize, why: impl Into<String>, hint: impl Into<String>) -> Refusal {
-    Refusal { step, why: why.into(), hint: hint.into() }
+    Refusal { step, why: why.into(), hint: hint.into(), code: None }
 }
 
 /// `secs` on the nearest frame at `fps`, as ticks at the sequence's rate.
@@ -2802,7 +2814,9 @@ fn captions(
         if existing.is_some() {
             let in_the_way = seq.tracks[ti].clips.iter().find(|c| !going.contains(&c.id) && c.timeline_in < tl_out && c.timeline_out > tl_in);
             if let Some(c) = in_the_way {
-                return Err(refuse(i, format!("a caption at {:.2}-{:.2} s would overlap {} on track {ti}", secs(tl_in), secs(tl_out), clip_name(seq, pool, c)), "make them again with replace true, give from and to around them, or name another track"));
+                let mut r = refuse(i, format!("a caption at {:.2}-{:.2} s would overlap {} on track {ti}", secs(tl_in), secs(tl_out), clip_name(seq, pool, c)), "make them again with replace true, give from and to around them, or name another track");
+                r.code = Some(RefusalCode::CaptionsOverlap);
+                return Err(r);
             }
         }
         let clip = title_clip(caption_title(&cue.text), tl_in, tl_out, fps);

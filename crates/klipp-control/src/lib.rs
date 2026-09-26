@@ -1868,6 +1868,24 @@ const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 /// in time, in which case the commands are still queued), the document
 /// `revision` after them, and the viewer `generation` from before them so
 /// a frame newer than that reflects the change.
+/// What the Undo menu calls an `apply` sent without a label: the first
+/// op's name, and how many more came with it.
+fn apply_label(ops: &[klipp_document::ops::Op]) -> String {
+    let name = |op: &klipp_document::ops::Op| -> String {
+        let tag = serde_json::to_value(op).ok().and_then(|v| v.get("op")?.as_str().map(|s| s.replace('_', " "))).unwrap_or_else(|| "edit".into());
+        let mut chars = tag.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => tag,
+        }
+    };
+    match ops {
+        [] => "Apply".into(),
+        [one] => name(one),
+        [first, rest @ ..] => format!("{} and {} more", name(first), rest.len()),
+    }
+}
+
 fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -> Result<serde_json::Value, String> {
     send_full_envelope(ctx, commands, Vec::new(), batch, None, None)
 }
@@ -3744,7 +3762,8 @@ fn handle(
             }
             let (plan, revision) = resolve_plan(ctx, &ops)?;
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), label)?;
+            let label = label.unwrap_or_else(|| apply_label(&ops));
+            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(label))?;
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
             if detail {
                 v["steps"] = json!(plan.report());
@@ -5045,6 +5064,16 @@ mod tests {
         }
         assert_eq!(seen.len(), 19, "wire_name has 19 arms; every one must be listed");
         assert!(parse_log_format("slog3").is_err(), "names are case-sensitive");
+    }
+
+    #[test]
+    fn an_apply_without_a_label_is_named_after_its_ops() {
+        use klipp_document::ops::{Anchor, ClipRef, Op};
+        let cut = Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) };
+        let split = Op::Split { clip_id: ClipRef::At { track: 0, secs: 0.5 }, at: Anchor::Secs(1.0) };
+        assert_eq!(apply_label(std::slice::from_ref(&cut)), "Cut");
+        assert_eq!(apply_label(&[cut, split.clone(), split]), "Cut and 2 more");
+        assert_eq!(apply_label(&[]), "Apply");
     }
 }
 
