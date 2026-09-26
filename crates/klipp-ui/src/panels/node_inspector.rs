@@ -1398,13 +1398,20 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "tint".into(), value: tint });
                 }
 
-                // Auto White Balance button
+                // Auto White Balance, and the eyedropper for when Auto WB
+                // cannot tell a grey from a coloured surface: the user
+                // clicks what they know is grey.
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     if ui.add(egui::Button::new(
                         egui::RichText::new("Auto WB").size(11.0)
                     ).min_size(egui::vec2(60.0, 18.0))).clicked() {
                         cmds.push(AppCommand::AutoWhiteBalance { clip_id });
+                    }
+                    let pick = ui.add(egui::Button::image(Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
+                        .on_hover_text("Pick a grey: click something grey, white or black in the viewer");
+                    if pick.clicked() {
+                        cmds.push(AppCommand::PickWhiteBalance { clip_id });
                     }
                 });
                 ui.add_space(2.0);

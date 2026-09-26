@@ -1840,6 +1840,10 @@ pub enum AppCommand {
     MediaDecodeChanged,
     /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
     AutoWhiteBalance { clip_id: ClipId },
+    /// Arm the viewer's white balance eyedropper for `clip_id`: the next
+    /// click picks the grey the clip is balanced on
+    /// (`RequestWhiteBalanceSample`).
+    PickWhiteBalance { clip_id: ClipId },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },
