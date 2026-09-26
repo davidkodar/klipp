@@ -2417,12 +2417,9 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
             let track = &sims[0].tracks[ti];
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
                 let mut scratch = track.clone();
-                if let Some((mut a, mut b)) = scratch.split_at(c.id, cut) {
-                    // A split gives both pieces both fades; a fade at
-                    // the join would dip the picture and the sound at
-                    // every cut. The clip's own fades stay at its ends.
-                    a.fade_out_secs = 0.0;
-                    b.fade_in_secs = 0.0;
+                if let Some((a, b)) = scratch.split_at(c.id, cut) {
+                    // `split_at` leaves no fade at the join it makes, so
+                    // there is nothing to clear here (#429).
                     blades.push((ti, ci, c.clone(), a, b));
                 }
             }
