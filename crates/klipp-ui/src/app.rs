@@ -15615,7 +15615,7 @@ impl KlippApp {
                         // The framing analysis's faces, when there is one: a
                         // face is never the surface a cast is judged against,
                         // so a close-up under a cool light balances on the shirt.
-                        let faces = crate::panels::colour_check::faces_at_playhead(&self.state);
+                        let faces = crate::panels::colour_check::whole_faces_at_playhead(&self.state);
                         match klipp_color::auto_white_balance(&bytes, fw, fh, &faces) {
                             Ok((temp_adj, tint_adj)) => {
                                 self.apply_balance_step(clip_id, temp_adj, tint_adj, "Auto White Balance", needs_refresh);

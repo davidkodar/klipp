@@ -474,6 +474,19 @@ impl ColourCheckPanel {
 /// as fractions of the frame. Empty when there is no analysis, and the
 /// measurement then falls back to skin-coloured pixels.
 pub(crate) fn faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
+    face_regions_at_playhead(state, false)
+}
+
+/// The whole of each face the analysis found under the playhead, with
+/// the neck below it (a third of the face's height): what a white
+/// balance must not take for the frame's surface. The cheek band that
+/// meters skin leaves the forehead, jaw and neck in, and those are skin
+/// too (review of #428).
+pub(crate) fn whole_faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
+    face_regions_at_playhead(state, true)
+}
+
+fn face_regions_at_playhead(state: &AppState, whole: bool) -> Vec<[f32; 4]> {
     let seq = state.sequence();
     let tc = seq.last_playhead.unwrap_or_else(|| klipp_core::Timecode::from_secs_f64(0.0, seq.fps.rate()));
     let Some((_, clip)) = seq
@@ -497,7 +510,13 @@ pub(crate) fn faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
     sample
         .faces
         .iter()
-        .map(|f| measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72]))
+        .map(|f| {
+            if whole {
+                [f.x, f.y, f.w, (f.h * 4.0 / 3.0).min(1.0 - f.y)]
+            } else {
+                measure::skin_band(&f.landmarks).unwrap_or([f.x + f.w * 0.12, f.y + f.h * 0.15, f.w * 0.76, f.h * 0.72])
+            }
+        })
         .collect()
 }
 
