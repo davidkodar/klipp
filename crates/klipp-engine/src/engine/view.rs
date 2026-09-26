@@ -103,11 +103,18 @@ pub(super) fn reduced_for_quality(size: (u32, u32), divisor: u8) -> (u32, u32) {
 
 /// Playback Quality's divisor for a frame rendered in `state`: the
 /// reduction while playing, full size otherwise. A parked frame is for
-/// judging and renders full size, so everything made ahead for it — the
-/// render cache's scan, the titles' warm — has to be made at that size
-/// too, or a parked scrub finds nothing it can use.
+/// judging and renders full size, which is why the render cache's scan
+/// warms that size as well as the reduced one.
 pub(super) fn quality_divisor_for(state: PlaybackState, divisor: u8) -> u8 {
     if state == PlaybackState::Playing { divisor } else { 1 }
+}
+
+/// The sizes the render cache's scan warms a frame at, in order: full,
+/// which a parked frame is shown at, then Playback Quality's reduced size
+/// when it differs, which playback asks for.
+pub(super) fn prerender_sizes(full: (u32, u32), divisor: u8) -> Vec<(u32, u32)> {
+    let reduced = reduced_for_quality(full, divisor);
+    if reduced == full { vec![full] } else { vec![full, reduced] }
 }
 
 /// The fewest lines Playback Quality reduces the viewer to.
@@ -1054,38 +1061,33 @@ impl PlaybackEngine {
             klipp_compose::frame_snapshot(&seq, self.playhead)
         };
         let primary = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
-        // At the size the viewer shows frames in now: the scan runs while
-        // parked, and a parked frame is full size whatever the quality.
-        let (w, h) = reduced_for_quality(
-            viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height)),
-            quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()),
-        );
-        let rendered = match self.render_cache_key(&seq, primary, (w, h)) {
+        // Both sizes a frame is shown at: full, for a parked scrub, and
+        // under Half or Quarter the reduced one playback asks for. Full
+        // size first, since the scan runs while parked. One render per
+        // call, as before: a size already cached is passed over.
+        let full = viewer_canvas((pixels.width, pixels.height), (seq.resolution.width, seq.resolution.height));
+        let mut rendered = false;
+        for (w, h) in prerender_sizes(full, crate::video_decoder::playback_quality_divisor()) {
+            let Some(key) = self.render_cache_key(&seq, primary, (w, h)) else { break };
             // Already cached at this size, in memory or on disk: nothing to
             // render. Without this the scan rendered its nearest candidate
             // again on every idle tick, forever — a full render, a readback,
             // compression and a disk write, every 40 to 80 ms while paused.
-            Some(key)
-                if self
-                    .render_cache_hot
-                    .get(&key)
-                    .is_some_and(|(_, cw, ch)| (cw, ch) == (w, h))
-                    || self.render_cache_disk.contains(&key) =>
-            {
-                false
+            let cached = self.render_cache_hot.get(&key).is_some_and(|(_, cw, ch)| (cw, ch) == (w, h))
+                || self.render_cache_disk.contains(&key);
+            if cached {
+                continue;
             }
-            Some(key) => {
-                // No per-node thumbnails: this is not the user's frame.
-                self.thumb_capture_suspended = true;
-                let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, &pixels)), w, h, Inspect::default());
-                self.thumb_capture_suspended = false;
-                let bytes = super::linear_rgba_to_u8(&linear);
-                self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
-                self.render_cache_disk.put(&key, &bytes, w, h);
-                true
-            }
-            None => false,
-        };
+            // No per-node thumbnails: this is not the user's frame.
+            self.thumb_capture_suspended = true;
+            let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, &pixels)), w, h, Inspect::default());
+            self.thumb_capture_suspended = false;
+            let bytes = super::linear_rgba_to_u8(&linear);
+            self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
+            self.render_cache_disk.put(&key, &bytes, w, h);
+            rendered = true;
+            break;
+        }
         self.playhead = saved;
         rendered
     }
@@ -1142,6 +1144,10 @@ mod playback_quality_tests {
         assert_eq!(quality_divisor_for(PlaybackState::Playing, 2), 2);
         assert_eq!(quality_divisor_for(PlaybackState::Paused, 4), 1);
         assert_eq!(quality_divisor_for(PlaybackState::Stopped, 2), 1);
+        // The scan warms the parked size first, then playback's.
+        assert_eq!(prerender_sizes((1920, 1080), 1), vec![(1920, 1080)]);
+        assert_eq!(prerender_sizes((1920, 1080), 2), vec![(1920, 1080), (960, 540)]);
+        assert_eq!(prerender_sizes((320, 180), 4), vec![(320, 180)], "already at the floor");
         // Odd shapes stay even, for the encoder-shaped buffers downstream.
         let (w, h) = reduced_for_quality((2048, 858), 2);
         assert!(w % 2 == 0 && h % 2 == 0 && (w as f64 / h as f64 - 2048.0 / 858.0).abs() < 0.01, "{w}x{h}");

@@ -1558,12 +1558,8 @@ impl PlaybackEngine {
                             Some(view::viewer_canvas(decoded, (seq.resolution.width, seq.resolution.height)))
                         })
                         .unwrap_or((seq.resolution.width, seq.resolution.height));
-                    // At the size the frame is shown in now: reduced while
-                    // playing, full size while parked.
-                    let (w, h) = view::reduced_for_quality(
-                        (w, h),
-                        view::quality_divisor_for(self.state, crate::video_decoder::playback_quality_divisor()),
-                    );
+                    // Warmed for playback, so at Playback Quality's size.
+                    let (w, h) = view::reduced_for_quality((w, h), crate::video_decoder::playback_quality_divisor());
                     if w == 0 || h == 0 {
                         continue;
                     }
