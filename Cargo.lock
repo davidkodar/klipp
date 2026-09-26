@@ -2851,6 +2851,7 @@ name = "klipp-color"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-effects",
  "klipp-grade-model",
  "klipp-testing",
  "rayon",

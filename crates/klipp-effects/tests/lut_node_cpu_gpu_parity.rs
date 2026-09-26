@@ -34,7 +34,7 @@ fn a_bundled_look_is_the_same_on_the_cpu_and_the_gpu() {
     let lut = klipp_color::load_cube(&path).expect("the bundled look loads");
     for (opacity, tetrahedral) in [(1.0, true), (0.4, true), (1.0, false)] {
         let input = frame();
-        let on_gpu = gpu.apply_3d_lut_gpu(&input, W, H, &lut.data, lut.size as u32, opacity, tetrahedral);
+        let on_gpu = gpu.apply_3d_lut_gpu(&input, W, H, &lut.data, lut.size as u32, opacity, tetrahedral, (None, None));
         let mut on_cpu = input.clone();
         klipp_color::apply_3d_lut_linear_ws(&mut on_cpu, &lut, opacity, klipp_core::WorkingColorspace::Rec709Linear, tetrahedral);
         let worst = on_gpu

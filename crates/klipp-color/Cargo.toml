@@ -8,6 +8,9 @@ license.workspace = true
 serde = { workspace = true }
 klipp-grade-model = { workspace = true }
 klipp-core = { workspace = true }
+# The CPU LUT lookup, shared with the global LUT so the two cannot
+# drift apart again (#422). klipp-core already depends on it.
+klipp-effects = { workspace = true }
 rayon = "1"
 tracing = { workspace = true }
 
