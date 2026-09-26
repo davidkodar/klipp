@@ -169,46 +169,66 @@ fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
     }
 }
 
-/// Write color-space tags onto the encoder's AVCodecContext: BT.709 (SDR)
-/// or BT.2020 + HLG/PQ, by the settings' `delivery()`.
-/// Safety: the caller must hold a valid `&mut Encoder` context; `as_mut_ptr`
-/// returns a non-null pointer for the lifetime of the context.
-fn apply_color_tags(
-    video_ctx: &mut ffmpeg_next::codec::encoder::video::Video,
-    hdr_mode: klipp_core::HdrMode,
-) {
-    use ffmpeg_next::ffi::{AVColorPrimaries, AVColorSpace, AVColorTransferCharacteristic};
-    let (prim, trc, space) = match hdr_mode {
-        klipp_core::HdrMode::Sdr => (
-            AVColorPrimaries::AVCOL_PRI_BT709,
-            AVColorTransferCharacteristic::AVCOL_TRC_BT709,
-            AVColorSpace::AVCOL_SPC_BT709,
-        ),
-        klipp_core::HdrMode::Hlg => (
-            AVColorPrimaries::AVCOL_PRI_BT2020,
-            AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67,
-            AVColorSpace::AVCOL_SPC_BT2020_NCL,
-        ),
-        klipp_core::HdrMode::Pq => (
-            AVColorPrimaries::AVCOL_PRI_BT2020,
-            AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084,
-            AVColorSpace::AVCOL_SPC_BT2020_NCL,
-        ),
-    };
-    unsafe {
-        (*video_ctx.as_mut_ptr()).color_primaries = prim;
-        (*video_ctx.as_mut_ptr()).color_trc = trc;
-        (*video_ctx.as_mut_ptr()).colorspace = space;
+/// The colour tags an export carries, in FFmpeg's and x265's terms.
+struct ColorTags {
+    primaries: ffmpeg_next::ffi::AVColorPrimaries,
+    transfer: ffmpeg_next::ffi::AVColorTransferCharacteristic,
+    matrix: ffmpeg_next::ffi::AVColorSpace,
+    x265: &'static str,
+}
+
+/// The tags for what the export writes: BT.2020 with HLG or PQ for an
+/// HDR delivery, and for SDR the output transform actually applied. The
+/// DCI-P3 D65 transform writes P3 primaries with a pure 2.6 gamma, which
+/// has no transfer code (SMPTE 428 is the XYZ encoding), so its transfer
+/// is left unspecified rather than claimed as BT.709. Every other SDR
+/// export says BT.709, the sRGB-curve ones included: Match Viewer in a
+/// Rec.709 or BT.2020 project writes the same curve as the sRGB transform,
+/// and the two must not be tagged apart. The matrix is the one the
+/// scalers convert with (BT.709 for SDR), since a P3 file is still
+/// Y'CbCr by that matrix.
+fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> ColorTags {
+    use ffmpeg_next::ffi::{AVColorPrimaries as P, AVColorSpace as M, AVColorTransferCharacteristic as T};
+    match delivery {
+        klipp_core::HdrMode::Sdr => match odt {
+            klipp_core::OdtChoice::DciP3D65_48 => ColorTags {
+                primaries: P::AVCOL_PRI_SMPTE432,
+                transfer: T::AVCOL_TRC_UNSPECIFIED,
+                matrix: M::AVCOL_SPC_BT709,
+                x265: "colorprim=smpte432:transfer=unknown:colormatrix=bt709",
+            },
+            _ => ColorTags {
+                primaries: P::AVCOL_PRI_BT709,
+                transfer: T::AVCOL_TRC_BT709,
+                matrix: M::AVCOL_SPC_BT709,
+                x265: "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+            },
+        },
+        klipp_core::HdrMode::Hlg => ColorTags {
+            primaries: P::AVCOL_PRI_BT2020,
+            transfer: T::AVCOL_TRC_ARIB_STD_B67,
+            matrix: M::AVCOL_SPC_BT2020_NCL,
+            x265: "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+        },
+        klipp_core::HdrMode::Pq => ColorTags {
+            primaries: P::AVCOL_PRI_BT2020,
+            transfer: T::AVCOL_TRC_SMPTE2084,
+            matrix: M::AVCOL_SPC_BT2020_NCL,
+            x265: "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
+        },
     }
 }
 
-/// x265-params string fragment matching `hdr_mode` — used by the software
-/// H.265 encoder which doesn't honor the AVCodecContext fields the same way.
-fn x265_color_params(hdr_mode: klipp_core::HdrMode) -> &'static str {
-    match hdr_mode {
-        klipp_core::HdrMode::Sdr => "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-        klipp_core::HdrMode::Hlg => "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
-        klipp_core::HdrMode::Pq => "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
+/// Write the colour tags from [`color_tags`] onto the encoder's
+/// AVCodecContext.
+/// Safety: the caller must hold a valid `&mut Encoder` context; `as_mut_ptr`
+/// returns a non-null pointer for the lifetime of the context.
+fn apply_color_tags(video_ctx: &mut ffmpeg_next::codec::encoder::video::Video, settings: &ExportSettings) {
+    let tags = color_tags(settings.delivery(), settings.odt);
+    unsafe {
+        (*video_ctx.as_mut_ptr()).color_primaries = tags.primaries;
+        (*video_ctx.as_mut_ptr()).color_trc = tags.transfer;
+        (*video_ctx.as_mut_ptr()).colorspace = tags.matrix;
     }
 }
 
@@ -271,22 +291,18 @@ impl Encoder {
         // registered muxer, so the entire encoder context fails to
         // build with "Invalid argument".
         //
-        // ProRes / DNxHD codecs override the user's container choice
-        // because they only mux into MOV. Everything else maps
-        // directly from `settings.format`.
-        let forced_format = match settings.video_codec {
-            ExportVideoCodec::ProRes422
-            | ExportVideoCodec::ProRes422HQ
-            | ExportVideoCodec::ProRes4444
-            | ExportVideoCodec::DNxHD115
-            | ExportVideoCodec::DNxHD145 => "mov",
-            _ => match settings.format {
-                ExportFormat::Mp4 => "mp4",
-                ExportFormat::Mkv => "matroska",
-                ExportFormat::Mov => "mov",
-                ExportFormat::WebM => "webm",
-                ExportFormat::Gif => "gif",
-            },
+        // The container is the user's: `container_problem` refuses a
+        // codec it cannot hold, so ProRes and DNxHD go in MKV as well as
+        // MOV.
+        if let Some(problem) = settings.container_problem() {
+            return Err(RenderError::Encode(problem));
+        }
+        let forced_format = match settings.format {
+            ExportFormat::Mp4 => "mp4",
+            ExportFormat::Mkv => "matroska",
+            ExportFormat::Mov => "mov",
+            ExportFormat::WebM => "webm",
+            ExportFormat::Gif => "gif",
         };
 
         let mut output_ctx = ffmpeg_next::format::output_as(output_path, forced_format)
@@ -430,13 +446,13 @@ impl Encoder {
                             };
                             video_opts.set("preset", nvenc_preset);
                             // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
-                            apply_color_tags(&mut video_ctx, settings.delivery());
+                            apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::H264 => {
                             video_ctx.set_bit_rate(0); // CRF mode
                             video_opts.set("crf", &settings.crf.to_string());
                             video_opts.set("preset", settings.preset.ffmpeg_value());
-                            apply_color_tags(&mut video_ctx, settings.delivery());
+                            apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::H265 if is_hw_encoder => {
                             video_opts.set("rc", "vbr");
@@ -450,14 +466,14 @@ impl Encoder {
                                 klipp_core::EncoderPreset::VerySlow => "p7",
                             };
                             video_opts.set("preset", nvenc_preset);
-                            apply_color_tags(&mut video_ctx, settings.delivery());
+                            apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::H265 => {
                             video_ctx.set_bit_rate(0);
                             video_opts.set("crf", &settings.crf.to_string());
                             video_opts.set("preset", settings.preset.ffmpeg_value());
-                            video_opts.set("x265-params", x265_color_params(settings.delivery()));
-                            apply_color_tags(&mut video_ctx, settings.delivery());
+                            video_opts.set("x265-params", color_tags(settings.delivery(), settings.odt).x265);
+                            apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::ProRes422 => {
                             video_opts.set("profile:v", "2");
@@ -514,7 +530,7 @@ impl Encoder {
                     // the H.264/H.265 branches tagged colour, ProRes/DNxHD/AV1/VP9 went
                     // untagged, and no codec declared its (limited) range. GIF is RGB.
                     if settings.video_codec != ExportVideoCodec::Gif {
-                        apply_color_tags(&mut video_ctx, settings.delivery());
+                        apply_color_tags(&mut video_ctx, settings);
                         unsafe {
                             (*video_ctx.as_mut_ptr()).color_range = ffmpeg_next::ffi::AVColorRange::AVCOL_RANGE_MPEG;
                         }
@@ -2114,6 +2130,101 @@ mod tests {
         let meta = std::fs::metadata(&path).unwrap();
         assert!(meta.len() > 100);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The tags follow the output transform applied, not only the
+    /// delivery: a DCI-P3 D65 export says P3 primaries and claims no
+    /// transfer (2.6 gamma has no code). The sRGB-curve exports, the sRGB
+    /// transform and Match Viewer in a Rec.709 project, are tagged alike,
+    /// as are Match Viewer and Rec.709 in ACEScg. H.265
+    /// is checked as well as H.264 because libx265 takes its tags from
+    /// x265-params. Skips without ffprobe.
+    #[test]
+    #[serial]
+    fn sdr_tags_follow_the_output_transform() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        use klipp_core::{OdtChoice as O, WorkingColorspace as W};
+        let cases = [
+            (O::DciP3D65_48, W::AcesCG, "smpte432", "unknown"),
+            (O::Srgb, W::Rec709Linear, "bt709", "bt709"),
+            (O::MatchViewer, W::Rec709Linear, "bt709", "bt709"),
+            (O::MatchViewer, W::AcesCG, "bt709", "bt709"),
+            (O::Rec709Sdr, W::AcesCG, "bt709", "bt709"),
+        ];
+        for codec in [ExportVideoCodec::H264, ExportVideoCodec::H265] {
+            for (odt, working, primaries, transfer) in cases {
+                let path = dir.join(format!("tags_{odt:?}_{working:?}_{codec:?}.mp4"));
+                let mut settings = make_settings(codec, path.to_str().unwrap());
+                settings.audio_codec = ExportAudioCodec::Copy;
+                settings.odt = odt;
+                let snapshot = SequenceSnapshot { working_colorspace: working, ..make_snapshot() };
+                let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
+                let rgba = [90u8, 120, 150, 255].repeat(320 * 240);
+                for _ in 0..3 {
+                    enc.encode_video_frame(&rgba, 320, 240).unwrap();
+                }
+                enc.finalise().unwrap();
+                let Ok(probe) = std::process::Command::new("ffprobe")
+                    .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_primaries,color_transfer,color_space"])
+                    .args(["-of", "default=nw=1"])
+                    .arg(&path)
+                    .output()
+                else {
+                    return;
+                };
+                let tags = String::from_utf8_lossy(&probe.stdout).to_string();
+                let _ = std::fs::remove_file(&path);
+                for want in [format!("color_primaries={primaries}"), format!("color_transfer={transfer}"), "color_space=bt709".to_string()] {
+                    assert!(tags.contains(&want), "{codec:?} {odt:?} in {working:?} lacks {want}: {tags}");
+                }
+            }
+        }
+    }
+
+    /// ProRes in MKV writes a Matroska file holding ProRes: it used to be
+    /// forced into the MOV muxer whatever the extension said, and a MKV
+    /// pair refused would fail a preset that exported before. Skips
+    /// without ffprobe.
+    #[test]
+    #[serial]
+    fn prores_in_mkv_is_written_as_matroska() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("prores.mkv");
+        let mut settings = make_settings(ExportVideoCodec::ProRes422HQ, path.to_str().unwrap());
+        settings.format = ExportFormat::Mkv;
+        settings.audio_codec = ExportAudioCodec::Copy;
+        let mut enc = Encoder::open(&path, &settings, &make_snapshot()).unwrap();
+        let rgba = [90u8, 120, 150, 255].repeat(320 * 240);
+        for _ in 0..3 {
+            enc.encode_video_frame(&rgba, 320, 240).unwrap();
+        }
+        enc.finalise().unwrap();
+        let Ok(probe) = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=format_name:stream=codec_name", "-of", "default=nw=1"])
+            .arg(&path)
+            .output()
+        else {
+            return;
+        };
+        let got = String::from_utf8_lossy(&probe.stdout).to_string();
+        let _ = std::fs::remove_file(&path);
+        assert!(got.contains("codec_name=prores") && got.contains("format_name=matroska"), "{got}");
+    }
+
+    /// A pair the container cannot hold is refused before anything is
+    /// written, naming both halves.
+    #[test]
+    fn a_pair_the_container_cannot_hold_is_refused_before_writing() {
+        let path = std::env::temp_dir().join("klipp_render_test").join("h264.webm");
+        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
+        settings.format = ExportFormat::WebM;
+        let Err(RenderError::Encode(e)) = Encoder::open(&path, &settings, &make_snapshot()) else {
+            panic!("H.264 in WebM was opened");
+        };
+        assert!(e.contains("WebM") && e.contains("H.264"), "{e}");
+        assert!(!path.exists());
     }
 
     #[test]

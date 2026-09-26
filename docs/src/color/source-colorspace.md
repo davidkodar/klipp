@@ -6,16 +6,7 @@ Klipp auto-detects source colourspace from clip metadata using a four-layer chai
 
 ## Supported Log Encodings
 
-| Curve | Camera | Gamut |
-|---|---|---|
-| **Sony S-Log3** | Sony FX/A7S/Venice | S-Gamut3.Cine |
-| **Canon Log 3** | Canon C70/C300/R5 | Cinema Gamut |
-| **Panasonic V-Log** | Panasonic GH/S/EVA1 | V-Gamut |
-| **ARRI Log-C 3** | ARRI Alexa | Wide Gamut |
-| **Apple Log** | iPhone 15 Pro+ ProRes | Wide-DCI |
-| **RED Log3G10** | RED cameras | RED WideGamut RGB |
-| **DJI D-Log** | DJI Inspire / Mavic Pro | DJI gamut |
-| **Z-CAM Z-Log2** | Z-CAM E2 / F6 | Z-CAM gamut |
+Klipp decodes fifteen camera log formats, from ARRI LogC3 and LogC4, Sony S-Log2 and S-Log3, Canon Log and Canon Log 3, and Panasonic V-Log to RED Log3G10, Blackmagic Film Gen 5, DJI D-Log, Fujifilm F-Log, Apple Log, Nikon N-Log, GoPro Protune Flat and Leica L-Log. [Supported Formats](../reference/formats.md) lists each with the gamut it is decoded in.
 
 Plus standard non-log spaces: sRGB, Rec.709, Rec.2020 (linear and gamma).
 
@@ -63,7 +54,7 @@ For testing or stand-in use:
 KLIPP_FORCE_LOG_FORMAT=slog3 cargo r
 ```
 
-Forces every clip to use the named log curve regardless of metadata. Available values: `slog3`, `clog3`, `vlog`, `logc`, `applelog`, `redlog3g10`, `dlog`, `zlog2`. Useful when developing or when batch-processing footage from a camera Klipp doesn't auto-detect yet.
+Forces every clip to use the named log curve regardless of metadata. Available values: `slog3`, `slog2`, `vlog`, `clog`, `clog3`, `logc3`, `logc4`, `redlog3g10`, `bmdfilmgen5`, `dlog`, `flog`, `applelog`, `nlog`, `goproflat` and `llog` (or `leicallog`); any other value is ignored. Useful when developing or when batch-processing footage from a camera Klipp doesn't auto-detect yet.
 
 The per-clip Inspector dropdown is the canonical way to do this; the env var is a developer-side stand-in.
 

@@ -1,60 +1,68 @@
 # Export Formats
 
-Detailed reference for all supported export containers, video codecs, and audio codecs.
+Reference for the containers, video codecs and audio codecs Klipp exports. Klipp encodes through FFmpeg, so the encoders named below have to be in the local FFmpeg build.
 
 ## Containers
 
-### MP4 (MPEG-4 Part 14)
-The most widely supported container. Compatible with virtually all media players, web browsers, and devices. Supports H.264, H.265, and AAC audio. Use MP4 for web delivery, YouTube, and general distribution.
+| Container | Extension | Video codecs | Audio codecs | Notes |
+|---|---|---|---|---|
+| MP4 | `.mp4` | H.264, H.265, AV1, VP9 | Any | The usual choice for web and general delivery. Chapters and soft subtitles (`mov_text`). |
+| MKV | `.mkv` | H.264, H.265, AV1, VP9, ProRes, DNxHD | Any | Chapters and soft subtitles (SubRip). |
+| MOV | `.mov` | H.264, H.265, ProRes, DNxHD | AAC, MP3, PCM | The usual home of ProRes and DNxHD. Chapters and soft subtitles (`mov_text`). |
+| WebM | `.webm` | VP9, AV1 | Opus | Soft subtitles (WebVTT). No chapters. |
+| GIF | `.gif` | GIF | — | Picture only: no audio, subtitles, chapters or HDR. |
 
-### MKV (Matroska)
-A flexible open-source container that supports nearly all video and audio codecs. MKV handles H.264, H.265, ProRes, DNxHD, FLAC, and many more. Ideal for archival and when codec flexibility is needed. Some devices and platforms have limited MKV support.
-
-### MOV (QuickTime)
-Apple's container format, required for ProRes output. Also supports H.264, H.265, and DNxHD. Use MOV when delivering ProRes masters or working with Apple-based post-production pipelines.
+Every pair in this table is one FFmpeg writes. The audio menu lists only what the container holds. Changing the format replaces a codec it cannot hold with its default (H.264 and AAC, or VP9 and Opus for WebM), and picking a video codec the format cannot hold moves the export to that codec's container: MOV for ProRes and DNxHD, WebM for VP9, MP4 for AV1. A saved preset is fitted the same way when it is loaded, and a pair that still does not fit is named above the Export button, which stays disabled until it is changed.
 
 ## Video Codecs
 
-| Codec | Use case | Quality | Speed | Size | Container |
-|---|---|---|---|---|---|
-| H.264 / AVC | Universal delivery, streaming, web | Good at moderate bitrates | Fast (NVENC: very fast) | Moderate | MP4, MKV, MOV |
-| H.265 / HEVC | 4K delivery, bandwidth-constrained | Better than H.264 (~30–50% smaller) | Slower than H.264 (NVENC: still fast) | Small | MP4, MKV, MOV |
-| ProRes 422 | Post-production intermediate | Visually lossless | Fast | Large (~10× H.264) | MOV |
-| ProRes 422 HQ | Broadcast delivery | Higher bitrate than 422 | Fast | Very large | MOV |
-| ProRes 4444 | VFX, alpha workflows | Near-lossless + alpha | Fast | Very large | MOV |
-| DNxHD | Avid interchange, broadcast | Visually lossless | Fast | Large | MOV, MKV |
+| Codec | Encoder | Rate control | Bit depth | Hardware |
+|---|---|---|---|---|
+| H.264 | libx264 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF (8-bit only) |
+| H.265 | libx265 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF |
+| AV1 | SVT-AV1 (`libsvtav1`) | CRF, CBR, VBR | 8 | NVENC |
+| VP9 | `libvpx-vp9` | CRF, CBR, VBR | 8 | — |
+| ProRes 422 | `prores_ks`, profile 2 | fixed | 10, 4:2:2 | — |
+| ProRes 422 HQ | `prores_ks`, profile 3 | fixed | 10, 4:2:2 | — |
+| ProRes 4444 | `prores_ks`, profile 4 | fixed | 10, 4:4:4 | — |
+| DNxHD 115 / 145 | `dnxhd` at 115 / 145 Mbps | fixed | 8, 4:2:2 | — |
+| GIF | `gif` | — | 256-colour palette | — |
 
-### NVENC vs Software
+- **H.264** is the most widely playable. At 10 bits it becomes the High 10 profile, which only libx264 writes and many players cannot decode; use H.265 for HDR.
+- **H.265** is what HDR10 is specified on, and encodes on the GPU at 10 bits.
+- **AV1** compresses best and is slow in software.
+- **VP9** is for web video in WebM. Klipp writes it in SDR only, at 8 bits.
+- **ProRes** is the mastering and interchange format. ProRes 4444 is written as 4:4:4 Y'CbCr; Klipp writes no alpha channel.
+- **DNxHD** at these two bitrates is 8-bit and cannot carry HDR; ProRes 422 HQ is the 10-bit equivalent.
+- **GIF** is made in two passes: a palette is built from the whole clip, then each frame is mapped to it. It loops forever.
 
-For H.264 and H.265, Klipp picks NVENC over libx264/libx265 when an NVIDIA GPU is present and `nvenc` is available in the local FFmpeg build. NVENC trade-offs:
-
-- **Faster** — typically 5–10× the encoding speed of CPU encoders
-- **Lower CPU use** — lets you do other work while the export runs
-- **Slightly lower compression efficiency** — at the same target quality, NVENC files are typically 5–15% larger than libx264/libx265 equivalents
-
-If file size matters more than speed (archival, bandwidth-capped delivery), tick **Force software encoder** in the export dialog.
+See [Exporting Projects](./exporting.md#hardware-encoding) for how the hardware encoder is chosen and what happens when it cannot open.
 
 ## Audio Codecs
 
-| Codec | Use case | Quality | Compatibility | Container |
-|---|---|---|---|---|
-| AAC | Standard delivery | Good at 128–256 kbps | Universal | MP4, MOV, MKV |
-| MP3 | Legacy compatibility | Acceptable at 192–320 kbps | Universal | MP4, MKV |
-| FLAC | Archival, lossless | Perfect (lossless) | Modern players | MKV |
-| PCM | Uncompressed | Bit-perfect | Universal | MOV, WAV |
-
-## Bit Depth and Colour
-
-| Codec | Bit depth | Colour space awareness |
+| Codec | Encoder | Bitrate |
 |---|---|---|
-| H.264 | 8-bit (10-bit possible with libx264 high10 profile) | Tagged in stream header |
-| H.265 | 8-bit or 10-bit | Tagged + HDR metadata for HDR10 / HLG |
-| ProRes 422 | 10-bit | YCbCr 4:2:2 |
-| ProRes 4444 | 12-bit | RGBA |
-| DNxHD | 8-bit (DNxHR HQX 10-bit) | YCbCr 4:2:2 |
+| AAC | `aac` | 128–320 kbps |
+| MP3 | `libmp3lame` | 128–320 kbps |
+| Opus | `libopus` | 128–320 kbps |
+| FLAC | `flac` | lossless |
+| PCM 16-bit | `pcm_s16le` | uncompressed |
+| PCM 24-bit | `pcm_s24le` | uncompressed |
+| No audio | — | no audio stream is written |
 
-Klipp tags exports with the configured ODT colour primaries and transfer characteristics so receiving applications interpret them correctly.
+The mix is written in stereo at 48 kHz.
 
-## Frame Rate Round-Trip
+## Colour Tags
 
-When the export frame rate differs from the timeline frame rate, Klipp uses rational-time interpolation rather than nearest-frame snapping. A 23.976 timeline rendered to 30 fps is doubled-and-decimated using exact rational arithmetic, so cumulative drift over a long export is zero.
+Every export except GIF is tagged limited range, and its colour tags follow the delivery; an SDR export through the DCI-P3 D65 transform is tagged P3:
+
+| Delivery | Primaries | Transfer | Matrix |
+|---|---|---|---|
+| SDR | BT.709 | BT.709 | BT.709 |
+| SDR, DCI-P3 D65 | P3 D65 (SMPTE EG 432-1) | unspecified | BT.709 |
+| HLG | BT.2020 | ARIB STD-B67 (HLG) | BT.2020 non-constant |
+| HDR10 (PQ) | BT.2020 | SMPTE ST 2084 (PQ) | BT.2020 non-constant |
+
+A PQ file also carries the mastering-display metadata and MaxCLL / MaxFALL, measured on the frames written.
+
+The DCI-P3 D65 transform writes a pure 2.6 gamma, which has no transfer code (the SMPTE 428 code is for the XYZ encoding a DCP holds), so its transfer is left unspecified. Tell the receiving application the gamma when it asks.

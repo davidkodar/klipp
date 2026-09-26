@@ -27380,9 +27380,10 @@ mod prefs_apply_tests {
 
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
-    dialog.video_codec = settings.video_codec;
+    // A preset saved before the container rules may hold a pair FFmpeg
+    // refuses (H.264 in WebM); it opens fitted to its container.
+    (dialog.video_codec, dialog.audio_codec) = settings.format.fit(settings.video_codec, settings.audio_codec);
     dialog.crf = settings.crf;
-    dialog.audio_codec = settings.audio_codec;
     dialog.preset = settings.preset;
     dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
     dialog.rate_control = settings.rate_control;
@@ -31374,44 +31375,16 @@ impl KlippApp {
                                 // requires the GIF container exclusively;
                                 // H.264/H.265 accept any of the four
                                 // mainstream containers.
-                                let codec_requires_mov = self.export_dialog.video_codec.requires_mov();
-                                let codec_requires_gif = self.export_dialog.video_codec.requires_gif();
-                                if codec_requires_mov {
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
-                                } else if codec_requires_gif {
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Gif, "GIF");
-                                } else if self.export_dialog.video_codec.requires_webm() {
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
-                                } else {
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mp4, "MP4");
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mkv, "MKV");
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Mov, "MOV");
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::WebM, "WebM");
-                                    ui.selectable_value(&mut self.export_dialog.format, ExportFormat::Gif, "GIF");
+                                for format in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov, ExportFormat::WebM, ExportFormat::Gif] {
+                                    ui.selectable_value(&mut self.export_dialog.format, format, format.label());
                                 }
                             });
-                        // If format changed away from MOV, reset codec if it requires MOV
-                        if self.export_dialog.format != prev_format
-                            && self.export_dialog.format != ExportFormat::Mov
-                            && self.export_dialog.video_codec.requires_mov()
-                        {
-                            self.export_dialog.video_codec = ExportVideoCodec::H264;
-                        }
-                        // If user picked GIF format from a non-GIF codec,
-                        // auto-switch to the GIF codec. Inverse: if the
-                        // codec was Gif and user picked a non-GIF format,
-                        // fall back to H.264.
+                        // A codec the new container cannot hold gives way to
+                        // the container's default, so every pair the dialog
+                        // shows is one FFmpeg will write.
                         if self.export_dialog.format != prev_format {
-                            match self.export_dialog.format {
-                                ExportFormat::Gif if !self.export_dialog.video_codec.requires_gif() => {
-                                    self.export_dialog.video_codec = ExportVideoCodec::Gif;
-                                }
-                                _ if self.export_dialog.video_codec.requires_gif() => {
-                                    self.export_dialog.video_codec = ExportVideoCodec::H264;
-                                }
-                                _ => {}
-                            }
+                            (self.export_dialog.video_codec, self.export_dialog.audio_codec) =
+                                self.export_dialog.format.fit(self.export_dialog.video_codec, self.export_dialog.audio_codec);
                         }
                         // Update file extension when format changes
                         if self.export_dialog.format != prev_format {
@@ -31433,11 +31406,11 @@ impl KlippApp {
                                 ui.separator();
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
-                                if self.export_dialog.format == ExportFormat::Mov {
+                                if self.export_dialog.format.holds_video(ExportVideoCodec::ProRes422) {
                                     ui.separator();
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — alpha/mastering");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — 4:4:4 mastering");
                                     ui.separator();
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — Avid interchange");
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — Avid high bitrate");
@@ -31453,13 +31426,19 @@ impl KlippApp {
                         );
                         ui.end_row();
 
-                        // Auto-switch to MOV when ProRes/DNxHD codec is selected
+                        // A codec the container cannot hold moves the export
+                        // to the codec's own container (ProRes and DNxHD to
+                        // MOV, VP9 to WebM), and the audio follows.
                         if self.export_dialog.video_codec != prev_codec
-                            && self.export_dialog.video_codec.requires_mov()
+                            && !self.export_dialog.format.holds_video(self.export_dialog.video_codec)
                         {
                             let old_fmt_ext = self.export_dialog.format.extension();
-                            self.export_dialog.format = ExportFormat::Mov;
-                            let new_fmt_ext = "mov";
+                            let format = self.export_dialog.video_codec.home_format();
+                            self.export_dialog.format = format;
+                            if !format.holds_audio(self.export_dialog.audio_codec) {
+                                self.export_dialog.audio_codec = format.default_audio();
+                            }
+                            let new_fmt_ext = format.extension();
                             if self.export_dialog.output_path.ends_with(&format!(".{old_fmt_ext}")) {
                                 let base = &self.export_dialog.output_path[..self.export_dialog.output_path.len() - old_fmt_ext.len()];
                                 self.export_dialog.output_path = format!("{base}{new_fmt_ext}");
@@ -31759,15 +31738,25 @@ impl KlippApp {
                             egui::ComboBox::from_id_salt("export_acodec")
                                 .selected_text(self.export_dialog.audio_codec.label())
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Aac, "AAC");
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Mp3, "MP3");
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Opus, "Opus");
-                                    ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Flac, "FLAC (lossless)");
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)");
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)");
-                                    ui.separator();
-                                    ui.selectable_value(&mut self.export_dialog.audio_codec, ExportAudioCodec::Copy, ExportAudioCodec::Copy.label());
+                                    // Only what the container holds: MOV takes no
+                                    // Opus or FLAC, WebM only Opus.
+                                    let format = self.export_dialog.format;
+                                    for group in [
+                                        &[(ExportAudioCodec::Aac, "AAC"), (ExportAudioCodec::Mp3, "MP3"), (ExportAudioCodec::Opus, "Opus")][..],
+                                        &[(ExportAudioCodec::Flac, "FLAC (lossless)"), (ExportAudioCodec::Pcm16, "PCM 16-bit (WAV)"), (ExportAudioCodec::Pcm24, "PCM 24-bit (WAV)")][..],
+                                        &[(ExportAudioCodec::Copy, ExportAudioCodec::Copy.label())][..],
+                                    ] {
+                                        let held: Vec<_> = group.iter().filter(|(c, _)| format.holds_audio(*c)).collect();
+                                        if held.is_empty() {
+                                            continue;
+                                        }
+                                        if group[0].0 != ExportAudioCodec::Aac {
+                                            ui.separator();
+                                        }
+                                        for (codec, label) in held {
+                                            ui.selectable_value(&mut self.export_dialog.audio_codec, *codec, *label);
+                                        }
+                                    }
                                 });
                         });
                         ui.end_row();
@@ -32137,7 +32126,21 @@ impl KlippApp {
             });
             ui.add_space(4.0);
         }
-        let path_ok = !self.export_dialog.output_path.trim().is_empty();
+        // A pair the container cannot hold (from an older preset) is
+        // said here and blocks the render, which would otherwise fail
+        // only after the mixdown had run.
+        let (format, video, audio) = (self.export_dialog.format, self.export_dialog.video_codec, self.export_dialog.audio_codec);
+        let container_problem = klipp_core::ExportSettings { format, video_codec: video, audio_codec: audio, ..Default::default() }.container_problem();
+        if let Some(problem) = &container_problem {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(format!("\u{26A0} {problem}")).size(11.0).color(ui.visuals().warn_fg_color));
+            });
+            ui.add_space(4.0);
+        }
+        let path_given = !self.export_dialog.output_path.trim().is_empty();
+        let path_ok = path_given && container_problem.is_none();
+        let disabled_reason = if path_given { "This container cannot hold the chosen codec" } else { "Choose an output file first" };
         let h = crate::theme::control::REGULAR;
         ui.horizontal(|ui| {
             // Secondary actions run from the left, the primary one is
@@ -32155,7 +32158,7 @@ impl KlippApp {
                     path_ok,
                     egui::Button::new("Add to Queue").min_size(egui::vec2(120.0, h)),
                 )
-                .on_disabled_hover_text("Choose an output file first")
+                .on_disabled_hover_text(disabled_reason)
                 .clicked()
             {
                 let path = PathBuf::from(&self.export_dialog.output_path);
@@ -32213,7 +32216,7 @@ impl KlippApp {
                     .rounding(4.0)
                     .min_size(egui::vec2(140.0, h));
                 ui.add_enabled(path_ok, btn)
-                    .on_disabled_hover_text("Choose an output file first")
+                    .on_disabled_hover_text(disabled_reason)
                     .clicked()
             };
 
