@@ -294,11 +294,15 @@ fn a_global_lut_in_an_acescg_project_is_bracketed_on_both_sides() {
     // without it, then the node's bracketed lookup. Straight alpha on
     // both, since the renderer's LUT goes on before the premultiply.
     let straight = RenderOptions { keep_alpha: true, ..Default::default() };
+    // Tetrahedral on both, stated rather than left to the default the
+    // expected value below assumes.
     let mut plain = renderer();
+    plain.set_lut_tetrahedral(true);
     plain.set_working_colorspace(AcesCG);
     let mut want = plain.render(&seq, tc(1.0), W, H, &mut src, straight);
     klipp_color::apply_3d_lut_linear_ws(&mut want, &lut, 0.9, AcesCG, true);
     let mut r = renderer();
+    r.set_lut_tetrahedral(true);
     r.set_working_colorspace(AcesCG);
     r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.9 }));
     let d = worst(&ap1_display(&want), &ap1_display(&r.render(&seq, tc(1.0), W, H, &mut src, straight)));

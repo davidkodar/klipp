@@ -5,7 +5,15 @@
 //! primaries matrices and the shader did not, so in an ACEScg project
 //! an untagged `.cube` looked one way in the viewer and another in a
 //! CPU export or a baked grade (#422). These run the node itself
-//! through the executor, both ways, where the two used to part.
+//! through the executor, both ways, where the two used to part — on
+//! the chained GPU path, which is the one a graph takes; the one-node
+//! GPU fallback computes the same bracket and hands it to the same
+//! shader.
+//!
+//! CPU against GPU cannot tell a bracket that goes the wrong way from
+//! one that goes the right way, since both sides take the same pair of
+//! matrices. So the first test holds them to what the bracket is *for*:
+//! the same colour, given in Rec.709 or in ACEScg, gets the same look.
 
 use klipp_core::WorkingColorspace;
 use klipp_nodes::graph::{Edge, Node, NodeGraph, NodeId, NodePos};
@@ -80,6 +88,23 @@ fn look(input: Option<WorkingColorspace>, output: Option<WorkingColorspace>) -> 
     }
 }
 
+fn run_on(input: &[f32], g: &NodeGraph, ws: WorkingColorspace, gpu: bool) -> (Vec<f32>, klipp_nodes::executor::ChainStats) {
+    let mut exec = if gpu { GraphExecutor::new() } else { GraphExecutor::new_cpu_only() };
+    exec.set_working_colorspace(ws);
+    let out = exec.execute_linear(input, g, W, H, 0.0, 0, None, None).expect("graph runs").0;
+    (out, exec.last_run_chain_stats())
+}
+
+/// Each pixel through a 3×3 primaries matrix, alpha kept.
+fn convert(px: &[f32], m: [[f32; 3]; 3]) -> Vec<f32> {
+    px.chunks_exact(4)
+        .flat_map(|p| {
+            let o = klipp_color::primaries::matrix3_mul_vec(m, [p[0], p[1], p[2]]);
+            [o[0], o[1], o[2], p[3]]
+        })
+        .collect()
+}
+
 fn run(g: &NodeGraph, ws: WorkingColorspace, gpu: bool) -> (Vec<f32>, klipp_nodes::executor::ChainStats) {
     let mut exec = if gpu { GraphExecutor::new() } else { GraphExecutor::new_cpu_only() };
     exec.set_working_colorspace(ws);
@@ -112,6 +137,34 @@ fn same_both_ways(name: &str, g: &NodeGraph, ws: WorkingColorspace) -> Option<Ve
     eprintln!("{name}: worst CPU vs GPU = {w:.3} levels");
     assert!(w < 1.0, "{name}: CPU and GPU differ by {w:.2} display levels");
     Some(gpu)
+}
+
+/// The bracket's direction: a picture given in Rec.709, and the same
+/// picture given in ACEScg, come out as the same look. A swapped,
+/// transposed or inverted matrix fails this; CPU against GPU does not
+/// see it. Checked on the CPU first, so a machine with no GPU still
+/// guards it, then on the GPU when there is one.
+#[test]
+fn the_same_colour_gets_the_same_look_in_either_project() {
+    use klipp_color::primaries::working_space_conversion_matrix as m;
+    let (to_ap1, to_709) = (
+        m(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG).unwrap(),
+        m(WorkingColorspace::AcesCG, WorkingColorspace::Rec709Linear).unwrap(),
+    );
+    let g = lut_graph(look(None, None));
+    let src = frame();
+    let as_ap1 = convert(&src, to_ap1);
+    for gpu in [false, true] {
+        let (rec709, stats) = run_on(&src, &g, WorkingColorspace::Rec709Linear, gpu);
+        if gpu && stats.extends == 0 && stats.flushes == 0 {
+            eprintln!("no usable GPU; the CPU half ran");
+            return;
+        }
+        let (aces, _) = run_on(&as_ap1, &g, WorkingColorspace::AcesCG, gpu);
+        let w = worst_levels(&rec709, &convert(&aces, to_709));
+        eprintln!("same colour, either project (gpu {gpu}): worst {w:.3} levels");
+        assert!(w < 0.5, "gpu {gpu}: the look differs by {w:.2} levels between a Rec.709 and an ACEScg project");
+    }
 }
 
 #[test]
