@@ -191,6 +191,9 @@ struct ActiveAudioSource {
     /// boundary — without this check the first clip's chain bleeds into
     /// the second. `audio_fingerprint_for_clip` is the canonical hash.
     audio_chain_fingerprint: u64,
+    /// [`audio_settings_fingerprint_for`] of the settings the running
+    /// chain has, so a change is handed to it once.
+    settings_fingerprint: u64,
     source: AudioSource,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
@@ -1614,10 +1617,32 @@ impl PlaybackEngine {
     /// going. Before this, sources were made only when playback started
     /// and at a video cut, so a late effect was silent and an ended one
     /// restarted every source at the next cut — a gap in the music.
+    /// Hand each running source's chain the current settings of the clip
+    /// it plays, where they changed (a slider, a preset, wet/dry).
+    fn push_audio_effect_settings(&mut self) {
+        let rows = self.audio_rows_at(self.playhead);
+        for active in &mut self.audio_sources {
+            let Some((_, media_id, _, _, effects, _)) = rows.iter().find(|r| r.0 == active.track_index) else { continue };
+            if *media_id != active.media_id {
+                continue;
+            }
+            let fp = audio_settings_fingerprint_for(effects);
+            if fp != active.settings_fingerprint {
+                debug!("audio: new effect settings for track {}", active.track_index);
+                active.source.update_effect_settings(effects.clone());
+                active.settings_fingerprint = fp;
+            }
+        }
+    }
+
     fn reconcile_audio_sources(&mut self) {
         if self.state != PlaybackState::Playing {
             return;
         }
+        // A settings change can arrive before the sequence snapshot it was
+        // made on, so the SequenceUpdated push may still read the old
+        // values; checking each tick while playing picks the new ones up.
+        self.push_audio_effect_settings();
         let tc = self.playhead;
         let rows = self.audio_rows_at(tc);
         let wanted: std::collections::HashMap<usize, (MediaId, u64)> = rows
@@ -3126,6 +3151,10 @@ impl PlaybackEngine {
                                 active.source.resume();
                             }
                         }
+                    } else {
+                        // Same chains, maybe new settings: into the running
+                        // chains in place, no restart and no gap.
+                        self.push_audio_effect_settings();
                     }
                 }
                 // Re-read clip speed in case SpeedRamp changed it during playback
@@ -3962,16 +3991,6 @@ pub(crate) fn audio_chain_fingerprint_for(
             fp = fp.wrapping_mul(31).wrapping_add(b as u64);
         }
         fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
-        // Settings too: a running chain holds the values it was built
-        // with, so without them a slider, preset or mix change is never
-        // heard in playback (export reads them fresh and did hear it).
-        fp = fp.wrapping_mul(31).wrapping_add(ae.wet_dry.to_bits() as u64);
-        for (name, value) in &ae.params {
-            for b in name.bytes() {
-                fp = fp.wrapping_mul(31).wrapping_add(b as u64);
-            }
-            fp = fp.wrapping_mul(31).wrapping_add(value.to_bits() as u64);
-        }
     }
     // Sort kf-track keys before hashing so HashMap iteration order
     // doesn't leak nondeterminism into the fingerprint.
@@ -3988,6 +4007,25 @@ pub(crate) fn audio_chain_fingerprint_for(
             fp = fp.wrapping_mul(31).wrapping_add(kf.time_secs.to_bits());
             fp = fp.wrapping_mul(31).wrapping_add(kf.value.to_bits() as u64);
             fp = fp.wrapping_mul(31).wrapping_add(kf.interpolation as u64);
+        }
+    }
+    fp
+}
+
+/// Hash the SETTINGS of an audio chain: each effect's parameters and
+/// wet/dry. A change here does not rebuild the chain (that would restart
+/// the audio and gap it on every slider tick); it is handed to the
+/// running chain in place (`AudioSource::update_effect_settings`). Without
+/// it a slider, preset or mix change was never heard in playback.
+pub(crate) fn audio_settings_fingerprint_for(audio_effects: &[klipp_core::AudioEffectInstance]) -> u64 {
+    let mut fp: u64 = 0;
+    for ae in audio_effects {
+        fp = fp.wrapping_mul(31).wrapping_add(ae.wet_dry.to_bits() as u64);
+        for (name, value) in &ae.params {
+            for b in name.bytes() {
+                fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+            }
+            fp = fp.wrapping_mul(31).wrapping_add(value.to_bits() as u64);
         }
     }
     fp
@@ -4073,6 +4111,7 @@ impl PlaybackEngine {
         // checks compare this against the new clip to decide whether
         // a chain rebuild is required.
         let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
+        let settings_fp = audio_settings_fingerprint_for(&audio_effects);
 
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
@@ -4101,6 +4140,7 @@ impl PlaybackEngine {
                             track_index,
                             media_id,
                             audio_chain_fingerprint: chain_fp,
+                            settings_fingerprint: settings_fp,
                             source: AudioSource::PcmFeeder(feeder),
                         });
                         return;
@@ -4126,6 +4166,7 @@ impl PlaybackEngine {
                     track_index,
                     media_id,
                     audio_chain_fingerprint: chain_fp,
+                    settings_fingerprint: settings_fp,
                     source: AudioSource::Decoder(adec),
                 });
             }
@@ -5472,6 +5513,9 @@ impl PlaybackEngine {
                         track_index: ps_source.track_index,
                         media_id: ps_source.media_id,
                         audio_chain_fingerprint: ps_source.audio_chain_fingerprint,
+                        // Built with the settings of pre-seek time; the
+                        // next settings push re-applies the current ones.
+                        settings_fingerprint: 0,
                         source: ps_source.source,
                     });
                 }
@@ -11395,11 +11439,11 @@ mod audio_fingerprint_kf_tests {
              reverb on the dry clip");
     }
 
-    /// A running chain holds the settings it was built with, so a changed
-    /// setting must change the fingerprint or playback never hears it.
+    /// A running chain holds the settings it was built with: a changed
+    /// setting must reach it, and must not restart it.
     #[test]
-    fn audio_chain_fingerprint_changes_with_a_setting() {
-        use crate::engine::audio_chain_fingerprint_for;
+    fn a_setting_changes_the_settings_fingerprint_not_the_chain() {
+        use crate::engine::{audio_chain_fingerprint_for, audio_settings_fingerprint_for};
         let kfs = std::collections::HashMap::new();
         let chain = |reduction: f32, wet_dry: f32| {
             vec![AudioEffectInstance {
@@ -11409,10 +11453,14 @@ mod audio_fingerprint_kf_tests {
                 params: vec![("reduction".into(), reduction), ("mode".into(), 0.0)],
             }]
         };
-        let base = audio_chain_fingerprint_for(&chain(30.0, 1.0), &kfs);
-        assert_eq!(base, audio_chain_fingerprint_for(&chain(30.0, 1.0), &kfs));
-        assert_ne!(base, audio_chain_fingerprint_for(&chain(12.0, 1.0), &kfs), "a preset or slider change must rebuild the chain");
-        assert_ne!(base, audio_chain_fingerprint_for(&chain(30.0, 0.5), &kfs), "a wet/dry change must rebuild the chain");
+        // A slider move must not rebuild the chain (a restart gaps the
+        // audio on every tick of a drag)...
+        assert_eq!(audio_chain_fingerprint_for(&chain(30.0, 1.0), &kfs), audio_chain_fingerprint_for(&chain(12.0, 0.5), &kfs));
+        // ...but it must reach the running chain.
+        let base = audio_settings_fingerprint_for(&chain(30.0, 1.0));
+        assert_eq!(base, audio_settings_fingerprint_for(&chain(30.0, 1.0)));
+        assert_ne!(base, audio_settings_fingerprint_for(&chain(12.0, 1.0)), "a preset or slider change must be pushed");
+        assert_ne!(base, audio_settings_fingerprint_for(&chain(30.0, 0.5)), "a wet/dry change must be pushed");
     }
 
     /// Pin the parity: two clips with the same chain produce the same

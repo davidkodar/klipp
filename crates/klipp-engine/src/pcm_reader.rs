@@ -80,6 +80,11 @@ fn fade_envelope(
 }
 
 /// Commands for the PCM feeder thread.
+/// How far ahead of playback a feed with audio effects renders, in
+/// milliseconds: enough margin for the effect chain, short enough that a
+/// setting changed while playing is heard within about a quarter second.
+pub(crate) const EFFECT_READ_AHEAD_SECS_X1000: u32 = 250;
+
 enum PcmCommand {
     SeekTo(f64),
     Pause,
@@ -108,6 +113,9 @@ pub struct PcmAudioFeeder {
     pub fade_out_curve: Arc<AtomicU32>,
     pub fade_gain: Arc<AtomicU32>,     // pre-fader gain (f32 bits)
     pub anti_click: Arc<AtomicBool>,   // apply 2ms anti-click fade at boundaries
+    /// New effect settings for the running chain; see
+    /// [`crate::audio_source::AudioSource::update_effect_settings`].
+    pub effect_settings: crate::audio_source::EffectSettingsSlot,
 }
 
 impl PcmAudioFeeder {
@@ -189,6 +197,8 @@ impl PcmAudioFeeder {
         let foc = fade_out_curve.clone();
         let fg = fade_gain.clone();
         let ac = anti_click.clone();
+        let effect_settings: crate::audio_source::EffectSettingsSlot = Default::default();
+        let settings_rx = effect_settings.clone();
 
         let needs_resample = output_rate != SAMPLE_RATE;
 
@@ -216,6 +226,7 @@ impl PcmAudioFeeder {
                         ac,
                         audio_effects,
                         audio_effect_keyframes,
+                        settings_rx,
                     );
                 });
             })
@@ -237,6 +248,7 @@ impl PcmAudioFeeder {
                 fade_out_curve,
                 fade_gain,
                 anti_click,
+                effect_settings,
             },
             consumer,
         ))
@@ -332,6 +344,7 @@ fn pcm_feed_thread(
     anti_click: Arc<AtomicBool>,
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    effect_settings: crate::audio_source::EffectSettingsSlot,
 ) {
     // Flush denormals on this DSP thread — same reason
     // as in audio_decoder. A silent PCM region with biquads engaged
@@ -386,6 +399,13 @@ fn pcm_feed_thread(
     let chunk_floats = chunk_frames * CHANNELS;
 
     loop {
+        // New settings for the running chain (a slider moved), in place.
+        if let Some(ref mut chain) = effect_chain {
+            if let Some(settings) = effect_settings.try_lock().ok().and_then(|mut p| p.take()) {
+                let applied = chain.apply_settings(&settings);
+                debug!("pcm_feed: effect settings applied in place ({applied}), {} ms queued", producer.occupied_len() / CHANNELS * 1000 / output_rate as usize);
+            }
+        }
         // Process commands
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
@@ -469,6 +489,13 @@ fn pcm_feed_thread(
         let vacant = producer.vacant_len();
         if vacant < chunk_floats {
             std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        // With effects, render only a little ahead: a setting changed
+        // while playing reaches audio not yet rendered, so two seconds of
+        // read-ahead made a slider change audible two seconds late.
+        if effect_chain.is_some() && producer.occupied_len() >= EFFECT_READ_AHEAD_SECS_X1000 as usize * output_rate as usize * CHANNELS / 1000 {
+            std::thread::sleep(Duration::from_millis(2));
             continue;
         }
 

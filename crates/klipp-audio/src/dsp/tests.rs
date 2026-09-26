@@ -1391,3 +1391,21 @@ fn process_aligned_removes_the_chain_latency_from_a_stream() {
     let out = run(&mut chain, from);
     assert_eq!(&out[..], &input[from..from + out.len()]);
 }
+
+#[test]
+fn apply_settings_changes_a_running_chain_in_place() {
+    let inst = |threshold: f32, wet_dry: f32| AudioEffectInstance {
+        effect_type: "compressor".into(),
+        enabled: true,
+        wet_dry,
+        params: vec![("threshold".into(), threshold)],
+    };
+    let mut chain = AudioEffectChain::from_instances(&[inst(-10.0, 1.0)], SR);
+    assert!(chain.apply_settings(&[inst(-30.0, 0.5)]));
+    assert_eq!(chain.slots[0].effect.get_param("threshold"), Some(-30.0));
+    assert_eq!(chain.slots[0].wet_dry, 0.5);
+    // Another shape needs a rebuild: refused, nothing changed.
+    let two = [inst(-5.0, 1.0), inst(-5.0, 1.0)];
+    assert!(!chain.apply_settings(&two));
+    assert_eq!(chain.slots[0].effect.get_param("threshold"), Some(-30.0));
+}

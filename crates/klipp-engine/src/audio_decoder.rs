@@ -77,6 +77,9 @@ pub struct AudioDecoder {
     /// thread's lifetime); variable latency is filed as
     /// PDC-NEXT-VARIABLE-LATENCY.
     pub latency_advertise: Arc<AtomicU32>,
+    /// New effect settings for the running chain; see
+    /// [`crate::audio_source::AudioSource::update_effect_settings`].
+    pub effect_settings: crate::audio_source::EffectSettingsSlot,
 }
 
 impl AudioDecoder {
@@ -123,12 +126,14 @@ impl AudioDecoder {
         let gen_clone = seek_generation.clone();
         let latency_clone = latency_advertise.clone();
         let path_owned = path.to_path_buf();
+        let effect_settings: crate::audio_source::EffectSettingsSlot = Default::default();
+        let settings_rx = effect_settings.clone();
 
         let thread = std::thread::Builder::new()
             .name("klipp-adec".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-adec", || {
-                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, latency_clone, audio_effects, audio_effect_keyframes, clip_source_in_secs);
+                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, latency_clone, audio_effects, audio_effect_keyframes, clip_source_in_secs, settings_rx);
                 });
             })
             .map_err(|e| AudioDecoderError::Open(format!("spawn thread: {e}")))?;
@@ -144,6 +149,7 @@ impl AudioDecoder {
                 post_seek_pts_us,
                 seek_generation,
                 latency_advertise,
+                effect_settings,
             },
             consumer,
         ))
@@ -209,6 +215,7 @@ fn audio_decode_thread(
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     clip_source_in_secs: f64,
+    effect_settings: crate::audio_source::EffectSettingsSlot,
 ) {
     // Flush denormals on this DSP thread so a silent
     // input (between clips, post-fade-out) can't drop the biquad/EQ
@@ -338,6 +345,12 @@ fn audio_decode_thread(
     let mut fx_accum_start_pts_secs: Option<f64> = None;
 
     loop {
+        // New settings for the running chain (a slider moved), in place.
+        if let Some(ref mut chain) = effect_chain {
+            if let Some(settings) = effect_settings.try_lock().ok().and_then(|mut p| p.take()) {
+                chain.apply_settings(&settings);
+            }
+        }
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DecodeCommand::SeekTo(secs, _) | DecodeCommand::SeekOn(secs, _) => {
@@ -404,6 +417,15 @@ fn audio_decode_thread(
             if !overflow_buf.is_empty() {
                 continue; // still have overflow, wait for more space
             }
+        }
+        // With effects, render only a little ahead, so a setting changed
+        // while playing is heard soon (see EFFECT_READ_AHEAD_SECS_X1000).
+        if effect_chain.is_some()
+            && producer.occupied_len()
+                >= crate::pcm_reader::EFFECT_READ_AHEAD_SECS_X1000 as usize * output_rate as usize * 2 / 1000
+        {
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
         }
 
         // ── Phase 1: Drain decoded audio frames from the decoder ──
