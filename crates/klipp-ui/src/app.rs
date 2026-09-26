@@ -15461,8 +15461,8 @@ impl KlippApp {
                     self.state.toast.show("Auto White Balance: the viewer has no picture to read yet");
                 } else if reading == Some(None) {
                     self.state.toast.show(
-                        "Auto White Balance: nothing neutral in this frame to balance from \
-                         (no grey, white or black surface) — the balance is left as it was",
+                        "Auto White Balance: no grey surface in the mid-tones to balance from \
+                         — the balance is left as it was",
                     );
                 } else if let Some(Some((temp_adj, tint_adj))) = reading {
                     // Apply to the clip's ColorBalance node. Snapshot the graph
@@ -15472,6 +15472,7 @@ impl KlippApp {
                     let mut snapshot: Option<klipp_nodes::NodeGraph> = None;
                     let mut committed: Option<klipp_nodes::NodeGraph> = None;
                     let mut applied = false;
+                    let mut railed = false;
                     for track in &mut seq.tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             snapshot = Some(clip.node_graph.clone());
@@ -15490,8 +15491,11 @@ impl KlippApp {
                                 // correction is on top of the balance the
                                 // clip already has, not instead of it.
                                 let node = &mut clip.node_graph.nodes[idx];
-                                node.params.temperature = Some((node.params.temperature.unwrap_or(0.0) + temp_adj).clamp(-50.0, 50.0));
-                                node.params.tint = Some((node.params.tint.unwrap_or(0.0) + tint_adj).clamp(-50.0, 50.0));
+                                let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
+                                let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
+                                node.params.temperature = Some(t);
+                                node.params.tint = Some(g);
+                                railed = t_railed || g_railed;
                                 applied = true;
                             }
                             committed = Some(clip.node_graph.clone());
@@ -15508,6 +15512,15 @@ impl KlippApp {
                                 },
                             });
                             self.state.dirty = true;
+                        }
+                        // The sliders stop at ±50; a strong cast, or a clip
+                        // already near the end, gets part of what it needs.
+                        if railed {
+                            self.state.toast.show(
+                                "Auto White Balance: the correction reached the end of the temperature or tint \
+                                 range, so the frame is only partly balanced — fix the cast at the source or \
+                                 with another balance node",
+                            );
                         }
                     } else {
                         self.state.toast.show("Add a Colour Balance node to use Auto White Balance");
@@ -40779,6 +40792,26 @@ mod project_identity_tests {
     fn a_failed_save_or_open_moves_nothing() {
         assert!(!project_identity_moves(Saved, Some(Path::new("/p/a.klipp")), Some(Path::new("/p/b.klipp")), true));
         assert!(!project_identity_moves(Replaced, None, Some(Path::new("/p/a.klipp")), true));
+    }
+}
+
+/// `value + adjustment` held to the temperature and tint sliders' ±50,
+/// and whether it had to be (#405: the clamp used to be silent).
+fn add_on_rail(value: f32, adjustment: f32) -> (f32, bool) {
+    let want = value + adjustment;
+    let held = want.clamp(-50.0, 50.0);
+    (held, (held - want).abs() > 0.01)
+}
+
+#[cfg(test)]
+mod add_on_rail_tests {
+    use super::add_on_rail;
+
+    #[test]
+    fn within_the_range_is_kept_and_past_it_is_held_and_said() {
+        assert_eq!(add_on_rail(10.0, -12.0), (-2.0, false));
+        assert_eq!(add_on_rail(40.0, 20.0), (50.0, true));
+        assert_eq!(add_on_rail(-45.0, -30.0), (-50.0, true));
     }
 }
 
