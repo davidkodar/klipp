@@ -779,12 +779,19 @@ impl MagneticEditor {
         let mut left_clip = original.clone();
         left_clip.timeline_out = at_time;
         left_clip.source_out = original.source_in + offset;
+        // The fades belong to the clip's own ends, not to the cut: the
+        // left keeps its fade in and loses the fade out, or the join
+        // would dip to nothing on a cut that should pass unheard. The
+        // legacy `Track::split_at` does the same, so the two blades
+        // agree.
+        left_clip.fade_out_secs = 0.0;
         // Left keeps magnetic_anchor (and its id).
 
         let mut right_clip = original.clone();
         right_clip.id = ClipId::new();
         right_clip.timeline_in = at_time;
         right_clip.source_in = original.source_in + offset;
+        right_clip.fade_in_secs = 0.0;
         // Right keeps magnetic_anchor too (the anchor is a relationship
         // TO some other clip — both halves sit at the anchored location,
         // so both should stay connected). Dropping it on the right half
@@ -2534,6 +2541,25 @@ mod tests {
         assert_eq!(track.clips[1].source_out, tc(48));
         // Right half has no magnetic anchor
         assert!(track.clips[1].magnetic_anchor.is_none());
+    }
+
+    /// #429: the magnetic blade leaves no fade at the cut either, so it
+    /// and the legacy blade agree about what a split sounds like.
+    #[test]
+    fn test_blade_keeps_each_half_only_its_own_outer_fade() {
+        let mut seq = make_sequence(&[(0, 96)]);
+        seq.tracks[0].clips[0].fade_in_secs = 0.5;
+        seq.tracks[0].clips[0].fade_out_secs = 0.75;
+        let clip_id = seq.tracks[0].clips[0].id;
+
+        let result = MagneticEditor::blade(&mut seq, clip_id, tc(48)).unwrap();
+        let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { panic!("a blade") };
+        assert_eq!((left_clip.fade_in_secs, left_clip.fade_out_secs), (0.5, 0.0), "the left half does not fade out at the cut");
+        assert_eq!((right_clip.fade_in_secs, right_clip.fade_out_secs), (0.0, 0.75), "the right half does not fade in at the cut");
+
+        let track = &seq.tracks[0];
+        assert_eq!((track.clips[0].fade_in_secs, track.clips[0].fade_out_secs), (0.5, 0.0));
+        assert_eq!((track.clips[1].fade_in_secs, track.clips[1].fade_out_secs), (0.0, 0.75));
     }
 
     #[test]

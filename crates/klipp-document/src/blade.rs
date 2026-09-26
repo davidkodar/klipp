@@ -314,6 +314,32 @@ mod tests {
         }
     }
 
+    /// #429: the cut is not an end of the clip, so the blade leaves no
+    /// fade at the join it makes — on either kind of track — and undo
+    /// brings the clip's own fades back.
+    #[test]
+    fn a_blade_leaves_no_fade_at_the_join_it_makes() {
+        for magnetic in [false, true] {
+            let (mut seq, _, _) = pair((0, 250), (0, 250));
+            for t in seq.tracks.iter_mut() {
+                t.clips[0].fade_in_secs = 0.5;
+                t.clips[0].fade_out_secs = 0.75;
+            }
+            let mut history = CommandHistory::new();
+            blade(&mut seq, &mut history, 125, magnetic).unwrap();
+            for t in &seq.tracks {
+                assert_eq!((t.clips[0].fade_in_secs, t.clips[0].fade_out_secs), (0.5, 0.0), "the left half does not fade out at the cut (magnetic {magnetic})");
+                assert_eq!((t.clips[1].fade_in_secs, t.clips[1].fade_out_secs), (0.0, 0.75), "the right half does not fade in at the cut (magnetic {magnetic})");
+            }
+
+            undo(&mut seq, &mut history);
+            for t in &seq.tracks {
+                assert_eq!(t.clips.len(), 1, "magnetic {magnetic}");
+                assert_eq!((t.clips[0].fade_in_secs, t.clips[0].fade_out_secs), (0.5, 0.75), "undo restores the clip's own fades (magnetic {magnetic})");
+            }
+        }
+    }
+
     /// #406: the halves pair by position, not by an equal out-time, so a
     /// sound that runs on past its picture is still re-linked.
     #[test]

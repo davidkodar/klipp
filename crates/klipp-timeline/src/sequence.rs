@@ -1021,6 +1021,10 @@ impl Track {
     /// of source and the keyframes, markers and effect keyframes before
     /// the cut; the right takes the rest, re-timed from its own start.
     /// Both get new ids. Returns `(left, right)`.
+    ///
+    /// The fades stay at the clip's own ends — the left keeps its fade in
+    /// and the right its fade out — and the two edges the cut makes have
+    /// no fade at all, so a split never dips the join it creates.
     pub fn split_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
         let pos = self.clips.iter().position(|c| c.id == clip_id)?;
         let clip = self.clips[pos].clone();
@@ -1117,7 +1121,9 @@ impl Track {
             volume: clip.volume,
             pan: clip.pan,
             fade_in_secs: clip.fade_in_secs,
-            fade_out_secs: clip.fade_out_secs,
+            // The cut is not an edge of the clip: a fade out here would
+            // dip the join to nothing on a cut that should pass unheard.
+            fade_out_secs: 0.0,
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
             channel_config: clip.channel_config,
@@ -1180,7 +1186,8 @@ impl Track {
             gain: clip.gain,
             volume: clip.volume,
             pan: clip.pan,
-            fade_in_secs: clip.fade_in_secs,
+            // The other side of the join: no fade in here either.
+            fade_in_secs: 0.0,
             fade_out_secs: clip.fade_out_secs,
             fade_in_curve: clip.fade_in_curve,
             fade_out_curve: clip.fade_out_curve,
@@ -2696,6 +2703,24 @@ mod tests {
         assert_eq!(track.clips[0].source_out, tc(24));
         assert_eq!(track.clips[1].timeline_in, tc(24));
         assert_eq!(track.clips[1].source_in, tc(24));
+    }
+
+    /// #429: the cut is not an end of the clip, so neither half fades at
+    /// it. A blade through a clip with a fade out used to leave a fade
+    /// out on the left half and a fade in on the right, dipping to
+    /// nothing at a join that should pass unnoticed.
+    #[test]
+    fn split_keeps_each_half_only_its_own_outer_fade() {
+        let mut c = make_clip(0, 96, 0, 96);
+        c.fade_in_secs = 0.5;
+        c.fade_out_secs = 0.75;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        let (a, b) = track.split_at(id, tc(48)).expect("split");
+        assert_eq!((a.fade_in_secs, a.fade_out_secs), (0.5, 0.0), "the left half keeps its fade in and does not fade out at the cut");
+        assert_eq!((b.fade_in_secs, b.fade_out_secs), (0.0, 0.75), "the right half keeps its fade out and does not fade in at the cut");
+        assert_eq!((track.clips[0].fade_out_secs, track.clips[1].fade_in_secs), (0.0, 0.0), "the clips on the track carry the same fades");
     }
 
     #[test]
