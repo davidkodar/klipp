@@ -2578,7 +2578,7 @@ impl PreferencesPanel {
             .map(|d| format!("Default ({})", d.name))
             .unwrap_or_else(|| "Default (auto)".to_string());
 
-        Self::setting_row(ui, "Output device", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Output device  \u{2022}  restart required", "Playback opens this device at launch; a device that has gone plays through the default.", theme, |ui| {
             let current_text = prefs
                 .audio_hardware
                 .output_device
