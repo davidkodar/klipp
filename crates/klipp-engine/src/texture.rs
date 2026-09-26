@@ -131,6 +131,12 @@ pub struct FrameBuffer {
     /// bytes clears it. `gpu_output_frame` counts those frames.
     pub gpu_output_live: bool,
     pub gpu_output_frame: u64,
+    /// Where on the timeline the frame in `gpu_output` is, when it was
+    /// written there with no bytes. Kept apart from `presented`, which
+    /// names the bytes: a zero-copy frame said nothing about them, and
+    /// naming them with its time paired a reader's bytes with another
+    /// frame's position.
+    gpu_presented: Option<klipp_core::RationalTime>,
 
     /// Per-node output thumbnails for the V2 canvas, keyed by node
     /// id. Each entry is a ~96×54 sRGB u8 RGBA buffer. Populated by
@@ -182,6 +188,7 @@ impl FrameBuffer {
             gpu_output_height: 0,
             gpu_output_generation: 0,
             gpu_output_live: false,
+            gpu_presented: None,
             gpu_output_frame: 0,
             node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
@@ -306,7 +313,8 @@ impl FrameBuffer {
         self.nit_map.get((y * self.nit_map_w + x) as usize).copied()
     }
 
-    /// Where on the timeline [`Self::latest_frame`] is.
+    /// Where on the timeline [`Self::latest_frame`] is: always the name of
+    /// those bytes, never of a zero-copy frame newer than them.
     pub fn latest_presented(&self) -> Option<klipp_core::RationalTime> {
         if self.pending_ready { self.pending_presented } else { self.presented }
     }
@@ -316,14 +324,38 @@ impl FrameBuffer {
         if self.pending_ready { self.pending_complete } else { self.complete }
     }
 
-    /// Say which frame the next write is of. The engine calls this with
-    /// every frame it publishes; a frame rendered before every clip's
-    /// stream had its picture says so with `complete` false.
+    /// Say which frame was just published. The engine calls this with
+    /// every frame, right after writing it; a frame rendered before every
+    /// clip's stream had its picture says so with `complete` false.
+    ///
+    /// A frame written as bytes names those bytes. A zero-copy frame
+    /// (after [`Self::note_gpu_frame`]) has no bytes, so it names only
+    /// itself ([`Self::shown_presented`]) and leaves the bytes' name as
+    /// it was: naming older bytes with its time was how a reader waiting
+    /// for "frame n" came away with another frame's picture.
     pub fn set_presented(&mut self, at: klipp_core::RationalTime, complete: bool) {
+        if self.gpu_output_live {
+            self.gpu_presented = Some(at);
+            return;
+        }
         self.pending_presented = Some(at);
-        self.presented = Some(at);
         self.pending_complete = complete;
-        self.complete = complete;
+        // Nothing queued: the frame already on screen is the one named.
+        if !self.pending_ready {
+            self.presented = Some(at);
+            self.complete = complete;
+        }
+    }
+
+    /// Where on the timeline the picture on screen is: the zero-copy frame
+    /// when the newest is one, else the bytes' ([`Self::latest_presented`]).
+    /// For telling someone where the viewer is; a reader of the bytes pairs
+    /// them with [`Self::latest_presented`] instead.
+    pub fn shown_presented(&self) -> Option<klipp_core::RationalTime> {
+        match (self.gpu_output_live, self.gpu_presented) {
+            (true, Some(at)) => Some(at),
+            _ => self.latest_presented(),
+        }
     }
 
     /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
@@ -467,5 +499,40 @@ mod tests {
         assert!(engine_buf.capacity() >= 1000);
         // pending_data has the original engine capacity
         assert_eq!(fb.pending_data.capacity(), engine_cap_before);
+    }
+
+    #[test]
+    fn a_zero_copy_frame_does_not_rename_the_bytes() {
+        let at = |f: i64| klipp_core::RationalTime::from_frames(f, 25);
+        let mut fb = FrameBuffer::new(2, 2);
+        fb.write_frame(vec![10; 16], 2, 2);
+        fb.set_presented(at(10), true);
+        // Playing on: frame 60 goes straight to the GPU texture, no bytes.
+        fb.note_gpu_frame();
+        fb.set_presented(at(60), true);
+        let (data, ..) = fb.latest_frame();
+        assert_eq!(data[0], 10);
+        assert_eq!(fb.latest_presented(), Some(at(10)), "the bytes are still frame 10's");
+        assert_eq!(fb.shown_presented(), Some(at(60)), "the screen shows 60");
+        // Bytes of 61 arrive: the pair moves together, and they are what is shown.
+        fb.write_frame(vec![61; 16], 2, 2);
+        fb.set_presented(at(61), true);
+        assert_eq!(fb.latest_frame().0[0], 61);
+        assert_eq!(fb.latest_presented(), Some(at(61)));
+        assert_eq!(fb.shown_presented(), Some(at(61)));
+    }
+
+    #[test]
+    fn naming_a_queued_frame_does_not_rename_the_one_on_screen() {
+        let at = |f: i64| klipp_core::RationalTime::from_frames(f, 25);
+        let mut fb = FrameBuffer::new(2, 2);
+        fb.write_frame(vec![1; 16], 2, 2);
+        fb.set_presented(at(1), true);
+        assert!(fb.swap_pending());
+        fb.write_frame(vec![2; 16], 2, 2);
+        fb.set_presented(at(2), true);
+        // The UI has not swapped: `presented` still names `data`.
+        assert_eq!(fb.presented, Some(at(1)));
+        assert_eq!(fb.latest_presented(), Some(at(2)));
     }
 }

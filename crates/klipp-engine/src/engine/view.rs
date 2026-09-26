@@ -953,7 +953,11 @@ impl PlaybackEngine {
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
-            fb.set_presented(self.playhead, !self.pending_stream_refresh);
+            // A progress frame is one short of the playhead, shown while a
+            // slow seek decodes: it is published under the playhead only
+            // for want of its own time, so it goes out as not complete,
+            // and nothing waiting for this playhead's picture takes it.
+            fb.set_presented(self.playhead, !self.pending_stream_refresh && !self.presenting_progress);
             match nits {
                 Some((map, mw, mh, step)) => {
                     fb.nit_map = map;
