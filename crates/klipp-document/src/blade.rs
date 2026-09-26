@@ -10,7 +10,7 @@
 //! step.
 
 use crate::history::EditCommand;
-use klipp_core::{ClipId, RationalTime};
+use klipp_core::{ClipId, Fps, RationalTime};
 use klipp_timeline::magnetic::MagneticEditor;
 use klipp_timeline::magnetic_commands::MagneticEditCommand;
 use klipp_timeline::{Clip, Sequence};
@@ -50,12 +50,14 @@ impl BladeRefusal {
     }
 }
 
-/// Whether `cut` lies inside `clip` by more than a frame: the blade's
-/// edge rule, the same on a legacy and a magnetic track, so a pair
-/// split across the two kinds is cut on both or on neither.
-pub fn cut_is_inside(clip: &Clip, cut: RationalTime) -> bool {
-    let one_frame = RationalTime { value: 1, rate: clip.timeline_in.rate };
-    cut > clip.timeline_in + one_frame && cut < clip.timeline_out - one_frame
+/// Whether `cut` lies inside `clip` by more than a frame at `fps`: the
+/// blade's edge rule, the same on a legacy and a magnetic track, so a
+/// pair split across the two kinds is cut on both or on neither. The
+/// frame is the sequence's, not a single tick of the clip's rate, which
+/// at 29.97 is a thirtieth of the frame it stands for.
+pub fn cut_is_inside(clip: &Clip, cut: RationalTime, fps: Fps) -> bool {
+    let frame = klipp_timeline::one_frame(fps);
+    cut > clip.timeline_in + frame && cut < clip.timeline_out - frame
 }
 
 fn overlaps(a: &Clip, b: &Clip) -> bool {
@@ -87,11 +89,12 @@ pub fn blade_linked(
     cut: RationalTime,
     magnetic: impl Fn(usize) -> bool,
 ) -> Result<Vec<EditCommand>, BladeRefusal> {
+    let fps = seq.fps;
     let clip = seq
         .tracks
         .get(track_index)
         .and_then(|t| t.find_clip(clip_id))
-        .filter(|c| cut_is_inside(c, cut))
+        .filter(|c| cut_is_inside(c, cut, fps))
         .cloned()
         .ok_or(BladeRefusal::NotInside)?;
 
@@ -114,7 +117,7 @@ pub fn blade_linked(
     let (mut edit, a, b) = cut_one(seq, track_index, clip_id, cut, magnetic(track_index)).ok_or(BladeRefusal::NotInside)?;
 
     match partner {
-        Some((pti, p)) if cut_is_inside(&p, cut) => {
+        Some((pti, p)) if cut_is_inside(&p, cut, fps) => {
             if let Some((mut p_edit, pa, pb)) = cut_one(seq, pti, p.id, cut, magnetic(pti)) {
                 relink(seq, track_index, a, Some(pa));
                 relink(seq, track_index, b, Some(pb));
@@ -145,6 +148,7 @@ pub fn blade_linked(
 
 /// Cut one clip its track's way. Returns the edit and the halves' ids.
 fn cut_one(seq: &mut Sequence, ti: usize, id: ClipId, cut: RationalTime, magnetic: bool) -> Option<(EditCommand, ClipId, ClipId)> {
+    let fps = seq.fps;
     if magnetic {
         let result = MagneticEditor::blade(seq, id, cut)?;
         let MagneticEditCommand::Blade { left_clip, right_clip, .. } = &result.command else { return None };
@@ -154,7 +158,7 @@ fn cut_one(seq: &mut Sequence, ti: usize, id: ClipId, cut: RationalTime, magneti
         let track = seq.tracks.get_mut(ti)?;
         let position = track.clips.iter().position(|c| c.id == id)?;
         let original_clip = track.clips[position].clone();
-        let (clip_a, clip_b) = track.blade_at(id, cut)?;
+        let (clip_a, clip_b) = track.blade_at(id, cut, fps)?;
         let (a, b) = (clip_a.id, clip_b.id);
         Some((EditCommand::LegacyBladeClip { track_index: ti, original_clip, clip_a, clip_b, position }, a, b))
     }
@@ -432,6 +436,34 @@ mod tests {
         assert_eq!(shape(&seq), before, "neither track was cut");
         assert!(blade_linked(&mut seq, 0, vid, tc(2), kinds).is_ok());
         assert_cross_linked(&seq, 2);
+    }
+
+    /// #434: the edge guard is a frame of the sequence's own fps. At
+    /// 29.97 a frame is 1001 ticks of the 30000 rate, so a guard of one
+    /// tick — about 33 microseconds — let a cut a frame from the head
+    /// through, on both kinds of track.
+    #[test]
+    fn the_edge_guard_is_a_frame_wide_at_a_fractional_rate() {
+        let f = |frames: i64| RationalTime { value: frames * 1001, rate: 30000 };
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::ntsc_29970();
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.magnetic_role = TrackRole::Free;
+        let c = Clip::media(MediaId::new(), f(0), f(100), f(0), f(100));
+        let id = c.id;
+        v1.clips = vec![c.clone()];
+        seq.tracks = vec![v1];
+
+        assert!(!cut_is_inside(&c, f(1), seq.fps), "one frame from the head is meant for the head");
+        assert!(!cut_is_inside(&c, f(99), seq.fps), "one frame from the tail is meant for the tail");
+        assert!(cut_is_inside(&c, f(2), seq.fps), "two frames in is inside the clip");
+
+        for magnetic in [false, true] {
+            assert_eq!(blade_linked(&mut seq, 0, id, f(1), |_| magnetic).err(), Some(BladeRefusal::NotInside), "magnetic {magnetic}");
+            assert_eq!(seq.tracks[0].clips.len(), 1, "nothing was cut (magnetic {magnetic})");
+        }
+        assert!(blade_linked(&mut seq, 0, id, f(2), |_| false).is_ok());
+        assert_eq!(seq.tracks[0].clips.len(), 2, "two frames in cuts");
     }
 
     /// A stale blade of a partner's original id, queued before the pair

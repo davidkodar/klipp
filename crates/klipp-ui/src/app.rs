@@ -20307,9 +20307,10 @@ impl KlippApp {
                 let mut new_clips: Vec<klipp_timeline::Clip> = Vec::new();
                 let mut current_id = cid;
                 {
+                    let seq_fps = self.state.sequences[active].fps;
                     let track = &mut self.state.sequences[active].tracks[track_idx];
                     for cut in &cuts {
-                        match track.blade_at(current_id, *cut) {
+                        match track.blade_at(current_id, *cut, seq_fps) {
                             Some((clip_a, clip_b)) => {
                                 new_clips.push(clip_a);
                                 current_id = clip_b.id;

@@ -6,6 +6,15 @@ use std::collections::HashMap;
 
 pub use klipp_core::types::{ChannelConfig, FadeCurve};
 
+/// One frame at `fps`, as a time at the sequence's own rate. `rate` is
+/// the fps numerator, so a frame is `den` ticks: one at a whole rate,
+/// 1001 at an NTSC one. Taking the frame as a single tick — which is
+/// the same thing only at a whole rate — makes any rule written in
+/// frames a thousand times looser at 23.976, 29.97 or 59.94.
+pub fn one_frame(fps: Fps) -> Timecode {
+    Timecode { value: fps.den.max(1) as i64, rate: fps.rate() }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Magnetic Timeline Types
 // ═══════════════════════════════════════════════════════════════════
@@ -1006,11 +1015,12 @@ impl Track {
     /// The blade tool: [`Self::split_at`], refusing a cut within a frame of
     /// either edge. That is a click-tolerance rule — a blade landing a
     /// hair inside a clip is almost always meant for the edge — and it
-    /// belongs to the tool, not to the split.
-    pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode) -> Option<(Clip, Clip)> {
+    /// belongs to the tool, not to the split. The frame is the
+    /// sequence's own, so `fps` comes from the sequence the track is in.
+    pub fn blade_at(&mut self, clip_id: ClipId, cut_at: Timecode, fps: Fps) -> Option<(Clip, Clip)> {
         let clip = self.clips.iter().find(|c| c.id == clip_id)?;
-        let one_frame = Timecode { value: 1, rate: clip.timeline_in.rate };
-        if cut_at <= clip.timeline_in + one_frame || cut_at >= clip.timeline_out - one_frame {
+        let frame = one_frame(fps);
+        if cut_at <= clip.timeline_in + frame || cut_at >= clip.timeline_out - frame {
             return None;
         }
         self.split_at(clip_id, cut_at)
@@ -2334,6 +2344,11 @@ mod tests {
         RationalTime::from_frames(frames, RATE)
     }
 
+    /// The rate `tc` counts in, as the sequence's fps.
+    fn test_fps() -> Fps {
+        Fps::new(RATE, 1)
+    }
+
     fn make_clip(timeline_in: i64, timeline_out: i64, src_in: i64, src_out: i64) -> Clip {
         Clip::media(MediaId::new(), tc(timeline_in), tc(timeline_out), tc(src_in), tc(src_out))
     }
@@ -2540,7 +2555,7 @@ mod tests {
         let id = c.id;
         let mut track = make_track(vec![c]);
 
-        let (a, b) = track.blade_at(id, tc(12)).expect("split");
+        let (a, b) = track.blade_at(id, tc(12), test_fps()).expect("split");
         for half in [&a, &b] {
             assert_eq!(half.blend_mode, klipp_core::BlendMode::Multiply);
             assert!(half.consumed_as_matte);
@@ -2695,7 +2710,7 @@ mod tests {
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
 
-        let result = track.blade_at(id0, tc(24));
+        let result = track.blade_at(id0, tc(24), test_fps());
         assert!(result.is_some());
 
         assert_eq!(track.clips.len(), 2);
@@ -2730,9 +2745,29 @@ mod tests {
         let mut track = make_track(vec![c0]);
 
         // Cut at 1 frame from start (within 1-frame guard)
-        assert!(track.blade_at(id0, tc(1)).is_none());
+        assert!(track.blade_at(id0, tc(1), test_fps()).is_none());
         // Cut at 1 frame from end
-        assert!(track.blade_at(id0, tc(47)).is_none());
+        assert!(track.blade_at(id0, tc(47), test_fps()).is_none());
+    }
+
+    /// #434: the guard is a frame of the sequence, not a tick of the
+    /// clip's rate. At 29.97 a frame is 1001 ticks of the 30000 rate, so
+    /// a cut a frame from the head used to clear a guard a thousandth of
+    /// that wide and leave a sliver of a frame nobody can trim.
+    #[test]
+    fn blade_at_measures_its_edge_guard_in_frames_at_a_fractional_rate() {
+        let fps = Fps::ntsc_29970();
+        assert_eq!(one_frame(fps), Timecode { value: 1001, rate: 30000 }, "a frame at 29.97 is 1001 ticks");
+        let f = |frames: i64| Timecode { value: frames * 1001, rate: 30000 };
+        let c = Clip::media(MediaId::new(), f(0), f(100), f(0), f(100));
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        assert!(track.blade_at(id, f(1), fps).is_none(), "a cut one frame from the head is meant for the head");
+        assert!(track.blade_at(id, f(99), fps).is_none(), "and one frame from the tail for the tail");
+        assert_eq!(track.clips.len(), 1, "nothing was cut");
+        assert!(track.blade_at(id, f(2), fps).is_some(), "two frames in is a cut");
+        assert_eq!(track.clips.len(), 2);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2771,7 +2806,7 @@ mod tests {
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
 
-        let result = track.blade_at(id0, tc(24));
+        let result = track.blade_at(id0, tc(24), test_fps());
         assert!(result.is_some(), "blade should succeed at frame 24");
         assert_eq!(track.clips.len(), 2);
 
@@ -2804,7 +2839,7 @@ mod tests {
         let c0 = make_clip(0, 48, 0, 48);
         let id0 = c0.id;
         let mut track = make_track(vec![c0]);
-        track.blade_at(id0, tc(24));
+        track.blade_at(id0, tc(24), test_fps());
         assert!(track.clips[0].audio_effect_keyframes.is_empty());
         assert!(track.clips[1].audio_effect_keyframes.is_empty());
     }

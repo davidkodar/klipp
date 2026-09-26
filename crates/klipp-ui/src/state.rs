@@ -4178,12 +4178,13 @@ impl AppState {
     /// refuses it whole, with a word on which track to unlock.
     pub fn split_at_playhead_commands(&self) -> Vec<klipp_core::AppCommand> {
         let ph = self.playhead;
+        let fps = self.sequence().fps;
         let mut queued: Vec<ClipId> = Vec::new();
         let mut cmds = Vec::new();
         for (track_index, track) in self.sequence().tracks.iter().enumerate() {
             if track.locked { continue; }
             let Some((_, clip)) = track.clip_at_timecode(ph) else { continue };
-            if !klipp_document::blade::cut_is_inside(clip, ph) { continue; }
+            if !klipp_document::blade::cut_is_inside(clip, ph, fps) { continue; }
             if clip.linked_clip_id.is_some_and(|l| queued.contains(&l)) { continue; }
             queued.push(clip.id);
             cmds.push(klipp_core::AppCommand::BladeClip { track_index, clip_id: clip.id, cut_at: ph });
