@@ -142,7 +142,7 @@ impl Default for ColourCheckPanel {
 }
 
 /// The look this frame is judged against: the brief's when it names
-/// one, a neutral broadcast target when it does not. The same rule the
+/// one, and without a brief only what every scene must get right. The same rule the
 /// assistant's `look_for` uses, minus the screen-recording case, which
 /// needs the beat sheet.
 fn look_for(state: &AppState) -> LookTarget {
@@ -152,7 +152,7 @@ fn look_for(state: &AppState) -> LookTarget {
         .as_ref()
         .and_then(|b| b.look.clone())
         .filter(|l| l.mid_l.is_some() || l.cast_a.is_some() || l.screencast)
-        .or_else(|| LookTarget::preset("broadcast_neutral"))
+        .or_else(|| LookTarget::preset("unbriefed"))
         .unwrap_or_else(|| LookTarget { name: "neutral".into(), ..Default::default() })
 }
 
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn the_look_is_the_briefs_when_there_is_one_and_neutral_otherwise() {
         let mut state = AppState::default();
-        assert_eq!(look_for(&state).name, "broadcast_neutral", "no brief, no look: a neutral target");
+        assert_eq!(look_for(&state).name, "unbriefed", "no brief: only what every scene must get right");
         let brief = klipp_timeline::Brief {
             look: LookTarget::from_measures(
                 "like the reference",
@@ -624,7 +624,7 @@ mod tests {
             ..Default::default()
         };
         state.sequence_mut().brief = Some(brief);
-        assert_eq!(look_for(&state).name, "broadcast_neutral");
+        assert_eq!(look_for(&state).name, "unbriefed");
     }
 }
 

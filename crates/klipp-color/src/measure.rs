@@ -940,11 +940,26 @@ impl LookTarget {
             "warm_interview" | "warm" | "interview" => LookTarget { black_l: Some(5.0), white_l: Some(94.0), mid_l: Some(50.0), contrast_range: Some(62.0), chroma_mean: Some(24.0), cast_a: Some(2.0), cast_b: Some(5.0), skin_hue: Some(50.0), skin_l: Some(62.0), ..base("warm_interview") },
             "cool_tech" | "cool" | "tech" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(47.0), contrast_range: Some(68.0), chroma_mean: Some(20.0), cast_a: Some(-1.0), cast_b: Some(-5.0), skin_l: Some(60.0), ..base("cool_tech") },
             "screencast" | "screen" => LookTarget { cast_a: Some(0.0), cast_b: Some(0.0), screencast: true, ..base("screencast") },
+            // No brief: only what is right for every scene — nothing
+            // clipped or crushed, neutrals neutral, black near black, a
+            // face exposed as a face. A median, a white point, a contrast
+            // range and a saturation are choices a scene makes: a noon
+            // beach is bright and pale, a night street dark, and judging
+            // both against a studio key failed every shot of a correctly
+            // exposed exterior (#328).
+            "unbriefed" => LookTarget { black_l: Some(4.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(62.0), ..base("unbriefed") },
             _ => return None,
         })
     }
 
     pub const PRESETS: [&'static str; 6] = ["broadcast_neutral", "web_punchy", "film_soft", "warm_interview", "cool_tech", "screencast"];
+
+    /// What a frame is judged against when the piece has no brief: see
+    /// the `unbriefed` preset. Not in [`Self::PRESETS`], which lists the
+    /// looks a brief can ask for.
+    pub fn unbriefed() -> LookTarget {
+        LookTarget::preset("unbriefed").expect("the unbriefed preset exists")
+    }
 
     /// A target lifted from measured frames: the mean of their readings.
     pub fn from_measures(name: &str, measures: &[FrameMeasure]) -> Option<LookTarget> {
@@ -1940,5 +1955,31 @@ mod match_tests {
         assert!(match_distance(&a, &b) < 0.001);
         let c = flat(56.0, 0.0, 0.0);
         assert!((match_distance(&a, &c) - match_distance(&b, &c)).abs() < 0.001, "the missing face changes nothing");
+    }
+}
+
+#[cfg(test)]
+mod unbriefed_tests {
+    use super::*;
+
+    /// #328: a correctly exposed bright exterior — median L* 65, pale,
+    /// white point short of 95 — fails the broadcast target and passes
+    /// with no brief, which still catches clipping and a cast.
+    #[test]
+    fn a_bright_exterior_passes_without_a_brief_and_faults_still_show() {
+        let beach: Vec<u8> = (0..100 * 100)
+            .flat_map(|i| if i < 4000 { [150u8, 190, 230, 255] } else { [200, 190, 172, 255] })
+            .collect();
+        let m = measure_frame(&beach, 100, 100, &[]);
+        let fails = |t: &LookTarget| judge(&m, t).into_iter().filter(|f| f.verdict == Verdict::Fail).map(|f| f.rule).collect::<Vec<_>>();
+        assert!(!fails(&LookTarget::preset("broadcast_neutral").unwrap()).is_empty(), "the studio target fails it");
+        let unbriefed: Vec<_> = judge(&m, &LookTarget::unbriefed()).into_iter().filter(|f| f.verdict != Verdict::Pass).map(|f| f.rule).collect();
+        for rule in ["mid_grey", "white_point", "contrast", "saturation"] {
+            assert!(!unbriefed.contains(&rule), "{rule} judged with no brief: {unbriefed:?}");
+        }
+
+        let blown: Vec<u8> = [255u8, 255, 255, 255].repeat(100 * 100);
+        let m = measure_frame(&blown, 100, 100, &[]);
+        assert!(judge(&m, &LookTarget::unbriefed()).iter().any(|f| f.rule == "clipped_white" && f.verdict == Verdict::Fail));
     }
 }

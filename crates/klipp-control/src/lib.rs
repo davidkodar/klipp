@@ -1601,7 +1601,7 @@ fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget
             }
         }
     }
-    LookTarget::preset("broadcast_neutral").unwrap()
+    LookTarget::unbriefed()
 }
 
 /// A look given by name alone takes the preset's numbers.
