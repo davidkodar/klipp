@@ -2534,7 +2534,8 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
 
     // Sequence markers, each by id. One inside the range goes with what
     // was there; one after it moves up with the clips; a range marker
-    // reaching into the cut loses what the cut took.
+    // reaching into the cut, or starting inside it and reaching past,
+    // loses what the cut took and keeps the rest.
     let mut marker_moves = Vec::new();
     let mut marker_drops = Vec::new();
     for (index, m) in sims[0].markers.iter().enumerate() {
@@ -2542,8 +2543,13 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         let (position, duration) = if m.position >= to {
             (m.position - len, m.duration)
         } else if m.position >= from {
-            marker_drops.push((index, m.clone()));
-            continue;
+            match end.filter(|e| *e > to) {
+                Some(e) => (from, Some(e - to)),
+                None => {
+                    marker_drops.push((index, m.clone()));
+                    continue;
+                }
+            }
         } else if let Some((d, e)) = m.duration.zip(end).filter(|(_, e)| *e > from) {
             (m.position, Some(d - (e.min(to) - from)))
         } else {
@@ -6171,6 +6177,23 @@ mod tests {
         assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
         let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
         assert_eq!(t, vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_range_marker_starting_inside_the_cut_keeps_what_lies_past_it() {
+        let (mut seq, pool, _, _, _) = fixture();
+        // 1.5-4.5 s; the cut takes 1-2 s, so it becomes 1.0-3.5 s. One
+        // ending inside the cut goes.
+        seq.markers.push(marker(1.5, "Scene", Some(3.0)));
+        seq.markers.push(marker(1.2, "Short", Some(0.5)));
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(5.0), None), ("Scene".to_string(), tc(1.0), Some(tc(2.5)))]);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
     }
 
     #[test]
