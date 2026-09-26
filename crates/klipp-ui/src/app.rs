@@ -27867,7 +27867,15 @@ impl KlippApp {
         // Build a view from the Arc'd texture. wgpu::Texture::create_view
         // takes &self, so the Arc holder keeps the underlying texture
         // alive — but the view itself is a separate resource.
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Through the sRGB view: the texture holds display-encoded bytes,
+        // and egui's shader takes whatever it samples as linear light and
+        // encodes it for the screen. A plain view encoded the picture a
+        // second time, so playback looked washed out beside the paused
+        // frame and the export (#455).
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
+            ..Default::default()
+        });
 
         let mut renderer = render_state.renderer.write();
         // Order matters here. egui-wgpu's `register_native_texture`
