@@ -403,6 +403,40 @@ impl Default for ExportSettings {
 }
 
 impl ExportSettings {
+    /// Replace a video or audio codec the container cannot hold with the
+    /// container's default, keeping the codecs that fit.
+    pub fn fit_codecs_to_format(&mut self) {
+        if !self.format.holds_video(self.video_codec) {
+            self.video_codec = self.format.default_video();
+        }
+        if !self.format.holds_audio(self.audio_codec) {
+            self.audio_codec = self.format.default_audio();
+        }
+    }
+
+    /// Why this container cannot be written with these codecs, or `None`
+    /// when it can. Checked before an encode starts, so a bad pair fails
+    /// with this sentence instead of FFmpeg's "Invalid argument".
+    pub fn container_problem(&self) -> Option<String> {
+        if !self.format.holds_video(self.video_codec) {
+            return Some(format!(
+                "{} cannot hold {} video; choose {} or another container",
+                self.format.label(),
+                self.video_codec.label(),
+                self.format.default_video().label(),
+            ));
+        }
+        if !self.format.holds_audio(self.audio_codec) {
+            return Some(format!(
+                "{} cannot hold {} audio; choose {} or another container",
+                self.format.label(),
+                self.audio_codec.label(),
+                self.format.default_audio().label(),
+            ));
+        }
+        None
+    }
+
     /// The transfer the file carries. An ACES Rec.2100 PQ output
     /// transform writes PQ pixels whatever `hdr_mode` says, so it is a PQ
     /// delivery and is tagged as one.
@@ -529,6 +563,50 @@ impl ExportFormat {
     /// Whether this format supports embedded subtitle streams.
     pub fn supports_subtitles(&self) -> bool {
         !matches!(self, Self::Gif)
+    }
+
+    /// Whether the export dialog offers `codec` in this container. Every
+    /// pair it offers is one FFmpeg's muxer takes: MOV refuses AV1 and
+    /// VP9, WebM takes only VP9 and AV1, and ProRes and DNxHD are written
+    /// to MOV only.
+    pub fn holds_video(&self, codec: ExportVideoCodec) -> bool {
+        use ExportVideoCodec as V;
+        match self {
+            Self::Mp4 => matches!(codec, V::H264 | V::H265 | V::Av1),
+            Self::Mkv => matches!(codec, V::H264 | V::H265 | V::Av1 | V::Vp9),
+            Self::Mov => !matches!(codec, V::Av1 | V::Vp9 | V::Gif),
+            Self::WebM => matches!(codec, V::Vp9 | V::Av1),
+            Self::Gif => codec == V::Gif,
+        }
+    }
+
+    /// Whether FFmpeg's muxer for this container takes `codec`. MOV
+    /// refuses Opus and FLAC ("only supported in MP4") and WebM takes
+    /// only Opus. No audio fits anywhere, and GIF writes no audio at all.
+    pub fn holds_audio(&self, codec: ExportAudioCodec) -> bool {
+        use ExportAudioCodec as A;
+        match self {
+            Self::Mp4 | Self::Mkv | Self::Gif => true,
+            Self::Mov => !matches!(codec, A::Opus | A::Flac),
+            Self::WebM => matches!(codec, A::Opus | A::Copy),
+        }
+    }
+
+    /// The video codec to switch to when the current one does not fit.
+    pub fn default_video(&self) -> ExportVideoCodec {
+        match self {
+            Self::Mp4 | Self::Mkv | Self::Mov => ExportVideoCodec::H264,
+            Self::WebM => ExportVideoCodec::Vp9,
+            Self::Gif => ExportVideoCodec::Gif,
+        }
+    }
+
+    /// The audio codec to switch to when the current one does not fit.
+    pub fn default_audio(&self) -> ExportAudioCodec {
+        match self {
+            Self::WebM => ExportAudioCodec::Opus,
+            _ => ExportAudioCodec::Aac,
+        }
     }
 }
 
@@ -690,6 +768,17 @@ impl ExportVideoCodec {
             self,
             Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145
         )
+    }
+
+    /// The container a codec is moved to when the chosen one cannot hold
+    /// it.
+    pub fn home_format(&self) -> ExportFormat {
+        match self {
+            Self::H264 | Self::H265 | Self::Av1 => ExportFormat::Mp4,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::DNxHD115 | Self::DNxHD145 => ExportFormat::Mov,
+            Self::Vp9 => ExportFormat::WebM,
+            Self::Gif => ExportFormat::Gif,
+        }
     }
 
     /// Whether this codec requires a WebM container.
@@ -3756,6 +3845,44 @@ mod gif_format_tests {
         // container's requirement set.
         assert!(!ExportVideoCodec::Gif.requires_mov());
         assert!(!ExportVideoCodec::Gif.requires_webm());
+    }
+
+    #[test]
+    fn containers_refuse_the_codecs_ffmpeg_will_not_mux() {
+        use ExportAudioCodec as A;
+        use ExportVideoCodec as V;
+        // Each of these made FFmpeg fail to write the header.
+        assert!(!ExportFormat::WebM.holds_video(V::H264));
+        assert!(!ExportFormat::WebM.holds_video(V::H265));
+        assert!(!ExportFormat::Mov.holds_video(V::Av1));
+        assert!(!ExportFormat::Mov.holds_video(V::Vp9));
+        assert!(!ExportFormat::Mov.holds_audio(A::Opus));
+        assert!(!ExportFormat::Mov.holds_audio(A::Flac));
+        for a in [A::Aac, A::Mp3, A::Flac, A::Pcm16, A::Pcm24] {
+            assert!(!ExportFormat::WebM.holds_audio(a), "{a:?} in WebM");
+        }
+        // Every container holds its own defaults and every codec fits
+        // the container it is moved to.
+        for f in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov, ExportFormat::WebM, ExportFormat::Gif] {
+            assert!(f.holds_video(f.default_video()), "{f:?}");
+            assert!(f.holds_audio(f.default_audio()), "{f:?}");
+        }
+        for v in [V::H264, V::H265, V::ProRes422, V::ProRes422HQ, V::ProRes4444, V::DNxHD115, V::DNxHD145, V::Av1, V::Vp9, V::Gif] {
+            assert!(v.home_format().holds_video(v), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_webm_export_with_default_codecs_is_fitted_to_vp9_and_opus() {
+        let mut s = ExportSettings { format: ExportFormat::WebM, ..Default::default() };
+        assert!(s.container_problem().is_some());
+        s.fit_codecs_to_format();
+        assert_eq!((s.video_codec, s.audio_codec), (ExportVideoCodec::Vp9, ExportAudioCodec::Opus));
+        assert_eq!(s.container_problem(), None);
+        // Codecs that fit are kept.
+        let mut s = ExportSettings { format: ExportFormat::Mov, video_codec: ExportVideoCodec::ProRes4444, audio_codec: ExportAudioCodec::Pcm24, ..Default::default() };
+        s.fit_codecs_to_format();
+        assert_eq!((s.video_codec, s.audio_codec), (ExportVideoCodec::ProRes4444, ExportAudioCodec::Pcm24));
     }
 
     #[test]

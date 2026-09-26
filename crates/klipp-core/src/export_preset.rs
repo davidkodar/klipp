@@ -379,6 +379,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_builtin_preset_writes_a_container_ffmpeg_accepts() {
+        for p in builtin_presets() {
+            let s = &p.settings;
+            assert!(s.format.holds_video(s.video_codec), "{}: {:?} in {:?}", p.name, s.video_codec, s.format);
+            assert!(s.format.holds_audio(s.audio_codec), "{}: {:?} in {:?}", p.name, s.audio_codec, s.format);
+        }
+    }
+
+    #[test]
     fn gif_preset_is_present_and_well_formed() {
         let presets = builtin_presets();
         let gif = presets

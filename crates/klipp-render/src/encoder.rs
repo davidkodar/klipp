@@ -274,6 +274,9 @@ impl Encoder {
         // ProRes / DNxHD codecs override the user's container choice
         // because they only mux into MOV. Everything else maps
         // directly from `settings.format`.
+        if let Some(problem) = settings.container_problem() {
+            return Err(RenderError::Encode(problem));
+        }
         let forced_format = match settings.video_codec {
             ExportVideoCodec::ProRes422
             | ExportVideoCodec::ProRes422HQ

@@ -4707,6 +4707,8 @@ reference:   {}",
                 Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm")),
             };
             let mut settings = klipp_core::ExportSettings { output_path: out, format, ..Default::default() };
+            // The default H.264 and AAC do not go in WebM.
+            settings.fit_codecs_to_format();
             if let (Some(w), Some(h)) = (width, height) {
                 settings.resolution = Some(klipp_core::Resolution { width: w, height: h });
             }
