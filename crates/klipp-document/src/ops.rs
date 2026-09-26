@@ -2405,7 +2405,12 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
             let track = &sims[0].tracks[ti];
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
                 let mut scratch = track.clone();
-                if let Some((a, b)) = scratch.split_at(c.id, cut) {
+                if let Some((mut a, mut b)) = scratch.split_at(c.id, cut) {
+                    // A split gives both pieces both fades; a fade at
+                    // the join would dip the picture and the sound at
+                    // every cut. The clip's own fades stay at its ends.
+                    a.fade_out_secs = 0.0;
+                    b.fade_in_secs = 0.0;
                     blades.push((ti, ci, c.clone(), a, b));
                 }
             }
@@ -6177,6 +6182,25 @@ mod tests {
         assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
         let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
         assert_eq!(t, vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_cut_through_a_faded_clip_keeps_the_fades_at_its_ends_and_none_at_the_join() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[0].clips[0].fade_in_secs = 0.3;
+        seq.tracks[0].clips[0].fade_out_secs = 0.5;
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let fades: Vec<(Timecode, Timecode, f32, f32)> = seqs[0].tracks[0].clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.fade_in_secs, c.fade_out_secs)).collect();
+        // The left piece keeps the fade in and loses the fade out; the
+        // right piece keeps the fade out at its end and fades in from
+        // nothing, so the join plays straight through.
+        assert_eq!(fades, vec![(tc(0.0), tc(1.0), 0.3, 0.0), (tc(1.0), tc(3.0), 0.0, 0.5), (tc(3.0), tc(7.0), 0.0, 0.0)]);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!((seqs[0].tracks[0].clips[0].fade_in_secs, seqs[0].tracks[0].clips[0].fade_out_secs), (0.3, 0.5));
     }
 
     #[test]
