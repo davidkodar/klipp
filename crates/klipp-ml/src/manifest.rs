@@ -62,6 +62,8 @@ pub enum ModelKind {
     Voice,
     /// Faces in a picture, with landmarks.
     FaceDetector,
+    /// Speech from noise: the Voice Isolation audio effect.
+    SpeechEnhancer,
 }
 
 /// Which backend crate runs the model. Lets the registry pick the

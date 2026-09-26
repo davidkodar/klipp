@@ -129,6 +129,7 @@ fn description_for(entry: &EffectEntry) -> String {
             "gate" => "Silence low-level noise".into(),
             "high_pass" => "Remove low-frequency rumble and wind".into(),
             "denoiser" => "Learn and reduce steady background noise".into(),
+            "voice_isolation" => "Separate speech from wind, traffic and room noise (AI)".into(),
             "deesser" => "Reduce sibilance in vocals".into(),
             "normalize" => "Set target loudness (LUFS)".into(),
             "noise_reduction" => "Per-band noise gating".into(),

@@ -119,4 +119,9 @@ deny = []
 unknown-registry = "deny"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    # DeepFilterNet's Rust engine (MIT OR Apache-2.0). The crates.io
+    # release (0.2.5) predates its tract inference backend; v0.5.6 is
+    # only published as a tag.
+    "https://github.com/Rikorose/DeepFilterNet",
+]

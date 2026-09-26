@@ -13,7 +13,10 @@ license.workspace = true
 # The CUDA provider is on by default: without a GPU build of the ONNX
 # runtime on the machine it is refused at run time and the CPU provider
 # carries on, so it costs nothing where it cannot help.
-default = ["ai-ort", "ai-ort-cuda", "ai-candle"]
+default = ["ai-ort", "ai-ort-cuda", "ai-candle", "voice-isolation"]
+# Voice Isolation (DeepFilterNet3, pure Rust). Its model still only
+# downloads when the user asks for it.
+voice-isolation = ["klipp-ui/voice-isolation"]
 ai-ort = ["klipp-ui/ai-ort"]
 ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
 ai-candle = ["klipp-ui/ai-candle"]

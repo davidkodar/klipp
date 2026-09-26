@@ -684,6 +684,15 @@ impl EffectRegistry {
                 description: "Learn and reduce steady background noise".into(),
                 grouping: "Restoration".into(),
             },
+            #[cfg(feature = "voice-isolation")]
+            EffectEntry {
+                name: "Voice Isolation".into(),
+                category: EffectCategory::AudioRestoration,
+                source: EffectSource::Audio("voice_isolation".into()),
+                source_label: "Built-in",
+                description: "Separate speech from wind, traffic and room noise (AI)".into(),
+                grouping: "Restoration".into(),
+            },
             EffectEntry {
                 name: "De-Esser".into(),
                 category: EffectCategory::AudioRestoration,
