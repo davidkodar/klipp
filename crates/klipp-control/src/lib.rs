@@ -1763,7 +1763,25 @@ fn voice_files(voice: &str, download: bool) -> Result<(std::path::PathBuf, std::
         }
         paths.push(cache.path_for(entry));
     }
-    Ok((paths.remove(0), paths.remove(0)))
+    let (model, config) = (paths.remove(0), paths.remove(0));
+    piper_config_beside(&model, &config)?;
+    Ok((model, config))
+}
+
+/// Put the voice's config where piper also looks for it: `<model>.json`
+/// beside the model. piper-tts 1.8 takes `--config` and then loads the
+/// voice from the model path alone, which reads `<model>.json`; the cache
+/// keeps the config under its own id, so narration failed with the file
+/// not found even with everything installed (#113). `--config` is still
+/// passed, for a piper that honours it.
+fn piper_config_beside(model: &std::path::Path, config: &std::path::Path) -> Result<(), String> {
+    let mut beside = model.as_os_str().to_owned();
+    beside.push(".json");
+    let beside = std::path::PathBuf::from(beside);
+    if beside.is_file() {
+        return Ok(());
+    }
+    std::fs::copy(config, &beside).map(|_| ()).map_err(|e| format!("the voice config for piper at {}: {e}", beside.display()))
 }
 
 fn temp_output(path: Option<String>, stem: &str, ext: &str) -> Result<std::path::PathBuf, String> {
@@ -5080,6 +5098,28 @@ mod tests {
         assert_eq!(apply_label(std::slice::from_ref(&cut)), "Cut");
         assert_eq!(apply_label(&[cut, split.clone(), split]), "Cut and 2 more");
         assert_eq!(apply_label(&[]), "Apply");
+    }
+}
+
+#[cfg(test)]
+mod piper_config_tests {
+    use super::piper_config_beside;
+
+    #[test]
+    fn the_config_is_copied_beside_the_model_once() {
+        let dir = std::env::temp_dir().join(format!("klipp-piper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("voice.bin");
+        let config = dir.join("voice_config.bin");
+        std::fs::write(&model, b"onnx").unwrap();
+        std::fs::write(&config, b"{\"audio\":{}}").unwrap();
+        piper_config_beside(&model, &config).unwrap();
+        assert_eq!(std::fs::read(dir.join("voice.bin.json")).unwrap(), b"{\"audio\":{}}");
+        // Already there: left alone.
+        std::fs::write(dir.join("voice.bin.json"), b"kept").unwrap();
+        piper_config_beside(&model, &config).unwrap();
+        assert_eq!(std::fs::read(dir.join("voice.bin.json")).unwrap(), b"kept");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -4064,6 +4064,14 @@ fn grade(
     knobs: &[(&str, &str, Option<f32>, f32, f32)],
     reset: bool,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    // What the op was given, in its own units: the contrast knob is stored
+    // as an offset from neutral (0) but spoken as the multiplier (1), so
+    // the reply and a refusal add the 1 back. Rounded, so float noise
+    // (0.100000024) never reaches the reply.
+    let shown = |name: &str, v: f32| {
+        let v = if name == "contrast" { v + 1.0 } else { v };
+        format!("{}", (v as f64 * 1000.0).round() / 1000.0)
+    };
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
@@ -4076,7 +4084,7 @@ fn grade(
     for (name, _, v, lo, hi) in knobs {
         if let Some(v) = v {
             if !v.is_finite() || v < lo || v > hi {
-                return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
+                return Err(refuse(i, format!("{name} {} is out of range", shown(name, *v)), format!("give {name} between {} and {}", shown(name, *lo), shown(name, *hi))));
             }
         }
     }
@@ -4094,7 +4102,7 @@ fn grade(
             if !node.params.apply_override(param, *v) {
                 return Err(refuse(i, format!("the grade has no \"{param}\""), "this is a bug: tell the user the grade param went nowhere"));
             }
-            said.push(format!("{name} {v}"));
+            said.push(format!("{name} {}", shown(name, *v)));
         }
     }
     let what = format!(
@@ -5865,6 +5873,9 @@ mod tests {
         let (seq, pool, media, a, _) = fixture();
         let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false }]).unwrap();
         assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
+        // Contrast is said as the multiplier it was given, not the offset
+        // the node stores, and without float noise.
+        assert!(plan.steps[0].what.contains("contrast 1.2,"), "{}", plan.steps[0].what);
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a node-graph edit") };
         let node = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).expect("a corrector");
         assert_eq!(node.params.exposure, Some(0.5));

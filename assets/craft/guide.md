@@ -231,6 +231,20 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?}`:
+  a title from scratch: a heading, a callout or a hero card, on a text
+  track (one is made on top if left out). `style` names a look, one of
+  the brief's type styles or `heading`, `callout` or `card`, and its
+  fields fill every one left out here. `x`, `y`, `size`, `color`,
+  `backing` and `outline` read as in `style`; `full_frame` is a solid
+  `#rrggbb` card behind everything, `gradient` a two-colour fill
+  (`#top,#bottom`). `animate` is the entrance (fade, rise, drop,
+  slide_left, slide_right, scale_up, scale_down, blur, mask_rise,
+  mask_drop, typewriter) and `loop` a continuous effect (pulse, flash,
+  neon, wave, shake, color_cycle). The built-in styles are laid out for
+  a wide frame: in a vertical sequence give `size`, `x` and `y` of your
+  own, or restyle it with `style` once it is placed, and look at the
+  frame.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
