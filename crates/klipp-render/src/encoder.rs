@@ -46,6 +46,9 @@ pub struct Encoder {
     audio_frame: Option<ffmpeg_next::frame::Audio>,
     /// Name of the video encoder in use (for reporting).
     video_codec_name: &'static str,
+    /// The hardware encoder that could not open, when the render fell
+    /// back to software (#381).
+    hardware_fallback: Option<&'static str>,
     /// Audio resampler (f32 packed stereo → encoder's required format).
     /// Reserved for future use when format conversion is needed beyond FLTP.
     #[allow(dead_code)]
@@ -141,6 +144,27 @@ fn pick_video_encoder(
         }
         ExportVideoCodec::Vp9 => ("libvpx-vp9", false),
         ExportVideoCodec::Gif => ("gif", false),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: make every hardware encoder refuse to open, as when all of a
+    /// card's NVENC sessions are taken.
+    static FAIL_HARDWARE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The software encoder for `codec`: what a render falls back to when the
+/// hardware encoder [`pick_video_encoder`] chose cannot open.
+fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
+    match codec {
+        ExportVideoCodec::H264 => "libx264",
+        ExportVideoCodec::H265 => "libx265",
+        ExportVideoCodec::Av1 => "libsvtav1",
+        ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444 => "prores_ks",
+        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => "dnxhd",
+        ExportVideoCodec::Vp9 => "libvpx-vp9",
+        ExportVideoCodec::Gif => "gif",
     }
 }
 
@@ -275,247 +299,277 @@ impl Encoder {
 
         // Try GPU-accelerated encoder first (NVENC for NVIDIA, AMF for AMD),
         // fall back to software (libx264/libx265).
-        let (video_codec_name, is_hw_encoder) =
-            pick_video_encoder(
-                &settings.video_codec,
-                snapshot.width,
-                snapshot.height,
-                settings.bit_depth == 10,
-            );
-        let video_codec = ffmpeg_next::encoder::find_by_name(video_codec_name)
-            .ok_or_else(|| RenderError::Encode(format!("codec not found: {video_codec_name}")))?;
-
-        info!("Video encoder: {} (hw={})", video_codec_name, is_hw_encoder);
-        // A 4K HDR H.264 render is much slower on libx264 than the user's
-        // last 8-bit one was on NVENC, so say why rather than leaving them
-        // to wonder. HEVC keeps the hardware path at ten bits.
-        if settings.bit_depth == 10 && matches!(settings.video_codec, ExportVideoCodec::H264) {
-            info!(
-                "10-bit H.264 encodes in software: no hardware H.264 encoder does ten bits. \
-                 H.265 would encode on the GPU at this depth."
-            );
+        // Hardware first. A consumer card allows only a few NVENC sessions
+        // at once, and OBS, a call, a proxy job or another export can hold
+        // the last one: `pick_video_encoder` only knows the encoder exists,
+        // and it is `avcodec_open2` that refuses. The render then goes to
+        // the software encoder once rather than failing (#381).
+        let picked = pick_video_encoder(
+            &settings.video_codec,
+            snapshot.width,
+            snapshot.height,
+            settings.bit_depth == 10,
+        );
+        let mut attempts = vec![picked];
+        if picked.1 {
+            attempts.push((software_video_encoder(&settings.video_codec), false));
         }
+        let last_attempt = attempts.len() - 1;
+        let mut hardware_fallback = None;
+        let (video_encoder, video_codec_name, pix_fmt, out_w, out_h) = 'open: {
+            for (attempt, (video_codec_name, is_hw_encoder)) in attempts.into_iter().enumerate() {
+                    let video_codec = ffmpeg_next::encoder::find_by_name(video_codec_name)
+                        .ok_or_else(|| RenderError::Encode(format!("codec not found: {video_codec_name}")))?;
 
-        // Create encoder context
-        let mut video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec)
-            .encoder()
-            .video()
-            .map_err(|e| RenderError::Encode(format!("video encoder context: {e}")))?;
-
-        // Resolution: use export override if set, else sequence resolution
-        let (out_w, out_h) = match &settings.resolution {
-            Some(res) => (res.width, res.height),
-            None => (snapshot.width, snapshot.height),
-        };
-        video_ctx.set_width(out_w);
-        video_ctx.set_height(out_h);
-        // Frame rate: use export override if set, else sequence fps
-        let (fps_num, fps_den) = match &settings.fps {
-            Some(fps) => (fps.num as i32, fps.den as i32),
-            None => (snapshot.fps_num as i32, snapshot.fps_den as i32),
-        };
-        video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
-        video_ctx.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
-
-        // Set pixel format based on codec + HW/SW.
-        // #65 baseline: for H.264/H.265, bit_depth == 10 selects a 10-bit
-        // format. NVENC needs P010LE (semi-planar, 10 bits in MSBs of a
-        // 16-bit word); software encoders take planar YUV420P10LE.
-        let want_10bit = settings.bit_depth == 10;
-        let pix_fmt = match settings.video_codec {
-            ExportVideoCodec::ProRes4444 => ffmpeg_next::format::Pixel::YUV444P10LE,
-            ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
-                ffmpeg_next::format::Pixel::YUV422P10LE
-            }
-            ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => {
-                ffmpeg_next::format::Pixel::YUV422P
-            }
-            ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
-                if is_hw_encoder {
-                    if want_10bit {
-                        ffmpeg_next::format::Pixel::P010LE
-                    } else {
-                        ffmpeg_next::format::Pixel::NV12
+                    info!("Video encoder: {} (hw={})", video_codec_name, is_hw_encoder);
+                    // A 4K HDR H.264 render is much slower on libx264 than the user's
+                    // last 8-bit one was on NVENC, so say why rather than leaving them
+                    // to wonder. HEVC keeps the hardware path at ten bits.
+                    if settings.bit_depth == 10 && matches!(settings.video_codec, ExportVideoCodec::H264) {
+                        info!(
+                            "10-bit H.264 encodes in software: no hardware H.264 encoder does ten bits. \
+                             H.265 would encode on the GPU at this depth."
+                        );
                     }
-                } else if want_10bit {
-                    ffmpeg_next::format::Pixel::YUV420P10LE
+
+                    // Create encoder context
+                    let mut video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec)
+                        .encoder()
+                        .video()
+                        .map_err(|e| RenderError::Encode(format!("video encoder context: {e}")))?;
+
+                    // Resolution: use export override if set, else sequence resolution
+                    let (out_w, out_h) = match &settings.resolution {
+                        Some(res) => (res.width, res.height),
+                        None => (snapshot.width, snapshot.height),
+                    };
+                    video_ctx.set_width(out_w);
+                    video_ctx.set_height(out_h);
+                    // Frame rate: use export override if set, else sequence fps
+                    let (fps_num, fps_den) = match &settings.fps {
+                        Some(fps) => (fps.num as i32, fps.den as i32),
+                        None => (snapshot.fps_num as i32, snapshot.fps_den as i32),
+                    };
+                    video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
+                    video_ctx.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
+
+                    // Set pixel format based on codec + HW/SW.
+                    // #65 baseline: for H.264/H.265, bit_depth == 10 selects a 10-bit
+                    // format. NVENC needs P010LE (semi-planar, 10 bits in MSBs of a
+                    // 16-bit word); software encoders take planar YUV420P10LE.
+                    let want_10bit = settings.bit_depth == 10;
+                    let pix_fmt = match settings.video_codec {
+                        ExportVideoCodec::ProRes4444 => ffmpeg_next::format::Pixel::YUV444P10LE,
+                        ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
+                            ffmpeg_next::format::Pixel::YUV422P10LE
+                        }
+                        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => {
+                            ffmpeg_next::format::Pixel::YUV422P
+                        }
+                        ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
+                            if is_hw_encoder {
+                                if want_10bit {
+                                    ffmpeg_next::format::Pixel::P010LE
+                                } else {
+                                    ffmpeg_next::format::Pixel::NV12
+                                }
+                            } else if want_10bit {
+                                ffmpeg_next::format::Pixel::YUV420P10LE
+                            } else {
+                                ffmpeg_next::format::Pixel::YUV420P
+                            }
+                        }
+                        ExportVideoCodec::Av1 => {
+                            if is_hw_encoder {
+                                ffmpeg_next::format::Pixel::NV12
+                            } else {
+                                ffmpeg_next::format::Pixel::YUV420P
+                            }
+                        }
+                        ExportVideoCodec::Vp9 => ffmpeg_next::format::Pixel::YUV420P,
+                        // GIF encoder takes 8-bit palettized frames. The two-pass
+                        // palette path inside encode_video_frame / finalise feeds
+                        // the encoder with `paletteuse` filter output (PAL8).
+                        ExportVideoCodec::Gif => ffmpeg_next::format::Pixel::PAL8,
+                    };
+                    video_ctx.set_format(pix_fmt);
+
+                    // Codec-specific options
+                    let mut video_opts = ffmpeg_next::Dictionary::new();
+                    match settings.video_codec {
+                        ExportVideoCodec::H264 if is_hw_encoder => {
+                            // NVENC: use VBR with constant quality (cq) — equivalent to CRF
+                            video_opts.set("rc", "vbr");
+                            video_opts.set("cq", &settings.crf.to_string());
+                            // Set a high bitrate cap so VBR has room (0 = uncapped)
+                            video_ctx.set_bit_rate(0);
+                            video_opts.set("b:v", "0");
+                            // NVENC preset: p1(fastest)..p7(best quality)
+                            let nvenc_preset = match settings.preset {
+                                klipp_core::EncoderPreset::Fast => "p4",
+                                klipp_core::EncoderPreset::Medium => "p5",
+                                klipp_core::EncoderPreset::Slow => "p6",
+                                klipp_core::EncoderPreset::VerySlow => "p7",
+                            };
+                            video_opts.set("preset", nvenc_preset);
+                            // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
+                            apply_color_tags(&mut video_ctx, settings.delivery());
+                        }
+                        ExportVideoCodec::H264 => {
+                            video_ctx.set_bit_rate(0); // CRF mode
+                            video_opts.set("crf", &settings.crf.to_string());
+                            video_opts.set("preset", settings.preset.ffmpeg_value());
+                            apply_color_tags(&mut video_ctx, settings.delivery());
+                        }
+                        ExportVideoCodec::H265 if is_hw_encoder => {
+                            video_opts.set("rc", "vbr");
+                            video_opts.set("cq", &settings.crf.to_string());
+                            video_ctx.set_bit_rate(0);
+                            video_opts.set("b:v", "0");
+                            let nvenc_preset = match settings.preset {
+                                klipp_core::EncoderPreset::Fast => "p4",
+                                klipp_core::EncoderPreset::Medium => "p5",
+                                klipp_core::EncoderPreset::Slow => "p6",
+                                klipp_core::EncoderPreset::VerySlow => "p7",
+                            };
+                            video_opts.set("preset", nvenc_preset);
+                            apply_color_tags(&mut video_ctx, settings.delivery());
+                        }
+                        ExportVideoCodec::H265 => {
+                            video_ctx.set_bit_rate(0);
+                            video_opts.set("crf", &settings.crf.to_string());
+                            video_opts.set("preset", settings.preset.ffmpeg_value());
+                            video_opts.set("x265-params", x265_color_params(settings.delivery()));
+                            apply_color_tags(&mut video_ctx, settings.delivery());
+                        }
+                        ExportVideoCodec::ProRes422 => {
+                            video_opts.set("profile:v", "2");
+                        }
+                        ExportVideoCodec::ProRes422HQ => {
+                            video_opts.set("profile:v", "3");
+                        }
+                        ExportVideoCodec::ProRes4444 => {
+                            video_opts.set("profile:v", "4");
+                        }
+                        ExportVideoCodec::DNxHD115 => {
+                            video_ctx.set_bit_rate(115_000_000);
+                        }
+                        ExportVideoCodec::DNxHD145 => {
+                            video_ctx.set_bit_rate(145_000_000);
+                        }
+                        ExportVideoCodec::Av1 if is_hw_encoder => {
+                            video_opts.set("rc", "vbr");
+                            video_opts.set("cq", &settings.crf.to_string());
+                            video_ctx.set_bit_rate(0);
+                        }
+                        ExportVideoCodec::Av1 => {
+                            // SVT-AV1 uses CRF
+                            video_opts.set("crf", &settings.crf.to_string());
+                            let svt_preset = match settings.preset {
+                                klipp_core::EncoderPreset::Fast => "8",
+                                klipp_core::EncoderPreset::Medium => "6",
+                                klipp_core::EncoderPreset::Slow => "4",
+                                klipp_core::EncoderPreset::VerySlow => "2",
+                            };
+                            video_opts.set("preset", svt_preset);
+                        }
+                        ExportVideoCodec::Vp9 => {
+                            video_opts.set("crf", &settings.crf.to_string());
+                            video_opts.set("b:v", "0"); // CRF mode for VP9
+                            // VP9 speed/quality preset
+                            let speed = match settings.preset {
+                                klipp_core::EncoderPreset::Fast => "4",
+                                klipp_core::EncoderPreset::Medium => "2",
+                                klipp_core::EncoderPreset::Slow => "1",
+                                klipp_core::EncoderPreset::VerySlow => "0",
+                            };
+                            video_opts.set("speed", speed);
+                        }
+                        ExportVideoCodec::Gif => {
+                            // Loop count: 0 = infinite (the standard for animated
+                            // GIFs). Any positive value would be `loop_count - 1`
+                            // playbacks before stopping.
+                            video_opts.set("loop", "0");
+                        }
+                    }
+
+                    // Every Y'CbCr output gets its colour tags and range — before, only
+                    // the H.264/H.265 branches tagged colour, ProRes/DNxHD/AV1/VP9 went
+                    // untagged, and no codec declared its (limited) range. GIF is RGB.
+                    if settings.video_codec != ExportVideoCodec::Gif {
+                        apply_color_tags(&mut video_ctx, settings.delivery());
+                        unsafe {
+                            (*video_ctx.as_mut_ptr()).color_range = ffmpeg_next::ffi::AVColorRange::AVCOL_RANGE_MPEG;
+                        }
+                    }
+
+                    // CBR/VBR override: if rate_control is not CRF and a video bitrate is set,
+                    // override the CRF-based settings above.
+                    match settings.rate_control {
+                        klipp_core::RateControl::Cbr => {
+                            if let Some(br_kbps) = settings.video_bitrate_kbps {
+                                video_ctx.set_bit_rate(br_kbps as usize * 1000);
+                                video_opts.set("maxrate", &format!("{}k", br_kbps));
+                                video_opts.set("minrate", &format!("{}k", br_kbps));
+                                video_opts.set("bufsize", &format!("{}k", br_kbps * 2));
+                                // Remove CRF if it was set
+                                video_opts.set("crf", "-1");
+                            }
+                        }
+                        klipp_core::RateControl::Vbr => {
+                            if let Some(br_kbps) = settings.video_bitrate_kbps {
+                                video_ctx.set_bit_rate(br_kbps as usize * 1000);
+                                video_opts.set("maxrate", &format!("{}k", br_kbps * 2));
+                                video_opts.set("bufsize", &format!("{}k", br_kbps * 4));
+                            }
+                        }
+                        klipp_core::RateControl::Crf => {} // Already handled above
+                    }
+
+                    // Global header flag (needed for MP4/MOV containers)
+                    if output_ctx
+                        .format()
+                        .flags()
+                        .contains(ffmpeg_next::format::flag::Flags::GLOBAL_HEADER)
+                    {
+                        unsafe {
+                            (*video_ctx.as_mut_ptr()).flags |=
+                                ffmpeg_next::ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+                        }
+                    }
+                // Open the video encoder
+                #[cfg(test)]
+                let refused = is_hw_encoder && FAIL_HARDWARE_OPEN.with(|f| f.get());
+                #[cfg(not(test))]
+                let refused = false;
+                let opened = if refused {
+                    Err(ffmpeg_next::Error::External)
                 } else {
-                    ffmpeg_next::format::Pixel::YUV420P
+                    video_ctx.open_as_with(video_codec, video_opts)
+                };
+                match opened {
+                    Ok(encoder) => break 'open (encoder, video_codec_name, pix_fmt, out_w, out_h),
+                    Err(e) => {
+                        // Naming the combination, because the library's own
+                        // message for a configuration the hardware cannot do
+                        // is "Generic error in an external library" and
+                        // nothing else.
+                        let err = RenderError::Encode(format!(
+                            "open video encoder: {e} ({video_codec_name}, {pix_fmt:?}, {}x{}{})",
+                            snapshot.width,
+                            snapshot.height,
+                            if settings.bit_depth == 10 { ", 10-bit" } else { "" },
+                        ));
+                        if attempt == last_attempt {
+                            return Err(err);
+                        }
+                        tracing::warn!("{err}; encoding in software instead");
+                        hardware_fallback = Some(video_codec_name);
+                    }
                 }
             }
-            ExportVideoCodec::Av1 => {
-                if is_hw_encoder {
-                    ffmpeg_next::format::Pixel::NV12
-                } else {
-                    ffmpeg_next::format::Pixel::YUV420P
-                }
-            }
-            ExportVideoCodec::Vp9 => ffmpeg_next::format::Pixel::YUV420P,
-            // GIF encoder takes 8-bit palettized frames. The two-pass
-            // palette path inside encode_video_frame / finalise feeds
-            // the encoder with `paletteuse` filter output (PAL8).
-            ExportVideoCodec::Gif => ffmpeg_next::format::Pixel::PAL8,
+            unreachable!("the last attempt returns its error");
         };
-        video_ctx.set_format(pix_fmt);
-
-        // Codec-specific options
-        let mut video_opts = ffmpeg_next::Dictionary::new();
-        match settings.video_codec {
-            ExportVideoCodec::H264 if is_hw_encoder => {
-                // NVENC: use VBR with constant quality (cq) — equivalent to CRF
-                video_opts.set("rc", "vbr");
-                video_opts.set("cq", &settings.crf.to_string());
-                // Set a high bitrate cap so VBR has room (0 = uncapped)
-                video_ctx.set_bit_rate(0);
-                video_opts.set("b:v", "0");
-                // NVENC preset: p1(fastest)..p7(best quality)
-                let nvenc_preset = match settings.preset {
-                    klipp_core::EncoderPreset::Fast => "p4",
-                    klipp_core::EncoderPreset::Medium => "p5",
-                    klipp_core::EncoderPreset::Slow => "p6",
-                    klipp_core::EncoderPreset::VerySlow => "p7",
-                };
-                video_opts.set("preset", nvenc_preset);
-                // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
-                apply_color_tags(&mut video_ctx, settings.delivery());
-            }
-            ExportVideoCodec::H264 => {
-                video_ctx.set_bit_rate(0); // CRF mode
-                video_opts.set("crf", &settings.crf.to_string());
-                video_opts.set("preset", settings.preset.ffmpeg_value());
-                apply_color_tags(&mut video_ctx, settings.delivery());
-            }
-            ExportVideoCodec::H265 if is_hw_encoder => {
-                video_opts.set("rc", "vbr");
-                video_opts.set("cq", &settings.crf.to_string());
-                video_ctx.set_bit_rate(0);
-                video_opts.set("b:v", "0");
-                let nvenc_preset = match settings.preset {
-                    klipp_core::EncoderPreset::Fast => "p4",
-                    klipp_core::EncoderPreset::Medium => "p5",
-                    klipp_core::EncoderPreset::Slow => "p6",
-                    klipp_core::EncoderPreset::VerySlow => "p7",
-                };
-                video_opts.set("preset", nvenc_preset);
-                apply_color_tags(&mut video_ctx, settings.delivery());
-            }
-            ExportVideoCodec::H265 => {
-                video_ctx.set_bit_rate(0);
-                video_opts.set("crf", &settings.crf.to_string());
-                video_opts.set("preset", settings.preset.ffmpeg_value());
-                video_opts.set("x265-params", x265_color_params(settings.delivery()));
-                apply_color_tags(&mut video_ctx, settings.delivery());
-            }
-            ExportVideoCodec::ProRes422 => {
-                video_opts.set("profile:v", "2");
-            }
-            ExportVideoCodec::ProRes422HQ => {
-                video_opts.set("profile:v", "3");
-            }
-            ExportVideoCodec::ProRes4444 => {
-                video_opts.set("profile:v", "4");
-            }
-            ExportVideoCodec::DNxHD115 => {
-                video_ctx.set_bit_rate(115_000_000);
-            }
-            ExportVideoCodec::DNxHD145 => {
-                video_ctx.set_bit_rate(145_000_000);
-            }
-            ExportVideoCodec::Av1 if is_hw_encoder => {
-                video_opts.set("rc", "vbr");
-                video_opts.set("cq", &settings.crf.to_string());
-                video_ctx.set_bit_rate(0);
-            }
-            ExportVideoCodec::Av1 => {
-                // SVT-AV1 uses CRF
-                video_opts.set("crf", &settings.crf.to_string());
-                let svt_preset = match settings.preset {
-                    klipp_core::EncoderPreset::Fast => "8",
-                    klipp_core::EncoderPreset::Medium => "6",
-                    klipp_core::EncoderPreset::Slow => "4",
-                    klipp_core::EncoderPreset::VerySlow => "2",
-                };
-                video_opts.set("preset", svt_preset);
-            }
-            ExportVideoCodec::Vp9 => {
-                video_opts.set("crf", &settings.crf.to_string());
-                video_opts.set("b:v", "0"); // CRF mode for VP9
-                // VP9 speed/quality preset
-                let speed = match settings.preset {
-                    klipp_core::EncoderPreset::Fast => "4",
-                    klipp_core::EncoderPreset::Medium => "2",
-                    klipp_core::EncoderPreset::Slow => "1",
-                    klipp_core::EncoderPreset::VerySlow => "0",
-                };
-                video_opts.set("speed", speed);
-            }
-            ExportVideoCodec::Gif => {
-                // Loop count: 0 = infinite (the standard for animated
-                // GIFs). Any positive value would be `loop_count - 1`
-                // playbacks before stopping.
-                video_opts.set("loop", "0");
-            }
-        }
-
-        // Every Y'CbCr output gets its colour tags and range — before, only
-        // the H.264/H.265 branches tagged colour, ProRes/DNxHD/AV1/VP9 went
-        // untagged, and no codec declared its (limited) range. GIF is RGB.
-        if settings.video_codec != ExportVideoCodec::Gif {
-            apply_color_tags(&mut video_ctx, settings.delivery());
-            unsafe {
-                (*video_ctx.as_mut_ptr()).color_range = ffmpeg_next::ffi::AVColorRange::AVCOL_RANGE_MPEG;
-            }
-        }
-
-        // CBR/VBR override: if rate_control is not CRF and a video bitrate is set,
-        // override the CRF-based settings above.
-        match settings.rate_control {
-            klipp_core::RateControl::Cbr => {
-                if let Some(br_kbps) = settings.video_bitrate_kbps {
-                    video_ctx.set_bit_rate(br_kbps as usize * 1000);
-                    video_opts.set("maxrate", &format!("{}k", br_kbps));
-                    video_opts.set("minrate", &format!("{}k", br_kbps));
-                    video_opts.set("bufsize", &format!("{}k", br_kbps * 2));
-                    // Remove CRF if it was set
-                    video_opts.set("crf", "-1");
-                }
-            }
-            klipp_core::RateControl::Vbr => {
-                if let Some(br_kbps) = settings.video_bitrate_kbps {
-                    video_ctx.set_bit_rate(br_kbps as usize * 1000);
-                    video_opts.set("maxrate", &format!("{}k", br_kbps * 2));
-                    video_opts.set("bufsize", &format!("{}k", br_kbps * 4));
-                }
-            }
-            klipp_core::RateControl::Crf => {} // Already handled above
-        }
-
-        // Global header flag (needed for MP4/MOV containers)
-        if output_ctx
-            .format()
-            .flags()
-            .contains(ffmpeg_next::format::flag::Flags::GLOBAL_HEADER)
-        {
-            unsafe {
-                (*video_ctx.as_mut_ptr()).flags |=
-                    ffmpeg_next::ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
-            }
-        }
-
-        // Open the video encoder
-        let video_encoder = video_ctx
-            .open_as_with(video_codec, video_opts)
-            .map_err(|e| {
-                // Naming the combination, because the library's own message
-                // for a configuration the hardware cannot do is
-                // "Generic error in an external library" and nothing else.
-                RenderError::Encode(format!(
-                    "open video encoder: {e} ({video_codec_name}, {pix_fmt:?}, {}x{}{})",
-                    snapshot.width,
-                    snapshot.height,
-                    if settings.bit_depth == 10 { ", 10-bit" } else { "" },
-                ))
-            })?;
 
         let video_time_base = video_encoder.time_base();
 
@@ -870,6 +924,7 @@ impl Encoder {
                 _ => None,
             },
             video_codec_name,
+            hardware_fallback,
             subtitle_stream_idx,
             hdr_mode: settings.delivery(),
             light_stats: LightLevelStats::new(),
@@ -891,6 +946,13 @@ impl Encoder {
 
     /// Human-readable hardware info for the video encoder.
     pub fn hw_info(&self) -> &'static str {
+        if let Some(hw) = self.hardware_fallback {
+            return if hw.contains("nvenc") {
+                "Software (CPU): NVENC unavailable"
+            } else {
+                "Software (CPU): hardware encoder unavailable"
+            };
+        }
         if self.video_codec_name.contains("nvenc") {
             "NVENC (NVIDIA)"
         } else if self.video_codec_name.contains("amf") {
@@ -1882,6 +1944,43 @@ mod tests {
             subtitle_tracks: vec![], chapters: vec![],
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
+    }
+
+    /// #381: a hardware encoder that will not open (every NVENC session
+    /// taken) must not fail the render; it goes to software and says so.
+    #[test]
+    #[serial]
+    fn a_hardware_encoder_that_will_not_open_falls_back_to_software() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_hw_fallback.mp4");
+        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
+        settings.audio_codec = ExportAudioCodec::Copy;
+        let snapshot = make_snapshot();
+        let had_hardware = pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false).1;
+
+        FAIL_HARDWARE_OPEN.with(|f| f.set(true));
+        let opened = Encoder::open(&path, &settings, &snapshot);
+        FAIL_HARDWARE_OPEN.with(|f| f.set(false));
+        let mut enc = opened.expect("the render must fall back to software, not fail");
+
+        assert_eq!(enc.video_codec_name, "libx264");
+        if had_hardware {
+            assert!(enc.hw_info().contains("unavailable"), "{}", enc.hw_info());
+        }
+        let rgba = [0u8, 128, 255, 255].repeat(320 * 240);
+        for _ in 0..5 {
+            enc.encode_video_frame(&rgba, 320, 240).unwrap();
+        }
+        enc.finalise().unwrap();
+        let out = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+            .arg(&path)
+            .output();
+        if let Ok(out) = out {
+            assert!(String::from_utf8_lossy(&out.stdout).contains("h264"), "the file is still an H.264 video");
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
