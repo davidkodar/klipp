@@ -3645,6 +3645,7 @@ impl GpuEffectsPipeline {
 
     /// Apply a 3D LUT with trilinear interpolation on GPU.
     /// `lut_data` is RGB triples in B-major order, `lut_size` is the grid dimension (e.g. 33).
+    /// `bracket` carries the LUT's primaries around the lookup.
     pub fn apply_3d_lut_gpu(
         &mut self,
         linear_rgba: &[f32],
@@ -3654,6 +3655,7 @@ impl GpuEffectsPipeline {
         lut_size: u32,
         opacity: f32,
         tetrahedral: bool,
+        bracket: LutBracket,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba.to_vec();
@@ -3684,14 +3686,7 @@ impl GpuEffectsPipeline {
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
         self.upload(lut_buf, 0, bytemuck::cast_slice(lut_data));
 
-        self.write_params(&GpuLut3dParams {
-            width,
-            height,
-            lut_size,
-            opacity,
-            tetrahedral: tetrahedral as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
-        });
+        self.write_params(&GpuLut3dParams::new(width, height, lut_size, opacity, tetrahedral, bracket));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -4850,6 +4845,7 @@ impl GpuEffectsPipeline {
         lut_size: u32,
         opacity: f32,
         tetrahedral: bool,
+        bracket: LutBracket,
     ) {
         if self.is_device_lost() {
             return;
@@ -4885,11 +4881,7 @@ impl GpuEffectsPipeline {
         // (lut_buf, chain_in_out) don't clash with the `&mut self` that
         // `next_params_slot` needs.
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &GpuLut3dParams {
-            width, height, lut_size, opacity,
-            tetrahedral: tetrahedral as u32,
-            _pad0: 0, _pad1: 0, _pad2: 0,
-        });
+        self.write_chain_params(slot, &GpuLut3dParams::new(width, height, lut_size, opacity, tetrahedral, bracket));
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
         self.upload(lut_buf, 0, bytemuck::cast_slice(lut_data));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -8120,11 +8112,36 @@ struct GpuLut3dParams {
     opacity: f32,
     /// Non-zero: tetrahedral interpolation instead of trilinear.
     tetrahedral: u32,
+    /// Bit 0: `pre` applies, bit 1: `post` (see `SHADER_LUT3D`).
+    bracket: u32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
+    /// Rows of the working space → LUT input primaries matrix.
+    pre: [[f32; 4]; 3],
+    /// Rows of the LUT output → working space primaries matrix.
+    post: [[f32; 4]; 3],
 }
-// 8 fields × 4 bytes = 32 bytes
+// 8 × 4 bytes + 2 × 48 = 128 bytes, inside PARAMS_SIZE
+
+impl GpuLut3dParams {
+    fn new(width: u32, height: u32, lut_size: u32, opacity: f32, tetrahedral: bool, bracket: LutBracket) -> Self {
+        let rows = |m: Option<[[f32; 3]; 3]>| m.map_or([[0.0; 4]; 3], |m| m.map(|r| [r[0], r[1], r[2], 0.0]));
+        Self {
+            width, height, lut_size, opacity,
+            tetrahedral: tetrahedral as u32,
+            bracket: bracket.0.is_some() as u32 | (bracket.1.is_some() as u32) << 1,
+            _pad0: 0, _pad1: 0,
+            pre: rows(bracket.0),
+            post: rows(bracket.1),
+        }
+    }
+}
+
+/// The primaries matrices a LUT lookup is bracketed with: working space
+/// into the LUT's input primaries before, its output primaries back
+/// after, rows first; `None` where the two agree. `klipp_color::lut_bracket`
+/// makes them from a LUT's tags.
+pub type LutBracket = (Option<[[f32; 3]; 3]>, Option<[[f32; 3]; 3]>);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -13759,9 +13776,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 );
 
 // LUT3D is defined in sRGB 0-1 space (each LUT entry maps an sRGB
-// triplet to an sRGB triplet). Storage is now native linear-f32, so
-// we encode pixel → sRGB, sample the LUT, then decode the result back
-// to linear. The opacity blend is done in linear space.
+// triplet to an sRGB triplet). Storage is native linear-f32, so we
+// encode pixel → sRGB, sample the LUT, then decode the result back to
+// linear. The opacity blend is done in linear space.
+//
+// A LUT tagged with other primaries than the working space's is
+// bracketed: `pre` takes the pixel into the LUT's input primaries
+// before the encode, `post` takes the decoded result from its output
+// primaries back, as `klipp_effects::apply_3d_lut_bracketed` does on
+// the CPU (#422). `bracket` bit 0 turns `pre` on, bit 1 `post`.
 const SHADER_LUT3D: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -13771,9 +13794,15 @@ struct Params {
     lut_size: u32,
     opacity: f32,
     tetrahedral: u32,
+    bracket: u32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
+    pre0: vec4<f32>,
+    pre1: vec4<f32>,
+    pre2: vec4<f32>,
+    post0: vec4<f32>,
+    post1: vec4<f32>,
+    post2: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -13803,9 +13832,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if pixel_idx >= params.width * params.height { return; }
 
     let pixel = unpack(input[pixel_idx]);
-    let r_in = clamp(linear_to_srgb_component(pixel.x), 0.0, 1.0);
-    let g_in = clamp(linear_to_srgb_component(pixel.y), 0.0, 1.0);
-    let b_in = clamp(linear_to_srgb_component(pixel.z), 0.0, 1.0);
+    let orig = vec3<f32>(pixel.x, pixel.y, pixel.z);
+    var lut_in = orig;
+    if (params.bracket & 1u) != 0u {
+        lut_in = vec3<f32>(dot(params.pre0.xyz, orig), dot(params.pre1.xyz, orig), dot(params.pre2.xyz, orig));
+    }
+    let r_in = clamp(linear_to_srgb_component(lut_in.x), 0.0, 1.0);
+    let g_in = clamp(linear_to_srgb_component(lut_in.y), 0.0, 1.0);
+    let b_in = clamp(linear_to_srgb_component(lut_in.z), 0.0, 1.0);
 
     let n1 = f32(params.lut_size - 1u);
 
@@ -13833,13 +13867,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c011 = lut_sample(r0, g1, b1);
     let c111 = lut_sample(r1, g1, b1);
 
-    // Tetrahedral: the unit cube split into six tetrahedra by the order
-    // of the fractional coordinates, so the sample is interpolated over
-    // the four corners that surround it rather than all eight. It holds a
-    // LUT's straight lines straight, where trilinear bows them — the
-    // wobble that shows on a skin tone or in a sky gradient.
+    var lut_out: vec3<f32>;
     if params.tetrahedral != 0u {
-        var lut_out: vec3<f32>;
+        // Tetrahedral: the unit cube split into six tetrahedra by the
+        // order of the fractional coordinates, so the sample is
+        // interpolated over the four corners that surround it rather
+        // than all eight. It holds a LUT's straight lines straight,
+        // where trilinear bows them — the wobble that shows on a skin
+        // tone or in a sky gradient.
         if rf > gf {
             if gf > bf {
                 lut_out = c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf;
@@ -13855,36 +13890,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             lut_out = c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf;
         }
-        let graded_t = vec3<f32>(
-            srgb_to_linear_component(clamp(lut_out.x, 0.0, 1.0)),
-            srgb_to_linear_component(clamp(lut_out.y, 0.0, 1.0)),
-            srgb_to_linear_component(clamp(lut_out.z, 0.0, 1.0)),
-        );
-        let orig_t = vec3<f32>(pixel.x, pixel.y, pixel.z);
-        let result_t = mix(orig_t, graded_t, params.opacity);
-        output[pixel_idx] = pack(vec4<f32>(result_t.x, result_t.y, result_t.z, pixel.w));
-        return;
+    } else {
+        let c00 = mix(c000, c100, rf);
+        let c01 = mix(c001, c101, rf);
+        let c10 = mix(c010, c110, rf);
+        let c11 = mix(c011, c111, rf);
+        let c0 = mix(c00, c10, gf);
+        let c1 = mix(c01, c11, gf);
+        lut_out = mix(c0, c1, bf);
     }
 
-    let c00 = mix(c000, c100, rf);
-    let c01 = mix(c001, c101, rf);
-    let c10 = mix(c010, c110, rf);
-    let c11 = mix(c011, c111, rf);
-
-    let c0 = mix(c00, c10, gf);
-    let c1 = mix(c01, c11, gf);
-
-    let graded_srgb = mix(c0, c1, bf);
-
-    // Decode LUT output (sRGB) back to linear.
-    let graded = vec3<f32>(
-        srgb_to_linear_component(clamp(graded_srgb.x, 0.0, 1.0)),
-        srgb_to_linear_component(clamp(graded_srgb.y, 0.0, 1.0)),
-        srgb_to_linear_component(clamp(graded_srgb.z, 0.0, 1.0)),
+    // Decode LUT output (sRGB) back to linear, and into the working
+    // space's primaries.
+    var graded = vec3<f32>(
+        srgb_to_linear_component(clamp(lut_out.x, 0.0, 1.0)),
+        srgb_to_linear_component(clamp(lut_out.y, 0.0, 1.0)),
+        srgb_to_linear_component(clamp(lut_out.z, 0.0, 1.0)),
     );
+    if (params.bracket & 2u) != 0u {
+        graded = vec3<f32>(dot(params.post0.xyz, graded), dot(params.post1.xyz, graded), dot(params.post2.xyz, graded));
+    }
 
     // Opacity blend in linear.
-    let orig = vec3<f32>(pixel.x, pixel.y, pixel.z);
     let result = mix(orig, graded, params.opacity);
 
     output[pixel_idx] = pack(vec4<f32>(result.x, result.y, result.z, pixel.w));

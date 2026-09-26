@@ -997,65 +997,123 @@ pub fn equalize_cdf(linear: &[f32]) -> [f32; EQUALIZE_CDF_LEN] {
     cdf
 }
 
-/// A 3D LUT on the CPU, as `GpuEffectsPipeline::apply_3d_lut_gpu` applies
-/// it: indexed by the display-encoded colour (clamped), trilinear, the
-/// result decoded and mixed with the original by `opacity` in linear
-/// light. `data` is RGB triples, blue-major, `size`³ of them.
-pub fn apply_3d_lut(linear: Vec<f32>, data: &[f32], size: u32, opacity: f32, tetrahedral: bool) -> Vec<f32> {
-    if opacity <= 0.0 || size < 2 || data.len() < (size * size * size * 3) as usize {
-        return linear;
+/// The one CPU LUT lookup, for the Lut3D node (through `klipp_color`)
+/// and the global LUT alike,
+/// as the GPU LUT pass does it: `pre` into the LUT's primaries, the
+/// sRGB encoding clamped to 0–1 as the index, trilinear or tetrahedral,
+/// the result decoded, `post` back to the working space, and the mix
+/// with the original by `opacity` in linear light. `data` is RGB
+/// triples, blue-major, `size`³ of them; a table too short for its
+/// size is left alone rather than read past.
+pub fn apply_3d_lut_bracketed(
+    rgba_linear: &mut [f32],
+    data: &[f32],
+    size: usize,
+    opacity: f32,
+    pre: Option<[[f32; 3]; 3]>,
+    post: Option<[[f32; 3]; 3]>,
+    tetrahedral: bool,
+) {
+    let n = size;
+    if opacity <= 0.0 || n < 2 || data.len() < n * n * n * 3 {
+        return;
     }
-    let n = size as usize;
     let n1 = (n - 1) as f32;
-    let at = |r: usize, g: usize, b: usize| {
-        let i = (b * n * n + g * n + r) * 3;
-        [data[i], data[i + 1], data[i + 2]]
-    };
-    let lerp3 = |a: [f32; 3], b: [f32; 3], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-    each_value(linear, |c| {
-        let idx = [0, 1, 2].map(|ch| (encode(c[ch]).clamp(0.0, 1.0) * n1).clamp(0.0, n1));
-        let i0 = idx.map(|v| (v as usize).min(n - 2));
-        let f = [idx[0] - i0[0] as f32, idx[1] - i0[1] as f32, idx[2] - i0[2] as f32];
-        let (r0, g0, b0) = (i0[0], i0[1], i0[2]);
-        let c00 = lerp3(at(r0, g0, b0), at(r0 + 1, g0, b0), f[0]);
-        let c01 = lerp3(at(r0, g0, b0 + 1), at(r0 + 1, g0, b0 + 1), f[0]);
-        let c10 = lerp3(at(r0, g0 + 1, b0), at(r0 + 1, g0 + 1, b0), f[0]);
-        let c11 = lerp3(at(r0, g0 + 1, b0 + 1), at(r0 + 1, g0 + 1, b0 + 1), f[0]);
-        let interpolated = if tetrahedral {
-            // The unit cube split into six tetrahedra by the order of the
-            // fractional coordinates: the sample is interpolated over the
-            // four corners that surround it rather than all eight, which
-            // holds a LUT's straight lines straight.
-            let (rf, gf, bf) = (f[0], f[1], f[2]);
-            let corner = |r: usize, g: usize, b: usize| at(r0 + r, g0 + g, b0 + b);
-            let (c000, c111) = (corner(0, 0, 0), corner(1, 1, 1));
-            let mix4 = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], x: f32, y: f32, z: f32| {
-                [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * x + (c[i] - b[i]) * y + (d[i] - c[i]) * z)
-            };
-            if rf > gf {
-                if gf > bf {
-                    mix4(c000, corner(1, 0, 0), corner(1, 1, 0), c111, rf, gf, bf)
-                } else if rf > bf {
-                    mix4(c000, corner(1, 0, 0), corner(1, 0, 1), c111, rf, bf, gf)
-                } else {
-                    mix4(c000, corner(0, 0, 1), corner(1, 0, 1), c111, bf, rf, gf)
-                }
-            } else if rf > bf {
-                mix4(c000, corner(0, 1, 0), corner(1, 1, 0), c111, gf, rf, bf)
-            } else if gf > bf {
-                mix4(c000, corner(0, 1, 0), corner(0, 1, 1), c111, gf, bf, rf)
-            } else {
-                mix4(c000, corner(0, 0, 1), corner(0, 1, 1), c111, bf, gf, rf)
-            }
+
+    rgba_linear.par_chunks_exact_mut(4).for_each(|pixel| {
+        let original = [pixel[0], pixel[1], pixel[2]];
+
+        let lut_in_linear = if let Some(m) = pre {
+            mul3(m, original)
         } else {
-            lerp3(lerp3(c00, c10, f[1]), lerp3(c01, c11, f[1]), f[2])
+            original
         };
-        let graded = interpolated.map(|v| decode(v.clamp(0.0, 1.0)));
-        [
-            c[0] + (graded[0] - c[0]) * opacity,
-            c[1] + (graded[1] - c[1]) * opacity,
-            c[2] + (graded[2] - c[2]) * opacity,
-            c[3],
-        ]
-    })
+        // Looked up on the sRGB encoding, as the GPU LUT shader does and
+        // as a `.cube` look is built: it expects display-encoded input.
+        // Indexing linear values put everything below mid-grey into the
+        // first cells of a 13³ LUT, so the look read its curve in the
+        // wrong place and banded (#414).
+        let lut_in = lut_in_linear.map(|c| encode(c.clamp(0.0, 1.0)));
+
+        let r_idx = (lut_in[0] * n1).clamp(0.0, n1);
+        let g_idx = (lut_in[1] * n1).clamp(0.0, n1);
+        let b_idx = (lut_in[2] * n1).clamp(0.0, n1);
+        let r0 = (r_idx.floor() as usize).min(n - 2);
+        let g0 = (g_idx.floor() as usize).min(n - 2);
+        let b0 = (b_idx.floor() as usize).min(n - 2);
+        let r1 = r0 + 1;
+        let g1 = g0 + 1;
+        let b1 = b0 + 1;
+        let rf = r_idx - r0 as f32;
+        let gf = g_idx - g0 as f32;
+        let bf = b_idx - b0 as f32;
+        let idx = |ri: usize, gi: usize, bi: usize| (bi * n * n + gi * n + ri) * 3;
+
+        let mut lut_out = [0.0_f32; 3];
+        for (ch, slot) in lut_out.iter_mut().enumerate() {
+            let c000 = data[idx(r0, g0, b0) + ch];
+            let c100 = data[idx(r1, g0, b0) + ch];
+            let c010 = data[idx(r0, g1, b0) + ch];
+            let c110 = data[idx(r1, g1, b0) + ch];
+            let c001 = data[idx(r0, g0, b1) + ch];
+            let c101 = data[idx(r1, g0, b1) + ch];
+            let c011 = data[idx(r0, g1, b1) + ch];
+            let c111 = data[idx(r1, g1, b1) + ch];
+            *slot = if tetrahedral {
+                // The unit cube split into six tetrahedra by the order of
+                // the fractional coordinates: four surrounding corners
+                // instead of all eight, which holds a LUT's straight
+                // lines straight where trilinear bows them.
+                if rf > gf {
+                    if gf > bf {
+                        c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf
+                    } else if rf > bf {
+                        c000 + (c100 - c000) * rf + (c101 - c100) * bf + (c111 - c101) * gf
+                    } else {
+                        c000 + (c001 - c000) * bf + (c101 - c001) * rf + (c111 - c101) * gf
+                    }
+                } else if rf > bf {
+                    c000 + (c010 - c000) * gf + (c110 - c010) * rf + (c111 - c110) * bf
+                } else if gf > bf {
+                    c000 + (c010 - c000) * gf + (c011 - c010) * bf + (c111 - c011) * rf
+                } else {
+                    c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf
+                }
+            } else {
+                let c00 = c000 + (c100 - c000) * rf;
+                let c01 = c001 + (c101 - c001) * rf;
+                let c10 = c010 + (c110 - c010) * rf;
+                let c11 = c011 + (c111 - c011) * rf;
+                let c0 = c00 + (c10 - c00) * gf;
+                let c1 = c01 + (c11 - c01) * gf;
+                c0 + (c1 - c0) * bf
+            };
+        }
+
+        let lut_out = lut_out.map(|c| decode(c.clamp(0.0, 1.0)));
+        let post_rgb = if let Some(m) = post {
+            mul3(m, lut_out)
+        } else {
+            lut_out
+        };
+
+        pixel[0] = original[0] + (post_rgb[0] - original[0]) * opacity;
+        pixel[1] = original[1] + (post_rgb[1] - original[1]) * opacity;
+        pixel[2] = original[2] + (post_rgb[2] - original[2]) * opacity;
+    });
+}
+
+fn mul3(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
+}
+
+/// A 3D LUT on the CPU, as `GpuEffectsPipeline::apply_3d_lut_gpu` applies
+/// it: indexed by the display-encoded colour (clamped), the result
+/// decoded and mixed with the original by `opacity` in linear light.
+/// `data` is RGB triples, blue-major, `size`³ of them. The lookup is
+/// [`apply_3d_lut_bracketed`], shared with the Lut3D node: two copies
+/// of it drifted apart once (#414, #422).
+pub fn apply_3d_lut(mut linear: Vec<f32>, data: &[f32], size: u32, opacity: f32, tetrahedral: bool) -> Vec<f32> {
+    apply_3d_lut_bracketed(&mut linear, data, size as usize, opacity, None, None, tetrahedral);
+    linear
 }

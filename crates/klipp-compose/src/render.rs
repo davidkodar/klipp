@@ -1655,8 +1655,17 @@ impl Renderer {
         None
     }
 
+    /// The primaries around the timeline LUT's lookup. It runs on the
+    /// composite before the display transform, so in the working space:
+    /// in an ACEScg project, AP1. An untagged `.cube` is Rec.709, as a
+    /// Lut3D node's is, and was looked up on sRGB-encoded AP1 (#422).
+    fn global_lut_bracket(&self, lut: &GlobalLut) -> klipp_effects::gpu::LutBracket {
+        klipp_color::lut_bracket(self.working, lut.lut.input_space, lut.lut.output_space)
+    }
+
     fn global_lut_on_chain(&mut self, width: u32, height: u32) -> bool {
         let Some(lut) = self.global_lut.take() else { return true };
+        let bracket = self.global_lut_bracket(&lut);
         let ok = self.executor.apply_global_lut_to_output(
             width,
             height,
@@ -1664,6 +1673,7 @@ impl Renderer {
             lut.lut.size as u32,
             lut.opacity,
             self.lut_tetrahedral,
+            bracket,
         );
         self.global_lut = Some(lut);
         ok
@@ -1824,10 +1834,14 @@ impl Renderer {
         if let Some(lut) = self.global_lut.take() {
             let t = Instant::now();
             let tetrahedral = self.lut_tetrahedral;
+            let bracket = self.global_lut_bracket(&lut);
             let above_white = if self.hdr_peak.is_some() { split_above_white(&mut acc) } else { None };
             acc = match self.gpu() {
-                Some(gpu) => gpu.apply_3d_lut_gpu(&acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
-                None => klipp_effects::apply_3d_lut(acc, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral),
+                Some(gpu) => gpu.apply_3d_lut_gpu(&acc, width, height, &lut.lut.data, lut.lut.size as u32, lut.opacity, tetrahedral, bracket),
+                None => {
+                    klipp_effects::apply_3d_lut_bracketed(&mut acc, &lut.lut.data, lut.lut.size, lut.opacity, bracket.0, bracket.1, tetrahedral);
+                    acc
+                }
             };
             if let Some(over) = above_white {
                 use rayon::prelude::*;

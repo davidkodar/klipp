@@ -2621,12 +2621,13 @@ impl NodeInspectorPanel {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
                 }
-                // Colorspace tags. `.cube` and friends carry no
+                // Primaries tags. `.cube` and friends carry no
                 // standardised colorspace metadata, so the loader
-                // defaults to Rec.709 / sRGB on both sides; the user
-                // re-tags here when the LUT was authored against a
-                // different working space (e.g. an ACES-AP1-tagged
-                // LUT loaded into a Rec.709 project, or vice versa).
+                // defaults to Rec.709 primaries on both sides; the user
+                // re-tags here when the LUT was built for other
+                // primaries (e.g. an AP1 LUT). The lookup is on the
+                // sRGB encoding whatever the tag; the tag only chooses
+                // the matrices around it (#422).
                 lut_colorspace_dropdown(
                     ui, theme, "Input space",
                     "lut_input_space",

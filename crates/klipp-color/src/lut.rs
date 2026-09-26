@@ -17,11 +17,15 @@ use klipp_core::WorkingColorspace;
 pub struct LutData {
     pub size: usize,
     pub data: Vec<f32>, // r,g,b interleaved, size^3 * 3 floats
-    /// Colorspace of the LUT's input domain (the values you index in
-    /// with). Defaults to [`WorkingColorspace::Rec709Linear`] for the
-    /// existing "untagged .cube" convention.
+    /// The primaries of the LUT's input domain. Primaries only: the
+    /// lookup is always indexed on the sRGB encoding of those values,
+    /// as a `.cube` look is built and as the Inspector's
+    /// "Rec.709 / sRGB" says; the `Linear` in the variant names the
+    /// working space the matrices convert from, not the index. Defaults
+    /// to [`WorkingColorspace::Rec709Linear`] for an untagged `.cube`.
     pub input_space: WorkingColorspace,
-    /// Colorspace of the LUT's output range. Same default.
+    /// The primaries of the LUT's output, which is sRGB-encoded and
+    /// decoded after the lookup. Same default.
     pub output_space: WorkingColorspace,
 }
 
@@ -564,7 +568,8 @@ pub fn apply_3d_lut_tetrahedral(rgba: &mut [u8], lut: &LutData, opacity: f32) {
 /// `output_space` default to `Rec709Linear` after parsing) and a
 /// `Rec709Linear` working space, the primaries matrices are skipped.
 /// The bracketing kicks in only when one of the three colorspaces
-/// differs; the GPU path does not bracket yet.
+/// differs. The GPU LUT pass brackets with the same matrices
+/// ([`lut_bracket`]), so a tag means the same on both (#422).
 pub fn apply_3d_lut_linear_ws(
     rgba_linear: &mut [f32],
     lut: &LutData,
@@ -596,98 +601,26 @@ pub fn apply_3d_lut_linear_ws_with_overrides(
     output_space: WorkingColorspace,
     tetrahedral: bool,
 ) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let n = lut.size;
-    if n < 2 {
-        return;
-    }
-    let n1 = (n - 1) as f32;
-    let pre = crate::primaries::working_space_conversion_matrix(working_space, input_space);
-    let post = crate::primaries::working_space_conversion_matrix(output_space, working_space);
+    let (pre, post) = lut_bracket(working_space, input_space, output_space);
+    klipp_effects::apply_3d_lut_bracketed(rgba_linear, &lut.data, lut.size, opacity, pre, post, tetrahedral);
+}
 
-    for pixel in rgba_linear.chunks_exact_mut(4) {
-        let original = [pixel[0], pixel[1], pixel[2]];
+/// A 3×3 primaries matrix, rows first.
+pub type Matrix3 = [[f32; 3]; 3];
 
-        let lut_in_linear = if let Some(m) = pre {
-            crate::primaries::matrix3_mul_vec(m, original)
-        } else {
-            original
-        };
-        // Looked up on the sRGB encoding, as the GPU LUT shader does and
-        // as a `.cube` look is built: it expects display-encoded input.
-        // Indexing linear values put everything below mid-grey into the
-        // first cells of a 13³ LUT, so the look read its curve in the
-        // wrong place and banded (#414).
-        let lut_in = lut_in_linear.map(|c| crate::transfer::linear_to_srgb(c.clamp(0.0, 1.0)));
-
-        let r_idx = (lut_in[0] * n1).clamp(0.0, n1);
-        let g_idx = (lut_in[1] * n1).clamp(0.0, n1);
-        let b_idx = (lut_in[2] * n1).clamp(0.0, n1);
-        let r0 = (r_idx.floor() as usize).min(n - 2);
-        let g0 = (g_idx.floor() as usize).min(n - 2);
-        let b0 = (b_idx.floor() as usize).min(n - 2);
-        let r1 = r0 + 1;
-        let g1 = g0 + 1;
-        let b1 = b0 + 1;
-        let rf = r_idx - r0 as f32;
-        let gf = g_idx - g0 as f32;
-        let bf = b_idx - b0 as f32;
-        let idx = |ri: usize, gi: usize, bi: usize| (bi * n * n + gi * n + ri) * 3;
-
-        let mut lut_out = [0.0_f32; 3];
-        for (ch, slot) in lut_out.iter_mut().enumerate() {
-            let c000 = lut.data[idx(r0, g0, b0) + ch];
-            let c100 = lut.data[idx(r1, g0, b0) + ch];
-            let c010 = lut.data[idx(r0, g1, b0) + ch];
-            let c110 = lut.data[idx(r1, g1, b0) + ch];
-            let c001 = lut.data[idx(r0, g0, b1) + ch];
-            let c101 = lut.data[idx(r1, g0, b1) + ch];
-            let c011 = lut.data[idx(r0, g1, b1) + ch];
-            let c111 = lut.data[idx(r1, g1, b1) + ch];
-            *slot = if tetrahedral {
-                // The unit cube split into six tetrahedra by the order of
-                // the fractional coordinates: four surrounding corners
-                // instead of all eight, which holds a LUT's straight
-                // lines straight where trilinear bows them.
-                if rf > gf {
-                    if gf > bf {
-                        c000 + (c100 - c000) * rf + (c110 - c100) * gf + (c111 - c110) * bf
-                    } else if rf > bf {
-                        c000 + (c100 - c000) * rf + (c101 - c100) * bf + (c111 - c101) * gf
-                    } else {
-                        c000 + (c001 - c000) * bf + (c101 - c001) * rf + (c111 - c101) * gf
-                    }
-                } else if rf > bf {
-                    c000 + (c010 - c000) * gf + (c110 - c010) * rf + (c111 - c110) * bf
-                } else if gf > bf {
-                    c000 + (c010 - c000) * gf + (c011 - c010) * bf + (c111 - c011) * rf
-                } else {
-                    c000 + (c001 - c000) * bf + (c011 - c001) * gf + (c111 - c011) * rf
-                }
-            } else {
-                let c00 = c000 + (c100 - c000) * rf;
-                let c01 = c001 + (c101 - c001) * rf;
-                let c10 = c010 + (c110 - c010) * rf;
-                let c11 = c011 + (c111 - c011) * rf;
-                let c0 = c00 + (c10 - c00) * gf;
-                let c1 = c01 + (c11 - c01) * gf;
-                c0 + (c1 - c0) * bf
-            };
-        }
-
-        let lut_out = lut_out.map(|c| crate::transfer::srgb_to_linear(c.clamp(0.0, 1.0)));
-        let post_rgb = if let Some(m) = post {
-            crate::primaries::matrix3_mul_vec(m, lut_out)
-        } else {
-            lut_out
-        };
-
-        pixel[0] = original[0] + (post_rgb[0] - original[0]) * opacity;
-        pixel[1] = original[1] + (post_rgb[1] - original[1]) * opacity;
-        pixel[2] = original[2] + (post_rgb[2] - original[2]) * opacity;
-    }
+/// The primaries matrices around a LUT lookup: working space into the
+/// LUT's input tag before, its output tag back to the working space
+/// after. `None` where the two already agree. The GPU LUT pass takes
+/// the same pair, so a tag means the same on both.
+pub fn lut_bracket(
+    working_space: WorkingColorspace,
+    input_space: WorkingColorspace,
+    output_space: WorkingColorspace,
+) -> (Option<Matrix3>, Option<Matrix3>) {
+    (
+        crate::primaries::working_space_conversion_matrix(working_space, input_space),
+        crate::primaries::working_space_conversion_matrix(output_space, working_space),
+    )
 }
 
 /// Write a 3D LUT in Adobe .cube format.
@@ -1044,9 +977,9 @@ mod tests {
     }
 
     /// Untagged LUT (input/output both Rec709) under Rec709 working
-    /// space — should produce byte-identical output to a manual LUT
-    /// apply with no bracketing. The conversion-matrix lookup
-    /// returns `None` and the matmul is skipped entirely.
+    /// space: no bracketing, so the result is the plain lookup — the
+    /// LUT's sRGB-encoded output decoded to linear. The conversion-
+    /// matrix lookup returns `None` and the matmul is skipped entirely.
     #[test]
     fn ws_aware_no_op_when_all_three_spaces_match() {
         // A trivially non-identity LUT: scales each channel by 0.5

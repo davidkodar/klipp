@@ -188,11 +188,16 @@ Export (`klipp-render`) carries a delivery-target ODT choice
 a BT.709 → AP1 walk when the project is Rec.709-linear so the ODT
 sees the right basis).
 
-LUTs in `klipp-color::lut` carry input/output working-space tags on
-`LutData`; `apply_3d_lut_linear_ws` brackets the trilinear lookup
-with the right primaries matrices so a Rec.709-authored .cube applied
-to an AcesCG project doesn't silently shift gamut. The Lut3D
-inspector node exposes both tags as dropdowns.
+LUTs in `klipp-color::lut` carry input/output primaries tags on
+`LutData`. The lookup itself is always on the sRGB encoding (as a
+`.cube` look is built); a tag says which primaries it was built in, and
+`lut_bracket` gives the matrices that take the working space into the
+LUT's input primaries before the lookup and its output primaries back
+after, so a Rec.709-authored .cube applied to an AcesCG project doesn't
+silently shift gamut. The CPU (`klipp_effects::apply_3d_lut_bracketed`,
+the one lookup shared with the global LUT) and the GPU LUT pass apply
+the same pair. The Lut3D inspector node exposes both tags as dropdowns,
+and the node's choice wins over the file's.
 
 ### OFX plugin host
 

@@ -236,9 +236,7 @@ fn a_timeline_grade_over_the_stack_matches() {
 
 /// The timeline's LUT over the stack: applied on the accumulator before
 /// the premultiply, where `render_stack` applies it.
-#[test]
-fn a_global_lut_over_the_stack_matches() {
-    let (seq, mut src) = stack();
+fn test_lut() -> klipp_color::lut::LutData {
     let size = 5usize;
     let step = 1.0 / (size - 1) as f32;
     let mut data = Vec::with_capacity(size * size * size * 3);
@@ -254,12 +252,18 @@ fn a_global_lut_over_the_stack_matches() {
             }
         }
     }
-    let lut = klipp_color::lut::LutData {
+    klipp_color::lut::LutData {
         size,
         data,
         input_space: klipp_core::WorkingColorspace::Rec709Linear,
         output_space: klipp_core::WorkingColorspace::Rec709Linear,
-    };
+    }
+}
+
+#[test]
+fn a_global_lut_over_the_stack_matches() {
+    let (seq, mut src) = stack();
+    let lut = test_lut();
     let mut r = renderer();
     r.set_global_lut(Some(klipp_compose::GlobalLut { lut: lut.clone(), opacity: 0.9 }));
     let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
@@ -272,6 +276,44 @@ fn a_global_lut_over_the_stack_matches() {
     let mut plain = renderer();
     let (no_lut, _) = plain.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).unwrap();
     assert!(worst(&no_lut, &gpu) > 20, "the LUT is not reaching the stack's frame");
+}
+
+/// The timeline's LUT in an ACEScg project. It runs before the display
+/// transform, on AP1; an untagged `.cube` is Rec.709, so the lookup is
+/// bracketed as a Lut3D node's is. Both sides used to look it up on
+/// sRGB-encoded AP1 (#422).
+#[test]
+fn a_global_lut_in_an_acescg_project_is_bracketed_on_both_sides() {
+    use klipp_core::WorkingColorspace::AcesCG;
+    let (seq, mut src) = stack();
+    let lut = test_lut();
+    let ap1_display = |linear: &[f32]| {
+        klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, AcesCG, klipp_core::SdrTransfer::Srgb)
+    };
+    // The CPU renderer applies the LUT as the node does: the stack
+    // without it, then the node's bracketed lookup. Straight alpha on
+    // both, since the renderer's LUT goes on before the premultiply.
+    let straight = RenderOptions { keep_alpha: true, ..Default::default() };
+    // Tetrahedral on both, stated rather than left to the default the
+    // expected value below assumes.
+    let mut plain = renderer();
+    plain.set_lut_tetrahedral(true);
+    plain.set_working_colorspace(AcesCG);
+    let mut want = plain.render(&seq, tc(1.0), W, H, &mut src, straight);
+    klipp_color::apply_3d_lut_linear_ws(&mut want, &lut, 0.9, AcesCG, true);
+    let mut r = renderer();
+    r.set_lut_tetrahedral(true);
+    r.set_working_colorspace(AcesCG);
+    r.set_global_lut(Some(klipp_compose::GlobalLut { lut, opacity: 0.9 }));
+    let d = worst(&ap1_display(&want), &ap1_display(&r.render(&seq, tc(1.0), W, H, &mut src, straight)));
+    assert!(d <= 1, "the CPU renderer's LUT is not the node's bracketed lookup: {d} levels");
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+        return;
+    };
+    let cpu = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    let d = worst(&ap1_display(&cpu), &gpu);
+    assert!(d <= 1, "LUT in ACEScg: GPU differs from the CPU renderer by {d} levels");
 }
 
 /// A rolling title mid-roll: the resting sprite placed by the GPU over

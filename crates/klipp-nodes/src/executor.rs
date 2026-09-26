@@ -848,6 +848,7 @@ impl GraphExecutor {
         lut_size: u32,
         opacity: f32,
         tetrahedral: bool,
+        bracket: klipp_effects::gpu::LutBracket,
     ) -> bool {
         let Some(slot_a) = self.output_on_gpu else { return false };
         let Some(gpu) = self.gpu.as_mut() else { return false };
@@ -855,7 +856,7 @@ impl GraphExecutor {
         // fresh one for the single pass. `begin_chain` resets the params
         // ring, which the LUT dispatch draws a slot from.
         gpu.begin_chain();
-        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral);
+        gpu.apply_3d_lut_chain(slot_a, width, height, lut_data, lut_size, opacity, tetrahedral, bracket);
         gpu.submit_chain();
         // The pass reads one slot and writes the other.
         self.output_on_gpu = Some(!slot_a);
@@ -2414,6 +2415,23 @@ impl GraphExecutor {
 
 }
 
+/// The primaries a Lut3D node's lookup is bracketed with. The node's
+/// `lut_input_space` / `lut_output_space` (set in the Inspector) win
+/// over the loaded LUT's own tags; an untagged `.cube` is Rec.709 on
+/// both sides. A tag names primaries only: the lookup is always on the
+/// sRGB encoding, as the Inspector's "Rec.709 / sRGB" says.
+fn lut_node_bracket(
+    params: &NodeParams,
+    lut: &LutData,
+    working: klipp_core::WorkingColorspace,
+) -> klipp_effects::gpu::LutBracket {
+    klipp_color::lut_bracket(
+        working,
+        params.lut_input_space.unwrap_or(lut.input_space),
+        params.lut_output_space.unwrap_or(lut.output_space),
+    )
+}
+
 /// The grain `size` both the shader and its CPU twin quantise pixel
 /// coordinates by, floored away from zero — at zero each divides by it.
 fn grain_size(grain: &klipp_core::FilmGrainSettings) -> f32 {
@@ -3022,9 +3040,10 @@ impl GraphExecutor {
                     .clone();
                 let opacity = params.lut_opacity.unwrap_or(1.0);
                 let tetrahedral = self.lut_tetrahedral;
+                let bracket = lut_node_bracket(params, &lut, self.working_colorspace);
                 self.gpu.as_mut().unwrap().apply_3d_lut_chain(
                     in_is_a, width, height,
-                    &lut.data, lut.size as u32, opacity, tetrahedral,
+                    &lut.data, lut.size as u32, opacity, tetrahedral, bracket,
                 );
                 Some(1)
             }
@@ -4162,30 +4181,19 @@ impl GraphExecutor {
                         .clone();
                     let opacity = params.lut_opacity.unwrap_or(1.0);
                     let tetrahedral = self.lut_tetrahedral;
+                    // Both paths bracket the lookup with the LUT's
+                    // primaries, from the same matrices (#422).
+                    let bracket = lut_node_bracket(params, &lut, self.working_colorspace);
                     if let Some(gpu) = &mut self.gpu {
-                        // GPU LUT path is still working-space-naive
-                        // (the compute shader treats the LUT as
-                        // Rec.709-tagged on both sides). Honouring
-                        // the per-node colorspace tags on the GPU
-                        // path needs another shader-uniform shape
-                        // change tracked separately.
                         gpu.apply_3d_lut_gpu(
                             primary_input, width, height,
-                            &lut.data, lut.size as u32, opacity, tetrahedral,
+                            &lut.data, lut.size as u32, opacity, tetrahedral, bracket,
                         )
                     } else {
-                        // CPU fallback: linear-light, working-space-
-                        // aware path. Per-node `lut_input_space` /
-                        // `lut_output_space` overrides win over the
-                        // loaded LUT's own tags (untagged .cube files
-                        // default to Rec709Linear at parse time; the
-                        // user re-tags via the Inspector).
-                        let in_space = params.lut_input_space.unwrap_or(lut.input_space);
-                        let out_space = params.lut_output_space.unwrap_or(lut.output_space);
                         let mut frame = primary_input.to_vec();
-                        klipp_color::apply_3d_lut_linear_ws_with_overrides(
-                            &mut frame, &lut, opacity, self.working_colorspace,
-                            in_space, out_space, tetrahedral,
+                        klipp_effects::apply_3d_lut_bracketed(
+                            &mut frame, &lut.data, lut.size, opacity,
+                            bracket.0, bracket.1, tetrahedral,
                         );
                         frame
                     }
