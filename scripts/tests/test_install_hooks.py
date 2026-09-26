@@ -73,7 +73,7 @@ class InstallHooksTests(unittest.TestCase):
         text = self.hook.read_text()
         self.assertTrue(text.startswith(LFS_HOOK))
         self.assertEqual(text.count("Klipp test gate"), 1)
-        self.assertIn("klipp-gate-block v3", text)
+        self.assertIn("klipp-gate-block v4", text)
         self.assertEqual((self.root / ".git/hooks/pre-push.klipp-backup").read_text(), LFS_HOOK + V1_BLOCK)
 
     def test_a_stale_gate_waits_for_the_lock_and_names_itself(self):
@@ -180,6 +180,64 @@ class InstallHooksTests(unittest.TestCase):
         _, err = hook.communicate(timeout=15)
         self.assertEqual(hook.returncode, 0, err)
         self.assertIn("gate-ran", self.calls())
+
+    def gate_that_lingers(self):
+        # Starts a child that would outlive a killed push, and says where.
+        self.gate('sleep 60 &\necho $! > "$(git rev-parse --show-toplevel)/child"\nwait')
+
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().split()[2] != "Z"
+
+    def wait_for_child(self):
+        path = self.root / "child"
+        for _ in range(200):
+            if path.exists() and path.read_text().strip():
+                return int(path.read_text())
+            time.sleep(0.02)
+        self.fail("the gate never started its child")
+
+    def test_a_killed_push_takes_its_gate_with_it(self):
+        self.install()
+        self.gate_that_lingers()
+        # Stands in for git: the hook's parent, killed by pid.
+        push = subprocess.Popen(["sh", "-c", f'sh "{self.hook}"; echo after'], cwd=self.root, env=self.env)
+        self.addCleanup(push.wait)
+        child = self.wait_for_child()
+        self.addCleanup(lambda: self.alive(child) and os.kill(child, 9))
+        push.kill()
+        for _ in range(100):
+            if not self.alive(child):
+                break
+            time.sleep(0.05)
+        self.assertFalse(self.alive(child), "the gate's work outlived its push")
+
+    def test_interrupting_the_hook_ends_the_gate(self):
+        self.install()
+        self.gate_that_lingers()
+        hook = subprocess.Popen(["sh", str(self.hook)], cwd=self.root, env=self.env)
+        self.addCleanup(hook.wait)
+        child = self.wait_for_child()
+        self.addCleanup(lambda: self.alive(child) and os.kill(child, 9))
+        hook.send_signal(2)
+        hook.wait(timeout=5)
+        for _ in range(60):
+            if not self.alive(child):
+                break
+            time.sleep(0.05)
+        self.assertFalse(self.alive(child), "Ctrl-C left the gate running")
+
+    def test_the_gate_still_reads_the_refs_git_sends(self):
+        self.install()
+        self.gate('cat > "$(git rev-parse --show-toplevel)/stdin"')
+        result = subprocess.run(["sh", str(self.hook)], cwd=self.root, env=self.env, text=True,
+                                input="refs/heads/x abc refs/heads/x def\n", capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "stdin").read_text(), "refs/heads/x abc refs/heads/x def\n")
 
 if __name__ == "__main__":
     unittest.main()
