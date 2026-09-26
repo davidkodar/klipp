@@ -57,6 +57,48 @@ const GUST_MAX_DUCK_DB: f32 = 30.0;
 /// and speech sit below it; a gust pushes the low end well above.
 const GUST_TARGET_DB: f32 = -3.0;
 
+/// Surge detector: a gust also shows as the low end jumping far above its
+/// own calm level. Beach and street wind often lifts the mids with it,
+/// which hides it from the tilt test above.
+///
+/// Both tests only act on noise-like sound. A voice lifting the low end is
+/// harmonic: between `FLAT_LOW_HZ` and `FLAT_HIGH_HZ` its bins stand far
+/// above their local spectral envelope, while wind's do not. Measuring
+/// flatness against that envelope rather than the raw spectrum keeps
+/// wind's steep low-end slope from reading as structure.
+const SURGE_LOW_HZ: f32 = 20.0;
+const SURGE_TOP_HZ: f32 = 300.0;
+const FLAT_LOW_HZ: f32 = 140.0;
+const FLAT_HIGH_HZ: f32 = 1500.0;
+/// Bins either side averaged into the local envelope.
+const FLAT_ENVELOPE_BINS: usize = 3;
+/// Calm level of the low end: the 20th percentile of up to 20
+/// quarter-second averages (47 hops each at 48 kHz), about the last five
+/// seconds. A minimum would sit in the troughs of wind's own flutter and
+/// read calm wind as a gust.
+const SURGE_SUBWINDOW_FRAMES: usize = 47;
+const SURGE_SUBWINDOWS: usize = 20;
+/// Rise above the calm level where a gust starts to count. Ducking grows
+/// at twice the rise past it, so from twice the margin a gust is pulled
+/// all the way back to the calm level.
+const SURGE_MARGIN_DB: f32 = 3.0;
+/// Voicing: peak of the normalised autocorrelation of the whitened
+/// 300-3500 Hz spectrum over pitch lags of 70-700 Hz. A frame counts as
+/// wind only when it is noise-like by both flatness and voicing.
+/// Measured on the 2048-point detector: beach wind flatness 0.62-0.68 and
+/// voicing 0.15-0.19; speech flatness 0.31-0.58 with voiced frames above
+/// 0.45; steady voices at 120 Hz and 85 Hz read 0.14/0.72 and 0.49/0.52.
+const VOICING_LOW_HZ: f32 = 300.0;
+const VOICING_HIGH_HZ: f32 = 3500.0;
+const VOICING_MIN_PITCH_HZ: f32 = 70.0;
+const VOICING_MAX_PITCH_HZ: f32 = 700.0;
+const VOICING_WIND: f32 = 0.22;
+const VOICING_VOICED: f32 = 0.32;
+/// Envelope-relative flatness of voiced speech sits below `FLAT_VOICED`,
+/// wind above `FLAT_NOISE`.
+const FLAT_VOICED: f32 = 0.52;
+const FLAT_NOISE: f32 = 0.62;
+
 /// Broadband spectral denoiser.
 ///
 /// A short-time Fourier transform (1024-point Hann, 75 % overlap) splits
@@ -96,6 +138,8 @@ pub struct Denoiser {
     cross_lr: Vec<Complex32>,
     /// Smoothed low-over-mid tilt in dB for the gust detector.
     gust_tilt_db: f32,
+    surge: SurgeState,
+    detector: Detector,
     channels: [ChannelState; MAX_CHANNELS],
 }
 
@@ -132,6 +176,193 @@ impl ChannelState {
 
     fn reset(&mut self) {
         *self = Self::new();
+    }
+}
+
+/// Running state of the surge detector (shared by both channels).
+struct SurgeState {
+    low_db: f32,
+    flatness: f32,
+    voicing: f32,
+    sub_sum: f32,
+    history: [f32; SURGE_SUBWINDOWS],
+    history_len: usize,
+    history_next: usize,
+    sub_count: usize,
+}
+
+impl SurgeState {
+    fn new() -> Self {
+        Self {
+            low_db: f32::NEG_INFINITY,
+            flatness: 0.0,
+            voicing: 1.0,
+            sub_sum: 0.0,
+            history: [0.0; SURGE_SUBWINDOWS],
+            history_len: 0,
+            history_next: 0,
+            sub_count: 0,
+        }
+    }
+
+    /// Feed one frame's low-end level, flatness and voicing; returns how
+    /// many dB the low end stands above its calm level, and how noise-like
+    /// (0..1) the sound is.
+    fn update(&mut self, low_db: f32, flatness: f32, voicing: f32) -> (f32, f32) {
+        if self.low_db.is_finite() {
+            self.low_db = 0.7 * self.low_db + 0.3 * low_db;
+            self.flatness = 0.8 * self.flatness + 0.2 * flatness;
+            self.voicing = 0.6 * self.voicing + 0.4 * voicing;
+        } else {
+            self.low_db = low_db;
+            self.flatness = flatness;
+            self.voicing = voicing;
+        }
+        self.sub_sum += self.low_db;
+        self.sub_count += 1;
+        if self.sub_count >= SURGE_SUBWINDOW_FRAMES {
+            self.history[self.history_next] = self.sub_sum / SURGE_SUBWINDOW_FRAMES as f32;
+            self.history_next = (self.history_next + 1) % SURGE_SUBWINDOWS;
+            self.history_len = (self.history_len + 1).min(SURGE_SUBWINDOWS);
+            self.sub_sum = 0.0;
+            self.sub_count = 0;
+        }
+        let rise = if self.history_len == 0 {
+            0.0
+        } else {
+            let mut calm = self.history;
+            let calm = &mut calm[..self.history_len];
+            calm.sort_by(|a, b| a.total_cmp(b));
+            self.low_db - calm[calm.len() / 5]
+        };
+        let excess = (2.0 * (rise - SURGE_MARGIN_DB)).min(rise);
+        let flat = ((self.flatness - FLAT_VOICED) / (FLAT_NOISE - FLAT_VOICED)).clamp(0.0, 1.0);
+        let unvoiced = ((VOICING_VOICED - self.voicing) / (VOICING_VOICED - VOICING_WIND)).clamp(0.0, 1.0);
+        (excess.clamp(0.0, GUST_MAX_DUCK_DB), flat * unvoiced)
+    }
+}
+
+/// How much of the surge duck reaches a bin: all of it up to 1 kHz, where
+/// beach gusts are loudest, then a fading share of the buffeting crackle
+/// above. Only frames the gate judged to be wind are ducked at all.
+fn surge_weight(hz: f32) -> f32 {
+    if hz <= 1000.0 {
+        1.0
+    } else if hz <= 3000.0 {
+        1.0 - 0.5 * (hz - 1000.0) / 2000.0
+    } else if hz <= 8000.0 {
+        0.5 * (1.0 - (hz - 3000.0) / 5000.0)
+    } else {
+        0.0
+    }
+}
+
+/// Analysis size of the wind gate. The audio path's 1024 points resolve
+/// 47 Hz, too coarse to separate the harmonics of a voice pitched at
+/// 120 Hz or below, which then looks as smooth as wind. The gate looks
+/// back over 2048 samples (23 Hz) instead; the audio path is unchanged.
+const DETECT_SIZE: usize = 2048;
+const DETECT_BINS: usize = DETECT_SIZE / 2 + 1;
+
+/// Mono look-back and transforms for the wind gate's flatness and voicing.
+struct Detector {
+    input: Vec<f32>,
+    window: Vec<f32>,
+    fft: Arc<dyn RealToComplex<f32>>,
+    inverse: Arc<dyn ComplexToReal<f32>>,
+    frame: Vec<f32>,
+    spectrum: Vec<Complex32>,
+    power: Vec<f32>,
+    whitened: Vec<Complex32>,
+    lags: Vec<f32>,
+}
+
+impl Detector {
+    fn new(planner: &mut RealFftPlanner<f32>) -> Self {
+        let fft = planner.plan_fft_forward(DETECT_SIZE);
+        let inverse = planner.plan_fft_inverse(DETECT_SIZE);
+        Self {
+            input: vec![0.0; DETECT_SIZE],
+            window: (0..DETECT_SIZE)
+                .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / DETECT_SIZE as f32).cos())
+                .collect(),
+            spectrum: fft.make_output_vec(),
+            frame: vec![0.0; DETECT_SIZE],
+            power: vec![0.0; DETECT_BINS],
+            whitened: vec![Complex32::new(0.0, 0.0); DETECT_BINS],
+            lags: vec![0.0; DETECT_SIZE],
+            fft,
+            inverse,
+        }
+    }
+
+    /// Append the newest hop, averaged over the channels.
+    fn push(&mut self, tails: &[&[f32]]) {
+        if tails.is_empty() {
+            return;
+        }
+        self.input.copy_within(HOP.., 0);
+        let scale = 1.0 / tails.len() as f32;
+        for i in 0..HOP {
+            self.input[DETECT_SIZE - HOP + i] = tails.iter().map(|t| t[i]).sum::<f32>() * scale;
+        }
+    }
+
+    /// Spectral flatness against the local envelope over
+    /// `FLAT_LOW_HZ..FLAT_HIGH_HZ`, and voicing: the peak normalised
+    /// autocorrelation of the whitened `VOICING_LOW_HZ..VOICING_HIGH_HZ`
+    /// band over pitch lags.
+    fn analyse(&mut self, sample_rate: f32) -> Option<(f32, f32)> {
+        for i in 0..DETECT_SIZE {
+            self.frame[i] = self.input[i] * self.window[i];
+        }
+        self.fft.process(&mut self.frame, &mut self.spectrum).ok()?;
+        for (p, v) in self.power.iter_mut().zip(&self.spectrum) {
+            *p = v.norm_sqr();
+        }
+        let bin_hz = |bin: usize| bin as f32 * sample_rate / DETECT_SIZE as f32;
+        let (mut flat_log, mut flat_sum, mut flat_bins) = (0.0f32, 0.0f32, 0usize);
+        self.whitened.fill(Complex32::new(0.0, 0.0));
+        for bin in FLAT_ENVELOPE_BINS..DETECT_BINS - FLAT_ENVELOPE_BINS {
+            let hz = bin_hz(bin);
+            let in_flat = hz > FLAT_LOW_HZ && hz <= FLAT_HIGH_HZ;
+            let in_voicing = (VOICING_LOW_HZ..=VOICING_HIGH_HZ).contains(&hz);
+            if !in_flat && !in_voicing {
+                if hz > FLAT_HIGH_HZ.max(VOICING_HIGH_HZ) {
+                    break;
+                }
+                continue;
+            }
+            let envelope = self.power[bin - FLAT_ENVELOPE_BINS..=bin + FLAT_ENVELOPE_BINS].iter().sum::<f32>()
+                / (2 * FLAT_ENVELOPE_BINS + 1) as f32;
+            let ratio = self.power[bin] / envelope.max(1e-20);
+            if in_flat {
+                flat_log += (ratio + 1e-20).ln();
+                flat_sum += ratio;
+                flat_bins += 1;
+            }
+            if in_voicing {
+                self.whitened[bin].re = ratio;
+            }
+        }
+        if flat_bins == 0 || flat_sum <= 0.0 {
+            return None;
+        }
+        let flatness = (flat_log / flat_bins as f32).exp() / (flat_sum / flat_bins as f32);
+        self.inverse.process(&mut self.whitened, &mut self.lags).ok()?;
+        let r0 = self.lags[0];
+        let voicing = if r0 > 1e-20 {
+            let first = (sample_rate / VOICING_MAX_PITCH_HZ) as usize;
+            let last = ((sample_rate / VOICING_MIN_PITCH_HZ) as usize).min(DETECT_SIZE / 2);
+            self.lags[first..=last].iter().fold(0.0f32, |m, r| m.max(*r / r0))
+        } else {
+            1.0
+        };
+        Some((flatness, voicing))
+    }
+
+    fn reset(&mut self) {
+        self.input.fill(0.0);
     }
 }
 
@@ -281,6 +512,8 @@ impl Denoiser {
             cross_rr: vec![0.0; BINS],
             cross_lr: vec![Complex32::new(0.0, 0.0); BINS],
             gust_tilt_db: f32::NEG_INFINITY,
+            surge: SurgeState::new(),
+            detector: Detector::new(&mut planner),
             channels: [ChannelState::new(), ChannelState::new()],
             fft,
             inverse,
@@ -352,42 +585,65 @@ impl Denoiser {
     }
 
     /// Duck the low bins while the low end towers over the mid band.
+    /// Duck the low bins while a gust is detected: either the low end
+    /// towers over the mid band, or it surges above its calm level while
+    /// the sound stays noise-like.
     fn apply_gust_gain(&mut self, channels: usize, ok: &[bool; MAX_CHANNELS]) {
-        let (mut low, mut mid) = (0.0f32, 0.0f32);
-        for ch in (0..channels).filter(|ch| ok[*ch]) {
-            for (bin, value) in self.spectra[ch].iter().enumerate() {
-                let hz = bin_hz(bin, self.sample_rate);
-                if hz > GUST_LOW_HZ && hz <= GUST_SPLIT_HZ {
-                    low += value.norm_sqr();
-                } else if hz > GUST_SPLIT_HZ && hz <= GUST_MID_TOP_HZ {
-                    mid += value.norm_sqr();
-                }
+        let (mut low, mut mid, mut surge_low) = (0.0f32, 0.0f32, 0.0f32);
+        let active: Vec<usize> = (0..channels).filter(|ch| ok[*ch]).collect();
+        if active.is_empty() {
+            return;
+        }
+        let power = &mut self.gain_scratch;
+        for (bin, p) in power.iter_mut().enumerate() {
+            *p = active.iter().map(|ch| self.spectra[*ch][bin].norm_sqr()).sum::<f32>() / active.len() as f32;
+            let hz = bin_hz(bin, self.sample_rate);
+            if hz > GUST_LOW_HZ && hz <= GUST_SPLIT_HZ {
+                low += *p;
+            } else if hz > GUST_SPLIT_HZ && hz <= GUST_MID_TOP_HZ {
+                mid += *p;
+            }
+            if hz > SURGE_LOW_HZ && hz <= SURGE_TOP_HZ {
+                surge_low += *p;
             }
         }
         if low <= 1e-20 || mid <= 1e-20 {
             return;
         }
+        let Some((flatness, voicing)) = self.detector.analyse(self.sample_rate) else { return };
+        let (surge_db, noise_like) = self.surge.update(10.0 * (surge_low + 1e-20).log10(), flatness, voicing);
+        let surge_duck = surge_db * noise_like * self.wind;
+
         let tilt = 10.0 * (low / mid).log10();
         self.gust_tilt_db = if self.gust_tilt_db.is_finite() { 0.7 * self.gust_tilt_db + 0.3 * tilt } else { tilt };
-        let duck_db = ((self.gust_tilt_db - GUST_TARGET_DB).max(0.0) * self.wind).min(GUST_MAX_DUCK_DB);
-        if duck_db <= 0.0 {
+        let tilt_duck = ((self.gust_tilt_db - GUST_TARGET_DB).max(0.0) * noise_like * self.wind).min(GUST_MAX_DUCK_DB);
+
+        if tilt_duck <= 0.0 && surge_duck <= 0.0 {
             return;
         }
         for bin in 0..BINS {
             let hz = bin_hz(bin, self.sample_rate);
-            let weight = if hz <= GUST_SPLIT_HZ {
+            let tilt_weight = if hz <= GUST_SPLIT_HZ {
                 1.0
             } else if hz >= GUST_EDGE_HZ {
-                break;
+                0.0
             } else {
                 1.0 - (hz - GUST_SPLIT_HZ) / (GUST_EDGE_HZ - GUST_SPLIT_HZ)
             };
-            let gain = 10f32.powf(-duck_db * weight / 20.0).max(self.floor);
+            let duck_db = (tilt_duck * tilt_weight).max(surge_duck * surge_weight(hz));
+            if duck_db <= 0.0 {
+                continue;
+            }
+            let gain = 10f32.powf(-duck_db / 20.0).max(self.floor);
             self.wind_gain[bin] = self.wind_gain[bin].min(gain);
         }
     }
 
     fn process_frames(&mut self, channels: usize) {
+        if self.wind > 0.0 {
+            let tails: Vec<&[f32]> = self.channels[..channels].iter().map(|c| &c.input[FFT_SIZE - HOP..]).collect();
+            self.detector.push(&tails);
+        }
         let mut ok = [false; MAX_CHANNELS];
         for ch in 0..channels {
             for i in 0..FFT_SIZE {
@@ -558,6 +814,8 @@ impl AudioEffect for Denoiser {
         self.cross_rr.fill(0.0);
         self.cross_lr.fill(Complex32::new(0.0, 0.0));
         self.gust_tilt_db = f32::NEG_INFINITY;
+        self.surge = SurgeState::new();
+        self.detector.reset();
     }
     fn latency_samples(&self) -> u32 { LATENCY as u32 }
     fn serialize_params(&self) -> Vec<(String, f32)> {
@@ -728,27 +986,75 @@ mod tests {
         assert!(kept > 0.9, "a sound reaching both mics must pass, kept {kept}");
     }
 
-    #[test]
-    fn gust_stage_ducks_a_low_end_surge_but_not_a_balanced_voice() {
-        let run = |wind: f32, mono: &[f32]| {
-            let mut fx = Denoiser::new(SR);
-            fx.set_param("strength", 0.0);
-            fx.set_param("wind", wind);
-            let mut buf = mono.to_vec();
-            fx.process(&mut buf, &ctx(1));
-            energy(&buf[SR as usize..])
-        };
-        let len = SR as usize * 2;
-        // Rumble at 80 Hz towering 14 dB over a 1 kHz component.
-        let gust: Vec<f32> = sine(len, 80.0, 0.5).iter().zip(sine(len, 1000.0, 0.1)).map(|(a, b)| a + b).collect();
-        let ducked = run(1.0, &gust) / run(0.0, &gust);
-        assert!(ducked < 0.2, "a low-end surge should be ducked, kept {ducked}");
+    /// Low-passed noise: a stand-in for wind's rumble.
+    fn rumble(len: usize, amp: f32, seed: u32) -> Vec<f32> {
+        let (mut a, mut b, mut c) = (0.0f32, 0.0f32, 0.0f32);
+        noise(len, amp, seed)
+            .into_iter()
+            .map(|v| {
+                a += 0.02 * (v - a);
+                b += 0.02 * (a - b);
+                c += 0.02 * (b - c);
+                c * 60.0
+            })
+            .collect()
+    }
 
-        // A voice-like spectrum with more energy in the mids than the lows.
-        let voice: Vec<f32> = sine(len, 150.0, 0.1).iter().zip(sine(len, 900.0, 0.2)).zip(sine(len, 2000.0, 0.1))
-            .map(|((a, b), c)| a + b + c).collect();
-        let kept = run(1.0, &voice) / run(0.0, &voice);
-        assert!(kept > 0.95, "balanced material must pass untouched, kept {kept}");
+    fn wind_run(wind: f32, mono: &[f32]) -> Vec<f32> {
+        let mut fx = Denoiser::new(SR);
+        fx.set_param("strength", 0.0);
+        fx.set_param("wind", wind);
+        let mut buf = mono.to_vec();
+        fx.process(&mut buf, &ctx(1));
+        buf
+    }
+
+    #[test]
+    fn gust_stage_ducks_a_low_end_surge() {
+        // Rumble towering over a little broadband noise.
+        let len = SR as usize * 2;
+        let gust: Vec<f32> = rumble(len, 0.5, 3).iter().zip(noise(len, 0.02, 4)).map(|(a, b)| a + b).collect();
+        let ducked = energy(&wind_run(1.0, &gust)[SR as usize..]) / energy(&wind_run(0.0, &gust)[SR as usize..]);
+        assert!(ducked < 0.2, "a low-end surge should be ducked, kept {ducked}");
+    }
+
+    #[test]
+    fn surge_stage_ducks_a_broadband_gust_over_calm_wind() {
+        // Two seconds of calm wind, then a gust 15 dB louder that lifts the
+        // mids too, as on the beach recording that the tilt test missed.
+        let calm = SR as usize * 2;
+        let len = calm + SR as usize * 2;
+        let base: Vec<f32> = rumble(len, 0.05, 5).iter().zip(noise(len, 0.01, 6)).map(|(a, b)| a + b).collect();
+        let gust: Vec<f32> = base.iter().enumerate().map(|(i, v)| if i >= calm { v * 5.6 } else { *v }).collect();
+        let tail = calm + SR as usize / 2;
+        let ducked = energy(&wind_run(1.0, &gust)[tail..]) / energy(&wind_run(0.0, &gust)[tail..]);
+        assert!(ducked < 0.25, "a gust over calm wind should drop by >6 dB, kept {ducked}");
+    }
+
+    #[test]
+    fn wind_stages_leave_a_voice_alone() {
+        // A harmonic voice (120 Hz with 5 Hz vibrato and a syllable rhythm,
+        // harmonics to 3 kHz falling 6 dB an octave) entering over calm
+        // wind raises the low end just like a gust does, but it is not
+        // noise and must pass.
+        let calm = SR as usize * 2;
+        let len = calm + SR as usize * 2;
+        let bed = rumble(len, 0.02, 7);
+        let mut phase = 0.0f32;
+        let voice: Vec<f32> = (0..len)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                let f0 = 120.0 * (1.0 + 0.03 * (2.0 * std::f32::consts::PI * 5.0 * t).sin());
+                phase += 2.0 * std::f32::consts::PI * f0 / SR as f32;
+                if i < calm { return 0.0; }
+                let syllable = 0.6 + 0.4 * (2.0 * std::f32::consts::PI * 4.0 * t).sin();
+                syllable * (1..=25).map(|h| (phase * h as f32).sin() * 0.3 / h as f32).sum::<f32>()
+            })
+            .collect();
+        let mix: Vec<f32> = bed.iter().zip(&voice).map(|(a, b)| a + b).collect();
+        let tail = calm + SR as usize / 2;
+        let kept = energy(&wind_run(1.0, &mix)[tail..]) / energy(&wind_run(0.0, &mix)[tail..]);
+        assert!(kept > 0.85, "a voice must not be taken for a gust, kept {kept}");
     }
 
     #[test]
