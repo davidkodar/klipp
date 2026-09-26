@@ -534,6 +534,13 @@ pub struct KlippApp {
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
+    /// A project (and media) to open once the UI is running: from the
+    /// command line, the open-last-project preference, or a dropped
+    /// project folder. Stepped each frame through the UI's dispatcher.
+    startup_open: Option<crate::cli::StartupOpen>,
+    /// The error of the last project open that failed, for
+    /// [`Self::startup_open`] to report and stop waiting on.
+    last_open_error: Option<String>,
     relink_panel: crate::panels::relink::RelinkPanel,
     /// Who this session is, in the lock files it writes.
     lock_holder: klipp_project::lock::Holder,
@@ -1001,6 +1008,8 @@ impl KlippApp {
             last_window_title: String::new(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
+            startup_open: None,
+            last_open_error: None,
             relink_panel: Default::default(),
             lock_holder: klipp_project::lock::Holder::current(),
             lock_keeper: None,
@@ -1069,6 +1078,15 @@ impl KlippApp {
             }
         }
 
+        // What to open is only noted here and opened on the first frames,
+        // through the UI's own dispatcher: OpenProject and ImportMedia are
+        // UI commands, and sent to the engine they were dropped (#395).
+        // Paths from the command line take the place of the startup
+        // behaviour.
+        let given = crate::cli::startup_paths();
+        if !given.is_empty() {
+            app.startup_open = Some(crate::cli::StartupOpen::plan(given));
+        } else {
         // Apply startup behavior
         match app.prefs.general.startup_behavior {
             crate::prefs::StartupBehavior::ProjectManager => {
@@ -1083,10 +1101,11 @@ impl KlippApp {
                 if let Some(recent) = app.prefs.general.recent_projects.first() {
                     let path = recent.path.clone();
                     if path.exists() {
-                        let _ = app.cmd_tx.send(AppCommand::OpenProject { path });
+                        app.startup_open = Some(crate::cli::StartupOpen::project(path));
                     }
                 }
             }
+        }
         }
 
         // Sync preferences to state
@@ -4774,6 +4793,27 @@ impl KlippApp {
         );
         if changed {
             let _ = self.cmd_tx.send(AppCommand::MediaDecodeChanged);
+        }
+    }
+
+    /// Take the next steps of [`Self::startup_open`]: open its project
+    /// through the dispatcher, then import its media once that project is
+    /// the one open, saying what could not be done.
+    fn run_startup_open(&mut self) {
+        use crate::cli::Step;
+        let Some(open) = self.startup_open.as_mut() else { return };
+        let failed = self.last_open_error.take();
+        let steps = open.step(self.state.project_path.as_deref(), failed.as_deref());
+        if open.done() {
+            self.startup_open = None;
+        }
+        for step in steps {
+            match step {
+                Step::Open(path) => self.send_commands(vec![AppCommand::OpenProject { path }]),
+                Step::NewProject => self.state.project_path = Some(PathBuf::from("Untitled")),
+                Step::Import(path) => self.send_commands(vec![AppCommand::ImportMedia { path }]),
+                Step::Toast(text) => self.state.toast.show(text),
+            }
         }
     }
 
@@ -25066,6 +25106,8 @@ impl KlippApp {
                 tracing::error!("Failed to load project: {e}");
                 // What was decided about its lock was for this open.
                 self.lock_decision = None;
+                self.state.toast.show(format!("Could not open {}: {e}", path.display()));
+                self.last_open_error = Some(e.to_string());
                 self.note_project_event(ProjectEvent::Replaced, Some(format!("could not open: {e}")));
             }
         }
@@ -27816,6 +27858,7 @@ impl eframe::App for KlippApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.run_startup_open();
         // Heartbeat for the freeze watchdog in klipp-app::main. Bumped
         // at the very top so any stall below (layout, viewer paint,
         // node graph layout, mutex wait) freezes the counter.
@@ -28014,8 +28057,10 @@ impl eframe::App for KlippApp {
                     let media_id = klipp_core::MediaId::new();
                     let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path: path.clone(), media_id });
                     tracing::info!("Dropped file: {:?}", path);
-                } else if ext == "klipp" {
-                    let _ = self.cmd_tx.send(AppCommand::OpenProject { path });
+                } else if crate::cli::is_project(&path) {
+                    // Opened through the UI, as a click would (#395): sent
+                    // to the engine, OpenProject was dropped.
+                    self.startup_open = Some(crate::cli::StartupOpen::project(path));
                 }
             }
         }
