@@ -68,6 +68,7 @@ impl DocumentView<'_> {
                     effects.merge(self.apply_inverse(c));
                 }
             }
+            EditCommand::Named { edit, .. } => effects.merge(self.apply_inverse(edit)),
             EditCommand::AddTrack { index, track } => {
                 let seq = &mut self.sequences[self.active];
                 if seq.tracks.get(*index).is_some_and(|t| t.id == track.id) {
@@ -506,6 +507,21 @@ impl DocumentView<'_> {
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.remove(&subclip.id);
             }
+            EditCommand::MoveMarkers { moved, dropped } => {
+                let markers = &mut self.sequences[self.active].markers;
+                for mv in moved {
+                    if let Some(m) = markers.iter_mut().find(|m| m.id == mv.id) {
+                        m.position = mv.old_position;
+                        m.duration = mv.old_duration;
+                    }
+                }
+                for (index, marker) in dropped {
+                    if !markers.iter().any(|m| m.id == marker.id) {
+                        let at = (*index).min(markers.len());
+                        markers.insert(at, marker.clone());
+                    }
+                }
+            }
             EditCommand::SetRange { old_in, old_out, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.in_point = *old_in;
@@ -675,6 +691,7 @@ impl DocumentView<'_> {
                     effects.merge(self.apply_forward(c));
                 }
             }
+            EditCommand::Named { edit, .. } => effects.merge(self.apply_forward(edit)),
             EditCommand::AddTrack { index, track } => {
                 let seq = &mut self.sequences[self.active];
                 let idx = (*index).min(seq.tracks.len());
@@ -1106,6 +1123,16 @@ impl DocumentView<'_> {
             }
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.add(subclip.clone());
+            }
+            EditCommand::MoveMarkers { moved, dropped } => {
+                let markers = &mut self.sequences[self.active].markers;
+                for mv in moved {
+                    if let Some(m) = markers.iter_mut().find(|m| m.id == mv.id) {
+                        m.position = mv.new_position;
+                        m.duration = mv.new_duration;
+                    }
+                }
+                markers.retain(|m| !dropped.iter().any(|(_, d)| d.id == m.id));
             }
             EditCommand::SetRange { new_in, new_out, .. } => {
                 let seq = &mut self.sequences[self.active];

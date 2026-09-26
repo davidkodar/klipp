@@ -1229,12 +1229,24 @@ impl Plan {
 }
 
 /// Why a plan could not be made: the step (0-based), the reason, and
-/// what would make it possible.
+/// what would make it possible. `code` names the reasons a caller may
+/// act on itself, so it need not read `why`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Refusal {
     pub step: usize,
     pub why: String,
     pub hint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<RefusalCode>,
+}
+
+/// A refusal a caller can tell apart without reading its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalCode {
+    /// [`Op::Captions`]: a caption would land on a clip already on the
+    /// track, one `replace` did not take away.
+    CaptionsOverlap,
 }
 
 impl std::fmt::Display for Refusal {
@@ -1244,7 +1256,7 @@ impl std::fmt::Display for Refusal {
 }
 
 fn refuse(step: usize, why: impl Into<String>, hint: impl Into<String>) -> Refusal {
-    Refusal { step, why: why.into(), hint: hint.into() }
+    Refusal { step, why: why.into(), hint: hint.into(), code: None }
 }
 
 /// `secs` on the nearest frame at `fps`, as ticks at the sequence's rate.
@@ -1425,6 +1437,35 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
     }
     let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
     Ok(Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs })
+}
+
+/// [`resolve_with`] for ops that stand on their own — a sweep of cuts,
+/// each at its own place: an op that is refused is left out and the
+/// rest are resolved as if it had not been asked for, rather than one
+/// refusal failing them all. The plan holds what resolved; the refusals
+/// say which did not, each with the index of its op.
+pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &dyn Transcripts) -> (Plan, Vec<Refusal>) {
+    let mut sims = vec![seq.clone()];
+    let mut sim_pool = pool.clone();
+    let mut sim_fps = seq.fps;
+    let mut steps = Vec::with_capacity(ops.len());
+    let mut refused = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        let sim = &sims[0];
+        let (what, edit, touched) = match resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts) {
+            Ok(resolved) => resolved,
+            Err(r) => {
+                refused.push(r);
+                continue;
+            }
+        };
+        let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
+        view.apply_forward(&edit);
+        let after = after_of(&sims[0], &touched);
+        steps.push(Step { op: op.clone(), what, edit, after });
+    }
+    let picture_end_secs = sims[0].tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| t.clips.iter()).map(|c| secs(c.timeline_out)).fold(0.0, f64::max);
+    (Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
 }
 
 fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -2297,9 +2338,7 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
     Ok((what, edit, vec![*clip_id]))
 }
 
-/// A word placed on the timeline, and whether a cut in the sound comes
-/// before it.
-/// A word as it is heard on the timeline.
+/// A word as it is heard on the timeline, and the clip it is heard from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeardWord {
     /// Timeline seconds.
@@ -2310,6 +2349,11 @@ pub struct HeardWord {
     pub after_cut: bool,
     /// The clip it is heard from.
     pub clip_id: ClipId,
+    /// Where that clip starts and ends on the timeline, in seconds: what
+    /// lies outside is not this word's pause but whatever the timeline
+    /// puts there.
+    pub clip_in: f64,
+    pub clip_out: f64,
 }
 
 /// [`Op::Cut`]: split every unlocked track at both edges, take out what
@@ -2323,13 +2367,30 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     let len = to - from;
     let open: Vec<usize> = (0..seq.tracks.len()).filter(|&t| !seq.tracks[t].locked).collect();
     for &ti in &open {
-        for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_in < to && c.timeline_out > from) {
-            if c.speed != 1.0 || !c.speed_keyframes.is_empty() {
+        // Every clip the cut touches: one it crosses is split or taken
+        // out, one after it is moved up.
+        for c in seq.tracks[ti].clips.iter().filter(|c| c.timeline_out > from) {
+            let crossed = c.timeline_in < to;
+            if crossed && (c.speed != 1.0 || !c.speed_keyframes.is_empty()) {
                 return Err(refuse(
                     i,
                     format!("{} is retimed, and a cut through it would land on the wrong frames", clip_name(seq, pool, c)),
                     "cut around it, or take its speed change off first",
                 ));
+            }
+            // A pair is cut together, and moved up together, or not at
+            // all: touching one half while the other stays put slips
+            // picture from sound.
+            if let Some((pti, _, p)) = c.linked_clip_id.and_then(|l| find_clip(seq, l)) {
+                if seq.tracks[pti].locked {
+                    let (mine, theirs) = (&seq.tracks[ti].name, &seq.tracks[pti].name);
+                    let why = if crossed {
+                        format!("{} is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p))
+                    } else {
+                        format!("{} would move up, but it is linked to {} on {theirs}, which is locked", clip_name(seq, pool, c), clip_name(seq, pool, p))
+                    };
+                    return Err(refuse(i, why, format!("unlock {theirs} or lock {mine} too")));
+                }
             }
         }
     }
@@ -2347,13 +2408,21 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
     // Split at each edge. Halves of a linked pair split at the same edge
     // are linked to each other, as one split in the app links them.
     let mut split = 0;
+    let mut new_halves: std::collections::HashSet<ClipId> = std::collections::HashSet::new();
+    // What each split clip became, so a transition can follow it.
+    let mut split_into: std::collections::HashMap<ClipId, (ClipId, ClipId)> = std::collections::HashMap::new();
     for cut in [from, to] {
         let mut blades = Vec::new();
         for &ti in &open {
             let track = &sims[0].tracks[ti];
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.timeline_in < cut && c.timeline_out > cut) {
                 let mut scratch = track.clone();
-                if let Some((a, b)) = scratch.split_at(c.id, cut) {
+                if let Some((mut a, mut b)) = scratch.split_at(c.id, cut) {
+                    // A split gives both pieces both fades; a fade at
+                    // the join would dip the picture and the sound at
+                    // every cut. The clip's own fades stay at its ends.
+                    a.fade_out_secs = 0.0;
+                    b.fade_in_secs = 0.0;
                     blades.push((ti, ci, c.clone(), a, b));
                 }
             }
@@ -2367,6 +2436,8 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
         for (track_index, position, original_clip, clip_a, clip_b) in blades {
             split += 1;
+            new_halves.extend([clip_a.id, clip_b.id]);
+            split_into.insert(original_clip.id, (clip_a.id, clip_b.id));
             push(&mut sims, EditCommand::LegacyBladeClip { track_index, original_clip, clip_a, clip_b, position });
         }
     }
@@ -2409,9 +2480,104 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         }
     }
 
-    if edits.is_empty() {
+    if split == 0 && removed == 0 && moved.is_empty() {
         return Err(refuse(i, format!("nothing on the unlocked tracks lies between {:.2} s and {:.2} s", secs(from), secs(to)), "check the range, or unlock the tracks"));
     }
+
+    // Transitions. One on a clip that was split follows the piece that
+    // survives on its side of the join: the outgoing clip's last piece,
+    // the incoming clip's first. One whose clip is gone, or whose clips
+    // no longer meet, goes; the engine would only skip it silently.
+    fn surviving(id: ClipId, split_into: &std::collections::HashMap<ClipId, (ClipId, ClipId)>, seq: &Sequence, last: bool) -> Option<ClipId> {
+        match split_into.get(&id) {
+            Some(&(a, b)) => {
+                let (near, far) = if last { (b, a) } else { (a, b) };
+                surviving(near, split_into, seq, last).or_else(|| surviving(far, split_into, seq, last))
+            }
+            None => find_clip(seq, id).map(|_| id),
+        }
+    }
+    let mut transition_edits = Vec::new();
+    for &ti in &open {
+        let now = &sims[0];
+        let track = &now.tracks[ti];
+        for t in &track.transitions {
+            let a = surviving(t.clip_a_id, &split_into, now, true);
+            let b = surviving(t.clip_b_id, &split_into, now, false);
+            let meet = a.zip(b).and_then(|(a, b)| Some(find_clip(now, a)?.2.timeline_out == find_clip(now, b)?.2.timeline_in)).unwrap_or(false);
+            if (a, b) == (Some(t.clip_a_id), Some(t.clip_b_id)) && meet {
+                continue;
+            }
+            let fade_out = |id: ClipId| find_clip(now, id).map(|(_, _, c)| c.fade_out_secs).unwrap_or(0.0);
+            let fade_in = |id: ClipId| find_clip(now, id).map(|(_, _, c)| c.fade_in_secs).unwrap_or(0.0);
+            transition_edits.push(EditCommand::RemoveTransition { track_index: ti, transition: *t, old_fade_out_a: fade_out(t.clip_a_id), old_fade_in_b: fade_in(t.clip_b_id) });
+            if let Some((a, b)) = a.zip(b).filter(|_| meet) {
+                let mut moved = *t;
+                moved.clip_a_id = a;
+                moved.clip_b_id = b;
+                transition_edits.push(EditCommand::AddTransition { track_index: ti, transition: moved, clip_a_id: a, clip_b_id: b, old_fade_out_a: fade_out(a), old_fade_in_b: fade_in(b), replaced: None });
+            }
+        }
+    }
+    for edit in transition_edits {
+        push(&mut sims, edit);
+    }
+
+    // Mend the links. A clip whose partner was taken out has none now,
+    // unless a half of that partner still points back at it from the
+    // same stretch of time. A half inherited its original's partner,
+    // which is its partner only while the two still lie together: the
+    // far half of an L-cut's sound, cut loose from its picture, is not
+    // linked to the picture that now sits over it.
+    let overlaps = |a: &Clip, b: &Clip| a.timeline_in < b.timeline_out && a.timeline_out > b.timeline_in;
+    let now = sims[0].clone();
+    let mut relinked = Vec::new();
+    for c in now.tracks.iter().flat_map(|t| t.clips.iter()) {
+        let Some(l) = c.linked_clip_id else { continue };
+        let want = match find_clip(&now, l) {
+            None => now.tracks.iter().flat_map(|t| t.clips.iter()).find(|p| p.linked_clip_id == Some(c.id) && overlaps(p, c)).map(|p| p.id),
+            Some((_, _, p)) if new_halves.contains(&c.id) || new_halves.contains(&l) => overlaps(p, c).then_some(l),
+            Some(_) => continue,
+        };
+        if want != c.linked_clip_id {
+            let mut new = c.clone();
+            new.linked_clip_id = want;
+            relinked.push(EditCommand::ReplaceClip { description: "Relink", old: Box::new(c.clone()), new: Box::new(new) });
+        }
+    }
+    for edit in relinked {
+        push(&mut sims, edit);
+    }
+
+    // Sequence markers, each by id. One inside the range goes with what
+    // was there; one after it moves up with the clips; a range marker
+    // reaching into the cut, or starting inside it and reaching past,
+    // loses what the cut took and keeps the rest.
+    let mut marker_moves = Vec::new();
+    let mut marker_drops = Vec::new();
+    for (index, m) in sims[0].markers.iter().enumerate() {
+        let end = m.duration.map(|d| m.position + d);
+        let (position, duration) = if m.position >= to {
+            (m.position - len, m.duration)
+        } else if m.position >= from {
+            match end.filter(|e| *e > to) {
+                Some(e) => (from, Some(e - to)),
+                None => {
+                    marker_drops.push((index, m.clone()));
+                    continue;
+                }
+            }
+        } else if let Some((d, e)) = m.duration.zip(end).filter(|(_, e)| *e > from) {
+            (m.position, Some(d - (e.min(to) - from)))
+        } else {
+            continue;
+        };
+        marker_moves.push(crate::history::MarkerMove { id: m.id, old_position: m.position, old_duration: m.duration, new_position: position, new_duration: duration });
+    }
+    if !marker_moves.is_empty() || !marker_drops.is_empty() {
+        push(&mut sims, EditCommand::MoveMarkers { moved: marker_moves, dropped: marker_drops });
+    }
+
     let what = format!(
         "cut {:.2}-{:.2} s ({:.2} s) from {} tracks: {split} clips split, {removed} taken out, {} moved up",
         secs(from),
@@ -2460,7 +2626,7 @@ pub fn heard_words(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
                 }
                 let start = (t_in + (w.start_secs - s_in) / speed).max(t_in);
                 let end = (t_in + (w.end_secs - s_in) / speed).clamp(start, t_out);
-                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id });
+                out.push(HeardWord { start, end, text: text.to_string(), after_cut: first, clip_id: clip.id, clip_in: t_in, clip_out: t_out });
                 first = false;
             }
         }
@@ -2648,7 +2814,9 @@ fn captions(
         if existing.is_some() {
             let in_the_way = seq.tracks[ti].clips.iter().find(|c| !going.contains(&c.id) && c.timeline_in < tl_out && c.timeline_out > tl_in);
             if let Some(c) = in_the_way {
-                return Err(refuse(i, format!("a caption at {:.2}-{:.2} s would overlap {} on track {ti}", secs(tl_in), secs(tl_out), clip_name(seq, pool, c)), "make them again with replace true, give from and to around them, or name another track"));
+                let mut r = refuse(i, format!("a caption at {:.2}-{:.2} s would overlap {} on track {ti}", secs(tl_in), secs(tl_out), clip_name(seq, pool, c)), "make them again with replace true, give from and to around them, or name another track");
+                r.code = Some(RefusalCode::CaptionsOverlap);
+                return Err(r);
             }
         }
         let clip = title_clip(caption_title(&cue.text), tl_in, tl_out, fps);
@@ -5930,10 +6098,256 @@ mod tests {
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
     }
 
+    /// An L-cut: the sound of the first shot runs on under the second.
+    /// V 0-10 s over A 0-11 s, V2 10-20 s over A2 11-20 s, each pair linked.
+    fn lcut_fixture() -> (Sequence, MediaPool, [ClipId; 4]) {
+        let (mut seq, pool, media_id, _, _) = fixture();
+        let mut v = Clip::media(media_id, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let mut a = Clip::media(media_id, tc(0.0), tc(11.0), tc(0.0), tc(11.0));
+        let mut v2 = Clip::media(media_id, tc(10.0), tc(20.0), tc(0.0), tc(10.0));
+        let mut a2 = Clip::media(media_id, tc(11.0), tc(20.0), tc(1.0), tc(10.0));
+        let ids = [v.id, a.id, v2.id, a2.id];
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        v2.linked_clip_id = Some(a2.id);
+        a2.linked_clip_id = Some(v2.id);
+        seq.tracks[0].clips = vec![v, v2];
+        seq.tracks[1].clips = vec![a, a2];
+        (seq, pool, ids)
+    }
+
+    fn spans_and_links(track: &Track) -> Vec<(Timecode, Timecode, Option<ClipId>)> {
+        track.clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.linked_clip_id)).collect()
+    }
+
+    #[test]
+    fn a_sweep_of_cuts_goes_on_past_one_that_is_refused() {
+        let (mut seq, pool, _, _, b) = fixture();
+        // b is retimed: a cut through it is refused, the other two are made.
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == b || c.linked_clip_id == Some(b)) {
+            c.speed = 2.0;
+        }
+        let ops = [
+            Op::Cut { from: Anchor::Secs(6.0), to: Anchor::Secs(7.0) },
+            Op::Cut { from: Anchor::Secs(2.0), to: Anchor::Secs(3.0) },
+            Op::Cut { from: Anchor::Secs(0.5), to: Anchor::Secs(1.0) },
+        ];
+        let (plan, refused) = resolve_each_with(&seq, &pool, &ops, &NoTranscripts);
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].step, 0);
+        assert!(refused[0].why.contains("retimed"), "{}", refused[0].why);
+        // 1.5 s taken out of 8, give or take the frame a half second snaps to.
+        assert!((plan.duration_secs - 6.5).abs() < 0.05, "{}", plan.duration_secs);
+        assert!(resolve(&seq, &pool, &ops).is_err(), "resolved together, the refusal stands");
+    }
+
+    fn dissolve(a: ClipId, b: ClipId) -> klipp_timeline::Transition {
+        klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.5),
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: klipp_core::TransitionUserParams::default(),
+            alignment: klipp_core::TransitionAlignment::default(),
+        }
+    }
+
+    fn marker(secs: f64, label: &str, duration: Option<f64>) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: tc(secs),
+            label: label.into(),
+            color: klipp_core::MarkerColor::Blue,
+            duration: duration.map(tc),
+            comment: String::new(),
+            kind: klipp_core::MarkerKind::None,
+        }
+    }
+
+    fn marker_spans(seq: &Sequence) -> Vec<(String, Timecode, Option<Timecode>)> {
+        seq.markers.iter().map(|m| (m.label.clone(), m.position, m.duration)).collect()
+    }
+
+    #[test]
+    fn a_cut_moves_the_markers_up_and_carries_a_transition_across_it() {
+        let (mut seq, pool, _, a, b) = fixture();
+        // The fixture's "Intro" at 6 s; one inside the cut; a range
+        // marker 2-4 s reaching a second into it.
+        seq.markers.push(marker(3.5, "Gone", None));
+        seq.markers.push(marker(2.0, "Reach", Some(2.0)));
+        let dissolve = dissolve(a, b);
+        seq.tracks[0].transitions.push(dissolve);
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(4.0), None), ("Reach".to_string(), tc(2.0), Some(tc(1.0)))]);
+        // The dissolve was between a and b; it is now between what is
+        // left of each, which meet at 3 s.
+        let pic = &seqs[0].tracks[0].clips;
+        let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
+        assert_eq!(t, vec![(pic[0].id, pic[1].id)]);
+        assert_eq!(seqs[0].tracks[0].transitions[0].id, dissolve.id);
+        // Undo puts the markers and the transition back as they were.
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
+        let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
+        assert_eq!(t, vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_cut_through_a_faded_clip_keeps_the_fades_at_its_ends_and_none_at_the_join() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[0].clips[0].fade_in_secs = 0.3;
+        seq.tracks[0].clips[0].fade_out_secs = 0.5;
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let fades: Vec<(Timecode, Timecode, f32, f32)> = seqs[0].tracks[0].clips.iter().map(|c| (c.timeline_in, c.timeline_out, c.fade_in_secs, c.fade_out_secs)).collect();
+        // The left piece keeps the fade in and loses the fade out; the
+        // right piece keeps the fade out at its end and fades in from
+        // nothing, so the join plays straight through.
+        assert_eq!(fades, vec![(tc(0.0), tc(1.0), 0.3, 0.0), (tc(1.0), tc(3.0), 0.0, 0.5), (tc(3.0), tc(7.0), 0.0, 0.0)]);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!((seqs[0].tracks[0].clips[0].fade_in_secs, seqs[0].tracks[0].clips[0].fade_out_secs), (0.3, 0.5));
+    }
+
+    #[test]
+    fn a_range_marker_starting_inside_the_cut_keeps_what_lies_past_it() {
+        let (mut seq, pool, _, _, _) = fixture();
+        // 1.5-4.5 s; the cut takes 1-2 s, so it becomes 1.0-3.5 s. One
+        // ending inside the cut goes.
+        seq.markers.push(marker(1.5, "Scene", Some(3.0)));
+        seq.markers.push(marker(1.2, "Short", Some(0.5)));
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(5.0), None), ("Scene".to_string(), tc(1.0), Some(tc(2.5)))]);
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
+    }
+
+    #[test]
+    fn undoing_a_cut_leaves_the_markers_made_since_alone() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.markers.push(marker(3.5, "Gone", None));
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(4.0), None)]);
+        // The app adds and renames markers outside history.
+        seqs[0].markers.push(marker(1.0, "Hero", None));
+        seqs[0].markers[0].label = "Chapter 1".into();
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        // Undo moves the cut's markers back and puts back the one it
+        // dropped, where it was; Hero and the new name stay.
+        assert_eq!(
+            marker_spans(&seqs[0]),
+            vec![("Chapter 1".to_string(), tc(6.0), None), ("Gone".to_string(), tc(3.5), None), ("Hero".to_string(), tc(1.0), None)]
+        );
+        seqs[0].markers.push(marker(7.0, "Outro", None));
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        // Redo the same: Outro, made after the cut at 7 s, is not moved.
+        assert_eq!(
+            marker_spans(&seqs[0]),
+            vec![("Chapter 1".to_string(), tc(4.0), None), ("Hero".to_string(), tc(1.0), None), ("Outro".to_string(), tc(7.0), None)]
+        );
+    }
+
+    #[test]
+    fn a_cut_that_takes_a_transition_s_clip_takes_the_transition() {
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.tracks[0].transitions.push(dissolve(a, b));
+        seq.tracks[0].clips[1].fade_in_secs = 0.5;
+        // All of a goes: nothing is left for the dissolve to go out from.
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(0.0), to: Anchor::Secs(4.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert!(seqs[0].tracks[0].transitions.is_empty());
+        assert_eq!(seqs[0].tracks[0].clips[0].fade_in_secs, 0.0, "the fade was the dissolve's");
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(seqs[0].tracks[0].transitions.len(), 1);
+        assert_eq!(seqs[0].tracks[0].clips[1].fade_in_secs, 0.5);
+    }
+
+    #[test]
+    fn a_cut_is_refused_when_a_pair_s_other_half_is_on_a_locked_track() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[1].locked = true;
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap_err();
+        assert!(err.why.contains("A1, which is locked"), "{}", err.why);
+        assert_eq!(err.hint, "unlock A1 or lock V1 too");
+        // Locked both: nothing to cut, and no slip.
+        seq.tracks[0].locked = true;
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap_err();
+        assert!(err.why.contains("nothing on the unlocked tracks"), "{}", err.why);
+    }
+
+    #[test]
+    fn a_cut_is_refused_when_a_pair_after_it_has_its_other_half_on_a_locked_track() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.tracks[1].locked = true;
+        // a ends at 2 s, so 2.5-3.5 s crosses only a gap on V1; b, at 4 s,
+        // would move up while its sound on A1 stays put.
+        seq.tracks[0].clips[0].timeline_out = tc(2.0);
+        seq.tracks[0].clips[0].source_out = tc(2.0);
+        let err = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(2.5), to: Anchor::Secs(3.5) }]).unwrap_err();
+        assert!(err.why.contains("would move up") && err.why.contains("A1, which is locked"), "{}", err.why);
+        assert_eq!(err.hint, "unlock A1 or lock V1 too");
+        // Sound of its own: b moves up and nothing slips.
+        seq.tracks[0].clips[1].linked_clip_id = None;
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(2.5), to: Anchor::Secs(3.5) }]).unwrap();
+        assert!(plan.steps[0].what.contains("1 moved up"), "{}", plan.steps[0].what);
+    }
+
+    #[test]
+    fn a_cut_through_an_l_cut_leaves_every_link_pointing_at_a_clip_it_lies_over() {
+        let (seq, pool, [v, a, v2, a2]) = lcut_fixture();
+        // 9.5-10.5: the tail of V, the head of V2, and the sound under both.
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(9.5), to: Anchor::Secs(10.5) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        let (pic, snd) = (&seqs[0].tracks[0].clips, &seqs[0].tracks[1].clips);
+        assert_eq!(spans_and_links(&seqs[0].tracks[0]), vec![(tc(0.0), tc(9.5), Some(snd[0].id)), (tc(9.5), tc(19.0), Some(snd[2].id))]);
+        assert_eq!(
+            spans_and_links(&seqs[0].tracks[1]),
+            vec![
+                (tc(0.0), tc(9.5), Some(pic[0].id)),
+                // The half second of A's sound left under V2's picture:
+                // its picture is gone, and V2 is not its partner.
+                (tc(9.5), tc(10.0), None),
+                // A2 still lies under V2's remainder, so they stay a pair.
+                (tc(10.0), tc(19.0), Some(pic[1].id)),
+            ]
+        );
+        // Undo gives back the four clips and their pairs.
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(spans_and_links(&seqs[0].tracks[0]), vec![(tc(0.0), tc(10.0), Some(a)), (tc(10.0), tc(20.0), Some(a2))]);
+        assert_eq!(spans_and_links(&seqs[0].tracks[1]), vec![(tc(0.0), tc(11.0), Some(v)), (tc(11.0), tc(20.0), Some(v2))]);
+    }
+
     #[test]
     fn a_cut_leaves_a_locked_track_alone_and_refuses_through_a_retime() {
         let (mut seq, pool, _, _, _) = fixture();
         seq.tracks[1].locked = true;
+        // Sound of its own, not the picture's: a linked pair with a half
+        // on a locked track is refused instead.
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.linked_clip_id = None;
+        }
         let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(1.0), to: Anchor::Secs(2.0) }]).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();

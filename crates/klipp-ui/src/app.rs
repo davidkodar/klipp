@@ -1700,7 +1700,7 @@ impl KlippApp {
                         refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
                     }
                     _ => {
-                        self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("plan"));
+                        self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
                         // A plan proposed for the person's approval opens
                         // where they can read it.
                         if env.edits.iter().any(|e| matches!(e, EditCommand::SetEditPlan { new: Some(p), .. } if !p.approved)) {
@@ -1798,7 +1798,7 @@ impl KlippApp {
             self.apply_edit_forward(e);
             self.state.push_history(e.clone());
         }
-        self.state.active_history_mut().end_batch();
+        self.state.active_history_mut().end_batch_as(label);
         self.state.dirty = true;
         self.state.media_usage_cache_dirty = true;
         self.sync_sequence_to_engine();
@@ -1807,22 +1807,53 @@ impl KlippApp {
     }
 
     /// Resolve and apply the document ops panels asked for, each request
-    /// one undo step. A refusal says why in a toast, and nothing changes.
+    /// one undo step. A refusal says why in a toast; a request of
+    /// independent ops applies the ones that resolve and names the rest.
     fn run_pending_doc_ops(&mut self) {
-        for (label, ops) in std::mem::take(&mut self.state.pending_doc_ops) {
+        use klipp_document::ops::{self, Anchor, Op, Refusal, RefusalCode};
+        for crate::state::DocOpsRequest { label, ops, independent } in std::mem::take(&mut self.state.pending_doc_ops) {
             self.transcript_source.sync(self.state.analysis_generation);
             let seq = &self.state.sequences[self.state.active_sequence_idx];
-            match klipp_document::ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source) {
-                Ok(plan) => {
+            let resolved = if independent {
+                Ok(ops::resolve_each_with(seq, &self.state.media_pool, &ops, &self.transcript_source))
+            } else {
+                ops::resolve_with(seq, &self.state.media_pool, &ops, &self.transcript_source).map(|plan| (plan, Vec::new()))
+            };
+            // A refusal, as the person at the keyboard reads it: where, and
+            // why. The document's hints are written for whoever asked, the
+            // assistant included; the one a person meets from the captions
+            // form is said in the form's own words: tick Replace when it is
+            // not ticked, and when it is, the captions in the way lie
+            // outside the range, so widen it.
+            let said = |r: &Refusal| {
+                let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
+                match ops.get(r.step) {
+                    Some(Op::Cut { from: Anchor::Secs(a), to: Anchor::Secs(b) }) => format!("{a:.2}-{b:.2} s: {}{hint}", r.why),
+                    Some(Op::Captions { replace: false, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => "Captions already exist in that range; tick Replace to overwrite them".to_string(),
+                    Some(Op::Captions { replace: true, .. }) if r.code == Some(RefusalCode::CaptionsOverlap) => format!("{}; widen the range to take those in, or choose another track", r.why),
+                    _ => format!("{}{hint}", r.why),
+                }
+            };
+            // A sweep's label counts what was done, not what was asked.
+            let label_for = |n: usize| label.replace("{n}", &n.to_string());
+            match resolved {
+                Ok((plan, refused)) if !plan.steps.is_empty() => {
+                    let label = label_for(plan.steps.len());
                     let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                     self.apply_edits_as_one(&edits, &label);
                     let what: Vec<&str> = plan.steps.iter().map(|s| s.what.as_str()).collect();
-                    self.state.toast.show(format!("{label}: {}", what.join("; ")));
+                    let mut toast = format!("{label}: {}", what.join("; "));
+                    if !refused.is_empty() {
+                        let why: Vec<String> = refused.iter().map(said).collect();
+                        toast.push_str(&format!("; {} not done: {}", refused.len(), why.join("; ")));
+                    }
+                    self.state.toast.show(toast);
                 }
-                Err(r) => {
-                    let hint = if r.hint.is_empty() { String::new() } else { format!(" \u{2014} {}", r.hint) };
-                    self.state.toast.show(format!("{label}: not done, {}{hint}", r.why));
+                Ok((_, refused)) => {
+                    let why: Vec<String> = refused.iter().map(said).collect();
+                    self.state.toast.show(format!("{}: not done, {}", label_for(ops.len()), why.join("; ")));
                 }
+                Err(r) => self.state.toast.show(format!("{}: not done, {}", label_for(ops.len()), said(&r))),
             }
         }
     }
@@ -25640,6 +25671,12 @@ impl KlippApp {
     }
 
     fn shortcuts_delete(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        // Delete over the Transcript panel is the panel's: it cuts the
+        // selected words. Taking the selected clip as well would remove
+        // a clip the cut has just split.
+        if self.state.show_transcript_panel && self.state.transcript_panel_hovered {
+            return;
+        }
         let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
@@ -28970,6 +29007,8 @@ impl eframe::App for KlippApp {
         if self.state.show_transcript_panel {
             let cmds = self.transcript_panel.show(ctx, &mut self.state, &self.transcript_source, &self.theme);
             all_cmds.extend(cmds);
+        } else {
+            self.state.transcript_panel_hovered = false;
         }
         self.run_pending_doc_ops();
 

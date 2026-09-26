@@ -66,20 +66,32 @@ impl Transcripts for TranscriptSource {
 /// A pause longer than this starts a new paragraph, as it ends a caption.
 pub const PARAGRAPH_PAUSE_SECS: f64 = 0.7;
 
+/// A cut never lands further than this from the word it takes out. The
+/// pause on either side of a word is a breath; anything longer is content
+/// the transcript does not describe.
+pub const MAX_PAD_SECS: f64 = 0.25;
+
 /// Where cutting the words `first..=last` out of `words` should cut, in
 /// timeline seconds: halfway into the pause on each side, so what is left
-/// keeps a natural breath rather than butting one word onto the next.
-/// At either end of the transcript it is a short margin instead.
+/// keeps a natural breath rather than butting one word onto the next —
+/// but no further than [`MAX_PAD_SECS`] from the word, and never past the
+/// clip the word is heard from. What lies between two words from
+/// different clips, or beyond a clip's edge, is not a pause but whatever
+/// the timeline puts there: a music bed, a montage, picture with no
+/// speech. At either end of the transcript it is a short margin instead.
 pub fn cut_for_words(words: &[HeardWord], first: usize, last: usize) -> (f64, f64) {
     const MARGIN_SECS: f64 = 0.05;
+    let (head, tail) = (&words[first], &words[last]);
     let from = match first.checked_sub(1).map(|p| &words[p]) {
-        Some(prev) if prev.end <= words[first].start => (prev.end + words[first].start) / 2.0,
-        _ => (words[first].start - MARGIN_SECS).max(0.0),
+        Some(prev) if prev.clip_id == head.clip_id && prev.end <= head.start => (prev.end + head.start) / 2.0,
+        _ => head.start - MARGIN_SECS,
     };
     let to = match words.get(last + 1) {
-        Some(next) if next.start >= words[last].end => (words[last].end + next.start) / 2.0,
-        _ => words[last].end + MARGIN_SECS,
+        Some(next) if next.clip_id == tail.clip_id && next.start >= tail.end => (tail.end + next.start) / 2.0,
+        _ => tail.end + MARGIN_SECS,
     };
+    let from = from.max(head.start - MAX_PAD_SECS).max(head.clip_in).max(0.0);
+    let to = to.min(tail.end + MAX_PAD_SECS).min(tail.clip_out);
     (from, to)
 }
 
@@ -100,11 +112,13 @@ pub fn fillers(words: &[HeardWord]) -> Vec<usize> {
 }
 
 /// Pauses between words longer than `longer_than`, each as the stretch to
-/// cut so that `keep` seconds of it remain, in timeline seconds.
+/// cut so that `keep` seconds of it remain, in timeline seconds. Only a
+/// gap between two words heard from the same clip is a pause: between
+/// clips lies whatever was put there, transcribed or not.
 pub fn long_pauses(words: &[HeardWord], longer_than: f64, keep: f64) -> Vec<(f64, f64)> {
     words
         .windows(2)
-        .filter(|w| w[1].start - w[0].end > longer_than.max(keep))
+        .filter(|w| w[0].clip_id == w[1].clip_id && w[1].start - w[0].end > longer_than.max(keep))
         .map(|w| (w[0].end + keep / 2.0, w[1].start - keep / 2.0))
         .collect()
 }
@@ -126,6 +140,124 @@ pub fn paragraph_starts(words: &[HeardWord]) -> Vec<usize> {
 pub fn word_at(words: &[HeardWord], secs: f64) -> Option<usize> {
     let after = words.partition_point(|w| w.start <= secs);
     after.checked_sub(1)
+}
+
+/// What names a heard word across a change to the timeline: the clip
+/// it is heard from, where it starts within that clip, and its text.
+/// A word keeps its key when its clip is moved; it loses it when the
+/// clip is split, trimmed at the head or transcribed again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordKey {
+    clip_id: klipp_core::ClipId,
+    offset: f64,
+    text: String,
+}
+
+impl WordKey {
+    pub fn of(word: &HeardWord) -> Self {
+        Self { clip_id: word.clip_id, offset: word.start - word.clip_in, text: word.text.clone() }
+    }
+
+    /// The word this names among `words`, if it is still heard.
+    pub fn find(&self, words: &[HeardWord]) -> Option<usize> {
+        words.iter().position(|w| w.clip_id == self.clip_id && w.text == self.text && (w.start - w.clip_in - self.offset).abs() < 0.01)
+    }
+}
+
+/// A cut a sweep proposes: what it takes out, where, and whether it is
+/// ticked for cutting.
+#[derive(Debug, Clone)]
+pub struct Proposal {
+    pub label: String,
+    pub range: (f64, f64),
+    pub ticked: bool,
+    at: ProposalAt,
+}
+
+#[derive(Debug, Clone)]
+enum ProposalAt {
+    /// A filler word.
+    Word(WordKey),
+    /// The pause between two words.
+    Pause(WordKey, WordKey),
+}
+
+/// Every filler, or every long pause, offered as cuts to review and
+/// apply together. Each proposal knows the words it came from, so the
+/// sweep can be fitted again to the words after the timeline changes
+/// under it, instead of vanishing mid-review.
+#[derive(Debug, Clone)]
+pub struct Sweep {
+    pub title: String,
+    pub cuts: Vec<Proposal>,
+    longer_than: f64,
+    keep: f64,
+}
+
+impl Sweep {
+    /// Every filler among `words`.
+    pub fn fillers(words: &[HeardWord]) -> Self {
+        let mut sweep = Self { title: "Fillers".into(), cuts: Vec::new(), longer_than: 0.0, keep: 0.0 };
+        for i in fillers(words) {
+            let at = ProposalAt::Word(WordKey::of(&words[i]));
+            sweep.cuts.push(Proposal { label: String::new(), range: (0.0, 0.0), ticked: true, at });
+        }
+        sweep.refit(words);
+        sweep
+    }
+
+    /// Every pause among `words` longer than `longer_than`, each cut
+    /// down to `keep` seconds.
+    pub fn pauses(words: &[HeardWord], longer_than: f64, keep: f64) -> Self {
+        let mut sweep = Self { title: "Long pauses".into(), cuts: Vec::new(), longer_than, keep };
+        for w in words.windows(2).filter(|w| !long_pauses(w, longer_than, keep).is_empty()) {
+            let at = ProposalAt::Pause(WordKey::of(&w[0]), WordKey::of(&w[1]));
+            sweep.cuts.push(Proposal { label: String::new(), range: (0.0, 0.0), ticked: true, at });
+        }
+        sweep.refit(words);
+        sweep
+    }
+
+    /// Place every proposal again from its words, as `words` now has
+    /// them; one whose words are no longer heard, no longer next to each
+    /// other, or no longer a filler or a long pause, is dropped. Ticks
+    /// are kept. Returns how many were dropped.
+    pub fn refit(&mut self, words: &[HeardWord]) -> usize {
+        let before = self.cuts.len();
+        let (longer_than, keep) = (self.longer_than, self.keep);
+        self.cuts.retain_mut(|cut| {
+            let placed = match &cut.at {
+                ProposalAt::Word(key) => key.find(words).filter(|&i| is_filler(&words[i].text)).map(|i| {
+                    (format!("{}  \u{201C}{}\u{201D}", format_secs(words[i].start), words[i].text), cut_for_words(words, i, i))
+                }),
+                ProposalAt::Pause(a, b) => a.find(words).zip(b.find(words)).filter(|&(i, j)| j == i + 1).and_then(|(i, _)| {
+                    let (a, b) = long_pauses(&words[i..=i + 1], longer_than, keep).pop()?;
+                    Some((format!("{}  {:.1} s pause", format_secs(a), b - a + keep), (a, b)))
+                }),
+            };
+            match placed {
+                Some((label, range)) => {
+                    cut.label = label;
+                    cut.range = range;
+                    true
+                }
+                None => false,
+            }
+        });
+        before - self.cuts.len()
+    }
+
+    /// The ranges ticked for cutting.
+    pub fn ticked(&self) -> Vec<(f64, f64)> {
+        self.cuts.iter().filter(|c| c.ticked).map(|c| c.range).collect()
+    }
+}
+
+/// Timeline seconds as `mm:ss.ss`.
+pub fn format_secs(s: f64) -> String {
+    let s = s.max(0.0);
+    let m = (s / 60.0).floor();
+    format!("{:02}:{:05.2}", m as u64, s - m * 60.0)
 }
 
 /// The cuts for `ranges` as `Op::Cut`s, latest first: each is resolved
@@ -150,12 +282,28 @@ pub fn cut_ops(mut ranges: Vec<(f64, f64)>) -> Vec<klipp_document::ops::Op> {
 mod tests {
     use super::*;
 
-    fn w(start: f64, end: f64, text: &str) -> HeardWord {
-        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: klipp_core::ClipId::new() }
+    /// A word heard from `clip`: its id and its timeline span.
+    fn w_in(clip: &(klipp_core::ClipId, f64, f64), start: f64, end: f64, text: &str) -> HeardWord {
+        HeardWord { start, end, text: text.into(), after_cut: false, clip_id: clip.0, clip_in: clip.1, clip_out: clip.2 }
     }
 
+    /// One clip, 0-10 s, with a pause before "Next".
     fn said() -> Vec<HeardWord> {
-        vec![w(1.0, 1.3, "So,"), w(1.5, 1.7, "um,"), w(1.8, 2.2, "the"), w(2.3, 2.9, "plan."), w(5.0, 5.4, "Next")]
+        let c = (klipp_core::ClipId::new(), 0.0, 10.0);
+        vec![w_in(&c, 1.0, 1.3, "So,"), w_in(&c, 1.5, 1.7, "um,"), w_in(&c, 1.8, 2.2, "the"), w_in(&c, 2.3, 2.9, "plan."), w_in(&c, 5.0, 5.4, "Next")]
+    }
+
+    /// An interview 0-10 s, a music montage with no transcript 10-15 s,
+    /// the interview again from 15 s.
+    fn montage() -> Vec<HeardWord> {
+        let before = (klipp_core::ClipId::new(), 0.0, 10.0);
+        let after = (klipp_core::ClipId::new(), 15.0, 25.0);
+        vec![
+            w_in(&before, 9.0, 9.3, "and"),
+            w_in(&before, 9.4, 9.8, "then."),
+            w_in(&after, 15.1, 15.3, "Um,"),
+            w_in(&after, 15.5, 15.9, "later"),
+        ]
     }
 
     #[test]
@@ -169,6 +317,29 @@ mod tests {
         // The last: a margin after it.
         let (_, to) = cut_for_words(&words, 4, 4);
         assert!((to - 5.45).abs() < 1e-9);
+        // Before a long pause: no further than the pad, not halfway.
+        let (_, to) = cut_for_words(&words, 3, 3);
+        assert!((to - (2.9 + MAX_PAD_SECS)).abs() < 1e-9, "{to}");
+    }
+
+    #[test]
+    fn a_cut_stays_out_of_what_lies_between_clips() {
+        let words = montage();
+        // The last word before the montage: the cut ends at its own margin,
+        // not halfway into the music.
+        let (_, to) = cut_for_words(&words, 1, 1);
+        assert!((to - 9.85).abs() < 1e-9, "{to}");
+        // The filler after it: the cut starts at its margin, inside its
+        // clip, and ends halfway to the next word as usual.
+        let (from, to) = cut_for_words(&words, 2, 2);
+        assert!((from - 15.05).abs() < 1e-9 && (to - 15.4).abs() < 1e-9, "{from} {to}");
+        // A word ending on its clip's edge: the cut ends there.
+        let mut words = montage();
+        words[1].end = 10.0;
+        let (_, to) = cut_for_words(&words, 1, 1);
+        assert!((to - 10.0).abs() < 1e-9, "{to}");
+        // The words either side of the montage are not a pause to shorten.
+        assert!(long_pauses(&montage(), 1.0, 0.4).is_empty());
     }
 
     #[test]
@@ -193,6 +364,40 @@ mod tests {
         assert_eq!(word_at(&words, 2.0), Some(2));
         assert_eq!(word_at(&words, 3.5), Some(3), "between words, the last one said");
         assert_eq!(word_at(&words, 0.5), None);
+    }
+
+    #[test]
+    fn a_sweep_follows_its_words_when_the_timeline_moves_and_drops_what_is_gone() {
+        let words = said();
+        let mut fillers = Sweep::fillers(&words);
+        let mut pauses = Sweep::pauses(&words, 1.0, 0.4);
+        assert_eq!(fillers.cuts.len(), 1);
+        assert_eq!(pauses.cuts.len(), 1);
+        fillers.cuts[0].ticked = false;
+        assert!(fillers.ticked().is_empty() && pauses.ticked().len() == 1);
+
+        // The clip moved a second later: every proposal moves with it,
+        // and the tick stays.
+        let moved: Vec<HeardWord> = words
+            .iter()
+            .map(|w| HeardWord { start: w.start + 1.0, end: w.end + 1.0, clip_in: w.clip_in + 1.0, clip_out: w.clip_out + 1.0, ..w.clone() })
+            .collect();
+        assert_eq!(fillers.refit(&moved), 0);
+        assert_eq!(pauses.refit(&moved), 0);
+        let (a, b) = fillers.cuts[0].range;
+        assert!((a - 2.4).abs() < 1e-9 && (b - 2.75).abs() < 1e-9, "{a} {b}");
+        assert!(!fillers.cuts[0].ticked);
+        assert_eq!(pauses.cuts[0].label, "00:04.10  2.1 s pause");
+
+        // The filler cut out, and the pause closed up: both proposals go.
+        let without: Vec<HeardWord> = moved.iter().filter(|w| w.text != "um,").cloned().collect();
+        assert_eq!(fillers.refit(&without), 1);
+        assert!(fillers.cuts.is_empty());
+        let mut closed = moved.clone();
+        closed[4].start = 4.2;
+        closed[4].end = 4.6;
+        assert_eq!(pauses.refit(&closed), 1);
+        assert!(pauses.cuts.is_empty());
     }
 
     #[test]

@@ -127,7 +127,13 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 /// if there is none).
 fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
     use klipp_document::ops::{Anchor, Op, TrackRef};
+    let has_range = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
     let Some(form) = state.subtitle_editor.captions_form.as_mut() else { return };
+    // With no in and out there is no "in to out": the whole sequence,
+    // said so, rather than a ticked box that means nothing.
+    if !has_range {
+        form.in_out_only = false;
+    }
     let mut make = false;
     ui.group(|ui| {
         ui.horizontal_wrapped(|ui| {
@@ -135,7 +141,8 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
             ui.add(egui::DragValue::new(&mut form.max_chars).range(8..=80));
             ui.label("Lines");
             ui.add(egui::DragValue::new(&mut form.max_lines).range(1..=3));
-            ui.checkbox(&mut form.in_out_only, "In to out only");
+            ui.add_enabled(has_range, egui::Checkbox::new(&mut form.in_out_only, "In to out only"))
+                .on_disabled_hover_text("Set in and out points on the timeline first");
             ui.checkbox(&mut form.replace, "Replace captions already there")
                 .on_hover_text("After a re-cut or a better transcript: take the old captions in that range away first");
             make = ui.button("Make Captions").clicked();
@@ -157,7 +164,7 @@ fn captions_form(ui: &mut egui::Ui, state: &mut AppState) {
         (None, None)
     };
     let op = Op::Captions { track, from, to, max_chars: form.max_chars, max_lines: form.max_lines, replace: form.replace };
-    state.pending_doc_ops.push(("Captions from transcript".to_string(), vec![op]));
+    state.pending_doc_ops.push(crate::state::DocOpsRequest { label: "Captions from transcript".to_string(), ops: vec![op], independent: false });
     state.subtitle_editor.captions_form = None;
 }
 
