@@ -764,6 +764,9 @@ pub(crate) struct TimelineFrameCache {
 pub struct TimelinePanel {
     /// When true, skip internal toolbar/headers/status rendering (embedded in new shell)
     pub embedded: bool,
+    /// The Colour page's strip of shots: clicks select, and no drag
+    /// starts an edit — no trim, fade, move, slip or slide (#323).
+    pub select_only: bool,
     dragging_clip: Option<DragState>,
     trimming_clip: Option<TrimState>,
     roll_trimming: Option<RollTrimState>,
@@ -7453,7 +7456,7 @@ impl TimelinePanel {
         // Drag start: edge-first detection for trim, then clip-body for move.
         // Uses press_origin (where user first clicked) instead of current pointer pos,
         // because egui delays drag_started() until pointer moves ~4px from click point.
-        if track_response.drag_started() {
+        if track_response.drag_started() && !self.select_only {
             let decision_pos = self.press_origin.or(pointer_pos);
             if let Some(pos) = decision_pos {
                 // Zero: check if pointer is near a fade handle (top corner of audio clip).
@@ -10559,6 +10562,7 @@ impl TimelinePanel {
         // Tool::Trim also uses this block so junction/edge cursors + highlights appear there too;
         // it adds an extra branch below for modifier-free Slip on clip body.
         if (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
+            && !self.select_only
             && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none()
         {
             if let Some(pos) = pointer_pos {

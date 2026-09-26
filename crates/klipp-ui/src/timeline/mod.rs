@@ -25,7 +25,35 @@ pub struct NewTimelinePanel {
 }
 
 impl NewTimelinePanel {
+    /// The timeline, or on the Colour page the strip of shots. There it
+    /// only selects, whatever tool the Edit page left armed: the tool
+    /// was shared and nothing on the Colour page showed it, so with the
+    /// Blade armed a click to pick a shot to grade cut it (#323). No
+    /// trims, fades or moves start there either. The Edit page's tool is
+    /// left as it was, unless a shortcut picked another one meanwhile.
     pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        old_timeline: &mut crate::panels::timeline::TimelinePanel,
+        kb: &crate::keybindings::KeyBindings,
+        adaptive_fit: bool,
+    ) -> Vec<AppCommand> {
+        let strip = state.show_color_panel;
+        old_timeline.select_only = strip;
+        let edit_tool = state.active_tool;
+        if strip {
+            state.active_tool = klipp_core::Tool::Select;
+        }
+        let cmds = self.show_timeline(ui, state, theme, old_timeline, kb, adaptive_fit);
+        if strip && state.active_tool == klipp_core::Tool::Select {
+            state.active_tool = edit_tool;
+        }
+        cmds
+    }
+
+    fn show_timeline(
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
@@ -475,5 +503,64 @@ impl NewTimelinePanel {
         camera_lane::show_key_menu(ui, state, &mut cmds);
 
         cmds
+    }
+}
+
+#[cfg(test)]
+mod colour_strip_tests {
+    use super::*;
+    use klipp_core::{AppCommand, MediaId, RationalTime, Tool};
+    use klipp_timeline::{Clip, TrackKind};
+
+    /// Clicks over the whole strip, with the Blade armed on the Edit
+    /// page: on the Colour page none of them cuts, and the Blade is
+    /// still armed afterwards (#323).
+    #[test]
+    fn the_colour_strip_selects_whatever_tool_edit_left_armed() {
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let long = RationalTime { value: 24 * 600, rate: 24 };
+        let zero = RationalTime { value: 0, rate: 24 };
+        state.sequences[0].tracks[v1].clips.push(Clip::media(MediaId::new(), zero, long, zero, long));
+        state.show_color_panel = true;
+        state.active_tool = Tool::Blade;
+
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let kb = crate::keybindings::KeyBindings::default();
+        let mut panel = NewTimelinePanel::default();
+        let mut old = crate::panels::timeline::TimelinePanel::default();
+        old.embedded = true;
+        let mut all = Vec::new();
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>, state: &mut AppState, all: &mut Vec<AppCommand>| {
+            time += 0.5;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 300.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    all.extend(panel.show(ui, state, &theme, &mut old, &kb, false));
+                });
+            });
+        };
+        frame(Vec::new(), &mut state, &mut all);
+        for y in (5..300).step_by(10) {
+            for x in (60..780).step_by(60) {
+                let at = egui::pos2(x as f32, y as f32);
+                let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                frame(vec![egui::Event::PointerMoved(at), button(true)], &mut state, &mut all);
+                frame(vec![button(false)], &mut state, &mut all);
+            }
+        }
+        assert!(
+            !all.iter().any(|c| matches!(c, AppCommand::BladeClip { .. })),
+            "a click on the Colour page cut a clip",
+        );
+        assert_eq!(state.active_tool, Tool::Blade, "the Edit page's tool was not left as it was");
+        assert!(old.select_only);
     }
 }

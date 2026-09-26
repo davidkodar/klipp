@@ -982,7 +982,7 @@ impl NodeInspectorPanel {
         ui.add_space(4.0);
         if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
             let mut val = node.params.contrast.unwrap_or(0.0);
-            if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
+            if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                 node.params.contrast = Some(val);
                 cmds.push(AppCommand::SetNodeParam {
                     clip_id, node_id: nid, param: "contrast".into(), value: val,
@@ -1216,7 +1216,7 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.exposure.unwrap_or(0.0);
-                    if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, "stops", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Exposure", &mut val, -3.0..=3.0, 0.0, "stops", theme, cmds, clip_id) {
                         node.params.exposure = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
                     }
@@ -1239,7 +1239,7 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut val = node.params.contrast.unwrap_or(0.0);
-                    if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Contrast", &mut val, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.contrast = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast".into(), value: val });
                     }
@@ -1275,6 +1275,7 @@ impl NodeInspectorPanel {
                         ui, "Pivot", &mut shown,
                         klipp_color::grade_model::grade_encode(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
                             ..=klipp_color::grade_model::grade_encode(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                        klipp_color::grade_model::grade_encode(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                         "", theme, cmds, clip_id,
                     ) {
                         let linear = klipp_color::grade_model::grade_decode(shown).clamp(
@@ -1285,7 +1286,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "contrast_pivot".into(), value: linear });
                     }
                     let mut cval = node.params.clarity.unwrap_or(0.0);
-                    if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, "", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Clarity", &mut cval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.clarity = Some(cval);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
                     }
@@ -1313,12 +1314,12 @@ impl NodeInspectorPanel {
                     // Rendered in the same widget with no unit it read as
                     // an inconsistency — "1.00" sitting under "0.00" with
                     // nothing to say why. The multiplier sign says why.
-                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, "\u{00D7}", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Saturation", &mut val, 0.0..=2.0, 1.0, "\u{00D7}", theme, cmds, clip_id) {
                         node.params.saturation = Some(val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "saturation".into(), value: val });
                     }
                     let mut vval = node.params.vibrance.unwrap_or(0.0);
-                    if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, "", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Vibrance", &mut vval, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.vibrance = Some(vval);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
                     }
@@ -1354,7 +1355,7 @@ impl NodeInspectorPanel {
                             "whites" => node.params.whites.unwrap_or(default),
                             _ => node.params.blacks.unwrap_or(default),
                         };
-                        if inspector_row(ui, label, &mut val, -1.0..=1.0, "", theme, cmds, clip_id) {
+                        if inspector_row(ui, label, &mut val, -1.0..=1.0, default, "", theme, cmds, clip_id) {
                             node.params.apply_override(param_name, val);
                             cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: param_name.into(), value: val });
                         }
@@ -1380,7 +1381,7 @@ impl NodeInspectorPanel {
                 }
                 // Temperature: blue → orange gradient
                 let mut temp = node.params.temperature.unwrap_or(0.0);
-                if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0,
+                if gradient_slider_row(ui, "Temperature", &mut temp, -50.0..=50.0, 0.0,
                     egui::Color32::from_rgb(0x6a, 0xb4, 0xf5),
                     egui::Color32::from_rgb(0xf5, 0xa0, 0x5a), theme, cmds, clip_id)
                 {
@@ -1390,7 +1391,7 @@ impl NodeInspectorPanel {
 
                 // Tint: green → pink gradient
                 let mut tint = node.params.tint.unwrap_or(0.0);
-                if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0,
+                if gradient_slider_row(ui, "Tint", &mut tint, -50.0..=50.0, 0.0,
                     egui::Color32::from_rgb(0xa8, 0xf5, 0xa8),
                     egui::Color32::from_rgb(0xf5, 0xa8, 0xc8), theme, cmds, clip_id)
                 {
@@ -1425,7 +1426,7 @@ impl NodeInspectorPanel {
 
                 // Global Mix: subtle grey → white
                 let mut mix = node.params.global_mix.unwrap_or(1.0);
-                if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0,
+                if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0, 1.0,
                     theme.overlay(20),
                     theme.overlay(90), theme, cmds, clip_id)
                 {
@@ -1451,17 +1452,17 @@ impl NodeInspectorPanel {
                         });
                     }
                     let mut luma = node.params.denoise_luma.unwrap_or(0.0);
-                    if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, "", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Luma", &mut luma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.denoise_luma = Some(luma);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_luma".into(), value: luma });
                     }
                     let mut chroma = node.params.denoise_chroma.unwrap_or(0.0);
-                    if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, "", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Chroma", &mut chroma, 0.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                         node.params.denoise_chroma = Some(chroma);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_chroma".into(), value: chroma });
                     }
                     let mut radius = node.params.denoise_radius.unwrap_or(3) as f32;
-                    if inspector_row(ui, "Radius", &mut radius, 1.0..=7.0, "px", theme, cmds, clip_id) {
+                    if inspector_row(ui, "Radius", &mut radius, 1.0..=7.0, 3.0, "px", theme, cmds, clip_id) {
                         let r = radius.round() as u32;
                         node.params.denoise_radius = Some(r);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
@@ -2234,12 +2235,12 @@ impl NodeInspectorPanel {
                                 });
                             }
                             let mut s = sat_val;
-                            if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, "", theme, cmds, clip_id) {
+                            if inspector_row(ui, "Saturation", &mut s, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                                 params.apply_override(sat_name, s);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.into(), value: s });
                             }
                             let mut b = bri_val;
-                            if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, "", theme, cmds, clip_id) {
+                            if inspector_row(ui, "Brightness", &mut b, -1.0..=1.0, 0.0, "", theme, cmds, clip_id) {
                                 params.apply_override(bri_name, b);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
                             }
@@ -2346,7 +2347,7 @@ impl NodeInspectorPanel {
 
                 // Mix slider — same style as Color tab
                 let mut mix = params.curves_mix.unwrap_or(1.0);
-                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, "", theme, cmds, clip_id) {
+                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, 1.0, "", theme, cmds, clip_id) {
                     params.curves_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "curves_mix".into(), value: mix });
                 }
@@ -2513,7 +2514,7 @@ impl NodeInspectorPanel {
 
                 // Mix slider
                 let mut mix = params.huesat_mix.unwrap_or(1.0);
-                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, "", theme, cmds, clip_id) {
+                if inspector_row(ui, "Mix", &mut mix, 0.0..=1.0, 1.0, "", theme, cmds, clip_id) {
                     params.huesat_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "huesat_mix".into(), value: mix });
                 }
@@ -3720,21 +3721,17 @@ fn inspector_row(
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
+    default: f32,
     suffix: &str,
     theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
+    let id = ui.next_auto_id();
+    let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
-    let speed = range_span / 800.0;
-
-    // Proportions matching the mockup:
-    // Label: ~28% | Slider: ~38% | Value: ~18% | Suffix: ~12% | Padding: rest
-    let label_w = (avail_w * 0.28).max(50.0);
-    let suffix_w = if suffix.is_empty() { 0.0 } else { (avail_w * 0.10).max(28.0) };
-    let value_w = (avail_w * 0.14).max(32.0);
-    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - suffix_w - 8.0).max(40.0);
+    let RowLayout { label_w, slider_w, value_w, suffix_w } = row_layout(avail_w, !suffix.is_empty());
 
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
 
@@ -3793,13 +3790,15 @@ fn inspector_row(
 
         // Value
         let value_x = slider_x + slider_w + 8.0;
-        painter.text(
-            egui::pos2(value_x, cy),
-            egui::Align2::LEFT_CENTER,
-            format!("{:.2}", *value),
-            egui::FontId::proportional(11.0),
-            theme.overlay(166),
-        );
+        if !editing {
+            painter.text(
+                egui::pos2(value_x, cy),
+                egui::Align2::LEFT_CENTER,
+                format!("{:.2}", *value),
+                egui::FontId::proportional(11.0),
+                theme.overlay(166),
+            );
+        }
 
         // Suffix
         if !suffix.is_empty() {
@@ -3813,48 +3812,188 @@ fn inspector_row(
         }
     }
 
-    // Slider interaction
     let slider_x = row_rect.min.x + PAD + label_w;
-    let interact_rect = egui::Rect::from_min_size(
-        egui::pos2(slider_x - 6.0, cy - 12.0),
-        egui::vec2(slider_w + 12.0, 24.0),
-    );
-    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
-    let mut changed = false;
+    slider_interact(
+        ui, id, SliderGeometry { x: slider_x, w: slider_w, cy, value_w: value_w + suffix_w },
+        value, range, default, cmds, clip_id,
+    )
+}
 
-    if slider_resp.drag_started() {
+/// Widths across an `inspector_row`: label ~28%, slider ~38%, value
+/// ~14%, suffix ~10%, padding the rest.
+struct RowLayout {
+    label_w: f32,
+    slider_w: f32,
+    value_w: f32,
+    suffix_w: f32,
+}
+
+fn row_layout(avail_w: f32, has_suffix: bool) -> RowLayout {
+    let label_w = (avail_w * 0.28).max(50.0);
+    let suffix_w = if has_suffix { (avail_w * 0.10).max(28.0) } else { 0.0 };
+    let value_w = (avail_w * 0.14).max(32.0);
+    let slider_w = (avail_w - PAD * 2.0 - label_w - value_w - suffix_w - 8.0).max(40.0);
+    RowLayout { label_w, slider_w, value_w, suffix_w }
+}
+
+/// Where a slider row's track and value field sit.
+struct SliderGeometry {
+    /// Left end of the track.
+    x: f32,
+    /// Track length.
+    w: f32,
+    cy: f32,
+    /// Width of the value field (and suffix) to the right of the track.
+    value_w: f32,
+}
+
+/// Whether the row with this id is showing a text field for its value.
+fn slider_value_editing(ui: &egui::Ui, id: egui::Id) -> bool {
+    ui.data(|d| d.get_temp::<String>(id.with("edit")).is_some())
+}
+
+/// Shift for fine steps and Ctrl (Cmd) for coarse ones, as the colour
+/// wheels do.
+fn slider_drag_factor(ui: &egui::Ui) -> f32 {
+    ui.input(|i| {
+        if i.modifiers.shift {
+            0.1
+        } else if i.modifiers.command {
+            4.0
+        } else {
+            1.0
+        }
+    })
+}
+
+/// This frame's horizontal drag. egui calls it a drag only after the
+/// pointer has moved a few pixels; the first frame counts from where the
+/// button went down, so those pixels are not lost.
+fn drag_dx(ui: &egui::Ui, resp: &egui::Response) -> f32 {
+    if resp.drag_started() {
+        ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(o, p)| p.x - o.x)).unwrap_or(0.0)
+    } else {
+        resp.drag_delta().x
+    }
+}
+
+/// What a click at `click_x` on a track does: nothing near the thumb, so
+/// grabbing it to drag does not move it; elsewhere, jump there.
+fn track_click_target(click_x: f32, thumb_x: f32, x: f32, w: f32) -> Option<f32> {
+    ((click_x - thumb_x).abs() > 8.0).then(|| ((click_x - x) / w).clamp(0.0, 1.0))
+}
+
+/// The Colour tab's slider behaviour, shared by its rows (#321). A drag
+/// moves the value from where it was by the distance dragged, not to the
+/// pointer; Shift is fine and Ctrl coarse. A click jumps only when it is
+/// away from the thumb. Double-click or right-click resets the one
+/// parameter to `default`. Double-click the number to type a value
+/// (Enter keeps it, Escape drops it); drag the number for small steps.
+fn slider_interact(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    g: SliderGeometry,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+) -> bool {
+    let (lo, hi) = (*range.start(), *range.end());
+    let span = (hi - lo).abs().max(f32::EPSILON);
+    let mut changed = false;
+    // A one-shot change (a click, a reset, a typed value) is its own undo
+    // step: Begin goes out with it and End at the row's next frame, after
+    // the caller's SetNodeParam, as a drag's End follows its last step.
+    let pending_end = id.with("one_shot_end");
+    if ui.data_mut(|d| d.remove_temp::<bool>(pending_end)).unwrap_or(false) {
+        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+    }
+    let one_shot = |ui: &egui::Ui, cmds: &mut Vec<AppCommand>| {
+        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        ui.data_mut(|d| d.insert_temp(pending_end, true));
+        ui.ctx().request_repaint();
+    };
+
+    // The track's hit area stops short of the value field, so a drag
+    // that starts on the number is the number's.
+    let track_rect = egui::Rect::from_min_max(
+        egui::pos2(g.x - 6.0, g.cy - 12.0),
+        egui::pos2(g.x + g.w + 3.0, g.cy + 12.0),
+    );
+    let track = ui.interact(track_rect, id.with("track"), egui::Sense::click_and_drag());
+    if track.drag_started() {
         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
     }
-    if slider_resp.dragged() || slider_resp.clicked() {
-        if let Some(pos) = slider_resp.interact_pointer_pos() {
-            let new_pct = ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0);
-            *value = range.start() + new_pct * range_span;
+    if track.dragged() {
+        let dx = drag_dx(ui, &track);
+        if dx != 0.0 {
+            *value = (*value + dx / g.w * span * slider_drag_factor(ui)).clamp(lo, hi);
+            changed = true;
+        }
+    } else if track.clicked() {
+        let thumb_x = g.x + g.w * ((*value - lo) / span).clamp(0.0, 1.0);
+        if let Some(t) = track.interact_pointer_pos().and_then(|p| track_click_target(p.x, thumb_x, g.x, g.w)) {
+            one_shot(ui, cmds);
+            *value = lo + t * span;
             changed = true;
         }
     }
-    if slider_resp.drag_stopped() {
+    if track.drag_stopped() {
         cmds.push(AppCommand::EndNodeParamEdit { clip_id });
     }
 
-    // Value drag (precision adjustment by dragging the number)
-    let value_x = slider_x + slider_w + 8.0;
     let val_rect = egui::Rect::from_min_size(
-        egui::pos2(value_x - 4.0, cy - 10.0),
-        egui::vec2(value_w + suffix_w + 8.0, 20.0),
+        egui::pos2(g.x + g.w + 4.0, g.cy - 10.0),
+        egui::vec2(g.value_w + 8.0, 20.0),
     );
-    let val_resp = ui.allocate_rect(val_rect, egui::Sense::click_and_drag());
-    if val_resp.drag_started() {
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+    let edit_id = id.with("edit");
+    if let Some(mut text) = ui.data(|d| d.get_temp::<String>(edit_id)) {
+        let field = ui.put(val_rect, egui::TextEdit::singleline(&mut text).font(egui::FontId::proportional(11.0)));
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        if field.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(edit_id));
+            let keep = ui.input(|i| !i.key_pressed(egui::Key::Escape));
+            if let Some(v) = keep.then(|| text.trim().parse::<f32>().ok()).flatten().filter(|v| v.is_finite()) {
+                one_shot(ui, cmds);
+                *value = v.clamp(lo, hi);
+                changed = true;
+            }
+        } else {
+            ui.data_mut(|d| d.insert_temp(edit_id, text));
+        }
+    } else {
+        let val = ui.interact(val_rect, id.with("value"), egui::Sense::click_and_drag());
+        if val.drag_started() {
+            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        }
+        if val.dragged() {
+            *value = (*value + drag_dx(ui, &val) * span / 800.0 * slider_drag_factor(ui)).clamp(lo, hi);
+            changed = true;
+        }
+        if val.drag_stopped() {
+            cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+        }
+        if val.double_clicked() {
+            ui.data_mut(|d| d.insert_temp(edit_id, format!("{:.2}", *value)));
+        } else if val.secondary_clicked() {
+            one_shot(ui, cmds);
+            *value = default;
+            changed = true;
+        }
+        val.on_hover_text("Drag to adjust (Shift fine, Ctrl coarse) · double-click to type · right-click to reset");
     }
-    if val_resp.dragged() {
-        let delta = val_resp.drag_delta().x * speed;
-        *value = (*value + delta).clamp(*range.start(), *range.end());
+    if track.double_clicked() || track.secondary_clicked() {
+        // A double-click's first click may already have opened a step for
+        // its jump; the reset joins it rather than opening another.
+        if !ui.data(|d| d.get_temp::<bool>(pending_end).unwrap_or(false)) {
+            one_shot(ui, cmds);
+        }
+        *value = default;
         changed = true;
     }
-    if val_resp.drag_stopped() {
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-    }
-
     changed
 }
 
@@ -3865,12 +4004,15 @@ fn gradient_slider_row(
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
+    default: f32,
     color_left: egui::Color32,
     color_right: egui::Color32,
     theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
+    let id = ui.next_auto_id();
+    let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let range_span = (range.end() - range.start()).abs();
     let label_w = (avail_w * 0.28).max(50.0);
@@ -3917,28 +4059,17 @@ fn gradient_slider_row(
         painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
 
         // Value
-        painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-            format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            theme.overlay(166));
-    }
-
-    let interact_rect = egui::Rect::from_min_size(
-        egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
-    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
-    let mut changed = false;
-    if slider_resp.drag_started() {
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-    }
-    if slider_resp.dragged() || slider_resp.clicked() {
-        if let Some(pos) = slider_resp.interact_pointer_pos() {
-            *value = range.start() + ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * range_span;
-            changed = true;
+        if !editing {
+            painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
+                format!("{:.2}", *value), egui::FontId::proportional(11.0),
+                theme.overlay(166));
         }
     }
-    if slider_resp.drag_stopped() {
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-    }
-    changed
+
+    slider_interact(
+        ui, id, SliderGeometry { x: slider_x, w: slider_w, cy, value_w },
+        value, range, default, cmds, clip_id,
+    )
 }
 
 /// Hue slider row: rainbow spectrum track.
@@ -3950,6 +4081,8 @@ fn hue_slider_row(
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
+    let id = ui.next_auto_id();
+    let editing = slider_value_editing(ui, id);
     let avail_w = ui.available_width();
     let label_w = (avail_w * 0.28).max(50.0);
     let value_w = (avail_w * 0.14).max(32.0);
@@ -3990,28 +4123,17 @@ fn hue_slider_row(
         painter.circle_filled(egui::pos2(thumb_x, cy), 6.0, egui::Color32::from_rgb(0xf0, 0xf0, 0xf0));
 
         // Value
-        painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
-            format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            theme.overlay(166));
-    }
-
-    let interact_rect = egui::Rect::from_min_size(
-        egui::pos2(slider_x - 6.0, cy - 12.0), egui::vec2(slider_w + 12.0, 24.0));
-    let slider_resp = ui.allocate_rect(interact_rect, egui::Sense::click_and_drag());
-    let mut changed = false;
-    if slider_resp.drag_started() {
-        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-    }
-    if slider_resp.dragged() || slider_resp.clicked() {
-        if let Some(pos) = slider_resp.interact_pointer_pos() {
-            *value = ((pos.x - slider_x) / slider_w).clamp(0.0, 1.0) * 360.0;
-            changed = true;
+        if !editing {
+            painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
+                format!("{:.2}", *value), egui::FontId::proportional(11.0),
+                theme.overlay(166));
         }
     }
-    if slider_resp.drag_stopped() {
-        cmds.push(AppCommand::EndNodeParamEdit { clip_id });
-    }
-    changed
+
+    slider_interact(
+        ui, id, SliderGeometry { x: slider_x, w: slider_w, cy, value_w },
+        value, 0.0..=360.0, 0.0, cmds, clip_id,
+    )
 }
 
 /// Per-node colorspace dropdown for the Lut3D inspector. Renders a
@@ -4259,5 +4381,228 @@ mod huesat_curve_coverage {
             missing.is_empty(),
             "these Hue/Sat curves have an editor but no reset: {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod slider_behaviour {
+    //! The Colour tab's sliders, driven with real pointer and key events
+    //! (#321): a drag moves the value by the distance dragged, a click on
+    //! the thumb does not move it, double-click or right-click resets
+    //! the one parameter, and a double-click on the number types it.
+    use super::*;
+
+    const WIDTH: f32 = 400.0;
+
+    struct Rig {
+        ctx: egui::Context,
+        time: f64,
+        value: f32,
+        cmds: Vec<AppCommand>,
+    }
+
+    impl Rig {
+        fn new(value: f32) -> Self {
+            let mut rig = Rig { ctx: egui::Context::default(), time: 0.0, value, cmds: Vec::new() };
+            rig.frame(Vec::new(), egui::Modifiers::NONE);
+            rig
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, 100.0))),
+                time: Some(self.time),
+                modifiers,
+                events,
+                ..Default::default()
+            };
+            let theme = KlippTheme::default();
+            let (value, cmds) = (&mut self.value, &mut self.cmds);
+            let _ = self.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    inspector_row(ui, "Blacks", value, -1.0..=1.0, 0.0, "", &theme, cmds, ClipId::new());
+                });
+            });
+        }
+
+        fn geometry(&self) -> (f32, f32, f32) {
+            let l = row_layout(WIDTH, false);
+            let x = PAD + l.label_w;
+            (x, l.slider_w, ROW_H / 2.0)
+        }
+
+        fn thumb(&self) -> egui::Pos2 {
+            let (x, w, cy) = self.geometry();
+            egui::pos2(x + w * ((self.value + 1.0) / 2.0), cy)
+        }
+
+        fn number(&self) -> egui::Pos2 {
+            let (x, w, cy) = self.geometry();
+            egui::pos2(x + w + 16.0, cy)
+        }
+
+        fn button(&mut self, at: egui::Pos2, button: egui::PointerButton, pressed: bool, modifiers: egui::Modifiers) {
+            self.frame(
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton { pos: at, button, pressed, modifiers },
+                ],
+                modifiers,
+            );
+        }
+
+        fn click(&mut self, at: egui::Pos2) {
+            self.button(at, egui::PointerButton::Primary, true, egui::Modifiers::NONE);
+            self.button(at, egui::PointerButton::Primary, false, egui::Modifiers::NONE);
+        }
+
+        fn drag(&mut self, from: egui::Pos2, dx: f32, modifiers: egui::Modifiers) {
+            self.button(from, egui::PointerButton::Primary, true, modifiers);
+            for i in 1..=4 {
+                self.frame(vec![egui::Event::PointerMoved(from + egui::vec2(dx * i as f32 / 4.0, 0.0))], modifiers);
+            }
+            self.button(from + egui::vec2(dx, 0.0), egui::PointerButton::Primary, false, modifiers);
+            self.frame(Vec::new(), modifiers);
+        }
+    }
+
+    #[test]
+    fn a_drag_moves_the_value_by_the_distance_not_to_the_pointer() {
+        let mut rig = Rig::new(0.0);
+        let (_, w, _) = rig.geometry();
+        // Grab a little to the right of the thumb, as a hand does.
+        let grab = rig.thumb() + egui::vec2(5.0, 0.0);
+        rig.drag(grab, 20.0, egui::Modifiers::NONE);
+        let want = 20.0 / w * 2.0;
+        assert!((rig.value - want).abs() < 0.01, "moved to {} for a 20 px drag, want {want}", rig.value);
+    }
+
+    #[test]
+    fn shift_drags_finely_and_ctrl_coarsely() {
+        let mut fine = Rig::new(0.0);
+        let at = fine.thumb();
+        fine.drag(at, 20.0, egui::Modifiers::SHIFT);
+        let mut plain = Rig::new(0.0);
+        let at = plain.thumb();
+        plain.drag(at, 20.0, egui::Modifiers::NONE);
+        let mut coarse = Rig::new(0.0);
+        let at = coarse.thumb();
+        coarse.drag(at, 20.0, egui::Modifiers::COMMAND);
+        assert!(fine.value > 0.0 && fine.value < plain.value / 5.0, "fine {} vs plain {}", fine.value, plain.value);
+        assert!(coarse.value > plain.value * 2.0, "coarse {} vs plain {}", coarse.value, plain.value);
+    }
+
+    #[test]
+    fn a_click_on_the_thumb_leaves_it_and_one_elsewhere_jumps() {
+        let mut rig = Rig::new(0.3);
+        let at = rig.thumb() + egui::vec2(4.0, 0.0);
+        rig.click(at);
+        assert_eq!(rig.value, 0.3, "a click on the thumb moved it");
+        let (x, w, cy) = rig.geometry();
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        rig.time += 1.0;
+        rig.click(egui::pos2(x + w * 0.25, cy));
+        assert!((rig.value + 0.5).abs() < 0.02, "a click a quarter along should jump to -0.5, got {}", rig.value);
+    }
+
+    #[test]
+    fn double_click_or_right_click_resets_the_one_slider() {
+        let mut rig = Rig::new(-0.4);
+        let at = rig.thumb();
+        rig.click(at);
+        rig.click(at);
+        assert_eq!(rig.value, 0.0, "double-click did not reset");
+        rig.value = 0.6;
+        rig.time += 1.0;
+        let at = rig.number();
+        rig.button(at, egui::PointerButton::Secondary, true, egui::Modifiers::NONE);
+        rig.button(at, egui::PointerButton::Secondary, false, egui::Modifiers::NONE);
+        assert_eq!(rig.value, 0.0, "right-click on the number did not reset");
+    }
+
+    #[test]
+    fn the_number_can_be_typed() {
+        let mut rig = Rig::new(0.1);
+        let at = rig.number();
+        rig.click(at);
+        rig.click(at);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        // Replace the field's text, then Enter.
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }],
+            egui::Modifiers::COMMAND,
+        );
+        rig.frame(vec![egui::Event::Text("-0.35".into())], egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            egui::Modifiers::NONE,
+        );
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert!((rig.value + 0.35).abs() < 1e-6, "typed -0.35, got {}", rig.value);
+        // Escape keeps the old value.
+        let at = rig.number();
+        rig.time += 1.0;
+        rig.click(at);
+        rig.click(at);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        rig.frame(vec![egui::Event::Text("9".into())], egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            egui::Modifiers::NONE,
+        );
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert!((rig.value + 0.35).abs() < 1e-6, "Escape changed the value to {}", rig.value);
+    }
+
+    /// A reset and a typed value are each one undo step: Begin before
+    /// the change and End after it, as a drag is.
+    #[test]
+    fn a_reset_and_a_typed_value_are_each_an_undo_step() {
+        let begins_and_ends = |cmds: &[AppCommand]| -> Vec<char> {
+            cmds.iter()
+                .filter_map(|c| match c {
+                    AppCommand::BeginNodeParamEdit { .. } => Some('('),
+                    AppCommand::EndNodeParamEdit { .. } => Some(')'),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut rig = Rig::new(0.4);
+        let at = rig.number();
+        rig.button(at, egui::PointerButton::Secondary, true, egui::Modifiers::NONE);
+        rig.button(at, egui::PointerButton::Secondary, false, egui::Modifiers::NONE);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(rig.value, 0.0);
+        assert_eq!(begins_and_ends(&rig.cmds), vec!['(', ')'], "the reset is not one undo step");
+
+        rig.cmds.clear();
+        rig.time += 1.0;
+        let at = rig.number();
+        rig.click(at);
+        rig.click(at);
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }],
+            egui::Modifiers::COMMAND,
+        );
+        rig.frame(vec![egui::Event::Text("0.25".into())], egui::Modifiers::NONE);
+        rig.frame(
+            vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+            egui::Modifiers::NONE,
+        );
+        rig.frame(Vec::new(), egui::Modifiers::NONE);
+        assert!((rig.value - 0.25).abs() < 1e-6);
+        assert_eq!(begins_and_ends(&rig.cmds), vec!['(', ')'], "the typed value is not one undo step");
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_the_number_is_the_numbers() {
+        let mut rig = Rig::new(0.0);
+        let (x, w, cy) = rig.geometry();
+        // Just right of the track's end, where the number begins: this
+        // used to be the track, and jumped the value to the end.
+        rig.drag(egui::pos2(x + w + 5.0, cy), 10.0, egui::Modifiers::NONE);
+        assert!(rig.value > 0.0 && rig.value < 0.05, "the number's small step, got {}", rig.value);
     }
 }
