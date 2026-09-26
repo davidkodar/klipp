@@ -62,6 +62,19 @@ const LEN: i64 = 200;
 /// looks like a pipeline bug. `scratch_file` also removes the
 /// directories that finished runs left behind; before it did, a day of
 /// full-suite runs left 313 of them holding 5.4 GB on the tmpfs.
+/// The decode delay is one setting for the whole process, and the tests
+/// in this file run in parallel: while the slow-decoder test had it set,
+/// every other engine here decoded 60 ms a frame too, and one of them
+/// now and then read a frame before its stream caught up (#411, about
+/// one full run in sixteen). The slow test holds this for writing; the
+/// rest hold it for reading, so they still run alongside each other,
+/// but never alongside it.
+static DECODER_SPEED: RwLock<()> = RwLock::new(());
+
+fn decoders_at_speed() -> std::sync::RwLockReadGuard<'static, ()> {
+    DECODER_SPEED.read().unwrap_or_else(|e| e.into_inner())
+}
+
 fn tmp(name: &str) -> PathBuf {
     klipp_testing::scratch::scratch_file("klipp-viewer-export", name)
 }
@@ -432,6 +445,7 @@ fn secondary_fixture() -> &'static (Timeline, PathBuf) {
 
 #[test]
 fn the_viewer_shows_the_exported_frame() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -464,6 +478,7 @@ fn the_viewer_shows_the_exported_frame() {
 /// playhead.
 #[test]
 fn playing_through_a_dissolve_shows_the_exported_frames() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -507,6 +522,7 @@ fn a_slow_decoder_after_playing_still_shows_the_exported_frames() {
             klipp_engine::video_decoder::set_decode_delay_for_tests(0);
         }
     }
+    let _decoders = DECODER_SPEED.write().unwrap_or_else(|e| e.into_inner());
     let (t, out) = main_fixture();
     let viewer = Viewer::start(t);
     let _restore = Restore;
@@ -612,6 +628,7 @@ fn secondary_timeline() -> Timeline {
 
 #[test]
 fn a_secondary_grade_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -632,6 +649,7 @@ fn a_secondary_grade_exports_as_the_viewer_shows_it() {
 /// through, would make the test above pass on two identical no-ops.
 #[test]
 fn the_secondary_changes_both_the_viewer_and_the_export() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -667,6 +685,7 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
 /// the composite, and it changes the picture.
 #[test]
 fn a_timeline_grade_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -760,6 +779,7 @@ fn fits_alike(t: &Timeline, points: &[(&str, u32, u32, Expect)]) -> Vec<Vec<u8>>
 /// wide, while the viewer rendered in a frame the clip's own shape.
 #[test]
 fn a_portrait_clip_is_pillarboxed_in_the_viewer_and_the_export_alike() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -785,6 +805,7 @@ fn a_portrait_clip_is_pillarboxed_in_the_viewer_and_the_export_alike() {
 /// A picture wider than the sequence is letterboxed by both.
 #[test]
 fn a_wide_clip_is_letterboxed_in_the_viewer_and_the_export_alike() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -804,6 +825,7 @@ fn a_wide_clip_is_letterboxed_in_the_viewer_and_the_export_alike() {
 /// the coded left half ends up on the right.
 #[test]
 fn a_half_turned_clip_is_turned_over_in_the_viewer_and_the_export_alike() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
@@ -821,6 +843,7 @@ fn a_half_turned_clip_is_turned_over_in_the_viewer_and_the_export_alike() {
 /// row pairs and bleeds colour one row across an odd edge.
 #[test]
 fn an_odd_sized_clip_is_barred_on_the_same_rows_in_the_viewer_and_the_export() {
+    let _decoders = decoders_at_speed();
     if !ffmpeg_ok() {
         eprintln!("skipping: no ffmpeg");
         return;
