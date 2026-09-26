@@ -2028,7 +2028,14 @@ impl Renderer {
         let shutter = std::mem::take(&mut self.shutter);
         let lut = self.global_lut.take();
         let inspect = std::mem::take(&mut self.inspect);
+        // The scene sets its own render scale, from its own resolution;
+        // the parent's layers after it must go on with the parent's. A
+        // scene stored at another size than its parent otherwise left
+        // its scale behind, and every blur and matte feather above it
+        // was sized for the wrong sequence.
+        let px_scale = self.px_scale;
         let surface = self.render_stack(scene, at, width, height, src, RenderOptions { keep_alpha: true, hdr_peak_nits: self.hdr_peak });
+        self.px_scale = px_scale;
         self.inspect = inspect;
         self.global_lut = lut;
         self.shutter = shutter;

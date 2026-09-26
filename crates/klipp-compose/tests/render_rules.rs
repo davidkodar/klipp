@@ -1611,3 +1611,40 @@ fn a_blur_covers_the_same_share_of_the_picture_at_half_size() {
     assert!(f >= 8.0, "the full-size blur is wide enough to measure: {full:?}");
     assert!((h - f / 2.0).abs() <= 1.5, "half-size ramp {h} samples, full {f}\nhalf {half:?}\nfull {full:?}");
 }
+
+/// A scene stored at another size than its parent sets its own render
+/// scale while it is composed, and the parent's layers above it keep the
+/// parent's: a blur over a precomposition is the same width as over
+/// nothing. The scene's scale used to stay behind, so the blur above a
+/// half-resolution scene rendered at half size was twice as wide.
+#[test]
+fn a_precomposition_does_not_resize_the_blur_above_it() {
+    let mut card = media(0.0, 1.0);
+    card.builtin_effects.push(BuiltinEffect::GaussianBlur { radius: 8.0 });
+    card.builtin_effects_enabled.push(true);
+    // The scene at the size it is rendered at, the parent at twice that.
+    let mut scene = sequence(vec![vec![solid([0, 255, 0], 0.0, 4.0)]]);
+    scene.resolution = klipp_core::Resolution { width: W, height: H };
+    let edge_at = |img: &[f32]| -> Vec<f32> { (0..W).map(|x| img[(((H / 2) * W + x) * 4) as usize]).collect() };
+    let ramp = |row: &[f32]| row.iter().filter(|v| **v > 0.05 && **v < 0.9).count();
+    for gpu in [false, true] {
+        let blur_width = |with_scene: bool| {
+            let mut tracks = vec![vec![card.clone()]];
+            if with_scene {
+                tracks.push(vec![Clip::precomposition(scene.id, tc(0.0), tc(4.0))]);
+            }
+            let mut outer = sequence(tracks);
+            outer.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
+            let flat = klipp_timeline::flatten::flatten_sequence(&outer, &[outer.clone(), scene.clone()]);
+            let mut src = AnySize([(card.id, [1.0, 0.0, 0.0])].into_iter().collect(), true);
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let img = r.render(&flat, tc(0.5), W, H, &mut src, RenderOptions::default());
+            (ramp(&edge_at(&img)), edge_at(&img))
+        };
+        let (alone, row_alone) = blur_width(false);
+        let (over, row_over) = blur_width(true);
+        assert!(alone >= 3, "the blur is wide enough to measure (gpu {gpu}): {row_alone:?}");
+        assert_eq!(over, alone, "the blur over the scene is as wide as alone (gpu {gpu})\nover  {row_over:?}\nalone {row_alone:?}");
+    }
+}
