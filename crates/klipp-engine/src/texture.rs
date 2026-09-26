@@ -148,6 +148,15 @@ pub struct FrameBuffer {
     pub node_thumbs_gen: u64,
 }
 
+/// The format to sample [`FrameBuffer::gpu_output`] through. The texture
+/// holds display-encoded bytes (the GPU stack's display encode), and a
+/// sampler reading a plain `Rgba8Unorm` view hands them to egui as if they
+/// were linear light; egui's shader then encodes them again, and playback
+/// showed every picture a whole sRGB curve too bright and too flat
+/// (#455). An sRGB view decodes on sampling, so what egui re-encodes is
+/// the picture the engine made.
+pub const GPU_VIEWER_SAMPLE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 impl FrameBuffer {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -209,6 +218,9 @@ impl FrameBuffer {
     /// `GpuEffectsPipeline::encode_chain_to_display`, which stores
     /// texels rather than copying rows and so has no row-pitch
     /// condition on the width.
+    /// Allocate (or reuse) the zero-copy viewer texture. Its bytes are
+    /// display-encoded: sample it through a [`GPU_VIEWER_SAMPLE_FORMAT`]
+    /// view, never the default one.
     pub fn ensure_gpu_output(
         &mut self,
         device: &std::sync::Arc<wgpu::Device>,
@@ -234,7 +246,11 @@ impl FrameBuffer {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats: &[],
+                // The stack stores display-encoded bytes through the
+                // plain view (a storage view cannot be sRGB); the viewer
+                // samples through the sRGB one, which decodes them to the
+                // linear light egui's shader expects (#455).
+                view_formats: &[GPU_VIEWER_SAMPLE_FORMAT],
             });
             self.gpu_output = Some(std::sync::Arc::new(tex));
             self.gpu_output_width = width;
