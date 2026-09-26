@@ -2527,32 +2527,27 @@ fn cut_range(seq: &Sequence, pool: &MediaPool, i: usize, from: Timecode, to: Tim
         push(&mut sims, edit);
     }
 
-    // Sequence markers. One inside the range goes with what was there;
-    // one after it moves up with the clips; a range marker reaching into
-    // the cut loses what the cut took.
-    let old_markers = sims[0].markers.clone();
-    let mut new_markers = Vec::with_capacity(old_markers.len());
-    let mut markers_changed = false;
-    for m in &old_markers {
-        let mut m = m.clone();
-        if m.position >= to {
-            m.position -= len;
-            markers_changed = true;
+    // Sequence markers, each by id. One inside the range goes with what
+    // was there; one after it moves up with the clips; a range marker
+    // reaching into the cut loses what the cut took.
+    let mut marker_moves = Vec::new();
+    let mut marker_drops = Vec::new();
+    for (index, m) in sims[0].markers.iter().enumerate() {
+        let end = m.duration.map(|d| m.position + d);
+        let (position, duration) = if m.position >= to {
+            (m.position - len, m.duration)
         } else if m.position >= from {
-            markers_changed = true;
+            marker_drops.push((index, m.clone()));
             continue;
-        } else if let Some(d) = m.duration {
-            let end = m.position + d;
-            if end > from {
-                let lost = end.min(to) - from;
-                m.duration = Some(d - lost);
-                markers_changed = true;
-            }
-        }
-        new_markers.push(m);
+        } else if let Some((d, e)) = m.duration.zip(end).filter(|(_, e)| *e > from) {
+            (m.position, Some(d - (e.min(to) - from)))
+        } else {
+            continue;
+        };
+        marker_moves.push(crate::history::MarkerMove { id: m.id, old_position: m.position, old_duration: m.duration, new_position: position, new_duration: duration });
     }
-    if markers_changed {
-        push(&mut sims, EditCommand::SetMarkers { old: old_markers, new: new_markers });
+    if !marker_moves.is_empty() || !marker_drops.is_empty() {
+        push(&mut sims, EditCommand::MoveMarkers { moved: marker_moves, dropped: marker_drops });
     }
 
     let what = format!(
@@ -6171,6 +6166,35 @@ mod tests {
         assert_eq!(marker_spans(&seqs[0]), marker_spans(&seq));
         let t: Vec<(ClipId, ClipId)> = seqs[0].tracks[0].transitions.iter().map(|t| (t.clip_a_id, t.clip_b_id)).collect();
         assert_eq!(t, vec![(a, b)]);
+    }
+
+    #[test]
+    fn undoing_a_cut_leaves_the_markers_made_since_alone() {
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.markers.push(marker(3.5, "Gone", None));
+        let plan = resolve(&seq, &pool, &[Op::Cut { from: Anchor::Secs(3.0), to: Anchor::Secs(5.0) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        assert_eq!(marker_spans(&seqs[0]), vec![("Intro".to_string(), tc(4.0), None)]);
+        // The app adds and renames markers outside history.
+        seqs[0].markers.push(marker(1.0, "Hero", None));
+        seqs[0].markers[0].label = "Chapter 1".into();
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_inverse(&plan.steps[0].edit);
+        // Undo moves the cut's markers back and puts back the one it
+        // dropped, where it was; Hero and the new name stay.
+        assert_eq!(
+            marker_spans(&seqs[0]),
+            vec![("Chapter 1".to_string(), tc(6.0), None), ("Gone".to_string(), tc(3.5), None), ("Hero".to_string(), tc(1.0), None)]
+        );
+        seqs[0].markers.push(marker(7.0, "Outro", None));
+        crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps }.apply_forward(&plan.steps[0].edit);
+        // Redo the same: Outro, made after the cut at 7 s, is not moved.
+        assert_eq!(
+            marker_spans(&seqs[0]),
+            vec![("Chapter 1".to_string(), tc(4.0), None), ("Hero".to_string(), tc(1.0), None), ("Outro".to_string(), tc(7.0), None)]
+        );
     }
 
     #[test]

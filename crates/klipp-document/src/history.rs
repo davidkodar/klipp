@@ -120,6 +120,16 @@ pub struct LinkedMovePartner {
     pub new_timeline_out: RationalTime,
 }
 
+/// One sequence marker's place before and after an edit moved it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkerMove {
+    pub id: klipp_core::MarkerId,
+    pub old_position: RationalTime,
+    pub old_duration: Option<RationalTime>,
+    pub new_position: RationalTime,
+    pub new_duration: Option<RationalTime>,
+}
+
 #[derive(Debug, Clone)]
 pub enum EditCommand {
     // === LEGACY (Free tracks only — existing behaviour unchanged) ===
@@ -408,12 +418,16 @@ pub enum EditCommand {
         parent_id: MediaId,
     },
 
-    /// The sequence's markers replaced whole: for an edit that moves or
-    /// drops many at once — a cut closing up the timeline — where one
-    /// snapshot either side is simpler than a command per marker.
-    SetMarkers {
-        old: Vec<klipp_timeline::Marker>,
-        new: Vec<klipp_timeline::Marker>,
+    /// Sequence markers moved or dropped by an edit that touches many at
+    /// once — a cut closing up the timeline — each named by id, so that
+    /// undo and redo put back or take out only those and leave alone
+    /// whatever was added, renamed or removed since. The app does those
+    /// outside history, so a snapshot of the whole list would lose them.
+    MoveMarkers {
+        moved: Vec<MarkerMove>,
+        /// Each dropped marker with its place in the list, so undo puts
+        /// it back where it was.
+        dropped: Vec<(usize, klipp_timeline::Marker)>,
     },
 
     // === RANGE SELECTION ===
@@ -735,7 +749,7 @@ impl EditCommand {
                 if changes.len() == 1 { "Rename Media Item" } else { "Batch Rename Media Items" }
             }
             EditCommand::CreateSubclip { .. } => "Create Subclip",
-            EditCommand::SetMarkers { .. } => "Edit Markers",
+            EditCommand::MoveMarkers { .. } => "Move Markers",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::AddTransition { .. } => "Add Transition",
             EditCommand::RemoveTransition { .. } => "Remove Transition",

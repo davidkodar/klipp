@@ -507,8 +507,20 @@ impl DocumentView<'_> {
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.remove(&subclip.id);
             }
-            EditCommand::SetMarkers { old, .. } => {
-                self.sequences[self.active].markers = old.clone();
+            EditCommand::MoveMarkers { moved, dropped } => {
+                let markers = &mut self.sequences[self.active].markers;
+                for mv in moved {
+                    if let Some(m) = markers.iter_mut().find(|m| m.id == mv.id) {
+                        m.position = mv.old_position;
+                        m.duration = mv.old_duration;
+                    }
+                }
+                for (index, marker) in dropped {
+                    if !markers.iter().any(|m| m.id == marker.id) {
+                        let at = (*index).min(markers.len());
+                        markers.insert(at, marker.clone());
+                    }
+                }
             }
             EditCommand::SetRange { old_in, old_out, .. } => {
                 let seq = &mut self.sequences[self.active];
@@ -1112,8 +1124,15 @@ impl DocumentView<'_> {
             EditCommand::CreateSubclip { subclip, parent_id: _ } => {
                 self.media_pool.add(subclip.clone());
             }
-            EditCommand::SetMarkers { new, .. } => {
-                self.sequences[self.active].markers = new.clone();
+            EditCommand::MoveMarkers { moved, dropped } => {
+                let markers = &mut self.sequences[self.active].markers;
+                for mv in moved {
+                    if let Some(m) = markers.iter_mut().find(|m| m.id == mv.id) {
+                        m.position = mv.new_position;
+                        m.duration = mv.new_duration;
+                    }
+                }
+                markers.retain(|m| !dropped.iter().any(|(_, d)| d.id == m.id));
             }
             EditCommand::SetRange { new_in, new_out, .. } => {
                 let seq = &mut self.sequences[self.active];
