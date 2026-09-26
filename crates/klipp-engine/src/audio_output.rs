@@ -61,28 +61,56 @@ pub(crate) fn quiet_alsa() {
 }
 
 
-/// Probe the default cpal output device sample rate. Returns 48000 if unavailable.
-///
-/// U-5: cached in a process-wide OnceLock. cpal's default-device
-/// enumeration is surprisingly expensive — a cold probe on ALSA /
-/// PipeWire can take 10-40 ms. The engine and the UI used to each
-/// call this independently at startup (see the
-/// "probe_sample_rate (duplicate)" LogTimer label in klipp-ui); the
-/// cache means whichever thread wins the race does the work once
-/// and the other becomes a ~100 ns atomic load. The default device
-/// doesn't hot-swap mid-process in any backend we support, so
-/// caching for the process lifetime is safe.
+/// The preferred output device's name, if one is set.
+fn preferred_device_name() -> Option<String> {
+    PREFERRED_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The device the output opens: the one named `preferred` when it is
+/// present, otherwise the system default. A preferred device that has
+/// gone (unplugged since it was chosen) is logged and the default used,
+/// so a stale preference never costs the user their sound.
+fn resolve_output_device(host: &cpal::Host, preferred: Option<&str>) -> Option<cpal::Device> {
+    if let Some(name) = preferred {
+        let found = host.output_devices().ok().and_then(|mut devices| devices.find(|d| d.name().ok().as_deref() == Some(name)));
+        if found.is_some() {
+            return found;
+        }
+        tracing::warn!("Audio device '{name}' not found, using the default");
+    }
+    host.default_output_device()
+}
+
+/// The device the output stream opens and the config it opens with,
+/// decided once so the pipeline's rate and the stream's can never be
+/// read from two different devices.
+struct OutputChoice {
+    device_name: String,
+    config: cpal::SupportedStreamConfig,
+}
+
+/// U-5: cached in a process-wide OnceLock. cpal's device enumeration is
+/// surprisingly expensive — a cold probe on ALSA / PipeWire can take
+/// 10-40 ms — and the engine and the UI both ask at startup. Decided for
+/// the preferred device, which klipp-app sets before the engine is built;
+/// a change of device applies at the next launch.
+fn output_choice() -> Option<&'static OutputChoice> {
+    static CACHED: std::sync::OnceLock<Option<OutputChoice>> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            quiet_alsa();
+            let host = cpal::default_host();
+            let device = resolve_output_device(&host, preferred_device_name().as_deref())?;
+            let config = output_config_for(&device)?;
+            Some(OutputChoice { device_name: device.name().unwrap_or_default(), config })
+        })
+        .as_ref()
+}
+
+/// The sample rate the output device opens at, which the playback
+/// pipeline is built for. 48000 when there is no device.
 pub fn probe_sample_rate() -> u32 {
-    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        use cpal::traits::HostTrait;
-        quiet_alsa();
-        let host = cpal::default_host();
-        host.default_output_device()
-            .and_then(|d| output_config_for(&d))
-            .map(|c| c.sample_rate().0)
-            .unwrap_or(48000)
-    })
+    output_choice().map(|c| c.config.sample_rate().0).unwrap_or(48000)
 }
 
 /// The rate Klipp's playback runs at. Every PCM cache and every effect
@@ -363,44 +391,23 @@ impl AudioOutput {
     /// Pure consumer — no clock duties. The master clock is external.
     /// `skim_consumer` is shared with the app layer so it can inject skim audio.
     pub fn new(consumer: AudioConsumer, skim_consumer: SkimConsumer) -> Result<Self, AudioOutputError> {
-        Self::new_with_device(consumer, skim_consumer, None)
+        Self::new_with_device(consumer, skim_consumer, preferred_device_name().as_deref())
     }
 
     /// Create audio output with an optional device name preference.
-    /// Falls back silently to the system default device if the named device isn't found.
+    /// Falls back to the system default device if the named device isn't found.
     pub fn new_with_device(mut consumer: AudioConsumer, skim_consumer: SkimConsumer, preferred_device: Option<&str>) -> Result<Self, AudioOutputError> {
         quiet_alsa();
         let host = cpal::default_host();
+        let device = resolve_output_device(&host, preferred_device).ok_or(AudioOutputError::NoDevice)?;
 
-        // Try to find preferred device by name, fall back to default
-        let device = if let Some(name) = preferred_device {
-            use cpal::traits::HostTrait;
-            host.output_devices()
-                .ok()
-                .and_then(|mut devices| devices.find(|d| {
-                    use cpal::traits::DeviceTrait;
-                    d.name().ok().as_deref() == Some(name)
-                }))
-                .or_else(|| {
-                    tracing::warn!("Audio device '{}' not found, using default", name);
-                    host.default_output_device()
-                })
-                .ok_or(AudioOutputError::NoDevice)?
-        } else {
-            host.default_output_device()
-                .ok_or(AudioOutputError::NoDevice)?
-        };
-
-        // The same rate choice the engine's pipeline was built for (see
-        // `probe_sample_rate`): the default device's is cached from there.
-        let supported_config = if preferred_device.is_none() {
-            let rate = probe_sample_rate();
-            let default = device
-                .default_output_config()
-                .map_err(|e| AudioOutputError::Config(e.to_string()))?;
-            cpal::SupportedStreamConfig::new(default.channels(), cpal::SampleRate(rate), *default.buffer_size(), default.sample_format())
-        } else {
-            output_config_for(&device).ok_or_else(|| AudioOutputError::Config("no output config".into()))?
+        // The config the pipeline's rate was probed with (see
+        // `probe_sample_rate`) when this is the device it was probed on;
+        // a device chosen since then is probed afresh.
+        let name = device.name().unwrap_or_default();
+        let supported_config = match output_choice() {
+            Some(choice) if choice.device_name == name => choice.config.clone(),
+            _ => output_config_for(&device).ok_or_else(|| AudioOutputError::Config("no output config".into()))?,
         };
 
         let sample_rate = supported_config.sample_rate().0;

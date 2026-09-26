@@ -309,6 +309,11 @@ fn main() -> Result<()> {
     let repaint_ctx: std::sync::Arc<std::sync::OnceLock<egui::Context>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
     let repaint_ctx_for_engine = std::sync::Arc::clone(&repaint_ctx);
+    // The engine opens the audio output as it is built, so the chosen
+    // output device has to be known before then; the UI only loads its
+    // preferences once eframe has booted.
+    let launch_prefs = klipp_ui::Preferences::load();
+    klipp_engine::audio_output::set_preferred_device(launch_prefs.audio_hardware.output_device.clone());
     let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(
@@ -491,7 +496,7 @@ fn main() -> Result<()> {
     // The assistant is opt-out in preferences (Preferences → AI). Off means
     // the control socket and MCP server never start, so no agent can drive
     // this instance. Read at launch — the toggle is restart-scoped.
-    if !klipp_ui::Preferences::load().ai.assistant {
+    if !launch_prefs.ai.assistant {
         info!("control socket disabled by preference (AI assistant off)");
     } else {
         match klipp_control::spawn(klipp_control::ControlContext {
