@@ -1146,7 +1146,6 @@ impl KlippApp {
         klipp_analysis::transcript::set_transcribe_on_cpu(app.prefs.ai.transcribe_on_cpu);
         // Unpack the Voice Isolation model off the audio path, if the
         // user has downloaded it.
-        #[cfg(feature = "voice-isolation")]
         if klipp_audio::dsp::voice_isolation::model_installed() {
             let _ = std::thread::Builder::new()
                 .name("klipp-voice-isolation-load".into())
@@ -6937,7 +6936,6 @@ impl KlippApp {
                 ));
                 // Voice Isolation effects already in a chain pass audio
                 // through until their model exists; let them load it.
-                #[cfg(feature = "voice-isolation")]
                 klipp_audio::dsp::voice_isolation::notify_model_installed();
                 self.state.model_download = ModelDownloadState::Idle;
             }

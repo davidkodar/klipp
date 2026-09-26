@@ -35,19 +35,12 @@ clack-extensions = { version = "0.1", features = [
 ] }
 tracing = { workspace = true }
 dirs = { workspace = true }
-# Voice Isolation: DeepFilterNet3 speech enhancement, pure Rust via
-# tract (no FFI). MIT OR Apache-2.0. The model itself is not bundled;
-# it downloads on request through klipp-ml's verified model cache.
-deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6", default-features = false, features = ["tract"], optional = true }
-ndarray = { version = "0.15", optional = true }
-klipp-ml = { workspace = true, optional = true }
-
-[features]
-default = []
-# The Voice Isolation effect. Off here; klipp-app turns it on by default
-# (like its other AI features), and `--no-default-features` builds
-# leave the engine out entirely. The effect is then simply not listed.
-voice-isolation = ["dep:deep_filter", "dep:ndarray", "dep:klipp-ml"]
+# Voice Isolation: DeepFilterNet3 speech enhancement (vendored in
+# crates/klipp-deepfilter, pure Rust, no unsafe). The model itself is
+# not bundled; it downloads on request through klipp-ml's verified cache.
+klipp-deepfilter = { workspace = true }
+ndarray = "0.15"
+klipp-ml = { workspace = true }
 
 [lints]
 workspace = true

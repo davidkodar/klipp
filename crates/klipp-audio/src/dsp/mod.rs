@@ -12,7 +12,6 @@ pub mod eq;
 pub mod gate;
 pub mod high_pass;
 pub mod denoiser;
-#[cfg(feature = "voice-isolation")]
 pub mod voice_isolation;
 pub mod hum_removal;
 pub mod limiter;
@@ -486,7 +485,6 @@ pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEff
         "gate" => Some(Box::new(gate::NoiseGate::new(sample_rate))),
         "high_pass" => Some(Box::new(high_pass::HighPass::new(sample_rate))),
         "denoiser" => Some(Box::new(denoiser::Denoiser::new(sample_rate))),
-        #[cfg(feature = "voice-isolation")]
         "voice_isolation" => Some(Box::new(voice_isolation::VoiceIsolation::new(sample_rate))),
         "reverb" => Some(Box::new(reverb::Reverb::new(sample_rate))),
         "delay" => Some(Box::new(delay::Delay::new(sample_rate))),
@@ -511,7 +509,6 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("gate", "Noise Gate"),
         ("high_pass", "High-pass Filter"),
         ("denoiser", "Broadband Denoiser"),
-        #[cfg(feature = "voice-isolation")]
         ("voice_isolation", "Voice Isolation"),
         ("reverb", "Reverb"),
         ("delay", "Delay"),

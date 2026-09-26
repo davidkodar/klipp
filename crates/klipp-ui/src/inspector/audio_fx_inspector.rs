@@ -812,7 +812,6 @@ pub fn show_content(
                     if inst.effect_type == "denoiser" {
                         show_denoiser_controls(ui, theme, clip_id, idx, inst, clip_time_secs, cmds);
                     }
-                    #[cfg(feature = "voice-isolation")]
                     if inst.effect_type == "voice_isolation" {
                         show_voice_isolation_controls(ui, theme, clip_id, idx, inst, cmds);
                     }
@@ -1216,14 +1215,12 @@ fn render_clap_params(
 // behavior is correct even when the visual smoke test isn't run.
 // ═══════════════════════════════════════════════════════════════════
 /// Voice Isolation presets: (name, hint, Reduction dB).
-#[cfg(feature = "voice-isolation")]
 const VOICE_ISOLATION_PRESETS: &[(&str, &str, f32)] = &[
     ("Natural", "Lowers the background by 12 dB: the voice leads, the place is still there", 12.0),
     ("Clean", "Lowers the background by 24 dB: broadcast-clean dialogue with a hint of room", 24.0),
     ("Full", "Removes all it can: studio-dry voice, for rescue jobs and voice-over", klipp_audio::dsp::voice_isolation::FULL_REDUCTION_DB),
 ];
 
-#[cfg(feature = "voice-isolation")]
 fn show_voice_isolation_controls(
     ui: &mut egui::Ui,
     theme: &KlippTheme,

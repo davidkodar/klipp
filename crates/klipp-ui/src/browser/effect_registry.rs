@@ -684,7 +684,6 @@ impl EffectRegistry {
                 description: "Learn and reduce steady background noise".into(),
                 grouping: "Restoration".into(),
             },
-            #[cfg(feature = "voice-isolation")]
             EffectEntry {
                 name: "Voice Isolation".into(),
                 category: EffectCategory::AudioRestoration,

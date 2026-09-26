@@ -14,10 +14,11 @@
 //! it is present the effect passes audio through untouched.
 
 use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
-use df::tract::{DfParams, DfTract, ReduceMask, RuntimeParams};
+use klipp_deepfilter::tract::{DfParams, DfTract, ReduceMask, RuntimeParams};
 use ndarray::Array2;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
 
 /// Model id in `assets/models.toml`.
@@ -72,35 +73,72 @@ fn model_params() -> Option<DfParams> {
     guard.clone()
 }
 
-/// One DeepFilterNet engine, owned by exactly one effect.
-///
-/// tract 0.19 keeps session tensors in `Rc`, so `DfTract` is not `Send`.
-/// Each engine here is built fresh from owned model bytes and is never
-/// cloned or shared: every `Rc` it holds lives inside it, so moving the
-/// whole engine to another thread cannot race on a reference count.
-/// (Cloning one would share `Rc`s between the copies, which is why the
-/// ~45 ms build is paid per effect instead.)
-struct Engine(DfTract);
+/// One hop of audio travelling to the engine thread and back. The two
+/// buffers go back and forth, so nothing is allocated per hop.
+struct Hop {
+    noisy: Array2<f32>,
+    enhanced: Array2<f32>,
+    /// Attenuation limit in dB for the engine (100 = none).
+    limit_db: f32,
+}
 
-// SAFETY: see the type's documentation; the engine is only ever moved
-// as a whole and never cloned, so no `Rc` inside it is reachable from
-// two threads.
-unsafe impl Send for Engine {}
+/// The engine's shape, reported once it is built.
+struct Ready {
+    hop: usize,
+    model_delay: usize,
+}
 
-fn engine(channels: usize) -> Option<Engine> {
-    let params = model_params()?;
-    // The command-line tool's thresholds and a max-reduced mask, the
-    // configuration Klipp's denoiser benchmark measured.
-    let runtime = RuntimeParams::default_with_ch(channels)
-        .with_thresholds(-15.0, 35.0, 35.0)
-        .with_mask_reduce(ReduceMask::MAX)
-        .with_atten_lim(100.0);
-    match DfTract::new(params, &runtime) {
-        Ok(df) => Some(Engine(df)),
-        Err(e) => {
-            tracing::warn!("Voice Isolation: could not build the engine: {e:#}");
-            None
-        }
+/// A DeepFilterNet engine on its own thread. The engine keeps its state in
+/// types that may not cross threads, so it is built on this thread and
+/// never leaves it; the effect trades plain audio buffers with it. The
+/// thread ends when the effect drops its side of the channel.
+struct Engine {
+    to_engine: Sender<Hop>,
+    from_engine: Receiver<Hop>,
+}
+
+impl Engine {
+    fn start(channels: usize) -> Option<(Engine, Ready)> {
+        let params = model_params()?;
+        let (to_engine, jobs) = channel::<Hop>();
+        let (results, from_engine) = channel::<Hop>();
+        let (ready_tx, ready_rx) = channel::<Option<Ready>>();
+        std::thread::Builder::new()
+            .name("klipp-voice-isolation".into())
+            .spawn(move || {
+                // The command-line tool's thresholds and a max-reduced
+                // mask, the configuration Klipp's denoiser benchmark measured.
+                let runtime = RuntimeParams::default_with_ch(channels)
+                    .with_thresholds(-15.0, 35.0, 35.0)
+                    .with_mask_reduce(ReduceMask::MAX)
+                    .with_atten_lim(100.0);
+                let mut df = match DfTract::new(params, &runtime) {
+                    Ok(df) => df,
+                    Err(e) => {
+                        tracing::warn!("Voice Isolation: could not build the engine: {e:#}");
+                        let _ = ready_tx.send(None);
+                        return;
+                    }
+                };
+                let model_delay = df.fft_size - df.hop_size + df.lookahead * df.hop_size;
+                let _ = ready_tx.send(Some(Ready { hop: df.hop_size, model_delay }));
+                let mut limit = 100.0f32;
+                while let Ok(mut hop) = jobs.recv() {
+                    if hop.limit_db != limit {
+                        limit = hop.limit_db;
+                        df.set_atten_lim(limit);
+                    }
+                    if df.process(hop.noisy.view(), hop.enhanced.view_mut()).is_err() {
+                        hop.enhanced.fill(0.0);
+                    }
+                    if results.send(hop).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        let ready = ready_rx.recv().ok().flatten()?;
+        Some((Engine { to_engine, from_engine }, ready))
     }
 }
 
@@ -112,13 +150,14 @@ static PARAM_DESCS: &[AudioParamDescriptor] = &[
 /// Streaming state around one engine: the engine works in fixed hops, the
 /// chain delivers any block size.
 struct Stream {
-    df: Engine,
+    engine: Engine,
     channels: usize,
     hop: usize,
     /// Model delay: STFT overlap plus lookahead.
     model_delay: usize,
-    noisy: Array2<f32>,
-    enhanced: Array2<f32>,
+    /// The buffers of the hop being gathered; away at the engine while
+    /// it processes, so `None` only if the engine thread died.
+    buffers: Option<(Array2<f32>, Array2<f32>)>,
     /// Samples gathered towards the next hop, per channel.
     filled: usize,
     /// Enhanced output of the last hop, handed out while the next fills.
@@ -132,6 +171,8 @@ pub struct VoiceIsolation {
     sample_rate: u32,
     reduction_db: f32,
     remove_voice: bool,
+    /// Attenuation limit passed to the engine, in dB.
+    engine_limit_db: f32,
     stream: Option<Stream>,
     /// Model generation last tried, so a missing model is retried once
     /// it has been installed, not on every block.
@@ -140,7 +181,7 @@ pub struct VoiceIsolation {
 
 impl VoiceIsolation {
     pub fn new(sample_rate: u32) -> Self {
-        Self { sample_rate, reduction_db: 30.0, remove_voice: false, stream: None, tried_generation: None }
+        Self { sample_rate, reduction_db: 30.0, remove_voice: false, engine_limit_db: 30.0, stream: None, tried_generation: None }
     }
 
     /// Whether audio is being processed (model present, 48 kHz).
@@ -149,14 +190,15 @@ impl VoiceIsolation {
     }
 
     fn apply_limit(&mut self) {
-        let Some(stream) = self.stream.as_mut() else { return };
         // Remove voice needs the full voice estimate; its amount is
-        // applied when subtracting.
-        // Below 0.01 dB the engine short-cuts to its input without its
-        // model delay, which would jump the output ~30 ms early; 0 dB is
-        // handled in `process` from the delay line instead.
-        let limit = if self.remove_voice || self.reduction_db >= FULL_REDUCTION_DB { 100.0 } else { self.reduction_db.max(0.1) };
-        stream.df.0.set_atten_lim(limit);
+        // applied when subtracting. Below 0.01 dB the engine short-cuts
+        // to its input without its model delay, which would jump the
+        // output ~30 ms early; 0 dB is handled in `process` instead.
+        self.engine_limit_db = if self.remove_voice || self.reduction_db >= FULL_REDUCTION_DB {
+            100.0
+        } else {
+            self.reduction_db.max(0.1)
+        };
     }
 
     fn ensure_stream(&mut self, channels: usize) {
@@ -175,21 +217,19 @@ impl VoiceIsolation {
             return;
         }
         self.tried_generation = Some(generation);
-        let Some(df) = engine(channels) else { return };
-        let hop = df.0.hop_size;
-        let model_delay = df.0.fft_size - df.0.hop_size + df.0.lookahead * df.0.hop_size;
+        let Some((engine, ready)) = Engine::start(channels) else { return };
+        let (hop, model_delay) = (ready.hop, ready.model_delay);
         let total = hop + model_delay;
         self.stream = Some(Stream {
+            engine,
             channels,
             hop,
             model_delay,
-            noisy: Array2::zeros((channels, hop)),
-            enhanced: Array2::zeros((channels, hop)),
+            buffers: Some((Array2::zeros((channels, hop)), Array2::zeros((channels, hop)))),
             filled: 0,
             out: Array2::zeros((channels, hop)),
             dry: vec![vec![0.0; total]; channels],
             dry_pos: 0,
-            df,
         });
         self.apply_limit();
     }
@@ -228,12 +268,18 @@ impl AudioEffect for VoiceIsolation {
         let voice_gain = 1.0 - 10f32.powf(-self.reduction_db / 20.0);
         let full = self.reduction_db >= FULL_REDUCTION_DB;
         let untouched = self.reduction_db <= 0.0;
+        let limit_db = self.engine_limit_db;
         let Some(s) = self.stream.as_mut() else { return };
         let stride = ctx.channels as usize;
+        let mut engine_lost = false;
         for frame in buffer.chunks_exact_mut(stride) {
+            let Some((noisy, _)) = s.buffers.as_mut() else {
+                engine_lost = true;
+                break;
+            };
             for ch in 0..channels {
                 let input = frame[ch];
-                s.noisy[[ch, s.filled]] = input;
+                noisy[[ch, s.filled]] = input;
                 let enhanced = s.out[[ch, s.filled]];
                 let dry = &mut s.dry[ch];
                 let delayed = dry[s.dry_pos];
@@ -251,11 +297,28 @@ impl AudioEffect for VoiceIsolation {
             s.filled += 1;
             if s.filled == s.hop {
                 s.filled = 0;
-                if s.df.0.process(s.noisy.view(), s.enhanced.view_mut()).is_err() {
-                    s.enhanced.fill(0.0);
+                let (noisy, enhanced) = s.buffers.take().expect("checked above");
+                let back = s
+                    .engine
+                    .to_engine
+                    .send(Hop { noisy, enhanced, limit_db })
+                    .ok()
+                    .and_then(|_| s.engine.from_engine.recv().ok());
+                match back {
+                    Some(hop) => {
+                        s.out.assign(&hop.enhanced);
+                        s.buffers = Some((hop.noisy, hop.enhanced));
+                    }
+                    None => {
+                        engine_lost = true;
+                        break;
+                    }
                 }
-                s.out.assign(&s.enhanced);
             }
+        }
+        if engine_lost {
+            tracing::warn!("Voice Isolation: the engine stopped; passing audio through");
+            self.stream = None;
         }
     }
     fn reset(&mut self) {

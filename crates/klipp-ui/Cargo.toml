@@ -6,8 +6,6 @@ license.workspace = true
 
 [features]
 default = []
-# The Voice Isolation audio effect (DeepFilterNet3).
-voice-isolation = ["klipp-audio/voice-isolation"]
 # Pulls in the ort-backed BiRefNet implementation. With this on,
 # the AI Tools panel auto-registers BiRefNet for Remove Background.
 # Requires libonnxruntime.so on the user's machine + ORT_DYLIB_PATH

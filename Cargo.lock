@@ -1211,29 +1211,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
-name = "deep_filter"
-version = "0.5.6"
-source = "git+https://github.com/Rikorose/DeepFilterNet?tag=v0.5.6#978576aa8400552a4ce9730838c635aa30db5e61"
-dependencies = [
- "anyhow",
- "flate2",
- "itertools 0.10.5",
- "log",
- "ndarray 0.15.6",
- "num-complex",
- "realfft",
- "rubato",
- "rust-ini",
- "rustfft",
- "tar",
- "thiserror 1.0.69",
- "tract-core",
- "tract-hir",
- "tract-onnx",
- "tract-pulse",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2845,9 +2822,9 @@ version = "0.1.0"
 dependencies = [
  "clack-extensions",
  "clack-host",
- "deep_filter",
  "dirs",
  "klipp-core",
+ "klipp-deepfilter",
  "klipp-ml",
  "libloading 0.8.9",
  "livi",
@@ -2937,6 +2914,25 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "klipp-deepfilter"
+version = "0.5.6"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "flate2",
+ "itertools 0.10.5",
+ "ndarray 0.15.6",
+ "num-complex",
+ "realfft",
+ "rust-ini",
+ "tar",
+ "tracing",
+ "tract-core",
+ "tract-onnx",
+ "tract-pulse",
 ]
 
 [[package]]
@@ -3824,7 +3820,6 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rawpointer",
- "serde",
 ]
 
 [[package]]
@@ -3984,7 +3979,6 @@ checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "bytemuck",
  "num-traits",
- "serde",
 ]
 
 [[package]]
@@ -5251,18 +5245,6 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
-
-[[package]]
-name = "rubato"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6dd52e80cfc21894deadf554a5673002938ae4625f7a283e536f9cf7c17b0d5"
-dependencies = [
- "num-complex",
- "num-integer",
- "num-traits",
- "realfft",
-]
 
 [[package]]
 name = "rust-ini"

@@ -1,0 +1,27 @@
+[package]
+name = "klipp-deepfilter"
+version = "0.5.6"
+edition = "2021"
+# Vendored from DeepFilterNet's libDF; keeps the upstream licence.
+license = "MIT OR Apache-2.0"
+authors = ["Hendrik Schröter"]
+description = "DeepFilterNet3 inference (vendored from DeepFilterNet libDF v0.5.6, without unsafe)"
+publish = false
+
+[dependencies]
+anyhow = "1"
+bytemuck = "1"
+flate2 = "1"
+itertools = "0.10"
+ndarray = "0.15"
+num-complex = { version = "0.4", features = ["bytemuck"] }
+realfft = "3"
+rust-ini = "0.19"
+tar = "0.4"
+tract-core = "0.19.16"
+tract-onnx = "0.19.16"
+tract-pulse = "0.19.16"
+tracing = { workspace = true }
+
+[lints]
+workspace = true
