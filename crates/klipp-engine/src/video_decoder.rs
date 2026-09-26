@@ -680,18 +680,25 @@ static LIVE_DECODE_THREADS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// Counts a decode thread as alive for as long as it is held.
-struct DecodeThreadToken;
+struct DecodeThreadToken(&'static std::sync::atomic::AtomicUsize);
 
 impl DecodeThreadToken {
     fn new() -> Self {
-        LIVE_DECODE_THREADS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        Self
+        Self::counted_in(&LIVE_DECODE_THREADS)
+    }
+
+    /// A token on a count of its own, so a test can watch it register
+    /// and deregister while real decoders in other tests come and go on
+    /// the shared count.
+    fn counted_in(count: &'static std::sync::atomic::AtomicUsize) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(count)
     }
 }
 
 impl Drop for DecodeThreadToken {
     fn drop(&mut self) {
-        LIVE_DECODE_THREADS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -3510,7 +3517,7 @@ mod decoder_linearisation_tests {
 #[cfg(test)]
 mod decode_thread_barrier_tests {
     use super::*;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     /// These tests read and write a process-global counter, so they
@@ -3558,10 +3565,16 @@ mod decode_thread_barrier_tests {
         // Released on drop, wherever that happens — including a thread
         // unwinding out of a panic, which is why it is a guard and not a
         // decrement at the end of the function body.
+        // Checked on a count of its own: the shared one also moves with
+        // every decoder the other tests in this binary open and close.
+        drop(token);
+        static OWN: AtomicUsize = AtomicUsize::new(0);
+        let token = DecodeThreadToken::counted_in(&OWN);
+        assert_eq!(OWN.load(Ordering::Acquire), 1, "the token did not register");
         drop(token);
         assert_eq!(
-            LIVE_DECODE_THREADS.load(Ordering::Acquire),
-            before - 1,
+            OWN.load(Ordering::Acquire),
+            0,
             "dropping the token did not deregister the thread",
         );
     }
@@ -3572,15 +3585,15 @@ mod decode_thread_barrier_tests {
     #[test]
     fn a_panicking_thread_still_deregisters() {
         let _guard = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
-        let before = LIVE_DECODE_THREADS.load(Ordering::Acquire);
+        static OWN: AtomicUsize = AtomicUsize::new(0);
         let h = std::thread::spawn(|| {
-            let _token = DecodeThreadToken::new();
+            let _token = DecodeThreadToken::counted_in(&OWN);
             panic!("as a decode thread might");
         });
         assert!(h.join().is_err(), "the fixture was supposed to panic");
         assert_eq!(
-            LIVE_DECODE_THREADS.load(Ordering::Acquire),
-            before,
+            OWN.load(Ordering::Acquire),
+            0,
             "a panicking thread left itself registered",
         );
     }
