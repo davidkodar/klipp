@@ -493,7 +493,8 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
 /// per-channel median, in linear light, of a 7×7 patch there, so one
 /// noisy or hot pixel under the cursor does not set the balance. Refused when the patch is clipped white or near
 /// black, where the channels no longer carry the light's colour, or is
-/// plainly a colour rather than a grey under some light.
+/// plainly a colour rather than a grey under some light (see
+/// the test Auto White Balance uses).
 pub fn picked_grey(rgba: &[u8], width: u32, height: u32, nx: f32, ny: f32) -> Result<[f32; 3], &'static str> {
     let (w, h) = (width as i64, height as i64);
     if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
@@ -518,7 +519,10 @@ pub fn picked_grey(rgba: &[u8], width: u32, height: u32, nx: f32, ny: f32) -> Re
     if lab.l < 8.0 {
         return Err("that point is too dark to read a colour from — pick a grey or white");
     }
-    if lab.chroma() > 30.0 {
+    // As coloured as a grey can get under a strong light, and no more:
+    // a wall under tungsten is chroma 30 or beyond, and it is exactly
+    // what Auto WB sends the user here to pick.
+    if !colour_could_be_a_cast(lab.chroma(), lab.a, lab.b) {
         return Err("that point is a colour, not a grey under the light — pick a grey, white or black surface");
     }
     Ok(mean)
@@ -620,8 +624,12 @@ type Mid = (f32, f32, f32, [f32; 3], bool, bool);
 /// screen or a deep blue sky at chroma 50 is its own colour, and a
 /// shirt leaning away from it is no sign of a cast.
 fn could_be_grey_under_a_cast(m: &Mid) -> bool {
-    let hue = m.2.atan2(m.1).to_degrees().rem_euclid(360.0);
-    m.0 <= 40.0 || (40.0..=100.0).contains(&hue)
+    colour_could_be_a_cast(m.0, m.1, m.2)
+}
+
+fn colour_could_be_a_cast(chroma: f32, a: f32, b: f32) -> bool {
+    let hue = b.atan2(a).to_degrees().rem_euclid(360.0);
+    chroma <= 40.0 || (40.0..=100.0).contains(&hue)
 }
 
 /// The least-coloured quarter of `mids`: every pixel at or under the
@@ -642,7 +650,7 @@ fn least_coloured_quarter<'a>(mids: &[&'a Mid], most: f32) -> Vec<&'a Mid> {
 /// card asks for almost nothing, so only a clear lean is refused.
 ///
 /// However coloured the surface, if its colour could be a cast (see
-/// [`could_be_grey_under_a_cast`]): a wall at chroma 16 under a mild
+/// the test Auto White Balance uses). a wall at chroma 16 under a mild
 /// cast and one at 52 under a strong one are refused alike. A face is left
 /// out of the surface when the framing analysis found one — a close-up
 /// under a cool light is otherwise the same shape as the tungsten wall,

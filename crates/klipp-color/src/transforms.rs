@@ -235,6 +235,20 @@ mod tests {
         assert!((mx - mn) / mx < 0.03, "the card is not grey after the pick: {out:?}");
     }
 
+    /// A grey wall under tungsten (chroma 30) and under a very strong
+    /// amber light (about 50) are what Auto WB refuses and sends the user
+    /// to pick: the picker takes them.
+    #[test]
+    fn the_picker_takes_a_wall_under_a_strong_cast() {
+        let (w, h) = (16u32, 16u32);
+        for c in [[168u8, 126, 86], [215, 135, 65]] {
+            let px: Vec<u8> = (0..w * h).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
+            let reference = crate::measure::picked_grey(&px, w, h, 0.5, 0.5).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+            let (t, _) = crate::white_balance::white_balance_to_neutralise(reference, klipp_core::WorkingColorspace::Rec709Linear);
+            assert!(t < 0.0, "{c:?}: an amber wall asks for a cooler balance, got {t}");
+        }
+    }
+
     /// Clipped white, black and a plain colour carry no light's colour
     /// to balance on; the picker says so rather than guessing.
     #[test]
