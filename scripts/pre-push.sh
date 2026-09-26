@@ -157,6 +157,50 @@ if ! "$ROOT/scripts/check-signoff.sh"; then
     exit 1
 fi
 
+# One gate at a time, across every worktree and every session.
+#
+# Several agents work on this repository at once, each in its own
+# worktree, and each push runs the whole gate. Four of them together
+# exhaust memory: rustc is OOM-killed, background jobs are reaped, and
+# the timing-sensitive engine tests fail with nothing wrong in the
+# change. So the gate queues on a lock in the git common directory,
+# which every worktree of this clone shares.
+#
+# The lock is held on a file descriptor, so a killed gate releases it
+# and cannot wedge the queue. It covers the checks, not the network
+# push that follows. KLIPP_GATE_NO_WAIT=1 refuses instead of waiting.
+#
+# The name is deliberately not klipp-gate.lock, the file sessions wrapped
+# `git push` in by hand before this existed: a hook waiting on a lock its
+# own parent holds would wait forever.
+if command -v flock >/dev/null 2>&1; then
+    _common=$(git rev-parse --path-format=absolute --git-common-dir)
+    _lock="$_common/klipp-pre-push.lock"
+    _holder="$_common/klipp-pre-push.holder"
+    exec 9>>"$_lock"
+    if ! flock -n 9; then
+        _who=$(cat "$_holder" 2>/dev/null || true)
+        _pid=${_who%% *}
+        _since=$(echo "$_who" | awk '{print $NF}')
+        case "$_since" in
+            ''|*[!0-9]*) ;;
+            *) _who="${_who% *}, held for $(( ($(date +%s) - _since) / 60 )) min" ;;
+        esac
+        if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
+            _who="$_who (that process is gone; a child of it still holds the lock)"
+        fi
+        printf '\n  pre-push: another gate is running: %s\n' "${_who:-unknown}" >&2
+        if [ "$KLIPP_GATE_NO_WAIT" = "1" ]; then
+            printf '            KLIPP_GATE_NO_WAIT=1 set — refusing instead of waiting.\n\n' >&2
+            exit 1
+        fi
+        printf '            Waiting for it to finish.\n\n' >&2
+        flock 9
+    fi
+    printf '%s %s %s %s\n' "$$" "$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)" \
+        "$ROOT" "$(date +%s)" >"$_holder"
+fi
+
 # Match klipp_testing::scratch, and keep compiler/linker temporary files
 # off a small system tmpfs too. A deliberate TMPDIR always wins.
 TMPDIR=${TMPDIR:-${CARGO_TARGET_DIR:-$ROOT/target}/test-scratch}
