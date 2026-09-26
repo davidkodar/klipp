@@ -210,6 +210,10 @@ struct ClipStream {
     seeking: Option<f64>,
     /// The media ran out; `held` is its last frame.
     ended: bool,
+    /// `held` is the first frame a seek delivered: the nearest the
+    /// decoder had, which may lie a little past the time asked for. Later
+    /// than that is still the frame for it, as no earlier one is coming.
+    held_from_seek: bool,
 }
 
 impl ClipStream {
@@ -223,7 +227,7 @@ impl ClipStream {
         }
         decoder.resume();
         debug!("clip stream opened for {:?} at {target:.3}s", want.clip);
-        Some(Self { decoder, held: None, target, seeking: Some(target), ended: false })
+        Some(Self { decoder, held: None, target, seeking: Some(target), ended: false, held_from_seek: false })
     }
 
     fn seek(&mut self, secs: f64) {
@@ -263,12 +267,14 @@ impl ClipStream {
                 // The first frame of the seek: the nearest there is.
                 self.seeking = None;
                 self.held = q.pop().map(HeldFrame::from_frame);
+                self.held_from_seek = true;
                 continue;
             }
             if pts > self.target + half_frame {
                 break;
             }
             self.held = q.pop().map(HeldFrame::from_frame);
+            self.held_from_seek = false;
         }
     }
 
@@ -279,8 +285,15 @@ impl ClipStream {
         }
         let Some(held) = self.held.as_ref().filter(|_| self.seeking.is_none()) else { return false };
         // Within half a frame of the target. (A seek lands up to 50 ms
-        // early — the frame before, at 25 fps — and pumping moves on.)
-        if held.pts.unwrap_or(f64::MAX) >= self.target - half_frame {
+        // early — the frame before, at 25 fps — and pumping moves on.) Not
+        // past it either: a frame from later is another frame, and taking
+        // it as this one published a dissolve with its other side ahead
+        // as complete (#411). `pump` never takes one that far on.
+        let pts = held.pts.unwrap_or(f64::MAX);
+        if pts > self.target + half_frame && held.pts.is_some() && !self.held_from_seek {
+            return false;
+        }
+        if pts >= self.target - half_frame {
             return true;
         }
         // Behind the target, but the next frame is past it: a source with
@@ -321,8 +334,12 @@ impl ClipStreams {
             match self.streams.get_mut(&w.clip) {
                 Some(s) => {
                     // A step back or a jump ahead: seek. Playback moves a
-                    // frame a tick, which the queue already holds.
-                    if target + frame_secs * 0.5 < s.target || target > s.target + 1.0 {
+                    // frame a tick, which the queue already holds. And a
+                    // held frame already past the new time: playback can
+                    // leave a stream a frame or two ahead of where it is
+                    // parked, and no later frame will bring it back (#411).
+                    let held_ahead = !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + frame_secs * 0.5);
+                    if target + frame_secs * 0.5 < s.target || target > s.target + 1.0 || held_ahead {
                         s.seek(target);
                     }
                     s.target = target;
@@ -374,7 +391,7 @@ impl ClipStreams {
     /// into its handle. The decoder is already there; opening another and
     /// seeking would leave that side empty for the first frames.
     pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64) {
-        self.streams.insert(clip, ClipStream { decoder, held: None, target: source_secs.max(0.0), seeking: None, ended: false });
+        self.streams.insert(clip, ClipStream { decoder, held: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
     }
 
     pub fn clear(&mut self) {
