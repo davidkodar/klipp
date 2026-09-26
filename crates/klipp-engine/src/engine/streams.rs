@@ -210,6 +210,10 @@ struct ClipStream {
     seeking: Option<f64>,
     /// The media ran out; `held` is its last frame.
     ended: bool,
+    /// `held` is the first frame a seek delivered: the nearest the
+    /// decoder had, which may lie a little past the time asked for. Later
+    /// than that is still the frame for it, as no earlier one is coming.
+    held_from_seek: bool,
 }
 
 impl ClipStream {
@@ -223,7 +227,7 @@ impl ClipStream {
         }
         decoder.resume();
         debug!("clip stream opened for {:?} at {target:.3}s", want.clip);
-        Some(Self { decoder, held: None, target, seeking: Some(target), ended: false })
+        Some(Self { decoder, held: None, target, seeking: Some(target), ended: false, held_from_seek: false })
     }
 
     fn seek(&mut self, secs: f64) {
@@ -263,12 +267,14 @@ impl ClipStream {
                 // The first frame of the seek: the nearest there is.
                 self.seeking = None;
                 self.held = q.pop().map(HeldFrame::from_frame);
+                self.held_from_seek = true;
                 continue;
             }
             if pts > self.target + half_frame {
                 break;
             }
             self.held = q.pop().map(HeldFrame::from_frame);
+            self.held_from_seek = false;
         }
     }
 
@@ -279,8 +285,15 @@ impl ClipStream {
         }
         let Some(held) = self.held.as_ref().filter(|_| self.seeking.is_none()) else { return false };
         // Within half a frame of the target. (A seek lands up to 50 ms
-        // early — the frame before, at 25 fps — and pumping moves on.)
-        if held.pts.unwrap_or(f64::MAX) >= self.target - half_frame {
+        // early — the frame before, at 25 fps — and pumping moves on.) Not
+        // past it either: a frame from later is another frame, and taking
+        // it as this one published a dissolve with its other side ahead
+        // as complete (#411). `pump` never takes one that far on.
+        let pts = held.pts.unwrap_or(f64::MAX);
+        if pts > self.target + half_frame && held.pts.is_some() && !self.held_from_seek {
+            return false;
+        }
+        if pts >= self.target - half_frame {
             return true;
         }
         // Behind the target, but the next frame is past it: a source with
@@ -321,8 +334,15 @@ impl ClipStreams {
             match self.streams.get_mut(&w.clip) {
                 Some(s) => {
                     // A step back or a jump ahead: seek. Playback moves a
-                    // frame a tick, which the queue already holds.
-                    if target + frame_secs * 0.5 < s.target || target > s.target + 1.0 {
+                    // frame a tick, which the queue already holds. And a
+                    // held frame already past the new time: playback can
+                    // leave a stream a frame or two ahead of where it is
+                    // parked, and no later frame will bring it back (#411).
+                    // Not while a seek is in flight: `held` is the old
+                    // frame until it lands, and seeking again on every
+                    // sync would restart a slow seek for ever.
+                    let held_ahead = s.seeking.is_none() && !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + frame_secs * 0.5);
+                    if target + frame_secs * 0.5 < s.target || target > s.target + 1.0 || held_ahead {
                         s.seek(target);
                     }
                     s.target = target;
@@ -374,7 +394,7 @@ impl ClipStreams {
     /// into its handle. The decoder is already there; opening another and
     /// seeking would leave that side empty for the first frames.
     pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64) {
-        self.streams.insert(clip, ClipStream { decoder, held: None, target: source_secs.max(0.0), seeking: None, ended: false });
+        self.streams.insert(clip, ClipStream { decoder, held: None, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
     }
 
     pub fn clear(&mut self) {
@@ -390,3 +410,69 @@ impl ClipStreams {
         self.streams.values().map(|s| s.decoder.frame_queue())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two seconds of FFV1 at 25 fps, or `None` without ffmpeg.
+    fn source() -> Option<std::path::PathBuf> {
+        let out = std::env::temp_dir().join("klipp-streams-held-ahead.mkv");
+        if out.exists() {
+            return Some(out);
+        }
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x36:r=25:d=2", "-c:v", "ffv1"])
+            .arg(&out)
+            .status()
+            .ok()?
+            .success();
+        ok.then_some(out)
+    }
+
+    /// #411 review: a stream holding a frame past its new time is sought
+    /// once, and not again by every sync while that seek is in flight.
+    #[test]
+    fn a_stream_held_ahead_is_sought_once() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let frame = 1.0 / 25.0;
+        let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs };
+        let w = want(1.0);
+        let mut streams = ClipStreams::new(4);
+        let resolve = |_: &Want| Some((path.clone(), 0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        streams.sync(std::slice::from_ref(&w), frame, &resolve);
+        while !streams.ready(frame) {
+            assert!(std::time::Instant::now() < deadline, "the stream never held its frame");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.pump(frame);
+        }
+        let s = streams.streams.get_mut(&w.clip).unwrap();
+        // As playback leaves it: the target a few frames back of the
+        // frame it holds, with no seek behind that frame.
+        s.target = 0.88;
+        s.held_from_seek = false;
+        let back = Want { source_secs: 0.88, ..w };
+        let before = s.decoder.requested_seek();
+        streams.sync(std::slice::from_ref(&back), frame, &resolve);
+        let s = &streams.streams[&back.clip];
+        assert_eq!(s.decoder.requested_seek(), before + 1, "a stream held ahead was not sought");
+        let once = s.decoder.requested_seek();
+        // The seek is still in flight, or has just landed; either way a
+        // second sync at the same time must not seek again.
+        // Put it back in flight whatever has landed: the seek pending, the
+        // old frame still held, ahead of the time.
+        let s = streams.streams.get_mut(&back.clip).unwrap();
+        s.seeking = Some(0.88);
+        s.held_from_seek = false;
+        if let Some(h) = s.held.as_mut() {
+            h.pts = Some(1.0);
+        }
+        streams.sync(std::slice::from_ref(&back), frame, &resolve);
+        assert_eq!(streams.streams[&back.clip].decoder.requested_seek(), once, "sought again while the seek was in flight");
+    }
+}
+
