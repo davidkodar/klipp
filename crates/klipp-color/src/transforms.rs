@@ -90,6 +90,26 @@ mod tests {
         assert_eq!(auto_white_balance(&px, 20, 20), None);
     }
 
+    /// #405: a warm grey room with one bright, cool-white door. The door
+    /// is a sliver of the neutrals but, averaged in linear light, it set
+    /// the balance; the median neutral is the room's.
+    #[test]
+    fn a_bright_sliver_does_not_set_the_balance() {
+        let (w, h) = (100u32, 100u32);
+        let px: Vec<u8> = (0..w * h)
+            .flat_map(|i| if i % 100 < 25 { [206u8, 211, 222, 255] } else { [120, 113, 103, 255] })
+            .collect();
+        let (temperature, tint) = auto_white_balance(&px, w, h).expect("a white reference");
+        // The room is warm, so the balance cools it; the door alone would
+        // have warmed it.
+        assert!(temperature < 0.0, "the door set the balance: {temperature}");
+        let room = [120f32, 113.0, 103.0].map(|v| crate::transfer::srgb_to_linear(v / 255.0));
+        let m = crate::white_balance::white_balance_matrix(temperature, tint, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = m.map(|row| row[0] * room[0] + row[1] * room[1] + row[2] * room[2]);
+        let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
+        assert!((mx - mn) / mx < 0.02, "the room is not neutral after one press: {out:?}");
+    }
+
     // ─── Film grain CPU tests ─────────────────────────────────────────
 
     fn wang_hash_cpu(mut x: u32) -> f32 {

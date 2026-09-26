@@ -521,13 +521,18 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
     if picked.is_empty() {
         return None;
     }
-    let mut sum = [0.0f64; 3];
-    for m in &picked {
-        for (acc, v) in sum.iter_mut().zip(m.3) {
-            *acc += v as f64;
-        }
-    }
-    Some(sum.map(|v| (v / picked.len() as f64) as f32))
+    // The picked pixel nearest their median a*/b*: the reference is the
+    // typical neutral, as the cast reading is. Averaging them in linear
+    // light let the brightest dominate — an L* 89 pixel weighs about
+    // seventeen times an L* 25 one — so one white door set the balance
+    // of a warm grey room, and a press did not land where `frame_stats`
+    // then read the frame as neutral (#405).
+    let (mut a, mut b): (Vec<f32>, Vec<f32>) = picked.iter().map(|m| (m.1, m.2)).unzip();
+    let (ma, mb) = (median(&mut a), median(&mut b));
+    picked
+        .iter()
+        .min_by(|x, y| ((x.1 - ma).powi(2) + (x.2 - mb).powi(2)).total_cmp(&((y.1 - ma).powi(2) + (y.2 - mb).powi(2))))
+        .map(|m| m.3)
 }
 
 /// The flat parts of a picture, where noise and banding show: the
