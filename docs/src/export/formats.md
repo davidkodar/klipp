@@ -6,13 +6,13 @@ Reference for the containers, video codecs and audio codecs Klipp exports. Klipp
 
 | Container | Extension | Video codecs | Audio codecs | Notes |
 |---|---|---|---|---|
-| MP4 | `.mp4` | H.264, H.265, AV1 | Any | The usual choice for web and general delivery. Chapters and soft subtitles (`mov_text`). |
-| MKV | `.mkv` | H.264, H.265, AV1, VP9 | Any | Chapters and soft subtitles (SubRip). |
-| MOV | `.mov` | H.264, H.265, ProRes, DNxHD | AAC, MP3, PCM | Required for ProRes and DNxHD. Chapters and soft subtitles (`mov_text`). |
+| MP4 | `.mp4` | H.264, H.265, AV1, VP9 | Any | The usual choice for web and general delivery. Chapters and soft subtitles (`mov_text`). |
+| MKV | `.mkv` | H.264, H.265, AV1, VP9, ProRes, DNxHD | Any | Chapters and soft subtitles (SubRip). |
+| MOV | `.mov` | H.264, H.265, ProRes, DNxHD | AAC, MP3, PCM | The usual home of ProRes and DNxHD. Chapters and soft subtitles (`mov_text`). |
 | WebM | `.webm` | VP9, AV1 | Opus | Soft subtitles (WebVTT). No chapters. |
 | GIF | `.gif` | GIF | — | Picture only: no audio, subtitles, chapters or HDR. |
 
-The export dialog only offers pairs the container can hold. Changing the format replaces a codec it cannot hold with its default (H.264 and AAC, or VP9 and Opus for WebM), and picking a codec the format cannot hold moves the export to that codec's container: MOV for ProRes and DNxHD, WebM for VP9, MP4 for AV1.
+Every pair in this table is one FFmpeg writes. The audio menu lists only what the container holds. Changing the format replaces a codec it cannot hold with its default (H.264 and AAC, or VP9 and Opus for WebM), and picking a video codec the format cannot hold moves the export to that codec's container: MOV for ProRes and DNxHD, WebM for VP9, MP4 for AV1. A saved preset is fitted the same way when it is loaded, and a pair that still does not fit is named above the Export button, which stays disabled until it is changed.
 
 ## Video Codecs
 
@@ -31,7 +31,7 @@ The export dialog only offers pairs the container can hold. Changing the format 
 - **H.264** is the most widely playable. At 10 bits it becomes the High 10 profile, which only libx264 writes and many players cannot decode; use H.265 for HDR.
 - **H.265** is what HDR10 is specified on, and encodes on the GPU at 10 bits.
 - **AV1** compresses best and is slow in software.
-- **VP9** is for web video in WebM. VP9 HDR has thin player support, so the export dialog suggests AV1 for an HDR VP9 delivery.
+- **VP9** is for web video in WebM. Klipp writes it in SDR only, at 8 bits.
 - **ProRes** is the mastering and interchange format. ProRes 4444 is written as 4:4:4 Y'CbCr; Klipp writes no alpha channel.
 - **DNxHD** at these two bitrates is 8-bit and cannot carry HDR; ProRes 422 HQ is the 10-bit equivalent.
 - **GIF** is made in two passes: a palette is built from the whole clip, then each frame is mapped to it. It loops forever.

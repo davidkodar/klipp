@@ -27363,9 +27363,10 @@ mod prefs_apply_tests {
 
 fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
-    dialog.video_codec = settings.video_codec;
+    // A preset saved before the container rules may hold a pair FFmpeg
+    // refuses (H.264 in WebM); it opens fitted to its container.
+    (dialog.video_codec, dialog.audio_codec) = settings.format.fit(settings.video_codec, settings.audio_codec);
     dialog.crf = settings.crf;
-    dialog.audio_codec = settings.audio_codec;
     dialog.preset = settings.preset;
     dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
     dialog.rate_control = settings.rate_control;
@@ -31365,13 +31366,8 @@ impl KlippApp {
                         // the container's default, so every pair the dialog
                         // shows is one FFmpeg will write.
                         if self.export_dialog.format != prev_format {
-                            let format = self.export_dialog.format;
-                            if !format.holds_video(self.export_dialog.video_codec) {
-                                self.export_dialog.video_codec = format.default_video();
-                            }
-                            if !format.holds_audio(self.export_dialog.audio_codec) {
-                                self.export_dialog.audio_codec = format.default_audio();
-                            }
+                            (self.export_dialog.video_codec, self.export_dialog.audio_codec) =
+                                self.export_dialog.format.fit(self.export_dialog.video_codec, self.export_dialog.audio_codec);
                         }
                         // Update file extension when format changes
                         if self.export_dialog.format != prev_format {
@@ -31393,11 +31389,11 @@ impl KlippApp {
                                 ui.separator();
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Av1, "AV1 — next-gen, best compression");
                                 ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::Vp9, "VP9 — web video (YouTube, WebM)");
-                                if self.export_dialog.format == ExportFormat::Mov {
+                                if self.export_dialog.format.holds_video(ExportVideoCodec::ProRes422) {
                                     ui.separator();
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422, "ProRes 422 — NLE interchange");
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes422HQ, "ProRes 422 HQ — high quality");
-                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — alpha/mastering");
+                                    ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::ProRes4444, "ProRes 4444 — 4:4:4 mastering");
                                     ui.separator();
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD115, "DNxHD 115 — Avid interchange");
                                     ui.selectable_value(&mut self.export_dialog.video_codec, ExportVideoCodec::DNxHD145, "DNxHD 145 — Avid high bitrate");
@@ -32113,7 +32109,21 @@ impl KlippApp {
             });
             ui.add_space(4.0);
         }
-        let path_ok = !self.export_dialog.output_path.trim().is_empty();
+        // A pair the container cannot hold (from an older preset) is
+        // said here and blocks the render, which would otherwise fail
+        // only after the mixdown had run.
+        let (format, video, audio) = (self.export_dialog.format, self.export_dialog.video_codec, self.export_dialog.audio_codec);
+        let container_problem = klipp_core::ExportSettings { format, video_codec: video, audio_codec: audio, ..Default::default() }.container_problem();
+        if let Some(problem) = &container_problem {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(format!("\u{26A0} {problem}")).size(11.0).color(ui.visuals().warn_fg_color));
+            });
+            ui.add_space(4.0);
+        }
+        let path_given = !self.export_dialog.output_path.trim().is_empty();
+        let path_ok = path_given && container_problem.is_none();
+        let disabled_reason = if path_given { "This container cannot hold the chosen codec" } else { "Choose an output file first" };
         let h = crate::theme::control::REGULAR;
         ui.horizontal(|ui| {
             // Secondary actions run from the left, the primary one is
@@ -32131,7 +32141,7 @@ impl KlippApp {
                     path_ok,
                     egui::Button::new("Add to Queue").min_size(egui::vec2(120.0, h)),
                 )
-                .on_disabled_hover_text("Choose an output file first")
+                .on_disabled_hover_text(disabled_reason)
                 .clicked()
             {
                 let path = PathBuf::from(&self.export_dialog.output_path);
@@ -32189,7 +32199,7 @@ impl KlippApp {
                     .rounding(4.0)
                     .min_size(egui::vec2(140.0, h));
                 ui.add_enabled(path_ok, btn)
-                    .on_disabled_hover_text("Choose an output file first")
+                    .on_disabled_hover_text(disabled_reason)
                     .clicked()
             };
 

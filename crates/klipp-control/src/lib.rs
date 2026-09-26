@@ -4742,6 +4742,10 @@ reference:   {}",
                 "target_lufs": settings.target_lufs,
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 "size": settings.resolution.map(|r| format!("{}x{}", r.width, r.height)),
+                // Chosen by the container (VP9 and Opus for .webm, a slower
+                // software encode that is always 8-bit), so said.
+                "video_codec": settings.video_codec.label(),
+                "audio_codec": settings.audio_codec.label(),
             });
             let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);
             let mut v = send(AppCommand::ExportSequence { settings })?;

@@ -32,8 +32,8 @@ Despite its name, **Audio Only MP3** writes an MP4 with a video stream as well a
 ### Output
 
 - **Output file** — where the file is written. Changing the format changes the file extension to match.
-- **Format** — the container: MP4, MKV, MOV, WebM or GIF. Changing it swaps out a video or audio codec the container cannot hold: ProRes and DNxHD only go in MOV, WebM holds only VP9 or AV1 with Opus, MOV holds neither AV1, VP9, Opus nor FLAC, and the GIF codec only goes in a GIF file.
-- **Video codec** — H.264, H.265, AV1, VP9, ProRes 422 / 422 HQ / 4444, DNxHD 115 / 145, or GIF. ProRes and DNxHD are listed when the format is MOV. See [Export Formats](./formats.md) for what each one is for.
+- **Format** — the container: MP4, MKV, MOV, WebM or GIF. Changing it swaps out a video or audio codec the container cannot hold: ProRes and DNxHD go in MOV or MKV, WebM holds only VP9 or AV1 with Opus, MOV holds neither AV1, VP9, Opus nor FLAC, and GIF holds only the GIF codec.
+- **Video codec** — H.264, H.265, AV1 or VP9, plus ProRes 422 / 422 HQ / 4444 and DNxHD 115 / 145 when the format is MOV or MKV. The GIF codec is chosen by choosing the GIF format. See [Export Formats](./formats.md) for what each one is for.
 
 ### Video
 

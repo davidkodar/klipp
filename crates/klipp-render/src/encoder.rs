@@ -291,25 +291,18 @@ impl Encoder {
         // registered muxer, so the entire encoder context fails to
         // build with "Invalid argument".
         //
-        // ProRes / DNxHD codecs override the user's container choice
-        // because they only mux into MOV. Everything else maps
-        // directly from `settings.format`.
+        // The container is the user's: `container_problem` refuses a
+        // codec it cannot hold, so ProRes and DNxHD go in MKV as well as
+        // MOV.
         if let Some(problem) = settings.container_problem() {
             return Err(RenderError::Encode(problem));
         }
-        let forced_format = match settings.video_codec {
-            ExportVideoCodec::ProRes422
-            | ExportVideoCodec::ProRes422HQ
-            | ExportVideoCodec::ProRes4444
-            | ExportVideoCodec::DNxHD115
-            | ExportVideoCodec::DNxHD145 => "mov",
-            _ => match settings.format {
-                ExportFormat::Mp4 => "mp4",
-                ExportFormat::Mkv => "matroska",
-                ExportFormat::Mov => "mov",
-                ExportFormat::WebM => "webm",
-                ExportFormat::Gif => "gif",
-            },
+        let forced_format = match settings.format {
+            ExportFormat::Mp4 => "mp4",
+            ExportFormat::Mkv => "matroska",
+            ExportFormat::Mov => "mov",
+            ExportFormat::WebM => "webm",
+            ExportFormat::Gif => "gif",
         };
 
         let mut output_ctx = ffmpeg_next::format::output_as(output_path, forced_format)
@@ -2187,6 +2180,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// ProRes in MKV writes a Matroska file holding ProRes: it used to be
+    /// forced into the MOV muxer whatever the extension said, and a MKV
+    /// pair refused would fail a preset that exported before. Skips
+    /// without ffprobe.
+    #[test]
+    #[serial]
+    fn prores_in_mkv_is_written_as_matroska() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("prores.mkv");
+        let mut settings = make_settings(ExportVideoCodec::ProRes422HQ, path.to_str().unwrap());
+        settings.format = ExportFormat::Mkv;
+        settings.audio_codec = ExportAudioCodec::Copy;
+        let mut enc = Encoder::open(&path, &settings, &make_snapshot()).unwrap();
+        let rgba = [90u8, 120, 150, 255].repeat(320 * 240);
+        for _ in 0..3 {
+            enc.encode_video_frame(&rgba, 320, 240).unwrap();
+        }
+        enc.finalise().unwrap();
+        let Ok(probe) = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=format_name:stream=codec_name", "-of", "default=nw=1"])
+            .arg(&path)
+            .output()
+        else {
+            return;
+        };
+        let got = String::from_utf8_lossy(&probe.stdout).to_string();
+        let _ = std::fs::remove_file(&path);
+        assert!(got.contains("codec_name=prores") && got.contains("format_name=matroska"), "{got}");
+    }
+
+    /// A pair the container cannot hold is refused before anything is
+    /// written, naming both halves.
+    #[test]
+    fn a_pair_the_container_cannot_hold_is_refused_before_writing() {
+        let path = std::env::temp_dir().join("klipp_render_test").join("h264.webm");
+        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
+        settings.format = ExportFormat::WebM;
+        let Err(RenderError::Encode(e)) = Encoder::open(&path, &settings, &make_snapshot()) else {
+            panic!("H.264 in WebM was opened");
+        };
+        assert!(e.contains("WebM") && e.contains("H.264"), "{e}");
+        assert!(!path.exists());
     }
 
     #[test]
