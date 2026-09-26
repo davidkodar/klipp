@@ -16,10 +16,10 @@
 //! # Concurrency
 //!
 //! `max_parallel` defaults to 2. Real-world limit on consumer NVIDIA
-//! cards is typically 2–3 concurrent NVENC sessions; setting it higher
-//! produces cryptic encoder-open failures on job 3 and beyond. A
-//! graceful NVENC-session cap from `hw_info` is still on the TODO
-//! list.
+//! cards is typically 2–3 concurrent NVENC sessions. A job that finds no
+//! session free falls back to the software encoder for its codec (#381)
+//! and says so in its hardware line, so running more jobs than the card
+//! has sessions is slower, not a failure.
 
 pub mod queue;
 
