@@ -109,7 +109,7 @@ Node parameters appear in the inspector when the node is selected.
 
 Direct mutation of the graph from UI code (e.g. `vec.remove(i)` against the node list) bypasses the centralised handler that maintains cross-field invariants. Klipp routes every graph change through `AppCommand` so that orphaned `TrackPoints`, dangling keyframes, or stale matte edges can be detected and cleaned up consistently.
 
-When extending the editor, send the existing `AppCommand` variants rather than touching the graph directly. They are defined in `crates/klipp-core/src/events.rs` and all take the clip's id:
+When extending the editor, send the existing `AppCommand` variants rather than touching the graph directly. They are defined in `crates/klipp-core/src/events.rs` and take the clip's id, except the viewing ones (`SetNodeSolo`, `SetNodeViewBookmark`, `JumpNodeViewBookmark`), which act on the graph shown:
 
 - **Structure** — `AddNode` (kind by name, e.g. `"Qualifier"`, and a position), `RemoveNode`, `ConnectNodes` (from node and port, to node and port), `DisconnectEdge` (by target node and port), `RenameNode`, `ToggleNodeEnabled`, `MoveNode`, `AutoLayoutNodeGraph`
 - **Wireless links** — `SetNodeOutputLink`, `SetNodeInputLink`: connect ports by label instead of a drawn edge
@@ -130,7 +130,7 @@ A clip's graph is saved in its `node_graph` field in the project file, and round
      "params": {}, "keyframes": {"tracks": []},
      "output_link": null, "input_links": []},
     {"id": "a07b…", "kind": "Corrector", "label": "Corrector", "enabled": true,
-     "params": {"exposure": 0.5}, "keyframes": {"tracks": []},
+     "params": {}, "keyframes": {"tracks": []},
      "output_link": null, "input_links": []},
     {"id": "e9d2…", "kind": "Output", "label": "Output", "enabled": true,
      "params": {}, "keyframes": {"tracks": []},

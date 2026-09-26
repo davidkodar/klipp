@@ -47,7 +47,7 @@ Each modifier can be switched off without removing it. The ones that produce a v
 | **Oscillate** | `amplitude`, `frequency` (Hz), `phase` (fraction of a cycle), `waveform` (Sine, Square, Triangle, Sawtooth), blend | A periodic wave of the given amplitude |
 | **Wiggle** | `amplitude`, `frequency` (Hz), blend | Smooth random motion: a new random value `frequency` times a second, interpolated between. The pattern is seeded by the clip, so it is the same every time the clip plays |
 | **Throw** | `velocity`, `acceleration`, blend | `velocity × t + ½ × acceleration × t²` from the clip's start: a steady drift, or one that speeds up or slows down |
-| **Ramp** | `start_value`, `end_value`, `start_norm`, `end_norm`, blend (Replace by default) | Goes from the start value to the end value between two points given as fractions of the clip's length (0 is its start, 1 its end), holding outside them |
+| **Ramp** | `start_value`, `end_value`, `start_norm`, `end_norm`, blend (a new Ramp starts as Replace; one saved without a blend loads as Add) | Goes from the start value to the end value between two points given as fractions of the clip's length (0 is its start, 1 its end), holding outside them |
 | **Loop** | `period_secs` | Time modifier: repeats the keyframes' first `period_secs` seconds |
 | **Ping Pong** | `period_secs` | Time modifier: plays the first `period_secs` seconds forward, then backward, and so on |
 | **Clamp** | `min`, `max` | Keeps the value between two limits |
