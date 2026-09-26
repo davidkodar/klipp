@@ -512,10 +512,38 @@ fn under_playhead_fingerprint(seq: &klipp_timeline::Sequence, tc: Timecode) -> u
         (clip.timeline_in.value, clip.timeline_in.rate).hash(&mut h);
         (clip.source_in.value, clip.source_in.rate).hash(&mut h);
         clip.speed.to_bits().hash(&mut h);
+        hash_speed_keyframes(&clip.speed_keyframes, &mut h);
         clip.source_rotation.hash(&mut h);
         std::mem::discriminant(&clip.kind).hash(&mut h);
     }
     h.finish()
+}
+
+/// A speed ramp's shape: every keyframe's time, value, interpolation
+/// and tangents. A drag
+/// on one keyframe changes which source frame each playhead shows
+/// without changing how many keyframes there are (#423).
+fn hash_speed_keyframes(keyframes: &[klipp_core::Keyframe], h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    keyframes.len().hash(h);
+    for k in keyframes {
+        k.time_secs.to_bits().hash(h);
+        k.value.to_bits().hash(h);
+        std::mem::discriminant(&k.interpolation).hash(h);
+        (k.tangent_out.0.to_bits(), k.tangent_out.1.to_bits()).hash(h);
+        (k.tangent_in.0.to_bits(), k.tangent_in.1.to_bits()).hash(h);
+    }
+}
+
+/// Where a decoded frame of `clip`, at source time `pts_secs`, sits on
+/// the timeline: the inverse of `klipp_compose::render::source_secs`,
+/// through the clip's speed curve with the compositor's integration step.
+/// Dividing by the base speed put a frame of a ramped clip at the wrong
+/// playhead, and cached it there (#423).
+fn timeline_for_source(clip: &klipp_timeline::Clip, pts_secs: f64, fps: f64, rate: u32) -> RationalTime {
+    let source_elapsed = (pts_secs - clip.source_in.to_secs_f64()).max(0.0);
+    let elapsed = klipp_timeline::effective_timeline_duration_for_keyframes(&clip.speed_keyframes, source_elapsed, fps, clip.speed);
+    clip.timeline_in + RationalTime::from_secs_f64(elapsed, rate)
 }
 
 fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
@@ -537,7 +565,7 @@ fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
             (clip.timeline_out.value, clip.timeline_out.rate).hash(&mut h);
             (clip.source_in.value, clip.source_in.rate).hash(&mut h);
             clip.speed.to_bits().hash(&mut h);
-            clip.speed_keyframes.len().hash(&mut h);
+            hash_speed_keyframes(&clip.speed_keyframes, &mut h);
             clip.source_rotation.hash(&mut h);
             std::mem::discriminant(&clip.kind).hash(&mut h);
         }
@@ -1495,7 +1523,7 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc:
             }
             // Before an incoming clip's in point this reaches back into
             // its head, past an outgoing clip's out point into its tail.
-            let source_secs = clip.source_in.to_secs_f64() + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
+            let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
             let decode_path = if use_proxies && item.proxy_ready {
                 item.proxy_path.as_ref().filter(|p| p.exists()).cloned().unwrap_or_else(|| item.path.clone())
             } else {
@@ -2445,7 +2473,7 @@ impl PlaybackEngine {
                         klipp_timeline::speed_integral_keyframes(
                             &self.speed_keyframes,
                             timeline_elapsed,
-                            self.fps.rate() as f64,
+                            self.fps.as_f64(),
                             self.clip_speed,
                         )
                     } else {
@@ -3376,8 +3404,7 @@ impl PlaybackEngine {
                 // Check if playhead is on a non-gap clip
                 if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
                     if let Some(media_id) = clip.media_id() {
-                        let source_secs = clip.source_in.to_secs_f64()
-                            + (self.playhead - clip.timeline_in).to_secs_f64() * clip.speed;
+                        let source_secs = klipp_compose::render::source_secs(clip, self.playhead, seq.fps.as_f64());
                         let clip_source_in = clip.source_in.to_secs_f64();
                         return Some((track_idx, idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation));
                     }
@@ -4360,8 +4387,7 @@ impl PlaybackEngine {
                 .iter()
                 .filter_map(|active| {
                     let clip = sounding_for_key(&seq, active.track_index, tc)?.clip;
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
+                    let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
                     Some((active.track_index, source_secs))
                 })
                 .collect()
@@ -5528,8 +5554,7 @@ impl PlaybackEngine {
                     .find_map(|track| {
                         track.clip_at_timecode(target).and_then(|(idx, clip)| {
                             let media_id = clip.media_id()?;
-                            let source_secs = clip.source_in.to_secs_f64()
-                                + (target - clip.timeline_in).to_secs_f64() * clip.speed;
+                            let source_secs = klipp_compose::render::source_secs(clip, target, seq.fps.as_f64());
                             let clip_source_in = clip.source_in.to_secs_f64();
                             Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                         })
@@ -5607,8 +5632,7 @@ impl PlaybackEngine {
             .find_map(|track| {
                 track.clip_at_timecode(target).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (target - clip.timeline_in).to_secs_f64() * clip.speed;
+                    let source_secs = klipp_compose::render::source_secs(clip, target, seq.fps.as_f64());
                     let clip_source_in = clip.source_in.to_secs_f64();
                     Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
@@ -5835,8 +5859,7 @@ impl PlaybackEngine {
             .find_map(|(ti, track)| {
                 track.clip_at_timecode(tc).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
-                    let source_secs = clip.source_in.to_secs_f64()
-                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed;
+                    let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
                     let clip_source_in = clip.source_in.to_secs_f64();
                     Some((ti, idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
@@ -6035,8 +6058,7 @@ impl PlaybackEngine {
                                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                                 seq.tracks.iter().find_map(|track| {
                                     let (_, clip) = track.clip_at_timecode(tc)?;
-                                    Some(clip.source_in.to_secs_f64()
-                                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed)
+                                    Some(klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64()))
                                 }).unwrap_or(0.0)
                             };
                             active.source.chirp(source_secs, 0.04);
@@ -6086,14 +6108,7 @@ impl PlaybackEngine {
                 if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
                 {
-                    let source_elapsed =
-                        frame.pts_secs() - clip.source_in.to_secs_f64();
-                    let spd = clip.speed.max(0.001);
-                    let elapsed_tc = RationalTime::from_secs_f64(
-                        (source_elapsed / spd).max(0.0),
-                        self.fps.rate(),
-                    );
-                    self.playhead = clip.timeline_in + elapsed_tc;
+                    self.playhead = timeline_for_source(clip, frame.pts_secs(), seq.fps.as_f64(), self.fps.rate());
                 }
                 drop(seq);
                 let (w, h) = (frame.width, frame.height);
@@ -6144,14 +6159,7 @@ impl PlaybackEngine {
                     if let Some(clip) = seq.tracks.get(self.current_track_index)
                         .and_then(|t| t.clips.get(self.current_clip_index))
                     {
-                        let source_elapsed =
-                            frame.pts_secs() - clip.source_in.to_secs_f64();
-                        let spd = clip.speed.max(0.001);
-                        let elapsed_tc = RationalTime::from_secs_f64(
-                            (source_elapsed / spd).max(0.0),
-                            self.fps.rate(),
-                        );
-                        self.playhead = clip.timeline_in + elapsed_tc;
+                        self.playhead = timeline_for_source(clip, frame.pts_secs(), seq.fps.as_f64(), self.fps.rate());
                     }
                     drop(seq);
 
@@ -6220,12 +6228,7 @@ impl PlaybackEngine {
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
                             .and_then(|t| t.clips.get(self.current_clip_index))
                         {
-                            let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
-                            let spd = clip.speed.max(0.001);
-                            let elapsed_tc = RationalTime::from_secs_f64(
-                                (source_elapsed / spd).max(0.0), self.fps.rate(),
-                            );
-                            (clip.timeline_in + elapsed_tc).value
+                            timeline_for_source(clip, frame.pts_secs(), seq.fps.as_f64(), self.fps.rate()).value
                         } else {
                             break;
                         }
@@ -6363,12 +6366,7 @@ impl PlaybackEngine {
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
                 {
-                    let source_elapsed = pts.to_secs_f64() - clip.source_in.to_secs_f64();
-                    let spd = clip.speed.max(0.001);
-                    let elapsed_tc = RationalTime::from_secs_f64(
-                        (source_elapsed / spd).max(0.0), self.fps.rate(),
-                    );
-                    (clip.timeline_in + elapsed_tc).value
+                    timeline_for_source(clip, pts.to_secs_f64(), seq.fps.as_f64(), self.fps.rate()).value
                 } else {
                     continue;
                 };
@@ -6379,18 +6377,30 @@ impl PlaybackEngine {
         }
 
         // 2. Check if backward frames need prefilling
+        // Thirty frames, in playhead ticks: a frame is `frame_ticks` of
+        // them, 1001 at an NTSC rate, where stepping back one tick at a
+        // time never met a cached frame and re-seeked on every step.
         let current = self.playhead.value;
+        let step = self.frame_ticks();
         let backward_needed = (1..=30).any(|i| {
-            let f = current - i;
+            let f = current - i * step;
             f >= 0 && self.frame_cache.get(f, self.primary_clip_now()).is_none()
         });
 
         if backward_needed {
             // Seek backward and decode forward to fill the cache behind us.
             // This is a one-time cost that makes all subsequent backward steps instant.
-            let prefetch_start = (current - 30).max(0);
-            if let Some(dec) = &self.v1_decoder {
-                let seek_secs = RationalTime { value: prefetch_start, rate: self.playhead.rate }.to_secs_f64();
+            let prefetch_start = (current - 30 * step).max(0);
+            // The decoder seeks in source time, through the clip's speed
+            // curve, not to the playhead's timeline seconds.
+            let seek_secs = {
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let at = RationalTime { value: prefetch_start, rate: self.playhead.rate };
+                seq.tracks.get(self.current_track_index)
+                    .and_then(|t| t.clips.get(self.current_clip_index))
+                    .map(|clip| klipp_compose::render::source_secs(clip, at.max(clip.timeline_in), seq.fps.as_f64()))
+            };
+            if let (Some(dec), Some(seek_secs)) = (&self.v1_decoder, seek_secs) {
                 dec.seek(seek_secs);
                 dec.resume();
             }
@@ -6411,12 +6421,7 @@ impl PlaybackEngine {
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
                             .and_then(|t| t.clips.get(self.current_clip_index))
                         {
-                            let source_elapsed = frame.pts_secs() - clip.source_in.to_secs_f64();
-                            let spd = clip.speed.max(0.001);
-                            let elapsed_tc = RationalTime::from_secs_f64(
-                                (source_elapsed / spd).max(0.0), self.fps.rate(),
-                            );
-                            (clip.timeline_in + elapsed_tc).value
+                            timeline_for_source(clip, frame.pts_secs(), seq.fps.as_f64(), self.fps.rate()).value
                         } else { break; }
                     };
                     let clip = self.primary_clip_now();
@@ -6663,8 +6668,7 @@ impl PlaybackEngine {
                 .find_map(|track| {
                     track.clip_at_timecode(ph).and_then(|(_, clip)| {
                         let media_id = clip.media_id()?;
-                        let source_secs = clip.source_in.to_secs_f64()
-                            + (ph - clip.timeline_in).to_secs_f64() * clip.speed;
+                        let source_secs = klipp_compose::render::source_secs(clip, ph, seq.fps.as_f64());
                         Some((media_id, source_secs))
                     })
                 })
