@@ -65,20 +65,10 @@ pub fn spawn(ctx: ControlContext) -> Option<std::path::PathBuf> {
         tracing::info!("control socket disabled by KLIPP_CONTROL=0");
         return None;
     }
-    let path = protocol::socket_path();
-    // A socket file left behind by a crashed instance would make bind
-    // fail with EADDRINUSE forever. Removing it is safe: if another
-    // Klipp really is listening, this instance takes over and the old
-    // one simply stops receiving — single-instance is the assumption,
-    // and the alternative (refusing to start) is worse.
-    let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let listener = match UnixListener::bind(&path) {
-        Ok(l) => l,
+    let (listener, path) = match claim_socket(&protocol::socket_path(), std::process::id()) {
+        Ok(claimed) => claimed,
         Err(e) => {
-            tracing::warn!("control socket unavailable at {}: {e}", path.display());
+            tracing::warn!("control socket unavailable: {e}");
             return None;
         }
     };
@@ -109,6 +99,80 @@ pub fn spawn(ctx: ControlContext) -> Option<std::path::PathBuf> {
         })
         .ok()?;
     Some(path)
+}
+
+/// Bind the control socket at `path`, or beside it when another Klipp
+/// owns it.
+///
+/// A socket file left by a crashed instance would make bind fail
+/// forever, so a file there used to be removed unconditionally. When a
+/// Klipp was still running, that unlinked its live socket: the second
+/// instance took every client over, and when it quit, left a dead file,
+/// so the first was unreachable until it restarted (#400). Now the file
+/// is connected to first. Refused, or gone: it is stale and replaced. A
+/// live Klipp answers: its socket is left alone, and this instance binds
+/// `<name>-<pid>.sock` in the same directory instead — reachable by
+/// setting `KLIPP_CONTROL_SOCKET` to it.
+fn claim_socket(path: &std::path::Path, pid: u32) -> Result<(UnixListener, std::path::PathBuf), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let path = if path.exists() && UnixStream::connect(path).is_ok() {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "klipp-control".into());
+        let own = path.with_file_name(format!("{stem}-{pid}.sock"));
+        tracing::warn!(
+            "another Klipp is listening on {}; this one listens on {} (set KLIPP_CONTROL_SOCKET to reach it)",
+            path.display(),
+            own.display()
+        );
+        own
+    } else {
+        path.to_path_buf()
+    };
+    // Stale: nobody answered on it (or this pid's own leftover).
+    let _ = std::fs::remove_file(&path);
+    UnixListener::bind(&path).map(|l| (l, path.clone())).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod socket_claim_tests {
+    use super::claim_socket;
+    use std::os::unix::net::UnixStream;
+
+    fn dir() -> std::path::PathBuf {
+        let d = std::path::Path::new("/tmp").join(format!("klipp-claim-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// #400: a second instance leaves a live Klipp's socket alone and
+    /// binds its own beside it; both stay reachable.
+    #[test]
+    fn a_live_socket_is_not_taken_over() {
+        let d = dir();
+        let path = d.join("klipp-control.sock");
+        let (_first, p1) = claim_socket(&path, 100).unwrap();
+        assert_eq!(p1, path);
+        let (_second, p2) = claim_socket(&path, 200).unwrap();
+        assert_eq!(p2, d.join("klipp-control-200.sock"));
+        assert!(UnixStream::connect(&path).is_ok(), "the first instance lost its socket");
+        assert!(UnixStream::connect(&p2).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A socket file nobody listens on — a crashed instance's — is
+    /// replaced, as before.
+    #[test]
+    fn a_stale_socket_is_replaced() {
+        let d = dir();
+        let path = d.join("klipp-control.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists() && UnixStream::connect(&path).is_err(), "a dead socket file");
+        let (_l, p) = claim_socket(&path, 300).unwrap();
+        assert_eq!(p, path);
+        assert!(UnixStream::connect(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
 
 fn serve_connection(stream: UnixStream, ctx: ControlContext) {
@@ -1894,6 +1958,9 @@ fn handle(
             let presented = fb.latest_presented().map(|t| t.to_secs_f64());
             Ok(json!({
                 "build": build_json(),
+                // Which Klipp answered: with two running, each on its own
+                // socket, a client can tell them apart.
+                "pid": std::process::id(),
                 "revision": ctx.shared.revision(),
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
