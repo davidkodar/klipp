@@ -396,7 +396,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
 
     // The brief.
     match &seq.brief {
-        None => add(Severity::Note, "no_brief", None, "there is no brief, so length, size, loudness and names are not checked".into(), "Set one with the piece's length, platform, loudness and cast"),
+        None => add(Severity::Note, "no_brief", None, "there is no brief, so length, size, loudness and names are not checked, and colour is judged only for clipping, cast, black point and faces — not for how bright or saturated a scene should be".into(), "Set one with the piece's length, platform, loudness and cast"),
         Some(brief) => {
             if let (Some(target), Some(tol)) = (brief.target_secs, brief.length_tolerance_secs()) {
                 if (duration - target).abs() > tol {
