@@ -214,6 +214,39 @@ mod tests {
         }
     }
 
+    /// The eyedropper: a grey card under a blue light, picked, gives the
+    /// balance that makes the card grey; the picked point is a patch, so
+    /// one odd pixel under the cursor does not set it.
+    #[test]
+    fn a_picked_grey_card_is_balanced_to_grey() {
+        let (w, h) = (40u32, 40u32);
+        let card = [118u8, 124, 138];
+        let mut px: Vec<u8> = (0..w * h).flat_map(|i| if i % w < 20 { [card[0], card[1], card[2], 255] } else { [170, 40, 45, 255] }).collect();
+        // A hot pixel under the cursor.
+        let at = ((10 * w + 10) * 4) as usize;
+        px[at..at + 3].copy_from_slice(&[240, 10, 10]);
+        let reference = crate::measure::picked_grey(&px, w, h, 10.0 / 39.0, 10.0 / 39.0).expect("a grey card");
+        let (t, g) = crate::white_balance::white_balance_to_neutralise(reference, klipp_core::WorkingColorspace::Rec709Linear);
+        assert!(t > 2.0, "a blue cast asks for warmth, got {t}");
+        let card = card.map(|v| crate::transfer::srgb_to_linear(v as f32 / 255.0));
+        let m = crate::white_balance::white_balance_matrix(t, g, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let out = m.map(|row| row[0] * card[0] + row[1] * card[1] + row[2] * card[2]);
+        let (mx, mn) = (out[0].max(out[1]).max(out[2]), out[0].min(out[1]).min(out[2]));
+        assert!((mx - mn) / mx < 0.03, "the card is not grey after the pick: {out:?}");
+    }
+
+    /// Clipped white, black and a plain colour carry no light's colour
+    /// to balance on; the picker says so rather than guessing.
+    #[test]
+    fn the_picker_refuses_clipped_black_and_colour() {
+        let (w, h) = (16u32, 16u32);
+        for (c, what) in [([255u8, 255, 255], "clipped"), ([4, 4, 5], "dark"), ([30, 160, 60], "colour")] {
+            let px: Vec<u8> = (0..w * h).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
+            let got = crate::measure::picked_grey(&px, w, h, 0.5, 0.5);
+            assert!(got.is_err(), "{what}: picked {got:?}");
+        }
+    }
+
     // ─── Film grain CPU tests ─────────────────────────────────────────
 
     fn wang_hash_cpu(mut x: u32) -> f32 {

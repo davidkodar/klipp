@@ -489,6 +489,41 @@ pub fn neutral_reference(rgba: &[u8], width: u32, height: u32) -> Option<[f32; 3
     neutral_pick(rgba, width, height, false, &[]).ok()
 }
 
+/// The grey the user picked at `(nx, ny)` (fractions of the frame): the
+/// per-channel median, in linear light, of a 7×7 patch there, so one
+/// noisy or hot pixel under the cursor does not set the balance. Refused when the patch is clipped white or near
+/// black, where the channels no longer carry the light's colour, or is
+/// plainly a colour rather than a grey under some light.
+pub fn picked_grey(rgba: &[u8], width: u32, height: u32, nx: f32, ny: f32) -> Result<[f32; 3], &'static str> {
+    let (w, h) = (width as i64, height as i64);
+    if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
+        return Err("the viewer has no picture to read yet");
+    }
+    let (cx, cy) = ((nx.clamp(0.0, 1.0) * (w - 1) as f32).round() as i64, (ny.clamp(0.0, 1.0) * (h - 1) as f32).round() as i64);
+    let mut samples: [Vec<f32>; 3] = Default::default();
+    for y in (cy - 3).max(0)..=(cy + 3).min(h - 1) {
+        for x in (cx - 3).max(0)..=(cx + 3).min(w - 1) {
+            let p = ((y * w + x) * 4) as usize;
+            for (c, channel) in samples.iter_mut().enumerate() {
+                channel.push(crate::transfer::srgb_to_linear(rgba[p + c] as f32 / 255.0));
+            }
+        }
+    }
+    let mean = samples.map(|mut v| median(&mut v));
+    let enc = mean.map(|v| (crate::transfer::linear_to_srgb(v) * 255.0).round().clamp(0.0, 255.0) as u8);
+    if enc.iter().any(|&v| v >= 250) {
+        return Err("that point is clipped white — pick a grey or a white that is not blown out");
+    }
+    let lab = srgb8_to_lab(enc[0], enc[1], enc[2]);
+    if lab.l < 8.0 {
+        return Err("that point is too dark to read a colour from — pick a grey or white");
+    }
+    if lab.chroma() > 30.0 {
+        return Err("that point is a colour, not a grey under the light — pick a grey, white or black surface");
+    }
+    Ok(mean)
+}
+
 /// Why [`balance_reference`] found nothing to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoReference {

@@ -1914,7 +1914,8 @@ pub struct AppState {
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
     /// Pixel coordinates to sample for white balance (set by viewer on click, consumed by app)
-    pub wb_sample_request: Option<(f32, f32)>, // normalized 0-1
+    /// The clip the white balance eyedropper was armed for.
+    pub wb_pick_clip: Option<ClipId>,
     /// Pixel coordinates to sample for qualifier (set by viewer on click, consumed by app)
     pub qualifier_sample_request: Option<(f32, f32)>, // normalized 0-1
     /// Matte preview — show B&W qualifier/mask matte in viewer
@@ -3872,7 +3873,7 @@ impl Default for AppState {
             hdr_reference_output: false,
             hdr_nits_under_pointer: None,
             eyedropper_mode: EyedropperMode::None,
-            wb_sample_request: None,
+            wb_pick_clip: None,
             qualifier_sample_request: None,
             matte_preview_active: false,
             solo_node: None,

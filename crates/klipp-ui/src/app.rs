@@ -3784,31 +3784,6 @@ impl KlippApp {
             self.state.curve_histograms = Some(hist);
         }
 
-        // Process white balance eyedropper sample
-        if let Some((nx, ny)) = self.state.wb_sample_request.take() {
-            let px = (nx * (fb_width - 1) as f32) as usize;
-            let py = (ny * (fb_height - 1) as f32) as usize;
-            let idx = (py * fb_width as usize + px) * 4;
-            if idx + 2 < rgba_bytes.len() {
-                let r = rgba_bytes[idx] as f32 / 255.0;
-                let g = rgba_bytes[idx + 1] as f32 / 255.0;
-                let b = rgba_bytes[idx + 2] as f32 / 255.0;
-                let temp = -(r - b) * 200.0;
-                let tint = -(g - (r + b) / 2.0) * 200.0;
-                if let Some(clip_id) = self.state.selected_clip {
-                    let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::ColorBalance);
-                    self.cmd_tx.send(AppCommand::SetNodeParam {
-                        clip_id, node_id, param: "temperature".into(),
-                        value: temp.clamp(-100.0, 100.0),
-                    }).ok();
-                    self.cmd_tx.send(AppCommand::SetNodeParam {
-                        clip_id, node_id, param: "tint".into(),
-                        value: tint.clamp(-100.0, 100.0),
-                    }).ok();
-                }
-            }
-        }
-
         // Process qualifier eyedropper sample
         if let Some((nx, ny)) = self.state.qualifier_sample_request.take() {
             let px = (nx * (fb_width - 1) as f32) as usize;
@@ -14340,10 +14315,112 @@ impl KlippApp {
         }
     }
 
+    /// The frame on screen, as bytes, when it is a whole frame of
+    /// `clip_id` that a white balance can be read from; otherwise why not.
+    ///
+    /// The newest frame the engine made, not the one last swapped in:
+    /// while paused the UI repaints rarely, and `data` can be several
+    /// frames behind. And only when those bytes are the picture on
+    /// screen, of this clip: while the GPU stack presents zero-copy
+    /// (playing), no bytes are published and the buffer still holds the
+    /// last parked frame — another time, maybe another clip — whose
+    /// correction was applied here (#404).
+    fn shown_frame_for_balance(&self, clip_id: klipp_core::ClipId) -> Result<(Vec<u8>, u32, u32), &'static str> {
+        let clip_span = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .map(|c| (c.timeline_in, c.timeline_out));
+        let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(why) = auto_wb_frame_refusal(
+            fb.gpu_output_live,
+            self.state.hdr_monitor.renders_hdr(),
+            fb.latest_complete(),
+            fb.latest_presented(),
+            clip_span,
+        ) {
+            return Err(why);
+        }
+        let (bytes, fw, fh, _) = fb.latest_frame();
+        if fw == 0 || fh == 0 || !bytes.chunks_exact(4).any(|p| p[3] != 0) {
+            return Err("the viewer has no picture to read yet");
+        }
+        Ok((bytes.to_vec(), fw, fh))
+    }
+
+    /// Add a white balance correction to `clip_id`'s balance, on its
+    /// Corrector (or a legacy Colour Balance node), as one undo step. The
+    /// frame it was read from is the graded one, so the correction goes
+    /// on top of the balance the clip already has, not instead of it.
+    fn apply_balance_step(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        temp_adj: f32,
+        tint_adj: f32,
+        who: &str,
+        needs_refresh: &mut bool,
+    ) {
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        let mut edit: Option<(klipp_nodes::NodeGraph, klipp_nodes::NodeGraph, bool)> = None;
+        for track in &mut seq.tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                let before = clip.node_graph.clone();
+                // The Corrector's temperature/tint feed the unified grade
+                // shader; the legacy Colour Balance node is the fallback.
+                let target = clip
+                    .node_graph
+                    .nodes
+                    .iter()
+                    .position(|n| n.kind == klipp_nodes::NodeKind::Corrector)
+                    .or_else(|| clip.node_graph.nodes.iter().position(|n| n.kind == klipp_nodes::NodeKind::ColorBalance));
+                if let Some(idx) = target {
+                    let node = &mut clip.node_graph.nodes[idx];
+                    let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
+                    let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
+                    node.params.temperature = Some(t);
+                    node.params.tint = Some(g);
+                    edit = Some((before, clip.node_graph.clone(), t_railed || g_railed));
+                }
+                break;
+            }
+        }
+        let Some((old_graph, new_graph, railed)) = edit else {
+            self.state.toast.show(format!("{who}: add a Colour Balance node first"));
+            return;
+        };
+        self.state.active_history_mut().push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph },
+        });
+        self.state.dirty = true;
+        // The sliders stop at ±50; a strong cast, or a clip already near
+        // the end, gets part of what it needs.
+        if railed {
+            self.state.toast.show(format!(
+                "{who}: the correction reached the end of the temperature or tint range, so the \
+                 frame is only partly balanced — fix the cast at the source or with another balance node"
+            ));
+        }
+        *needs_refresh = true;
+    }
+
     fn handle_color_sampling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RequestWhiteBalanceSample { nx, ny } => {
-                self.state.wb_sample_request = Some((*nx, *ny));
+                // The picked point's grey is the reference: what the user
+                // knows is neutral, where Auto WB has to guess (#428).
+                let Some(clip_id) = self.state.wb_pick_clip.take() else { return true };
+                match self.shown_frame_for_balance(clip_id) {
+                    Err(why) => self.state.toast.show(format!("White balance picker: {why}")),
+                    Ok((bytes, fw, fh)) => match klipp_color::measure::picked_grey(&bytes, fw, fh, *nx, *ny) {
+                        Err(why) => self.state.toast.show(format!("White balance picker: {why}")),
+                        Ok(reference) => {
+                            let (temp_adj, tint_adj) = klipp_color::white_balance::white_balance_to_neutralise(
+                                reference,
+                                klipp_core::WorkingColorspace::Rec709Linear,
+                            );
+                            self.apply_balance_step(clip_id, temp_adj, tint_adj, "White balance picker", _needs_refresh);
+                        }
+                    },
+                }
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
@@ -15531,114 +15608,38 @@ impl KlippApp {
                 true
             }
             AppCommand::AutoWhiteBalance { clip_id } => {
-                // The newest frame the engine made, not the one last
-                // swapped in: while paused the UI repaints rarely, and
-                // `data` can be several frames behind.
-                //
-                // And only when those bytes are the picture on screen, of
-                // this clip: while the GPU stack presents zero-copy
-                // (playing), no bytes are published and the buffer still
-                // holds the last parked frame — another time, maybe
-                // another clip — whose correction was applied here (#404).
-                let clip_span = self.state.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(|c| (c.timeline_in, c.timeline_out));
-                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                let (bytes, fw, fh, _) = fb.latest_frame();
-                let has_picture = fw > 0 && fh > 0 && bytes.chunks_exact(4).any(|p| p[3] != 0);
-                let refusal = auto_wb_frame_refusal(
-                    fb.gpu_output_live,
-                    self.state.hdr_monitor.renders_hdr(),
-                    fb.latest_complete(),
-                    fb.latest_presented(),
-                    clip_span,
-                );
-                // The framing analysis's faces, when there is one: a face
-                // is never the surface a cast is judged against, so a
-                // close-up under a cool light balances on the shirt.
-                let faces = crate::panels::colour_check::faces_at_playhead(&self.state);
-                let reading = (has_picture && refusal.is_none()).then(|| klipp_color::auto_white_balance(bytes, fw, fh, &faces));
-                drop(fb);
-                if let Some(why) = refusal {
-                    self.state.toast.show(format!("Auto White Balance: {why}"));
-                } else if !has_picture {
-                    self.state.toast.show("Auto White Balance: the viewer has no picture to read yet");
-                } else if reading == Some(Err(klipp_color::measure::NoReference::NothingGrey)) {
-                    self.state.toast.show(
-                        "Auto White Balance: nothing in this frame is surely grey (skin, sand \
-                         and a strong cast are not trusted) — the balance is left as it was",
-                    );
-                } else if reading == Some(Err(klipp_color::measure::NoReference::LeansAgainstTheFrame)) {
-                    self.state.toast.show(
-                        "Auto White Balance: the greys here lean against the frame's main colour — \
-                         a strong cast, or a coloured wall beside a grey that is not quite, and \
-                         colour alone cannot tell which. The balance is left as it was: set \
-                         Temperature and Tint by hand, or run Analyze so faces are known",
-                    );
-                } else if let Some(Ok((temp_adj, tint_adj))) = reading {
-                    // Apply to the clip's ColorBalance node. Snapshot the graph
-                    // before applying so we can push a single SetNodeGraph undo
-                    // entry covering the whole auto-WB gesture.
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    let mut snapshot: Option<klipp_nodes::NodeGraph> = None;
-                    let mut committed: Option<klipp_nodes::NodeGraph> = None;
-                    let mut applied = false;
-                    let mut railed = false;
-                    for track in &mut seq.tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            snapshot = Some(clip.node_graph.clone());
-                            // Prefer the Corrector node for the WB
-                            // write-back — its temperature/tint feed the
-                            // unified colour-grade shader. Fall back to
-                            // the legacy ColorBalance node for graphs
-                            // that don't have a Corrector.
-                            let target_idx = clip.node_graph.nodes.iter().position(|n|
-                                n.kind == klipp_nodes::NodeKind::Corrector
-                            ).or_else(|| clip.node_graph.nodes.iter().position(|n|
-                                n.kind == klipp_nodes::NodeKind::ColorBalance
-                            ));
-                            if let Some(idx) = target_idx {
-                                // The frame read is the graded one, so the
-                                // correction is on top of the balance the
-                                // clip already has, not instead of it.
-                                let node = &mut clip.node_graph.nodes[idx];
-                                let (t, t_railed) = add_on_rail(node.params.temperature.unwrap_or(0.0), temp_adj);
-                                let (g, g_railed) = add_on_rail(node.params.tint.unwrap_or(0.0), tint_adj);
-                                node.params.temperature = Some(t);
-                                node.params.tint = Some(g);
-                                railed = t_railed || g_railed;
-                                applied = true;
+                let clip_id = *clip_id;
+                match self.shown_frame_for_balance(clip_id) {
+                    Err(why) => self.state.toast.show(format!("Auto White Balance: {why}")),
+                    Ok((bytes, fw, fh)) => {
+                        // The framing analysis's faces, when there is one: a
+                        // face is never the surface a cast is judged against,
+                        // so a close-up under a cool light balances on the shirt.
+                        let faces = crate::panels::colour_check::faces_at_playhead(&self.state);
+                        match klipp_color::auto_white_balance(&bytes, fw, fh, &faces) {
+                            Ok((temp_adj, tint_adj)) => {
+                                self.apply_balance_step(clip_id, temp_adj, tint_adj, "Auto White Balance", needs_refresh);
                             }
-                            committed = Some(clip.node_graph.clone());
-                            break;
+                            Err(klipp_color::measure::NoReference::NothingGrey) => self.state.toast.show(
+                                "Auto White Balance: nothing in this frame is surely grey (skin, sand \
+                                 and a strong cast are not trusted) — the balance is left as it was. \
+                                 Pick a grey with the eyedropper beside the button instead",
+                            ),
+                            Err(klipp_color::measure::NoReference::LeansAgainstTheFrame) => self.state.toast.show(
+                                "Auto White Balance: the greys here lean against the frame's main colour — \
+                                 a strong cast, or a coloured wall beside a grey that is not quite, and \
+                                 colour alone cannot tell which. The balance is left as it was: pick the \
+                                 grey with the eyedropper beside the button, or run Analyze so faces are known",
+                            ),
                         }
                     }
-                    if applied {
-                        if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetNodeGraph {
-                                    clip_id: *clip_id,
-                                    old_graph,
-                                    new_graph,
-                                },
-                            });
-                            self.state.dirty = true;
-                        }
-                        // The sliders stop at ±50; a strong cast, or a clip
-                        // already near the end, gets part of what it needs.
-                        if railed {
-                            self.state.toast.show(
-                                "Auto White Balance: the correction reached the end of the temperature or tint \
-                                 range, so the frame is only partly balanced — fix the cast at the source or \
-                                 with another balance node",
-                            );
-                        }
-                    } else {
-                        self.state.toast.show("Add a Colour Balance node to use Auto White Balance");
-                    }
-                    *needs_refresh = true;
                 }
+                true
+            }
+            AppCommand::PickWhiteBalance { clip_id } => {
+                self.state.eyedropper_mode = crate::state::EyedropperMode::WhiteBalance;
+                self.state.wb_pick_clip = Some(*clip_id);
+                self.state.toast.show("Click something grey, white or black in the viewer (Esc cancels)");
                 true
             }
             AppCommand::ToggleColorPanel => {
