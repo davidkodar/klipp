@@ -149,9 +149,10 @@ fn pick_video_encoder(
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: make every hardware encoder refuse to open, as when all of a
-    /// card's NVENC sessions are taken.
+    /// Tests: make hardware encoders refuse to open, as when all of a
+    /// card's NVENC sessions are taken, and optionally software ones too.
     static FAIL_HARDWARE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_SOFTWARE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The software encoder for `codec`: what a render falls back to when the
@@ -316,10 +317,26 @@ impl Encoder {
         }
         let last_attempt = attempts.len() - 1;
         let mut hardware_fallback = None;
+        // Why an earlier attempt failed, named in the error if the fallback
+        // fails too, so a double failure still says the hardware was tried.
+        let mut earlier_failure: Option<String> = None;
         let (video_encoder, video_codec_name, pix_fmt, out_w, out_h) = 'open: {
             for (attempt, (video_codec_name, is_hw_encoder)) in attempts.into_iter().enumerate() {
-                    let video_codec = ffmpeg_next::encoder::find_by_name(video_codec_name)
-                        .ok_or_else(|| RenderError::Encode(format!("codec not found: {video_codec_name}")))?;
+                    let Some(video_codec) = ffmpeg_next::encoder::find_by_name(video_codec_name) else {
+                        // An FFmpeg built with nvenc but not libx264 lands
+                        // here on the fallback; it fails like an open does.
+                        let failure = format!("{video_codec_name}: codec not found in this FFmpeg");
+                        if attempt == last_attempt {
+                            return Err(RenderError::Encode(match earlier_failure.take() {
+                                Some(earlier) => format!("open video encoder: {earlier}; then {failure}"),
+                                None => format!("codec not found: {video_codec_name}"),
+                            }));
+                        }
+                        tracing::warn!("{failure}; trying the software encoder");
+                        hardware_fallback = Some(video_codec_name);
+                        earlier_failure = Some(failure);
+                        continue;
+                    };
 
                     info!("Video encoder: {} (hw={})", video_codec_name, is_hw_encoder);
                     // A 4K HDR H.264 render is much slower on libx264 than the user's
@@ -539,7 +556,11 @@ impl Encoder {
                     }
                 // Open the video encoder
                 #[cfg(test)]
-                let refused = is_hw_encoder && FAIL_HARDWARE_OPEN.with(|f| f.get());
+                let refused = if is_hw_encoder {
+                    FAIL_HARDWARE_OPEN.with(|f| f.get())
+                } else {
+                    FAIL_SOFTWARE_OPEN.with(|f| f.get())
+                };
                 #[cfg(not(test))]
                 let refused = false;
                 let opened = if refused {
@@ -554,17 +575,21 @@ impl Encoder {
                         // message for a configuration the hardware cannot do
                         // is "Generic error in an external library" and
                         // nothing else.
-                        let err = RenderError::Encode(format!(
-                            "open video encoder: {e} ({video_codec_name}, {pix_fmt:?}, {}x{}{})",
+                        let failure = format!(
+                            "{video_codec_name}: {e} ({pix_fmt:?}, {}x{}{})",
                             snapshot.width,
                             snapshot.height,
                             if settings.bit_depth == 10 { ", 10-bit" } else { "" },
-                        ));
+                        );
                         if attempt == last_attempt {
-                            return Err(err);
+                            return Err(RenderError::Encode(match earlier_failure.take() {
+                                Some(earlier) => format!("open video encoder: {earlier}; then {failure}"),
+                                None => format!("open video encoder: {failure}"),
+                            }));
                         }
-                        tracing::warn!("{err}; encoding in software instead");
+                        tracing::warn!("open video encoder: {failure}; encoding in software instead");
                         hardware_fallback = Some(video_codec_name);
+                        earlier_failure = Some(failure);
                     }
                 }
             }
@@ -1946,40 +1971,71 @@ mod tests {
         }
     }
 
+    fn fallback_settings(name: &str) -> (std::path::PathBuf, ExportSettings, SequenceSnapshot) {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
+        settings.audio_codec = ExportAudioCodec::Copy;
+        (path, settings, make_snapshot())
+    }
+
     /// #381: a hardware encoder that will not open (every NVENC session
     /// taken) must not fail the render; it goes to software and says so.
     #[test]
     #[serial]
     fn a_hardware_encoder_that_will_not_open_falls_back_to_software() {
-        let dir = std::env::temp_dir().join("klipp_render_test");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test_hw_fallback.mp4");
-        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
-        settings.audio_codec = ExportAudioCodec::Copy;
-        let snapshot = make_snapshot();
-        let had_hardware = pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false).1;
-
+        let (path, settings, snapshot) = fallback_settings("test_hw_fallback.mp4");
+        if !pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false).1 {
+            eprintln!("skipped: this FFmpeg has no hardware H.264 encoder, so there is nothing to fall back from");
+            return;
+        }
         FAIL_HARDWARE_OPEN.with(|f| f.set(true));
         let opened = Encoder::open(&path, &settings, &snapshot);
         FAIL_HARDWARE_OPEN.with(|f| f.set(false));
         let mut enc = opened.expect("the render must fall back to software, not fail");
 
         assert_eq!(enc.video_codec_name, "libx264");
-        if had_hardware {
-            assert!(enc.hw_info().contains("unavailable"), "{}", enc.hw_info());
-        }
+        assert!(enc.hardware_fallback.is_some(), "the fallback must be recorded");
+        assert!(enc.hw_info().contains("unavailable"), "{}", enc.hw_info());
         let rgba = [0u8, 128, 255, 255].repeat(320 * 240);
         for _ in 0..5 {
             enc.encode_video_frame(&rgba, 320, 240).unwrap();
         }
         enc.finalise().unwrap();
-        let out = std::process::Command::new("ffprobe")
-            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0"])
+        match std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,nb_read_frames", "-of", "csv=p=0"])
             .arg(&path)
-            .output();
-        if let Ok(out) = out {
-            assert!(String::from_utf8_lossy(&out.stdout).contains("h264"), "the file is still an H.264 video");
+            .output()
+        {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(text.contains("h264"), "the file is still an H.264 video: {text}");
+                assert!(text.trim().ends_with(",5"), "all five frames are in the file: {text}");
+            }
+            Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// When the software encoder fails too, the error still says the
+    /// hardware encoder was tried first, and why it was not used.
+    #[test]
+    #[serial]
+    fn when_both_encoders_fail_the_error_names_both() {
+        let (path, settings, snapshot) = fallback_settings("test_hw_both_fail.mp4");
+        let (hw, had_hardware) = pick_video_encoder(&ExportVideoCodec::H264, snapshot.width, snapshot.height, false);
+        if !had_hardware {
+            eprintln!("skipped: this FFmpeg has no hardware H.264 encoder");
+            return;
+        }
+        FAIL_HARDWARE_OPEN.with(|f| f.set(true));
+        FAIL_SOFTWARE_OPEN.with(|f| f.set(true));
+        let opened = Encoder::open(&path, &settings, &snapshot);
+        FAIL_HARDWARE_OPEN.with(|f| f.set(false));
+        FAIL_SOFTWARE_OPEN.with(|f| f.set(false));
+        let Err(RenderError::Encode(message)) = opened else { panic!("both failing must fail the render") };
+        assert!(message.contains(hw) && message.contains("then libx264"), "{message}");
         let _ = std::fs::remove_file(&path);
     }
 
