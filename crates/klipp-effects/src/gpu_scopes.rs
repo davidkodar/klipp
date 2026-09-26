@@ -93,12 +93,25 @@ pub enum ScopeInput<'a> {
         height: u32,
         luma: [f32; 3],
     },
+    /// [`ScopeInput::Display`]'s bytes where the display encode left
+    /// them, on this renderer's device: packed RGBA8, `width × height`
+    /// of them, row after row. Measured in place, so nothing is read
+    /// back or uploaded — at 4K the round trip was 33 MB and 24 ms for
+    /// every pass while playing (#333).
+    DisplayOnGpu {
+        buffer: &'a wgpu::Buffer,
+        width: u32,
+        height: u32,
+        luma: [f32; 3],
+    },
 }
 
 impl ScopeInput<'_> {
     fn size(&self) -> (u32, u32) {
         match self {
-            ScopeInput::Linear { width, height, .. } | ScopeInput::Display { width, height, .. } => (*width, *height),
+            ScopeInput::Linear { width, height, .. }
+            | ScopeInput::Display { width, height, .. }
+            | ScopeInput::DisplayOnGpu { width, height, .. } => (*width, *height),
         }
     }
 }
@@ -191,6 +204,17 @@ pub enum ScopeJob {
     Waveform(WaveformJob),
     Vectorscope(VectorscopeJob),
     Histogram(HistogramJob),
+}
+
+impl ScopeJob {
+    /// The drawn image's width and height.
+    pub fn out_size(&self) -> (u32, u32) {
+        match self {
+            ScopeJob::Waveform(w) => (w.out_w, w.out_h),
+            ScopeJob::Vectorscope(v) => (v.out_w, v.out_h),
+            ScopeJob::Histogram(h) => (h.out_w, h.out_h),
+        }
+    }
 }
 
 impl ScopeJob {
@@ -1504,10 +1528,13 @@ impl ScopeRenderer {
                 if need > self.max_input_bytes() { step.max(2) } else { step }
             }
             ScopeInput::Display { .. } => step,
+            // Already on the device: the shaders sample every `step`th
+            // pixel themselves.
+            ScopeInput::DisplayOnGpu { .. } => 1,
         };
         let decimated_f: Vec<f32>;
         let decimated_u: Vec<u8>;
-        let (bytes, width, height, step): (&[u8], u32, u32, u32) = match input {
+        let (bytes, width, height, step): (Option<&[u8]>, u32, u32, u32) = match input {
             ScopeInput::Linear { rgba, .. } => {
                 if rgba.len() < (width as usize) * (height as usize) * 4 {
                     return jobs.iter().map(|_| None).collect();
@@ -1515,9 +1542,9 @@ impl ScopeRenderer {
                 if decimate > 1 {
                     let (w2, h2) = (width.div_ceil(decimate), height.div_ceil(decimate));
                     decimated_f = decimate_rgba::<f32>(rgba, width, w2, h2, decimate);
-                    (bytemuck::cast_slice(&decimated_f), w2, h2, 1)
+                    (Some(bytemuck::cast_slice(&decimated_f)), w2, h2, 1)
                 } else {
-                    (bytemuck::cast_slice(rgba), width, height, 1)
+                    (Some(bytemuck::cast_slice(rgba)), width, height, 1)
                 }
             }
             ScopeInput::Display { rgba, .. } => {
@@ -1527,10 +1554,16 @@ impl ScopeRenderer {
                 if decimate > 1 {
                     let (w2, h2) = (width.div_ceil(decimate), height.div_ceil(decimate));
                     decimated_u = decimate_rgba::<u8>(rgba, width, w2, h2, decimate);
-                    (&decimated_u, w2, h2, 1)
+                    (Some(&decimated_u), w2, h2, 1)
                 } else {
-                    (rgba, width, height, 1)
+                    (Some(rgba), width, height, 1)
                 }
+            }
+            ScopeInput::DisplayOnGpu { buffer, .. } => {
+                if buffer.size() < (width as u64) * (height as u64) * 4 {
+                    return jobs.iter().map(|_| None).collect();
+                }
+                (None, width, height, step)
             }
         };
         // One column per pixel of the widest trace: a waveform's width, a
@@ -1554,16 +1587,27 @@ impl ScopeRenderer {
         let lp_r = if lp { ((sigma / 2.0).floor() as u32).max(1) } else { 1 };
         let (lp_w, lp_h) = (width.div_ceil(lp_r), height.div_ceil(lp_r));
         self.ensure_bins(cols);
-        self.ensure_input(bytes.len() as u64);
+        if let Some(bytes) = bytes {
+            self.ensure_input(bytes.len() as u64);
+        }
         if lp {
             self.ensure_low_pass(lp_w as u64 * height as u64 * 16, lp_w as u64 * lp_h as u64 * 16);
         }
-        let input_buf = self.input.as_ref().expect("input buffer");
-        self.queue.write_buffer(input_buf, 0, bytes);
+        let input_buf: &wgpu::Buffer = match (bytes, input) {
+            (Some(bytes), _) => {
+                let buf = self.input.as_ref().expect("input buffer");
+                self.queue.write_buffer(buf, 0, bytes);
+                buf
+            }
+            (None, ScopeInput::DisplayOnGpu { buffer, .. }) => buffer,
+            (None, _) => unreachable!("only a GPU input skips the upload"),
+        };
 
         let (m, luma, transfer, scale) = match input {
             ScopeInput::Linear { matrix, luma, transfer, scale, .. } => (*matrix, *luma, *transfer as u32, *scale),
-            ScopeInput::Display { luma, .. } => ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], *luma, 0, 1.0),
+            ScopeInput::Display { luma, .. } | ScopeInput::DisplayOnGpu { luma, .. } => {
+                ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], *luma, 0, 1.0)
+            }
         };
         let want_hist = jobs.iter().any(|j| matches!(j, ScopeJob::Histogram(_)));
         let want_wave = want_hist || jobs.iter().any(|j| matches!(j, ScopeJob::Waveform(_)));
@@ -1789,12 +1833,12 @@ impl ScopeRenderer {
             if want_wave {
                 let direct = match input {
                     ScopeInput::Linear { .. } => &self.acc_linear,
-                    ScopeInput::Display { .. } => &self.acc_display,
+                    ScopeInput::Display { .. } | ScopeInput::DisplayOnGpu { .. } => &self.acc_display,
                 };
                 if let Some((rows_bg, copy_bg, wave_bg, count_bg, _, _)) = &lp_groups {
                     pass.set_pipeline(match input {
                         ScopeInput::Linear { .. } => &self.lp_h_linear,
-                        ScopeInput::Display { .. } => &self.lp_h_display,
+                        ScopeInput::Display { .. } | ScopeInput::DisplayOnGpu { .. } => &self.lp_h_display,
                     });
                     pass.set_bind_group(0, rows_bg, &[]);
                     pass.dispatch_workgroups(lp_w.div_ceil(16), height.div_ceil(16), 1);
@@ -1839,7 +1883,7 @@ impl ScopeRenderer {
             if want_vector {
                 pass.set_pipeline(match input {
                     ScopeInput::Linear { .. } => &self.acc_vector_linear,
-                    ScopeInput::Display { .. } => &self.acc_vector_display,
+                    ScopeInput::Display { .. } | ScopeInput::DisplayOnGpu { .. } => &self.acc_vector_display,
                 });
                 pass.set_bind_group(0, &vacc_bg, &[]);
                 pass.dispatch_workgroups(groups.0, groups.1, 1);
