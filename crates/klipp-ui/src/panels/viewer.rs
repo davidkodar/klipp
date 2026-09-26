@@ -1734,7 +1734,7 @@ impl ViewerPanel {
             && !state.has_modal_open()
         {
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
-            self.draw_corner_pin_handles(ui, state, image_rect, cmds);
+            self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
         }
 
         // ── On-canvas Title-object editor ──
@@ -4413,82 +4413,83 @@ impl ViewerPanel {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         let pointer_released = ui.input(|i| i.pointer.primary_released());
         let shift_held = ui.input(|i| i.modifiers.shift);
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
         let hit_radius = 10.0;
+        let drag_key = format!("viewer_transform_{}", clip_id.0);
 
         // Handle ongoing drag
-        if let Some(drag) = state.viewer_transform_drag.take() {
-            if pointer_released && !drag.started {
-                // A click on a handle, not a drag: nothing to record.
-            } else if pointer_released {
-                // Drag ended — emit EndEffectDrag for undo coalescing
-                let final_transform = self.compute_dragged_transform(
-                    &drag, pointer_pos,
-                    scale_to_screen_x, scale_to_screen_y,
-                    center_screen, shift_held,
-                );
-                if let Some(idx) = effect_index.or(Some(drag.effect_index)) {
-                    cmds.push(AppCommand::EndEffectDrag {
-                        key: format!("viewer_transform_{}", clip_id.0),
-                        clip_id,
-                        effect_index: idx,
-                        new_effect: final_transform.to_builtin_effect(),
-                    });
-                }
-                // Don't put drag back — it's done
-            } else if pointer_down && !drag.started {
-                // Pressed but not moved yet: nothing has changed. Past the
-                // threshold it becomes a drag, and only then is the effect
-                // added and the undo gesture opened.
-                let mut drag = drag;
-                if pointer_pos.is_some_and(|p| drag_has_started(drag.drag_start_pos, p)) {
-                    if effect_index.is_none() {
-                        cmds.push(AppCommand::AddBuiltinEffect {
-                            clip_id,
-                            effect: drag.initial_transform.to_builtin_effect(),
-                        });
-                    }
-                    cmds.push(AppCommand::BeginEffectDrag {
-                        key: format!("viewer_transform_{}", clip_id.0),
-                        clip_id,
-                        effect_index: drag.effect_index,
-                        old_effect: drag.initial_transform.to_builtin_effect(),
-                    });
-                    drag.started = true;
-                }
-                state.viewer_transform_drag = Some(drag);
-                ui.ctx().request_repaint();
-            } else if pointer_down {
-                // Drag continues — compute new transform and emit update
-                let new_transform = self.compute_dragged_transform(
-                    &drag, pointer_pos,
-                    scale_to_screen_x, scale_to_screen_y,
-                    center_screen, shift_held,
-                );
-                let idx = effect_index.unwrap_or(drag.effect_index);
-                cmds.push(AppCommand::UpdateBuiltinEffect {
-                    clip_id,
-                    index: idx,
-                    effect: new_transform.to_builtin_effect(),
-                });
-
-                // Set cursor icon based on handle
-                match drag.handle {
-                    TransformHandle::Position => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    }
-                    TransformHandle::Rotation => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    }
-                    _ => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-                    }
-                }
-
-                // Put drag back
-                state.viewer_transform_drag = Some(drag);
-                ui.ctx().request_repaint();
+        if let Some(mut drag) = state.viewer_transform_drag.take() {
+            let idx = effect_index.unwrap_or(drag.effect_index);
+            let mut step = if escape {
+                GizmoStep::Abandon
+            } else {
+                gizmo_step(drag.started, drag.drag_start_pos, pointer_pos, pointer_down, pointer_released)
+            };
+            let transform_now = self
+                .compute_dragged_transform(&drag, pointer_pos, scale_to_screen_x, scale_to_screen_y, center_screen, shift_held)
+                .to_builtin_effect();
+            // Back where it began, however far the pointer went between:
+            // a click, and nothing to keep (#408).
+            if step == GizmoStep::End && transform_now == drag.initial_transform.to_builtin_effect() {
+                step = GizmoStep::Abandon;
             }
-            // If pointer is neither down nor released (shouldn't happen), drop drag
+            if matches!(step, GizmoStep::Start | GizmoStep::End) && !drag.started {
+                // The pointer has crossed the threshold: only now is the
+                // effect added and the undo gesture opened. A flick that
+                // crossed it and released within one frame opens and
+                // closes the gesture in that frame.
+                if effect_index.is_none() {
+                    cmds.push(AppCommand::AddBuiltinEffect {
+                        clip_id,
+                        effect: drag.initial_transform.to_builtin_effect(),
+                    });
+                    drag.added = true;
+                }
+                cmds.push(AppCommand::BeginEffectDrag {
+                    key: drag_key.clone(),
+                    clip_id,
+                    effect_index: drag.effect_index,
+                    old_effect: drag.initial_transform.to_builtin_effect(),
+                });
+                drag.started = true;
+            }
+            match step {
+                GizmoStep::Nothing | GizmoStep::Start => {
+                    state.viewer_transform_drag = Some(drag);
+                    ui.ctx().request_repaint();
+                }
+                GizmoStep::Update => {
+                    cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: idx, effect: transform_now });
+                    ui.ctx().set_cursor_icon(match drag.handle {
+                        TransformHandle::Position | TransformHandle::Rotation => egui::CursorIcon::Grabbing,
+                        _ => egui::CursorIcon::ResizeNwSe,
+                    });
+                    state.viewer_transform_drag = Some(drag);
+                    ui.ctx().request_repaint();
+                }
+                GizmoStep::End => {
+                    // Apply before closing the gesture: EndEffectDrag only
+                    // writes history, so without this a release frame's
+                    // movement is recorded and never applied — a flick
+                    // added an identity Transform and an undo entry for a
+                    // move that never happened.
+                    cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: idx, effect: transform_now.clone() });
+                    cmds.push(AppCommand::EndEffectDrag { key: drag_key, clip_id, effect_index: idx, new_effect: transform_now });
+                }
+                GizmoStep::Abandon => {
+                    // A gesture that opened and cannot close as an edit:
+                    // released back at its start, Escape, the pointer
+                    // gone from the window, or its release never seen
+                    // because the gizmo was not drawn on that frame (a
+                    // workspace or modal opened by shortcut mid-drag).
+                    // Left open, it swallowed every later inspector
+                    // edit's undo entry (#409). One that never opened
+                    // (a click) has nothing to take back.
+                    if drag.started {
+                        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index: idx, added: drag.added });
+                    }
+                }
+            }
         } else if let Some(pointer) = pointer_pos {
             // Check for new drag start
             if pointer_down && ui.input(|i| i.pointer.primary_pressed()) {
@@ -4513,6 +4514,7 @@ impl ViewerPanel {
                             initial_transform: transform,
                             drag_start_pos: pointer,
                             started: false,
+                            added: false,
                         });
                     }
                 }
@@ -4551,12 +4553,16 @@ impl ViewerPanel {
     /// The drag is bracketed under the key the effect handlers coalesce
     /// on, so it is one undo entry however far the handle went. The
     /// handles are in the frame before the clip's transform, where the
-    /// pin runs.
+    /// pin runs. As with the transform gizmo, a press is taken only
+    /// inside the viewer (a portrait picture's corners cross into the
+    /// toolbar), and opens the gesture only once the pointer has moved:
+    /// a click on a corner changes nothing and records nothing (#408).
     fn draw_corner_pin_handles(
         &self,
         ui: &mut egui::Ui,
         state: &mut AppState,
         image_rect: egui::Rect,
+        viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
         use klipp_effects::corner_pin::{corners, with_corners, PARAMS};
@@ -4599,43 +4605,81 @@ impl ViewerPanel {
         let pressed = ui.input(|i| i.pointer.primary_pressed());
         let down = ui.input(|i| i.pointer.primary_down());
         let released = ui.input(|i| i.pointer.primary_released());
-        if let Some(drag) = state.viewer_corner_pin_drag.take() {
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if let Some(mut drag) = state.viewer_corner_pin_drag.take() {
             if drag.clip_id != clip_id || drag.effect_index != effect_index {
-                // The clip or the effect changed under the drag: let it go.
-            } else if released {
-                cmds.push(AppCommand::EndEffectDrag {
-                    key: drag_key,
-                    clip_id,
-                    effect_index,
-                    new_effect: with_corners(drag.corners),
-                });
-            } else if down {
-                if let Some(p) = pointer_pos {
-                    let (nx, ny) = viewer_screen_to_norm(image_rect, p);
-                    let mut next = drag.corners;
-                    next[drag.corner] = [nx.clamp(-2.0, 3.0), ny.clamp(-2.0, 3.0)];
-                    cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: with_corners(next) });
-                    for axis in 0..2 {
-                        if keyed[drag.corner][axis] {
-                            cmds.push(AppCommand::AddEffectKeyframe {
-                                clip_id,
-                                effect_index,
-                                param_name: PARAMS[drag.corner][axis].to_string(),
-                                time_secs: clip_time,
-                                value: next[drag.corner][axis],
-                            });
-                        }
-                    }
-                    state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag { corners: next, ..drag });
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                // The clip or the effect changed under the drag: take
+                // the gesture back rather than leave it open.
+                if drag.started {
+                    cmds.push(AppCommand::AbandonEffectDrag { clip_id: drag.clip_id, effect_index: drag.effect_index, added: false });
+                }
+                return;
+            }
+            let step = if escape {
+                GizmoStep::Abandon
+            } else {
+                gizmo_step(drag.started, drag.drag_start_pos, pointer_pos, down, released)
+            };
+            if matches!(step, GizmoStep::Start | GizmoStep::End) && !drag.started {
+                cmds.push(AppCommand::BeginEffectDrag { key: drag_key.clone(), clip_id, effect_index, old_effect });
+                drag.started = true;
+            }
+            match step {
+                GizmoStep::Nothing | GizmoStep::Start => {
+                    state.viewer_corner_pin_drag = Some(drag);
                     ui.ctx().request_repaint();
+                }
+                GizmoStep::Update | GizmoStep::End => {
+                    if let Some(p) = pointer_pos {
+                        let (nx, ny) = viewer_screen_to_norm(image_rect, p);
+                        let mut next = drag.corners;
+                        next[drag.corner] = [nx.clamp(-2.0, 3.0), ny.clamp(-2.0, 3.0)];
+                        cmds.push(AppCommand::UpdateBuiltinEffect { clip_id, index: effect_index, effect: with_corners(next) });
+                        for axis in 0..2 {
+                            if keyed[drag.corner][axis] {
+                                cmds.push(AppCommand::AddEffectKeyframe {
+                                    clip_id,
+                                    effect_index,
+                                    param_name: PARAMS[drag.corner][axis].to_string(),
+                                    time_secs: clip_time,
+                                    value: next[drag.corner][axis],
+                                });
+                            }
+                        }
+                        drag.corners = next;
+                    }
+                    if step == GizmoStep::Update {
+                        state.viewer_corner_pin_drag = Some(drag);
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        ui.ctx().request_repaint();
+                    } else {
+                        cmds.push(AppCommand::EndEffectDrag {
+                            key: drag_key,
+                            clip_id,
+                            effect_index,
+                            new_effect: with_corners(drag.corners),
+                        });
+                    }
+                }
+                GizmoStep::Abandon => {
+                    if drag.started {
+                        cmds.push(AppCommand::AbandonEffectDrag { clip_id, effect_index, added: false });
+                    }
                 }
             }
         } else if let Some(p) = pointer_pos {
             if pressed && state.viewer_transform_drag.is_none() {
-                if let Some(corner) = hit(p) {
-                    cmds.push(AppCommand::BeginEffectDrag { key: drag_key, clip_id, effect_index, old_effect });
-                    state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag { clip_id, effect_index, corner, corners: shown });
+                if viewer_rect.contains(p) {
+                    if let Some(corner) = hit(p) {
+                        state.viewer_corner_pin_drag = Some(crate::state::ViewerCornerPinDrag {
+                            clip_id,
+                            effect_index,
+                            corner,
+                            corners: shown,
+                            drag_start_pos: p,
+                            started: false,
+                        });
+                    }
                 }
             } else if hit(p).is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -6927,6 +6971,53 @@ fn drag_has_started(from: egui::Pos2, to: egui::Pos2) -> bool {
     from.distance(to) > TRANSFORM_DRAG_THRESHOLD
 }
 
+/// What a viewer handle gesture does this frame, decided by
+/// [`gizmo_step`] from the pointer alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GizmoStep {
+    /// The press is held short of the threshold: keep waiting.
+    Nothing,
+    /// The pointer has crossed the threshold: add the effect if the
+    /// clip has none, open the undo gesture, and keep the drag.
+    Start,
+    /// The drag goes on: write the pointer's transform.
+    Update,
+    /// Released past the threshold: write the final transform and close
+    /// the gesture. When it never opened (pressed, moved and released
+    /// within one frame, which egui coalesces), open it first.
+    End,
+    /// The gesture is over and leaves nothing behind: released back at
+    /// its start, the pointer gone from the window, or its release
+    /// never seen. One that opened is taken back; one that did not (a
+    /// click) has nothing to take back.
+    Abandon,
+}
+
+/// The state machine behind the transform gizmo and the corner-pin
+/// handles: given a drag that is armed (`started` false) or opened,
+/// where it was pressed, and the pointer this frame, which step to
+/// take. A press alone must not edit the clip; a drag that comes back
+/// to where it started must not either; and a drag must not be lost
+/// because it was over within one frame (#408) or its release was
+/// never delivered here (#409).
+fn gizmo_step(started: bool, start: egui::Pos2, pointer: Option<egui::Pos2>, down: bool, released: bool) -> GizmoStep {
+    let Some(pointer) = pointer else { return GizmoStep::Abandon };
+    let moved = drag_has_started(start, pointer);
+    if released {
+        if moved { GizmoStep::End } else { GizmoStep::Abandon }
+    } else if down {
+        if started {
+            GizmoStep::Update
+        } else if moved {
+            GizmoStep::Start
+        } else {
+            GizmoStep::Nothing
+        }
+    } else {
+        GizmoStep::Abandon
+    }
+}
+
 /// Where the rotation handle goes: `distance` above the top edge's
 /// middle, turned with the clip — or, when that would leave `inside`
 /// (the viewer, less the handle's own size), the same distance below
@@ -6966,5 +7057,63 @@ mod transform_gizmo_tests {
         // With room above the box, it stays where it always was.
         let roomy = rotation_handle_pos(egui::pos2(400.0, 200.0), pivot, 0.0, 25.0, viewer.shrink(7.0));
         assert_eq!(roomy, egui::pos2(400.0, 175.0));
+    }
+
+    // ── #408: the gesture state machine ──────────────────────────────
+    //
+    // `gizmo_step(started, start, pointer, down, released)`. A drag is
+    // armed on the press, at `start`; `started` says whether it has
+    // opened (crossed the threshold on an earlier frame).
+
+    const START: egui::Pos2 = egui::pos2(100.0, 100.0);
+    fn at(dx: f32) -> Option<egui::Pos2> {
+        Some(egui::pos2(START.x + dx, START.y))
+    }
+
+    /// Pressed, held with a twitch, released: nothing opens, and the
+    /// release drops the arm. Neither Add nor Begin nor End is emitted.
+    #[test]
+    fn a_click_on_a_handle_opens_nothing() {
+        assert_eq!(gizmo_step(false, START, at(0.0), true, false), GizmoStep::Nothing);
+        assert_eq!(gizmo_step(false, START, at(2.0), true, false), GizmoStep::Nothing, "a twitch short of the threshold keeps waiting");
+        assert_eq!(gizmo_step(false, START, at(2.0), false, true), GizmoStep::Abandon, "released short of it: the arm is dropped");
+    }
+
+    /// The ordinary drag, one frame per stage: the threshold opens the
+    /// gesture, holding updates it, releasing away from the start ends it.
+    #[test]
+    fn a_press_move_release_across_frames_is_start_update_end() {
+        assert_eq!(gizmo_step(false, START, at(10.0), true, false), GizmoStep::Start);
+        assert_eq!(gizmo_step(true, START, at(20.0), true, false), GizmoStep::Update);
+        assert_eq!(gizmo_step(true, START, at(30.0), false, true), GizmoStep::End);
+    }
+
+    /// Pressed on frame N; moved 40 px and released within frame N+1,
+    /// which egui delivers as one frame. The release applies the
+    /// threshold itself, so this is a drag: End, with the gesture
+    /// opened first. Before, "released and not started" was tested
+    /// first and the flick was a click that moved nothing.
+    #[test]
+    fn a_one_frame_flick_is_still_a_drag() {
+        assert_eq!(gizmo_step(false, START, at(40.0), false, true), GizmoStep::End);
+    }
+
+    /// Opened, then released back within the threshold of the press:
+    /// the gesture is taken back, and with it the Transform it added.
+    #[test]
+    fn a_drag_released_back_at_its_start_is_taken_back() {
+        assert_eq!(gizmo_step(true, START, at(2.0), false, true), GizmoStep::Abandon);
+        assert_eq!(gizmo_step(true, START, at(4.0), false, true), GizmoStep::End, "past the threshold it is an edit");
+    }
+
+    /// The release was never delivered here (the gizmo was not drawn on
+    /// that frame), or the pointer left the window: the gesture cannot
+    /// close as an edit and must not stay open (#409).
+    #[test]
+    fn a_missed_release_or_a_gone_pointer_takes_the_drag_back() {
+        assert_eq!(gizmo_step(true, START, at(30.0), false, false), GizmoStep::Abandon, "neither down nor released");
+        assert_eq!(gizmo_step(true, START, None, true, false), GizmoStep::Abandon, "pointer gone while held");
+        assert_eq!(gizmo_step(false, START, None, true, false), GizmoStep::Abandon, "an armed press with the pointer gone is dropped");
+        assert_eq!(gizmo_step(false, START, at(1.0), false, false), GizmoStep::Abandon, "an armed press whose release was missed is dropped");
     }
 }

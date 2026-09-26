@@ -971,9 +971,38 @@ impl CommandHistory {
     /// Captures the current state as the "before" snapshot.
     /// While a drag is active, calls to push() with the same key are suppressed
     /// by the command handler checking is_dragging().
+    ///
+    /// A gesture still open from before is dropped first, not combined
+    /// with this one: its "before" snapshot would otherwise become this
+    /// gesture's, and the entry pushed at `end_drag` would undo to a
+    /// state the user never dragged from. The caller closes the old
+    /// gesture properly when it can (#409).
     pub fn begin_drag(&mut self, key: String, old_state: HistoryEntry) {
+        if let Some(open) = self.pending_coalesce_key.take() {
+            tracing::warn!(open, new = %key, "begin_drag while a drag was still open: dropping the open one");
+            self.pending_old_entry = None;
+        }
         self.pending_coalesce_key = Some(key);
         self.pending_old_entry = Some(old_state);
+    }
+
+    /// Remove the entry on top of the undo stack when `f` accepts it,
+    /// as if it had never been pushed. For an edit that a gesture made
+    /// on its way in and then took back, such as the Transform the
+    /// gizmo adds for a drag that ended where it began: `undo` would
+    /// leave the edit on the redo stack. Nothing is removed inside a
+    /// batch, where the entry is not on the stack yet.
+    pub fn retract_last(&mut self, f: impl FnOnce(&EditCommand) -> bool) -> bool {
+        if self.batch.is_some() {
+            return false;
+        }
+        let Some(last) = self.undo_stack.back() else { return false };
+        if !f(&last.command) {
+            return false;
+        }
+        self.undo_stack.pop_back();
+        self.bump_revision();
+        true
     }
 
     /// Call when the user releases the drag (mouse up).
@@ -1798,6 +1827,70 @@ mod drag_coalesce_tests {
 
         assert_eq!(h.undo_stack.len(), 0,
             "no pending drag = no-op; stale duplicate end_drag should not produce a phantom undo entry");
+    }
+
+    // ── #409: a gesture dropped or re-begun ─────────────────────────
+
+    fn effect_entry(clip_id: ClipId, effect_index: usize, left: f32) -> HistoryEntry {
+        let crop = klipp_effects::BuiltinEffect::Crop { left, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+        HistoryEntry {
+            command: EditCommand::EditBuiltinEffect { clip_id, effect_index, old_effect: crop.clone(), new_effect: crop },
+        }
+    }
+
+    #[test]
+    fn an_abandoned_drag_leaves_no_trace() {
+        let clip = ClipId::new();
+        let mut h = CommandHistory::new();
+        h.begin_drag("viewer_transform_x".into(), effect_entry(clip, 0, 0.1));
+        assert!(h.is_dragging_builtin_effect(clip, 0));
+        h.abandon_pending_drag();
+        assert!(!h.is_dragging_builtin_effect(clip, 0), "the effect is no longer being dragged");
+        assert!(!h.is_any_drag_in_progress());
+        assert_eq!(h.undo_stack.len(), 0, "abandoning pushes nothing");
+        h.end_drag(effect_entry(clip, 0, 0.9));
+        assert_eq!(h.undo_stack.len(), 0, "a late end_drag has nothing to close");
+    }
+
+    #[test]
+    fn a_re_begun_drag_drops_the_open_one_rather_than_combining_them() {
+        let clip = ClipId::new();
+        let mut h = CommandHistory::new();
+        // The gizmo's gesture, its release never seen.
+        h.begin_drag("viewer_transform_x".into(), effect_entry(clip, 0, 0.1));
+        // The inspector then drags another effect on the clip.
+        h.begin_drag(format!("{clip:?}:builtin:1"), effect_entry(clip, 1, 0.5));
+        assert!(!h.is_dragging_builtin_effect(clip, 0), "the gizmo's gesture is gone");
+        assert!(h.is_dragging_builtin_effect(clip, 1));
+        h.end_drag(effect_entry(clip, 1, 0.9));
+        assert!(!h.is_any_drag_in_progress());
+        assert_eq!(h.undo_stack.len(), 1, "one entry, for the gesture that closed");
+        match &h.undo_stack[0].command {
+            EditCommand::EditBuiltinEffect { effect_index, old_effect, .. } => {
+                assert_eq!(*effect_index, 1);
+                assert_eq!(*old_effect, klipp_effects::BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
+                    "the entry undoes to the second gesture's start, not the gizmo's");
+            }
+            other => panic!("expected EditBuiltinEffect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retract_last_takes_back_the_top_entry_without_a_redo() {
+        let clip = ClipId::new();
+        let mut h = CommandHistory::new();
+        h.push(effect_entry(clip, 0, 0.1));
+        assert!(!h.retract_last(|_| false), "declined: nothing happens");
+        assert_eq!(h.undo_stack.len(), 1);
+        assert!(h.retract_last(|c| matches!(c, EditCommand::EditBuiltinEffect { .. })));
+        assert_eq!(h.undo_stack.len(), 0);
+        assert!(!h.can_redo(), "a retracted entry is not a redo");
+        assert!(!h.retract_last(|_| true), "nothing left to retract");
+        h.begin_batch();
+        h.push(effect_entry(clip, 0, 0.2));
+        assert!(!h.retract_last(|_| true), "inside a batch the entry is not on the stack yet");
+        h.end_batch();
+        assert_eq!(h.undo_stack.len(), 1);
     }
 }
 
