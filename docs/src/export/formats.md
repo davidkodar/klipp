@@ -54,14 +54,16 @@ The mix is written in stereo at 48 kHz.
 
 ## Colour Tags
 
-Every export except GIF is tagged limited range, and its colour tags follow the delivery:
+Every export except GIF is tagged limited range, and its colour tags follow the delivery and, for SDR, the output transform:
 
 | Delivery | Primaries | Transfer | Matrix |
 |---|---|---|---|
 | SDR | BT.709 | BT.709 | BT.709 |
+| SDR, sRGB curve only | BT.709 | sRGB (IEC 61966-2-1) | BT.709 |
+| SDR, DCI-P3 D65 | P3 D65 (SMPTE EG 432-1) | unspecified | BT.709 |
 | HLG | BT.2020 | ARIB STD-B67 (HLG) | BT.2020 non-constant |
 | HDR10 (PQ) | BT.2020 | SMPTE ST 2084 (PQ) | BT.2020 non-constant |
 
 A PQ file also carries the mastering-display metadata and MaxCLL / MaxFALL, measured on the frames written.
 
-The tags depend on the delivery, not on the output transform. An SDR export through the DCI-P3 D65 transform holds P3 pixels under BT.709 tags, so tell the receiving application its colour space by hand.
+The DCI-P3 D65 transform writes a pure 2.6 gamma, which has no transfer code (the SMPTE 428 code is for the XYZ encoding a DCP holds), so its transfer is left unspecified. Tell the receiving application the gamma when it asks.

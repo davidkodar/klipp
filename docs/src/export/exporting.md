@@ -103,7 +103,7 @@ A hardware encoder can be listed by FFmpeg and still refuse to open, for instanc
 Klipp does not make DCPs. The supported route is to export a high-quality master and wrap it with a dedicated tool: [DCP-o-matic](https://dcpomatic.com) (free) or easyDCP.
 
 - Export ProRes 4444 or ProRes 422 HQ in MOV, with PCM 24-bit audio, at the frame rate the DCP will play (usually 24 fps).
-- Klipp has no DCI XYZ output transform, so the master is RGB. DCP-o-matic converts it to XYZ; tell it the master's colour space when you add the file. The DCI-P3 D65 transform writes P3 pixels, but the file's colour tags still say BT.709, so set the input colour in DCP-o-matic by hand if you use it.
+- Klipp has no DCI XYZ output transform, so the master is RGB. DCP-o-matic converts it to XYZ; tell it the master's colour space when you add the file. The DCI-P3 D65 transform writes P3 pixels with a 2.6 gamma; the file is tagged P3 D65 with the transfer unspecified, so give DCP-o-matic the gamma by hand if you use it.
 - Klipp's export writes a stereo mix. A 5.1 or 7.1 DCP needs its sound prepared elsewhere.
 
 Native DCP export would need a DCI XYZ output transform, JPEG 2000 encoding to the DCI profile, MXF wrapping of picture and sound, and the CPL, PKL and ASSETMAP files that describe the package (usually done with asdcplib). It is not planned now.
