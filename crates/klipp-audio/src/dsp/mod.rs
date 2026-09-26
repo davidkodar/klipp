@@ -12,6 +12,7 @@ pub mod eq;
 pub mod gate;
 pub mod high_pass;
 pub mod denoiser;
+pub mod resample;
 pub mod voice_isolation;
 pub mod hum_removal;
 pub mod limiter;
@@ -28,7 +29,10 @@ pub enum ParamUnit {
     Db,
     Hz,
     Ms,
+    /// Stored as 0..100 and shown as is.
     Percent,
+    /// Stored as 0..1 and shown as a percentage (0.75 reads "75%").
+    Fraction,
     Ratio,
     None,
 }
@@ -101,6 +105,11 @@ pub trait AudioEffect: Send {
     fn set_param(&mut self, name: &str, value: f32);
     fn process(&mut self, buffer: &mut [f32], ctx: &AudioProcessContext);
     fn reset(&mut self);
+    /// Get ready to process `channels`-channel audio before the first
+    /// block, for effects with a costly start (Voice Isolation builds its
+    /// model engine). Real-time feeds call this when they build a chain,
+    /// so the start does not stall the first block after Play.
+    fn prepare(&mut self, _channels: usize) {}
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -132,6 +141,9 @@ const SUB_CHUNK_FRAMES: usize = 64;
 pub struct AudioEffectChain {
     slots: Vec<ChainSlot>,
     dry_buffer: Vec<f32>,
+    /// Output frames still to drop for [`Self::process_aligned`]; `None`
+    /// until the first aligned call after construction or `reset`.
+    align_trim_frames: Option<usize>,
 }
 
 struct ChainSlot {
@@ -162,6 +174,7 @@ impl AudioEffectChain {
         Self {
             slots: Vec::new(),
             dry_buffer: Vec::new(),
+            align_trim_frames: None,
         }
     }
 
@@ -362,6 +375,33 @@ impl AudioEffectChain {
         for slot in &mut self.slots {
             slot.effect.reset();
         }
+        self.align_trim_frames = None;
+    }
+
+    /// Let every effect do its costly start now rather than on the first
+    /// block. See [`AudioEffect::prepare`].
+    pub fn prepare(&mut self, channels: usize) {
+        for slot in &mut self.slots {
+            slot.effect.prepare(channels);
+        }
+    }
+
+    /// Process a streamed block and keep the output aligned with the input
+    /// position. Effects that look ahead (Voice Isolation, the Broadband
+    /// Denoiser, Pitch Shift) delay their output by their latency; after
+    /// construction or `reset` (a seek), the first `total_latency_samples`
+    /// frames of output are dropped once, so what follows lines up with the
+    /// picture. The caller has consumed the whole input either way.
+    pub fn process_aligned(&mut self, buffer: &mut Vec<f32>, ctx: &AudioProcessContext) {
+        let pending = match self.align_trim_frames {
+            Some(n) => n,
+            None => self.total_latency_samples(ctx.sample_rate) as usize,
+        };
+        self.process(buffer, ctx);
+        let channels = ctx.channels.max(1) as usize;
+        let drop_frames = pending.min(buffer.len() / channels);
+        buffer.drain(..drop_frames * channels);
+        self.align_trim_frames = Some(pending - drop_frames);
     }
 
     pub fn slot_count(&self) -> usize {

@@ -758,18 +758,14 @@ pub fn show_content(
                                 desc.name,
                                 clip_time_secs,
                                 static_value, keyframe_tolerance);
-                            let unit_suffix = match desc.unit {
-                                klipp_audio::dsp::ParamUnit::Db => " dB",
-                                klipp_audio::dsp::ParamUnit::Hz => " Hz",
-                                klipp_audio::dsp::ParamUnit::Ms => " ms",
-                                klipp_audio::dsp::ParamUnit::Percent => "%",
-                                klipp_audio::dsp::ParamUnit::Ratio => ":1",
-                                klipp_audio::dsp::ParamUnit::None => "",
-                            };
+                            let (display_scale, unit_suffix) = param_display(desc.unit);
 
-                            let range = desc.max - desc.min;
+                            // Fractions are stored 0..1 and shown as percent;
+                            // only the slider sees the scaled value.
+                            let range = (desc.max - desc.min) * display_scale;
                             let speed = (range * 0.003) as f64;
                             let decimals = if range > 100.0 { 0 } else if range > 10.0 { 1 } else { 2 };
+                            let mut shown = val * display_scale;
                             let kf_state = if desc.is_keyframable() {
                                 Some(audio_kf_state(audio_effect_keyframes, idx, desc.name, clip_time_secs, keyframe_tolerance))
                             } else {
@@ -779,14 +775,15 @@ pub fn show_content(
                             let resp = scrubby_param_row(
                                 ui,
                                 desc.label,
-                                &mut val,
-                                desc.min..=desc.max,
-                                desc.default,
+                                &mut shown,
+                                desc.min * display_scale..=desc.max * display_scale,
+                                desc.default * display_scale,
                                 speed,
                                 decimals,
                                 unit_suffix,
                                 kf_state,
                             );
+                            val = shown / display_scale;
 
                             // Plain drag with no kfs → static param update.
                             // Drag with kfs → AddAudioEffectKeyframe at the
@@ -968,7 +965,7 @@ fn render_ladspa_params(
             klipp_audio::dsp::ParamUnit::Db => " dB",
             klipp_audio::dsp::ParamUnit::Hz => " Hz",
             klipp_audio::dsp::ParamUnit::Ms => " ms",
-            klipp_audio::dsp::ParamUnit::Percent => "%",
+            klipp_audio::dsp::ParamUnit::Percent | klipp_audio::dsp::ParamUnit::Fraction => "%",
             klipp_audio::dsp::ParamUnit::Ratio => ":1",
             klipp_audio::dsp::ParamUnit::None => "",
         };
@@ -1214,6 +1211,21 @@ fn render_clap_params(
 // (state lookup, kf evaluation, has-kfs check) so the diamond's
 // behavior is correct even when the visual smoke test isn't run.
 // ═══════════════════════════════════════════════════════════════════
+/// How a built-in parameter is shown: a scale from its stored value to
+/// the slider, and the unit suffix. Fractions (0..1) read as percentages.
+fn param_display(unit: klipp_audio::dsp::ParamUnit) -> (f32, &'static str) {
+    use klipp_audio::dsp::ParamUnit;
+    match unit {
+        ParamUnit::Db => (1.0, " dB"),
+        ParamUnit::Hz => (1.0, " Hz"),
+        ParamUnit::Ms => (1.0, " ms"),
+        ParamUnit::Percent => (1.0, "%"),
+        ParamUnit::Fraction => (100.0, "%"),
+        ParamUnit::Ratio => (1.0, ":1"),
+        ParamUnit::None => (1.0, ""),
+    }
+}
+
 /// Voice Isolation presets: (name, hint, Reduction dB).
 const VOICE_ISOLATION_PRESETS: &[(&str, &str, f32)] = &[
     ("Natural", "Lowers the background by 12 dB: the voice leads, the place is still there", 12.0),
@@ -1396,6 +1408,22 @@ fn show_denoiser_controls(
 mod helper_tests {
     use super::*;
     use klipp_core::Interpolation;
+
+    #[test]
+    fn fractions_read_as_percent_and_percent_params_stay_as_they_are() {
+        use klipp_audio::dsp::ParamUnit;
+        // The Broadband Denoiser stores Reduction 0..1; full reduction
+        // used to read "1.00%".
+        let (scale, suffix) = param_display(ParamUnit::Fraction);
+        assert_eq!((1.0 * scale, suffix), (100.0, "%"));
+        // Chorus mix and friends already store 0..100.
+        assert_eq!(param_display(ParamUnit::Percent), (1.0, "%"));
+        let denoiser = klipp_audio::dsp::create_effect("denoiser", 48_000).unwrap();
+        for name in ["strength", "floor", "wind"] {
+            let desc = denoiser.param_descriptors().iter().find(|d| d.name == name).unwrap();
+            assert_eq!(desc.unit, ParamUnit::Fraction, "{name} is stored 0..1");
+        }
+    }
 
     fn kf(t: f64, v: f32) -> Keyframe {
         Keyframe {

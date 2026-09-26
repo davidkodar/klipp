@@ -1275,8 +1275,11 @@ fn tool_definitions() -> Vec<Value> {
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
               shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
-              clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
+              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
+              clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
+              Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
+              default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
+              wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
               clips after keep their place, close the gap or overlap yourself. \
@@ -1430,8 +1433,11 @@ fn tool_definitions() -> Vec<Value> {
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
               shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, wind?, hiss?, hum?, deess?} — clean a \
-              clip's sound: wind/rumble, tape hiss, mains hum, harsh sibilance, each its tool. \
+              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
+              clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
+              Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
+              default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
+              wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
               retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
               clips after keep their place, close the gap or overlap yourself. \

@@ -346,11 +346,14 @@ fn pcm_feed_thread(
 
     // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
-        let chain = AudioEffectChain::from_instances_with_kfs(
+        let mut chain = AudioEffectChain::from_instances_with_kfs(
             &audio_effects,
             &audio_effect_keyframes,
             output_rate,
         );
+        // Start costly effects now, while paused, not on the first block
+        // after Play, where it would starve the sound card.
+        chain.prepare(CHANNELS);
         debug!(
             "pcm_feed: {} audio effects active ({} kf tracks)",
             chain.slot_count(),
@@ -493,7 +496,7 @@ fn pcm_feed_thread(
             let remaining = total_floats - read_pos;
             let to_push = chunk_floats.min(remaining).min(vacant);
 
-            if is_muted {
+            if is_muted && effect_chain.is_none() {
                 let zeros = vec![0.0f32; to_push];
                 producer.push_slice(&zeros);
             } else if effect_chain.is_none() && !has_fade && (vol - 1.0).abs() < 0.01 {
@@ -506,7 +509,9 @@ fn pcm_feed_thread(
                         let frame_idx = (read_pos / CHANNELS) + i;
                         let pos_secs = frame_idx as f64 / SAMPLE_RATE as f64;
                         let fade = fade_envelope(pos_secs, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
-                        let mult = vol * fade;
+                        // Muted audio still runs through the chain (as
+                        // silence) so its alignment survives the mute.
+                        let mult = if is_muted { 0.0 } else { vol * fade };
                         pair.iter().map(move |s| s * mult)
                     })
                     .collect();
@@ -521,7 +526,9 @@ fn pcm_feed_thread(
                         channels: CHANNELS as u32,
                         clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
                     };
-                    chain.process(&mut scaled, &fx_ctx);
+                    // Aligned: effects that look ahead would otherwise
+                    // play late against the picture by their latency.
+                    chain.process_aligned(&mut scaled, &fx_ctx);
                 }
                 producer.push_slice(&scaled);
             }
@@ -552,6 +559,9 @@ fn pcm_feed_thread(
             }
 
             if !buf.is_empty() {
+                // Source frames consumed, counted before the chain can
+                // trim its latency off the head of the output.
+                let produced_frames = buf.len() / CHANNELS;
                 // Apply audio effects chain after resample + volume/fade.
                 // Time domain matches the fast path: source-position seconds
                 // minus clip's source_in.
@@ -562,11 +572,11 @@ fn pcm_feed_thread(
                         channels: CHANNELS as u32,
                         clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
                     };
-                    chain.process(&mut buf, &fx_ctx);
+                    chain.process_aligned(&mut buf, &fx_ctx);
                 }
                 producer.push_slice(&buf);
                 // Advance read_pos by the source frames consumed
-                let source_frames_consumed = (buf.len() / CHANNELS) as f64 * rate_ratio;
+                let source_frames_consumed = produced_frames as f64 * rate_ratio;
                 read_pos += (source_frames_consumed as usize) * CHANNELS;
                 read_pos = read_pos.min(total_floats);
             }

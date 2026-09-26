@@ -797,7 +797,7 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
                 klipp_audio::dsp::ParamUnit::Db => " dB",
                 klipp_audio::dsp::ParamUnit::Hz => " Hz",
                 klipp_audio::dsp::ParamUnit::Ms => " ms",
-                klipp_audio::dsp::ParamUnit::Percent => "%",
+                klipp_audio::dsp::ParamUnit::Percent | klipp_audio::dsp::ParamUnit::Fraction => "%",
                 klipp_audio::dsp::ParamUnit::Ratio => ":1",
                 klipp_audio::dsp::ParamUnit::None => "",
             };

@@ -189,10 +189,18 @@ exist until the plan runs.
   kept beside the file for your export notes. Match the reference's energy
   with legally-usable music, never its own track; reach for effects on
   transitions, cuts and atmosphere.
-- `clean_audio {clip_id, wind?, hiss?, hum?, deess?}`: clean a clip's
-  sound. Each flag adds the right tool: wind and rumble, tape or air
-  hiss, mains hum, harsh sibilance. The beach-in-a-gale clip wants
-  `wind`.
+- `clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?}`:
+  clean a clip's sound. Each flag adds the right tool. `voice` is Voice
+  Isolation, an AI model that separates speech from wind, traffic and
+  room noise; it is the best cleanup wherever someone speaks, and covers
+  wind and hiss too. `reduction_db` sets how far the rest goes down:
+  12 keeps the place audible, 24 (the default) is broadcast-clean, 60
+  removes all it can. Leave `voice` off where nobody speaks, or it takes
+  the ambience with the noise; there `wind` (gusts and rumble) and
+  `hiss` do the job. `hum` removes mains buzz and `deess` harsh
+  sibilance. The presenter on a beach in a gale wants `voice`; the
+  empty beach itself wants `wind`. Voice Isolation's model downloads
+  only when the user asks; the reply says when it is missing.
 - `align_audio` (the `klipp_align_audio` tool): line a clip's sound up
   with a reference clip's — dual-system sound, a separate recorder
   against the camera's scratch track. It cross-correlates the two,
