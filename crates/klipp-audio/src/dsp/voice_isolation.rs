@@ -234,8 +234,19 @@ impl VoiceIsolation {
         self.apply_limit();
     }
 
+    /// Input-to-output delay. Known before the engine starts (it starts on
+    /// the first block), because export and playback delay compensation
+    /// ask for it before processing anything.
     fn total_latency(&self) -> usize {
-        self.stream.as_ref().map_or(0, |s| s.hop + s.model_delay)
+        if let Some(s) = &self.stream {
+            return s.hop + s.model_delay;
+        }
+        if self.sample_rate != MODEL_RATE {
+            return 0;
+        }
+        model_params()
+            .and_then(|p| Some(p.hop_size()? + p.latency_samples()?))
+            .unwrap_or(0)
     }
 }
 
@@ -412,6 +423,21 @@ mod tests {
             let sum = isolated[i] + removed[i];
             assert!((sum - input[i - latency]).abs() < 1e-4, "sample {i}: {sum} vs {}", input[i - latency]);
         }
+    }
+
+    #[test]
+    fn latency_is_known_before_the_first_block() {
+        if !model_installed() {
+            eprintln!("skipped: {MODEL_ID} not downloaded");
+            return;
+        }
+        // Export and playback compensation ask before processing.
+        let mut fx = VoiceIsolation::new(MODEL_RATE);
+        let before = fx.latency_samples();
+        let mut buf = noise(MODEL_RATE as usize / 10, 9);
+        fx.process(&mut buf, &ctx(2));
+        assert!(before > 0, "latency must be reported before the engine starts");
+        assert_eq!(before, fx.latency_samples(), "and match the running engine");
     }
 
     #[test]

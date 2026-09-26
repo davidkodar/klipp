@@ -25,6 +25,25 @@ pub struct DfParams {
 }
 
 impl DfParams {
+    /// Samples from input to output, as `DfTract` will run: the STFT
+    /// overlap plus the model's lookahead. Read from the model's config so
+    /// callers can know it before building an engine. (Klipp addition.)
+    pub fn latency_samples(&self) -> Option<usize> {
+        let model_cfg = self.config.section(Some("deepfilternet"))?;
+        let df_cfg = self.config.section(Some("df"))?;
+        let get = |section: &ini::Properties, key: &str| section.get(key)?.parse::<usize>().ok();
+        let hop = get(df_cfg, "hop_size")?;
+        let fft = get(df_cfg, "fft_size")?;
+        let conv_lookahead = get(model_cfg, "conv_lookahead")?;
+        let df_lookahead = get(df_cfg, "df_lookahead").or_else(|| get(model_cfg, "df_lookahead"))?;
+        Some(fft - hop + conv_lookahead.max(df_lookahead) * hop)
+    }
+
+    /// The engine's hop size in samples. (Klipp addition.)
+    pub fn hop_size(&self) -> Option<usize> {
+        self.config.section(Some("df"))?.get("hop_size")?.parse().ok()
+    }
+
     pub fn new(tar_file: PathBuf) -> Result<Self> {
         let file = File::open(tar_file).context("Could not open model tar file.")?;
         Self::from_targz(file)
