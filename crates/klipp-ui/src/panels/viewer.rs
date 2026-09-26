@@ -1732,7 +1732,7 @@ impl ViewerPanel {
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {
-            self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
+            self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
             self.draw_corner_pin_handles(ui, state, image_rect, cmds);
         }
 
@@ -4207,6 +4207,7 @@ impl ViewerPanel {
         ui: &mut egui::Ui,
         state: &mut AppState,
         image_rect: egui::Rect,
+        viewer_rect: egui::Rect,
         frame_w: f32,
         frame_h: f32,
         cmds: &mut Vec<AppCommand>,
@@ -4233,6 +4234,7 @@ impl ViewerPanel {
 
         let transform = get_transform(clip);
         let effect_index = find_transform_index(clip);
+        let n_builtin_effects = clip.builtin_effects.len();
 
         // Coordinate mapping: frame pixels -> screen pixels
         let scale_to_screen_x = image_rect.width() / frame_w;
@@ -4293,10 +4295,14 @@ impl ViewerPanel {
         // don't overlap the viewer rect, so they don't visually
         // cover the handles in regular dock layouts) while letting
         // every popup naturally occlude it.
+        //
+        // Clipped to the viewer: a picture that fills the viewer's height
+        // put its rotation handle above the panel, over the page tabs,
+        // where a click on "Colour" grabbed it.
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Middle,
             ui.id().with("transform_controls"),
-        ));
+        )).with_clip_rect(viewer_rect);
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
@@ -4369,17 +4375,19 @@ impl ViewerPanel {
 
         // Rotation handle — small circle above the top edge
         let rot_distance = 25.0;
-        let rot_handle_pos = rotate_point(
-            egui::pos2(box_center_x, box_center_y - half_h - rot_distance),
+        let rot_radius = 5.0;
+        let rot_handle_pos = rotation_handle_pos(
+            egui::pos2(box_center_x, box_center_y - half_h),
             pos_screen,
             rotation_rad,
+            rot_distance,
+            viewer_rect.shrink(rot_radius + 2.0),
         );
         let rot_connector_base = mid_top;
         painter.line_segment(
             [rot_connector_base, rot_handle_pos],
             egui::Stroke::new(1.5_f32, outline_color),
         );
-        let rot_radius = 5.0;
         painter.circle_filled(rot_handle_pos, rot_radius, egui::Color32::WHITE);
         painter.circle_stroke(rot_handle_pos, rot_radius, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
         // Small arc icon inside rotation handle
@@ -4408,7 +4416,9 @@ impl ViewerPanel {
 
         // Handle ongoing drag
         if let Some(drag) = state.viewer_transform_drag.take() {
-            if pointer_released {
+            if pointer_released && !drag.started {
+                // A click on a handle, not a drag: nothing to record.
+            } else if pointer_released {
                 // Drag ended — emit EndEffectDrag for undo coalescing
                 let final_transform = self.compute_dragged_transform(
                     &drag, pointer_pos,
@@ -4424,6 +4434,28 @@ impl ViewerPanel {
                     });
                 }
                 // Don't put drag back — it's done
+            } else if pointer_down && !drag.started {
+                // Pressed but not moved yet: nothing has changed. Past the
+                // threshold it becomes a drag, and only then is the effect
+                // added and the undo gesture opened.
+                let mut drag = drag;
+                if pointer_pos.is_some_and(|p| drag_has_started(drag.drag_start_pos, p)) {
+                    if effect_index.is_none() {
+                        cmds.push(AppCommand::AddBuiltinEffect {
+                            clip_id,
+                            effect: drag.initial_transform.to_builtin_effect(),
+                        });
+                    }
+                    cmds.push(AppCommand::BeginEffectDrag {
+                        key: format!("viewer_transform_{}", clip_id.0),
+                        clip_id,
+                        effect_index: drag.effect_index,
+                        old_effect: drag.initial_transform.to_builtin_effect(),
+                    });
+                    drag.started = true;
+                }
+                state.viewer_transform_drag = Some(drag);
+                ui.ctx().request_repaint();
             } else if pointer_down {
                 // Drag continues — compute new transform and emit update
                 let new_transform = self.compute_dragged_transform(
@@ -4461,36 +4493,25 @@ impl ViewerPanel {
             if pointer_down && ui.input(|i| i.pointer.primary_pressed()) {
                 // Only start a drag if the pointer is within the image_rect (with some margin)
                 let expanded = image_rect.expand(40.0);
-                if expanded.contains(pointer) {
+                if expanded.contains(pointer) && viewer_rect.contains(pointer) {
                     let handle = self.hit_test_handles(
                         pointer, pos_screen, &corners, rot_handle_pos,
                         center_radius, handle_half, rot_radius, hit_radius,
                     );
 
                     if let Some(handle) = handle {
-                        let eff_idx = effect_index.unwrap_or(0);
-                        // If no transform effect exists, add one first
-                        if effect_index.is_none() {
-                            cmds.push(AppCommand::AddBuiltinEffect {
-                                clip_id,
-                                effect: transform.to_builtin_effect(),
-                            });
-                        }
-
-                        // Begin undo coalescing
-                        cmds.push(AppCommand::BeginEffectDrag {
-                            key: format!("viewer_transform_{}", clip_id.0),
-                            clip_id,
-                            effect_index: eff_idx,
-                            old_effect: transform.to_builtin_effect(),
-                        });
-
+                        // Armed, not started: the effect and the undo
+                        // gesture wait for the pointer to move. A new
+                        // transform is appended after the clip's other
+                        // effects, so that is where it will be.
+                        let eff_idx = effect_index.unwrap_or(n_builtin_effects);
                         state.viewer_transform_drag = Some(ViewerTransformDrag {
                             clip_id,
                             effect_index: eff_idx,
                             handle,
                             initial_transform: transform,
                             drag_start_pos: pointer,
+                            started: false,
                         });
                     }
                 }
@@ -6894,5 +6915,55 @@ mod fitted_backing_editor_tests {
         let size = object.transform.size;
         assert!(size.x <= object.transform.size.x + 1e-6);
         assert!(size.y <= object.transform.size.y + 1e-6);
+    }
+}
+
+/// How far the pointer must move from where it was pressed on a handle
+/// before the press is a drag. A click alone must not edit the clip.
+const TRANSFORM_DRAG_THRESHOLD: f32 = 3.0;
+
+fn drag_has_started(from: egui::Pos2, to: egui::Pos2) -> bool {
+    from.distance(to) > TRANSFORM_DRAG_THRESHOLD
+}
+
+/// Where the rotation handle goes: `distance` above the top edge's
+/// middle, turned with the clip — or, when that would leave `inside`
+/// (the viewer, less the handle's own size), the same distance below
+/// the edge, inside the box, where it can still be reached.
+fn rotation_handle_pos(top_mid: egui::Pos2, pivot: egui::Pos2, rotation_rad: f32, distance: f32, inside: egui::Rect) -> egui::Pos2 {
+    let above = rotate_point(egui::pos2(top_mid.x, top_mid.y - distance), pivot, rotation_rad);
+    if inside.contains(above) {
+        above
+    } else {
+        rotate_point(egui::pos2(top_mid.x, top_mid.y + distance), pivot, rotation_rad)
+    }
+}
+
+#[cfg(test)]
+mod transform_gizmo_tests {
+    use super::*;
+
+    #[test]
+    fn a_press_that_does_not_move_is_not_a_drag() {
+        let p = egui::pos2(100.0, 100.0);
+        assert!(!drag_has_started(p, p));
+        assert!(!drag_has_started(p, egui::pos2(102.0, 101.0)));
+        assert!(drag_has_started(p, egui::pos2(104.0, 100.0)));
+    }
+
+    /// #322: a portrait picture fills the viewer's height, so its top
+    /// edge is the viewer's top; the handle goes inside rather than
+    /// over the page tabs above.
+    #[test]
+    fn the_rotation_handle_stays_inside_the_viewer() {
+        let viewer = egui::Rect::from_min_max(egui::pos2(0.0, 40.0), egui::pos2(800.0, 600.0));
+        let top_mid = egui::pos2(400.0, 40.0);
+        let pivot = egui::pos2(400.0, 320.0);
+        let h = rotation_handle_pos(top_mid, pivot, 0.0, 25.0, viewer.shrink(7.0));
+        assert!(viewer.contains(h), "the handle is outside the viewer at {h:?}");
+        assert_eq!(h, egui::pos2(400.0, 65.0));
+        // With room above the box, it stays where it always was.
+        let roomy = rotation_handle_pos(egui::pos2(400.0, 200.0), pivot, 0.0, 25.0, viewer.shrink(7.0));
+        assert_eq!(roomy, egui::pos2(400.0, 175.0));
     }
 }

@@ -179,6 +179,10 @@ pub struct ViewerTransformDrag {
     pub handle: TransformHandle,
     pub initial_transform: crate::inspector::video_tab::TransformParams,
     pub drag_start_pos: egui::Pos2,
+    /// Whether the pointer has moved far enough for this to be a drag.
+    /// A press alone changes nothing: the Transform effect is added, and
+    /// the undo gesture opened, only once it has.
+    pub started: bool,
 }
 
 /// A corner-pin handle being dragged in the viewer: which corner, and
