@@ -29127,8 +29127,11 @@ impl eframe::App for KlippApp {
         // Update thumbnails: convert ready thumbnails to textures
         self.update_thumbnail_textures(ctx);
 
-        // Reset skim flag for this frame (set by browser or timeline hover)
-        self.state.browser_skim_active_this_frame = false;
+        // Reset skim flag for this frame (set by browser or timeline hover).
+        // A playhead drag holds it for the whole gesture: `scrub_to` only
+        // runs on frames egui reports the drag on, and the skim must not be
+        // declared over on the frames in between.
+        self.state.browser_skim_active_this_frame = self.state.is_scrubbing;
 
         // Process pending skim transcodes (queued during drain_events)
         let pending_skims: Vec<MediaId> = std::mem::take(&mut self.state.pending_skim_transcodes);
@@ -29896,9 +29899,15 @@ impl eframe::App for KlippApp {
         // quiet past the deadline: one SeekTo(committed playhead) to
         // repaint the Program viewer over the last skim frame.
         if let Some(deadline) = self.state.program_skim_revert_deadline {
-            if self.state.program_skim_active || self.state.playback == PlaybackState::Playing {
-                // Skim resumed (flag flap) or playback took over —
-                // the engine repaints on its own; no revert needed.
+            if self.state.program_skim_active
+                || self.state.playback == PlaybackState::Playing
+                || self.state.is_scrubbing
+            {
+                // Skim resumed (flag flap), playback took over, or a drag
+                // began — the engine repaints on its own and `scrub_end`
+                // commits the drop position, so no revert is needed. A
+                // deadline armed by the hover that ended as the drag began
+                // would otherwise still fire in the middle of it.
                 self.state.program_skim_revert_deadline = None;
             } else if std::time::Instant::now() >= deadline {
                 self.state.program_skim_revert_deadline = None;

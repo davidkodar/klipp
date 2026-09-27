@@ -4510,6 +4510,20 @@ impl TimelinePanel {
             state.showing_thumbnail_preview = false;
         }
 
+        // Hold the skim "alive" for the whole gesture. The debounced revert
+        // in `app.rs` fires 150ms after no panel claimed a skim, and each
+        // firing sends a `SeekTo` that renders a *full-size* parked
+        // composite — a drag is Paused, so the Playback Quality reduction
+        // that applies while playing does not. Over a gap, a title, a
+        // generator, a compound clip or media still transcoding nothing
+        // claimed the skim, so that fired over and over mid-drag. A drag is
+        // a skim whether or not the thing under the playhead has a skim
+        // file; hover still gets its debounce, because hover is not a
+        // gesture with a beginning and an end.
+        if state.is_scrubbing {
+            state.browser_skim_active_this_frame = true;
+        }
+
         // Drive the high-quality skim decode + audio skim. Same pipeline the
         // media browser hover uses — produces mid-res preview frames at
         // `prefs.playback.skim_resolution` instead of the upscaled-thumbnail
@@ -18344,6 +18358,41 @@ mod scrub_preview_tests {
         assert!(
             !cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
             "no skim file, nothing to ask the skim worker for",
+        );
+    }
+
+    /// Over a gap, a title, a generator or media still transcoding there
+    /// is no skim file, so nothing claimed the skim and the debounced
+    /// revert fired again and again mid-drag — a full-size parked
+    /// composite each time.
+    #[test]
+    fn a_drag_claims_the_skim_even_with_no_skim_file() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0);
+
+        assert!(
+            state.browser_skim_active_this_frame,
+            "the gesture must count as a skim for its whole length",
+        );
+    }
+
+    /// And a plain tap on the ruler is not a gesture, so it leaves the
+    /// debounce the revert was built for alone.
+    #[test]
+    fn a_plain_ruler_click_does_not_claim_the_skim() {
+        let mut state = scrub_state(None);
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0);
+
+        assert!(
+            !state.browser_skim_active_this_frame,
+            "a click is not a drag; the revert still has its debounce",
         );
     }
 }
