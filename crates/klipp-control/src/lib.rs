@@ -1361,6 +1361,17 @@ fn with_project_generation(ctx: &ControlContext, mut v: serde_json::Value) -> se
     v
 }
 
+/// A PNG's size from its header, once the file is whole (it ends in the
+/// IEND chunk): a file still being written reads as `None`.
+fn png_size_if_whole(bytes: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 33 || !bytes.starts_with(SIGNATURE) || &bytes[12..16] != b"IHDR" || !bytes.ends_with(&[0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]) {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    Some((be(16), be(20)))
+}
+
 fn project_status(ctx: &ControlContext) -> Result<klipp_core::ProjectStatus, String> {
     Ok(ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?.clone())
 }
@@ -3603,6 +3614,84 @@ fn handle(
             Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
         }
 
+        ControlCommand::RelinkMedia { media_id, path, force } => {
+            let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
+            let p = std::path::PathBuf::from(&path);
+            if !p.is_absolute() || !p.is_file() {
+                return Err(format!("no file at {path:?} (give an absolute path)"));
+            }
+            // What the project knew of the item, judged against the file
+            // before relinking, by the rules a relink search uses: the
+            // answer says whether it is the same clip.
+            let wanted = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_media::relink::Wanted::from_item(pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?)
+            };
+            let verdict = klipp_media::relink::check_pick(&wanted, &p);
+            use klipp_media::relink::PickVerdict;
+            if let (PickVerdict::Contradicted(why), false) = (&verdict, force) {
+                return Err(format!("{path} is probably not the same clip: {why}. Nothing was relinked; send force: true to relink it anyway"));
+            }
+            let mut v = send(AppCommand::RelinkMedia { media_id: id, new_path: p })?;
+            v["check"] = match verdict {
+                PickVerdict::Confirmed(w) => json!({ "verdict": "same clip", "differences": w }),
+                PickVerdict::Unconfirmed(w) => json!({ "verdict": "nothing ties it to the clip, nothing against it", "differences": w }),
+                PickVerdict::Contradicted(why) => json!({ "verdict": "probably not the same clip", "why": why }),
+            };
+            Ok(v)
+        }
+
+        ControlCommand::WindowScreenshot { path, max_width } => {
+            if in_batch {
+                return Err("window_screenshot is not part of a batch; send it on its own".into());
+            }
+            let path = match path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::env::temp_dir().join(format!("klipp-window-{}.png", std::process::id())),
+            };
+            if !path.is_absolute() {
+                return Err("path must be absolute".into());
+            }
+            let _ = std::fs::remove_file(&path);
+            send(AppCommand::CaptureWindow { path: path.clone(), max_width: Some(max_width.unwrap_or(1600)) })?;
+            // Written by the UI on the frame after it asks egui; waited for
+            // until it is there and whole.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some((width, height)) = std::fs::read(&path).ok().as_deref().and_then(png_size_if_whole) {
+                    return Ok(json!({
+                        "path": path.to_string_lossy(),
+                        "width": width,
+                        "height": height,
+                        "note": "The window as drawn: the viewer through its monitor LUT and overlays. Measure colour with screenshot or frame_stats, not this.",
+                    }));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err("the window was not captured within 5 s (is the window shown?)".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        ControlCommand::TagMedia { media_id, add, remove } => {
+            let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
+            let tags = {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?.tags.clone()
+            };
+            let mut commands = Vec::new();
+            // Removed by index, highest first, so the rest keep theirs.
+            let mut gone: Vec<usize> = remove.iter().filter_map(|t| tags.iter().position(|x| x == t)).collect();
+            gone.sort_unstable_by(|a, b| b.cmp(a));
+            gone.dedup();
+            commands.extend(gone.into_iter().map(|tag_index| AppCommand::RemoveMediaTag { media_id: id, tag_index }));
+            commands.extend(add.into_iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).map(|tag| AppCommand::AddMediaTag { media_id: id, tag }));
+            if commands.is_empty() {
+                return Err("nothing to change: give tags to add or remove (removing needs a tag the item has)".into());
+            }
+            send_envelope(ctx, commands, true)
+        }
+
         ControlCommand::ListMedia => {
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             Ok(json!({
@@ -3617,6 +3706,8 @@ fn handle(
                     "video_codec": m.video_codec,
                     "has_audio": m.has_audio,
                     "log_format": log_format_json(m),
+                    "offline": m.offline,
+                    "tags": m.tags,
                 })).collect::<Vec<_>>(),
             }))
         }
@@ -5418,5 +5509,21 @@ mod fps_fraction_tests {
         assert_eq!(super::fps_fraction(59.94), Ok((60000, 1001)));
         assert!(super::fps_fraction(0.0).is_err());
         assert!(super::fps_fraction(25.5).is_err());
+    }
+}
+
+#[cfg(test)]
+mod png_size_tests {
+    /// A whole PNG gives its size; a cut-off one, or not a PNG, nothing.
+    #[test]
+    fn a_whole_png_gives_its_size() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&640u32.to_be_bytes());
+        png.extend_from_slice(&360u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let whole = [png.clone(), vec![0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]].concat();
+        assert_eq!(super::png_size_if_whole(&whole), Some((640, 360)));
+        assert_eq!(super::png_size_if_whole(&png), None, "no IEND yet");
+        assert_eq!(super::png_size_if_whole(b"not a png at all, no, not one bit of it"), None);
     }
 }

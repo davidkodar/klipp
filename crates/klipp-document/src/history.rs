@@ -169,6 +169,9 @@ pub enum EditCommand {
     SetClipRole { clip_id: ClipId, old: klipp_core::ClipRole, new: klipp_core::ClipRole },
     /// The sequence's picture size and rate, as (resolution, fps).
     SetSequenceFormat { old: (Resolution, Fps), new: (Resolution, Fps) },
+    /// The sequence's markers, the whole list either side: a marker
+    /// added, changed or removed, as one undo step.
+    SetMarkers { old: Vec<klipp_timeline::Marker>, new: Vec<klipp_timeline::Marker> },
     /// The move over the whole sequence; see `klipp_timeline::Camera`.
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
@@ -711,6 +714,7 @@ impl EditCommand {
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
+            EditCommand::SetMarkers { .. } => "Markers",
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::SetTemplateInstance { .. } => "Template Parameter",

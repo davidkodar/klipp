@@ -1,7 +1,7 @@
 use klipp_core::{MarkerColor, MarkerId, MarkerKind, Timecode};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
     pub id: MarkerId,
     pub position: Timecode,

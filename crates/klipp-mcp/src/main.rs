@@ -681,6 +681,23 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_relink_media" => json!({
+            "method": "relink_media",
+            "media_id": arg_str(args, "media_id")?,
+            "path": arg_str(args, "path")?,
+            "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+        }),
+        "klipp_tag_media" => json!({
+            "method": "tag_media",
+            "media_id": arg_str(args, "media_id")?,
+            "add": args.get("add").cloned().unwrap_or(json!([])),
+            "remove": args.get("remove").cloned().unwrap_or(json!([])),
+        }),
+        "klipp_window_screenshot" => json!({
+            "method": "window_screenshot",
+            "path": args.get("path").and_then(|v| v.as_str()),
+            "max_width": args.get("max_width").and_then(|v| v.as_u64()),
+        }),
         "klipp_open_project" => json!({
             "method": "open_project",
             "path": arg_str(args, "path")?,
@@ -1918,6 +1935,32 @@ fn tool_definitions() -> Vec<Value> {
               piece of work and when you are done, so the user can carry on by hand. \
               klipp_status says where the project is saved and whether it has unsaved changes.",
              json!({ "path": { "type": "string" } }), vec![]),
+        tool("klipp_relink_media",
+             "Point a media item at a file: an offline item found again, or a better copy. \
+              The file is judged against what the project knew of the item (reel, start \
+              timecode, length, rate, size) and relinked; the answer's check says how sure \
+              that is. A file that is probably not the clip is refused with the reason; \
+              force: true relinks it anyway (a relink is not undone by undo). \
+              klipp_list_media marks items offline.",
+             json!({
+                 "media_id": { "type": "string" },
+                 "path": { "type": "string", "description": "absolute path of the file" },
+                 "force": { "type": "boolean", "description": "relink even a file the check says is probably not the clip" }
+             }), vec!["media_id", "path"]),
+        tool("klipp_tag_media",
+             "Tag a media item with words that sort the pool (a person, a place, \"b-roll\", \
+              \"hero\"), or remove tags. klipp_list_media shows each item's tags.",
+             json!({
+                 "media_id": { "type": "string" },
+                 "add": { "type": "array", "items": { "type": "string" } },
+                 "remove": { "type": "array", "items": { "type": "string" } }
+             }), vec!["media_id"]),
+        tool("klipp_window_screenshot",
+             "The whole Klipp window as the person sees it, panels and dialogs included, as a \
+              PNG (1600 wide by default): for checking a layout, a panel or a dialog. The \
+              viewer in it is drawn through its monitor LUT and overlays, so measure colour \
+              with klipp_screenshot or klipp_frame_stats, never from this.",
+             json!({ "path": { "type": "string" }, "max_width": { "type": "integer" } }), vec![]),
         tool("klipp_open_project",
              "Open the project at an absolute path, replacing the one that is open. Refused \
               while the open project has unsaved changes: save it first, or pass \

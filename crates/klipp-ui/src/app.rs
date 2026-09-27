@@ -1712,6 +1712,11 @@ impl KlippApp {
         let envelopes: Vec<klipp_document::control::ControlEnvelope> = inbox.try_iter().collect();
         for env in envelopes {
             let mut refused = None;
+            // Whether the project was already unsaved: the reply names
+            // "edits" as the cause only when this envelope made it so. A
+            // play or a seek over a project unsaved for another reason
+            // (analysis markers arriving) used to relabel it as edits.
+            let was_dirty = self.state.dirty;
             // A resolved plan: its commands forward, in order, as one
             // history entry — unless the document moved since it was
             // resolved, in which case it was made for a document that no
@@ -1756,7 +1761,7 @@ impl KlippApp {
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
-                    if self.state.dirty && refused.is_none() {
+                    if self.state.dirty && !was_dirty && refused.is_none() {
                         project.changed_by = Some("edits".into());
                     }
                 }
@@ -2027,6 +2032,41 @@ impl KlippApp {
                 project.changed_by = Some("analysis markers arriving on media items".into());
             }
             self.sync_media_pool_to_engine();
+        }
+    }
+
+    /// A whole-window capture: ask egui for the next frame's picture,
+    /// then write it where it was asked for, scaled down to `max_width`.
+    /// The image is the window as drawn: the viewer through its monitor
+    /// LUT and overlays, so not a frame to measure colour from.
+    fn serve_window_capture(&mut self, ctx: &egui::Context) {
+        let Some((path, max_width, asked)) = self.state.window_capture.clone() else { return };
+        if !asked {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.request_repaint();
+            self.state.window_capture = Some((path, max_width, true));
+            return;
+        }
+        let shot = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = shot else {
+            ctx.request_repaint();
+            return;
+        };
+        self.state.window_capture = None;
+        let [w, h] = image.size;
+        let rgba: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+        let Some(mut img) = image::RgbaImage::from_raw(w as u32, h as u32, rgba) else { return };
+        if let Some(mw) = max_width.filter(|mw| *mw > 0 && (*mw as usize) < w) {
+            let nh = ((h as f64) * mw as f64 / w as f64).round().max(1.0) as u32;
+            img = image::imageops::resize(&img, mw, nh, image::imageops::FilterType::Triangle);
+        }
+        if let Err(e) = img.save(&path) {
+            tracing::warn!("window capture to {}: {e}", path.display());
         }
     }
 
@@ -5085,7 +5125,20 @@ impl KlippApp {
             if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
                 node_param_scrub = true;
             }
-            if self.handle_marker_commands(&cmd, &mut needs_refresh) { continue; }
+            // Timeline markers are edited outside the document's own
+            // ops, so their handlers record nothing: a marker added,
+            // changed or removed (by hand or by an agent) is one undo step
+            // here, the whole list either side.
+            let markers_before = self.state.sequences.get(self.state.active_sequence_idx).map(|s| s.markers.clone());
+            if self.handle_marker_commands(&cmd, &mut needs_refresh) {
+                if let Some(old) = markers_before {
+                    let new = self.state.sequences[self.state.active_sequence_idx].markers.clone();
+                    if old != new {
+                        self.state.push_history(EditCommand::SetMarkers { old, new });
+                    }
+                }
+                continue;
+            }
             if self.handle_transition_commands(&cmd, &mut needs_refresh) { continue; }
             if self.handle_playback_commands(&cmd, &mut needs_refresh) { continue; }
             if self.handle_export_commands(&cmd, &mut needs_refresh) { continue; }
@@ -13231,6 +13284,9 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     }
+                    // The shared pool too: the control socket reads tags
+                    // from there.
+                    self.sync_media_pool_to_engine();
                     true
                 }
                 AppCommand::RemoveMediaTag { media_id, tag_index } => {
@@ -13240,6 +13296,7 @@ impl KlippApp {
                             self.state.dirty = true;
                         }
                     }
+                    self.sync_media_pool_to_engine();
                     true
                 }
                 // Media pool management
@@ -21348,6 +21405,10 @@ impl KlippApp {
                 self.state.render_queue.clear_completed();
                 true
             }
+            AppCommand::CaptureWindow { path, max_width } => {
+                self.state.window_capture = Some((path.clone(), *max_width, false));
+                true
+            }
             AppCommand::ShowPreferences => {
                 self.state.show_preferences = true;
                 true
@@ -28777,6 +28838,7 @@ impl eframe::App for KlippApp {
         }
 
         self.apply_ui_scale(ctx);
+        self.serve_window_capture(ctx);
         self.drain_thumbnails();
         self.drain_source_frame(ctx);
         // Keep repainting while filmstrip is generating so timeline updates progressively

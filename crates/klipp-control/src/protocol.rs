@@ -89,6 +89,36 @@ pub enum ControlCommand {
     ListClips,
     /// The media pool.
     ListMedia,
+    /// Point a media item at `path` (an offline one found, or a better
+    /// copy): judged against what the project knew of it (reel,
+    /// timecode, length, rate, size) and relinked, the answer saying
+    /// whether it is the same clip. A file that is probably not the
+    /// clip is refused unless `force`: a relink is not an undo step.
+    RelinkMedia {
+        media_id: String,
+        path: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// The whole window as the person sees it (panels, dialogs, the
+    /// viewer through its monitor LUT and overlays) to a PNG at `path`,
+    /// or a temporary file, no wider than `max_width`. For checking a
+    /// layout or a dialog; measure colour from `screenshot`, not this.
+    WindowScreenshot {
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        max_width: Option<u32>,
+    },
+    /// A media item's tags: the words that sort the pool (a person, a
+    /// place, "b-roll", "hero"). `add` and `remove` are tag words.
+    TagMedia {
+        media_id: String,
+        #[serde(default)]
+        add: Vec<String>,
+        #[serde(default)]
+        remove: Vec<String>,
+    },
     /// Import a file into the media pool. Asynchronous: the app probes
     /// the file on a worker, so poll `list_media` for the result.
     ImportMedia {
