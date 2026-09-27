@@ -28,7 +28,7 @@ fn solid(name: &str, colour: &str) -> Option<PathBuf> {
     if out.exists() {
         return Some(out);
     }
-    let partial = out.with_extension("partial.mkv");
+    let partial = common::unshared(&out, "mkv");
     let ok = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi"])
         .args(["-i", &format!("color=c={colour}:s={W}x{H}:r={}:d=2", common::FPS)])

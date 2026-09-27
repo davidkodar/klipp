@@ -48,15 +48,38 @@ fn encoded(name: &str, width: u32, height: u32, tags: &str, fps: Fps, codec: &[&
         return Some(out);
     }
     let rate = format!("{}/{}", fps.num, fps.den);
+    // Written under a name of its own and moved into place: written to
+    // `out` directly, a test running alongside found it existing and
+    // decoded the half that was there.
+    let partial = unshared(&out, ext);
     let ok = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc2=s={width}x{height}:r={rate}:d=2")])
         .args(["-vf", &format!("format=yuv420p10le,setparams=range=tv:{tags}")])
         .args(codec)
-        .arg(&out)
+        .arg(&partial)
         .status()
         .ok()?
         .success();
-    ok.then_some(out)
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        return None;
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
+}
+
+/// A scratch path beside the cached fixture `out`, with extension `ext`,
+/// that no other writer of `out` shares. The tests in a binary run
+/// concurrently, and on a cold temp dir several build the same fixture at
+/// once: under one shared scratch name, one deleted or overwrote the file
+/// another was still encoding, which panicked, handed out a half file, or
+/// returned `None` and so skipped a test that then read as a pass. Each
+/// writer renames a whole file into place, and they all write the same
+/// bytes, so the last rename wins harmlessly.
+pub fn unshared(out: &std::path::Path, ext: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    out.with_extension(format!("{}-{n}.{ext}", std::process::id()))
 }
 
 pub const PQ_TAGS: &str = "colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084";
@@ -347,7 +370,7 @@ pub fn pq_bands() -> Option<PathBuf> {
     if out.exists() {
         return Some(out);
     }
-    let raw = std::env::temp_dir().join(format!("klipp-hdr-monitor-bands{name}.yuv"));
+    let raw = unshared(&out, "yuv");
     let mut bytes = Vec::new();
     // Two seconds: the harness parks ten frames in.
     for _ in 0..50 {
@@ -366,7 +389,7 @@ pub fn pq_bands() -> Option<PathBuf> {
     let size = format!("{BANDS_W}x{BANDS_H}");
     // Written beside the cache name and moved into place, so a run that
     // dies mid-encode leaves no half file for the next one to measure.
-    let partial = out.with_extension("partial.mkv");
+    let partial = unshared(&out, "mkv");
     let ok = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", &size, "-r", "25"])
         .args(["-i", raw.to_str()?, "-vf", &format!("setparams=range=tv:{}", PQ_TAGS)])
@@ -426,9 +449,9 @@ pub fn ramp(name: &str, codec: &[&str], ext: &str) -> Option<PathBuf> {
             bytes.extend_from_slice(&512u16.to_le_bytes());
         }
     }
-    let raw = out.with_extension("yuv");
+    let raw = unshared(&out, "yuv");
     std::fs::write(&raw, bytes).ok()?;
-    let partial = out.with_extension(format!("partial.{ext}"));
+    let partial = unshared(&out, ext);
     let ok = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le"])
         .args(["-s", &format!("{RAMP_W}x{RAMP_H}"), "-r", "25", "-i"])
