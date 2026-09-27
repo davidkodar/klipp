@@ -3308,7 +3308,7 @@ impl PreferencesPanel {
         // project, the way every professional NLE handles it.
         Self::section_header(ui, "LUTs", theme);
 
-        Self::setting_row_with_subtitle(ui, "Viewer LUT", "Applied after colour pipeline for display", theme, |ui| {
+        Self::setting_row_with_subtitle(ui, "Viewer LUT", "A monitor LUT for the viewer only (SDR): never in exports, scopes or measurements", theme, |ui| {
             let display = prefs.color.viewer_lut_path.as_ref()
                 .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
                 .unwrap_or_else(|| "None".into());

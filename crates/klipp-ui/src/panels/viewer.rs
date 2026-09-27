@@ -146,6 +146,19 @@ pub struct ViewerPanel {
     /// after `renderer.free_texture(old_id)` releases egui-wgpu's
     /// internal BindGroup so storage cleanup is well-ordered.
     pub gpu_texture_view: Option<wgpu::TextureView>,
+    /// The monitor LUT from Preferences (#465), applied to the picture on
+    /// screen only: see [`crate::viewer_lut`].
+    pub lut: crate::viewer_lut::ViewerLut,
+    pub lut_pass: Option<crate::viewer_lut::ViewerLutPass>,
+    /// The parked frame's bytes, kept for the pass when a LUT is set.
+    pub lut_source_bytes: Option<(Vec<u8>, u32, u32)>,
+    /// The LUT'd picture, registered with egui, and the view behind it
+    /// (kept alive for the id, as `gpu_texture_view` is).
+    pub lut_texture_id: Option<egui::TextureId>,
+    pub lut_texture_view: Option<wgpu::TextureView>,
+    /// Whether `lut_texture_id` holds the current picture: shown in
+    /// place of the plain one only then.
+    pub lut_live: bool,
 }
 
 impl Drop for ViewerPanel {
@@ -425,7 +438,7 @@ impl ViewerPanel {
                     panel_rect.center(),
                     egui::vec2(dw, dh),
                 );
-                let image_id = gpu_id.unwrap_or_else(|| tex.id());
+                let image_id = self.lut_live.then_some(self.lut_texture_id).flatten().or(gpu_id).unwrap_or_else(|| tex.id());
                 ui.painter().image(
                     image_id,
                     image_rect,
@@ -1680,9 +1693,12 @@ impl ViewerPanel {
             // `video_texture` when the GPU path isn't live (env gate
             // off, eframe running glow, shared device not installed,
             // or this frame's grade hasn't finished yet).
-            let image_id = self.gpu_frame_live
-                .then_some(self.gpu_texture_id)
+            // Through the monitor LUT when one is set: on screen only,
+            // the frame itself stays as graded (#465).
+            let image_id = self.lut_live
+                .then_some(self.lut_texture_id)
                 .flatten()
+                .or_else(|| self.gpu_frame_live.then_some(self.gpu_texture_id).flatten())
                 .or_else(|| self.video_texture.as_ref().map(|t| t.id()));
             if let Some(id) = image_id {
                 // `painter_at(viewer_rect)` clips to the viewer's panel
