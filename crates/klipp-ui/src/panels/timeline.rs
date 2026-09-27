@@ -4450,10 +4450,10 @@ impl TimelinePanel {
     }
 
     /// Update the scrub target. Called every drag frame. Writes the visible
-    /// playhead immediately (no engine round-trip), kicks the filmstrip
-    /// preview via `awaiting_seek_frame`, pushes `SetPlayhead` so the engine
-    /// keeps its internal position in sync (cheap when idle), and updates the
-    /// audio skim session.
+    /// playhead immediately (no engine round-trip), asks the skim worker for
+    /// the frame there, kicks the filmstrip preview via `awaiting_seek_frame`
+    /// only where no skim file makes a better picture available, and updates
+    /// the audio skim session.
     fn scrub_to(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>, target_secs: f64) {
         let dur_secs = state.sequence_duration().to_secs_f64();
         let clamped = if dur_secs > 0.0 {
@@ -4477,13 +4477,38 @@ impl TimelinePanel {
         state.playhead_smooth_secs = clamped;
         state.playhead_anchor = tc;
         state.playhead_anchor_wall = std::time::Instant::now();
-        // Kick the filmstrip preview to re-resolve at the new playhead.
-        // `show_filmstrip_preview` is gated on `awaiting_seek_frame &&
-        // !showing_thumbnail_preview` — clearing the latter forces it to
-        // re-pick the closest thumbnail every drag frame instead of getting
-        // stuck on the first one.
-        state.awaiting_seek_frame = true;
-        state.showing_thumbnail_preview = false;
+        // Resolve the clip under the new playhead once, up front: whether it
+        // has a skim file decides both what we ask the skim worker for and
+        // whether the filmstrip preview may paint the viewer at all.
+        let scrub_clip = Self::scrub_clip_at_playhead(state);
+        let has_skim_file = scrub_clip.as_ref().is_some_and(|(media_id, _, _)| {
+            state
+                .media_pool
+                .get(media_id)
+                .and_then(|m| m.skim_file.as_ref())
+                .is_some_and(|p| p.exists())
+        });
+
+        // The filmstrip preview is the fallback, not a companion. Over
+        // skimmable media a drag now behaves exactly like a hover skim: the
+        // last skim frame stays in the viewer until the next replaces it.
+        // Kicking these two flags per drag frame as well let
+        // `show_filmstrip_preview` upload a 128px thumbnail — picked from a
+        // strip spaced up to 1.5s apart, so up to ±0.75s off the cursor —
+        // into the same viewer texture on every frame the skim decode had
+        // not landed yet. Sharp/blurred alternating at UI frame rate is the
+        // strobe, and the thumbnail path's own `request_repaint` raised the
+        // frame rate, which raised the share of frames it won.
+        //
+        // Where there is no skim file the thumbnail is the only picture
+        // available, so keep kicking it there: `show_filmstrip_preview` is
+        // gated on `awaiting_seek_frame && !showing_thumbnail_preview`, and
+        // clearing the latter is what makes it re-pick the closest thumbnail
+        // each frame instead of sticking on the first one.
+        if !has_skim_file {
+            state.awaiting_seek_frame = true;
+            state.showing_thumbnail_preview = false;
+        }
 
         // Drive the high-quality skim decode + audio skim. Same pipeline the
         // media browser hover uses — produces mid-res preview frames at
@@ -4491,16 +4516,10 @@ impl TimelinePanel {
         // mush. Throttled by `skim_decode_in_flight`; latest request is
         // queued in `skim_queued_request` and dispatched when the in-flight
         // decode finishes (in `app.rs` after drain_events).
-        if let Some((media_id, _source_path, source_secs)) = Self::scrub_clip_at_playhead(state) {
+        if let Some((media_id, _source_path, source_secs)) = scrub_clip {
             // Video skim — only worth requesting if there's a skim_file.
             // Otherwise the source decode is too slow for real-time scrub
-            // and we fall back to the filmstrip preview (already kicked
-            // above via `awaiting_seek_frame`).
-            let has_skim_file = state
-                .media_pool
-                .get(&media_id)
-                .and_then(|m| m.skim_file.as_ref())
-                .is_some_and(|p| p.exists());
+            // and we fall back to the filmstrip preview kicked above.
             if has_skim_file {
                 // Timeline playhead scrub previews into the Program Viewer.
                 if !state.skim_decode_in_flight {
@@ -18217,5 +18236,114 @@ mod snap_tests {
             &state,
         );
         assert_eq!(label, "Marker: Hero shot");
+    }
+}
+
+/// The scrub path's preview bookkeeping: `scrub_to` is pure state, so
+/// the flags it leaves behind can be checked without a UI at all.
+#[cfg(test)]
+mod scrub_preview_tests {
+    use super::*;
+    use klipp_timeline::Track;
+
+    fn make_video_track() -> Track {
+        Track::new("Video 1", TrackKind::Video)
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // scrub_to — the filmstrip preview is a fallback, not a companion
+    // ═══════════════════════════════════════════════════════════════
+
+    /// A scratch directory for a stand-in skim file. `skim_file` is
+    /// only ever tested with `Path::exists`, so any file will do.
+    fn scrub_scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("klipp-scrub-skim-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A one-clip V1 sequence spanning ten seconds, with its pool item.
+    /// `skim` is the skim file the item claims, if any.
+    fn scrub_state(skim: Option<&std::path::Path>) -> AppState {
+        let mut state = AppState::default();
+        let media_id = MediaId::new();
+        let mut item = klipp_media::MediaItem::new_synthetic_title(
+            media_id,
+            "shot.mp4".into(),
+            Timecode::from_frames(240, 24),
+            state.fps,
+        );
+        item.kind = klipp_media::MediaItemKind::File;
+        item.path = std::path::PathBuf::from("/klipp-test/shot.mp4");
+        item.skim_file = skim.map(|p| p.to_path_buf());
+        state.media_pool.add(item);
+
+        let mut track = make_video_track();
+        track.clips.push(klipp_timeline::Clip::media(
+            media_id,
+            Timecode::from_frames(0, 24),
+            Timecode::from_frames(240, 24),
+            Timecode::from_frames(0, 24),
+            Timecode::from_frames(240, 24),
+        ));
+        let seq_idx = state.active_sequence_idx;
+        state.sequences[seq_idx].tracks = vec![track];
+        state
+    }
+
+    /// The gate `App::update` uses before uploading a filmstrip
+    /// thumbnail into the viewer texture the skim frame also writes.
+    fn filmstrip_would_upload(state: &AppState) -> bool {
+        state.awaiting_seek_frame && !state.showing_thumbnail_preview
+    }
+
+    /// The strobe: every drag frame armed the filmstrip preview, so on
+    /// each frame the skim decode had not landed yet a 128px thumbnail
+    /// from up to ±0.75s away was upscaled into the viewer, alternating
+    /// with the sharp, correctly-timed skim frame.
+    #[test]
+    fn a_drag_over_skimmable_media_never_arms_the_filmstrip() {
+        let dir = scrub_scratch_dir("has-skim");
+        let skim = dir.join("shot.skim.mkv");
+        std::fs::write(&skim, b"stand-in").expect("write skim");
+
+        let mut state = scrub_state(Some(&skim));
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0);
+
+        assert!(
+            !filmstrip_would_upload(&state),
+            "the filmstrip thumbnail would be uploaded over the skim frame",
+        );
+        assert!(
+            cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
+            "the skim frame itself must still be asked for",
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And the fallback still stands where it is the only picture
+    /// available: no skim file, so the thumbnail is what there is.
+    #[test]
+    fn a_drag_without_a_skim_file_still_arms_the_filmstrip() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0);
+
+        assert!(
+            filmstrip_would_upload(&state),
+            "with no skim file the filmstrip preview is the only preview",
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
+            "no skim file, nothing to ask the skim worker for",
+        );
     }
 }
