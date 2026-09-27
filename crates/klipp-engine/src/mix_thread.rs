@@ -50,16 +50,20 @@ impl SourceMix {
                 pair[1] *= volume * pan_r;
             }
         }
-        for pair in samples.chunks_exact_mut(2) {
-            match channel_config {
-                1 => {
+        match channel_config {
+            1 => {
+                for pair in samples.chunks_exact_mut(2) {
                     let mono = (pair[0] + pair[1]) * 0.5;
                     pair[0] = mono;
                     pair[1] = mono;
                 }
-                2 => pair.swap(0, 1),
-                _ => break,
             }
+            2 => {
+                for pair in samples.chunks_exact_mut(2) {
+                    pair.swap(0, 1);
+                }
+            }
+            _ => {}
         }
     }
 }

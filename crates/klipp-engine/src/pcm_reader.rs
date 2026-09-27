@@ -506,8 +506,8 @@ fn pcm_feed_thread(
         let vol = volume.load(Ordering::Relaxed) as f32 / 100.0;
         let is_muted = muted.load(Ordering::Relaxed);
 
-        // Read fade params (lock-free) — gain is NOT applied here,
-        // it's applied instantly in the cpal callback via AudioOutput.clip_gain
+        // Read fade params (lock-free) — gain is NOT applied here, it is
+        // applied with the clip's volume in the mix thread (SourceMix)
         let src_in = f64::from_bits(fade_source_in.load(Ordering::Relaxed));
         let clip_dur = f64::from_bits(fade_clip_dur.load(Ordering::Relaxed));
         let fi_secs = f64::from_bits(fade_in_secs.load(Ordering::Relaxed));

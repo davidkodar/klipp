@@ -1555,6 +1555,15 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
     rows
 }
 
+/// How far ahead of the output the mix thread works: the samples in the
+/// main ring (interleaved stereo) at the device rate, in seconds.
+fn mix_lead_secs(buffered_samples: usize, sample_rate: u32) -> f64 {
+    if sample_rate == 0 {
+        return 0.0;
+    }
+    buffered_samples as f64 / (2.0 * sample_rate as f64)
+}
+
 /// A track's two sound lanes as source keys: lane 0 is the track index
 /// itself, lane 1 a key far above any track. The mix thread folds both
 /// back onto the track, so the track's volume, pan, mute, solo and
@@ -3749,17 +3758,26 @@ impl PlaybackEngine {
         // A blade join's continuing sound takes no fade-in; the flag is
         // for the first source with a clip, as it always was.
         let mut contiguous = self.contiguous_audio.swap(false, std::sync::atomic::Ordering::Relaxed);
+        // The settings apply in the mix thread, ahead of the output ring,
+        // so a keyframed volume, pan or gain is evaluated where the
+        // samples mixed now will be heard, as the export evaluates each
+        // sample at its own time; at the playhead a duck came ~200 ms early.
+        let lead = match (&self.mix_thread, self.state) {
+            (Some(mt), PlaybackState::Playing) => mix_lead_secs(mt.buffered_samples(), self.cpal_sample_rate),
+            _ => 0.0,
+        };
+        let heard_at = self.playhead.to_secs_f64() + lead;
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
                 if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, self.playhead).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
-                    let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
+                    let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
                     let audio_eval_ctx = klipp_core::EvalContext {
                         clip_time_secs,
                         clip_duration_secs: (audio_clip.source_out.to_secs_f64() - audio_clip.source_in.to_secs_f64()),
-                        timeline_time_secs: self.playhead.to_secs_f64(),
+                        timeline_time_secs: heard_at,
                         fps: self.fps.as_f64(),
                         seed: audio_clip.id.0.as_u64_pair().0,
                     };
@@ -3779,11 +3797,11 @@ impl PlaybackEngine {
                     if let Some(linked_id) = audio_clip.linked_clip_id {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
-                                let linked_clip_time = (self.playhead.to_secs_f64() - video_clip.timeline_in.to_secs_f64()).max(0.0);
+                                let linked_clip_time = (heard_at - video_clip.timeline_in.to_secs_f64()).max(0.0);
                                 let linked_eval_ctx = klipp_core::EvalContext {
                                     clip_time_secs: linked_clip_time,
                                     clip_duration_secs: (video_clip.source_out.to_secs_f64() - video_clip.source_in.to_secs_f64()),
-                                    timeline_time_secs: self.playhead.to_secs_f64(),
+                                    timeline_time_secs: heard_at,
                                     fps: self.fps.as_f64(),
                                     seed: video_clip.id.0.as_u64_pair().0,
                                 };
@@ -12087,5 +12105,17 @@ mod scope_pacing {
         // sluggish: 15 ms costs 30 ms of wait, as the docs say.
         let wait = (Duration::from_millis(15) * 2).min(SCOPE_MAX_INTERVAL);
         assert_eq!(wait, Duration::from_millis(30));
+    }
+}
+
+#[cfg(test)]
+mod mix_lead_tests {
+    /// The mix thread's ~200 ms main ring at 48 kHz stereo is 19 200
+    /// samples: the keyframes are evaluated 0.2 s past the playhead.
+    #[test]
+    fn the_lead_is_the_main_ring_in_seconds() {
+        assert!((super::mix_lead_secs(48_000 * 2 / 5, 48_000) - 0.2).abs() < 1e-9);
+        assert_eq!(super::mix_lead_secs(0, 48_000), 0.0);
+        assert_eq!(super::mix_lead_secs(1024, 0), 0.0);
     }
 }
