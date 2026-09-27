@@ -2221,6 +2221,9 @@ pub struct AppState {
     /// A new interface size from the View menu (percent, 0 = Auto),
     /// applied and saved by the app, which holds the preferences.
     pub ui_scale_request: Option<u32>,
+    /// Show the multicam angle grid in the Source viewer's place while a
+    /// multicam group is in play (View menu).
+    pub multicam_grid_enabled: bool,
     /// The interface size in effect, for the menu's check mark.
     pub ui_scale_percent: u32,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
@@ -4025,6 +4028,7 @@ impl Default for AppState {
             modal_or_popup_open: false,
             show_preferences: false,
             ui_scale_request: None,
+            multicam_grid_enabled: true,
             ui_scale_percent: 0,
             auto_create_tracks: true,
             project_auto_filmstrips: None,

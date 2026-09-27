@@ -395,6 +395,9 @@ pub struct KlippApp {
     /// frames sat in the channel and the timeline showed flat bars until
     /// something else redrew it.
     filmstrip_cache_loads: std::collections::HashSet<MediaId>,
+    /// The multicam angle grid's decoder and tiles, made the first time
+    /// the grid is shown.
+    multicam_grid: Option<crate::multicam_grid::GridRuntime>,
     /// The interface size last applied, and the screen width it was
     /// worked out for, so it is set once per change rather than every
     /// frame (and never fights a zoom made another way).
@@ -1057,6 +1060,7 @@ impl KlippApp {
             source_frame_rx,
             filmstrip_tx,
             filmstrip_cache_loads: std::collections::HashSet::new(),
+            multicam_grid: None,
             ui_scale_applied: None,
             filmstrip_refining: Default::default(),
             filmstrip_rx,
@@ -27068,53 +27072,6 @@ mod auto_zoom_tests {
     }
 }
 
-/// The multicam group the viewer shows at `playhead`, the selected
-/// clip's else the one under the playhead: its angles, and the angle in
-/// effect. `None` without a group of two angles or more.
-fn multicam_view_at(seq: &klipp_timeline::Sequence, selected: Option<klipp_core::ClipId>, playhead: klipp_core::Timecode) -> Option<(Vec<u8>, u8)> {
-    let group = selected.and_then(|id| seq.all_clips().find(|c| c.id == id)).and_then(|c| c.multicam_group);
-    let m = seq.multicam_at(group, playhead).or_else(|| group.and(seq.multicam_at(None, playhead)))?;
-    (m.angles.len() >= 2).then_some((m.angles, m.active))
-}
-
-#[cfg(test)]
-mod multicam_view_tests {
-    use super::multicam_view_at;
-    use klipp_core::{GroupId, MediaId, RationalTime};
-    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
-
-    fn tc(s: f64) -> RationalTime { RationalTime::from_secs_f64(s, 24) }
-
-    fn clip(group: Option<GroupId>, n: u8) -> Clip {
-        let mut c = Clip::media(MediaId::new(), tc(0.0), tc(10.0), tc(0.0), tc(10.0));
-        c.multicam_group = group;
-        c.multicam_angle = n;
-        c
-    }
-
-    /// As the creation paths make a group: picture clips grouped, sound
-    /// not. With nothing selected, or a clip outside the group selected,
-    /// the group under the playhead is the one shown; its angles are the
-    /// ones it has, not 0..n.
-    #[test]
-    fn the_group_under_the_playhead_without_a_selection() {
-        let g = GroupId::new();
-        let mut primary = clip(Some(g), 0);
-        primary.multicam_cuts = vec![(4.0, 2)];
-        let other = clip(None, 0);
-        let other_id = other.id;
-        let mut seq = Sequence::new_default();
-        seq.tracks = [(primary, TrackKind::Video), (clip(None, 0), TrackKind::Audio), (clip(Some(g), 2), TrackKind::Video), (other, TrackKind::Video)]
-            .into_iter()
-            .enumerate()
-            .map(|(i, (c, k))| { let mut t = Track::new(&format!("T{i}"), k); t.clips = vec![c]; t })
-            .collect();
-        assert_eq!(multicam_view_at(&seq, None, tc(1.0)), Some((vec![0, 2], 0)));
-        assert_eq!(multicam_view_at(&seq, Some(other_id), tc(5.0)), Some((vec![0, 2], 2)));
-        assert_eq!(multicam_view_at(&seq, None, tc(12.0)), None, "past the group");
-    }
-}
-
 /// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
 /// when a candidate name has already been used in this batch. Tracks
 /// taken names in `used` (caller owns the set).
@@ -28807,12 +28764,38 @@ impl eframe::App for KlippApp {
         // the group under the playhead: gated on a selection alone, it went
         // away as soon as the playhead moved on without one.
         let view = self.prefs.editing.multicam_auto_viewer.then(|| {
-            multicam_view_at(&self.state.sequences[self.state.active_sequence_idx], self.state.selected_clip, self.state.playhead)
+            crate::multicam_grid::view_at(&self.state.sequences[self.state.active_sequence_idx], self.state.selected_clip, self.state.playhead)
         }).flatten();
         self.state.multicam_viewer_active = view.is_some();
         if let Some((angles, active)) = view {
             self.state.multicam_angles = angles;
             self.state.multicam_active_angle = active;
+        }
+        // The angle grid, in the Source viewer's place: decoded while it
+        // is shown, its tiles let go when it is not.
+        // Shown where the Source viewer is: beside Program, or in its
+        // place in a single-viewer layout switched to Source.
+        // As the layout decides it (`layout::compute_layout`): the Colour
+        // and Export workspaces' single viewer is Program whatever the
+        // mode says, and decoding every angle for no pixels on screen
+        // was waste.
+        let source_on_screen = self.state.viewers_side_by_side()
+            || (!self.state.single_viewer_is_program() && self.state.viewer_mode == klipp_core::ViewerMode::Source);
+        let grid_shown = self.state.multicam_grid_enabled && self.state.multicam_viewer_active && source_on_screen;
+        let mut old_tiles = Vec::new();
+        if grid_shown {
+            let seq = &self.state.sequences[self.state.active_sequence_idx];
+            if let Some(group) = crate::multicam_grid::group_at(seq, self.state.selected_clip, self.state.playhead) {
+                let runtime = self.multicam_grid.get_or_insert_with(|| crate::multicam_grid::GridRuntime::new(ctx));
+                runtime.request(seq, &self.state.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
+                runtime.drain(ctx, |t| old_tiles.push(t));
+                old_tiles.extend(runtime.take_retired());
+            }
+        } else if let Some(runtime) = self.multicam_grid.as_mut() {
+            runtime.clear(|t| old_tiles.push(t));
+        }
+        for t in old_tiles {
+            self.defer_drop_texture(t);
         }
 
         // Window title with project name and dirty indicator — only
@@ -34285,6 +34268,24 @@ impl KlippApp {
         // helper — same skim texture, same metadata card, same In/Out
         // markers, same edit buttons users already saw when clicking the
         // old "Source" toggle. No duplicated logic.
+        // While a multicam group is in play, the Source viewer's picture
+        // is the angle grid: click a tile to cut to that angle, as keys
+        // 1-9 do (through the same command, so both routes record the
+        // same). The chrome below stays, so a single-viewer layout can go
+        // back to Program.
+        if self.state.multicam_grid_enabled && self.state.multicam_viewer_active {
+            if let Some(runtime) = self.multicam_grid.as_ref().filter(|r| !r.sources.is_empty()) {
+                if let Some(angle) = crate::multicam_grid::show(ui, video_rect, runtime, self.state.multicam_active_angle, &self.theme) {
+                    all_cmds.push(AppCommand::SwitchMulticamAngle { angle: angle as usize + 1 });
+                }
+                // The timeline's transport, not the Source viewer's: the
+                // grid follows the timeline playhead, and the Source
+                // chrome read and moved a source playhead it is not about.
+                let chrome_cmds = self.viewer.draw_transport_chrome(ui, &mut self.state, &self.theme, chrome_rect, klipp_core::ViewerMode::Program);
+                all_cmds.extend(chrome_cmds);
+                return;
+            }
+        }
         self.viewer.show_source_viewer(ui, &self.state, &self.theme, video_rect, all_cmds);
 
         // Scroll-zoom + middle-drag-pan input for the source video area.
