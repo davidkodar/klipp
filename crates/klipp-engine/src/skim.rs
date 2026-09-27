@@ -321,11 +321,13 @@ impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
         let (tx, rx) = crossbeam_channel::unbounded::<Vec<SkimJob<T>>>();
         let spawned = std::thread::Builder::new().name("klipp-skim-batch".into()).spawn(move || {
             let mut decoders = SkimDecoders::new(max_open);
-            let mut pending: std::collections::VecDeque<SkimJob<T>> = std::collections::VecDeque::new();
+            let mut pending: std::collections::VecDeque<(usize, SkimJob<T>)> = std::collections::VecDeque::new();
+            // Where the next batch starts: after the source served last.
+            let mut next_start = 0;
             loop {
                 if pending.is_empty() {
                     match rx.recv_timeout(Duration::from_secs(5)) {
-                        Ok(batch) => pending = batch.into(),
+                        Ok(batch) => pending = rotated(batch, next_start),
                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                             decoders.sweep(Duration::from_secs(30));
                             continue;
@@ -334,9 +336,10 @@ impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
                     }
                 }
                 while let Ok(newer) = rx.try_recv() {
-                    pending = newer.into();
+                    pending = rotated(newer, next_start);
                 }
-                let Some(job) = pending.pop_front() else { continue };
+                let Some((index, job)) = pending.pop_front() else { continue };
+                next_start = index + 1;
                 let result = decoders
                     .frame_at(&job.path, job.rotation, job.secs, job.max_height, Duration::from_millis(300))
                     .or_else(|e| match &job.fallback_path {
@@ -355,6 +358,36 @@ impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
     /// Replace whatever is waiting with `batch`.
     pub fn request(&self, batch: Vec<SkimJob<T>>) {
         let _ = self.tx.send(batch);
+    }
+}
+
+/// `batch` with each job's place in it, starting at `start` and wrapping.
+/// A batch that replaces another starts after the source served last, so
+/// sources take turns: started at the first each time, a stream of
+/// batches (a scrub while paused) kept serving the first and starved the
+/// rest.
+fn rotated<J>(batch: Vec<J>, start: usize) -> std::collections::VecDeque<(usize, J)> {
+    let n = batch.len();
+    let mut out: std::collections::VecDeque<(usize, J)> = batch.into_iter().enumerate().collect();
+    if n > 0 {
+        out.rotate_left(start % n);
+    }
+    out
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::rotated;
+
+    /// A batch replacing another carries on from where the last left off,
+    /// wrapping, so every source is served in turn.
+    #[test]
+    fn a_new_batch_starts_after_the_source_served_last() {
+        let order = |start| rotated(vec!['a', 'b', 'c', 'd'], start).into_iter().collect::<Vec<_>>();
+        assert_eq!(order(0), vec![(0, 'a'), (1, 'b'), (2, 'c'), (3, 'd')]);
+        assert_eq!(order(2), vec![(2, 'c'), (3, 'd'), (0, 'a'), (1, 'b')]);
+        assert_eq!(order(5), vec![(1, 'b'), (2, 'c'), (3, 'd'), (0, 'a')], "wraps");
+        assert!(rotated(Vec::<char>::new(), 3).is_empty());
     }
 }
 

@@ -109,8 +109,15 @@ pub struct GridRuntime {
     answered: usize,
     asked_at: Instant,
     last_key: Option<(GroupId, i64, u32)>,
+    playing: bool,
     pub sources: Vec<AngleSource>,
     pub tiles: HashMap<u8, egui::TextureHandle>,
+    /// The batch each tile's frame came from: paused, a tile from an
+    /// older one is still on its way to the playhead, and is drawn dimmed
+    /// rather than passed off as the frame there.
+    tile_generation: HashMap<u8, u64>,
+    /// Tiles of a group no longer shown, for the caller to let go.
+    retired: Vec<egui::TextureHandle>,
 }
 
 /// While playing, a new batch at most this often.
@@ -138,8 +145,11 @@ impl GridRuntime {
             answered: 0,
             asked_at: Instant::now(),
             last_key: None,
+            playing: false,
             sources: Vec::new(),
             tiles: HashMap::new(),
+            tile_generation: HashMap::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -148,6 +158,13 @@ impl GridRuntime {
     /// batch is in (or given up on).
     pub fn request(&mut self, seq: &Sequence, pool: &MediaPool, group: GroupId, playhead: Timecode, playing: bool) {
         let key = (group, playhead.value, playhead.rate);
+        // Another group: its cameras are not these. Keyed by angle alone,
+        // the old group's pictures showed under the new group's labels.
+        if self.last_key.is_some_and(|(g, _, _)| g != group) {
+            self.retired.extend(self.tiles.drain().map(|(_, t)| t));
+            self.tile_generation.clear();
+        }
+        self.playing = playing;
         let due = if playing {
             let done = self.answered >= self.asked || self.asked_at.elapsed() >= BATCH_TIMEOUT;
             done && self.asked_at.elapsed() >= PLAYING_INTERVAL
@@ -190,6 +207,12 @@ impl GridRuntime {
                 self.answered += 1;
             }
             let Ok(frame) = result else { continue };
+            // A frame for a group no longer shown (its batch was asked
+            // for before the switch) is not this group's.
+            if !self.sources.iter().any(|s| s.angle == angle) {
+                continue;
+            }
+            self.tile_generation.insert(angle, generation);
             let image = egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
             match self.tiles.get_mut(&angle) {
                 Some(tex) if tex.size() == image.size => tex.set(image, egui::TextureOptions::LINEAR),
@@ -203,11 +226,27 @@ impl GridRuntime {
         }
     }
 
+    /// Tiles let go of since the last call, for the caller to drop after
+    /// the frame (a texture freed mid-frame trips wgpu).
+    pub fn take_retired(&mut self) -> Vec<egui::TextureHandle> {
+        std::mem::take(&mut self.retired)
+    }
+
+    /// Whether `angle`'s tile is from an older batch than the one asked
+    /// for last, while paused.
+    pub fn is_stale(&self, angle: u8) -> bool {
+        !self.playing && self.tile_generation.get(&angle).is_some_and(|g| *g < self.generation)
+    }
+
     /// Let the tiles go when the grid is not shown.
     pub fn clear(&mut self, mut drop_old: impl FnMut(egui::TextureHandle)) {
         for (_, tex) in self.tiles.drain() {
             drop_old(tex);
         }
+        for tex in self.retired.drain(..) {
+            drop_old(tex);
+        }
+        self.tile_generation.clear();
         self.sources.clear();
         self.last_key = None;
     }
@@ -242,7 +281,9 @@ pub fn show(ui: &mut egui::Ui, rect: egui::Rect, runtime: &GridRuntime, active: 
                 let size = tex.size_vec2();
                 let scale = (cell_rect.width() / size.x).min(cell_rect.height() / size.y);
                 let img = egui::Rect::from_center_size(cell_rect.center(), size * scale);
-                painter.image(tex.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                // Dimmed while still on its way to the playhead's frame.
+                let tint = if runtime.is_stale(source.angle) { egui::Color32::from_gray(110) } else { egui::Color32::WHITE };
+                painter.image(tex.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
             }
             (_, None) => {
                 painter.text(cell_rect.center(), egui::Align2::CENTER_CENTER, "No picture here", egui::FontId::proportional(12.0), theme.text_dim);
@@ -318,25 +359,44 @@ mod tests {
         assert_eq!(view_at(&seq, None, tc(1.0)), Some((vec![0, 2], 0)));
         assert_eq!(view_at(&seq, None, tc(5.0)), Some((vec![0, 2], 2)));
         assert_eq!(view_at(&seq, None, tc(12.0)), None, "past the group");
+        // A clip outside the group selected: the group under the playhead.
+        let mut lone = angle(GroupId::new(), 0, 0.0, 10.0);
+        lone.multicam_group = None;
+        let lone_id = lone.id;
+        let mut with_lone = seq.clone();
+        let mut t = Track::new("Other", TrackKind::Video);
+        t.clips = vec![lone];
+        with_lone.tracks.push(t);
+        assert_eq!(view_at(&with_lone, Some(lone_id), tc(5.0)), Some((vec![0, 2], 2)));
     }
 
     /// Angles in angle order whatever the tracks, the picture clip of
-    /// each (never its sound), and an angle that started later has no
-    /// picture before it starts.
+    /// each (never its sound), what to decode for it at the playhead (its
+    /// own source time, from its own start), and no picture for an angle
+    /// that has not started.
     #[test]
     fn angle_sources_come_in_angle_order_with_their_picture() {
         let g = GroupId::new();
+        let mut pool = MediaPool::default();
+        let mut media = |name: &str| pool.add(klipp_media::MediaItem::synthetic_for_test(PathBuf::from(format!("/nonexistent/{name}")), None));
+        let (m0, m1, m2) = (media("a.mov"), media("b.mov"), media("c.mov"));
+        let with = |mut c: Clip, m| { c.kind = klipp_timeline::ClipKind::Media { media_id: m }; c };
         let seq = synced(vec![
-            (angle(g, 2, 3.0, 10.0), TrackKind::Video),
-            (angle(g, 0, 0.0, 10.0), TrackKind::Video),
-            (angle(g, 0, 0.0, 10.0), TrackKind::Audio),
-            (angle(g, 1, 0.0, 10.0), TrackKind::Video),
+            (with(angle(g, 2, 3.0, 10.0), m2), TrackKind::Video),
+            (with(angle(g, 0, 0.0, 10.0), m0), TrackKind::Video),
+            (with(angle(g, 0, 0.0, 10.0), m0), TrackKind::Audio),
+            (with(angle(g, 1, 1.0, 10.0), m1), TrackKind::Video),
         ]);
-        let pool = MediaPool::default();
-        let sources = angle_sources(&seq, &pool, g, tc(1.0));
+        let sources = angle_sources(&seq, &pool, g, tc(2.0));
         assert_eq!(sources.iter().map(|s| s.angle).collect::<Vec<_>>(), vec![0, 1, 2]);
-        // No media in the pool: nothing to decode, but every angle has a tile.
-        assert!(sources.iter().all(|s| s.decode.is_none()));
+        assert_eq!(sources.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["a.mov", "b.mov", "c.mov"]);
+        let d0 = sources[0].decode.as_ref().expect("angle 0 is under the playhead");
+        assert_eq!(d0.path, PathBuf::from("/nonexistent/a.mov"));
+        assert!(d0.fallback.is_none(), "no skim file or proxy: the original, nothing to fall back to");
+        assert!((d0.secs - 2.0).abs() < 1e-6);
+        let d1 = sources[1].decode.as_ref().expect("angle 1 started at 1 s");
+        assert!((d1.secs - 1.0).abs() < 1e-6, "its own source time: {}", d1.secs);
+        assert!(sources[2].decode.is_none(), "angle 2 starts at 3 s");
     }
 
     #[test]

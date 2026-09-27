@@ -28766,7 +28766,12 @@ impl eframe::App for KlippApp {
         // is shown, its tiles let go when it is not.
         // Shown where the Source viewer is: beside Program, or in its
         // place in a single-viewer layout switched to Source.
-        let source_on_screen = self.state.viewers_side_by_side() || self.state.viewer_mode == klipp_core::ViewerMode::Source;
+        // As the layout decides it (`layout::compute_layout`): the Colour
+        // and Export workspaces' single viewer is Program whatever the
+        // mode says, and decoding every angle for no pixels on screen
+        // was waste.
+        let source_on_screen = self.state.viewers_side_by_side()
+            || (!self.state.single_viewer_is_program() && self.state.viewer_mode == klipp_core::ViewerMode::Source);
         let grid_shown = self.state.multicam_grid_enabled && self.state.multicam_viewer_active && source_on_screen;
         let mut old_tiles = Vec::new();
         if grid_shown {
@@ -28775,6 +28780,7 @@ impl eframe::App for KlippApp {
                 let runtime = self.multicam_grid.get_or_insert_with(|| crate::multicam_grid::GridRuntime::new(ctx));
                 runtime.request(seq, &self.state.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
                 runtime.drain(ctx, |t| old_tiles.push(t));
+                old_tiles.extend(runtime.take_retired());
             }
         } else if let Some(runtime) = self.multicam_grid.as_mut() {
             runtime.clear(|t| old_tiles.push(t));
@@ -34263,7 +34269,10 @@ impl KlippApp {
                 if let Some(angle) = crate::multicam_grid::show(ui, video_rect, runtime, self.state.multicam_active_angle, &self.theme) {
                     all_cmds.push(AppCommand::SwitchMulticamAngle { angle: angle as usize + 1 });
                 }
-                let chrome_cmds = self.viewer.draw_transport_chrome(ui, &mut self.state, &self.theme, chrome_rect, klipp_core::ViewerMode::Source);
+                // The timeline's transport, not the Source viewer's: the
+                // grid follows the timeline playhead, and the Source
+                // chrome read and moved a source playhead it is not about.
+                let chrome_cmds = self.viewer.draw_transport_chrome(ui, &mut self.state, &self.theme, chrome_rect, klipp_core::ViewerMode::Program);
                 all_cmds.extend(chrome_cmds);
                 return;
             }
