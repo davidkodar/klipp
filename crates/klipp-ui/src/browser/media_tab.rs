@@ -1148,22 +1148,7 @@ fn render_list_view(
                 egui::vec2(80.0, 45.0),
             );
             if let Some(tex) = state.thumbnail_textures.get(&item.id) {
-                let src_aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
-                let dst_aspect = thumb_rect.width() / thumb_rect.height();
-                let uv_rect = if (src_aspect - dst_aspect).abs() < 0.01 {
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
-                } else if src_aspect > dst_aspect {
-                    // Source is wider — crop sides
-                    let visible_frac = dst_aspect / src_aspect;
-                    let offset = (1.0 - visible_frac) / 2.0;
-                    egui::Rect::from_min_max(egui::pos2(offset, 0.0), egui::pos2(1.0 - offset, 1.0))
-                } else {
-                    // Source is taller — crop top/bottom
-                    let visible_frac = src_aspect / dst_aspect;
-                    let offset = (1.0 - visible_frac) / 2.0;
-                    egui::Rect::from_min_max(egui::pos2(0.0, offset), egui::pos2(1.0, 1.0 - offset))
-                };
-                ui.painter().image(tex.id(), thumb_rect, uv_rect, egui::Color32::WHITE);
+                paint_thumbnail(ui, tex, thumb_rect, crate::theme::radius::CONTROL, theme);
             } else {
                 ui.painter().rect_filled(thumb_rect, crate::theme::radius::CONTROL, theme.bg_raised);
             }
@@ -1432,35 +1417,7 @@ fn render_grid_view(
                     &state.title_assets,
                 );
             } else if let Some(tex) = state.thumbnail_textures.get(&item.id) {
-                let tex_size = tex.size_vec2();
-                if tex_size.x > 0.0 && tex_size.y > 0.0 {
-                    // Use UV cropping to cover the thumb_rect while preserving aspect ratio
-                    let src_aspect = tex_size.x / tex_size.y;
-                    let dst_aspect = thumb_rect.width() / thumb_rect.height();
-                    let uv_rect = if src_aspect > dst_aspect {
-                        // Source is wider — crop sides
-                        let visible_frac = dst_aspect / src_aspect;
-                        let offset = (1.0 - visible_frac) / 2.0;
-                        egui::Rect::from_min_max(
-                            egui::pos2(offset, 0.0),
-                            egui::pos2(1.0 - offset, 1.0),
-                        )
-                    } else {
-                        // Source is taller — crop top/bottom
-                        let visible_frac = src_aspect / dst_aspect;
-                        let offset = (1.0 - visible_frac) / 2.0;
-                        egui::Rect::from_min_max(
-                            egui::pos2(0.0, offset),
-                            egui::pos2(1.0, 1.0 - offset),
-                        )
-                    };
-                    ui.painter().image(
-                        tex.id(),
-                        thumb_rect,
-                        uv_rect,
-                        egui::Color32::WHITE,
-                    );
-                }
+                paint_thumbnail(ui, tex, thumb_rect, 0.0, theme);
             } else {
                 ui.painter().rect_filled(thumb_rect, 0.0, theme.bg_raised);
                 let icon_size = 24.0;
@@ -2528,5 +2485,55 @@ mod metadata_filter_tests {
         assert_eq!(format_fps_label(24000, 1001), "23.976");
         assert_eq!(format_fps_label(30000, 1001), "29.970");
         assert_eq!(format_fps_label(60, 0), "—");
+    }
+}
+
+/// A clip's thumbnail in a tile: a wider picture fills it and loses its
+/// sides, a taller one (a portrait phone clip) is shown whole between
+/// bars, so the pool shows which clips are vertical, as FILES does.
+/// Cropped to the tile's width, a 9:16 clip showed only its middle band
+/// and read as landscape.
+fn paint_thumbnail(ui: &egui::Ui, tex: &egui::TextureHandle, rect: egui::Rect, rounding: f32, theme: &KlippTheme) {
+    let size = tex.size_vec2();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return;
+    }
+    let (dst, uv) = thumbnail_placement(size, rect);
+    if dst != rect {
+        ui.painter().rect_filled(rect, rounding, theme.bg_void);
+    }
+    ui.painter().image(tex.id(), dst, uv, egui::Color32::WHITE);
+}
+
+/// Where a `size` picture goes in `rect`, and which part of it: see
+/// [`paint_thumbnail`].
+fn thumbnail_placement(size: egui::Vec2, rect: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let full = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let src = size.x / size.y;
+    let dst = rect.width() / rect.height();
+    if (src - dst).abs() < 0.01 {
+        (rect, full)
+    } else if src > dst {
+        let offset = (1.0 - dst / src) / 2.0;
+        (rect, egui::Rect::from_min_max(egui::pos2(offset, 0.0), egui::pos2(1.0 - offset, 1.0)))
+    } else {
+        (egui::Rect::from_center_size(rect.center(), egui::vec2(rect.height() * src, rect.height())), full)
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_placement_tests {
+    use super::thumbnail_placement;
+
+    #[test]
+    fn a_portrait_clip_is_shown_whole_and_a_wide_one_fills_the_tile() {
+        let tile = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(160.0, 90.0));
+        let (dst, uv) = thumbnail_placement(egui::vec2(480.0, 853.3), tile);
+        assert_eq!(uv, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), "all of it");
+        assert!((dst.height() - 90.0).abs() < 0.01 && (dst.width() - 90.0 * 480.0 / 853.3).abs() < 0.01, "{dst:?}");
+        assert!((dst.center().x - 80.0).abs() < 0.01, "centred");
+        let (dst, uv) = thumbnail_placement(egui::vec2(2.39, 1.0), tile);
+        assert_eq!(dst, tile);
+        assert!(uv.min.x > 0.0 && uv.max.x < 1.0 && uv.min.y == 0.0);
     }
 }

@@ -177,7 +177,9 @@ impl SkimDecoders {
             return Err("an HDR frame; skim HDR media from its tone-mapped transcode".into());
         }
         let (mut rgba, mut w, mut h) = match &frame.gpu_source {
-            Some(gpu) if frame.data.is_empty() => (realise_srgb_u8_from_gpu(gpu), frame.width, frame.height),
+            // The readback is the GPU buffer's own size: labelled with the
+            // frame's, a rotated clip's swapped sides sheared the tile.
+            Some(gpu) if frame.data.is_empty() => (realise_srgb_u8_from_gpu(gpu), gpu.width, gpu.height),
             _ => (frame.to_rgba(), frame.width, frame.height),
         };
         if rgba.len() != (w as usize) * (h as usize) * 4 {
