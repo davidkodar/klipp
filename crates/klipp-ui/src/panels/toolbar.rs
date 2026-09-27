@@ -761,6 +761,9 @@ impl ToolbarPanel {
             // The whole interface, not the picture: on a 4K screen the
             // default could be too small to read, and the setting was
             // only in Preferences.
+            // The angle grid replaces the Source viewer while a multicam
+            // group is in play; off, the Source viewer stays.
+            ui.checkbox(&mut state.multicam_grid_enabled, "Multicam Angle Grid");
             ui.menu_button("Interface Size", |ui| {
                 // Wide enough that the check mark stays on its entry's line.
                 ui.set_min_width(96.0);

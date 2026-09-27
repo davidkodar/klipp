@@ -304,6 +304,60 @@ impl<T: Clone + Send + 'static> SkimWorker<T> {
     }
 }
 
+/// A thread owning a [`SkimDecoders`] of its own, answering the newest
+/// batch of requests: one frame per job, each delivered as it is made.
+/// For a picture of several sources at once (a multicam grid's angles),
+/// where [`SkimWorker`] keeps only the last request and would starve all
+/// but one. A batch that arrives while one is being made replaces what
+/// is left of it.
+pub struct SkimBatchWorker<T: Clone + Send + 'static> {
+    tx: crossbeam_channel::Sender<Vec<SkimJob<T>>>,
+}
+
+impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
+    /// Start the thread with room for `max_open` decoders, one per source
+    /// the batches name. `deliver` is called with every answered job.
+    pub fn spawn(max_open: usize, deliver: impl Fn(SkimJob<T>, Result<SkimFrame, String>) + Send + 'static) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<SkimJob<T>>>();
+        let spawned = std::thread::Builder::new().name("klipp-skim-batch".into()).spawn(move || {
+            let mut decoders = SkimDecoders::new(max_open);
+            let mut pending: std::collections::VecDeque<SkimJob<T>> = std::collections::VecDeque::new();
+            loop {
+                if pending.is_empty() {
+                    match rx.recv_timeout(Duration::from_secs(5)) {
+                        Ok(batch) => pending = batch.into(),
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                            decoders.sweep(Duration::from_secs(30));
+                            continue;
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                while let Ok(newer) = rx.try_recv() {
+                    pending = newer.into();
+                }
+                let Some(job) = pending.pop_front() else { continue };
+                let result = decoders
+                    .frame_at(&job.path, job.rotation, job.secs, job.max_height, Duration::from_millis(300))
+                    .or_else(|e| match &job.fallback_path {
+                        Some(original) => decoders.frame_at(original, job.rotation, job.secs, job.max_height, Duration::from_millis(400)),
+                        None => Err(e),
+                    });
+                deliver(job, result);
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::error!("skim batch worker thread could not start: {e}");
+        }
+        Self { tx }
+    }
+
+    /// Replace whatever is waiting with `batch`.
+    pub fn request(&self, batch: Vec<SkimJob<T>>) {
+        let _ = self.tx.send(batch);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{frame_index, halve_rgba};
