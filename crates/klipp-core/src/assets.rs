@@ -15,14 +15,15 @@ use std::path::{Path, PathBuf};
 pub const BUNDLED_LUT_PREFIX: &str = "bundled:";
 
 /// The bundled LUT library: next to the executable in an install, else
-/// in the source tree the build came from. Looked up once.
+/// in a checkout the executable sits inside (`target/release/klipp-app`
+/// under the repository), else in the source tree the build came from.
+/// Looked up once. A release built in a worktree that was removed
+/// afterwards and copied into the main checkout has no source tree left;
+/// the checkout it runs from still has the library (#456).
 pub fn bundled_luts_dir() -> Option<&'static Path> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let beside_exe = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|d| d.join("assets").join("luts")))
-            .filter(|p| p.is_dir());
+        let beside_exe = std::env::current_exe().ok().and_then(|exe| luts_above(&exe));
         let source_tree = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
@@ -31,6 +32,12 @@ pub fn bundled_luts_dir() -> Option<&'static Path> {
         beside_exe.or(source_tree)
     })
     .as_deref()
+}
+
+/// The nearest `assets/luts` library in the directories holding `exe`:
+/// beside it in an install, at the repository root for a cargo build.
+fn luts_above(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors().skip(1).map(|d| d.join("assets").join("luts")).find(|p| p.is_dir())
 }
 
 /// The name a project stores for `path`: `bundled:<relative>` when it
@@ -85,6 +92,22 @@ pub mod lut_path_serde {
 
 #[cfg(test)]
 mod tests {
+    /// A cargo build's executable finds the library at the repository
+    /// root above `target/release`; an install finds the one beside it.
+    #[test]
+    fn the_library_is_found_above_the_executable() {
+        let root = std::env::temp_dir().join(format!("klipp-luts-above-{}", std::process::id()));
+        let luts = root.join("assets").join("luts");
+        let release = root.join("target").join("release");
+        std::fs::create_dir_all(&luts).unwrap();
+        std::fs::create_dir_all(&release).unwrap();
+        assert_eq!(super::luts_above(&release.join("klipp-app")), Some(luts.clone()));
+        let beside = release.join("assets").join("luts");
+        std::fs::create_dir_all(&beside).unwrap();
+        assert_eq!(super::luts_above(&release.join("klipp-app")), Some(beside), "the nearest one wins");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     #[test]

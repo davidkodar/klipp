@@ -1278,6 +1278,10 @@ impl GraphExecutor {
         matte_preview_node: Option<NodeId>,
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        // A correction gated by a matte runs as the correction blended by
+        // an ApplyMatte: no correction reads its port 1 (#440).
+        let gates_applied = graph.with_gates_applied();
+        let graph = gates_applied.as_ref().unwrap_or(graph);
         let saved_ws = self.working_colorspace;
         let needs_swap = graph
             .working_space_override
