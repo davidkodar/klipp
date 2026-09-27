@@ -664,6 +664,33 @@ fn multicam_shows_the_cut_angle() {
     }
 }
 
+/// A synced multicam puts each angle on tracks of its own. The group is
+/// shown once, where the primary is, at the angle the cut list chooses;
+/// the other angles' tracks show nothing of it. Looking on one track
+/// only, every angle's track showed its camera and the top one covered
+/// the cut.
+#[test]
+fn multicam_angles_on_their_own_tracks_show_the_cut_angle() {
+    let group = klipp_core::GroupId::new();
+    let mut primary = media(0.0, 4.0);
+    primary.multicam_group = Some(group);
+    primary.multicam_cuts = vec![(1.0, 2), (2.0, 1), (3.0, 0)];
+    let mut angle1 = media(0.0, 4.0);
+    angle1.multicam_group = Some(group);
+    angle1.multicam_angle = 1;
+    let mut angle2 = media(0.0, 4.0);
+    angle2.multicam_group = Some(group);
+    angle2.multicam_angle = 2;
+    let mut src = Flat::default().grey(&primary, 0.2).grey(&angle1, 0.6).grey(&angle2, 0.9);
+    // Angle 2 on top, then angle 1, then the primary at the bottom.
+    let seq = sequence(vec![vec![angle2], vec![angle1], vec![primary]]);
+    for (t, want) in [(0.5, 0.2), (1.5, 0.9), (2.5, 0.6), (3.5, 0.2)] {
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 1e-3);
+        }
+    }
+}
+
 /// Two frames of a clip's media, at 0 and 1/24 s, for frame blending.
 struct TwoFrames {
     clip: ClipId,
