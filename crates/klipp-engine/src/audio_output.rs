@@ -373,14 +373,6 @@ pub struct AudioOutput {
     chirp_active: Arc<AtomicBool>,
     /// Master volume applied in the cpal callback (lock-free, instant response).
     master_volume: Arc<AtomicU32>,
-    /// Per-clip volume applied in the cpal callback (lock-free, instant response).
-    clip_volume: Arc<AtomicU32>,
-    /// Per-clip pan applied in the cpal callback (-1.0 left, 0.0 center, 1.0 right).
-    clip_pan: Arc<AtomicU32>,
-    /// Per-clip pre-fader gain applied in the cpal callback.
-    clip_gain: Arc<AtomicU32>,
-    /// Per-clip channel config (0=Default, 1=MonoDownmix, 2=SwapLR).
-    clip_channel_config: Arc<AtomicU32>,
     /// Consumer side of the skim audio ring buffer.
     /// Mixed into the cpal callback output alongside playback audio.
     skim_consumer: SkimConsumer,
@@ -434,14 +426,6 @@ impl AudioOutput {
         let chirp_flag = chirp_active.clone();
         let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let master_vol_flag = master_volume.clone();
-        let clip_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
-        let clip_vol_flag = clip_volume.clone();
-        let clip_pan = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
-        let clip_pan_flag = clip_pan.clone();
-        let clip_gain = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
-        let clip_gain_flag = clip_gain.clone();
-        let clip_channel_config = Arc::new(AtomicU32::new(0));
-        let clip_channel_config_flag = clip_channel_config.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
         // Static dedup flag for the cpal output callback. cpal fires
@@ -537,48 +521,13 @@ impl AudioOutput {
                                 } else {
                                     LAST_CALLBACK_SHORT.store(short, Ordering::Relaxed);
                                 }
-                                // Apply gain + clip volume + master volume + clip pan (lock-free, instant)
-                                let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
-                                let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));
-                                let clip_gn = f32::from_bits(clip_gain_flag.load(Ordering::Relaxed));
-                                let pan = f32::from_bits(clip_pan_flag.load(Ordering::Relaxed));
-                                let vol = master_vol * clip_vol * clip_gn;
-
-                                // Balance-style pan: center = unity, hard L/R attenuates opposite
-                                let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-                                let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
-
-                                let need_vol = (vol - 1.0).abs() > 0.001;
-                                let need_pan = pan.abs() > 0.001;
-
-                                if need_vol || need_pan {
-                                    for pair in data[..filled].chunks_mut(2) {
-                                        if let Some(l) = pair.get_mut(0) {
-                                            *l *= vol * pan_l;
-                                        }
-                                        if let Some(r) = pair.get_mut(1) {
-                                            *r *= vol * pan_r;
-                                        }
-                                    }
-                                }
-
-                                // Apply channel config (after gain/volume/pan)
-                                let ch_config = clip_channel_config_flag.load(Ordering::Relaxed);
-                                if ch_config != 0 {
-                                    for pair in data[..filled].chunks_mut(2) {
-                                        if pair.len() == 2 {
-                                            match ch_config {
-                                                1 => { // MonoDownmix
-                                                    let mono = (pair[0] + pair[1]) * 0.5;
-                                                    pair[0] = mono;
-                                                    pair[1] = mono;
-                                                }
-                                                2 => { // SwapLR
-                                                    pair.swap(0, 1);
-                                                }
-                                                _ => {}
-                                            }
-                                        }
+                                // Master volume (lock-free, instant). Each clip's
+                                // volume, gain, pan and channel config are applied
+                                // to its own source in the mix thread.
+                                let vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
+                                if (vol - 1.0).abs() > 0.001 {
+                                    for x in data[..filled].iter_mut() {
+                                        *x *= vol;
                                     }
                                 }
                                 // NO clock update — master clock is external
@@ -677,10 +626,6 @@ impl AudioOutput {
             seek_gen,
             chirp_active,
             master_volume,
-            clip_volume,
-            clip_pan,
-            clip_gain,
-            clip_channel_config,
             skim_consumer,
         })
     }
@@ -713,27 +658,6 @@ impl AudioOutput {
     /// Set master volume (applied instantly in cpal callback, no buffer lag).
     pub fn set_master_volume(&self, vol: f32) {
         self.master_volume.store(f32::to_bits(vol), Ordering::Relaxed);
-    }
-
-    /// Set per-clip volume (applied instantly in cpal callback, no buffer lag).
-    pub fn set_clip_volume(&self, vol: f32) {
-        self.clip_volume.store(f32::to_bits(vol), Ordering::Relaxed);
-    }
-
-    /// Set per-clip pan (applied instantly in cpal callback, no buffer lag).
-    /// -1.0 = hard left, 0.0 = center, 1.0 = hard right.
-    pub fn set_clip_pan(&self, pan: f32) {
-        self.clip_pan.store(f32::to_bits(pan), Ordering::Relaxed);
-    }
-
-    /// Set per-clip pre-fader gain (applied instantly in cpal callback, no buffer lag).
-    pub fn set_clip_gain(&self, gain: f32) {
-        self.clip_gain.store(f32::to_bits(gain), Ordering::Relaxed);
-    }
-
-    /// Set per-clip channel config (0=Default, 1=MonoDownmix, 2=SwapLR).
-    pub fn set_channel_config(&self, config: u32) {
-        self.clip_channel_config.store(config, Ordering::Relaxed);
     }
 
     /// Wire a skim audio consumer into the cpal callback for mixing.

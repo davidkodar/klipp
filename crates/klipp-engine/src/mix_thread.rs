@@ -11,6 +11,59 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+/// One source's clip settings, applied to its own samples before the
+/// track sums them: volume times gain, a balance pan, and the channel
+/// config (0 as is, 1 mono downmix, 2 swap left and right), in the
+/// order the export applies them. Each source carries its own, so the
+/// two clips of a crossfade and the clips on other tracks keep theirs;
+/// set once on the whole output, the first clip's settings played every
+/// track.
+pub struct SourceMix {
+    volume: AtomicU32,
+    pan: AtomicU32,
+    channel_config: AtomicU32,
+}
+
+impl Default for SourceMix {
+    fn default() -> Self {
+        Self { volume: AtomicU32::new(1.0f32.to_bits()), pan: AtomicU32::new(0.0f32.to_bits()), channel_config: AtomicU32::new(0) }
+    }
+}
+
+impl SourceMix {
+    pub fn set(&self, volume: f32, pan: f32, channel_config: u32) {
+        self.volume.store(volume.to_bits(), Ordering::Relaxed);
+        self.pan.store(pan.to_bits(), Ordering::Relaxed);
+        self.channel_config.store(channel_config, Ordering::Relaxed);
+    }
+
+    /// Apply the settings to interleaved stereo samples.
+    pub fn apply(&self, samples: &mut [f32]) {
+        let volume = f32::from_bits(self.volume.load(Ordering::Relaxed));
+        let pan = f32::from_bits(self.pan.load(Ordering::Relaxed));
+        let channel_config = self.channel_config.load(Ordering::Relaxed);
+        if (volume - 1.0).abs() > 0.001 || pan.abs() > 0.001 {
+            let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+            let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+            for pair in samples.chunks_exact_mut(2) {
+                pair[0] *= volume * pan_l;
+                pair[1] *= volume * pan_r;
+            }
+        }
+        for pair in samples.chunks_exact_mut(2) {
+            match channel_config {
+                1 => {
+                    let mono = (pair[0] + pair[1]) * 0.5;
+                    pair[0] = mono;
+                    pair[1] = mono;
+                }
+                2 => pair.swap(0, 1),
+                _ => break,
+            }
+        }
+    }
+}
+
 enum MixCommand {
     /// Add a staging consumer for a track. `latency_advertise` is
     /// the source decoder's [`AudioDecoder::latency_advertise`] —
@@ -20,6 +73,7 @@ enum MixCommand {
         track_index: usize,
         consumer: AudioConsumer,
         latency_advertise: Arc<AtomicU32>,
+        mix: Arc<SourceMix>,
     },
     /// Clear all staging consumers (called on stop/clip change).
     ClearAll,
@@ -137,11 +191,13 @@ impl MixThread {
         track_index: usize,
         consumer: AudioConsumer,
         latency_advertise: Arc<AtomicU32>,
+        mix: Arc<SourceMix>,
     ) {
         let _ = self.cmd_tx.send(MixCommand::AddStaging {
             track_index,
             consumer,
             latency_advertise,
+            mix,
         });
     }
 
@@ -248,6 +304,8 @@ fn mix_loop(
         /// + one == comparison per block).
         latency_advertise: Arc<AtomicU32>,
         latency_last_seen: u32,
+        /// The clip settings of the source feeding this staging.
+        mix: Arc<SourceMix>,
     }
 
     let mut lufs_meter = LufsMeter::new(sample_rate as f32, tp_oversample);
@@ -274,6 +332,7 @@ fn mix_loop(
                     track_index,
                     consumer,
                     latency_advertise,
+                    mix,
                 } => {
                     debug!("Mix thread: added staging for track {track_index}");
                     stagings.push(StagingEntry {
@@ -281,6 +340,7 @@ fn mix_loop(
                         consumer,
                         latency_advertise,
                         latency_last_seen: u32::MAX, // sentinel — first poll will always count as a "change"
+                        mix,
                     });
                 }
                 MixCommand::ClearAll => {
@@ -349,6 +409,7 @@ fn mix_loop(
             if filled > 0 {
                 any_data = true;
                 buf.truncate(filled);
+                staging.mix.apply(buf);
             } else {
                 buf.clear();
             }
@@ -481,5 +542,77 @@ fn mix_loop(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod source_mix_tests {
+    use super::SourceMix;
+
+    #[test]
+    fn volume_gain_and_balance_then_channel_config() {
+        let mix = SourceMix::default();
+        let mut s = [0.5, 0.25, 0.5, 0.25];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.5, 0.25, 0.5, 0.25], "the default leaves samples alone");
+
+        mix.set(0.5, 0.5, 0);
+        let mut s = [1.0, 1.0];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.25, 0.5], "half volume, balance right halves the left");
+
+        mix.set(1.0, -1.0, 0);
+        let mut s = [1.0, 1.0];
+        mix.apply(&mut s);
+        assert_eq!(s, [1.0, 0.0], "full left silences the right");
+
+        mix.set(1.0, 0.0, 1);
+        let mut s = [1.0, 0.0];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.5, 0.5], "mono downmix");
+
+        mix.set(1.0, 0.0, 2);
+        let mut s = [1.0, 0.0];
+        mix.apply(&mut s);
+        assert_eq!(s, [0.0, 1.0], "swap");
+    }
+
+    /// Through the mix thread: a clip at half volume on one track leaves
+    /// the clip on another track at its own level, and the two lanes of
+    /// a crossfade each keep their own. The whole output used to take the
+    /// first clip's settings.
+    #[test]
+    fn each_source_keeps_its_own_clip_settings_in_the_mix() {
+        use super::MixThread;
+        use ringbuf::traits::{Consumer, Producer, Split};
+        use std::sync::atomic::AtomicU32;
+        use std::sync::{Arc, Mutex};
+
+        let mixer = Arc::new(Mutex::new(klipp_audio::AudioMixer::new(2)));
+        let (mt, mut main) = MixThread::new(48_000, mixer, Arc::new(crate::sync::MasterClock::new()), false);
+        let n = 512;
+        // Track 0: lane 0 at 0.5 and its crossfade lane at 0.25; track 1 at 1.0.
+        let feeds = [(crate::engine::source_key(0, 0), 0.5f32), (crate::engine::source_key(0, 1), 0.25), (crate::engine::source_key(1, 0), 1.0)];
+        for (key, volume) in feeds {
+            let (mut producer, consumer) = ringbuf::HeapRb::<f32>::new(n * 4).split();
+            assert_eq!(producer.push_slice(&vec![0.4f32; n]), n);
+            let mix = Arc::new(super::SourceMix::default());
+            mix.set(volume, 0.0, 0);
+            mt.add_staging(key, consumer, Arc::new(AtomicU32::new(0)), mix);
+        }
+        // The sources may land in different blocks, so compare the total:
+        // each is 0.4 over n samples at its own volume, times the track's
+        // centre pan gain.
+        let (centre, _) = klipp_audio::AudioMixer::new(1).pan_law.gains(0.0);
+        let want = 0.4 * n as f32 * (0.5 + 0.25 + 1.0) * centre;
+        let mut total = 0.0f32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (total - want).abs() > 1e-2 && std::time::Instant::now() < deadline {
+            let mut buf = vec![0.0f32; n];
+            let got = main.pop_slice(&mut buf);
+            total += buf[..got].iter().sum::<f32>();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!((total - want).abs() <= 1e-2, "mixed {total}, want {want}");
     }
 }
