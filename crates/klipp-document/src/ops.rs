@@ -3929,18 +3929,8 @@ fn transition(
         return Err(refuse(i, format!("a transition of {secs} s"), "give secs between 0.06 and 4"));
     }
     let dur = snap(secs, fps).max(one_frame(fps));
-    // Both clips overlap the cut by half the transition: each needs that
-    // much source beyond its edge, and to stay longer than the overlap.
-    let half = dur.to_secs_f64() / 2.0;
-    let half_tc = snap(half, fps);
-    let (a_room, b_room) = handle_room(pool, clip, next, half_tc);
-    if !a_room || !b_room {
-        let who = if !a_room { clip_name(seq, pool, clip) } else { clip_name(seq, pool, next) };
-        return Err(refuse(i, format!("{who} has no footage beyond the cut to make the {secs:.2} s overlap"), "shorten the transition, or trim the clip so there is a handle"));
-    }
-    if dur >= clip.timeline_out - clip.timeline_in || dur >= next.timeline_out - next.timeline_in {
-        return Err(refuse(i, "the transition is as long as one of its clips", "shorten it, or lengthen the clips"));
-    }
+    let alignment = klipp_core::TransitionAlignment::default();
+    transition_fits(seq, pool, fps, i, clip, next, dur, alignment)?;
     let replaced = seq.tracks[ti].transitions.iter().find(|t| t.clip_a_id == clip.id && t.clip_b_id == next.id).cloned();
     let transition = klipp_timeline::Transition {
         id: klipp_core::TransitionId::new(),
@@ -3949,7 +3939,7 @@ fn transition(
         clip_a_id: clip.id,
         clip_b_id: next.id,
         user_params: klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),
-        alignment: klipp_core::TransitionAlignment::default(),
+        alignment,
     };
     let at = clip.timeline_out.to_secs_f64();
     // On an audio track every transition is a crossfade, whatever it was
@@ -3984,12 +3974,83 @@ fn transition(
     Ok((what, edit, vec![clip.id, next.id]))
 }
 
-/// Whether `a` has `half` of footage past its out point and `b` before
-/// its in point: what a transition of twice `half` centred on their cut
-/// plays.
-fn handle_room(pool: &MediaPool, a: &Clip, b: &Clip, half: Timecode) -> (bool, bool) {
+/// Whether a transition of `dur` aligned `alignment` fits between `a`
+/// and `b`: each clip has the footage beyond the cut the transition
+/// plays from it, and outlasts the transition. The check a transition
+/// passes to be added, and to be lengthened or realigned afterwards: a
+/// tail past the file's end would export as padded silence, and a head
+/// short of the in point cuts the crossfade short.
+#[allow(clippy::too_many_arguments)]
+fn transition_fits(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, a: &Clip, b: &Clip, dur: Timecode, alignment: klipp_core::TransitionAlignment) -> Result<(), Refusal> {
+    let (tail, head) = overlap(dur, alignment, fps);
+    let (a_room, b_room) = handle_room(pool, a, b, tail, head);
+    if !a_room || !b_room {
+        let who = if !a_room { clip_name(seq, pool, a) } else { clip_name(seq, pool, b) };
+        let secs = dur.to_secs_f64();
+        return Err(refuse(i, format!("{who} has no footage beyond the cut to make the {secs:.2} s overlap"), "shorten the transition, or trim the clip so there is a handle"));
+    }
+    if dur >= a.timeline_out - a.timeline_in || dur >= b.timeline_out - b.timeline_in {
+        return Err(refuse(i, "the transition is as long as one of its clips", "shorten it, or lengthen the clips"));
+    }
+    Ok(())
+}
+
+/// How far a transition of `dur` reaches past the cut into the
+/// outgoing clip's tail and before it into the incoming clip's head:
+/// half each when centred, all of it on one side otherwise.
+fn overlap(dur: Timecode, alignment: klipp_core::TransitionAlignment, fps: Fps) -> (Timecode, Timecode) {
+    use klipp_core::TransitionAlignment::*;
+    let half = snap(dur.to_secs_f64() / 2.0, fps);
+    let none = frame_tc(0, fps);
+    match alignment {
+        Center => (half, half),
+        StartAtCut => (dur, none),
+        EndAtCut => (none, dur),
+    }
+}
+
+/// Whether `a` has `tail` of footage past its out point and `b` `head`
+/// before its in point.
+fn handle_room(pool: &MediaPool, a: &Clip, b: &Clip, tail: Timecode, head: Timecode) -> (bool, bool) {
     let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
-    (media_dur(a).is_none_or(|d| a.source_out + half <= d), b.source_in >= half)
+    (media_dur(a).is_none_or(|d| a.source_out + tail <= d), b.source_in >= head)
+}
+
+/// A transition on `track_index` given a new `duration` and
+/// `alignment`, as one undoable edit, through the same check as adding
+/// it: the clips must have the footage the reshaped transition plays
+/// from them. Mutating the transition in place, as the inspector did,
+/// let a tail run past the file's end (the export pads it with silence)
+/// and a head short of the in point (the crossfade is cut short), and
+/// left nothing to undo.
+pub fn reshape_transition(
+    seq: &Sequence,
+    pool: &MediaPool,
+    track_index: usize,
+    transition_id: klipp_core::TransitionId,
+    duration: Timecode,
+    alignment: klipp_core::TransitionAlignment,
+) -> Result<EditCommand, Refusal> {
+    let fps = seq.fps;
+    let track = seq.tracks.get(track_index).ok_or_else(|| refuse(0, format!("there is no track {track_index}"), "pick a transition on the timeline"))?;
+    let old = track.transitions.iter().find(|t| t.id == transition_id).ok_or_else(|| refuse(0, "the transition is gone", "pick one on the timeline"))?;
+    if track.locked {
+        return Err(refuse(0, format!("track {track_index} is locked"), "unlock it first"));
+    }
+    let (Some(a), Some(b)) = (track.find_clip(old.clip_a_id), track.find_clip(old.clip_b_id)) else {
+        return Err(refuse(0, "the transition's clips are gone", "remove the transition"));
+    };
+    let dur = duration.max(one_frame(fps));
+    transition_fits(seq, pool, fps, 0, a, b, dur, alignment)?;
+    Ok(EditCommand::AddTransition {
+        track_index,
+        transition: klipp_timeline::Transition { duration: dur, alignment, ..*old },
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        old_fade_out_a: a.fade_out_secs,
+        old_fade_in_b: b.fade_in_secs,
+        replaced: Some(*old),
+    })
 }
 
 /// The crossfade between `a`'s and `b`'s linked sound clips, when they
@@ -4005,8 +4066,8 @@ fn linked_crossfade(seq: &Sequence, pool: &MediaPool, fps: Fps, a: &Clip, b: &Cl
     if track.clips.get(pa_idx + 1).map(|c| c.id) != Some(pb.id) || pa.timeline_out != pb.timeline_in {
         return None;
     }
-    let half = snap(dur.to_secs_f64() / 2.0, fps);
-    if handle_room(pool, pa, pb, half) != (true, true) {
+    let (tail, head) = overlap(dur, klipp_core::TransitionAlignment::default(), fps);
+    if handle_room(pool, pa, pb, tail, head) != (true, true) {
         return None;
     }
     Some(EditCommand::AddTransition {
@@ -5284,6 +5345,119 @@ mod tests {
         assert!(view.sequences[0].tracks[1].transitions.is_empty());
         view.apply_inverse(&remove);
         assert_eq!(view.sequences[0].tracks[1].transitions.len(), 1);
+    }
+
+    #[test]
+    fn a_transition_is_reshaped_through_the_same_checks_and_undo_puts_it_back() {
+        use klipp_core::TransitionAlignment;
+        let (mut seq, pool, _, _, _) = fixture();
+        // The second sound clip has no head before its in point.
+        seq.tracks[1].clips[1].source_in = tc(0.0);
+        seq.tracks[1].clips[1].source_out = tc(4.0);
+        let (sa, sb) = (seq.tracks[1].clips[0].id, seq.tracks[1].clips[1].id);
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: sa,
+            clip_b_id: sb,
+            user_params: Default::default(),
+            alignment: TransitionAlignment::StartAtCut,
+        };
+        seq.tracks[1].transitions.push(tr);
+        // Ending it at the cut needs a head the clip has not got.
+        let err = reshape_transition(&seq, &pool, 1, tr.id, tc(0.4), TransitionAlignment::EndAtCut).unwrap_err();
+        assert!(err.why.contains("no footage beyond the cut"), "{err}");
+        // As long as a clip: refused.
+        let err = reshape_transition(&seq, &pool, 1, tr.id, tc(4.0), TransitionAlignment::StartAtCut).unwrap_err();
+        assert!(err.why.contains("as long as one of its clips"), "{err}");
+        // Longer, still from the cut: the outgoing clip has the tail.
+        let edit = reshape_transition(&seq, &pool, 1, tr.id, tc(1.0), TransitionAlignment::StartAtCut).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&edit);
+        let t = &view.sequences[0].tracks[1];
+        assert_eq!(t.transitions.len(), 1);
+        assert_eq!((t.transitions[0].id, t.transitions[0].duration), (tr.id, tc(1.0)));
+        assert!((klipp_timeline::crossfade::extent(t, &t.clips[0]).tail_secs - 1.0).abs() < 1e-9);
+        view.apply_inverse(&edit);
+        let t = &view.sequences[0].tracks[1];
+        assert_eq!(t.transitions.len(), 1);
+        assert_eq!(t.transitions[0].duration, tc(0.4));
+    }
+
+    #[test]
+    fn removing_a_transition_from_an_audio_track_takes_a_legacy_dip_with_it() {
+        let (mut seq, pool, _, _, _) = fixture();
+        // A transition dropped on an audio track before crossfades existed
+        // set dip fades on its clips; loaded now it is a crossfade with
+        // the stale fades still on them.
+        let (sa, sb) = (seq.tracks[1].clips[0].id, seq.tracks[1].clips[1].id);
+        seq.tracks[1].clips[0].fade_in_secs = 0.1;
+        seq.tracks[1].clips[0].fade_out_secs = 0.4;
+        seq.tracks[1].clips[1].fade_in_secs = 0.4;
+        seq.tracks[1].clips[1].fade_out_secs = 0.2;
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: sa,
+            clip_b_id: sb,
+            user_params: Default::default(),
+            alignment: Default::default(),
+        };
+        seq.tracks[1].transitions.push(tr);
+        let remove = EditCommand::RemoveTransition { track_index: 1, transition: tr, old_fade_out_a: 0.4, old_fade_in_b: 0.4 };
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&remove);
+        let t = &view.sequences[0].tracks[1];
+        assert!(t.transitions.is_empty());
+        // Only the fades at the crossfaded ends go; the others stay.
+        assert_eq!((t.clips[0].fade_in_secs, t.clips[0].fade_out_secs), (0.1, 0.0));
+        assert_eq!((t.clips[1].fade_in_secs, t.clips[1].fade_out_secs), (0.0, 0.2));
+        view.apply_inverse(&remove);
+        let t = &view.sequences[0].tracks[1];
+        assert_eq!(t.transitions.len(), 1);
+        assert_eq!((t.clips[0].fade_out_secs, t.clips[1].fade_in_secs), (0.4, 0.4));
+    }
+
+    #[test]
+    fn removing_a_transition_leaves_a_fade_the_user_drew() {
+        let (mut seq, pool, _, _, _) = fixture();
+        // A music clip with its own 2 s fade out, and a crossfade added
+        // over it later: adding the crossfade left the fade alone.
+        let (sa, sb) = (seq.tracks[1].clips[0].id, seq.tracks[1].clips[1].id);
+        seq.tracks[1].clips[0].fade_out_secs = 2.0;
+        seq.tracks[1].clips[1].fade_in_secs = 0.15;
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: sa,
+            clip_b_id: sb,
+            user_params: Default::default(),
+            alignment: Default::default(),
+        };
+        seq.tracks[1].transitions.push(tr);
+        let remove = EditCommand::RemoveTransition { track_index: 1, transition: tr, old_fade_out_a: 2.0, old_fade_in_b: 0.15 };
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&remove);
+        let t = &view.sequences[0].tracks[1];
+        assert!(t.transitions.is_empty());
+        // Neither fade is the transition's dip, so both survive it.
+        assert_eq!((t.clips[0].fade_out_secs, t.clips[1].fade_in_secs), (2.0, 0.15));
+        view.apply_inverse(&remove);
+        let t = &view.sequences[0].tracks[1];
+        assert_eq!(t.transitions.len(), 1);
+        assert_eq!((t.clips[0].fade_out_secs, t.clips[1].fade_in_secs), (2.0, 0.15));
     }
 
     #[test]

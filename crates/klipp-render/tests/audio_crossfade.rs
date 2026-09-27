@@ -165,3 +165,52 @@ fn a_crossfade_on_a_picture_track_leaves_the_sound_alone() {
     let clips: Vec<(u64, u64)> = snap.audio_tracks.iter().flat_map(|t| t.clips.iter().map(|c| (c.timeline_start_frame, c.timeline_end_frame))).collect();
     assert_eq!(clips, vec![(0, 72), (72, 144)]);
 }
+
+/// A 30-rate clip on a 25 fps sequence: the crossfade's half is
+/// computed in the clip's rate (12 frames at 25 fps rescale to 14 at
+/// 30, 0.4667 s) and is not a whole sequence frame. The export moves
+/// the clip's start back by whole frames, so the sample at the cut has
+/// to be the clip's in point all the same, and everything after it in
+/// step with the picture.
+#[test]
+fn a_clip_at_another_rate_than_the_sequence_stays_in_sync_after_the_cut() {
+    let (Some(r), Some(s)) = (ramp(), silence()) else { return };
+    const SEQ_FPS: u32 = 25;
+    let t30 = |secs: f64| Timecode::from_secs_f64(secs, 30);
+    let mut pool = MediaPool::new();
+    let mut item = |p: PathBuf| {
+        let mut m = MediaItem::synthetic_for_test(p, None);
+        m.has_audio = true;
+        m.duration = Timecode::from_secs_f64(8.0, SEQ_FPS);
+        pool.add(m)
+    };
+    let (a_media, b_media) = (item(s), item(r));
+    let mut seq = Sequence::new_default();
+    seq.fps = klipp_core::Fps::new(SEQ_FPS, 1);
+    let mut track = Track::new("A1", TrackKind::Audio);
+    // A silent at 0–3 s, B the ramp at 3–6 s from source 2 s, both at
+    // rate 30; a 24-frame crossfade centred on the cut.
+    let a = Clip::media(a_media, t30(0.0), t30(3.0), t30(1.0), t30(4.0));
+    let b = Clip::media(b_media, t30(3.0), t30(6.0), t30(2.0), t30(5.0));
+    track.transitions.push(Transition {
+        id: klipp_core::TransitionId::new(),
+        kind: TransitionKind::CrossDissolve,
+        duration: Timecode::from_frames(24, SEQ_FPS),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: TransitionAlignment::Center,
+    });
+    track.clips = vec![a, b];
+    seq.tracks = vec![track];
+    let mut mix = mixdown(&seq, &pool);
+    // Frame 100 is 4 s, a second past the cut and well past the window:
+    // B at unity, and a second into it — source 3 s.
+    let heard = secs_of(mix.get_frame_audio(100)[0]);
+    assert!((heard - 3.0).abs() < 0.002, "B heard at source {heard:.4} s a second after the cut, want 3.0000");
+    // And at the cut itself, its in point, at the incoming gain of a
+    // centred crossfade.
+    let (_, gb) = gains(0.5);
+    let heard = secs_of((mix.get_frame_audio(75)[0] as f64 / gb) as f32);
+    assert!((heard - 2.0).abs() < 0.002, "B heard at source {heard:.4} s at the cut, want 2.0000");
+}

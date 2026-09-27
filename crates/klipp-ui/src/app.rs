@@ -1789,6 +1789,17 @@ impl KlippApp {
         self.colour_check.selfcheck = Some((ok, said.join("\n")));
     }
 
+    /// A transition's duration or alignment changed from the inspector:
+    /// through the document op that checks the clips have the footage
+    /// for it, refused with a toast when they have not, one undo step.
+    fn reshape_transition(&mut self, track_index: usize, transition_id: klipp_core::TransitionId, duration: klipp_core::RationalTime, alignment: klipp_core::TransitionAlignment) {
+        let seq = self.state.sequence();
+        match klipp_document::ops::reshape_transition(seq, &self.state.media_pool, track_index, transition_id, duration, alignment) {
+            Ok(edit) => self.apply_edits_as_one(std::slice::from_ref(&edit), "Transition"),
+            Err(r) => self.state.toast.show(format!("Transition unchanged: {}. {}", r.why, capitalise(&r.hint))),
+        }
+    }
+
     fn apply_edits_as_one(&mut self, edits: &[EditCommand], label: &str) {
         if edits.is_empty() {
             return;
@@ -23433,14 +23444,16 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTransitionDuration { track_index, transition_id, duration_frames } => {
-                let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
-                        t.duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
-                    }
+                let seq = self.state.sequence();
+                let fps = seq.fps;
+                // Frames of the sequence, as ticks at its rate: a frame is
+                // `den` of them, one only at a whole-number rate.
+                let duration = klipp_core::RationalTime { value: i64::from(*duration_frames) * i64::from(fps.den), rate: fps.num };
+                let Some(t) = seq.tracks.get(*track_index).and_then(|t| t.transitions.iter().find(|t| t.id == *transition_id)) else { return true };
+                // The same time at another rate is no edit.
+                if t.duration.to_secs_f64() != duration.to_secs_f64() {
+                    self.reshape_transition(*track_index, *transition_id, duration, t.alignment);
                 }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
                 true
             }
             AppCommand::SetTransitionKind { track_index, transition_id, kind_id } => {
@@ -23464,13 +23477,11 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTransitionAlignment { track_index, transition_id, alignment } => {
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
-                    if let Some(t) = track.transitions.iter_mut().find(|t| t.id == *transition_id) {
-                        t.alignment = *alignment;
-                    }
+                let seq = self.state.sequence();
+                let Some(t) = seq.tracks.get(*track_index).and_then(|t| t.transitions.iter().find(|t| t.id == *transition_id)) else { return true };
+                if t.alignment != *alignment {
+                    self.reshape_transition(*track_index, *transition_id, t.duration, *alignment);
                 }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
                 true
             }
             _ => false,
