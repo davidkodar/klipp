@@ -3802,7 +3802,7 @@ impl TimelinePanel {
                 if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                     let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                    self.scrub_to(state, cmds, target_secs);
+                    self.scrub_to(state, cmds, target_secs, pos.x);
                     // A plain tap on the ruler never goes through
                     // `drag_started`/`drag_stopped`, so `scrub_end`
                     // (which commits the final `SetPlayhead`) never
@@ -4453,8 +4453,15 @@ impl TimelinePanel {
     /// playhead immediately (no engine round-trip), asks the skim worker for
     /// the frame there, kicks the filmstrip preview via `awaiting_seek_frame`
     /// only where no skim file makes a better picture available, and updates
-    /// the audio skim session.
-    fn scrub_to(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>, target_secs: f64) {
+    /// the audio skim session. `pointer_x` is the cursor's screen x, which
+    /// feeds the same cursor-speed estimate the hover skim keeps.
+    fn scrub_to(
+        &self,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        target_secs: f64,
+        pointer_x: f32,
+    ) {
         let dur_secs = state.sequence_duration().to_secs_f64();
         let clamped = if dur_secs > 0.0 {
             target_secs.clamp(0.0, dur_secs)
@@ -4522,6 +4529,32 @@ impl TimelinePanel {
         // gesture with a beginning and an end.
         if state.is_scrubbing {
             state.browser_skim_active_this_frame = true;
+
+            // The same cursor-speed EMA the hover branch keeps.
+            // `determine_skim_mode` reads `skim_speed_px_per_sec` and calls
+            // anything under 1 px/s Silent, and only hover ever wrote to it
+            // — so a drag saw either zero (the value `BrowserSkimAudioEnd`
+            // leaves) or whatever the last hover left, and the audio skim
+            // was silent through the whole gesture. Sub-pixel movement
+            // counts as stationary because the EMA alone decays far too
+            // slowly to give silence the moment the drag stops.
+            //
+            // Maintained on every drag frame, not only the ones with an
+            // audio session: the first frame of a gesture is the one that
+            // seeds `skim_last_x`, and the session does not exist yet on it
+            // (`scrub_begin` has only just asked for it).
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(state.skim_last_update).as_secs_f32();
+            let dx = (pointer_x - state.skim_last_x).abs();
+            if dx < 0.5 {
+                state.skim_speed_px_per_sec = 0.0;
+            } else {
+                let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+                state.skim_speed_px_per_sec =
+                    state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+            }
+            state.skim_last_x = pointer_x;
+            state.skim_last_update = now;
         }
 
         // Drive the high-quality skim decode + audio skim. Same pipeline the
@@ -4548,8 +4581,16 @@ impl TimelinePanel {
                 state.browser_skim_active_this_frame = true;
             }
 
-            // Audio skim — same command the media browser hover uses.
-            if state.is_scrubbing && state.skim_audio_session.is_some() {
+            // Audio skim — same command the media browser hover uses, and
+            // now with the same 16ms floor between updates. The drag used
+            // to push one per UI frame with no rate limit at all, which at
+            // a high refresh rate re-seeks the sidecar faster than it can
+            // fill its ring.
+            if state.is_scrubbing
+                && state.skim_audio_session.is_some()
+                && state.skim_last_audio_dispatch.elapsed().as_millis() >= 16
+            {
+                state.skim_last_audio_dispatch = std::time::Instant::now();
                 cmds.push(AppCommand::BrowserSkimAudioUpdate {
                     media_id,
                     time_secs: source_secs,
@@ -4742,7 +4783,7 @@ impl TimelinePanel {
                     if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                         let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                         let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                        self.scrub_to(state, cmds, target_secs);
+                        self.scrub_to(state, cmds, target_secs, pos.x);
                     }
                 }
             }
@@ -18326,7 +18367,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
 
         assert!(
             !filmstrip_would_upload(&state),
@@ -18349,7 +18390,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
 
         assert!(
             filmstrip_would_upload(&state),
@@ -18372,7 +18413,7 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
 
         assert!(
             state.browser_skim_active_this_frame,
@@ -18388,11 +18429,60 @@ mod scrub_preview_tests {
         let panel = TimelinePanel::default();
         let mut cmds = Vec::new();
 
-        panel.scrub_to(&mut state, &mut cmds, 3.0);
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
 
         assert!(
             !state.browser_skim_active_this_frame,
             "a click is not a drag; the revert still has its debounce",
+        );
+    }
+
+    /// `determine_skim_mode` calls anything under 1 px/s Silent, and only
+    /// the hover branch ever fed it — so the audio skim said nothing for
+    /// the whole of a playhead drag however fast the cursor moved.
+    #[test]
+    fn a_drag_maintains_the_cursor_speed() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        // The first drag frame seeds the sample; the second is 80px
+        // along, one 16ms UI frame later.
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+
+        assert!(
+            klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec)
+                == klipp_engine::skim_audio::SkimMode::Playing,
+            "the drag left the speed at {} px/s, which reads as Silent",
+            state.skim_speed_px_per_sec,
+        );
+    }
+
+    /// And stopping dead inside the gesture is silence again, the same
+    /// way a stationary hover is: the EMA decays far too slowly to do
+    /// that on its own, so sub-pixel movement snaps it to zero.
+    #[test]
+    fn a_drag_that_stops_moving_goes_silent() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.1);
+
+        assert_eq!(
+            klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec),
+            klipp_engine::skim_audio::SkimMode::Silent,
         );
     }
 }
