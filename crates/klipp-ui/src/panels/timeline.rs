@@ -6192,8 +6192,17 @@ impl TimelinePanel {
                     }
                 }
 
-                // Timeline skimming: show frame at hover position in viewer
-                if state.skimming_enabled && !state.has_modal_open() {
+                // Timeline skimming: show frame at hover position in viewer.
+                // Not while the playhead is being dragged. Clips draw before
+                // the playhead, so once the cursor crossed the tracks during
+                // a head or ruler drag both branches pushed a skim request in
+                // the same frame and this one, being first, won. The frame
+                // that reached the viewer was then the hovered clip's at the
+                // cursor rather than the playhead's clip at the playhead —
+                // a different clip entirely whenever the pointer was not over
+                // the topmost video clip. During a gesture the playhead is
+                // what the viewer is about.
+                if state.skimming_enabled && !state.has_modal_open() && !state.is_scrubbing {
                     // Compound clip path — resolve hover to inner media at this
                     // position and skim through that media. The existing
                     // `if let Some(media_id) = clip.media_id()` block below
