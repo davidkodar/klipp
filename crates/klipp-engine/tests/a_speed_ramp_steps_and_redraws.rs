@@ -6,7 +6,8 @@
 //! frame cached under it, somewhere else entirely. And the fingerprints
 //! that decide whether a parked frame is still current hashed only how
 //! many speed keyframes there were, so dragging one kept the old frame
-//! on screen until the next seek (#423).
+//! on screen until the next seek (#423). A multicam cut is the same kind
+//! of edit: the cut list alone changes which file is under the playhead.
 
 mod common;
 
@@ -100,15 +101,26 @@ fn parked_in_a_ramp() -> Option<Engine> {
     let mut t = Track::new("V1", TrackKind::Video);
     t.clips = vec![clip];
     seq.tracks = vec![t];
+    Some(parked_at_frame_5(seq, pool_of(id, &src, fps)))
+}
+
+/// The luma ramp as media `id`.
+fn pool_of(id: MediaId, src: &std::path::Path, fps: Fps) -> MediaPool {
     let mut pool = MediaPool::default();
     pool.add(MediaItem {
         id,
-        path: src.clone(),
+        path: src.to_path_buf(),
         kind: klipp_media::MediaItemKind::File,
         resolution: Resolution { width: W, height: H },
-        ..MediaItem::new_synthetic_title(id, src.display().to_string(), tc(common::RAMP_N as i64), fps)
+        ..MediaItem::new_synthetic_title(id, src.display().to_string(), common::frame_tc(common::RAMP_N as i64, fps), fps)
     });
+    pool
+}
 
+/// An engine on `seq`, parked on timeline frame 5.
+fn parked_at_frame_5(seq: Sequence, pool: MediaPool) -> Engine {
+    let fps = seq.fps;
+    let tc = |f| common::frame_tc(f, fps);
     let (cmd, cmd_rx) = crossbeam_channel::unbounded();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
     let playhead = Arc::new(Mutex::new(None));
@@ -132,7 +144,7 @@ fn parked_in_a_ramp() -> Option<Engine> {
     let g = e.generation();
     e.cmd.send(AppCommand::SetPlayhead(tc(5))).unwrap();
     assert!(e.settle_after(g), "no first frame");
-    Some(e)
+    e
 }
 
 #[test]
@@ -165,4 +177,49 @@ fn dragging_a_speed_keyframe_redraws_the_parked_frame() {
     e.cmd.send(AppCommand::SequenceUpdated).unwrap();
     assert!(e.settle_after(g), "the keyframe drag rendered nothing");
     assert_ne!(e.frame(), before, "the parked frame is still the one decoded under the old ramp");
+}
+
+/// A multicam switch changes the primary's cut list and nothing else,
+/// and the fingerprints left the cut list out: paused, the viewer kept
+/// the old camera until something else made the engine look (#479).
+/// Two angles of the ramp, twenty frames apart in the source.
+#[test]
+fn a_multicam_cut_redraws_the_parked_frame() {
+    let Some(src) = common::ffv1_avi_ramp() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let fps = Fps::new(common::FPS, 1);
+    let tc = |f| common::frame_tc(f, fps);
+    let id = MediaId::new();
+    let group = GroupId::new();
+    let angle = |n: u8, source_in: i64| {
+        let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(20)) };
+        clip.source_in = tc(source_in);
+        clip.source_out = tc(source_in + 20);
+        clip.multicam_group = Some(group);
+        clip.multicam_angle = n;
+        clip
+    };
+    let mut seq = Sequence::new_default();
+    seq.fps = fps;
+    seq.resolution = Resolution { width: W, height: H };
+    seq.tracks = [angle(0, 0), angle(1, 20)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut t = Track::new(&format!("V{}", i + 1), TrackKind::Video);
+            t.clips = vec![c];
+            t
+        })
+        .collect();
+    let e = parked_at_frame_5(seq, pool_of(id, &src, fps));
+    let before = e.frame();
+    let g = e.generation();
+    // Written as the UI writes most edits: to the shared sequence, with
+    // nothing sent after. The engine's idle look at the layout is all
+    // that can notice.
+    e.seq.write().unwrap().tracks[0].clips[0].multicam_cuts = vec![(0.0, 1)];
+    assert!(e.settle_after(g), "the cut rendered nothing");
+    assert_ne!(e.frame(), before, "the parked frame is still the first camera's");
 }

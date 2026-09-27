@@ -516,6 +516,7 @@ fn under_playhead_fingerprint(seq: &klipp_timeline::Sequence, tc: Timecode) -> u
         (clip.source_in.value, clip.source_in.rate).hash(&mut h);
         clip.speed.to_bits().hash(&mut h);
         hash_speed_keyframes(&clip.speed_keyframes, &mut h);
+        hash_multicam(clip, &mut h);
         clip.source_rotation.hash(&mut h);
         std::mem::discriminant(&clip.kind).hash(&mut h);
     }
@@ -535,6 +536,20 @@ fn hash_speed_keyframes(keyframes: &[klipp_core::Keyframe], h: &mut impl std::ha
         std::mem::discriminant(&k.interpolation).hash(h);
         (k.tangent_out.0.to_bits(), k.tangent_out.1.to_bits()).hash(h);
         (k.tangent_in.0.to_bits(), k.tangent_in.1.to_bits()).hash(h);
+    }
+}
+
+/// A clip's place in a multicam group and, on the primary, its cut list:
+/// which angle's file the frame under the playhead comes from. A switch
+/// changes the cut list alone, and a parked frame fingerprinted without it
+/// stayed the old camera's until something else made the engine look.
+fn hash_multicam(clip: &klipp_timeline::Clip, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    clip.multicam_group.hash(h);
+    clip.multicam_angle.hash(h);
+    clip.multicam_cuts.len().hash(h);
+    for (at, angle) in &clip.multicam_cuts {
+        (at.to_bits(), angle).hash(h);
     }
 }
 
@@ -569,6 +584,7 @@ fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
             (clip.source_in.value, clip.source_in.rate).hash(&mut h);
             clip.speed.to_bits().hash(&mut h);
             hash_speed_keyframes(&clip.speed_keyframes, &mut h);
+            hash_multicam(clip, &mut h);
             clip.source_rotation.hash(&mut h);
             std::mem::discriminant(&clip.kind).hash(&mut h);
         }
@@ -1771,11 +1787,9 @@ impl PlaybackEngine {
                 opened = true;
             }
         }
-        // The output carries one clip's volume, pan, gain and channel
-        // config, taken from the first source that has a clip. A source
-        // retiring changes which source that is: past a crossfade's
-        // window the incoming clip went on at the outgoing clip's
-        // settings until something else happened to sync.
+        // Each source carries its own clip's volume, pan, gain and
+        // channel config: one opened needs its settings now, not at the
+        // next tick's sync.
         if opened || !retired.is_empty() {
             self.sync_clip_volumes();
         }
