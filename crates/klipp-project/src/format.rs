@@ -330,6 +330,8 @@ pub struct ClipJson {
     pub multicam_angle: Option<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub multicam_cuts: Vec<(f64, u8)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicam_sound: Option<klipp_timeline::MulticamSound>,
     #[serde(default)]
     pub solo: Option<bool>,
     /// Per-clip blend mode (Normal, Multiply, Screen, …). Older projects
@@ -987,6 +989,7 @@ mod tests {
             audio_effect_keyframes: audio_kfs.clone(),
             multicam_group: None, multicam_angle: None,
             multicam_cuts: vec![],
+            multicam_sound: None,
             solo: None,
             blend_mode: None,
             depth: None,
@@ -1054,6 +1057,7 @@ mod tests {
             audio_effect_keyframes: std::collections::HashMap::new(),
             multicam_group: None, multicam_angle: None,
             multicam_cuts: vec![],
+            multicam_sound: None,
             solo: None,
             blend_mode: None,
             depth: None,
@@ -1221,6 +1225,7 @@ mod tests {
             audio_effect_keyframes: std::collections::HashMap::new(),
             multicam_group: None, multicam_angle: None,
             multicam_cuts: vec![],
+            multicam_sound: None,
             solo: None,
             blend_mode: None,
             depth: None,

@@ -2110,6 +2110,11 @@ fn handle(
                     .map(|m| json!({
                         "angles": m.angles.iter().map(|a| *a as usize + 1).collect::<Vec<_>>(),
                         "active": m.active as usize + 1,
+                        "sound": match m.primary.multicam_sound {
+                            klipp_core::MulticamSound::Angle(a) => json!(a as usize + 1),
+                            klipp_core::MulticamSound::FollowPicture => json!("follow"),
+                            klipp_core::MulticamSound::Off => json!("off"),
+                        },
                         "cuts": m.primary.multicam_cuts.iter().map(|(at, a)| json!({
                             "at_secs": m.primary.timeline_in.to_secs_f64() + at,
                             "angle": *a as usize + 1,
@@ -3786,6 +3791,32 @@ fn handle(
             }
             drop(seq);
             send(AppCommand::SwitchMulticamAngleAt { angle, at })
+        }
+
+        ControlCommand::SetMulticamSound { sound, at_secs } => {
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let at = match at_secs {
+                Some(s) => klipp_core::Timecode::from_secs_f64(s.max(0.0), seq.fps.rate()),
+                None => {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    fb.shown_presented().ok_or("no playhead yet: give at_secs")?
+                }
+            };
+            let m = seq.multicam_at(None, at).ok_or_else(|| format!("no multicam group at {:.2} s", at.to_secs_f64()))?;
+            let have: Vec<usize> = m.angles.iter().map(|a| *a as usize + 1).collect();
+            let sound = match sound.trim() {
+                "follow" => klipp_core::MulticamSound::FollowPicture,
+                "off" => klipp_core::MulticamSound::Off,
+                n => {
+                    let a = n.parse::<usize>().ok().and_then(|a| a.checked_sub(1)).and_then(|a| u8::try_from(a).ok());
+                    match a {
+                        Some(a) if m.angles.contains(&a) => klipp_core::MulticamSound::Angle(a),
+                        _ => return Err(format!("sound is an angle the group has ({have:?}), \"follow\" or \"off\"; not {n:?}")),
+                    }
+                }
+            };
+            drop(seq);
+            send(AppCommand::SetMulticamSound { sound, at: Some(at) })
         }
 
         ControlCommand::AddMarker { at_secs, duration_secs, label, note, color, kind } => {

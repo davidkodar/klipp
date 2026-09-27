@@ -3,7 +3,7 @@
 //! renderer, the multicam controls and the angle switch, which each used
 //! to work it out their own way and disagreed.
 
-use klipp_core::{GroupId, Timecode};
+use klipp_core::{GroupId, MulticamSound, Timecode};
 
 use crate::{Clip, Sequence, TrackKind};
 
@@ -64,6 +64,107 @@ impl Sequence {
     }
 }
 
+impl Sequence {
+    /// The group and angle whose sound `clip` is: its own when it is an
+    /// angle's picture, its linked picture's when it is that picture's
+    /// sound on an audio track. `None` outside every group.
+    pub fn multicam_sound_of(&self, clip: &Clip) -> Option<(GroupId, u8)> {
+        if let Some(g) = clip.multicam_group {
+            return Some((g, clip.multicam_angle));
+        }
+        // Linked either way round: a link is written on both clips, and
+        // a project that lost one side still names its picture.
+        let picture = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind != TrackKind::Audio)
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.multicam_group.is_some() && (Some(c.id) == clip.linked_clip_id || c.linked_clip_id == Some(clip.id)))?;
+        Some((picture.multicam_group?, picture.multicam_angle))
+    }
+
+    /// The stretches of the timeline, in seconds, over which `angle` of
+    /// `group` is not heard: under each of the group's primaries (a
+    /// bladed group has several), wherever its sound rule picks another
+    /// angle. Outside every primary an angle plays as any clip does, as
+    /// its picture shows there.
+    fn multicam_silences(&self, group: GroupId, angle: u8) -> Vec<(f64, f64)> {
+        let pictures = || self.tracks.iter().filter(|t| t.kind != TrackKind::Audio).flat_map(|t| t.clips.iter()).filter(|c| c.multicam_group == Some(group));
+        let angles: Vec<u8> = pictures().map(|c| c.multicam_angle).collect();
+        let member = |a: u8| if angles.contains(&a) { a } else { 0 };
+        let mut out = Vec::new();
+        for p in pictures().filter(|c| c.multicam_angle == 0) {
+            let (start, end) = (p.timeline_in.to_secs_f64(), p.timeline_out.to_secs_f64());
+            match p.multicam_sound {
+                MulticamSound::Off => out.push((start, end)),
+                MulticamSound::Angle(a) => {
+                    if member(a) != angle {
+                        out.push((start, end));
+                    }
+                }
+                MulticamSound::FollowPicture => {
+                    // As `multicam_at` reads the cut list: the last cut at
+                    // or before a moment, the primary before the first.
+                    let mut from = start;
+                    let mut on = 0;
+                    for &(at, a) in &p.multicam_cuts {
+                        let t = (start + at).clamp(start, end);
+                        if t > from && member(on) != angle {
+                            out.push((from, t));
+                        }
+                        from = from.max(t);
+                        on = a;
+                    }
+                    if end > from && member(on) != angle {
+                        out.push((from, end));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `clip`'s sound is heard at `time`: always for a clip in no
+    /// multicam group. Playback asks this of each clip under the playhead.
+    pub fn multicam_sounds_at(&self, clip: &Clip, time: Timecode) -> bool {
+        let Some((group, angle)) = self.multicam_sound_of(clip) else { return true };
+        let t = time.to_secs_f64();
+        !self.multicam_silences(group, angle).iter().any(|&(a, b)| t >= a - 1e-9 && t < b - 1e-9)
+    }
+
+    /// The stretches of `clip`, in seconds from its in point, over which
+    /// its sound is heard, for a render that plays the clip whole and
+    /// gates it: `None` when all of it is, and empty when none. The same
+    /// rule as [`Self::multicam_sounds_at`], so a render hears what
+    /// playback does.
+    pub fn multicam_sound_spans(&self, clip: &Clip) -> Option<Vec<(f64, f64)>> {
+        let (group, angle) = self.multicam_sound_of(clip)?;
+        let (start, end) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+        let mut silences: Vec<(f64, f64)> = self
+            .multicam_silences(group, angle)
+            .into_iter()
+            .map(|(a, b)| (a.max(start), b.min(end)))
+            .filter(|(a, b)| b > a)
+            .collect();
+        if silences.is_empty() {
+            return None;
+        }
+        silences.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut spans = Vec::new();
+        let mut from = start;
+        for (a, b) in silences {
+            if a > from {
+                spans.push((from - start, a - start));
+            }
+            from = from.max(b);
+        }
+        if end > from {
+            spans.push((from - start, end - start));
+        }
+        Some(spans)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Clip, Sequence, Track, TrackKind};
@@ -113,5 +214,59 @@ mod tests {
         assert!(s.multicam_at(None, tc(11.0)).is_none());
         assert!(s.multicam_angle_clip(g, 3, tc(3.0)).is_some());
         assert!(s.multicam_angle_clip(g, 0, tc(3.0)).is_none(), "the primary is disabled");
+    }
+
+    /// Whose sound a group plays (#478). By default angle 0's, whatever
+    /// the picture cuts to; an angle's sound on an audio track follows its
+    /// picture through the link. Following the picture, each angle is
+    /// heard where it is on screen, the spans a render gates by agreeing
+    /// with what playback asks moment by moment. Off, none is heard; past
+    /// the primary's end an angle plays as any clip does.
+    #[test]
+    fn whose_sound_a_group_plays() {
+        use klipp_core::{ClipId, MulticamSound, Timecode};
+        let g = GroupId::new();
+        let mut primary = angle(g, 0);
+        primary.timeline_out = tc(8.0);
+        primary.multicam_cuts = vec![(2.0, 1), (4.0, 0), (6.0, 5)];
+        let mut cam1 = angle(g, 1);
+        let lav1_id = ClipId::new();
+        cam1.linked_clip_id = Some(lav1_id);
+        let mut s = seq(vec![primary, cam1]);
+        let mut lav1 = Clip::media(MediaId::new(), tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        lav1.id = lav1_id;
+        lav1.linked_clip_id = Some(s.tracks[1].clips[0].id);
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips = vec![lav1];
+        s.tracks.push(a);
+        let at = |x: f64| -> Timecode { tc(x) };
+        let clip = |s: &Sequence, t: usize| s.tracks[t].clips[0].clone();
+
+        let (p, c1, l1) = (clip(&s, 0), clip(&s, 1), clip(&s, 2));
+        assert_eq!(s.multicam_sound_of(&l1), Some((g, 1)));
+        assert!(s.multicam_sounds_at(&p, at(3.0)) && !s.multicam_sounds_at(&c1, at(3.0)) && !s.multicam_sounds_at(&l1, at(3.0)));
+        assert!(s.multicam_sounds_at(&l1, at(9.0)), "past the primary an angle is a clip");
+        assert_eq!(s.multicam_sound_spans(&p), None);
+        assert_eq!(s.multicam_sound_spans(&l1), Some(vec![(8.0, 10.0)]));
+
+        s.tracks[0].clips[0].multicam_sound = MulticamSound::FollowPicture;
+        let (p, l1) = (clip(&s, 0), clip(&s, 2));
+        // Angle 5 is not in the group: the primary's from 6 s.
+        assert_eq!(s.multicam_sound_spans(&p), Some(vec![(0.0, 2.0), (4.0, 8.0)]));
+        assert_eq!(s.multicam_sound_spans(&l1), Some(vec![(2.0, 4.0), (8.0, 10.0)]));
+        for x in [0.5, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 6.5, 7.5, 8.5] {
+            // Spans count from the clip's in point; both clips start at 0.
+            let heard = |c: &Clip| s.multicam_sound_spans(c).is_none_or(|sp| sp.iter().any(|(a, b)| x >= *a && x < *b));
+            if x < p.timeline_out.to_secs_f64() {
+                assert_eq!(s.multicam_sounds_at(&p, at(x)), heard(&p), "primary at {x}");
+            }
+            assert_eq!(s.multicam_sounds_at(&l1, at(x)), heard(&l1), "lav at {x}");
+        }
+
+        s.tracks[0].clips[0].multicam_sound = MulticamSound::Angle(1);
+        assert_eq!(s.multicam_sound_spans(&clip(&s, 0)), Some(vec![]));
+        assert_eq!(s.multicam_sound_spans(&clip(&s, 2)), None);
+        s.tracks[0].clips[0].multicam_sound = MulticamSound::Off;
+        assert_eq!(s.multicam_sound_spans(&clip(&s, 2)), Some(vec![(8.0, 10.0)]));
     }
 }

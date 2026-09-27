@@ -151,6 +151,44 @@ impl MulticamSync {
     }
 }
 
+/// Whose sound a multicam group plays, set on its primary. Every angle
+/// brings its own sound, and heard together they are the same moment
+/// several times over, a room of echoes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MulticamSound {
+    /// One angle's sound throughout, whatever the picture cuts to (counted
+    /// from 0; an angle the group lacks is the primary's). The default,
+    /// angle 0, is the sound a synced group's angles were matched to.
+    Angle(u8),
+    /// The sound of the angle on screen, cut where the picture cuts.
+    FollowPicture,
+    /// No angle's sound: the group plays under sound from elsewhere, a
+    /// recorder's track outside the group.
+    Off,
+}
+
+impl Default for MulticamSound {
+    fn default() -> Self {
+        Self::Angle(0)
+    }
+}
+
+impl MulticamSound {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// As a menu and a reply name it, angles counted from 1.
+    pub fn label(self) -> String {
+        match self {
+            MulticamSound::Angle(a) => format!("Angle {}", a as usize + 1),
+            MulticamSound::FollowPicture => "Follow the Picture".into(),
+            MulticamSound::Off => "No Angle (Sound From Elsewhere)".into(),
+        }
+    }
+}
+
 /// One clip to become an angle, as far as syncing is concerned.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MulticamAngle {

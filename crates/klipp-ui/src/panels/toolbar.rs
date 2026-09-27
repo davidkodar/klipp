@@ -565,6 +565,22 @@ impl ToolbarPanel {
                             }
                         }
                     });
+                    // Whose sound the group plays: the angles' sounds
+                    // together are one moment heard several times.
+                    if let Some((angles, current)) = state.sequence().multicam_at(None, state.playhead).map(|m| (m.angles, m.primary.multicam_sound)) {
+                        ui.menu_button("Multicam Sound", |ui| {
+                            let choices = angles
+                                .iter()
+                                .map(|a| klipp_core::MulticamSound::Angle(*a))
+                                .chain([klipp_core::MulticamSound::FollowPicture, klipp_core::MulticamSound::Off]);
+                            for sound in choices {
+                                if ui.radio(sound == current, sound.label()).clicked() {
+                                    cmds.push(AppCommand::SetMulticamSound { sound, at: None });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
                 }
             }
             ui.separator();

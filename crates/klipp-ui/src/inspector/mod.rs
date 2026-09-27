@@ -353,6 +353,7 @@ impl NewInspectorPanel {
                             multicam_group: None,
                             multicam_angle: 0,
                             multicam_cuts: Vec::new(),
+                            multicam_sound: Default::default(),
                             audio_effects: Vec::new(),
                             audio_effect_keyframes: std::collections::HashMap::new(),
                             deflicker_data: None,

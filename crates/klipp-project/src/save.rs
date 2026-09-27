@@ -312,6 +312,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         multicam_group: c.multicam_group.map(|g| g.to_string()),
                         multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
                         multicam_cuts: c.multicam_cuts.clone(),
+                        multicam_sound: Some(c.multicam_sound).filter(|s| !s.is_default()),
                         solo: if c.solo { Some(true) } else { None },
                         blend_mode: if matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
                             None

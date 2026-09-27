@@ -902,6 +902,7 @@ impl Track {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             deflicker_data: None,
             deflicker_gains: None,
             stabilization_data: None,
@@ -1175,6 +1176,7 @@ impl Track {
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
+            multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: audio_effect_kfs_a,
             deflicker_data: None,
@@ -1240,6 +1242,7 @@ impl Track {
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
+            multicam_sound: clip.multicam_sound,
             audio_effects: clip.audio_effects,
             audio_effect_keyframes: audio_effect_kfs_b,
             deflicker_data: None,
@@ -1755,6 +1758,9 @@ pub struct Clip {
     /// Each entry is (time_secs_from_clip_start, angle_index).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub multicam_cuts: Vec<(f64, u8)>,
+    /// For the primary multicam clip: whose sound the group plays.
+    #[serde(default, skip_serializing_if = "crate::MulticamSound::is_default")]
+    pub multicam_sound: crate::MulticamSound,
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
@@ -2030,6 +2036,7 @@ impl Clip {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             deflicker_data: None,
@@ -2129,6 +2136,7 @@ impl Clip {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             deflicker_data: None,
@@ -2223,6 +2231,7 @@ impl Clip {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             deflicker_data: None,

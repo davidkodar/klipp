@@ -674,6 +674,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "angle": args.get("angle").and_then(|v| v.as_u64()).ok_or("missing required argument: angle")?,
             "at_secs": args.get("at_secs").and_then(|v| v.as_f64()),
         }),
+        "klipp_set_multicam_sound" => json!({
+            "method": "set_multicam_sound",
+            "sound": match args.get("sound") {
+                Some(serde_json::Value::Number(n)) => n.to_string(),
+                Some(serde_json::Value::String(s)) => s.clone(),
+                _ => return Err("missing required argument: sound".into()),
+            },
+            "at_secs": args.get("at_secs").and_then(|v| v.as_f64()),
+        }),
         "klipp_save_project" => {
             let mut v = json!({ "method": "save_project" });
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -1871,6 +1880,18 @@ fn tool_definitions() -> Vec<Value> {
                  "angle": { "type": "integer", "minimum": 1 },
                  "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
              }), vec!["angle"]),
+        tool("klipp_set_multicam_sound",
+             "Choose whose sound the multicam group at at_secs (or the playhead) plays. Each \
+              angle brings its own sound, and heard together they echo, so a group plays one: \
+              an angle counted from 1 (the default is angle 1, the sound a synced group was \
+              matched to; pick the lav or the camera nearest the speaker), \"follow\" to cut \
+              the sound with the picture, or \"off\" when a recorder's track outside the \
+              group carries the sound. Playback and export hear the same. klipp_status's \
+              multicam entry says which is set.",
+             json!({
+                 "sound": { "description": "an angle number from 1, \"follow\" or \"off\"" },
+                 "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
+             }), vec!["sound"]),
         tool("klipp_add_marker",
              "Put a marker on the timeline: how you and the editor leave each other notes. \
               Mark what you are unsure of or want looked at, with a label and a note saying \

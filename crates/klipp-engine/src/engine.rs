@@ -1509,7 +1509,9 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
     for (track_idx, track) in seq.tracks.iter().enumerate() {
         for sounding in klipp_timeline::crossfade::sounding_at_where(track, tc, &fades) {
             let clip = sounding.clip;
-            if !clip.enabled {
+            // A multicam angle is heard where the group's sound rule
+            // says, the rule the render gates the same clip by.
+            if !clip.enabled || !seq.multicam_sounds_at(clip, tc) {
                 continue;
             }
             let Some(media_id) = clip.media_id() else { continue };
