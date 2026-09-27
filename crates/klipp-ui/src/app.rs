@@ -13142,6 +13142,7 @@ impl KlippApp {
                         });
                     }
                     self.relink_media(*media_id, new_path);
+                    self.state.dirty = true;
                     true
                 }
                 AppCommand::RelinkMedia { media_id, new_path } => {
