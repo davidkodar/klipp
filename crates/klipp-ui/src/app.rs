@@ -2056,6 +2056,45 @@ impl KlippApp {
         }
     }
 
+    /// Cut the multicam group in play at `at` to `angle` (counted from
+    /// 1): the keys, the angle bar, the grid and the control socket all
+    /// come here.
+    fn switch_multicam_angle(&mut self, angle: usize, at: klipp_core::Timecode) {
+        // Angles are counted from 1 here, as the buttons and keys 1-9
+        // count them; the cut list from 0, the primary. Stored as sent,
+        // "Angle 1" cut to the second camera.
+        let Some(wanted) = angle.checked_sub(1).and_then(|a| u8::try_from(a).ok()) else { return };
+        let seq_idx = self.state.active_sequence_idx;
+        let Some((track_idx, primary_id, angles)) = self.state.sequences[seq_idx]
+            .multicam_at(None, at)
+            .map(|m| (m.primary_track, m.primary.id, m.angles))
+        else {
+            return;
+        };
+        if !angles.contains(&wanted) {
+            self.state.toast.show(format!("This multicam group has no angle {angle}"));
+            return;
+        }
+        let Some(clip) = self.state.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return };
+        let old = clip.clone();
+        let clip_time = (at - clip.timeline_in).to_secs_f64();
+        clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
+        clip.multicam_cuts.push((clip_time, wanted));
+        clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let new = clip.clone();
+        // One undo step per cut: cutting live means mis-hits,
+        // and a mis-hit could not be taken back.
+        self.state.push_history(EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(new) });
+        self.state.toast.show(format!("Cut to angle {angle}"));
+        self.state.dirty = true;
+        // The viewer shows the cut only once the engine has
+        // the sequence and redraws the frame; without this
+        // the toast and the angle bar said one camera and the
+        // picture another (paused, a sync alone redraws
+        // nothing).
+        self.sync_and_refresh_frame();
+    }
+
     /// Keep the system-theme watcher in step with the preference and
     /// apply a changed Omarchy palette. Runs once per frame; cheap
     /// unless the flag is set.
@@ -5831,41 +5870,11 @@ impl KlippApp {
                 }
                 // Switch multicam angle: record a cut in the multicam cut list
                 AppCommand::SwitchMulticamAngle { angle } => {
-                    // Angles are counted from 1 here, as the buttons and
-                    // keys 1-9 count them; the cut list from 0, the
-                    // primary. Stored as sent, "Angle 1" cut to the second
-                    // camera.
-                    let Some(wanted) = angle.checked_sub(1).and_then(|a| u8::try_from(a).ok()) else { return true };
-                    let ph = self.state.playhead;
-                    let seq_idx = self.state.active_sequence_idx;
-                    let Some((track_idx, primary_id, angles)) = self.state.sequences[seq_idx]
-                        .multicam_at(None, ph)
-                        .map(|m| (m.primary_track, m.primary.id, m.angles))
-                    else {
-                        return true;
-                    };
-                    if !angles.contains(&wanted) {
-                        self.state.toast.show(format!("This multicam group has no angle {angle}"));
-                        return true;
-                    }
-                    let Some(clip) = self.state.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return true };
-                    let old = clip.clone();
-                    let clip_time = (ph - clip.timeline_in).to_secs_f64();
-                    clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
-                    clip.multicam_cuts.push((clip_time, wanted));
-                    clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                    let new = clip.clone();
-                    // One undo step per cut: cutting live means mis-hits,
-                    // and a mis-hit could not be taken back.
-                    self.state.push_history(EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(new) });
-                    self.state.toast.show(format!("Cut to angle {angle}"));
-                    self.state.dirty = true;
-                    // The viewer shows the cut only once the engine has
-                    // the sequence and redraws the frame; without this
-                    // the toast and the angle bar said one camera and the
-                    // picture another (paused, a sync alone redraws
-                    // nothing).
-                    self.sync_and_refresh_frame();
+                    self.switch_multicam_angle(*angle, self.state.playhead);
+                    true
+                }
+                AppCommand::SwitchMulticamAngleAt { angle, at } => {
+                    self.switch_multicam_angle(*angle, *at);
                     true
                 }
                 // Fit timeline zoom to show all clips

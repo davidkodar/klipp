@@ -699,6 +699,24 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// Sync pool items onto one clock and lay them out as a multicam at
+    /// the playhead (seek first), each angle on tracks of its own: what
+    /// Create Synced Multicam does. `sync` is "timecode", "audio" or
+    /// "timecode_then_audio" (the default). The sync runs in the
+    /// background; `status` and `timeline` show the group when it lands.
+    CreateMulticam {
+        media_ids: Vec<String>,
+        #[serde(default)]
+        sync: Option<String>,
+    },
+    /// Cut the multicam group in play to `angle` (counted from 1, as
+    /// keys 1-9 are) at `at_secs`, or at the playhead: what the keys, the
+    /// angle bar and the grid do, one undo step each.
+    SwitchAngle {
+        angle: usize,
+        #[serde(default)]
+        at_secs: Option<f64>,
+    },
     /// Everything a session needs to know where it is, in one call: the
     /// build, the project and whether it is saved, the brief, every media
     /// item with its analysis state, the sequence, and what to do next.
@@ -859,5 +877,19 @@ mod tests {
                 "title": {"text": "Hi", "exit": {"kind": "fade", "durations_secs": 1.0}}}]}
         });
         assert!(serde_json::from_value::<Request>(plan).is_err());
+    }
+
+    /// The multicam requests as a client sends them: create with or
+    /// without a sync method, switch with or without a time.
+    #[test]
+    fn multicam_requests_parse() {
+        let create: Request = serde_json::from_value(json!({"id": 1, "method": "create_multicam", "media_ids": ["a", "b"], "sync": "audio"})).unwrap();
+        assert!(matches!(create.command, super::ControlCommand::CreateMulticam { ref media_ids, sync: Some(ref s) } if media_ids.len() == 2 && s == "audio"));
+        let bare: Request = serde_json::from_value(json!({"id": 1, "method": "create_multicam", "media_ids": ["a", "b"]})).unwrap();
+        assert!(matches!(bare.command, super::ControlCommand::CreateMulticam { sync: None, .. }));
+        let switch: Request = serde_json::from_value(json!({"id": 1, "method": "switch_angle", "angle": 2, "at_secs": 6.0})).unwrap();
+        assert!(matches!(switch.command, super::ControlCommand::SwitchAngle { angle: 2, at_secs: Some(t) } if t == 6.0));
+        let now: Request = serde_json::from_value(json!({"id": 1, "method": "switch_angle", "angle": 1})).unwrap();
+        assert!(matches!(now.command, super::ControlCommand::SwitchAngle { angle: 1, at_secs: None }));
     }
 }

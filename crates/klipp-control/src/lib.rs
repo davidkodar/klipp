@@ -429,6 +429,15 @@ fn timeline_text(
             if c.consumed_as_matte {
                 line.push_str("  is-a-matte");
             }
+            if c.multicam_group.is_some() {
+                // Counted from 1, as switch_angle takes them; the
+                // primary (angle 1) carries the cuts, in timeline seconds.
+                let _ = write!(line, "  multicam angle {}", c.multicam_angle as usize + 1);
+                if !c.multicam_cuts.is_empty() {
+                    let cuts: Vec<String> = c.multicam_cuts.iter().map(|(at, a)| format!("{:.2}s→{}", c.timeline_in.to_secs_f64() + at, *a as usize + 1)).collect();
+                    let _ = write!(line, "  cuts {}", cuts.join(" "));
+                }
+            }
             let _ = write!(line, "  id {}", c.id.0);
             let _ = writeln!(out, "{line}");
         }
@@ -2008,6 +2017,21 @@ fn handle(
                 "fps": fps,
                 "resolution": { "width": seq.resolution.width, "height": seq.resolution.height },
                 "duration_secs": seq.total_duration().to_secs_f64(),
+                // The multicam group at the frame on screen: its angles
+                // and the one in effect, counted from 1 as switch_angle
+                // and keys 1-9 count them, and the primary's cut list in
+                // timeline seconds.
+                "multicam": presented
+                    .map(|s| klipp_core::Timecode::from_secs_f64(s, seq.fps.rate()))
+                    .and_then(|t| seq.multicam_at(None, t))
+                    .map(|m| json!({
+                        "angles": m.angles.iter().map(|a| *a as usize + 1).collect::<Vec<_>>(),
+                        "active": m.active as usize + 1,
+                        "cuts": m.primary.multicam_cuts.iter().map(|(at, a)| json!({
+                            "at_secs": m.primary.timeline_in.to_secs_f64() + at,
+                            "angle": *a as usize + 1,
+                        })).collect::<Vec<_>>(),
+                    })),
                 // The frame on screen: where the playhead was when it was
                 // made. Seconds and, at the sequence's rate, frames.
                 "playhead_secs": presented,
@@ -3558,6 +3582,47 @@ fn handle(
             }
             v["next"] = json!("Imported. Analysis runs on import; set the brief first (set_brief) so the transcript gets the cast's names and the spellings. Watch analysis_status, then read the transcript and shots.");
             Ok(v)
+        }
+
+        ControlCommand::CreateMulticam { media_ids, sync } => {
+            let method = match sync.as_deref().map(str::trim) {
+                None | Some("") | Some("timecode_then_audio") => klipp_core::MulticamSync::TimecodeThenAudio,
+                Some("timecode") => klipp_core::MulticamSync::Timecode,
+                Some("audio") => klipp_core::MulticamSync::Audio,
+                Some(other) => return Err(format!("no sync method \"{other}\": timecode, audio or timecode_then_audio")),
+            };
+            let ids = media_ids.iter().map(|s| parse_uuid(s, "media_id").map(klipp_core::MediaId)).collect::<Result<Vec<_>, _>>()?;
+            if ids.len() < 2 {
+                return Err("a multicam needs two angles or more".into());
+            }
+            {
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                if let Some(missing) = ids.iter().find(|id| pool.get(id).is_none()) {
+                    return Err(format!("no media item {}", missing.0));
+                }
+            }
+            let mut v = send(AppCommand::CreateSyncedMulticam { media_ids: ids, method })?;
+            v["next"] = json!("The sync runs in the background: read status (its multicam entry) or timeline once the group is laid out, then switch_angle to cut.");
+            Ok(v)
+        }
+
+        ControlCommand::SwitchAngle { angle, at_secs } => {
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            let at = match at_secs {
+                Some(s) => klipp_core::Timecode::from_secs_f64(s.max(0.0), seq.fps.rate()),
+                None => {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    fb.shown_presented().ok_or("no playhead yet: give at_secs")?
+                }
+            };
+            let m = seq.multicam_at(None, at).ok_or_else(|| format!("no multicam group at {:.2} s", at.to_secs_f64()))?;
+            let wanted = angle.checked_sub(1).and_then(|a| u8::try_from(a).ok());
+            if !wanted.is_some_and(|w| m.angles.contains(&w)) {
+                let have: Vec<usize> = m.angles.iter().map(|a| *a as usize + 1).collect();
+                return Err(format!("the group has no angle {angle}; it has {have:?}"));
+            }
+            drop(seq);
+            send(AppCommand::SwitchMulticamAngleAt { angle, at })
         }
 
         ControlCommand::RenameSequence { name } => {

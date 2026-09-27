@@ -625,6 +625,19 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
+        "klipp_create_multicam" => {
+            let ids = args.get("media_ids").and_then(|v| v.as_array()).ok_or("missing required argument: media_ids")?;
+            let mut v = json!({ "method": "create_multicam", "media_ids": ids });
+            if let Some(sync) = args.get("sync").and_then(|v| v.as_str()) {
+                v["sync"] = json!(sync);
+            }
+            v
+        }
+        "klipp_switch_angle" => json!({
+            "method": "switch_angle",
+            "angle": args.get("angle").and_then(|v| v.as_u64()).ok_or("missing required argument: angle")?,
+            "at_secs": args.get("at_secs").and_then(|v| v.as_f64()),
+        }),
         "klipp_save_project" => {
             let mut v = json!({ "method": "save_project" });
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
@@ -1775,6 +1788,28 @@ fn tool_definitions() -> Vec<Value> {
               project file. A new project's sequence has a default or inherited name until \
               it is named; the brief's title does not rename it.",
              json!({ "name": { "type": "string" } }), vec!["name"]),
+        tool("klipp_create_multicam",
+             "Make a multicam group from pool items (two or more angles of one event): synced \
+              onto one clock and laid out at the playhead, each angle on tracks of its own, as \
+              Create Synced Multicam does. sync is \"timecode\", \"audio\" or \
+              \"timecode_then_audio\" (default: timecode where a clip has it, sound for the \
+              rest). Seek first to where it should go. The sync runs in the background: read \
+              klipp_status (its multicam entry) or klipp_timeline once it is laid out.",
+             json!({
+                 "media_ids": { "type": "array", "items": { "type": "string" }, "description": "the angles, from klipp_list_media" },
+                 "sync": { "type": "string", "enum": ["timecode", "audio", "timecode_then_audio"] }
+             }), vec!["media_ids"]),
+        tool("klipp_switch_angle",
+             "Cut the multicam group in play to an angle, counted from 1 as keys 1-9 are, at \
+              at_secs or at the playhead: from there on the program shows that camera, until \
+              the next cut. One undo step per cut. klipp_status's multicam entry lists the \
+              group's angles, the one in effect and the cut list; klipp_timeline marks each \
+              clip's angle and the primary's cuts. Cutting to a transcript: switch to the \
+              speaker's angle at each change of speaker.",
+             json!({
+                 "angle": { "type": "integer", "minimum": 1 },
+                 "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
+             }), vec!["angle"]),
         tool("klipp_save_project",
              "Save the project: to an absolute path (a folder ending in .klipp, made if \
               needed), or where it was last saved when no path is given. Save before a long \
