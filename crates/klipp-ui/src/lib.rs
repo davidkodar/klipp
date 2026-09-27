@@ -79,6 +79,7 @@ pub mod theme;
 pub mod transcript;
 pub mod timeline;
 pub mod ui_util;
+pub mod viewer_lut;
 pub mod widgets;
 
 pub use app::KlippApp;

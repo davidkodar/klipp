@@ -4026,6 +4026,9 @@ impl KlippApp {
         };
         let convert_ms = t_convert.elapsed().as_secs_f64() * 1000.0;
 
+        // The monitor LUT's pass reads the same picture (#465).
+        self.viewer.lut_source_bytes = self.viewer.lut_pass.is_some().then(|| (rgba_bytes.clone(), w as u32, h as u32));
+
         let t_texture = std::time::Instant::now();
         let image = egui::ColorImage {
             size: [w, h],
@@ -27860,6 +27863,89 @@ impl KlippApp {
         );
     }
 
+    /// Run the picture on screen through the monitor LUT set in
+    /// Preferences (#465), into a texture the viewer shows in its place.
+    /// On screen only: the frame buffer, scopes, measurements and
+    /// exports keep the graded frame. Not while the viewer shows HDR: the
+    /// LUT reads a display-encoded SDR signal.
+    fn refresh_viewer_lut(&mut self, frame: &mut eframe::Frame) {
+        let changed = self.viewer.lut.follow(self.prefs.color.viewer_lut_path.as_deref());
+        let Some(render_state) = frame.wgpu_render_state() else {
+            self.viewer.lut_live = false;
+            return;
+        };
+        if changed {
+            if let Some(why) = &self.viewer.lut.error {
+                self.state.toast.show(format!("Viewer LUT not applied: {why}"));
+            }
+            self.viewer.lut_pass = self.viewer.lut.lut.as_ref().map(|lut| {
+                crate::viewer_lut::ViewerLutPass::new(&render_state.device, &render_state.queue, lut)
+            });
+            self.viewer.lut_live = false;
+            // The parked frame is not uploaded again until it changes:
+            // take it from the frame buffer for the new LUT.
+            if self.viewer.lut_pass.is_some() {
+                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                let (bytes, w, h, _) = fb.latest_frame();
+                self.viewer.lut_source_bytes = Some((bytes.to_vec(), w, h));
+            }
+        }
+        let hdr = self.state.hdr_monitor.renders_hdr();
+        let Some(pass) = self.viewer.lut_pass.as_mut().filter(|_| !hdr) else {
+            self.viewer.lut_live = false;
+            return;
+        };
+        let remade = if self.viewer.gpu_frame_live {
+            // The GPU stack writes each frame into the same texture: run
+            // the pass on every repaint while it is live.
+            let source = {
+                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.gpu_output.as_ref().map(|t| {
+                    let view = t.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(klipp_engine::texture::GPU_VIEWER_SAMPLE_FORMAT),
+                        ..Default::default()
+                    });
+                    (view, (t.width(), t.height()))
+                })
+            };
+            let Some((view, size)) = source else {
+                self.viewer.lut_live = false;
+                return;
+            };
+            pass.apply(&render_state.device, &render_state.queue, &view, size)
+        } else if let Some((bytes, w, h)) = self.viewer.lut_source_bytes.take() {
+            pass.apply_bytes(&render_state.device, &render_state.queue, &bytes, (w, h))
+        } else if self.viewer.lut_live {
+            // The parked frame has not changed: the output still holds it.
+            false
+        } else {
+            // Back from the playing or HDR view with nothing new uploaded:
+            // the parked frame is in the frame buffer.
+            let (bytes, w, h) = {
+                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                let (bytes, w, h, _) = fb.latest_frame();
+                (bytes.to_vec(), w, h)
+            };
+            if !pass.apply_bytes(&render_state.device, &render_state.queue, &bytes, (w, h)) && pass.output_view().is_none() {
+                return;
+            }
+            true
+        };
+        if remade || self.viewer.lut_texture_id.is_none() {
+            let Some(view) = pass.output_view() else { return };
+            let mut renderer = render_state.renderer.write();
+            // Free the old id before its view drops, as for
+            // `gpu_texture_id` (see `refresh_gpu_viewer_texture`).
+            if let Some(old) = self.viewer.lut_texture_id.take() {
+                renderer.free_texture(&old);
+                self.viewer.lut_texture_view = None;
+            }
+            self.viewer.lut_texture_id = Some(renderer.register_native_texture(&render_state.device, &view, wgpu::FilterMode::Linear));
+            self.viewer.lut_texture_view = Some(view);
+        }
+        self.viewer.lut_live = true;
+    }
+
     fn refresh_gpu_viewer_texture(&mut self, frame: &mut eframe::Frame) {
         // Snapshot the current gpu_output handle + generation.
         let snapshot = {
@@ -28509,6 +28595,7 @@ impl eframe::App for KlippApp {
             }
         }
         self.upload_frame_to_egui(ctx);
+        self.refresh_viewer_lut(frame);
         self.upload_source_frame_to_egui(ctx);
         self.upload_title_overlay(ctx);
         self.recompute_char_positions_if_needed();
