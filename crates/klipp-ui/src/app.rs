@@ -3245,6 +3245,23 @@ impl KlippApp {
     /// Only an offline item used to be re-probed; relinking an online
     /// clip to a different file kept the old duration, frame rate and
     /// resolution.
+    /// The height to decode a skim frame at: the source's own height,
+    /// never above 1080, and capped by the `skim_resolution` preference.
+    ///
+    /// `min`, not `max`. Written as `pref.max(source_height.min(1080))`
+    /// the preference could only ever *raise* the height, so it was inert
+    /// for every source at or above its own value — at the 720 default,
+    /// every source from 720p up, which is most footage. "Resolution (max
+    /// height in pixels) for skim frame decodes" has to be able to cap.
+    ///
+    /// The 240 floor is what `max` was accidentally providing: the
+    /// preference has no UI, only a line in the prefs file, and nothing
+    /// else stops a hand-edited nonsense value decoding a 2px frame into
+    /// the viewer.
+    fn skim_decode_height(source_height: u32, pref: u32) -> u32 {
+        source_height.min(1080).min(pref.max(240))
+    }
+
     /// Ask the skim worker for `media_id`'s frame at `time_secs`, from
     /// the skim transcode when there is one. Marks the request in flight;
     /// the frame (or an empty one on failure) clears it.
@@ -3264,7 +3281,8 @@ impl KlippApp {
         };
         let rotation = item.effective_rotation_for(&decode_path);
         let source_height = item.resolution.height.max(240);
-        let max_height = self.prefs.playback.skim_resolution.max(source_height.min(1080));
+        let max_height =
+            Self::skim_decode_height(source_height, self.prefs.playback.skim_resolution);
         self.state.skim_decode_in_flight = true;
         self.state.skim_decode_started_at = Some(std::time::Instant::now());
         self.state.skim_last_requested = Some((media_id, frame, target));
@@ -28760,12 +28778,6 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // If a skim decode just finished and there's a queued request, dispatch it immediately
-        if !self.state.skim_decode_in_flight {
-            if let Some((mid, time, target)) = self.state.skim_queued_request.take() {
-                self.request_skim_frame(mid, time, target);
-            }
-        }
         self.apply_ui_scale(ctx);
         self.drain_thumbnails();
         self.drain_source_frame(ctx);
@@ -28775,6 +28787,17 @@ impl eframe::App for KlippApp {
         }
         self.drain_audio_conforms();
         self.drain_proxy_events();
+        // If a skim decode just finished and there's a queued request,
+        // dispatch it immediately. After `drain_proxy_events`, because that
+        // is where `BrowserSkimFrameReady` clears `skim_decode_in_flight`:
+        // run before it and the queued request could only ever be seen as
+        // still blocked, so every one of them went out a UI frame late and
+        // the picture lagged the cursor by that frame for the whole drag.
+        if !self.state.skim_decode_in_flight {
+            if let Some((mid, time, target)) = self.state.skim_queued_request.take() {
+                self.request_skim_frame(mid, time, target);
+            }
+        }
         self.drain_proxy_progress();
         self.poll_render_queue();
         // Show filmstrip thumbnail preview only while waiting for a seek result
@@ -42508,5 +42531,37 @@ mod timeline_grade_stand_in_tests {
         stand_in_timeline_grade_on(&mut seq, &mut fresh).expect("stood in");
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
         assert_eq!(seq.timeline_graph, Some(grade));
+    }
+}
+
+/// The skim decode height the `skim_resolution` preference asks for.
+#[cfg(test)]
+mod skim_decode_height_tests {
+    use super::KlippApp;
+
+    /// The whole point of the knob: it caps. Written with `max` it was
+    /// inert for every source at or above its own value, which at the
+    /// 720 default is most footage anyone edits.
+    #[test]
+    fn the_preference_caps_a_source_above_it() {
+        assert_eq!(KlippApp::skim_decode_height(2160, 720), 720);
+        assert_eq!(KlippApp::skim_decode_height(1080, 720), 720);
+        assert_eq!(KlippApp::skim_decode_height(1080, 480), 480);
+    }
+
+    /// And it never upscales: a source shorter than the preference
+    /// decodes at its own height, and nothing goes past 1080.
+    #[test]
+    fn the_source_height_and_the_1080_ceiling_still_bound_it() {
+        assert_eq!(KlippApp::skim_decode_height(480, 720), 480);
+        assert_eq!(KlippApp::skim_decode_height(4320, 4320), 1080);
+    }
+
+    /// `max` used to stop a nonsense value reaching the decoder. The
+    /// preference has no UI, so keep a floor now that it can lower.
+    #[test]
+    fn a_nonsense_preference_cannot_decode_a_two_pixel_frame() {
+        assert_eq!(KlippApp::skim_decode_height(1080, 2), 240);
+        assert_eq!(KlippApp::skim_decode_height(1080, 0), 240);
     }
 }
