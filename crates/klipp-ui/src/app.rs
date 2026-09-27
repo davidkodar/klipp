@@ -3137,11 +3137,12 @@ impl KlippApp {
         let new_timeline_in = klipp_core::Timecode::from_secs_f64(new_in_secs, rate);
 
         // Push MoveClip through the normal command path so history / magnetic
-        // rules / sync-to-engine all behave the same as a drag.
-        let _ = self.cmd_tx.send(AppCommand::MoveClip {
+        // rules / sync-to-engine all behave the same as a drag. The UI's
+        // dispatcher, not `cmd_tx`: the engine ignores MoveClip (#437).
+        self.send_commands(vec![AppCommand::MoveClip {
             clip_id,
             new_timeline_in,
-        });
+        }]);
 
         let fps_f = {
             let fps = self.state.sequence().fps;
@@ -8852,15 +8853,16 @@ impl KlippApp {
                     if let Some((source_id, _kind)) = crate::panels::timeline::find_matte_candidate_above(&self.state, track_idx, cid) {
                         // Re-dispatch as SetClipMatte so the cycle /
                         // self-ref / AdjustmentLayer guards in that
-                        // handler are the single source of truth.
-                        let _ = self.cmd_tx.send(AppCommand::SetClipMatte {
+                        // handler are the single source of truth. Through
+                        // the UI's dispatcher: the engine ignores it (#437).
+                        self.send_commands(vec![AppCommand::SetClipMatte {
                             clip_id: cid,
                             source_clip_id: source_id,
                             channel: chan,
                             invert: false,
                             feather_px: 0.0,
                             choke_px: 0.0,
-                        });
+                        }]);
                     } else {
                         self.state.toast.show("No clip above to use as matte. Stack a clip on a higher track first.");
                     }
@@ -8882,7 +8884,8 @@ impl KlippApp {
                             choke_px: 0.0,
                         }
                     };
-                    let _ = self.cmd_tx.send(next_cmd);
+                    // The UI handles both; the engine ignores them (#437).
+                    self.send_commands(vec![next_cmd]);
                     true
                 }
 
@@ -23029,9 +23032,11 @@ impl KlippApp {
 
         // Insert the ExternalMatte node into the clip's graph and
         // wire it into the existing Corrector's matte input
-        // (port 1) when one exists. If not, the matte hangs in
-        // the graph and the user can wire it manually from the
-        // V2 editor — still better than no apply.
+        // (port 1) when one exists: the executor runs a correction
+        // gated there through an ApplyMatte, so the grade reaches only
+        // the mask (#440). If not, the matte hangs in the graph and the
+        // user can wire it manually from the V2 editor — still better
+        // than no apply.
         let track_name = self
             .state
             .sequence()

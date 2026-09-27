@@ -1424,7 +1424,90 @@ pub struct ChainLink {
     pub gated: bool,
 }
 
+/// The corrections a matte on port 1 limits: a secondary whatever the
+/// kind.
+fn gateable(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Corrector
+            | NodeKind::ColorBalance
+            | NodeKind::Exposure
+            | NodeKind::Contrast
+            | NodeKind::Saturation
+            | NodeKind::ColorWheels
+            | NodeKind::ToneControls
+            | NodeKind::RGBCurves
+    )
+}
+
 impl NodeGraph {
+    /// The graph as the executor runs it, when it holds a correction
+    /// gated by a matte on its port 1: each such correction followed by
+    /// an ApplyMatte that takes the graded picture where the matte is
+    /// and the correction's own input elsewhere. `None` when there is
+    /// none, and the graph runs as it is.
+    ///
+    /// A gated correction is how a secondary is built (a qualifier's
+    /// matte, a window, an AI mask), but no correction node reads its
+    /// port 1, so each graded the whole frame. The ApplyMatte shape is
+    /// the one the executor blends by a matte, on the GPU chain as well.
+    /// The ApplyMatte's id is derived from the correction's, so it is the
+    /// same node from frame to frame.
+    pub fn with_gates_applied(&self) -> Option<NodeGraph> {
+        let gated: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|n| gateable(n.kind) && self.input_of(n.id, 1).is_some() && self.input_of(n.id, 0).is_some())
+            .map(|n| n.id)
+            .collect();
+        if gated.is_empty() {
+            return None;
+        }
+        let mut g = self.clone();
+        for corr in gated {
+            // Read from the graph as rewritten so far: a correction fed
+            // by one gated before it reads that one's blend, not its
+            // whole-frame grade.
+            let (Some(matte), Some(plain)) = (g.input_of(corr, 1), g.input_of(corr, 0)) else { continue };
+            let apply = Uuid::from_u128(corr.as_u128() ^ 0x6761_7465_645f_6d61_7474_655f_6170_706c);
+            let at = g.nodes.iter().position(|n| n.id == corr).map_or(g.nodes.len(), |i| i + 1);
+            // Whoever read the correction reads the blend now.
+            for e in &mut g.edges {
+                if e.from_node == corr {
+                    e.from_node = apply;
+                }
+            }
+            // The matte leaves the correction's port 1, drawn or wireless.
+            let output_link = g.nodes.iter_mut().find(|n| n.id == corr).and_then(|n| {
+                if let Some(l) = n.input_links.get_mut(1) {
+                    *l = None;
+                }
+                n.output_link.take()
+            });
+            if g.output_node_id == corr {
+                g.output_node_id = apply;
+            }
+            g.edges.retain(|e| !(e.to_node == corr && e.to_port == 1));
+            g.edges.push(Edge { from_node: corr, from_port: 0, to_node: apply, to_port: 0 });
+            g.edges.push(Edge { from_node: matte, from_port: 0, to_node: apply, to_port: 1 });
+            g.edges.push(Edge { from_node: plain, from_port: 0, to_node: apply, to_port: 2 });
+            g.nodes.insert(
+                at,
+                Node {
+                    id: apply,
+                    kind: NodeKind::ApplyMatte,
+                    label: "Gate".into(),
+                    enabled: true,
+                    params: NodeParams::default(),
+                    keyframes: NodeKeyframeTracks::default(),
+                    output_link,
+                    input_links: Vec::new(),
+                },
+            );
+        }
+        Some(g)
+    }
+
     /// The chain from the source to the output, in flow order, with each
     /// node's grading stage — what a colourist means by "the order of
     /// operations".
@@ -1446,18 +1529,7 @@ impl NodeGraph {
                 break;
             }
             if let Some(n) = by_id.get(&id) {
-                let gated = self.edges.iter().any(|e| e.to_node == id && e.to_port == 1)
-                    && matches!(
-                        n.kind,
-                        NodeKind::Corrector
-                            | NodeKind::ColorBalance
-                            | NodeKind::Exposure
-                            | NodeKind::Contrast
-                            | NodeKind::Saturation
-                            | NodeKind::ColorWheels
-                            | NodeKind::ToneControls
-                            | NodeKind::RGBCurves
-                    );
+                let gated = self.edges.iter().any(|e| e.to_node == id && e.to_port == 1) && gateable(n.kind);
                 out.push(ChainLink {
                     id,
                     kind: n.kind,
