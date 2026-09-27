@@ -3802,7 +3802,7 @@ impl TimelinePanel {
                 if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                     let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                    self.scrub_to(state, cmds, target_secs);
+                    self.scrub_to(state, cmds, target_secs, pos.x);
                     // A plain tap on the ruler never goes through
                     // `drag_started`/`drag_stopped`, so `scrub_end`
                     // (which commits the final `SetPlayhead`) never
@@ -4450,11 +4450,18 @@ impl TimelinePanel {
     }
 
     /// Update the scrub target. Called every drag frame. Writes the visible
-    /// playhead immediately (no engine round-trip), kicks the filmstrip
-    /// preview via `awaiting_seek_frame`, pushes `SetPlayhead` so the engine
-    /// keeps its internal position in sync (cheap when idle), and updates the
-    /// audio skim session.
-    fn scrub_to(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>, target_secs: f64) {
+    /// playhead immediately (no engine round-trip), asks the skim worker for
+    /// the frame there, kicks the filmstrip preview via `awaiting_seek_frame`
+    /// only where no skim file makes a better picture available, and updates
+    /// the audio skim session. `pointer_x` is the cursor's screen x, which
+    /// feeds the same cursor-speed estimate the hover skim keeps.
+    fn scrub_to(
+        &self,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        target_secs: f64,
+        pointer_x: f32,
+    ) {
         let dur_secs = state.sequence_duration().to_secs_f64();
         let clamped = if dur_secs > 0.0 {
             target_secs.clamp(0.0, dur_secs)
@@ -4477,13 +4484,78 @@ impl TimelinePanel {
         state.playhead_smooth_secs = clamped;
         state.playhead_anchor = tc;
         state.playhead_anchor_wall = std::time::Instant::now();
-        // Kick the filmstrip preview to re-resolve at the new playhead.
-        // `show_filmstrip_preview` is gated on `awaiting_seek_frame &&
-        // !showing_thumbnail_preview` — clearing the latter forces it to
-        // re-pick the closest thumbnail every drag frame instead of getting
-        // stuck on the first one.
-        state.awaiting_seek_frame = true;
-        state.showing_thumbnail_preview = false;
+        // Resolve the clip under the new playhead once, up front: whether it
+        // has a skim file decides both what we ask the skim worker for and
+        // whether the filmstrip preview may paint the viewer at all.
+        let scrub_clip = Self::scrub_clip_at_playhead(state);
+        let has_skim_file = scrub_clip.as_ref().is_some_and(|(media_id, _, _)| {
+            state
+                .media_pool
+                .get(media_id)
+                .and_then(|m| m.skim_file.as_ref())
+                .is_some_and(|p| p.exists())
+        });
+
+        // The filmstrip preview is the fallback, not a companion. Over
+        // skimmable media a drag now behaves exactly like a hover skim: the
+        // last skim frame stays in the viewer until the next replaces it.
+        // Kicking these two flags per drag frame as well let
+        // `show_filmstrip_preview` upload a 128px thumbnail — picked from a
+        // strip spaced up to 1.5s apart, so up to ±0.75s off the cursor —
+        // into the same viewer texture on every frame the skim decode had
+        // not landed yet. Sharp/blurred alternating at UI frame rate is the
+        // strobe, and the thumbnail path's own `request_repaint` raised the
+        // frame rate, which raised the share of frames it won.
+        //
+        // Where there is no skim file the thumbnail is the only picture
+        // available, so keep kicking it there: `show_filmstrip_preview` is
+        // gated on `awaiting_seek_frame && !showing_thumbnail_preview`, and
+        // clearing the latter is what makes it re-pick the closest thumbnail
+        // each frame instead of sticking on the first one.
+        if !has_skim_file {
+            state.awaiting_seek_frame = true;
+            state.showing_thumbnail_preview = false;
+        }
+
+        // Hold the skim "alive" for the whole gesture. The debounced revert
+        // in `app.rs` fires 150ms after no panel claimed a skim, and each
+        // firing sends a `SeekTo` that renders a *full-size* parked
+        // composite — a drag is Paused, so the Playback Quality reduction
+        // that applies while playing does not. Over a gap, a title, a
+        // generator, a compound clip or media still transcoding nothing
+        // claimed the skim, so that fired over and over mid-drag. A drag is
+        // a skim whether or not the thing under the playhead has a skim
+        // file; hover still gets its debounce, because hover is not a
+        // gesture with a beginning and an end.
+        if state.is_scrubbing {
+            state.browser_skim_active_this_frame = true;
+
+            // The same cursor-speed EMA the hover branch keeps.
+            // `determine_skim_mode` reads `skim_speed_px_per_sec` and calls
+            // anything under 1 px/s Silent, and only hover ever wrote to it
+            // — so a drag saw either zero (the value `BrowserSkimAudioEnd`
+            // leaves) or whatever the last hover left, and the audio skim
+            // was silent through the whole gesture. Sub-pixel movement
+            // counts as stationary because the EMA alone decays far too
+            // slowly to give silence the moment the drag stops.
+            //
+            // Maintained on every drag frame, not only the ones with an
+            // audio session: the first frame of a gesture is the one that
+            // seeds `skim_last_x`, and the session does not exist yet on it
+            // (`scrub_begin` has only just asked for it).
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(state.skim_last_update).as_secs_f32();
+            let dx = (pointer_x - state.skim_last_x).abs();
+            if dx < 0.5 {
+                state.skim_speed_px_per_sec = 0.0;
+            } else {
+                let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+                state.skim_speed_px_per_sec =
+                    state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+            }
+            state.skim_last_x = pointer_x;
+            state.skim_last_update = now;
+        }
 
         // Drive the high-quality skim decode + audio skim. Same pipeline the
         // media browser hover uses — produces mid-res preview frames at
@@ -4491,16 +4563,10 @@ impl TimelinePanel {
         // mush. Throttled by `skim_decode_in_flight`; latest request is
         // queued in `skim_queued_request` and dispatched when the in-flight
         // decode finishes (in `app.rs` after drain_events).
-        if let Some((media_id, _source_path, source_secs)) = Self::scrub_clip_at_playhead(state) {
+        if let Some((media_id, _source_path, source_secs)) = scrub_clip {
             // Video skim — only worth requesting if there's a skim_file.
             // Otherwise the source decode is too slow for real-time scrub
-            // and we fall back to the filmstrip preview (already kicked
-            // above via `awaiting_seek_frame`).
-            let has_skim_file = state
-                .media_pool
-                .get(&media_id)
-                .and_then(|m| m.skim_file.as_ref())
-                .is_some_and(|p| p.exists());
+            // and we fall back to the filmstrip preview kicked above.
             if has_skim_file {
                 // Timeline playhead scrub previews into the Program Viewer.
                 if !state.skim_decode_in_flight {
@@ -4515,8 +4581,16 @@ impl TimelinePanel {
                 state.browser_skim_active_this_frame = true;
             }
 
-            // Audio skim — same command the media browser hover uses.
-            if state.is_scrubbing && state.skim_audio_session.is_some() {
+            // Audio skim — same command the media browser hover uses, and
+            // now with the same 16ms floor between updates. The drag used
+            // to push one per UI frame with no rate limit at all, which at
+            // a high refresh rate re-seeks the sidecar faster than it can
+            // fill its ring.
+            if state.is_scrubbing
+                && state.skim_audio_session.is_some()
+                && state.skim_last_audio_dispatch.elapsed().as_millis() >= 16
+            {
+                state.skim_last_audio_dispatch = std::time::Instant::now();
                 cmds.push(AppCommand::BrowserSkimAudioUpdate {
                     media_id,
                     time_secs: source_secs,
@@ -4709,7 +4783,7 @@ impl TimelinePanel {
                     if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                         let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                         let target_secs = (x_in_content / state.timeline_zoom) as f64;
-                        self.scrub_to(state, cmds, target_secs);
+                        self.scrub_to(state, cmds, target_secs, pos.x);
                     }
                 }
             }
@@ -6118,8 +6192,17 @@ impl TimelinePanel {
                     }
                 }
 
-                // Timeline skimming: show frame at hover position in viewer
-                if state.skimming_enabled && !state.has_modal_open() {
+                // Timeline skimming: show frame at hover position in viewer.
+                // Not while the playhead is being dragged. Clips draw before
+                // the playhead, so once the cursor crossed the tracks during
+                // a head or ruler drag both branches pushed a skim request in
+                // the same frame and this one, being first, won. The frame
+                // that reached the viewer was then the hovered clip's at the
+                // cursor rather than the playhead's clip at the playhead —
+                // a different clip entirely whenever the pointer was not over
+                // the topmost video clip. During a gesture the playhead is
+                // what the viewer is about.
+                if state.skimming_enabled && !state.has_modal_open() && !state.is_scrubbing {
                     // Compound clip path — resolve hover to inner media at this
                     // position and skim through that media. The existing
                     // `if let Some(media_id) = clip.media_id()` block below
@@ -18217,5 +18300,198 @@ mod snap_tests {
             &state,
         );
         assert_eq!(label, "Marker: Hero shot");
+    }
+}
+
+/// The scrub path's preview bookkeeping: `scrub_to` is pure state, so
+/// the flags it leaves behind can be checked without a UI at all.
+#[cfg(test)]
+mod scrub_preview_tests {
+    use super::*;
+    use klipp_timeline::Track;
+
+    fn make_video_track() -> Track {
+        Track::new("Video 1", TrackKind::Video)
+    }
+    // ═══════════════════════════════════════════════════════════════
+    // scrub_to — the filmstrip preview is a fallback, not a companion
+    // ═══════════════════════════════════════════════════════════════
+
+    /// A scratch directory for a stand-in skim file. `skim_file` is
+    /// only ever tested with `Path::exists`, so any file will do.
+    fn scrub_scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("klipp-scrub-skim-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A one-clip V1 sequence spanning ten seconds, with its pool item.
+    /// `skim` is the skim file the item claims, if any.
+    fn scrub_state(skim: Option<&std::path::Path>) -> AppState {
+        let mut state = AppState::default();
+        let media_id = MediaId::new();
+        let mut item = klipp_media::MediaItem::new_synthetic_title(
+            media_id,
+            "shot.mp4".into(),
+            Timecode::from_frames(240, 24),
+            state.fps,
+        );
+        item.kind = klipp_media::MediaItemKind::File;
+        item.path = std::path::PathBuf::from("/klipp-test/shot.mp4");
+        item.skim_file = skim.map(|p| p.to_path_buf());
+        state.media_pool.add(item);
+
+        let mut track = make_video_track();
+        track.clips.push(klipp_timeline::Clip::media(
+            media_id,
+            Timecode::from_frames(0, 24),
+            Timecode::from_frames(240, 24),
+            Timecode::from_frames(0, 24),
+            Timecode::from_frames(240, 24),
+        ));
+        let seq_idx = state.active_sequence_idx;
+        state.sequences[seq_idx].tracks = vec![track];
+        state
+    }
+
+    /// The gate `App::update` uses before uploading a filmstrip
+    /// thumbnail into the viewer texture the skim frame also writes.
+    fn filmstrip_would_upload(state: &AppState) -> bool {
+        state.awaiting_seek_frame && !state.showing_thumbnail_preview
+    }
+
+    /// The strobe: every drag frame armed the filmstrip preview, so on
+    /// each frame the skim decode had not landed yet a 128px thumbnail
+    /// from up to ±0.75s away was upscaled into the viewer, alternating
+    /// with the sharp, correctly-timed skim frame.
+    #[test]
+    fn a_drag_over_skimmable_media_never_arms_the_filmstrip() {
+        let dir = scrub_scratch_dir("has-skim");
+        let skim = dir.join("shot.skim.mkv");
+        std::fs::write(&skim, b"stand-in").expect("write skim");
+
+        let mut state = scrub_state(Some(&skim));
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+
+        assert!(
+            !filmstrip_would_upload(&state),
+            "the filmstrip thumbnail would be uploaded over the skim frame",
+        );
+        assert!(
+            cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
+            "the skim frame itself must still be asked for",
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And the fallback still stands where it is the only picture
+    /// available: no skim file, so the thumbnail is what there is.
+    #[test]
+    fn a_drag_without_a_skim_file_still_arms_the_filmstrip() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+
+        assert!(
+            filmstrip_would_upload(&state),
+            "with no skim file the filmstrip preview is the only preview",
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AppCommand::BrowserSkimFrame { .. })),
+            "no skim file, nothing to ask the skim worker for",
+        );
+    }
+
+    /// Over a gap, a title, a generator or media still transcoding there
+    /// is no skim file, so nothing claimed the skim and the debounced
+    /// revert fired again and again mid-drag — a full-size parked
+    /// composite each time.
+    #[test]
+    fn a_drag_claims_the_skim_even_with_no_skim_file() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+
+        assert!(
+            state.browser_skim_active_this_frame,
+            "the gesture must count as a skim for its whole length",
+        );
+    }
+
+    /// And a plain tap on the ruler is not a gesture, so it leaves the
+    /// debounce the revert was built for alone.
+    #[test]
+    fn a_plain_ruler_click_does_not_claim_the_skim() {
+        let mut state = scrub_state(None);
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+
+        assert!(
+            !state.browser_skim_active_this_frame,
+            "a click is not a drag; the revert still has its debounce",
+        );
+    }
+
+    /// `determine_skim_mode` calls anything under 1 px/s Silent, and only
+    /// the hover branch ever fed it — so the audio skim said nothing for
+    /// the whole of a playhead drag however fast the cursor moved.
+    #[test]
+    fn a_drag_maintains_the_cursor_speed() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        // The first drag frame seeds the sample; the second is 80px
+        // along, one 16ms UI frame later.
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+
+        assert!(
+            klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec)
+                == klipp_engine::skim_audio::SkimMode::Playing,
+            "the drag left the speed at {} px/s, which reads as Silent",
+            state.skim_speed_px_per_sec,
+        );
+    }
+
+    /// And stopping dead inside the gesture is silence again, the same
+    /// way a stationary hover is: the EMA decays far too slowly to do
+    /// that on its own, so sub-pixel movement snaps it to zero.
+    #[test]
+    fn a_drag_that_stops_moving_goes_silent() {
+        let mut state = scrub_state(None);
+        state.is_scrubbing = true;
+        let panel = TimelinePanel::default();
+        let mut cmds = Vec::new();
+
+        panel.scrub_to(&mut state, &mut cmds, 3.0, 100.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.0);
+        state.skim_last_update =
+            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        panel.scrub_to(&mut state, &mut cmds, 4.0, 180.1);
+
+        assert_eq!(
+            klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec),
+            klipp_engine::skim_audio::SkimMode::Silent,
+        );
     }
 }

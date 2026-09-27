@@ -3649,7 +3649,12 @@ impl PlaybackEngine {
             && self.audio_output.is_some()
             && self.audio_fingerprint_at(tc) == self.last_audio_fingerprint
             && self.audio_sources.len() == self.audio_source_count_at(tc);
-        let nobody_listening = self.state != PlaybackState::Playing && !self.is_scrubbing;
+        // A scrub only has a listener when scrub audio is on: the chirps play
+        // from `audio_sources.first()`. Counting a silent scrub as listening
+        // repositioned audio on every drag step, rebuilding the pipeline at
+        // each clip boundary (a fresh cpal stream, ~17 ms) mid-drag.
+        let nobody_listening =
+            self.state != PlaybackState::Playing && !(self.is_scrubbing && self.scrub_audio_enabled);
         if nobody_listening && !cheap {
             self.pending_audio_reposition = Some((tc, source_secs, std::time::Instant::now()));
             return false;
