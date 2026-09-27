@@ -1309,6 +1309,9 @@ pub enum AppCommand {
     /// socket's `switch_angle`, whose cut must land where it was asked
     /// for, not wherever a seek had got to.
     SwitchMulticamAngleAt { angle: usize, at: Timecode },
+    /// Choose whose sound the multicam group at `at` (the playhead when
+    /// `None`) plays, on every primary of the group: one undo step.
+    SetMulticamSound { sound: crate::MulticamSound, at: Option<Timecode> },
     /// Set the audio mixer's pan law.
     SetPanLaw(crate::config::PanLaw),
     /// Zoom timeline to fit all clips.

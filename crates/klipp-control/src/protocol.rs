@@ -807,6 +807,15 @@ pub enum ControlCommand {
         #[serde(default)]
         at_secs: Option<f64>,
     },
+    /// Choose whose sound the multicam group at `at_secs` (or the
+    /// playhead) plays: an angle counted from 1 ("2"), "follow" for the
+    /// angle on screen, "off" for none (sound from a recorder outside the
+    /// group). One undo step.
+    SetMulticamSound {
+        sound: String,
+        #[serde(default)]
+        at_secs: Option<f64>,
+    },
     /// Everything a session needs to know where it is, in one call: the
     /// build, the project and whether it is saved, the brief, every media
     /// item with its analysis state, the sequence, and what to do next.
@@ -981,6 +990,8 @@ mod tests {
         assert!(matches!(switch.command, super::ControlCommand::SwitchAngle { angle: 2, at_secs: Some(t) } if t == 6.0));
         let now: Request = serde_json::from_value(json!({"id": 1, "method": "switch_angle", "angle": 1})).unwrap();
         assert!(matches!(now.command, super::ControlCommand::SwitchAngle { angle: 1, at_secs: None }));
+        let sound: Request = serde_json::from_value(json!({"id": 1, "method": "set_multicam_sound", "sound": "follow"})).unwrap();
+        assert!(matches!(sound.command, super::ControlCommand::SetMulticamSound { ref sound, at_secs: None } if sound == "follow"));
     }
 
     /// The marker requests as a client sends them.

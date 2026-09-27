@@ -2139,6 +2139,39 @@ impl KlippApp {
         self.sync_and_refresh_frame();
     }
 
+    /// Choose whose sound the multicam group at `at` plays, on each of
+    /// its primaries (a bladed group has several), as one undo step.
+    fn set_multicam_sound(&mut self, sound: klipp_core::MulticamSound, at: klipp_core::Timecode) {
+        let seq_idx = self.state.active_sequence_idx;
+        let Some((group, angles)) = self.state.sequences[seq_idx].multicam_at(None, at).map(|m| (m.group, m.angles)) else {
+            self.state.toast.show("There is no multicam group here");
+            return;
+        };
+        if let klipp_core::MulticamSound::Angle(a) = sound {
+            if !angles.contains(&a) {
+                self.state.toast.show(format!("This multicam group has no angle {}", a as usize + 1));
+                return;
+            }
+        }
+        let mut steps = Vec::new();
+        for clip in self.state.sequences[seq_idx].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            if clip.multicam_group == Some(group) && clip.multicam_angle == 0 && clip.multicam_sound != sound {
+                let old = clip.clone();
+                clip.multicam_sound = sound;
+                steps.push(EditCommand::ReplaceClip { description: "Multicam Sound", old: Box::new(old), new: Box::new(clip.clone()) });
+            }
+        }
+        let command = match steps.len() {
+            0 => return,
+            1 => steps.remove(0),
+            _ => EditCommand::Batch(steps),
+        };
+        self.state.push_history(command);
+        self.state.toast.show(format!("Multicam sound: {}", sound.label()));
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
+    }
+
     /// Keep the system-theme watcher in step with the preference and
     /// apply a changed Omarchy palette. Runs once per frame; cheap
     /// unless the flag is set.
@@ -5952,6 +5985,10 @@ impl KlippApp {
                     self.switch_multicam_angle(*angle, *at);
                     true
                 }
+                AppCommand::SetMulticamSound { sound, at } => {
+                    self.set_multicam_sound(*sound, at.unwrap_or(self.state.playhead));
+                    true
+                }
                 // Fit timeline zoom to show all clips
                 _ => false,
         }
@@ -8386,6 +8423,7 @@ impl KlippApp {
                                     multicam_group: clip.multicam_group,
                                     multicam_angle: clip.multicam_angle,
                                     multicam_cuts: clip.multicam_cuts.clone(),
+                                    multicam_sound: clip.multicam_sound,
                                     audio_effects: clip.audio_effects.clone(),
                                     audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                                     deflicker_data: None,
@@ -8513,6 +8551,7 @@ impl KlippApp {
                             multicam_group: clip.multicam_group,
                             multicam_angle: clip.multicam_angle,
                             multicam_cuts: clip.multicam_cuts.clone(),
+                            multicam_sound: clip.multicam_sound,
                             audio_effects: clip.audio_effects.clone(),
                             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                             deflicker_data: None,
@@ -16723,6 +16762,7 @@ impl KlippApp {
                     multicam_group: None,
                     multicam_angle: 0,
                     multicam_cuts: Vec::new(),
+                    multicam_sound: Default::default(),
                     audio_effects: Vec::new(),
                     audio_effect_keyframes: std::collections::HashMap::new(),
                     deflicker_data: None,
@@ -17082,6 +17122,7 @@ impl KlippApp {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             audio_effects: Vec::new(),
             audio_effect_keyframes: std::collections::HashMap::new(),
             deflicker_data: None,
@@ -24534,6 +24575,7 @@ impl KlippApp {
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
+                multicam_sound: clip.multicam_sound,
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 deflicker_data: None,
@@ -24667,6 +24709,7 @@ impl KlippApp {
                 multicam_group: clip.multicam_group,
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
+                multicam_sound: clip.multicam_sound,
                 audio_effects: clip.audio_effects.clone(),
                 audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 deflicker_data: None,

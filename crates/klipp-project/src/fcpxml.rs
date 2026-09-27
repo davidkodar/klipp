@@ -676,6 +676,7 @@ mod tests {
             multicam_group: None,
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
+            multicam_sound: Default::default(),
             deflicker_data: None,
             deflicker_gains: None,
             stabilization_data: None,

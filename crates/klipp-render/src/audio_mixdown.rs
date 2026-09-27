@@ -392,6 +392,22 @@ fn fade_out_only(pos: f64, dur: f64, fade_out: f64, out_curve: u8) -> f32 {
     }
 }
 
+/// How long a multicam's sound takes to hand over from one angle to the
+/// next at a cut: the outgoing gate falls as the incoming one rises, so a
+/// cut is neither a click nor a dip.
+const HANDOVER_SECS: f64 = 0.005;
+
+/// A multicam angle's gate `pos` seconds into a clip of `dur` seconds,
+/// heard over `spans` (see `AudioClipShape::heard`): 1 inside a span, 0
+/// outside, a straight ramp across each cut. A span's edge at the clip's
+/// own ends is left to the clip's fades.
+fn heard_gain(spans: &[(f64, f64)], pos: f64, dur: f64) -> f32 {
+    let half = HANDOVER_SECS / 2.0;
+    let rise = |edge: f64| if edge <= 0.0 { 1.0 } else { ((pos - (edge - half)) / HANDOVER_SECS).clamp(0.0, 1.0) };
+    let fall = |edge: f64| if edge >= dur { 1.0 } else { (((edge + half) - pos) / HANDOVER_SECS).clamp(0.0, 1.0) };
+    spans.iter().map(|&(a, b)| rise(a).min(fall(b))).sum::<f64>().min(1.0) as f32
+}
+
 /// Apply `shape` to `samples`, interleaved stereo starting `clip_pos`
 /// seconds into the clip at timeline time `timeline_secs`. `clip_pos`
 /// counts from the clip's extended start when a crossfade gives it a
@@ -410,7 +426,7 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
     let animated = !shape.volume_keyframes.is_empty() || !shape.gain_keyframes.is_empty() || !shape.pan_keyframes.is_empty() || !shape.param_modifiers.is_empty();
     let (vol_end, pan_end) = if animated { levels_at(shape, clip_pos + frame_secs, timeline_secs + frame_secs, fps) } else { (vol, pan) };
     let moving = (vol_end - vol).abs() > 1e-6 || (pan_end - pan).abs() > 1e-6;
-    let has_fade = crossfading || shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
+    let has_fade = crossfading || shape.heard.is_some() || shape.fade_in_secs > 0.001 || shape.fade_out_secs > 0.001 || clip_pos < ANTI_CLICK_SECS;
     if !has_fade && !moving && (vol - 1.0).abs() < 1e-6 && pan.abs() < 1e-6 && shape.channel_config == 0 {
         return;
     }
@@ -429,6 +445,10 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
                 fade_out_only(pos, dur, shape.fade_out_secs as f64, shape.fade_out_curve)
             } else {
                 fade_envelope(pos, dur, shape.fade_in_secs as f64, shape.fade_out_secs as f64, shape.fade_in_curve, shape.fade_out_curve)
+            };
+            let own = match &shape.heard {
+                Some(spans) => own * heard_gain(spans, pos, dur),
+                None => own,
             };
             if crossfading {
                 own * crossfade_gain(pos + head, ext_dur, shape.crossfade_in_secs, shape.crossfade_out_secs)
@@ -727,6 +747,33 @@ mod tests {
         assert_eq!(total as u64, frames * 48000 * 1001 / 30000, "the frames' audio does not add up to the time they cover");
         let lengths: std::collections::BTreeSet<usize> = (0..frames).map(|f| mixdown.get_frame_audio(f).len() / 2).collect();
         assert_eq!(lengths, [1601, 1602].into_iter().collect());
+    }
+
+    /// A multicam's two angles hand over at a cut: silent outside their
+    /// spans, whole inside, and across the cut the outgoing gate and the
+    /// incoming one sum to one, so the cut neither clicks nor dips. Edges
+    /// at the clip's own ends are not ramped.
+    #[test]
+    fn multicam_angles_hand_over_at_a_cut_without_a_dip() {
+        let out = [(0.0, 2.0)];
+        let inc = [(2.0, 10.0)];
+        for pos in [1.9975, 1.999, 2.0, 2.001, 2.0025] {
+            let sum = heard_gain(&out, pos, 10.0) + heard_gain(&inc, pos, 10.0);
+            assert!((sum - 1.0).abs() < 1e-5, "{pos}: {sum}");
+        }
+        assert_eq!(heard_gain(&out, 1.0, 10.0), 1.0);
+        assert_eq!(heard_gain(&out, 3.0, 10.0), 0.0);
+        assert_eq!(heard_gain(&inc, 1.0, 10.0), 0.0);
+        assert_eq!(heard_gain(&out, 0.0, 10.0), 1.0, "the clip's start is its own fade's");
+        assert_eq!(heard_gain(&inc, 10.0, 10.0), 1.0, "and so is its end");
+        // Through `shape_samples`: gated out between spans.
+        let shape = AudioClipShape { clip_duration_secs: 10.0, heard: Some(vec![(0.0, 2.0), (5.0, 10.0)]), ..Default::default() };
+        let mut s = vec![1.0f32; 8];
+        shape_samples(&mut s, &shape, 3.0, 3.0, 25.0, 48000);
+        assert!(s.iter().all(|v| *v == 0.0));
+        let mut s = vec![1.0f32; 8];
+        shape_samples(&mut s, &shape, 6.0, 6.0, 25.0, 48000);
+        assert!(s.iter().all(|v| (*v - 1.0).abs() < 1e-6));
     }
 
     /// The clip's settings shape its samples as playback does: gain and

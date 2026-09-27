@@ -170,6 +170,10 @@ pub struct AudioClipShape {
     pub tail_secs: f64,
     pub crossfade_in_secs: f64,
     pub crossfade_out_secs: f64,
+    /// For an angle of a multicam group: the stretches, in seconds from
+    /// the in point, over which its sound is heard, the rest gated out
+    /// (see `Sequence::multicam_sound_spans`). `None` is all of it.
+    pub heard: Option<Vec<(f64, f64)>>,
 }
 
 impl Default for AudioClipShape {
@@ -193,6 +197,7 @@ impl Default for AudioClipShape {
             tail_secs: 0.0,
             crossfade_in_secs: 0.0,
             crossfade_out_secs: 0.0,
+            heard: None,
         }
     }
 }
@@ -231,7 +236,15 @@ impl AudioClipShape {
             tail_secs: 0.0,
             crossfade_in_secs: 0.0,
             crossfade_out_secs: 0.0,
+            heard: None,
         }
+    }
+
+    /// Heard only over `spans` of the clip, as a multicam's sound rule
+    /// says: see [`Self::heard`].
+    pub fn heard_over(mut self, spans: Option<Vec<(f64, f64)>>) -> Self {
+        self.heard = spans;
+        self
     }
 
     /// With the crossfades `e` at the clip's ends. A crossfade takes the
@@ -255,6 +268,9 @@ impl AudioClipShape {
     /// Whether the clip can never be heard: volume zero with nothing
     /// animating it. Such a clip need not be decoded.
     pub fn is_silent(&self) -> bool {
+        if self.heard.as_ref().is_some_and(|s| s.is_empty()) {
+            return true;
+        }
         self.volume == 0.0
             && self.volume_keyframes.is_empty()
             && !self.param_modifiers.contains_key(&klipp_core::ParamId::Volume)
@@ -586,20 +602,6 @@ fn snapshot_audio_track(
             }
         }
 
-        // Multicam audio flattening: primary clip expands cut list into
-        // audio segments sourcing from the active angle's media.
-        if clip.multicam_group.is_some()
-            && clip.multicam_angle == 0
-            && !clip.multicam_cuts.is_empty()
-        {
-            flatten_multicam_audio_clips(clip, track, media_pool, fps, &mut clips)?;
-            continue;
-        }
-        // Skip non-primary multicam angles (handled via primary's cut list).
-        if clip.multicam_group.is_some() && clip.multicam_angle != 0 {
-            continue;
-        }
-
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
@@ -615,7 +617,11 @@ fn snapshot_audio_track(
                     let frames = |secs: f64| (secs * fps).round() as u64;
                     let xfade = klipp_timeline::crossfade::extent(track, clip).on_frames(fps);
                     let (head_frames, tail_frames) = (frames(xfade.head_secs), frames(xfade.tail_secs));
-                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64()).with_crossfades(xfade);
+                    // A multicam angle's sound, linked to its picture, is
+                    // heard where the group's sound rule says.
+                    let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64())
+                        .with_crossfades(xfade)
+                        .heard_over(seq.multicam_sound_spans(clip));
                     if shape.is_silent() {
                         continue;
                     }
@@ -650,7 +656,7 @@ fn snapshot_audio_track(
 fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled || clip.multicam_group.is_some() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
+        if !clip.enabled || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
             continue;
         }
         let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };
@@ -663,7 +669,7 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
         if partner_on_audio {
             continue;
         }
-        let shape = AudioClipShape::of(clip, clip.duration().to_secs_f64());
+        let shape = AudioClipShape::of(clip, clip.duration().to_secs_f64()).heard_over(seq.multicam_sound_spans(clip));
         if shape.is_silent() {
             continue;
         }
@@ -716,79 +722,6 @@ fn flatten_compound_audio_clips(
             shape: AudioClipShape::of(&clip, clip.duration().to_secs_f64()),
         });
     }
-    Ok(())
-}
-
-/// Flatten a primary multicam clip's cut list into audio clip snapshots.
-/// Mirrors `flatten_multicam_video_clips` but produces `AudioClipSnapshot`s.
-fn flatten_multicam_audio_clips(
-    primary: &klipp_timeline::Clip,
-    track: &Track,
-    media_pool: &MediaPool,
-    fps: f64,
-    out: &mut Vec<AudioClipSnapshot>,
-) -> Result<(), RenderError> {
-    let group_id = primary.multicam_group.expect("caller checked");
-    let clip_in_secs = primary.timeline_in.to_secs_f64();
-    let clip_out_secs = primary.timeline_out.to_secs_f64();
-    let clip_duration_secs = clip_out_secs - clip_in_secs;
-
-    // Build cut segments: (start_secs, end_secs, angle_index)
-    let mut segments: Vec<(f64, f64, u8)> = Vec::new();
-    let cuts = &primary.multicam_cuts;
-    for (i, &(cut_time, angle)) in cuts.iter().enumerate() {
-        let seg_start = cut_time;
-        let seg_end = if i + 1 < cuts.len() {
-            cuts[i + 1].0
-        } else {
-            clip_duration_secs
-        };
-        if seg_end > seg_start {
-            segments.push((seg_start, seg_end, angle));
-        }
-    }
-    // Fill in segment from 0 to first cut if needed
-    if segments.is_empty() || segments[0].0 > 0.001 {
-        let first_end = if segments.is_empty() { clip_duration_secs } else { segments[0].0 };
-        if first_end > 0.001 {
-            segments.insert(0, (0.0, first_end, 0));
-        }
-    }
-
-    let angle_clips: Vec<&klipp_timeline::Clip> = track.clips.iter()
-        .filter(|c| c.multicam_group == Some(group_id) && c.enabled)
-        .collect();
-
-    for (seg_start, seg_end, angle) in &segments {
-        let angle_clip = angle_clips.iter()
-            .find(|c| c.multicam_angle == *angle)
-            .or_else(|| angle_clips.iter().find(|c| c.multicam_angle == 0));
-        let Some(angle_clip) = angle_clip else { continue };
-
-        let media_id = match angle_clip.media_id() {
-            Some(mid) => mid,
-            None => continue,
-        };
-        let media = match media_pool.get(&media_id) {
-            Some(m) if m.has_audio => m,
-            _ => continue,
-        };
-
-        let parent_in_secs = clip_in_secs + seg_start;
-        let parent_out_secs = clip_in_secs + seg_end;
-        let source_start_secs = angle_clip.source_in.to_secs_f64() + seg_start;
-
-        out.push(AudioClipSnapshot {
-            timeline_start_frame: (parent_in_secs * fps).round() as u64,
-            timeline_end_frame: (parent_out_secs * fps).round() as u64,
-            source_start_secs,
-            path: media.path.clone(),
-            audio_effects: angle_clip.audio_effects.clone(),
-            audio_effect_keyframes: angle_clip.audio_effect_keyframes.clone(),
-            shape: AudioClipShape::of(angle_clip, seg_end - seg_start),
-        });
-    }
-
     Ok(())
 }
 
