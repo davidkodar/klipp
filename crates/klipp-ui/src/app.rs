@@ -5861,9 +5861,11 @@ impl KlippApp {
                     self.state.toast.show(format!("Cut to angle {angle}"));
                     self.state.dirty = true;
                     // The viewer shows the cut only once the engine has
-                    // the sequence; without this the toast and the angle
-                    // bar said one camera and the picture another.
-                    self.sync_sequence_to_engine();
+                    // the sequence and redraws the frame; without this
+                    // the toast and the angle bar said one camera and the
+                    // picture another (paused, a sync alone redraws
+                    // nothing).
+                    self.sync_and_refresh_frame();
                     true
                 }
                 // Fit timeline zoom to show all clips
@@ -23818,7 +23820,10 @@ impl KlippApp {
         // toast about.
         if let Some(entry) = self.state.active_history_mut().undo() {
             self.apply_edit_inverse(&entry.command);
-            self.sync_sequence_to_engine();
+            // And redraw the frame: paused, a sync alone shows the
+            // change only when the engine happens to see it (a multicam
+            // cut undone kept showing the angle cut to).
+            self.sync_and_refresh_frame();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
         }
@@ -23827,7 +23832,10 @@ impl KlippApp {
     fn apply_redo(&mut self) {
         if let Some(entry) = self.state.active_history_mut().redo() {
             self.apply_edit_forward(&entry.command);
-            self.sync_sequence_to_engine();
+            // And redraw the frame: paused, a sync alone shows the
+            // change only when the engine happens to see it (a multicam
+            // cut undone kept showing the angle cut to).
+            self.sync_and_refresh_frame();
             self.state.dirty = true;
             self.state.media_usage_cache_dirty = true;
         }
