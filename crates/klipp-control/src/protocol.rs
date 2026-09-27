@@ -699,6 +699,38 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// A marker on the timeline at `at_secs` (a range with
+    /// `duration_secs`): a label, a note, a colour (red, orange, yellow,
+    /// green, blue, purple) and a kind (chapter, todo, comment,
+    /// best_take, section). Answers with its id.
+    AddMarker {
+        at_secs: f64,
+        #[serde(default)]
+        duration_secs: Option<f64>,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+    },
+    /// Every marker on the timeline, in time order, with its id.
+    ListMarkers,
+    /// Change what is given of a marker, by id.
+    UpdateMarker {
+        marker_id: String,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+    },
+    RemoveMarker { marker_id: String },
     /// Sync pool items onto one clock and lay them out as a multicam at
     /// the playhead (seek first), each angle on tracks of its own: what
     /// Create Synced Multicam does. `sync` is "timecode", "audio" or
@@ -891,5 +923,18 @@ mod tests {
         assert!(matches!(switch.command, super::ControlCommand::SwitchAngle { angle: 2, at_secs: Some(t) } if t == 6.0));
         let now: Request = serde_json::from_value(json!({"id": 1, "method": "switch_angle", "angle": 1})).unwrap();
         assert!(matches!(now.command, super::ControlCommand::SwitchAngle { angle: 1, at_secs: None }));
+    }
+
+    /// The marker requests as a client sends them.
+    #[test]
+    fn marker_requests_parse() {
+        let add: Request = serde_json::from_value(json!({"id": 1, "method": "add_marker", "at_secs": 2.0, "note": "why", "kind": "todo"})).unwrap();
+        assert!(matches!(add.command, super::ControlCommand::AddMarker { at_secs, note: Some(ref n), kind: Some(ref k), label: None, .. } if at_secs == 2.0 && n == "why" && k == "todo"));
+        let list: Request = serde_json::from_value(json!({"id": 1, "method": "list_markers"})).unwrap();
+        assert!(matches!(list.command, super::ControlCommand::ListMarkers));
+        let update: Request = serde_json::from_value(json!({"id": 1, "method": "update_marker", "marker_id": "x", "color": "green"})).unwrap();
+        assert!(matches!(update.command, super::ControlCommand::UpdateMarker { color: Some(_), label: None, .. }));
+        let remove: Request = serde_json::from_value(json!({"id": 1, "method": "remove_marker", "marker_id": "x"})).unwrap();
+        assert!(matches!(remove.command, super::ControlCommand::RemoveMarker { .. }));
     }
 }

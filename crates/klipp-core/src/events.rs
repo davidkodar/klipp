@@ -2300,6 +2300,18 @@ pub enum AppCommand {
 
     // Markers
     AddMarker { position: Timecode, label: String, color: MarkerColor },
+    /// A marker with everything said at once and its id chosen by the
+    /// sender: the control socket's `add_marker`, which answers with the
+    /// id so the marker can be named later.
+    AddMarkerWith {
+        marker_id: MarkerId,
+        position: Timecode,
+        duration: Option<Timecode>,
+        label: String,
+        comment: String,
+        color: MarkerColor,
+        kind: MarkerKind,
+    },
     RemoveMarker { marker_id: MarkerId },
     UpdateMarkerLabel { marker_id: MarkerId, label: String },
     UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },

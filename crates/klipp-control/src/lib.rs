@@ -217,6 +217,55 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
     }
 }
 
+fn marker_color(s: &str) -> Result<klipp_core::MarkerColor, String> {
+    use klipp_core::MarkerColor::*;
+    Ok(match s.trim().to_ascii_lowercase().as_str() {
+        "red" => Red,
+        "orange" => Orange,
+        "yellow" => Yellow,
+        "green" => Green,
+        "blue" => Blue,
+        "purple" => Purple,
+        other => return Err(format!("no marker colour \"{other}\": red, orange, yellow, green, blue or purple")),
+    })
+}
+
+fn marker_kind(s: &str) -> Result<klipp_core::MarkerKind, String> {
+    use klipp_core::MarkerKind::*;
+    Ok(match s.trim().to_ascii_lowercase().as_str() {
+        "" | "none" => None,
+        "chapter" => Chapter,
+        "todo" | "to_do" => ToDo,
+        "comment" => Comment,
+        "best_take" => BestTake,
+        "section" => Section,
+        other => return Err(format!("no marker kind \"{other}\": chapter, todo, comment, best_take or section")),
+    })
+}
+
+fn marker_kind_name(k: klipp_core::MarkerKind) -> &'static str {
+    use klipp_core::MarkerKind::*;
+    match k {
+        None => "none",
+        Chapter => "chapter",
+        ToDo => "todo",
+        Comment => "comment",
+        BestTake => "best_take",
+        Section => "section",
+    }
+}
+
+/// The marker named by `id`, when the timeline has it.
+fn find_marker(ctx: &ControlContext, id: &str) -> Result<klipp_core::MarkerId, String> {
+    let id = klipp_core::MarkerId(parse_uuid(id, "marker_id")?);
+    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    if seq.markers.iter().any(|m| m.id == id) {
+        Ok(id)
+    } else {
+        Err(format!("no marker {} on the timeline (list_markers has them)", id.0))
+    }
+}
+
 fn parse_uuid(s: &str, what: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(s).map_err(|e| format!("{what} is not a uuid: {e}"))
 }
@@ -449,7 +498,15 @@ fn timeline_text(
                 Some(d) => format!("{:.2}-{:.2} s", m.position.to_secs_f64(), (m.position + d).to_secs_f64()),
                 None => format!("{:.2} s", m.position.to_secs_f64()),
             };
-            let _ = writeln!(out, "  {at}  \"{}\"  {:?}", m.label, m.color);
+            let mut line = format!("  {at}  \"{}\"  {:?}", m.label, m.color);
+            if !matches!(m.kind, klipp_core::MarkerKind::None) {
+                let _ = write!(line, "  {}", marker_kind_name(m.kind));
+            }
+            if !m.comment.is_empty() {
+                let _ = write!(line, "  note \"{}\"", m.comment.replace('\n', " "));
+            }
+            let _ = write!(line, "  id {}", m.id.0);
+            let _ = writeln!(out, "{line}");
         }
     }
     out
@@ -3623,6 +3680,66 @@ fn handle(
             }
             drop(seq);
             send(AppCommand::SwitchMulticamAngleAt { angle, at })
+        }
+
+        ControlCommand::AddMarker { at_secs, duration_secs, label, note, color, kind } => {
+            let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps;
+            let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s.max(0.0), fps.rate());
+            let marker_id = klipp_core::MarkerId::new();
+            let mut v = send(AppCommand::AddMarkerWith {
+                marker_id,
+                position: tc(at_secs),
+                duration: duration_secs.filter(|d| *d > 0.0).map(tc),
+                label: label.unwrap_or_default(),
+                comment: note.unwrap_or_default(),
+                color: color.as_deref().map(marker_color).transpose()?.unwrap_or(klipp_core::MarkerColor::Blue),
+                kind: kind.as_deref().map(marker_kind).transpose()?.unwrap_or_default(),
+            })?;
+            v["marker_id"] = json!(marker_id.0.to_string());
+            Ok(v)
+        }
+
+        ControlCommand::ListMarkers => {
+            let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            Ok(json!({ "markers": seq.markers.iter().map(|m| json!({
+                "marker_id": m.id.0.to_string(),
+                "at_secs": m.position.to_secs_f64(),
+                "duration_secs": m.duration.map(|d| d.to_secs_f64()),
+                "label": m.label,
+                "note": m.comment,
+                "color": format!("{:?}", m.color).to_lowercase(),
+                "kind": marker_kind_name(m.kind),
+            })).collect::<Vec<_>>() }))
+        }
+
+        ControlCommand::UpdateMarker { marker_id, label, note, color, kind } => {
+            let id = find_marker(ctx, &marker_id)?;
+            let mut commands = Vec::new();
+            if let Some(label) = label {
+                commands.push(AppCommand::UpdateMarkerLabel { marker_id: id, label });
+            }
+            if let Some(comment) = note {
+                commands.push(AppCommand::UpdateMarkerComment { marker_id: id, comment });
+            }
+            if let Some(c) = color {
+                commands.push(AppCommand::UpdateMarkerColor { marker_id: id, color: marker_color(&c)? });
+            }
+            if let Some(k) = kind {
+                commands.push(AppCommand::UpdateMarkerKind { marker_id: id, kind: marker_kind(&k)? });
+            }
+            if commands.is_empty() {
+                return Err("nothing to change: give label, note, color or kind".into());
+            }
+            let mut last = json!({});
+            for c in commands {
+                last = send(c)?;
+            }
+            Ok(last)
+        }
+
+        ControlCommand::RemoveMarker { marker_id } => {
+            let id = find_marker(ctx, &marker_id)?;
+            send(AppCommand::RemoveMarker { marker_id: id })
         }
 
         ControlCommand::RenameSequence { name } => {
