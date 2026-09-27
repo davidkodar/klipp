@@ -4627,7 +4627,7 @@ impl TimelinePanel {
     /// End a scrub gesture. Stops audio skim, emits `EndScrub`, and resumes
     /// playback if it was running before scrub started — playing from the
     /// drop position, which the engine already knows about via `SetPlayhead`.
-    fn scrub_end(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+    pub(crate) fn scrub_end(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
         if !state.is_scrubbing {
             return;
         }

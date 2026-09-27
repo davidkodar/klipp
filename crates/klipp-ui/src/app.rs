@@ -29410,6 +29410,19 @@ impl eframe::App for KlippApp {
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         self.render_main_layout(ctx, &mut all_cmds);
 
+        // A scrub that lost its release. egui does not promise
+        // `drag_stopped` when the window loses focus or a modal opens over a
+        // drag, and since the scrub flag reached the engine (#483) a stuck
+        // one is not cosmetic: it suppresses the parked refresh for that
+        // position (#489), holds the foreground signal so background jobs
+        // yield indefinitely, and keeps the scrub mute engaged. If nothing
+        // is being dragged any more, end the gesture exactly as a release
+        // would, so the final seek still lands.
+        if self.state.is_scrubbing && ctx.dragged_id().is_none() {
+            tracing::debug!("scrub ended without a release; closing it");
+            self.timeline.scrub_end(&mut self.state, &mut all_cmds);
+        }
+
         // Dim UI on play: darken everything outside the viewer rect during
         // playback for cinematic focus. Click-through (no allocate_rect),
         // Order::Middle so modals/command palette/markers/toasts paint above
