@@ -2019,9 +2019,6 @@ impl KlippApp {
         }
     }
 
-    /// Keep the system-theme watcher in step with the preference and
-    /// apply a changed Omarchy palette. Runs once per frame; cheap
-    /// unless the flag is set.
     /// Apply the interface size: a View menu choice is saved first, then
     /// the preference is set on the context whenever it or the screen
     /// changes. Auto follows the system scale, and adds a quarter on a
@@ -2051,6 +2048,9 @@ impl KlippApp {
         }
     }
 
+    /// Keep the system-theme watcher in step with the preference and
+    /// apply a changed Omarchy palette. Runs once per frame; cheap
+    /// unless the flag is set.
     fn sync_system_theme(&mut self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
 
