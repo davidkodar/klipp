@@ -389,6 +389,16 @@ pub struct KlippApp {
     source_frame_tx: Sender<SourceFrameResult>,
     source_frame_rx: Receiver<SourceFrameResult>,
     filmstrip_tx: Sender<FilmstripResult>,
+    /// Filmstrips being read back from the disk cache. They skip the
+    /// queue and its "generating" flag, which is what keeps the UI
+    /// repainting while frames arrive, so after a project opened their
+    /// frames sat in the channel and the timeline showed flat bars until
+    /// something else redrew it.
+    filmstrip_cache_loads: std::collections::HashSet<MediaId>,
+    /// The interface size last applied, and the screen width it was
+    /// worked out for, so it is set once per change rather than every
+    /// frame (and never fights a zoom made another way).
+    ui_scale_applied: Option<(u32, u32)>,
     /// The files a filmstrip refinement pass is running for; see
     /// `AppCommand::RefineFilmstrip`.
     filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
@@ -1041,6 +1051,8 @@ impl KlippApp {
             source_frame_tx,
             source_frame_rx,
             filmstrip_tx,
+            filmstrip_cache_loads: std::collections::HashSet::new(),
+            ui_scale_applied: None,
             filmstrip_refining: Default::default(),
             filmstrip_rx,
             audio_conform_tx,
@@ -2010,6 +2022,35 @@ impl KlippApp {
     /// Keep the system-theme watcher in step with the preference and
     /// apply a changed Omarchy palette. Runs once per frame; cheap
     /// unless the flag is set.
+    /// Apply the interface size: a View menu choice is saved first, then
+    /// the preference is set on the context whenever it or the screen
+    /// changes. Auto follows the system scale, and adds a quarter on a
+    /// screen wider than 2800 points at that scale — a 4K panel at 1x or
+    /// 1.25x, where the defaults read as small print.
+    fn apply_ui_scale(&mut self, ctx: &egui::Context) {
+        if let Some(pct) = self.state.ui_scale_request.take() {
+            self.prefs.appearance.ui_scale_percent = pct;
+            let _ = self.prefs.save();
+        }
+        let pct = self.prefs.appearance.ui_scale_percent;
+        self.state.ui_scale_percent = pct;
+        // Sizes in points shrink as the zoom grows; times the zoom they
+        // are the screen at the system scale, which is what Auto reads,
+        // and what keeps this key the same once the zoom is set.
+        let zoom = ctx.zoom_factor();
+        let (monitor, window) = ctx.input(|i| (i.viewport().monitor_size, i.screen_rect().width()));
+        let width = monitor.map_or(window, |m| m.x.max(window)) * zoom;
+        let key = (pct, width.round() as u32);
+        if self.ui_scale_applied == Some(key) {
+            return;
+        }
+        self.ui_scale_applied = Some(key);
+        let want = if pct == 0 { auto_zoom_factor(width) } else { pct as f32 / 100.0 };
+        if (zoom - want).abs() > 0.001 {
+            ctx.set_zoom_factor(want);
+        }
+    }
+
     fn sync_system_theme(&mut self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
 
@@ -2691,7 +2732,8 @@ impl KlippApp {
                             }
                         }
                     })
-                    .ok();
+                    .is_ok()
+                    .then(|| self.filmstrip_cache_loads.insert(media_id));
                 return;
             }
         }
@@ -3251,6 +3293,11 @@ impl KlippApp {
                 path: new_path.to_path_buf(),
                 media_id,
             });
+            // Its pictures, from the file it now names. The re-probe
+            // alone makes none: a moved file has the same size and date,
+            // so it reads as unchanged, and an item that was offline at
+            // open never had a thumbnail made in the first place.
+            self.refresh_media_pictures(media_id);
         }
         self.sync_media_pool_to_engine();
     }
@@ -3634,6 +3681,7 @@ impl KlippApp {
                     }
                 }
                 Ok(FilmstripResult::CacheUnreadable { media_id }) => {
+                    self.filmstrip_cache_loads.remove(&media_id);
                     self.state.filmstrip_in_progress.remove(&media_id);
                     self.state.filmstrip_progress.remove(&media_id);
                     self.state.thumbnail_cache.set_filmstrip(media_id, Vec::new());
@@ -3642,6 +3690,7 @@ impl KlippApp {
                     }
                 }
                 Ok(FilmstripResult::Done { media_id }) => {
+                    self.filmstrip_cache_loads.remove(&media_id);
                     let count = self.state.thumbnail_cache
                         .filmstrip(&media_id)
                         .map(|f| f.len())
@@ -26925,9 +26974,6 @@ fn sanitise_filename(label: &str) -> String {
     }
 }
 
-/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
-/// when a candidate name has already been used in this batch. Tracks
-/// taken names in `used` (caller owns the set).
 /// Where an export goes when nothing says otherwise: the user's Videos
 /// folder where there is one, as every NLE does, else the home directory.
 fn default_export_dir() -> PathBuf {
@@ -26937,6 +26983,27 @@ fn default_export_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+/// The Auto interface size for a screen `width` points wide at the
+/// system scale: 125% from 2800 up, the system's own below.
+pub(crate) fn auto_zoom_factor(width: f32) -> f32 {
+    if width >= 2800.0 { 1.25 } else { 1.0 }
+}
+
+#[cfg(test)]
+mod auto_zoom_tests {
+    /// 4K at 1x (3840) or 1.25x (3072) gets a quarter more; 4K at 2x
+    /// (1920), 1440p (2560) and 1080p keep the system scale.
+    #[test]
+    fn a_large_screen_at_its_system_scale_gets_a_quarter_more() {
+        for (w, want) in [(3840.0, 1.25), (3072.0, 1.25), (2560.0, 1.0), (1920.0, 1.0)] {
+            assert_eq!(super::auto_zoom_factor(w), want, "{w}");
+        }
+    }
+}
+
+/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
+/// when a candidate name has already been used in this batch. Tracks
+/// taken names in `used` (caller owns the set).
 fn unique_export_path(
     base_dir: &std::path::Path,
     stem: &str,
@@ -28582,10 +28649,11 @@ impl eframe::App for KlippApp {
                 self.request_skim_frame(mid, time, target);
             }
         }
+        self.apply_ui_scale(ctx);
         self.drain_thumbnails();
         self.drain_source_frame(ctx);
         // Keep repainting while filmstrip is generating so timeline updates progressively
-        if self.state.filmstrip_generating {
+        if self.state.filmstrip_generating || !self.filmstrip_cache_loads.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.drain_audio_conforms();
@@ -29034,8 +29102,14 @@ impl eframe::App for KlippApp {
                     // avoids an allocation + lifetime crossing on every
                     // skim tick. Different dimensions (media changed)
                     // still need a fresh handle; defer the old drop.
+                    // Never into a poster: until the first frame lands the
+                    // skim shows the pool thumbnail's own handle, and
+                    // writing through it painted skim pixels into the
+                    // pool tile.
+                    let is_poster = self.state.browser_skim_texture.as_ref()
+                        .is_some_and(|t| self.state.thumbnail_textures.values().any(|p| p.id() == t.id()));
                     match self.state.browser_skim_texture {
-                        Some(ref mut tex) if tex.size_vec2() == new_size => {
+                        Some(ref mut tex) if !is_poster && tex.size_vec2() == new_size => {
                             tex.set(image, egui::TextureOptions::LINEAR);
                         }
                         _ => {
@@ -33730,6 +33804,12 @@ impl KlippApp {
                     // Cache the viewer panel rect for overlays (e.g. dim-on-play)
                     // that need to align with the viewer regardless of layout mode.
                     self.state.viewer_panel_rect = rects.viewer_rect;
+                    // The Colour strip is capped to its tracks; a stored
+                    // height above what is shown would make the divider
+                    // move nothing until the drag had used it up.
+                    if self.state.show_color_panel && rects.timeline_rect.height() + 0.5 < self.layout.color_timeline_height {
+                        self.layout.color_timeline_height = rects.timeline_rect.height();
+                    }
                     let crate::layout::LayoutRects {
                         full: _,
                         toolbar_rect,

@@ -578,6 +578,10 @@ pub const TIMELINE_DEFAULT_FRAC: f32 = 0.38;
 /// above decides it against the real window instead.
 pub const TIMELINE_H_UNSET: f32 = 0.0;
 pub const TIMELINE_MAX_H_PCT: f32 = 0.85;
+/// The Colour page's timeline strip: at most this share of the column
+/// above the scope dock, and room under its tracks for the scrollbar.
+pub const COLOR_STRIP_MAX_FRAC: f32 = 0.25;
+pub const COLOR_STRIP_SLACK: f32 = 14.0;
 pub const BROWSER_DEFAULT_W: f32 = 300.0;
 pub const BROWSER_MIN_W: f32 = 220.0;
 pub const BROWSER_MAX_W: f32 = 900.0;

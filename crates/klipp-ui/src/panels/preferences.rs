@@ -2476,9 +2476,12 @@ impl PreferencesPanel {
                 .show_ui(ui, |ui| {
                     for (val, label) in scales {
                         if ui.selectable_value(&mut prefs.appearance.ui_scale_percent, *val, *label).changed() {
-                            // Apply zoom factor immediately
-                            let zoom = if *val == 0 { 1.0 } else { *val as f32 / 100.0 };
-                            ui.ctx().set_zoom_factor(zoom);
+                            // Apply a set size immediately; Auto depends on
+                            // the screen and is worked out by the app
+                            // (`apply_ui_scale`) once the preference lands.
+                            if *val != 0 {
+                                ui.ctx().set_zoom_factor(*val as f32 / 100.0);
+                            }
                             *dirty = true;
                         }
                     }

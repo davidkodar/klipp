@@ -2218,6 +2218,11 @@ pub struct AppState {
 
     // Phase 9: Preferences
     pub show_preferences: bool,
+    /// A new interface size from the View menu (percent, 0 = Auto),
+    /// applied and saved by the app, which holds the preferences.
+    pub ui_scale_request: Option<u32>,
+    /// The interface size in effect, for the menu's check mark.
+    pub ui_scale_percent: u32,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
     pub auto_create_tracks: bool,
 
@@ -4014,6 +4019,8 @@ impl Default for AppState {
             show_inspector_panel: true,
             modal_or_popup_open: false,
             show_preferences: false,
+            ui_scale_request: None,
+            ui_scale_percent: 0,
             auto_create_tracks: true,
             project_auto_filmstrips: None,
             project_auto_skim: None,

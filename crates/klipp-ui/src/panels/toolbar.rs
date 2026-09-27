@@ -751,6 +751,18 @@ impl ToolbarPanel {
                 }
                 ui.close_menu();
             }
+            // The whole interface, not the picture: on a 4K screen the
+            // default could be too small to read, and the setting was
+            // only in Preferences.
+            ui.menu_button("Interface Size", |ui| {
+                for (label, pct) in [("Auto", 0u32), ("100%", 100), ("125%", 125), ("150%", 150), ("175%", 175), ("200%", 200)] {
+                    let check = if state.ui_scale_percent == pct { "\u{2714} " } else { "  " };
+                    if ui.button(format!("{check}{label}")).clicked() {
+                        state.ui_scale_request = Some(pct);
+                        ui.close_menu();
+                    }
+                }
+            });
             ui.menu_button("Viewer Zoom", |ui| {
                 let current_zoom = state.view_for(focused).zoom;
                 for (label, zoom) in [("Fit", 0.0f32), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {

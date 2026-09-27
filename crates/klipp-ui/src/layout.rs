@@ -172,7 +172,17 @@ pub(crate) fn compute_layout(
     } else {
         layout.timeline_height
     };
-    let timeline_h = wanted_timeline_h.clamp(timeline_min_h, max_timeline_h.max(timeline_min_h));
+    let mut timeline_h = wanted_timeline_h.clamp(timeline_min_h, max_timeline_h.max(timeline_min_h));
+    if in_color_ws {
+        // The strip is for moving between shots: never taller than its
+        // tracks need, nor more than a share of the column. A height
+        // dragged out, or carried over in layout.json, left a band of
+        // empty tracks where the picture should have been.
+        let tracks_h: f32 = state.sequence().tracks.iter().map(crate::panels::timeline::track_row_height).sum();
+        let content_h = theme::RULER_HEIGHT + crate::timeline::camera_lane::height(state) + tracks_h + theme::COLOR_STRIP_SLACK;
+        let share = (timeline_bottom - main_top) * theme::COLOR_STRIP_MAX_FRAC;
+        timeline_h = timeline_h.min(content_h.max(timeline_min_h)).min(share.max(timeline_min_h));
+    }
 
     let timeline_rect = egui::Rect::from_min_size(
         egui::pos2(center_left, timeline_bottom - timeline_h),
@@ -310,6 +320,21 @@ mod tests {
         state.show_color_panel = true;
         let color = compute_layout(test_full_rect(), &layout, &state);
         assert!(color.scopes_rect.height() > 0.0);
+    }
+
+    /// A Colour strip dragged or carried over tall (the walkthrough's
+    /// layout.json had 471 px) shows no more than its tracks, so the
+    /// picture keeps the space; 4K at 1.25 is 3072x1728 logical.
+    #[test]
+    fn the_colour_strip_is_no_taller_than_its_tracks() {
+        let full = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(3072.0, 1728.0));
+        let layout = LayoutState { color_timeline_height: 471.0, ..Default::default() };
+        let state = AppState { show_color_panel: true, show_scopes: true, ..Default::default() };
+        let r = compute_layout(full, &layout, &state);
+        let tracks: f32 = state.sequence().tracks.iter().map(crate::panels::timeline::track_row_height).sum();
+        let want = theme::RULER_HEIGHT + crate::timeline::camera_lane::height(&state) + tracks + theme::COLOR_STRIP_SLACK;
+        assert!(r.timeline_rect.height() <= want.max(theme::TIMELINE_MIN_H) + 0.5, "strip {} for tracks needing {want}", r.timeline_rect.height());
+        assert!(r.viewer_rect.height() > 700.0, "the picture keeps the room: {}", r.viewer_rect.height());
     }
 
     #[test]
