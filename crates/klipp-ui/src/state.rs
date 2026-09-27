@@ -2534,9 +2534,11 @@ pub struct AppState {
 
     /// Whether the multicam viewer grid is active.
     pub multicam_viewer_active: bool,
-    /// Number of angles in the current multicam group.
-    pub multicam_angle_count: usize,
-    /// Currently active multicam angle index.
+    /// The angles of the current multicam group, in order (0 the
+    /// primary). Not assumed to run 0..n: labelled by position, a group
+    /// lacking an angle named the wrong camera.
+    pub multicam_angles: Vec<u8>,
+    /// The angle the group's cut list has in effect at the playhead.
     pub multicam_active_angle: u8,
 
     // Viewer text edit mode (double-click title in viewer)
@@ -4150,7 +4152,7 @@ impl Default for AppState {
             clear_title_overlay: false,
             title_fade_duration: 0.5,
             multicam_viewer_active: false,
-            multicam_angle_count: 0,
+            multicam_angles: Vec::new(),
             multicam_active_angle: 0,
             viewer_text_edit: false,
             viewer_text_edit_object: None,

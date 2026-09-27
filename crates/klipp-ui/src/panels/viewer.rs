@@ -1172,9 +1172,9 @@ impl ViewerPanel {
             egui::vec2(image_rect.width(), bar_h),
         );
 
-        let btn_w = (bar_rect.width() / state.multicam_angle_count as f32).min(80.0);
-        for i in 0..state.multicam_angle_count {
-            let is_active = i as u8 == state.multicam_active_angle;
+        let btn_w = (bar_rect.width() / state.multicam_angles.len().max(1) as f32).min(80.0);
+        for (i, &angle) in state.multicam_angles.iter().enumerate() {
+            let is_active = angle == state.multicam_active_angle;
             let btn_rect = egui::Rect::from_min_size(
                 egui::pos2(bar_rect.left() + i as f32 * btn_w, bar_rect.top()),
                 egui::vec2(btn_w - 2.0, bar_h),
@@ -1197,13 +1197,13 @@ impl ViewerPanel {
             ui.painter().text(
                 btn_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                format!("Angle {}", i + 1),
+                format!("Angle {}", angle as usize + 1),
                 egui::FontId::proportional(12.0),
                 text_color,
             );
 
             if resp.clicked() {
-                cmds.push(AppCommand::SwitchMulticamAngle { angle: i + 1 });
+                cmds.push(AppCommand::SwitchMulticamAngle { angle: angle as usize + 1 });
             }
         }
     }
@@ -1829,7 +1829,7 @@ impl ViewerPanel {
         self.draw_proxy_badge(ui.painter(), state, theme, &frame);
 
         // ── Multicam angle bar (shown below the viewer when multicam is active) ──
-        if state.multicam_viewer_active && state.multicam_angle_count > 0 {
+        if state.multicam_viewer_active && !state.multicam_angles.is_empty() {
             self.draw_multicam_angle_bar(ui, state, theme, cmds, &frame);
         }
 

@@ -664,6 +664,65 @@ fn multicam_shows_the_cut_angle() {
     }
 }
 
+/// A synced multicam puts each angle on tracks of its own. The group is
+/// shown once, where the primary is, at the angle the cut list chooses;
+/// the other angles' tracks show nothing of it. Looking on one track
+/// only, every angle's track showed its camera and the top one covered
+/// the cut.
+#[test]
+fn multicam_angles_on_their_own_tracks_show_the_cut_angle() {
+    let group = klipp_core::GroupId::new();
+    let mut primary = media(0.0, 4.0);
+    primary.multicam_group = Some(group);
+    primary.multicam_cuts = vec![(1.0, 2), (2.0, 1), (3.0, 0)];
+    let mut angle1 = media(0.0, 4.0);
+    angle1.multicam_group = Some(group);
+    angle1.multicam_angle = 1;
+    let mut angle2 = media(0.0, 4.0);
+    angle2.multicam_group = Some(group);
+    angle2.multicam_angle = 2;
+    let mut src = Flat::default().grey(&primary, 0.2).grey(&angle1, 0.6).grey(&angle2, 0.9);
+    // Angle 2 on top, then angle 1, then the primary at the bottom.
+    let seq = sequence(vec![vec![angle2], vec![angle1], vec![primary]]);
+    for (t, want) in [(0.5, 0.2), (1.5, 0.9), (2.5, 0.6), (3.5, 0.2)] {
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            assert_px(&format!("t={t}, run {i}"), px(img, 16, 9), [want; 3], 1e-3);
+        }
+    }
+}
+
+/// The primary's track hidden: the group is still one picture, the cut
+/// angle, shown on the topmost track holding the group (not black). The
+/// primary disabled: its cut list still chooses, and where it chooses
+/// the primary, nothing of the group shows (not every angle stacked).
+#[test]
+fn multicam_survives_a_hidden_track_and_a_disabled_primary() {
+    let group = klipp_core::GroupId::new();
+    let mut primary = media(0.0, 4.0);
+    primary.multicam_group = Some(group);
+    primary.multicam_cuts = vec![(2.0, 1)];
+    let mut angle1 = media(0.0, 4.0);
+    angle1.multicam_group = Some(group);
+    angle1.multicam_angle = 1;
+    let mut src = Flat::default().grey(&primary, 0.2).grey(&angle1, 0.6);
+    let mut seq = sequence(vec![vec![angle1.clone()], vec![primary.clone()]]);
+    seq.tracks[1].visible = false;
+    for (t, want) in [(1.0, 0.2), (3.0, 0.6)] {
+        for (i, img) in render(&seq, t, &mut src).iter().enumerate() {
+            assert_px(&format!("hidden primary track, t={t}, run {i}"), px(img, 16, 9), [want; 3], 1e-3);
+        }
+    }
+    let mut disabled = primary;
+    disabled.enabled = false;
+    let seq = sequence(vec![vec![angle1], vec![disabled]]);
+    for (i, img) in render(&seq, 3.0, &mut src).iter().enumerate() {
+        assert_px(&format!("disabled primary, cut to 1, run {i}"), px(img, 16, 9), [0.6; 3], 1e-3);
+    }
+    for (i, img) in render(&seq, 1.0, &mut src).iter().enumerate() {
+        assert_px(&format!("disabled primary, before the cut, run {i}"), px(img, 16, 9), [0.0; 3], 1e-3);
+    }
+}
+
 /// Two frames of a clip's media, at 0 and 1/24 s, for frame blending.
 struct TwoFrames {
     clip: ClipId,
