@@ -625,6 +625,26 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
+        "klipp_add_marker" => {
+            let mut v = json!({ "method": "add_marker", "at_secs": args.get("at_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: at_secs")? });
+            for key in ["duration_secs", "label", "note", "color", "kind"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
+        "klipp_list_markers" => json!({ "method": "list_markers" }),
+        "klipp_update_marker" => {
+            let mut v = json!({ "method": "update_marker", "marker_id": arg_str(args, "marker_id")? });
+            for key in ["label", "note", "color", "kind"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
+        "klipp_remove_marker" => json!({ "method": "remove_marker", "marker_id": arg_str(args, "marker_id")? }),
         "klipp_create_multicam" => {
             let ids = args.get("media_ids").and_then(|v| v.as_array()).ok_or("missing required argument: media_ids")?;
             let mut v = json!({ "method": "create_multicam", "media_ids": ids });
@@ -1810,6 +1830,39 @@ fn tool_definitions() -> Vec<Value> {
                  "angle": { "type": "integer", "minimum": 1 },
                  "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
              }), vec!["angle"]),
+        tool("klipp_add_marker",
+             "Put a marker on the timeline: how you and the editor leave each other notes. \
+              Mark what you are unsure of or want looked at, with a label and a note saying \
+              why, and the editor jumps through them. at_secs is timeline seconds; \
+              duration_secs makes it a range. color: red, orange, yellow, green, blue, \
+              purple; kind: chapter, todo, comment, best_take, section (chapters export as \
+              chapter points). Answers with the marker's id.",
+             json!({
+                 "at_secs": { "type": "number" },
+                 "duration_secs": { "type": "number" },
+                 "label": { "type": "string" },
+                 "note": { "type": "string", "description": "the longer comment" },
+                 "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple"] },
+                 "kind": { "type": "string", "enum": ["chapter", "todo", "comment", "best_take", "section"] }
+             }), vec!["at_secs"]),
+        tool("klipp_list_markers",
+             "Every marker on the timeline in time order, with its id, time, range, label, \
+              note, colour and kind: the editor's notes to you, and yours to them. Read them \
+              at the start of a session: a todo marker is work asked for.",
+             json!({}), vec![]),
+        tool("klipp_update_marker",
+             "Change a marker's label, note, colour or kind, by id (from klipp_list_markers). \
+              Mark a todo done by changing its kind or colour, rather than removing the note.",
+             json!({
+                 "marker_id": { "type": "string" },
+                 "label": { "type": "string" },
+                 "note": { "type": "string" },
+                 "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple"] },
+                 "kind": { "type": "string", "enum": ["none", "chapter", "todo", "comment", "best_take", "section"] }
+             }), vec!["marker_id"]),
+        tool("klipp_remove_marker",
+             "Remove a marker, by id.",
+             json!({ "marker_id": { "type": "string" } }), vec!["marker_id"]),
         tool("klipp_save_project",
              "Save the project: to an absolute path (a folder ending in .klipp, made if \
               needed), or where it was last saved when no path is given. Save before a long \

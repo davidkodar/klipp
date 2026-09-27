@@ -23606,6 +23606,22 @@ impl KlippApp {
 
     fn handle_marker_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+            AppCommand::AddMarkerWith { marker_id, position, duration, label, comment, color, kind } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                seq.markers.push(Marker {
+                    id: *marker_id,
+                    position: *position,
+                    label: label.clone(),
+                    color: *color,
+                    duration: *duration,
+                    comment: comment.clone(),
+                    kind: *kind,
+                });
+                seq.markers.sort_by(|a, b| a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal));
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                true
+            }
             AppCommand::AddMarker { position, label, color } => {
                 self.state.sequences[self.state.active_sequence_idx].markers.push(Marker {
                     id: MarkerId::new(),
@@ -23620,11 +23636,15 @@ impl KlippApp {
                     a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 self.state.dirty = true;
+                // The shared sequence too: the control socket reads its
+                // markers from there, and missed any made here.
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::RemoveMarker { marker_id } => {
                 self.state.sequences[self.state.active_sequence_idx].markers.retain(|m| m.id != *marker_id);
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::UpdateMarkerLabel { marker_id, label } => {
@@ -23632,6 +23652,7 @@ impl KlippApp {
                     m.label = label.clone();
                 }
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::UpdateMarkerColor { marker_id, color } => {
@@ -23639,6 +23660,7 @@ impl KlippApp {
                     m.color = *color;
                 }
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::UpdateMarkerComment { marker_id, comment } => {
@@ -23646,6 +23668,7 @@ impl KlippApp {
                     m.comment = comment.clone();
                 }
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::UpdateMarkerKind { marker_id, kind } => {
@@ -23653,6 +23676,7 @@ impl KlippApp {
                     m.kind = *kind;
                 }
                 self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::SetMarkerDuration { marker_id, duration } => {
