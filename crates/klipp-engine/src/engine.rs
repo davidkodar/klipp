@@ -195,6 +195,9 @@ struct ActiveAudioSource {
     /// chain has, so a change is handed to it once.
     settings_fingerprint: u64,
     source: AudioSource,
+    /// The volume, gain, pan and channel config of the clip it plays,
+    /// applied to this source's samples alone in the mix thread.
+    mix: std::sync::Arc<crate::mix_thread::SourceMix>,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
@@ -1552,6 +1555,15 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
     rows
 }
 
+/// How far ahead of the output the mix thread works: the samples in the
+/// main ring (interleaved stereo) at the device rate, in seconds.
+fn mix_lead_secs(buffered_samples: usize, sample_rate: u32) -> f64 {
+    if sample_rate == 0 {
+        return 0.0;
+    }
+    buffered_samples as f64 / (2.0 * sample_rate as f64)
+}
+
 /// A track's two sound lanes as source keys: lane 0 is the track index
 /// itself, lane 1 a key far above any track. The mix thread folds both
 /// back onto the track, so the track's volume, pan, mute, solo and
@@ -2846,28 +2858,12 @@ impl PlaybackEngine {
                 }
             }
 
-            AppCommand::SetClipVolume(vol) => {
-                if let Some(aout) = &self.audio_output {
-                    aout.0.set_clip_volume(vol);
-                }
-            }
-
-            AppCommand::SetClipPan(pan) => {
-                if let Some(aout) = &self.audio_output {
-                    aout.0.set_clip_pan(pan);
-                }
-            }
-
-            AppCommand::SetClipGain(gain) => {
-                if let Some(aout) = &self.audio_output {
-                    aout.0.set_clip_gain(gain);
-                }
-            }
-
-            AppCommand::SetClipChannelConfig(config) => {
-                if let Some(aout) = &self.audio_output {
-                    aout.0.set_channel_config(config);
-                }
+            // The edit is in the sequence already: each source takes its
+            // own clip's settings from there. The value alone does not say
+            // which clip it is for, and set on the whole output it played
+            // every track at it.
+            AppCommand::SetClipVolume(_) | AppCommand::SetClipPan(_) | AppCommand::SetClipGain(_) | AppCommand::SetClipChannelConfig(_) => {
+                self.sync_clip_volumes();
             }
 
             AppCommand::MediaDecodeChanged => {
@@ -3753,31 +3749,41 @@ impl PlaybackEngine {
         }
     }
 
-    /// Sync per-clip volume, pan, and fade from sequence data to the audio output.
-    /// Called on start_all_audio and SequenceUpdated.
+    /// Sync each source's clip volume, gain, pan, channel config and
+    /// fade from the sequence: every source its own clip's, as the export
+    /// mixes them. Called every tick while playing, on start_all_audio
+    /// and on SequenceUpdated.
     fn sync_clip_volumes(&self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let mut clip_volume = 1.0f32;
-        let mut clip_pan = 0.0f32;
-        let mut clip_gain_out = 1.0f32;
-        let mut clip_ch_config = 0u32;
+        // A blade join's continuing sound takes no fade-in; the flag is
+        // for the first source with a clip, as it always was.
+        let mut contiguous = self.contiguous_audio.swap(false, std::sync::atomic::Ordering::Relaxed);
+        // The settings apply in the mix thread, ahead of the output ring,
+        // so a keyframed volume, pan or gain is evaluated where the
+        // samples mixed now will be heard, as the export evaluates each
+        // sample at its own time; at the playhead a duck came ~200 ms early.
+        let lead = match (&self.mix_thread, self.state) {
+            (Some(mt), PlaybackState::Playing) => mix_lead_secs(mt.buffered_samples(), self.cpal_sample_rate),
+            _ => 0.0,
+        };
+        let heard_at = self.playhead.to_secs_f64() + lead;
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
                 if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, self.playhead).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
-                    let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
+                    let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
                     let audio_eval_ctx = klipp_core::EvalContext {
                         clip_time_secs,
                         clip_duration_secs: (audio_clip.source_out.to_secs_f64() - audio_clip.source_in.to_secs_f64()),
-                        timeline_time_secs: self.playhead.to_secs_f64(),
+                        timeline_time_secs: heard_at,
                         fps: self.fps.as_f64(),
                         seed: audio_clip.id.0.as_u64_pair().0,
                     };
 
-                    clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
-                    clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
+                    let mut clip_volume = eval_with_modifiers(&audio_clip.volume_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Volume, clip_time_secs, audio_clip.volume, &audio_eval_ctx);
+                    let mut clip_pan = eval_with_modifiers(&audio_clip.pan_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Pan, clip_time_secs, audio_clip.pan, &audio_eval_ctx);
                     let mut clip_gain = eval_with_modifiers(&audio_clip.gain_keyframes, &audio_clip.param_modifiers, &klipp_core::ParamId::Gain, clip_time_secs, audio_clip.gain, &audio_eval_ctx);
                     let mut fade_in = audio_clip.fade_in_secs;
                     let mut fade_out = audio_clip.fade_out_secs;
@@ -3791,11 +3797,11 @@ impl PlaybackEngine {
                     if let Some(linked_id) = audio_clip.linked_clip_id {
                         for t in &seq.tracks {
                             if let Some(video_clip) = t.clips.iter().find(|c| c.id == linked_id) {
-                                let linked_clip_time = (self.playhead.to_secs_f64() - video_clip.timeline_in.to_secs_f64()).max(0.0);
+                                let linked_clip_time = (heard_at - video_clip.timeline_in.to_secs_f64()).max(0.0);
                                 let linked_eval_ctx = klipp_core::EvalContext {
                                     clip_time_secs: linked_clip_time,
                                     clip_duration_secs: (video_clip.source_out.to_secs_f64() - video_clip.source_in.to_secs_f64()),
-                                    timeline_time_secs: self.playhead.to_secs_f64(),
+                                    timeline_time_secs: heard_at,
                                     fps: self.fps.as_f64(),
                                     seed: video_clip.id.0.as_u64_pair().0,
                                 };
@@ -3816,7 +3822,7 @@ impl PlaybackEngine {
                     // When contiguous_audio is true, offset source_in backward so the
                     // fade envelope doesn't think we're at position 0 (which would
                     // trigger a fade-in from silence at blade cut boundaries)
-                    let is_contiguous = self.contiguous_audio.load(std::sync::atomic::Ordering::Relaxed);
+                    let is_contiguous = std::mem::take(&mut contiguous);
                     let effective_source_in = if is_contiguous {
                         source_in_secs - 1.0 // pretend clip started 1s earlier
                     } else {
@@ -3836,25 +3842,14 @@ impl PlaybackEngine {
                         fade_curve_to_u32(fo_curve),
                         clip_gain,
                     );
-                    // Clear contiguous flag — it's consumed
-                    self.contiguous_audio.store(false, std::sync::atomic::Ordering::Relaxed);
-                    clip_gain_out = clip_gain;
-                    clip_ch_config = channel_config_to_u32(ch_config);
-                    break;
+                    active.mix.set(clip_volume * clip_gain, clip_pan, channel_config_to_u32(ch_config));
                 }
             }
         }
-        // Every source inside a crossfade gets its own envelope, whichever
-        // one the loop above took: both sides of the join fade.
+        // Every source inside a crossfade gets its crossfade envelope in
+        // place of the clip fade set above: both sides of the join fade.
         for active in &self.audio_sources {
             set_crossfade_envelope(&seq, &self.fadeable_media, active, self.playhead);
-        }
-        drop(seq);
-        if let Some(aout) = &self.audio_output {
-            aout.0.set_clip_gain(clip_gain_out);
-            aout.0.set_clip_volume(clip_volume);
-            aout.0.set_clip_pan(clip_pan);
-            aout.0.set_channel_config(clip_ch_config);
         }
     }
 
@@ -4254,13 +4249,14 @@ impl PlaybackEngine {
                         let zero_latency = std::sync::Arc::new(
                             std::sync::atomic::AtomicU32::new(0),
                         );
-                        self.ensure_mix_pipeline(consumer, track_index, zero_latency);
+                        let mix = self.ensure_mix_pipeline(consumer, track_index, zero_latency);
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
                             media_id,
                             audio_chain_fingerprint: chain_fp,
                             settings_fingerprint: settings_fp,
                             source: AudioSource::PcmFeeder(feeder),
+                            mix,
                         });
                         return;
                     }
@@ -4280,13 +4276,14 @@ impl PlaybackEngine {
                 // Source starts paused — caller resumes when ready
 
                 let latency_advertise = adec.latency_advertise.clone();
-                self.ensure_mix_pipeline(consumer, track_index, latency_advertise);
+                let mix = self.ensure_mix_pipeline(consumer, track_index, latency_advertise);
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
                     media_id,
                     audio_chain_fingerprint: chain_fp,
                     settings_fingerprint: settings_fp,
                     source: AudioSource::Decoder(adec),
+                    mix,
                 });
             }
             Err(e) => {
@@ -4308,7 +4305,7 @@ impl PlaybackEngine {
         staging_consumer: crate::audio_decoder::AudioConsumer,
         track_index: usize,
         latency_advertise: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) {
+    ) -> std::sync::Arc<crate::mix_thread::SourceMix> {
         // Create mix thread + audio output on first use
         if self.mix_thread.is_none() {
             let (mt, main_consumer) = MixThread::new(
@@ -4332,9 +4329,11 @@ impl PlaybackEngine {
             self.mix_thread = Some(mt);
         }
 
+        let mix = std::sync::Arc::new(crate::mix_thread::SourceMix::default());
         if let Some(ref mt) = self.mix_thread {
-            mt.add_staging(track_index, staging_consumer, latency_advertise);
+            mt.add_staging(track_index, staging_consumer, latency_advertise, mix.clone());
         }
+        mix
     }
 
     /// Look up the PCM cache path for a media item.
@@ -5642,8 +5641,9 @@ impl PlaybackEngine {
                 self.stop_all_audio();
                 for ps_source in ps.sources {
                     let latency = ps_source.latency_advertise.clone();
-                    self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index, latency);
+                    let mix = self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index, latency);
                     self.audio_sources.push(ActiveAudioSource {
+                        mix,
                         track_index: ps_source.track_index,
                         media_id: ps_source.media_id,
                         audio_chain_fingerprint: ps_source.audio_chain_fingerprint,
@@ -12105,5 +12105,17 @@ mod scope_pacing {
         // sluggish: 15 ms costs 30 ms of wait, as the docs say.
         let wait = (Duration::from_millis(15) * 2).min(SCOPE_MAX_INTERVAL);
         assert_eq!(wait, Duration::from_millis(30));
+    }
+}
+
+#[cfg(test)]
+mod mix_lead_tests {
+    /// The mix thread's ~200 ms main ring at 48 kHz stereo is 19 200
+    /// samples: the keyframes are evaluated 0.2 s past the playhead.
+    #[test]
+    fn the_lead_is_the_main_ring_in_seconds() {
+        assert!((super::mix_lead_secs(48_000 * 2 / 5, 48_000) - 0.2).abs() < 1e-9);
+        assert_eq!(super::mix_lead_secs(0, 48_000), 0.0);
+        assert_eq!(super::mix_lead_secs(1024, 0), 0.0);
     }
 }
