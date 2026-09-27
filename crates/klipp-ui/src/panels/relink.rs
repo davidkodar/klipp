@@ -433,7 +433,7 @@ fn browse_button(ui: &mut egui::Ui, state: &AppState, media_id: klipp_core::Medi
         }
         dialog
             .pick_file()
-            .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+            .map(|new_path| vec![AppCommand::RelinkMediaByHand { media_id, new_path }])
             .unwrap_or_default()
     });
 }

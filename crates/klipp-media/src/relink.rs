@@ -199,8 +199,10 @@ pub enum Proposal {
 }
 
 /// Score `c` against `w`: `Ok` with what matched, or `Err` with the fact
-/// that rules it out.
-fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String> {
+/// that rules it out (empty when nothing matched) and whether the file
+/// looked like the item anyway (same content or name), which is when a
+/// search reports it.
+fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, (String, bool)> {
     let name = c.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut matched = Vec::new();
     let mut warnings = Vec::new();
@@ -278,10 +280,10 @@ fn score(w: &Wanted, c: &Candidate, criteria: Criteria) -> Result<Scored, String
         let looked_like_it = matched
             .iter()
             .any(|c| matches!(c, Criterion::Content | Criterion::Name | Criterion::NameStem));
-        return Err(if looked_like_it { why } else { String::new() });
+        return Err((why, looked_like_it));
     }
     if matched.is_empty() {
-        return Err(String::new());
+        return Err((String::new(), false));
     }
     let mut score: u32 = matched.iter().map(|c| c.weight()).sum();
     if matched.contains(&Criterion::Folder) {
@@ -320,7 +322,7 @@ pub fn propose(wanted: &[Wanted], candidates: &[Candidate], criteria: Criteria) 
                         s.candidate = i;
                         hits.push(s);
                     }
-                    Err(why) if !why.is_empty() => rejected.push(why),
+                    Err((why, true)) if !why.is_empty() => rejected.push(why),
                     Err(_) => {}
                 }
             }
@@ -344,6 +346,35 @@ pub fn propose(wanted: &[Wanted], candidates: &[Candidate], criteria: Criteria) 
             }
         })
         .collect()
+}
+
+/// What a file picked by hand for `w` says about being it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PickVerdict {
+    /// Evidence enough to be sure ([`Scored::is_strong`]), with any
+    /// differences worth mentioning.
+    Confirmed(Vec<String>),
+    /// Nothing against it, nothing much for it either.
+    Unconfirmed(Vec<String>),
+    /// A fact that rules it out: another reel, another start timecode, a
+    /// length no transcode explains.
+    Contradicted(String),
+}
+
+/// Judge a file the user picked for `w` by the rules a search uses.
+/// Relinking one clip by hand chose among nothing, so two cards'
+/// `C0001.MP4` went through unchecked; this says when the file picked is
+/// not the clip. Reads the file (ffmpeg), so call it off the UI thread.
+pub fn check_pick(w: &Wanted, path: &Path) -> PickVerdict {
+    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let fingerprint = (file_size == w.file_size && file_size > 0).then(|| fingerprint(path)).flatten();
+    let c = Candidate { path: path.to_path_buf(), file_size, fingerprint, facts: read_facts(path) };
+    match score(w, &c, Criteria::default()) {
+        Ok(s) if s.is_strong() => PickVerdict::Confirmed(s.warnings),
+        Ok(s) => PickVerdict::Unconfirmed(s.warnings),
+        Err((why, _)) if !why.is_empty() => PickVerdict::Contradicted(why),
+        Err(_) => PickVerdict::Unconfirmed(Vec::new()),
+    }
 }
 
 /// How many folders `a` and `b` share, counted up from the file until
@@ -831,6 +862,42 @@ mod tests {
             }
             other => panic!("expected the A002 card, got {other:?}"),
         }
+    }
+
+    /// A clip relinked by hand to the other card's `C0001.mov` is caught
+    /// by its timecode; the right card's is confirmed. Real files, skipped
+    /// where there is no ffmpeg.
+    #[test]
+    fn a_hand_picked_file_from_the_wrong_card_is_contradicted() {
+        let root = std::env::temp_dir().join(format!("klipp-relink-pick-{}", std::process::id()));
+        let make = |card: &str, tc: &str| -> bool {
+            let dir = root.join(card);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=2"])
+                .args(["-timecode", tc, "-c:v", "mpeg4"])
+                .arg(dir.join("C0001.mov"))
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        if !make("A001", "01:00:00:00") || !make("A002", "02:00:00:00") {
+            std::fs::remove_dir_all(&root).ok();
+            eprintln!("skipped: ffmpeg could not write the test clips");
+            return;
+        }
+        let mut w = wanted("C0001.mov");
+        w.start_timecode = Some("02:00:00:00".into());
+        w.duration_secs = Some(2.0);
+        w.resolution = Some((320, 180));
+        w.fingerprint = None;
+        let wrong = check_pick(&w, &root.join("A001/C0001.mov"));
+        let right = check_pick(&w, &root.join("A002/C0001.mov"));
+        std::fs::remove_dir_all(&root).ok();
+        match wrong {
+            PickVerdict::Contradicted(why) => assert!(why.contains("01:00:00:00"), "{why}"),
+            other => panic!("the wrong card was not caught: {other:?}"),
+        }
+        assert_eq!(right, PickVerdict::Confirmed(Vec::new()));
     }
 
     #[test]
