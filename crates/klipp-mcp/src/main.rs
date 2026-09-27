@@ -2029,6 +2029,27 @@ mod wait_tests {
     use super::*;
 
     #[test]
+    fn every_advertised_tool_has_a_dispatch_path() {
+        let tools = tool_definitions();
+        let mut names = std::collections::HashSet::new();
+        for definition in tools {
+            let name = definition["name"].as_str().expect("tool has a name").to_owned();
+            assert!(names.insert(name.clone()), "tool is advertised more than once: {name}");
+            if name == "klipp_guide" {
+                continue;
+            }
+
+            // Empty arguments deliberately exercise only routing. A required
+            // argument is expected to produce a validation error; an
+            // `unknown tool` error means the advertised name has no dispatch
+            // arm in tool_to_command.
+            if let Err(error) = tool_to_command(&name, &json!({})) {
+                assert!(!error.starts_with("unknown tool:"), "advertised tool is not dispatchable: {name}");
+            }
+        }
+    }
+
+    #[test]
     fn import_analysis_defaults_on_and_queue_options_are_forwarded() {
         let old = tool_to_command("klipp_import_media", &json!({ "path": "/tmp/take.mp4" })).unwrap();
         assert_eq!(old["analyze"], true);
