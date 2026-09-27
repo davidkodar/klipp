@@ -1285,8 +1285,8 @@ fn tool_definitions() -> Vec<Value> {
               sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
-              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB (0 \
-              full, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
+              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
+              the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
               replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
@@ -1447,8 +1447,8 @@ fn tool_definitions() -> Vec<Value> {
               sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
-              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB (0 \
-              full, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
+              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
+              the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
               replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \

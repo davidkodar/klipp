@@ -152,7 +152,8 @@ exist until the plan runs.
   ambience, foley or broll, nor for any set twelve decibels or more
   under the music (a camera's street sound under a bed).
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
-  levels in decibels (0 full, -9 a duck, -60 near silence) at timeline
+  levels in decibels from the clip's own level (0 as set, -9 a duck,
+  -60 near silence) at timeline
   seconds with straight moves between. It replaces the clip's volume
   keyframes. For the dip `duck` cannot find, or a swell into a moment.
 - `grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:

@@ -227,10 +227,11 @@ pub enum Op {
         fade_out: Option<f32>,
     },
     /// A clip's volume drawn by hand: `keys` at timeline seconds, each a
-    /// level in dB (0 the clip as it plays, -9 a duck, -60 near silence),
-    /// with straight moves between them. Replaces the clip's volume
-    /// keyframes (a picture clip's sound is set on it). For the dip
-    /// `duck` cannot find, or a swell into a moment.
+    /// level in dB from the clip's own level, as `duck` measures its dip
+    /// (0 as set, -9 a duck, -60 near silence), with straight moves
+    /// between them. Replaces the clip's volume keyframes (a picture
+    /// clip's sound is set on it). For the dip `duck` cannot find, or a
+    /// swell into a moment.
     Volume {
         clip_id: ClipRef,
         keys: Vec<VolumeKey>,
@@ -2291,7 +2292,9 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
     let settings = sound_settings_clip(seq, clip);
     let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
     for k in keys {
-        klipp_core::keyframe::upsert_keyframe(&mut kfs, (k.at - c_in).clamp(0.0, c_out - c_in), db_to_linear(k.db));
+        // From the clip's own level, as `duck` writes: a bed set to
+        // -8 dB and keyed at 0 stays at -8, not 8 dB louder.
+        klipp_core::keyframe::upsert_keyframe(&mut kfs, (k.at - c_in).clamp(0.0, c_out - c_in), settings.volume * db_to_linear(k.db));
     }
     kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
     let old_state = crate::history::KeyframeSnapshot::from_clip(settings);
@@ -5355,6 +5358,14 @@ mod tests {
         assert!(bad(r#"[{"at":1.0,"db":0}]"#).contains("outside"), "before the clip");
         assert!(bad(r#"[{"at":3.0,"db":20}]"#).contains("dB"));
         assert!(bad("[]").contains("no keys"));
+        // Keys are from the clip's own level: a bed set to -8 dB keyed at
+        // 0 stays at -8, and -9 is 9 dB under it.
+        seq.tracks.last_mut().unwrap().clips[0].volume = db_to_linear(-8.0);
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        let at = |t: f64| klipp_core::keyframe::evaluate(&new_state.volume_keyframes, t, 1.0);
+        assert!((at(1.0) - db_to_linear(-8.0)).abs() < 1e-4, "0 dB is the clip as set: {}", at(1.0));
+        assert!((at(3.0) - db_to_linear(-20.0)).abs() < 1e-4, "-12 dB under it: {}", at(3.0));
     }
 
     #[test]
