@@ -82,6 +82,43 @@ fn an_image_matte_on_the_grade_limits_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two gated corrections in a row: the second's ungraded picture is
+/// the first one's blend, so where neither matte reaches, the picture
+/// is untouched. Read from the graph before rewriting, the second took
+/// the first's whole-frame grade there.
+#[test]
+fn chained_gates_each_keep_the_picture_outside_their_matte() {
+    let dir = std::env::temp_dir().join(format!("klipp-gated-chain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let left = dir.join("left.png");
+    let empty = dir.join("empty.png");
+    image::GrayImage::from_fn(W, H, |x, _| image::Luma([if x < W / 2 { 255 } else { 0 }])).save(&left).unwrap();
+    image::GrayImage::from_fn(W, H, |_, _| image::Luma([0])).save(&empty).unwrap();
+
+    let mut g = NodeGraph::default();
+    let out = g.output_node_id;
+    let into_out = g.input_of(out, 0).expect("the default chain feeds the output");
+    let (c1, c2, m1, m2) = (klipp_nodes::graph::NodeId::new_v4(), klipp_nodes::graph::NodeId::new_v4(), klipp_nodes::graph::NodeId::new_v4(), klipp_nodes::graph::NodeId::new_v4());
+    let node = |id, kind, params: NodeParams| Node { id, kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+    let matte = |path: &std::path::Path| NodeParams { matte_image_path: Some(path.to_path_buf()), matte_channel: Some(MatteChannel::Luminance), ..Default::default() };
+    g.nodes.push(node(c1, NodeKind::Corrector, NodeParams { saturation: Some(0.0), ..Default::default() }));
+    g.nodes.push(node(c2, NodeKind::Corrector, NodeParams { saturation: Some(1.5), ..Default::default() }));
+    g.nodes.push(node(m1, NodeKind::ExternalMatte, matte(&left)));
+    g.nodes.push(node(m2, NodeKind::ExternalMatte, matte(&empty)));
+    g.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
+    g.edges.extend([
+        Edge { from_node: into_out, from_port: 0, to_node: c1, to_port: 0 },
+        Edge { from_node: m1, from_port: 0, to_node: c1, to_port: 1 },
+        Edge { from_node: c1, from_port: 0, to_node: c2, to_port: 0 },
+        Edge { from_node: m2, from_port: 0, to_node: c2, to_port: 1 },
+        Edge { from_node: c2, from_port: 0, to_node: out, to_port: 0 },
+    ]);
+    for out in run(&g) {
+        assert_left_greyed_right_kept(&out, "chained gates");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_ungated_graph_runs_as_it_is() {
     assert!(NodeGraph::default().with_gates_applied().is_none());

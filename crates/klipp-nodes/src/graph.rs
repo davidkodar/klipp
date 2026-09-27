@@ -1454,17 +1454,21 @@ impl NodeGraph {
     /// The ApplyMatte's id is derived from the correction's, so it is the
     /// same node from frame to frame.
     pub fn with_gates_applied(&self) -> Option<NodeGraph> {
-        let gated: Vec<(NodeId, NodeId, NodeId)> = self
+        let gated: Vec<NodeId> = self
             .nodes
             .iter()
-            .filter(|n| gateable(n.kind))
-            .filter_map(|n| Some((n.id, self.input_of(n.id, 1)?, self.input_of(n.id, 0)?)))
+            .filter(|n| gateable(n.kind) && self.input_of(n.id, 1).is_some() && self.input_of(n.id, 0).is_some())
+            .map(|n| n.id)
             .collect();
         if gated.is_empty() {
             return None;
         }
         let mut g = self.clone();
-        for (corr, matte, plain) in gated {
+        for corr in gated {
+            // Read from the graph as rewritten so far: a correction fed
+            // by one gated before it reads that one's blend, not its
+            // whole-frame grade.
+            let (Some(matte), Some(plain)) = (g.input_of(corr, 1), g.input_of(corr, 0)) else { continue };
             let apply = Uuid::from_u128(corr.as_u128() ^ 0x6761_7465_645f_6d61_7474_655f_6170_706c);
             let at = g.nodes.iter().position(|n| n.id == corr).map_or(g.nodes.len(), |i| i + 1);
             // Whoever read the correction reads the blend now.
