@@ -1302,6 +1302,10 @@ pub enum AppCommand {
     CreateSyncedMulticam { media_ids: Vec<MediaId>, method: crate::MulticamSync },
     /// Switch multicam angle (1-indexed).
     SwitchMulticamAngle { angle: usize },
+    /// The same at a given time rather than the playhead: the control
+    /// socket's `switch_angle`, whose cut must land where it was asked
+    /// for, not wherever a seek had got to.
+    SwitchMulticamAngleAt { angle: usize, at: Timecode },
     /// Set the audio mixer's pan law.
     SetPanLaw(crate::config::PanLaw),
     /// Zoom timeline to fit all clips.
