@@ -69,6 +69,11 @@ impl ProxyResolution {
     }
 }
 
+/// The loudness the web platforms play at: YouTube, Instagram, X and
+/// Vimeo turn louder uploads down to about −14 LUFS integrated and leave
+/// quieter ones quiet, so a web delivery is normalised there by default.
+pub const WEB_LOUDNESS_LUFS: f32 = -14.0;
+
 /// The built-in presets, with deterministic UUIDs so a project that
 /// names one keeps it across versions.
 pub fn builtin_presets() -> Vec<ExportPreset> {
@@ -88,7 +93,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -107,7 +112,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -126,7 +131,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(256),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -145,7 +150,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(128),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -164,7 +169,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -183,7 +188,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 audio_bitrate_kbps: Some(192),
                 video_bitrate_kbps: None,
                 rate_control: RateControl::Crf,
-                target_lufs: None,
+                target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
             },
         },
@@ -464,6 +469,21 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for p in &presets {
             assert!(seen.insert(p.id.clone()), "duplicate preset id: {}", p.id);
+        }
+    }
+
+    /// A web delivery comes out at the loudness the platforms play at; a
+    /// master (ProRes, DNxHR, lossless) keeps its level, and the
+    /// broadcast preset keeps its own R128 target.
+    #[test]
+    fn web_presets_normalise_and_masters_do_not() {
+        for p in builtin_presets() {
+            let web = ["YouTube", "Vimeo", "Twitter", "Instagram", "Web"].iter().any(|w| p.name.contains(w));
+            if web {
+                assert_eq!(p.settings.target_lufs, Some(WEB_LOUDNESS_LUFS), "{}", p.name);
+            } else if !p.name.contains("Broadcast") {
+                assert_eq!(p.settings.target_lufs, None, "{}", p.name);
+            }
         }
     }
 }
