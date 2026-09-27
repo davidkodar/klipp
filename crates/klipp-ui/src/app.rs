@@ -22460,6 +22460,12 @@ impl KlippApp {
                 true
             }
             AppCommand::BeginScrub => {
+                // Forward first, so the engine is in scrub mode for the
+                // proxy switch below as well as for the rest of the drag.
+                // Handling a command here returns `true`, which is what
+                // stops `send_commands` forwarding it — without this the
+                // engine's `is_scrubbing` was never set by anything.
+                let _ = self.cmd_tx.send(cmd.clone());
                 // Auto-switch to proxy during scrub if preference enabled
                 if self.prefs.proxy.auto_switch_during_scrub {
                     self.state.pre_scrub_use_proxies = self.state.use_proxies;
@@ -22469,6 +22475,12 @@ impl KlippApp {
                 true
             }
             AppCommand::EndScrub => {
+                // Forward first: the proxy restore, the full-res re-seek
+                // and the `SetPlayhead` that `scrub_end` pushes next all
+                // travel the same channel, so clearing `is_scrubbing`
+                // ahead of them leaves the release seek settling exactly
+                // as it did before.
+                let _ = self.cmd_tx.send(cmd.clone());
                 // Restore proxy state after scrub
                 if self.prefs.proxy.auto_switch_during_scrub {
                     self.state.use_proxies = self.state.pre_scrub_use_proxies;
