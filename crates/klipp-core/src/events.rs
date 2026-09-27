@@ -2514,6 +2514,10 @@ pub enum AppCommand {
     SetActiveTool(Tool),
     ToggleFullscreen,
     ShowPreferences,
+    /// Capture the whole window, panels and all, to a PNG at `path`, no
+    /// wider than `max_width`: what the person sees, for the control
+    /// socket's `window_screenshot`.
+    CaptureWindow { path: std::path::PathBuf, max_width: Option<u32> },
 
     // Track locking
     SetTrackLocked { track_id: TrackId, locked: bool },

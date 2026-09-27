@@ -102,6 +102,9 @@ impl DocumentView<'_> {
                     }
                 }
             }
+            EditCommand::SetMarkers { old, .. } => {
+                self.sequences[self.active].markers = old.clone();
+            }
             EditCommand::SetSequenceFormat { old, .. } => {
                 let seq = &mut self.sequences[self.active];
                 seq.resolution = old.0;
@@ -723,6 +726,9 @@ impl DocumentView<'_> {
                         *template_instance = (**new).clone();
                     }
                 }
+            }
+            EditCommand::SetMarkers { new, .. } => {
+                self.sequences[self.active].markers = new.clone();
             }
             EditCommand::SetSequenceFormat { new, .. } => {
                 let seq = &mut self.sequences[self.active];
