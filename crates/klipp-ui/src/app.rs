@@ -403,6 +403,10 @@ pub struct KlippApp {
     /// `AppCommand::RefineFilmstrip`.
     filmstrip_refining: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<MediaId>>>,
     filmstrip_rx: Receiver<FilmstripResult>,
+    /// Hand-picked relinks checked off the UI thread: the file picked,
+    /// the name the clip had, and what the check found.
+    relink_check_tx: Sender<(String, PathBuf, klipp_media::relink::PickVerdict)>,
+    relink_check_rx: Receiver<(String, PathBuf, klipp_media::relink::PickVerdict)>,
     audio_conform_tx: Sender<AudioConformResult>,
     audio_conform_rx: Receiver<AudioConformResult>,
     /// Track proxy ffmpeg child PIDs so we can kill them on exit
@@ -938,6 +942,7 @@ impl KlippApp {
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
+        let (relink_check_tx, relink_check_rx) = crossbeam_channel::unbounded();
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
         let (proxy_progress_tx, proxy_progress_rx) = crossbeam_channel::unbounded();
@@ -1055,6 +1060,8 @@ impl KlippApp {
             ui_scale_applied: None,
             filmstrip_refining: Default::default(),
             filmstrip_rx,
+            relink_check_tx,
+            relink_check_rx,
             audio_conform_tx,
             audio_conform_rx,
             proxy_children: Vec::new(),
@@ -3655,6 +3662,20 @@ impl KlippApp {
                 Err(e) => {
                     self.state.toast.show(format!("Archive failed: {e}"));
                 }
+            }
+        }
+        // A clip relinked by hand to a file that is not it says so.
+        while let Ok((was, picked, verdict)) = self.relink_check_rx.try_recv() {
+            let name = picked.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            use klipp_media::relink::PickVerdict;
+            match verdict {
+                PickVerdict::Contradicted(why) => self.state.toast.show(format!(
+                    "{was} relinked to {name}, but it may not be the same clip: {why}. Relink it again if that is wrong."
+                )),
+                PickVerdict::Confirmed(w) | PickVerdict::Unconfirmed(w) if !w.is_empty() => {
+                    self.state.toast.show(format!("{was} relinked to {name}: {}", w.join(", ")))
+                }
+                _ => {}
             }
         }
         // Process up to 50 filmstrip frames per UI tick for fast progressive updates
@@ -8195,6 +8216,11 @@ impl KlippApp {
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index) {
                         if let Some(clip) = track.find_clip(cid).cloned() {
                             if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)).cloned() {
+                                // Its attributes too, as Resolve does: copy a
+                                // clip, then Paste Attributes onto others.
+                                // Paste Attributes stayed greyed out after
+                                // Copy, with nothing saying why (#325).
+                                self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(&clip));
                                 self.state.clipboard = Some(ClipboardContent {
                                     clips: vec![(clip, media)],
                                     source_track_index: track_index,
@@ -13101,6 +13127,22 @@ impl KlippApp {
                 AppCommand::OpenCacheManager => {
                     self.refresh_cache_categories();
                     self.state.show_cache_manager = true;
+                    true
+                }
+                AppCommand::RelinkMediaByHand { media_id, new_path } => {
+                    // What the project knew of the clip, taken before the
+                    // relink overwrites it, then checked against the file
+                    // off the UI thread (it is read with ffmpeg).
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        let wanted = klipp_media::relink::Wanted::from_item(item);
+                        let (tx, path) = (self.relink_check_tx.clone(), new_path.clone());
+                        let _ = std::thread::Builder::new().name("klipp-relink-check".into()).spawn(move || {
+                            let verdict = klipp_media::relink::check_pick(&wanted, &path);
+                            let _ = tx.send((wanted.filename, path, verdict));
+                        });
+                    }
+                    self.relink_media(*media_id, new_path);
+                    self.state.dirty = true;
                     true
                 }
                 AppCommand::RelinkMedia { media_id, new_path } => {

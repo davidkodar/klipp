@@ -328,7 +328,7 @@ fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
                     .set_title(format!("Relink: {original_name}"))
                     .set_directory(start_dir)
                     .pick_file()
-                    .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+                    .map(|new_path| vec![AppCommand::RelinkMediaByHand { media_id, new_path }])
                     .unwrap_or_default()
             });
         }

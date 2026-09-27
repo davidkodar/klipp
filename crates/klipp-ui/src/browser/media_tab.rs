@@ -1967,7 +1967,7 @@ fn show_context_menu(
                     dialog = dialog.add_filter(ext.to_uppercase(), &[ext.as_str()]);
                 }
                 dialog.pick_file()
-                    .map(|new_path| vec![AppCommand::RelinkMedia { media_id, new_path }])
+                    .map(|new_path| vec![AppCommand::RelinkMediaByHand { media_id, new_path }])
                     .unwrap_or_default()
             });
         }

@@ -3532,7 +3532,10 @@ impl AttributesClipboard {
             clip.param_modifiers = self.param_modifiers.clone();
         }
         if what.speed {
+            // The ramp as well as the rate: copied with the clip, it
+            // was never written, so a pasted ramp came out a constant.
             clip.speed = self.speed;
+            clip.speed_keyframes = self.speed_keyframes.clone();
         }
     }
 }
@@ -5328,5 +5331,28 @@ mod split_at_playhead_tests {
             Some(klipp_document::blade::BladeRefusal::LockedAcrossPair { locked: seq.tracks[vi].name.clone(), unlocked: seq.tracks[ai].name.clone() })
         );
         assert_eq!(seq.tracks[ai].clips.len(), 1, "nothing was cut");
+    }
+}
+
+#[cfg(test)]
+mod paste_speed_tests {
+    use super::{AttributesClipboard, PasteChoice};
+    use klipp_core::{MediaId, RationalTime};
+
+    /// Pasting speed brings the ramp, not only the rate it started at.
+    #[test]
+    fn pasting_speed_brings_the_ramp() {
+        let tc = |f| RationalTime::from_frames(f, 24);
+        let mut source = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        source.speed = 0.5;
+        source.speed_keyframes = vec![
+            klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+            klipp_core::Keyframe { time_secs: 1.0, value: 0.25, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) },
+        ];
+        let copied = AttributesClipboard::of(&source);
+        let mut target = klipp_timeline::Clip::media(MediaId::new(), tc(0), tc(48), tc(0), tc(48));
+        copied.paste_onto(&mut target, PasteChoice { effects: false, color_grade: false, audio: false, transform: false, speed: true });
+        assert_eq!(target.speed, 0.5);
+        assert_eq!(target.speed_keyframes, source.speed_keyframes);
     }
 }

@@ -1472,6 +1472,11 @@ pub enum AppCommand {
     EndScrub,
     /// Relink a specific offline media item to a new path.
     RelinkMedia { media_id: MediaId, new_path: PathBuf },
+    /// Relink one item to a file the user picked by hand: relinked at
+    /// once, then checked against what the project knew of it (reel,
+    /// timecode, length, rate, size), and a warning shown when the file
+    /// is not that clip.
+    RelinkMediaByHand { media_id: MediaId, new_path: PathBuf },
     /// Transcribe one clip now — the media browser's "Transcribe Clip"
     /// right-click action. Runs speech-to-text on this item even when
     /// automatic transcription is switched off in preferences.

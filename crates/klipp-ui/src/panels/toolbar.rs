@@ -413,7 +413,14 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::PasteClip);
                 ui.close_menu();
             }
-            if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text(kb.display_for("paste_attributes"))).clicked() {
+            if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text(kb.display_for("copy_attributes"))).clicked() {
+                if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
+                ui.close_menu();
+            }
+            if ui.add_enabled(state.attributes_clipboard.is_some() && state.selected_clip.is_some(), egui::Button::new("Paste Attributes...").shortcut_text(kb.display_for("paste_attributes")))
+                .on_disabled_hover_text(if state.attributes_clipboard.is_none() { "Copy a clip or its attributes first" } else { "Select the clips to paste onto" })
+                .clicked()
+            {
                 state.show_paste_attributes_dialog = true; ui.close_menu();
             }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Duplicate").shortcut_text(kb.display_for("duplicate_clip"))).clicked() {
