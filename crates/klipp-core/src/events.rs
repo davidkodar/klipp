@@ -1100,6 +1100,9 @@ pub enum AppCommand {
 
     // Sequences
     AddSequence { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
+    /// Add a sequence and make it the one open: the control socket's
+    /// `new_sequence`, which does not know the new sequence's index.
+    AddSequenceAndOpen { name: String, fps_num: u32, fps_den: u32, width: u32, height: u32 },
     DuplicateSequence { sequence_idx: usize, new_name: String },
     SetActiveSequence { sequence_idx: usize },
     RenameSequence { sequence_idx: usize, new_name: String },

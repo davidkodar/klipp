@@ -266,6 +266,21 @@ fn find_marker(ctx: &ControlContext, id: &str) -> Result<klipp_core::MarkerId, S
     }
 }
 
+/// A frame rate as a fraction: the NTSC rates (23.976, 29.97, 47.95,
+/// 59.94, 119.88) as n*1000/1001, the rest as whole numbers.
+fn fps_fraction(fps: f64) -> Result<(u32, u32), String> {
+    for base in [24u32, 30, 48, 60, 120] {
+        if (fps - base as f64 * 1000.0 / 1001.0).abs() < 0.01 {
+            return Ok((base * 1000, 1001));
+        }
+    }
+    let whole = fps.round();
+    if (fps - whole).abs() < 0.01 && (1.0..=240.0).contains(&whole) {
+        return Ok((whole as u32, 1));
+    }
+    Err(format!("{fps} fps is not a frame rate Klipp takes: a whole number, or 23.976, 29.97, 59.94"))
+}
+
 fn parse_uuid(s: &str, what: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(s).map_err(|e| format!("{what} is not a uuid: {e}"))
 }
@@ -3742,6 +3757,60 @@ fn handle(
             send(AppCommand::RemoveMarker { marker_id: id })
         }
 
+        ControlCommand::NewProject { name, location, width, height, fps, sequence_name, discard_changes } => {
+            if in_batch {
+                return Err("new_project is not part of a batch; send it on its own".into());
+            }
+            let name = name.trim().to_string();
+            if name.is_empty() || name.contains('/') {
+                return Err("a project needs a name, without slashes".into());
+            }
+            let location = std::path::PathBuf::from(&location);
+            if !location.is_absolute() || !location.is_dir() {
+                return Err(format!("location must be an existing folder, as an absolute path (got {location:?})"));
+            }
+            let dir = location.join(format!("{name}.klipp"));
+            if dir.exists() {
+                return Err(format!("{} exists already: open_project it, or pick another name", dir.display()));
+            }
+            let (fps_num, fps_den) = match fps {
+                Some(f) => fps_fraction(f)?,
+                None => (0, 0),
+            };
+            let (width, height) = match (width, height) {
+                (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+                (None, None) => (0, 0),
+                _ => return Err("give both width and height, or neither".into()),
+            };
+            let before = project_status(ctx)?;
+            if before.dirty && !discard_changes {
+                return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
+            }
+            let sequence_name = sequence_name.unwrap_or_else(|| "Main Sequence".into());
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name }], false)?;
+            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
+            if let Some(e) = after.last_error {
+                return Err(e);
+            }
+            Ok(json!({
+                "created": true,
+                "path": dir.to_string_lossy(),
+                "text": if width == 0 { "Empty project made; its size and rate follow the first clip placed." } else { "Empty project made." },
+            }))
+        }
+
+        ControlCommand::NewSequence { name, width, height, fps } => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("a sequence needs a name".into());
+            }
+            if width == 0 || height == 0 || width % 2 == 1 || height % 2 == 1 {
+                return Err(format!("{width}x{height} is not a picture size: both even and above zero"));
+            }
+            let (fps_num, fps_den) = fps_fraction(fps)?;
+            send(AppCommand::AddSequenceAndOpen { name, fps_num, fps_den, width, height })
+        }
+
         ControlCommand::RenameSequence { name } => {
             let name = name.trim().to_string();
             if name.is_empty() {
@@ -5336,5 +5405,18 @@ mod face_region_tests {
     fn without_a_face_detector_the_head_stands_in() {
         let framing = Framing::default();
         assert_eq!(face_or_head_regions(&framing, &walking_away()).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod fps_fraction_tests {
+    #[test]
+    fn rates_become_fractions() {
+        assert_eq!(super::fps_fraction(25.0), Ok((25, 1)));
+        assert_eq!(super::fps_fraction(29.97), Ok((30000, 1001)));
+        assert_eq!(super::fps_fraction(23.976), Ok((24000, 1001)));
+        assert_eq!(super::fps_fraction(59.94), Ok((60000, 1001)));
+        assert!(super::fps_fraction(0.0).is_err());
+        assert!(super::fps_fraction(25.5).is_err());
     }
 }
