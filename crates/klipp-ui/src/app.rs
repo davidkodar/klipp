@@ -22019,13 +22019,7 @@ impl KlippApp {
                 }
                 self.state.show_export_dialog = true;
                 self.export_dialog.range_mode = 2;
-                if self.export_dialog.output_path.is_empty() {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    self.export_dialog.output_path = format!(
-                        "{home}/output.{}",
-                        self.export_dialog.format.extension(),
-                    );
-                }
+                self.prepare_export_defaults();
                 true
             }
             AppCommand::GenerateRenderScript { path } => {
@@ -25579,10 +25573,7 @@ impl KlippApp {
             // Ctrl+E — Export
             if kb.is_action_pressed("export", i) {
                 self.state.show_export_dialog = true;
-                if self.export_dialog.output_path.is_empty() {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    self.export_dialog.output_path = format!("{home}/output.{}", self.export_dialog.format.extension());
-                }
+                self.prepare_export_defaults();
             }
             // Ctrl+, — Preferences
             if kb.is_action_pressed("preferences", i) {
@@ -26937,6 +26928,15 @@ fn sanitise_filename(label: &str) -> String {
 /// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
 /// when a candidate name has already been used in this batch. Tracks
 /// taken names in `used` (caller owns the set).
+/// Where an export goes when nothing says otherwise: the user's Videos
+/// folder where there is one, as every NLE does, else the home directory.
+fn default_export_dir() -> PathBuf {
+    dirs::video_dir()
+        .filter(|d| d.is_dir())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
 fn unique_export_path(
     base_dir: &std::path::Path,
     stem: &str,
@@ -31501,10 +31501,11 @@ impl KlippApp {
 
     /// An output path before the form is shown, so an export can never
     /// start with an empty name (that wrote `.partial` into the working
-    /// directory). Named after the project, in the home directory.
+    /// directory). Named after the project, in the Videos folder
+    /// (`XDG_VIDEOS_DIR`), else the home directory.
     fn prepare_export_defaults(&mut self) {
         if self.export_dialog.output_path.trim().is_empty() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            let home = default_export_dir().to_string_lossy().to_string();
             let stem = self
                 .state
                 .project_path
@@ -31834,7 +31835,12 @@ impl KlippApp {
                         // highlight roll-off curve. The control picks
                         // None / Reinhard / Hable / ACES, which is a
                         // tone map and nothing else.
-                        if delivery == klipp_core::HdrMode::Sdr {
+                        // Only the legacy sRGB output reads it: "Match
+                        // viewer" and the ACES transforms carry their own
+                        // curves (`klipp_render::encoder::export_display`),
+                        // so shown for those it was a setting that did
+                        // nothing.
+                        if delivery == klipp_core::HdrMode::Sdr && self.export_dialog.odt == klipp_core::OdtChoice::Srgb {
                             ui.label("Tone map:");
                             egui::ComboBox::from_id_salt("export_tone_map")
                                 .selected_text(klipp_color::display::tone_map_op_label(
