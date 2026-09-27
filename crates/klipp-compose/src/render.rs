@@ -2719,36 +2719,26 @@ fn transition_at<'a>(track: &'a Track, tr: &klipp_timeline::Transition, time: Ti
 /// the frame. Clips outside a multicam group are returned as they are.
 fn multicam_angle<'a>(seq: &'a Sequence, track: &'a Track, clip: &'a Clip, time: Timecode) -> Option<&'a Clip> {
     let Some(group) = clip.multicam_group else { return Some(clip) };
-    let in_group = |c: &&Clip| c.multicam_group == Some(group) && c.enabled;
-    let under = |c: &&Clip| time >= c.timeline_in && time < c.timeline_out;
-    // The group is shown once, where its primary is: a synced multicam
-    // puts each angle on tracks of its own, and looking on this track
-    // alone, every angle's track showed its own camera, stacked.
-    let Some((primary_track, primary)) = seq
-        .tracks
-        .iter()
-        .filter(|t| t.kind != TrackKind::Audio)
-        .find_map(|t| t.clips.iter().filter(in_group).find(|c| c.multicam_angle == 0 && under(c)).map(|c| (t, c)))
-    else {
-        return Some(clip);
+    let Some(m) = seq.multicam_at(Some(group), time) else { return Some(clip) };
+    // The group is shown once: on the primary's track, or, with that
+    // track hidden or the primary disabled (a disabled clip's track has
+    // nothing in play), on the topmost shown picture track holding one
+    // of its clips. A synced multicam puts each angle on tracks of its own,
+    // and looking on this track alone, every angle's track showed its
+    // own camera, stacked.
+    let holds_group = |t: &Track| t.clips.iter().any(|c| c.multicam_group == Some(group) && c.enabled && time >= c.timeline_in && time < c.timeline_out);
+    let shown_on = if is_visual(&seq.tracks[m.primary_track]) && m.primary.enabled {
+        Some(m.primary_track)
+    } else {
+        seq.tracks.iter().position(|t| is_visual(t) && t.kind != TrackKind::Audio && holds_group(t))
     };
-    if !std::ptr::eq(primary_track, track) {
+    if shown_on.is_none_or(|i| !std::ptr::eq(&seq.tracks[i], track)) {
         return None;
     }
-    let rel = (time - primary.timeline_in).to_secs_f64();
-    let angle = primary
-        .multicam_cuts
-        .iter().rfind(|(at, _)| *at <= rel + 1e-9)
-        .map(|(_, a)| *a)
-        .unwrap_or(0);
-    Some(
-        seq.tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .filter(in_group)
-            .find(|c| c.multicam_angle == angle && under(c))
-            .unwrap_or(primary),
-    )
+    // The angle cut to, else the primary where that angle has ended; a
+    // disabled clip shows nothing, as anywhere else.
+    seq.multicam_angle_clip(group, m.active, time)
+        .or_else(|| seq.multicam_angle_clip(group, 0, time))
 }
 
 /// Seconds since the clip's start on the timeline; negative before it

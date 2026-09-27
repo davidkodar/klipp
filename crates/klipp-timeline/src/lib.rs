@@ -52,6 +52,7 @@ pub mod insert_edit;
 pub mod magnetic;
 pub mod magnetic_commands;
 mod marker;
+pub mod multicam;
 mod sequence;
 
 pub use klipp_core::title_motion::{CrawlDirection, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};

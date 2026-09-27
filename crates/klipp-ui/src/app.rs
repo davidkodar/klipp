@@ -5831,41 +5831,39 @@ impl KlippApp {
                 }
                 // Switch multicam angle: record a cut in the multicam cut list
                 AppCommand::SwitchMulticamAngle { angle } => {
-                    let angle = *angle;
+                    // Angles are counted from 1 here, as the buttons and
+                    // keys 1-9 count them; the cut list from 0, the
+                    // primary. Stored as sent, "Angle 1" cut to the second
+                    // camera.
+                    let Some(wanted) = angle.checked_sub(1).and_then(|a| u8::try_from(a).ok()) else { return true };
                     let ph = self.state.playhead;
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    // The primary (angle 0) holds the cut list, and a synced
-                    // group has one for its picture and one for its sound:
-                    // the cut goes on both, so the picture the viewer shows
-                    // and the sound the export mixes switch together.
-                    let group = seq.all_clips()
-                        .find(|c| c.multicam_group.is_some() && c.multicam_angle == 0 && ph >= c.timeline_in && ph < c.timeline_out)
-                        .and_then(|c| c.multicam_group);
-                    let mut found = false;
-                    for track in &mut seq.tracks {
-                        for clip in &mut track.clips {
-                            if group.is_some()
-                                && clip.multicam_group == group
-                                && clip.multicam_angle == 0
-                                && ph >= clip.timeline_in && ph < clip.timeline_out
-                            {
-                                let clip_time = (ph - clip.timeline_in).to_secs_f64();
-                                // Remove any existing cut at this exact time
-                                clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
-                                // The command counts angles from 1, as the
-                                // buttons and keys 1-9 do; the cut list
-                                // from 0, the primary. Stored as sent,
-                                // "Angle 1" cut to the second camera.
-                                clip.multicam_cuts.push((clip_time, angle.saturating_sub(1) as u8));
-                                clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                                found = true;
-                            }
-                        }
+                    let seq_idx = self.state.active_sequence_idx;
+                    let Some((track_idx, primary_id, angles)) = self.state.sequences[seq_idx]
+                        .multicam_at(None, ph)
+                        .map(|m| (m.primary_track, m.primary.id, m.angles))
+                    else {
+                        return true;
+                    };
+                    if !angles.contains(&wanted) {
+                        self.state.toast.show(format!("This multicam group has no angle {angle}"));
+                        return true;
                     }
-                    if found {
-                        self.state.toast.show(format!("Cut to angle {}", angle));
-                        self.state.dirty = true;
-                    }
+                    let Some(clip) = self.state.sequences[seq_idx].tracks[track_idx].find_clip_mut(primary_id) else { return true };
+                    let old = clip.clone();
+                    let clip_time = (ph - clip.timeline_in).to_secs_f64();
+                    clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
+                    clip.multicam_cuts.push((clip_time, wanted));
+                    clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                    let new = clip.clone();
+                    // One undo step per cut: cutting live means mis-hits,
+                    // and a mis-hit could not be taken back.
+                    self.state.push_history(EditCommand::ReplaceClip { description: "Switch Angle", old: Box::new(old), new: Box::new(new) });
+                    self.state.toast.show(format!("Cut to angle {angle}"));
+                    self.state.dirty = true;
+                    // The viewer shows the cut only once the engine has
+                    // the sequence; without this the toast and the angle
+                    // bar said one camera and the picture another.
+                    self.sync_sequence_to_engine();
                     true
                 }
                 // Fit timeline zoom to show all clips
@@ -27056,33 +27054,13 @@ mod auto_zoom_tests {
 /// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
 /// when a candidate name has already been used in this batch. Tracks
 /// taken names in `used` (caller owns the set).
-/// The multicam group the viewer shows at `playhead`: the selected
-/// clip's, else the one whose primary is under the playhead. Its angle
-/// count (distinct angles: a synced angle has a picture and a sound clip,
-/// and counting clips doubled it) and the angle the primary's cut list
-/// has in effect, 0-based. `None` without a group of two angles or more.
-fn multicam_view_at(seq: &klipp_timeline::Sequence, selected: Option<klipp_core::ClipId>, playhead: klipp_core::Timecode) -> Option<(usize, u8)> {
-    let group = selected
-        .and_then(|id| seq.all_clips().find(|c| c.id == id))
-        .and_then(|c| c.multicam_group)
-        .or_else(|| {
-            seq.all_clips()
-                .find(|c| c.multicam_angle == 0 && c.multicam_group.is_some() && playhead >= c.timeline_in && playhead < c.timeline_out)
-                .and_then(|c| c.multicam_group)
-        })?;
-    let angles: std::collections::BTreeSet<u8> = seq.all_clips().filter(|c| c.multicam_group == Some(group)).map(|c| c.multicam_angle).collect();
-    if angles.len() < 2 {
-        return None;
-    }
-    let active = seq
-        .all_clips()
-        .find(|c| c.multicam_group == Some(group) && c.multicam_angle == 0)
-        .map(|p| {
-            let t = (playhead - p.timeline_in).to_secs_f64();
-            p.multicam_cuts.iter().rev().find(|(at, _)| *at <= t + 1e-9).map(|(_, a)| *a).unwrap_or(0)
-        })
-        .unwrap_or(0);
-    Some((angles.len(), active))
+/// The multicam group the viewer shows at `playhead`, the selected
+/// clip's else the one under the playhead: its angles, and the angle in
+/// effect. `None` without a group of two angles or more.
+fn multicam_view_at(seq: &klipp_timeline::Sequence, selected: Option<klipp_core::ClipId>, playhead: klipp_core::Timecode) -> Option<(Vec<u8>, u8)> {
+    let group = selected.and_then(|id| seq.all_clips().find(|c| c.id == id)).and_then(|c| c.multicam_group);
+    let m = seq.multicam_at(group, playhead).or_else(|| group.and(seq.multicam_at(None, playhead)))?;
+    (m.angles.len() >= 2).then_some((m.angles, m.active))
 }
 
 #[cfg(test)]
@@ -27093,31 +27071,32 @@ mod multicam_view_tests {
 
     fn tc(s: f64) -> RationalTime { RationalTime::from_secs_f64(s, 24) }
 
-    fn angle(group: GroupId, n: u8) -> Clip {
+    fn clip(group: Option<GroupId>, n: u8) -> Clip {
         let mut c = Clip::media(MediaId::new(), tc(0.0), tc(10.0), tc(0.0), tc(10.0));
-        c.multicam_group = Some(group);
+        c.multicam_group = group;
         c.multicam_angle = n;
         c
     }
 
-    /// A synced group: each angle a picture and a sound clip on tracks of
-    /// its own. Three angles, not six clips; found under the playhead with
-    /// nothing selected; the cut in effect, 0-based.
+    /// As the creation paths make a group: picture clips grouped, sound
+    /// not. With nothing selected, or a clip outside the group selected,
+    /// the group under the playhead is the one shown; its angles are the
+    /// ones it has, not 0..n.
     #[test]
-    fn a_synced_group_under_the_playhead_counts_its_angles() {
+    fn the_group_under_the_playhead_without_a_selection() {
         let g = GroupId::new();
-        let mut primary = angle(g, 0);
+        let mut primary = clip(Some(g), 0);
         primary.multicam_cuts = vec![(4.0, 2)];
+        let other = clip(None, 0);
+        let other_id = other.id;
         let mut seq = Sequence::new_default();
-        seq.tracks = [(primary.clone(), TrackKind::Video), (angle(g, 0), TrackKind::Audio), (angle(g, 1), TrackKind::Video), (angle(g, 1), TrackKind::Audio), (angle(g, 2), TrackKind::Video), (angle(g, 2), TrackKind::Audio)]
+        seq.tracks = [(primary, TrackKind::Video), (clip(None, 0), TrackKind::Audio), (clip(Some(g), 2), TrackKind::Video), (other, TrackKind::Video)]
             .into_iter()
             .enumerate()
             .map(|(i, (c, k))| { let mut t = Track::new(&format!("T{i}"), k); t.clips = vec![c]; t })
             .collect();
-        // The primary's sound clip carries no cuts; the picture one does.
-        seq.tracks[0].clips[0] = primary;
-        assert_eq!(multicam_view_at(&seq, None, tc(1.0)), Some((3, 0)));
-        assert_eq!(multicam_view_at(&seq, None, tc(5.0)), Some((3, 2)));
+        assert_eq!(multicam_view_at(&seq, None, tc(1.0)), Some((vec![0, 2], 0)));
+        assert_eq!(multicam_view_at(&seq, Some(other_id), tc(5.0)), Some((vec![0, 2], 2)));
         assert_eq!(multicam_view_at(&seq, None, tc(12.0)), None, "past the group");
     }
 }
@@ -28814,8 +28793,8 @@ impl eframe::App for KlippApp {
             multicam_view_at(&self.state.sequences[self.state.active_sequence_idx], self.state.selected_clip, self.state.playhead)
         }).flatten();
         self.state.multicam_viewer_active = view.is_some();
-        if let Some((count, active)) = view {
-            self.state.multicam_angle_count = count;
+        if let Some((angles, active)) = view {
+            self.state.multicam_angles = angles;
             self.state.multicam_active_angle = active;
         }
 
