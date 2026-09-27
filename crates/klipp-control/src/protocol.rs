@@ -699,6 +699,34 @@ pub enum ControlCommand {
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.
     RenameSequence { name: String },
+    /// Start an empty project `name` in the folder `location` (made
+    /// `<location>/<name>.klipp`), with its first sequence at `width` x
+    /// `height` and `fps` (a rate like 25, 29.97, 30, 59.94; left out,
+    /// both follow the first clip placed, as the New Project dialog's
+    /// Automatic does). Refused over unsaved changes unless
+    /// `discard_changes`.
+    NewProject {
+        name: String,
+        location: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        #[serde(default)]
+        fps: Option<f64>,
+        #[serde(default)]
+        sequence_name: Option<String>,
+        #[serde(default)]
+        discard_changes: bool,
+    },
+    /// Add a sequence to the project and open it: `width` x `height` at
+    /// `fps` (a vertical 1080x1920 at 30 for a phone delivery).
+    NewSequence {
+        name: String,
+        width: u32,
+        height: u32,
+        fps: f64,
+    },
     /// A marker on the timeline at `at_secs` (a range with
     /// `duration_secs`): a label, a note, a colour (red, orange, yellow,
     /// green, blue, purple) and a kind (chapter, todo, comment,
@@ -936,5 +964,13 @@ mod tests {
         assert!(matches!(update.command, super::ControlCommand::UpdateMarker { color: Some(_), label: None, .. }));
         let remove: Request = serde_json::from_value(json!({"id": 1, "method": "remove_marker", "marker_id": "x"})).unwrap();
         assert!(matches!(remove.command, super::ControlCommand::RemoveMarker { .. }));
+    }
+    /// new_project and new_sequence as a client sends them.
+    #[test]
+    fn project_and_sequence_requests_parse() {
+        let np: Request = serde_json::from_value(json!({"id": 1, "method": "new_project", "name": "a", "location": "/tmp", "fps": 25.0})).unwrap();
+        assert!(matches!(np.command, super::ControlCommand::NewProject { fps: Some(_), width: None, discard_changes: false, .. }));
+        let ns: Request = serde_json::from_value(json!({"id": 1, "method": "new_sequence", "name": "V", "width": 1080, "height": 1920, "fps": 30})).unwrap();
+        assert!(matches!(ns.command, super::ControlCommand::NewSequence { width: 1080, height: 1920, .. }));
     }
 }

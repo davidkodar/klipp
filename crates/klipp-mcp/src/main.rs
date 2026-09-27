@@ -645,6 +645,22 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_remove_marker" => json!({ "method": "remove_marker", "marker_id": arg_str(args, "marker_id")? }),
+        "klipp_new_project" => {
+            let mut v = json!({ "method": "new_project", "name": arg_str(args, "name")?, "location": arg_str(args, "location")? });
+            for key in ["width", "height", "fps", "sequence_name", "discard_changes"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
+        "klipp_new_sequence" => json!({
+            "method": "new_sequence",
+            "name": arg_str(args, "name")?,
+            "width": args.get("width").and_then(|v| v.as_u64()).ok_or("missing required argument: width")?,
+            "height": args.get("height").and_then(|v| v.as_u64()).ok_or("missing required argument: height")?,
+            "fps": args.get("fps").and_then(|v| v.as_f64()).ok_or("missing required argument: fps")?,
+        }),
         "klipp_create_multicam" => {
             let ids = args.get("media_ids").and_then(|v| v.as_array()).ok_or("missing required argument: media_ids")?;
             let mut v = json!({ "method": "create_multicam", "media_ids": ids });
@@ -1863,6 +1879,31 @@ fn tool_definitions() -> Vec<Value> {
         tool("klipp_remove_marker",
              "Remove a marker, by id.",
              json!({ "marker_id": { "type": "string" } }), vec!["marker_id"]),
+        tool("klipp_new_project",
+             "Start an empty project: name, and location an existing folder (the project is \
+              <location>/<name>.klipp, saved at once). width, height and fps set its first \
+              sequence; left out, both follow the first clip placed. Refused when the open \
+              project has unsaved changes unless discard_changes is true: klipp_save_project \
+              first.",
+             json!({
+                 "name": { "type": "string" },
+                 "location": { "type": "string", "description": "absolute path of an existing folder" },
+                 "width": { "type": "integer" },
+                 "height": { "type": "integer" },
+                 "fps": { "type": "number", "description": "25, 29.97, 30, 59.94 …" },
+                 "sequence_name": { "type": "string" },
+                 "discard_changes": { "type": "boolean" }
+             }), vec!["name", "location"]),
+        tool("klipp_new_sequence",
+             "Add a sequence to the project and open it, at a picture size and rate: a vertical \
+              1080x1920 at 30 for a phone cut beside the 16:9 master, a 1080x1080 square. \
+              The media pool is shared; place clips on it as on any sequence.",
+             json!({
+                 "name": { "type": "string" },
+                 "width": { "type": "integer" },
+                 "height": { "type": "integer" },
+                 "fps": { "type": "number" }
+             }), vec!["name", "width", "height", "fps"]),
         tool("klipp_save_project",
              "Save the project: to an absolute path (a folder ending in .klipp, made if \
               needed), or where it was last saved when no path is given. Save before a long \

@@ -19586,6 +19586,14 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::AddSequenceAndOpen { name, fps_num, fps_den, width, height } => {
+                let index = self.state.sequences.len();
+                self.send_commands(vec![
+                    AppCommand::AddSequence { name: name.clone(), fps_num: *fps_num, fps_den: *fps_den, width: *width, height: *height },
+                    AppCommand::SetActiveSequence { sequence_idx: index },
+                ]);
+                true
+            }
             AppCommand::AddSequence { name, fps_num, fps_den, width, height } => {
                 let seq = klipp_timeline::Sequence {
                     // A new sequence starts without a camera; a nest that goes
