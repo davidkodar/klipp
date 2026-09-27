@@ -27051,9 +27051,6 @@ mod auto_zoom_tests {
     }
 }
 
-/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
-/// when a candidate name has already been used in this batch. Tracks
-/// taken names in `used` (caller owns the set).
 /// The multicam group the viewer shows at `playhead`, the selected
 /// clip's else the one under the playhead: its angles, and the angle in
 /// effect. `None` without a group of two angles or more.
@@ -27101,6 +27098,9 @@ mod multicam_view_tests {
     }
 }
 
+/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
+/// when a candidate name has already been used in this batch. Tracks
+/// taken names in `used` (caller owns the set).
 fn unique_export_path(
     base_dir: &std::path::Path,
     stem: &str,
