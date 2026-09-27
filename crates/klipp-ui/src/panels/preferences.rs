@@ -3132,6 +3132,46 @@ impl PreferencesPanel {
             let _ = std::fs::create_dir_all(dir);
         };
 
+        Self::setting_row(ui, "Skim preview height", theme, |ui| {
+            // How tall a skim frame is decoded, for the hover and scrub
+            // preview and for the scope render fed from it. Capped by the
+            // source and by the skim file, which is never taller than
+            // 1080, so this only ever lowers.
+            let heights = [(480_u32, "480"), (720, "720"), (1080, "1080")];
+            let current = heights
+                .iter()
+                .find(|(v, _)| *v == prefs.playback.skim_resolution)
+                .map(|(_, l)| *l)
+                .unwrap_or("720");
+            // Right-to-left inside the widget area: the ComboBox first so
+            // it lands on the right, then the badge to its left.
+            egui::ComboBox::from_id_salt("skim_h")
+                .selected_text(current)
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &heights {
+                        if ui.selectable_value(&mut prefs.playback.skim_resolution, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("\u{24D8}").size(13.0).color(theme.text_dim)).on_hover_text(
+                "The height a hover or scrub preview frame is decoded at, \
+                 and the height the scopes read while you skim.\n\n\
+                 Lower is smoother: half the height is roughly a quarter \
+                 of the pixels to decode and read back, so more preview \
+                 frames land while you drag.\n\n\
+                 It does not affect the frame you stop on, playback, or \
+                 export — those are always full size. It does affect how \
+                 dense the waveform and parade look while skimming.\n\n\
+                 \u{2022}  480   — smoothest, sparsest scopes\n\
+                 \u{2022}  720   — the balance, and the default\n\
+                 \u{2022}  1080  — sharpest preview and densest scopes, \
+                 at the most decode cost",
+            );
+        });
+
         Self::setting_row_with_subtitle(ui, "Render cache", &format_size(render_size), theme, |ui| {
             if clear_btn(ui, "Clear") { wipe_dir(&render_dir); }
         });
