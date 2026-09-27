@@ -1281,9 +1281,13 @@ fn tool_definitions() -> Vec<Value> {
               stays. For an audio clip linked to a video clip the settings go on the video \
               clip, where playback and the render read them.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
-              down (9 dB by default) wherever another clip is heard over it, moving over \
+              down (9 dB by default) wherever speech is heard over it (not clips marked music, \
+              sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB (0 \
+              full, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
+              replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
@@ -1439,9 +1443,13 @@ fn tool_definitions() -> Vec<Value> {
               stays. For an audio clip linked to a video clip the settings go on the video \
               clip, where playback and the render read them.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
-              down (9 dB by default) wherever another clip is heard over it, moving over \
+              down (9 dB by default) wherever speech is heard over it (not clips marked music, \
+              sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
+              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB (0 \
+              full, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
+              replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
               grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \

@@ -148,6 +148,13 @@ exist until the plan runs.
   another clip is heard over it, and moves there and back over half a
   second. Set the music's own volume first and place the speech first:
   the duck is written as keyframes from what is on the timeline then.
+  It comes down for speech only: not for clips marked music, sfx,
+  ambience, foley or broll, nor for any set twelve decibels or more
+  under the music (a camera's street sound under a bed).
+- `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
+  levels in decibels (0 full, -9 a duck, -60 near silence) at timeline
+  seconds with straight moves between. It replaces the clip's volume
+  keyframes. For the dip `duck` cannot find, or a swell into a moment.
 - `grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:
   a picture clip's primary grade. What you give is set, the rest stays.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose

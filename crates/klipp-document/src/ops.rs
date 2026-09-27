@@ -37,6 +37,15 @@ use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind};
 use serde::{Deserialize, Serialize};
 
+/// A level at a moment, for [`Op::Volume`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeKey {
+    /// Timeline seconds.
+    pub at: f64,
+    /// Decibels: 0 is full level.
+    pub db: f32,
+}
+
 /// A point on the timeline, said the way an editor says it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,6 +225,15 @@ pub enum Op {
         fade_in: Option<f32>,
         #[serde(default)]
         fade_out: Option<f32>,
+    },
+    /// A clip's volume drawn by hand: `keys` at timeline seconds, each a
+    /// level in dB (0 the clip as it plays, -9 a duck, -60 near silence),
+    /// with straight moves between them. Replaces the clip's volume
+    /// keyframes (a picture clip's sound is set on it). For the dip
+    /// `duck` cannot find, or a swell into a moment.
+    Volume {
+        clip_id: ClipRef,
+        keys: Vec<VolumeKey>,
     },
     /// Music under speech: the volume of `clip_id` drops by `by_db`
     /// (9 by default) wherever another clip is heard over it, moving
@@ -1479,6 +1497,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, given) = resolve_clip(seq, fps, clip_id, i)?;
             audio_settings(seq, pool, i, given, *volume_db, *gain_db, *pan, *fade_in, *fade_out)
         }
+        Op::Volume { clip_id, keys } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            volume_keys(seq, pool, i, ti, clip, keys)
+        }
         Op::Duck { clip_id, by_db, fade_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
@@ -2173,18 +2195,32 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     }
     let settings = sound_settings_clip(seq, music);
     let (m_in, m_out) = (secs(music.timeline_in), secs(music.timeline_out));
-    // Where anything else is heard over the music, merged where the
-    // gaps are too short to come up and go down again.
+    // What the music comes down for: speech, not every sound. A clip
+    // marked music, effects, ambience, foley or b-roll is not, and nor
+    // is one set well under the music (a camera's ambience at -20 dB
+    // under a bed at 0): counted, a quiet street ducked a whole film.
+    let music_level = settings.volume * settings.gain;
+    let speaks = |c: &Clip| {
+        let s = sound_settings_clip(seq, c);
+        let quiet = s.volume * s.gain < music_level * db_to_linear(-12.0);
+        let not_speech = matches!(
+            s.role,
+            klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll
+        );
+        !quiet && !not_speech
+    };
+    // Where speech is heard over the music, merged where the gaps are
+    // too short to come up and go down again.
     let mut over: Vec<(f64, f64)> = seq
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
-        .filter(|(t, c)| c.id != music.id && Some(c.id) != music.linked_clip_id && is_heard(seq, pool, t, c))
+        .filter(|(t, c)| c.id != music.id && Some(c.id) != music.linked_clip_id && is_heard(seq, pool, t, c) && speaks(c))
         .map(|(_, c)| (secs(c.timeline_in).max(m_in), secs(c.timeline_out).min(m_out)))
         .filter(|(a, b)| b > a)
         .collect();
     if over.is_empty() {
-        return Err(refuse(i, "nothing is heard over it", "place the speech first; a duck follows what is on the timeline"));
+        return Err(refuse(i, "no speech is heard over it", "place the speech first, and mark it dialogue or voiceover (role); a duck ignores music, effects, ambience and anything set 12 dB under the music"));
     }
     over.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut spans: Vec<(f64, f64)> = Vec::new();
@@ -2232,6 +2268,51 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         new_linked_state: None,
     };
     Ok((what, edit, vec![music.id]))
+}
+
+/// [`Op::Volume`]: the clip's volume keyframes, from levels at timeline
+/// times, recorded as one keyframe edit.
+fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys: &[VolumeKey]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if keys.is_empty() {
+        return Err(refuse(i, "no keys", "give keys [{at, db}, …] at timeline seconds"));
+    }
+    if !is_heard(seq, pool, &seq.tracks[ti], clip) {
+        return Err(refuse(i, format!("{} is not heard", clip_name(seq, pool, clip)), "name a clip with sound, not muted"));
+    }
+    let (c_in, c_out) = (secs(clip.timeline_in), secs(clip.timeline_out));
+    for k in keys {
+        if !(c_in - 1e-6..=c_out + 1e-6).contains(&k.at) {
+            return Err(refuse(i, format!("{:.2} s is outside {} ({c_in:.2}-{c_out:.2} s)", k.at, clip_name(seq, pool, clip)), "give times on the clip, in timeline seconds"));
+        }
+        if !(-60.0..=12.0).contains(&k.db) {
+            return Err(refuse(i, format!("{} dB", k.db), "give levels between -60 and +12 dB"));
+        }
+    }
+    let settings = sound_settings_clip(seq, clip);
+    let mut kfs: Vec<klipp_core::Keyframe> = Vec::new();
+    for k in keys {
+        klipp_core::keyframe::upsert_keyframe(&mut kfs, (k.at - c_in).clamp(0.0, c_out - c_in), db_to_linear(k.db));
+    }
+    kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    let old_state = crate::history::KeyframeSnapshot::from_clip(settings);
+    let mut new_state = old_state.clone();
+    new_state.volume_keyframes = kfs;
+    let on = if settings.id == clip.id { String::new() } else { " (on the video clip it is linked to)".to_string() };
+    let what = format!(
+        "volume of {}: {}{on}",
+        clip_name(seq, pool, clip),
+        keys.iter().map(|k| format!("{:+.1} dB at {:.2} s", k.db, k.at)).collect::<Vec<_>>().join(", "),
+    );
+    let edit = EditCommand::EditKeyframes {
+        clip_id: settings.id,
+        linked_clip_id: None,
+        description: "Volume",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    };
+    Ok((what, edit, vec![clip.id]))
 }
 
 /// One clip's edge to `target`: the geometry, the refusals and the
@@ -5214,10 +5295,66 @@ mod tests {
         assert!(at(8.25) > low && at(8.25) < base, "on the way up: {}", at(8.25));
         // A duck of nothing, a step, a clip that is not heard: refused.
         let alone = { let mut s2 = seq.clone(); s2.tracks = vec![seq.tracks[2].clone()]; s2 };
-        assert!(resolve(&alone, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]).unwrap_err().why.contains("nothing is heard"));
+        assert!(resolve(&alone, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]).unwrap_err().why.contains("no speech is heard"));
         assert!(bad(Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.0 }).hint.contains("never a step"));
         // As the tools send them.
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"audio","clip_id":{"track":2,"secs":1.0},"volume_db":-8,"fade_in":2},{"op":"duck","clip_id":{"track":2,"secs":1.0}}]"#).unwrap();
+    }
+
+    /// A duck follows speech (#457): ambience set well under the music,
+    /// or a clip marked as something other than speech, is not something
+    /// to come down for; the same speech at full level still is.
+    #[test]
+    fn a_duck_ignores_quiet_ambience_and_what_is_not_speech() {
+        let (mut seq, pool, media, a, _) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]);
+        assert!(duck(&seq).is_ok(), "speech at full level is ducked under");
+        // The camera sound at -20 dB under a bed at 0: a street, not speech.
+        let mut quiet = seq.clone();
+        for c in quiet.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
+            c.volume = db_to_linear(-20.0);
+        }
+        assert!(duck(&quiet).unwrap_err().why.contains("no speech"), "quiet ambience is not ducked under");
+        // Marked ambience at full level: not speech either.
+        let mut marked = seq.clone();
+        for c in marked.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
+            c.role = klipp_core::ClipRole::Ambience;
+        }
+        assert!(duck(&marked).is_err());
+        let _ = a;
+    }
+
+    /// Volume drawn by hand: keys at timeline seconds in dB become the
+    /// clip's volume keyframes, one edit; keys off the clip, levels out
+    /// of range and no keys are refused.
+    #[test]
+    fn volume_keys_are_drawn_by_hand() {
+        let (mut seq, pool, media, _, _) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(2.0), tc(10.0), tc(0.0), tc(8.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"volume","clip_id":"{}","keys":[{{"at":3.0,"db":0}},{{"at":4.0,"db":-12}},{{"at":6.0,"db":-12}},{{"at":7.0,"db":0}}]}}]"#, music_id.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::EditKeyframes { clip_id, new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        assert_eq!(*clip_id, music_id);
+        let at = |t: f64| klipp_core::keyframe::evaluate(&new_state.volume_keyframes, t, 1.0);
+        assert!((at(1.0) - 1.0).abs() < 1e-3, "clip time 1 s = timeline 3 s, full: {}", at(1.0));
+        assert!((at(3.0) - db_to_linear(-12.0)).abs() < 1e-3, "timeline 5 s, down: {}", at(3.0));
+        assert!(at(4.5) > db_to_linear(-12.0) && at(4.5) < 1.0, "on the way up: {}", at(4.5));
+        let bad = |keys: &str| {
+            let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"volume","clip_id":"{}","keys":{keys}}}]"#, music_id.0)).unwrap();
+            resolve(&seq, &pool, &ops).unwrap_err().why
+        };
+        assert!(bad(r#"[{"at":1.0,"db":0}]"#).contains("outside"), "before the clip");
+        assert!(bad(r#"[{"at":3.0,"db":20}]"#).contains("dB"));
+        assert!(bad("[]").contains("no keys"));
     }
 
     #[test]
