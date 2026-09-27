@@ -1157,15 +1157,26 @@ impl DocumentView<'_> {
                 }
             }
             EditCommand::RemoveTransition { track_index, transition, .. } => {
-                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                // The dip a transition wrote on its clips goes with it: a
+                // fade at the crossfaded end of each clip as long as the
+                // transition, on an audio track too, where a transition
+                // dropped before crossfades existed dipped the clips and
+                // that dip would otherwise outlive it. A fade of any other
+                // length is the user's own and stays: adding the
+                // crossfade left it alone, so removing it does too.
+                // Within half a frame: the transition's length is whole
+                // frames, the fade written with it may not be.
+                let dip_secs = transition.duration.to_secs_f64() as f32;
+                let seq = &mut self.sequences[self.active];
+                let slack = (0.5 / seq.fps.as_f64().max(1.0)) as f32 + 1e-4;
+                let is_dip = |fade: f32| (fade - dip_secs).abs() <= slack;
+                if let Some(track) = seq.tracks.get_mut(*track_index) {
                     track.transitions.retain(|t| t.id != transition.id);
-                    if track.kind != klipp_timeline::TrackKind::Audio {
-                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_a_id) {
-                            c.fade_out_secs = 0.0;
-                        }
-                        if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_b_id) {
-                            c.fade_in_secs = 0.0;
-                        }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_a_id && is_dip(c.fade_out_secs)) {
+                        c.fade_out_secs = 0.0;
+                    }
+                    if let Some(c) = track.clips.iter_mut().find(|c| c.id == transition.clip_b_id && is_dip(c.fade_in_secs)) {
+                        c.fade_in_secs = 0.0;
                     }
                 }
             }

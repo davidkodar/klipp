@@ -603,17 +603,27 @@ fn snapshot_audio_track(
         if let Some(media_id) = clip.media_id() {
             if let Some(media) = media_pool.get(&media_id) {
                 if media.has_audio {
-                    let xfade = klipp_timeline::crossfade::extent(track, clip);
+                    // The crossfades' handles on whole sequence frames:
+                    // the clip's start frame moves back by the head and
+                    // its source start by those same frames as seconds,
+                    // so the sample at the cut is its in point exactly.
+                    // Moving the frame by the rounded head and the source
+                    // by the exact one — they differ when the clip's rate
+                    // is not the sequence's, or its in point is off the
+                    // frame grid — played the incoming clip up to a frame
+                    // ahead of its picture for its whole length.
+                    let frames = |secs: f64| (secs * fps).round() as u64;
+                    let xfade = klipp_timeline::crossfade::extent(track, clip).on_frames(fps);
+                    let (head_frames, tail_frames) = (frames(xfade.head_secs), frames(xfade.tail_secs));
                     let shape = AudioClipShape::of(sound_settings_source(seq, clip), clip.duration().to_secs_f64()).with_crossfades(xfade);
                     if shape.is_silent() {
                         continue;
                     }
                     // Stretched by the crossfades' handles: the incoming
                     // clip starts sounding early, the outgoing one ends late.
-                    let frames = |secs: f64| (secs * fps).round() as u64;
                     clips.push(AudioClipSnapshot {
-                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps).saturating_sub(frames(xfade.head_secs)),
-                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps) + frames(xfade.tail_secs),
+                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps).saturating_sub(head_frames),
+                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps) + tail_frames,
                         source_start_secs: clip.source_in.to_secs_f64() - xfade.head_secs,
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),

@@ -3160,10 +3160,12 @@ impl TimelinePanel {
                 .transitions
                 .iter()
                 .any(|t| t.clip_a_id == clip_a_id && t.clip_b_id == clip_b_id);
-            if let Some(crate::drag_drop::DragPayload::Transition { name, .. }) = state.drag_drop.end() {
+            if let Some(crate::drag_drop::DragPayload::Transition { .. }) = state.drag_drop.end() {
                 if already {
                     state.toast.show("Transition already exists at this cut".to_string());
                 } else {
+                    // No "applied" toast here: the op has not run yet,
+                    // and says why itself when it refuses.
                     cmds.push(AppCommand::AddTransition {
                         track_index: track_idx,
                         clip_a_id,
@@ -3171,7 +3173,6 @@ impl TimelinePanel {
                         kind_id,
                         duration_frames: state.default_transition_frames,
                     });
-                    state.toast.show(format!("\"{}\" applied", name));
                 }
             }
         }

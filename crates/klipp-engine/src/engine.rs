@@ -1467,6 +1467,9 @@ pub struct PlaybackEngine {
     scrub_audio_enabled: bool,
     // True while BeginScrub…EndScrub brackets a playhead drag.
     is_scrubbing: bool,
+    /// The media playback can crossfade, refreshed once per tick: see
+    /// [`fadeable_media`].
+    fadeable_media: FadeableMedia,
     // Predictive pre-seek — background thread pre-opens audio decoders before loop point
     pre_seek_result: Arc<std::sync::Mutex<Option<LoopPreSeekResult>>>,
     pre_seek_generation: u64,
@@ -1496,10 +1499,12 @@ type TrackAudioRow = (
 /// handle. Each row is keyed by [`source_key`]: the track, and the lane
 /// the clip plays in, so a crossfade's two clips are two sources.
 /// `pcm_cache` swaps in an item's conformed PCM file where one exists.
-fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: Timecode, use_proxies: bool, pcm_cache: bool) -> Vec<TrackAudioRow> {
+/// `fadeable` is the media playback can crossfade, see [`fadeable_media`].
+fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fadeable: &FadeableMedia, tc: Timecode, use_proxies: bool, pcm_cache: bool) -> Vec<TrackAudioRow> {
     let mut rows = Vec::new();
+    let fades = can_fade(fadeable);
     for (track_idx, track) in seq.tracks.iter().enumerate() {
-        for sounding in klipp_timeline::crossfade::sounding_at(track, tc) {
+        for sounding in klipp_timeline::crossfade::sounding_at_where(track, tc, &fades) {
             let clip = sounding.clip;
             if !clip.enabled {
                 continue;
@@ -1562,11 +1567,37 @@ pub(crate) fn key_track(key: usize) -> usize {
     key % LANE_STRIDE
 }
 
-/// The clip a source keyed `key` plays at `tc`, with its crossfades.
-fn sounding_for_key(seq: &klipp_timeline::Sequence, key: usize, tc: Timecode) -> Option<klipp_timeline::crossfade::Sounding<'_>> {
+/// The media whose sound can crossfade in playback: see [`fadeable_media`].
+type FadeableMedia = std::collections::HashSet<MediaId>;
+
+/// The media whose sound can crossfade in playback. Only the PCM
+/// feeder applies an envelope (`AudioSource::set_fade` is a no-op on
+/// the decoder), so a clip whose media has no usable PCM cache — none
+/// yet, or its file gone, the same test `open_audio_source` makes
+/// before it falls through to the decoder — is joined by a plain cut
+/// instead: scheduling a crossfade it could not fade summed both clips
+/// at full level and then stopped the outgoing one dead. One
+/// file-system check per conformed item, made once per engine tick
+/// (`PlaybackEngine::refresh_fadeable_media`) rather than under the
+/// sequence lock each time a lane is asked, which the UI waits on.
+fn fadeable_media(pool: &klipp_media::MediaPool) -> FadeableMedia {
+    pool.all()
+        .filter(|item| item.audio_cache.as_ref().is_some_and(|c| c.pcm_path.exists()))
+        .map(|item| item.id)
+        .collect()
+}
+
+/// Whether a clip's sound can crossfade in playback, see [`fadeable_media`].
+fn can_fade(fadeable: &FadeableMedia) -> impl Fn(&klipp_timeline::Clip) -> bool + '_ {
+    move |clip| clip.media_id().is_some_and(|id| fadeable.contains(&id))
+}
+
+/// The clip a source keyed `key` plays at `tc`, with its crossfades:
+/// the ones playback can fade, see [`fadeable_media`].
+fn sounding_for_key<'a>(seq: &'a klipp_timeline::Sequence, fadeable: &FadeableMedia, key: usize, tc: Timecode) -> Option<klipp_timeline::crossfade::Sounding<'a>> {
     let track = seq.tracks.get(key_track(key))?;
     let lane = (key / LANE_STRIDE) as u8;
-    klipp_timeline::crossfade::sounding_at(track, tc).into_iter().find(|s| s.lane == lane)
+    klipp_timeline::crossfade::sounding_at_where(track, tc, &can_fade(fadeable)).into_iter().find(|s| s.lane == lane)
 }
 
 impl PlaybackEngine {
@@ -1575,7 +1606,7 @@ impl PlaybackEngine {
     fn audio_rows_at(&self, tc: Timecode) -> Vec<TrackAudioRow> {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        audio_rows(&seq, &pool, tc, self.use_proxies, false)
+        audio_rows(&seq, &pool, &self.fadeable_media, tc, self.use_proxies, false)
     }
 
     /// Titles about to start get their resting render made ahead on the
@@ -1664,6 +1695,23 @@ impl PlaybackEngine {
         }
     }
 
+    /// Refresh the media playback can crossfade, see [`fadeable_media`]:
+    /// once per tick, before anything in it asks. Skipped on an idle
+    /// tick that has no command to handle, when nothing asks; the pool
+    /// is taken as it is free, since a tick waiting on the UI's import
+    /// of a hundred files would be a tick lost for nothing.
+    fn refresh_fadeable_media(&mut self, had_commands: bool) {
+        if !had_commands && matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped) {
+            return;
+        }
+        let pool = match self.media_pool.try_read() {
+            Ok(p) => p,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        self.fadeable_media = fadeable_media(&pool);
+    }
+
     fn reconcile_audio_sources(&mut self) {
         if self.state != PlaybackState::Playing {
             return;
@@ -1709,8 +1757,15 @@ impl PlaybackEngine {
                 opened = true;
             }
         }
-        if opened {
+        // The output carries one clip's volume, pan, gain and channel
+        // config, taken from the first source that has a clip. A source
+        // retiring changes which source that is: past a crossfade's
+        // window the incoming clip went on at the outgoing clip's
+        // settings until something else happened to sync.
+        if opened || !retired.is_empty() {
             self.sync_clip_volumes();
+        }
+        if opened {
             if let Some(aout) = &self.audio_output {
                 aout.0.resume();
             }
@@ -2005,6 +2060,7 @@ impl PlaybackEngine {
             loop_enabled: false,
             scrub_audio_enabled: true,
             is_scrubbing: false,
+            fadeable_media: FadeableMedia::new(),
             pre_seek_result: Arc::new(std::sync::Mutex::new(None)),
             pre_seek_generation: 0,
             pre_seek_started: false,
@@ -2183,6 +2239,8 @@ impl PlaybackEngine {
             if had_commands {
                 self.last_command_at = std::time::Instant::now();
             }
+
+            self.refresh_fadeable_media(had_commands);
 
             mark_stage(EngineStage::CommandDrain);
             for cmd in commands {
@@ -3706,7 +3764,7 @@ impl PlaybackEngine {
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
-                if let Some(audio_clip) = sounding_for_key(&seq, active.track_index, self.playhead).map(|s| s.clip) {
+                if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, self.playhead).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (self.playhead.to_secs_f64() - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
@@ -3789,7 +3847,7 @@ impl PlaybackEngine {
         // Every source inside a crossfade gets its own envelope, whichever
         // one the loop above took: both sides of the join fade.
         for active in &self.audio_sources {
-            set_crossfade_envelope(&seq, active, self.playhead);
+            set_crossfade_envelope(&seq, &self.fadeable_media, active, self.playhead);
         }
         drop(seq);
         if let Some(aout) = &self.audio_output {
@@ -3931,22 +3989,58 @@ impl PlaybackEngine {
     }
 }
 
-/// Put a source inside an audio crossfade on its crossfade envelope:
-/// the clip's range stretched by the handle the crossfade plays, the
-/// constant-power ramp in over the crossfade at its head, out at its
-/// tail. A crossfade takes the place of the clip's own fade at that end,
-/// as in the render (`AudioClipShape::with_crossfades`); the clip's own
-/// fade at the other end stays. The fade settings are the linked video
-/// clip's where there is one, as everywhere else in playback.
+/// The fade envelope a source plays: what `AudioSource::set_fade`
+/// takes, computed by [`envelope_of`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Envelope {
+    source_in_secs: f64,
+    duration_secs: f64,
+    fade_in_secs: f64,
+    fade_out_secs: f64,
+    fade_in_curve: u32,
+    fade_out_curve: u32,
+    gain: f32,
+}
+
+impl Envelope {
+    fn apply(&self, source: &AudioSource) {
+        source.set_fade(
+            self.source_in_secs,
+            self.duration_secs,
+            self.fade_in_secs,
+            self.fade_out_secs,
+            self.fade_in_curve,
+            self.fade_out_curve,
+            self.gain,
+        );
+    }
+}
+
+/// Put a source inside an audio crossfade on its crossfade envelope,
+/// see [`envelope_of`]. A source outside one is left as it is: the
+/// plain clip envelope, with its contiguous-cut offset, is
+/// `sync_clip_volumes`'s.
 ///
-/// Only the PCM feeder applies an envelope; a source on the decoder
-/// fallback plays both sides of the join at full level.
-fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, active: &ActiveAudioSource, tc: Timecode) {
-    let Some(sounding) = sounding_for_key(seq, active.track_index, tc) else { return };
-    let e = sounding.extent;
-    if e.is_none() {
+/// Only the PCM feeder applies an envelope; a clip on the decoder
+/// fallback is not crossfaded at all (see [`fadeable_media`]).
+fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, fadeable: &FadeableMedia, active: &ActiveAudioSource, tc: Timecode) {
+    let Some(sounding) = sounding_for_key(seq, fadeable, active.track_index, tc) else { return };
+    if sounding.extent.is_none() {
         return;
     }
+    envelope_of(seq, &sounding, tc).apply(&active.source);
+}
+
+/// The envelope the clip `sounding` plays at `tc`: its own fades and
+/// its gain, the fade settings the linked video clip's where there is
+/// one, as everywhere else in playback. Inside an audio crossfade it is
+/// the clip's range stretched by the handle the crossfade plays, the
+/// constant-power ramp in over the crossfade at its head, out at its
+/// tail. A crossfade takes the place of the clip's own fade at that
+/// end, as in the render (`AudioClipShape::with_crossfades`); the
+/// clip's own fade at the other end stays.
+fn envelope_of(seq: &klipp_timeline::Sequence, sounding: &klipp_timeline::crossfade::Sounding<'_>, tc: Timecode) -> Envelope {
+    let e = sounding.extent;
     let clip = sounding.clip;
     let settings = clip
         .linked_clip_id
@@ -3972,15 +4066,15 @@ fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, active: &ActiveAudioSo
         seed: settings.id.0.as_u64_pair().0,
     };
     let gain = eval_with_modifiers(&settings.gain_keyframes, &settings.param_modifiers, &klipp_core::ParamId::Gain, clip_time, settings.gain, &ctx);
-    active.source.set_fade(
-        clip.source_in.to_secs_f64() - e.head_secs,
-        e.head_secs + clip.duration().to_secs_f64() + e.tail_secs,
-        fade_in,
-        fade_out,
-        in_curve,
-        out_curve,
+    Envelope {
+        source_in_secs: clip.source_in.to_secs_f64() - e.head_secs,
+        duration_secs: e.head_secs + clip.duration().to_secs_f64() + e.tail_secs,
+        fade_in_secs: fade_in,
+        fade_out_secs: fade_out,
+        fade_in_curve: in_curve,
+        fade_out_curve: out_curve,
         gain,
-    );
+    }
 }
 
 /// Pure helper: hash the audio-relevant fields of a single clip.
@@ -4076,6 +4170,7 @@ pub(crate) fn audio_settings_fingerprint_for(audio_effects: &[klipp_core::AudioE
 /// sequence so it can be unit-tested without a live `PlaybackEngine`.
 pub(crate) fn audio_resync_needed(
     seq: &klipp_timeline::Sequence,
+    fadeable: &FadeableMedia,
     tc: Timecode,
     active: impl IntoIterator<Item = (usize, MediaId, u64)>,
 ) -> bool {
@@ -4084,7 +4179,7 @@ pub(crate) fn audio_resync_needed(
             // The source's track vanished — safest to resync.
             return true;
         }
-        match sounding_for_key(seq, key, tc).map(|s| s.clip) {
+        match sounding_for_key(seq, fadeable, key, tc).map(|s| s.clip) {
             Some(clip) => {
                 if clip.media_id() != Some(media_id) {
                     return true;
@@ -4261,6 +4356,7 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         audio_resync_needed(
             &seq,
+            &self.fadeable_media,
             tc,
             self.audio_sources
                 .iter()
@@ -4281,7 +4377,7 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         for active_src in &self.audio_sources {
             if seq.tracks.get(key_track(active_src.track_index)).is_some() {
-                if let Some(new_clip) = sounding_for_key(&seq, active_src.track_index, tc).map(|s| s.clip) {
+                if let Some(new_clip) = sounding_for_key(&seq, &self.fadeable_media, active_src.track_index, tc).map(|s| s.clip) {
                     let new_source_in = new_clip.source_in.to_secs_f64();
                     let new_clip_dur = new_clip.duration().to_secs_f64();
                     active_src.source.set_fade(
@@ -4295,7 +4391,7 @@ impl PlaybackEngine {
                     );
                 }
             }
-            set_crossfade_envelope(&seq, active_src, tc);
+            set_crossfade_envelope(&seq, &self.fadeable_media, active_src, tc);
         }
     }
 
@@ -4351,7 +4447,7 @@ impl PlaybackEngine {
                 if seq.tracks.get(key_track(active.track_index)).is_none() {
                     return false;
                 }
-                let Some(clip) = sounding_for_key(&seq, active.track_index, tc).map(|s| s.clip) else {
+                let Some(clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, tc).map(|s| s.clip) else {
                     // No clip at `tc` on this track: start_all_audio will
                     // drop the source, which is the correct outcome too.
                     return true;
@@ -4382,7 +4478,7 @@ impl PlaybackEngine {
             self.audio_sources
                 .iter()
                 .filter_map(|active| {
-                    let clip = sounding_for_key(&seq, active.track_index, tc)?.clip;
+                    let clip = sounding_for_key(&seq, &self.fadeable_media, active.track_index, tc)?.clip;
                     let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
                     Some((active.track_index, source_secs))
                 })
@@ -5432,18 +5528,33 @@ impl PlaybackEngine {
                 Vec<klipp_core::AudioEffectInstance>,
                 std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
             );
-            let track_audio: Vec<PreSeekRow> = audio_rows(&seq, &pool, tc, use_proxies, true);
+            let fadeable = fadeable_media(&pool);
+            let track_audio: Vec<PreSeekRow> = audio_rows(&seq, &pool, &fadeable, tc, use_proxies, true);
+            // The envelope each source plays from its first sample. The
+            // feeder shapes sound as it fills its buffer, about two
+            // seconds of it in the moment it runs below, so an envelope
+            // set at the swap-in came too late for a loop whose in
+            // point sits inside a crossfade: both clips played the
+            // window at full level and the outgoing one stopped dead.
+            let envelopes: Vec<Option<Envelope>> = track_audio
+                .iter()
+                .map(|row| sounding_for_key(&seq, &fadeable, row.0, tc).map(|s| envelope_of(&seq, &s, tc)))
+                .collect();
             drop(pool);
             drop(seq);
 
             // Open and seek audio sources
             let mut sources = Vec::new();
-            for (track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes) in track_audio {
+            for ((track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes), envelope) in track_audio.into_iter().zip(envelopes) {
                 let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
                 // Try PCM cache
                 if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone(), audio_effect_keyframes.clone()) {
                     if source_secs > 0.01 {
                         feeder.seek(source_secs);
+                    }
+                    let source = AudioSource::PcmFeeder(feeder);
+                    if let Some(envelope) = &envelope {
+                        envelope.apply(&source);
                     }
                     let zero_latency = std::sync::Arc::new(
                         std::sync::atomic::AtomicU32::new(0),
@@ -5452,7 +5563,7 @@ impl PlaybackEngine {
                         track_index: track_idx,
                         media_id,
                         audio_chain_fingerprint: chain_fp,
-                        source: AudioSource::PcmFeeder(feeder),
+                        source,
                         consumer,
                         latency_advertise: zero_latency,
                     });
@@ -5542,6 +5653,14 @@ impl PlaybackEngine {
                         source: ps_source.source,
                     });
                 }
+                // The pre-seek thread filled them on the envelopes of
+                // the clips under the loop's in point, which is where
+                // the playhead is from here on; the output's volume,
+                // pan, gain and channel config still come from there,
+                // and the envelopes are refreshed against the sequence
+                // as it is now.
+                self.playhead = target;
+                self.sync_clip_volumes();
 
                 // 3. Seek video decoder (still needed — video wasn't pre-seeked)
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -5605,7 +5724,6 @@ impl PlaybackEngine {
 
                 // 6. The other clips' streams follow (they seek themselves
                 // when their time jumps back).
-                self.playhead = target;
                 self.sync_streams();
 
                 let _ = self.event_tx.send(AppEvent::LoopedBack);
@@ -11673,7 +11791,7 @@ mod audio_crossfade_schedule_tests {
     //! render mixes the same clips over the same window
     //! (`klipp-render/tests/audio_crossfade.rs`); these pin the playback
     //! half against the same shape of timeline.
-    use super::{audio_resync_needed, audio_rows, audio_chain_fingerprint_for, key_track, LANE_STRIDE};
+    use super::{audio_resync_needed, audio_rows, audio_chain_fingerprint_for, envelope_of, fade_curve_to_u32, fadeable_media, key_track, sounding_for_key, LANE_STRIDE};
     use klipp_core::{MediaId, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind};
     use klipp_media::{MediaItem, MediaPool};
     use klipp_timeline::{Clip, Sequence, Track, TrackKind, Transition};
@@ -11683,12 +11801,24 @@ mod audio_crossfade_schedule_tests {
     }
 
     /// A1: A at 0–72 (source 24–96), B at 72–144 (source 48–120),
-    /// crossfaded over 12 frames centred on the cut: frames 66–78.
+    /// crossfaded over 12 frames centred on the cut: frames 66–78. Both
+    /// items have a PCM cache, as only the PCM feeder can fade.
     fn timeline() -> (Sequence, MediaPool, MediaId, MediaId) {
         let mut pool = MediaPool::new();
         let mut item = |name: &str| {
             let mut m = MediaItem::synthetic_for_test(format!("/tmp/{name}.wav").into(), None);
             m.has_audio = true;
+            let pcm_path = klipp_testing::scratch::scratch_file("klipp-engine-xfade", &format!("{name}.pcm"));
+            std::fs::write(&pcm_path, b"").unwrap();
+            m.audio_cache = Some(klipp_media::AudioCacheEntry {
+                media_id: m.id,
+                pcm_path,
+                peaks_path: Default::default(),
+                sample_rate: 48000,
+                channels: 2,
+                duration_secs: 5.0,
+                peaks: Vec::new(),
+            });
             pool.add(m)
         };
         let (am, bm) = (item("xfade-a"), item("xfade-b"));
@@ -11714,9 +11844,9 @@ mod audio_crossfade_schedule_tests {
     #[test]
     fn inside_the_window_both_clips_play_from_their_handles() {
         let (s, pool, am, bm) = timeline();
-        let outside = audio_rows(&s, &pool, tc(60), false, false);
+        let outside = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false);
         assert_eq!(outside.len(), 1);
-        let before_cut = audio_rows(&s, &pool, tc(69), false, false);
+        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
         assert_eq!(before_cut.len(), 2);
         let a = before_cut.iter().find(|r| r.1 == am).unwrap();
         let b = before_cut.iter().find(|r| r.1 == bm).unwrap();
@@ -11725,7 +11855,7 @@ mod audio_crossfade_schedule_tests {
         assert_eq!(key_track(b.0), 0);
         // B is three frames before its in point: its head, from source 45.
         assert!((b.3 - 45.0 / 24.0).abs() < 1e-9, "B from {}", b.3);
-        let after_cut = audio_rows(&s, &pool, tc(75), false, false);
+        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
         let a = after_cut.iter().find(|r| r.1 == am).unwrap();
         // A three frames past its out point: its tail, source 99.
         assert!((a.3 - 99.0 / 24.0).abs() < 1e-9, "A from {}", a.3);
@@ -11734,25 +11864,83 @@ mod audio_crossfade_schedule_tests {
     #[test]
     fn the_incoming_source_keeps_its_key_after_the_window() {
         let (s, pool, _, bm) = timeline();
-        let in_window = audio_rows(&s, &pool, tc(70), false, false);
-        let after = audio_rows(&s, &pool, tc(100), false, false);
+        let in_window = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false);
+        let after = audio_rows(&s, &pool, &fadeable_media(&pool), tc(100), false, false);
         let key = |rows: &[super::TrackAudioRow]| rows.iter().find(|r| r.1 == bm).unwrap().0;
         assert_eq!(key(&in_window), key(&after), "B would be reopened at full level as the window ends");
         // And its source carries on: nothing to resync past the window.
         let fp = audio_chain_fingerprint_for(&[], &Default::default());
-        assert!(!audio_resync_needed(&s, tc(100), [(key(&after), bm, fp)]));
+        assert!(!audio_resync_needed(&s, &fadeable_media(&pool), tc(100), [(key(&after), bm, fp)]));
+    }
+
+    #[test]
+    fn a_clip_without_a_pcm_cache_is_cut_to_not_crossfaded() {
+        // The incoming clip's conform has not finished: its source would
+        // be the decoder, which cannot fade. So the join is a plain
+        // cut: one source at a time, neither clip extended, one key.
+        let (s, mut pool, am, bm) = timeline();
+        pool.get_mut(&bm).unwrap().audio_cache = None;
+        let before_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
+        assert_eq!(before_cut.len(), 1, "B would play at full level under A");
+        assert_eq!(before_cut[0].1, am);
+        let after_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
+        assert_eq!(after_cut.len(), 1, "A would play on past its out point at full level");
+        assert_eq!(after_cut[0].1, bm);
+        assert!((after_cut[0].3 - 51.0 / 24.0).abs() < 1e-9, "B from {}", after_cut[0].3);
+        assert_eq!(before_cut[0].0, after_cut[0].0, "a plain cut keeps one key");
+        // And the source that is playing needs no crossfade envelope.
+        let fp = audio_chain_fingerprint_for(&[], &Default::default());
+        assert!(audio_resync_needed(&s, &fadeable_media(&pool), tc(75), [(before_cut[0].0, am, fp)]), "A's source must give way to B at the cut");
     }
 
     #[test]
     fn a_plain_cut_keeps_one_source_key() {
         let (mut s, pool, am, bm) = timeline();
         s.tracks[0].transitions.clear();
-        let a = audio_rows(&s, &pool, tc(70), false, false);
-        let b = audio_rows(&s, &pool, tc(75), false, false);
+        let a = audio_rows(&s, &pool, &fadeable_media(&pool), tc(70), false, false);
+        let b = audio_rows(&s, &pool, &fadeable_media(&pool), tc(75), false, false);
         assert_eq!((a.len(), b.len()), (1, 1));
         assert_eq!((a[0].1, b[0].1), (am, bm));
         assert_eq!(a[0].0, b[0].0);
         assert!(a[0].0 < LANE_STRIDE);
+    }
+
+    /// The envelope a source is given before it fills, as the loop's
+    /// pre-seek does for a source it opens inside the window: each
+    /// clip stretched by its handle and ramped over the crossfade at
+    /// that end, its own fade kept at the other.
+    #[test]
+    fn a_source_opened_inside_the_window_gets_its_crossfade_envelope() {
+        let (mut s, pool, am, bm) = timeline();
+        s.tracks[0].clips[0].fade_in_secs = 0.1;
+        s.tracks[0].clips[1].fade_out_secs = 0.2;
+        let rows = audio_rows(&s, &pool, &fadeable_media(&pool), tc(69), false, false);
+        let envelope = |media: MediaId| {
+            let key = rows.iter().find(|r| r.1 == media).unwrap().0;
+            envelope_of(&s, &sounding_for_key(&s, &fadeable_media(&pool), key, tc(69)).unwrap(), tc(69))
+        };
+        let constant_power = fade_curve_to_u32(klipp_timeline::FadeCurve::ConstantPower);
+        let a = envelope(am);
+        // A: source 24–96 plus a 6-frame tail, fading out over the 12-frame window.
+        assert!((a.source_in_secs - 1.0).abs() < 1e-9, "{a:?}");
+        assert!((a.duration_secs - 3.25).abs() < 1e-9, "{a:?}");
+        assert!((a.fade_out_secs - 0.5).abs() < 1e-9, "{a:?}");
+        assert_eq!(a.fade_out_curve, constant_power);
+        assert!((a.fade_in_secs - 0.1).abs() < 1e-6, "A's own fade in stays: {a:?}");
+        let b = envelope(bm);
+        // B: a 6-frame head before source 48, fading in over the window.
+        assert!((b.source_in_secs - 1.75).abs() < 1e-9, "{b:?}");
+        assert!((b.duration_secs - 3.25).abs() < 1e-9, "{b:?}");
+        assert!((b.fade_in_secs - 0.5).abs() < 1e-9, "{b:?}");
+        assert_eq!(b.fade_in_curve, constant_power);
+        assert!((b.fade_out_secs - 0.2).abs() < 1e-6, "B's own fade out stays: {b:?}");
+        // A clip in no crossfade plays its own envelope.
+        s.tracks[0].transitions.clear();
+        let plain_cut = audio_rows(&s, &pool, &fadeable_media(&pool), tc(60), false, false);
+        let plain = envelope_of(&s, &sounding_for_key(&s, &fadeable_media(&pool), plain_cut[0].0, tc(60)).unwrap(), tc(60));
+        assert!((plain.source_in_secs - 1.0).abs() < 1e-9 && (plain.duration_secs - 3.0).abs() < 1e-9, "{plain:?}");
+        assert!((plain.fade_in_secs - 0.1).abs() < 1e-6, "{plain:?}");
+        assert_eq!((plain.fade_out_secs, plain.gain), (0.0, 1.0));
     }
 }
 
@@ -11807,7 +11995,7 @@ mod audio_continuity_tests {
         // At the video cut boundary (frame 48) the audio clip under the
         // source is unchanged → NO resync: the music keeps streaming.
         assert!(
-            !audio_resync_needed(&s, tc(48), active),
+            !audio_resync_needed(&s, &Default::default(), tc(48), active),
             "continuous audio across a video jump cut must NOT trigger a resync",
         );
     }
@@ -11825,7 +12013,7 @@ mod audio_continuity_tests {
         // Source is on music_a; at frame 48 the clip under it is music_b.
         let active = [(0usize, music_a, empty_fp())];
         assert!(
-            audio_resync_needed(&s, tc(48), active),
+            audio_resync_needed(&s, &Default::default(), tc(48), active),
             "a real audio media change at the boundary MUST resync",
         );
     }
@@ -11850,7 +12038,7 @@ mod audio_continuity_tests {
         // Source opened with an EMPTY chain fingerprint → chain differs.
         let active = [(0usize, music, empty_fp())];
         assert!(
-            audio_resync_needed(&s, tc(10), active),
+            audio_resync_needed(&s, &Default::default(), tc(10), active),
             "an audio-chain change MUST resync even when the media is unchanged",
         );
     }
@@ -11867,7 +12055,7 @@ mod audio_continuity_tests {
         // retired on its own; the others must not be restarted for it.
         let active = [(0usize, music, empty_fp())];
         assert!(
-            !audio_resync_needed(&s, tc(60), active),
+            !audio_resync_needed(&s, &Default::default(), tc(60), active),
             "a gap under one source must not restart every source",
         );
     }
@@ -11877,7 +12065,7 @@ mod audio_continuity_tests {
         let s = Sequence::new_default();
         let active: [(usize, MediaId, u64); 0] = [];
         assert!(
-            !audio_resync_needed(&s, tc(0), active),
+            !audio_resync_needed(&s, &Default::default(), tc(0), active),
             "with no active audio sources there is nothing to resync",
         );
     }

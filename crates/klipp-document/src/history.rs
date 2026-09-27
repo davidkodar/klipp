@@ -454,8 +454,9 @@ pub enum EditCommand {
         old_fade_in_b: f32,
         replaced: Option<klipp_timeline::Transition>,
     },
-    /// A transition taken away. On a picture track the fades it set on
-    /// its clips go with it; undo puts both back.
+    /// A transition taken away. The fades at the cut it sat on go with
+    /// it, on any track (a picture transition set them; an audio one
+    /// set them before it was a crossfade); undo puts both back.
     RemoveTransition {
         track_index: usize,
         transition: klipp_timeline::Transition,

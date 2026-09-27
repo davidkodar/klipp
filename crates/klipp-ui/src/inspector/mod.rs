@@ -5120,18 +5120,39 @@ fn show_transition_inspector(
                         .color(theme.text_secondary)
                         .size(11.0),
                 );
-                let mut frames = transition.duration.value.max(1) as u32;
+                // A drag is one edit, made when it ends: the value in
+                // flight is held here meanwhile, since each change goes
+                // through the op path as an undo step of its own.
+                // Shown in frames of the sequence: the duration's ticks
+                // are frames only at a whole-number rate, and at
+                // 24000/1001 a 24-frame transition is 24024 of them,
+                // which clamped to the range and went out as an edit
+                // every frame.
+                let fps = state.sequence().fps;
+                let current = ((transition.duration.to_secs_f64() * fps.as_f64()).round() as u32).max(1);
+                let draft_id = ui.id().with(("transition_duration", transition.id));
+                let mut frames = ui.data(|d| d.get_temp::<u32>(draft_id)).unwrap_or(current);
+                // A typed value lands when the field is left, not on
+                // each keystroke: "120" is one edit, not 1, 12 and 120,
+                // each checked and perhaps refused in turn.
                 let resp = ui.add(
                     egui::DragValue::new(&mut frames)
                         .range(1..=600)
-                        .suffix(" fr"),
+                        .suffix(" fr")
+                        .update_while_editing(false),
                 );
-                if resp.changed() {
-                    cmds.push(AppCommand::SetTransitionDuration {
-                        track_index: track_idx,
-                        transition_id: transition.id,
-                        duration_frames: frames,
-                    });
+                if resp.dragged() {
+                    ui.data_mut(|d| d.insert_temp(draft_id, frames));
+                } else {
+                    let done = resp.drag_stopped() || resp.changed();
+                    ui.data_mut(|d| d.remove::<u32>(draft_id));
+                    if done && frames != current {
+                        cmds.push(AppCommand::SetTransitionDuration {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            duration_frames: frames,
+                        });
+                    }
                 }
             });
 
