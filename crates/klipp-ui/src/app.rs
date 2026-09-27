@@ -28800,8 +28800,16 @@ impl eframe::App for KlippApp {
         self.poll_render_queue();
         // Show filmstrip thumbnail preview only while waiting for a seek result
         if self.state.awaiting_seek_frame && !self.state.showing_thumbnail_preview {
-            let is_dirty = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).dirty;
-            if !is_dirty {
+            // A skim frame that has landed but not yet been uploaded sets
+            // `pending_ready`, not `dirty` — `dirty` is only set by the
+            // `swap_pending()` inside `upload_frame_to_egui`, which runs
+            // after this. Checking `dirty` alone let a thumbnail paint over
+            // a good frame that was already waiting.
+            let waiting = {
+                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.dirty || fb.pending_ready
+            };
+            if !waiting {
                 self.show_filmstrip_preview(ctx);
             }
         }
@@ -29136,8 +29144,15 @@ impl eframe::App for KlippApp {
         // 8 ms budget under load, so asking the UI for 125 Hz just burns
         // CPU waiting for frames that aren't ready. 60 Hz matches the
         // engine's target and halves UI thread work under grade load.
+        // A scrub wants frames too: a skim frame lands on the worker thread
+        // and is written into the frame buffer, but nothing wakes the UI to
+        // upload it, so without a clock it sits there until the next pointer
+        // event. The filmstrip preview used to provide that clock by asking
+        // for a repaint on every drag frame; #483 stopped arming it over
+        // skimmable media and this replaces the clock without the thumbnail.
         let wants_continuous_frames = self.state.playback == PlaybackState::Playing
-            || self.state.source_playback == PlaybackState::Playing;
+            || self.state.source_playback == PlaybackState::Playing
+            || self.state.is_scrubbing;
         if wants_continuous_frames {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }

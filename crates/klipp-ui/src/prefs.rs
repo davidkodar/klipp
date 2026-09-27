@@ -235,13 +235,15 @@ fn default_pre_roll() -> f32 { 2.0 }
 fn default_jkl_step() -> f32 { 2.0 }
 
 fn default_skim_resolution() -> u32 {
-    // Bumped from 480 → 720. Skim frames feed both the viewer preview
-    // *and* (via `RenderScopesForFrame`) the GPU scope render. At 480 the
-    // scope had ≈¼ the samples of a 1080p playback frame which made
-    // waveform/parade/histogram look noticeably sparser during hover
-    // skim / timeline scrub than during playback. 720 closes most of the
-    // visible gap while keeping per-frame decode cost bounded.
-    720
+    // What skimming has always actually delivered. The cap used to be
+    // `pref.max(source.min(1080))` — a floor, not a cap — so the preference
+    // never lowered anything and every skim frame came back at the source
+    // height capped to 1080. #483 made the cap real, which would have
+    // quietly halved the preview at the old default of 720, because the
+    // reducer halves rather than scales: 1080 asked down to 720 gives 540.
+    // The default therefore matches the picture that has been in use, and
+    // the knob is there for anyone who wants a cheaper decode.
+    1080
 }
 
 /// How aggressively background jobs (skim transcode, filmstrip,
@@ -946,25 +948,27 @@ impl Preferences {
     /// own preferences tab. The legacy fields lived in `EditingPrefs` from
     /// the original "everything related to editing-mode UI lives here"
     /// design until users (rightly) couldn't find them.
-    /// Bump `playback.skim_resolution` from the old default of 480 to the
-    /// new default of 720. Existing prefs files have 480 saved literally and
-    /// `serde(default)` only fills in *missing* fields, so users who set up
-    /// Klipp before the default change are stuck on the old, visibly worse
-    /// preview quality. Only migrates the literal old default — any value
-    /// the user explicitly set (including 480 if they really wanted it,
-    /// chose anything other than 480, or anything > 480) is left alone.
+    /// Carry the old literal defaults, 480 and then 720, up to 1080.
+    /// `serde(default)` only fills in *missing* fields, so a prefs file
+    /// written before the default changed keeps its saved number. That
+    /// mattered little while the cap was a floor rather than a cap and
+    /// every skim frame came back at the source capped to 1080 whatever
+    /// the number said; now that the cap is real, leaving 720 saved would
+    /// halve the preview, because the reducer halves rather than scales.
+    /// Only the two literal old defaults move, so a number the user chose
+    /// is left alone.
     fn migrate_skim_resolution_default(value: &mut serde_json::Value) {
         let Some(playback) = value.get_mut("playback").and_then(|v| v.as_object_mut()) else {
             return;
         };
         if let Some(res) = playback.get("skim_resolution").and_then(|v| v.as_u64()) {
-            if res == 480 {
+            if res == 480 || res == 720 {
                 playback.insert(
                     "skim_resolution".to_string(),
-                    serde_json::Value::from(720u64),
+                    serde_json::Value::from(1080u64),
                 );
                 tracing::info!(
-                    "Migrated skim_resolution: 480 -> 720 (preview quality bump)"
+                    "Migrated skim_resolution: {res} -> 1080 (the height skimming always delivered)"
                 );
             }
         }
@@ -2017,7 +2021,7 @@ mod tests {
         assert!(rt.playback.skim_audio);
         assert_eq!(rt.playback.jkl_audio_mute_threshold, 4.0);
         assert!(!rt.playback.loop_playback);
-        assert_eq!(rt.playback.skim_resolution, 720);
+        assert_eq!(rt.playback.skim_resolution, 1080);
 
         // EditingPrefs
         assert!(rt.editing.auto_create_tracks);
@@ -2197,7 +2201,7 @@ mod tests {
         // Fields with serde(default) within playback
         assert!(prefs.playback.skim_audio); // default_true
         assert!(!prefs.playback.loop_playback); // default false
-        assert_eq!(prefs.playback.skim_resolution, 720); // default_skim_resolution
+        assert_eq!(prefs.playback.skim_resolution, 1080); // default_skim_resolution
         // Fields with serde(default) within general
         assert!(prefs.general.remember_inspector_layout);
         assert!(prefs.general.collapsed_sections.is_empty());
@@ -2252,7 +2256,7 @@ mod tests {
         prefs.playback.skim_audio = false;
         prefs.playback.jkl_audio_mute_threshold = 8.0;
         prefs.playback.loop_playback = true;
-        prefs.playback.skim_resolution = 720;
+        prefs.playback.skim_resolution = 1080;
 
         // EditingPrefs
         prefs.editing.auto_create_tracks = false;
@@ -2380,7 +2384,7 @@ mod tests {
         assert!(!rt.playback.skim_audio);
         assert_eq!(rt.playback.jkl_audio_mute_threshold, 8.0);
         assert!(rt.playback.loop_playback);
-        assert_eq!(rt.playback.skim_resolution, 720);
+        assert_eq!(rt.playback.skim_resolution, 1080);
 
         assert!(!rt.editing.auto_create_tracks);
         assert!(!rt.editing.auto_generate_filmstrips);
@@ -2587,6 +2591,32 @@ mod tests {
     /// (`migrate_legacy_editing_to_file_browser`) that moves the values
     /// before serde deserialization. These tests cover the shim directly
     /// against synthetic JSON so the migration path doesn't bit-rot.
+    #[test]
+    /// Both old literal defaults move up to Full. While the cap was a floor
+    /// rather than a cap, a saved 480 or 720 still decoded at the source
+    /// capped to 1080, so nobody was on the number they had saved; now that
+    /// the cap is real, leaving it would halve their preview, because the
+    /// reducer halves rather than scales. A number the user chose is theirs.
+    fn migrate_carries_the_old_skim_defaults_up_to_full() {
+        for old in [480u64, 720] {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&format!(r#"{{ "playback": {{ "skim_resolution": {old} }} }}"#)).unwrap();
+            Preferences::migrate_skim_resolution_default(&mut value);
+            assert_eq!(
+                value["playback"]["skim_resolution"].as_u64(),
+                Some(1080),
+                "{old} was a default nobody actually got, so it moves"
+            );
+        }
+        // Half and Quarter are real choices on this reducer, and stay.
+        for chosen in [540u64, 270, 1080] {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&format!(r#"{{ "playback": {{ "skim_resolution": {chosen} }} }}"#)).unwrap();
+            Preferences::migrate_skim_resolution_default(&mut value);
+            assert_eq!(value["playback"]["skim_resolution"].as_u64(), Some(chosen), "a chosen height is left alone");
+        }
+    }
+
     #[test]
     fn migrate_moves_legacy_editing_file_fields_to_file_browser() {
         let raw = r#"{

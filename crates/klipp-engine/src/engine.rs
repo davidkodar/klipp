@@ -6698,7 +6698,15 @@ impl PlaybackEngine {
         const PARK_DEBOUNCE: Duration = Duration::from_millis(400);
         const REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
-        if self.state != PlaybackState::Paused {
+        // Not while a scrub is live. A drag sends no seek until it is
+        // released, so `self.playhead` is frozen at the pre-drag position
+        // and this debounce never restarts — about 400 ms in it would
+        // re-decode the original at that stale position and present it
+        // into the same buffer the drag's skim frames are written to. A
+        // full-size graded frame from where the drag began, over a
+        // reduced ungraded frame at the cursor: sharpness, colour and
+        // time all jump at once. The debounce restarts at EndScrub.
+        if self.state != PlaybackState::Paused || self.is_scrubbing {
             self.parked_since = None;
             if let Some((mut dec, _, _)) = self.parked_refresh.take() {
                 dec.stop_detached();

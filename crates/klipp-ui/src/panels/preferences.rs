@@ -3137,12 +3137,16 @@ impl PreferencesPanel {
             // preview and for the scope render fed from it. Capped by the
             // source and by the skim file, which is never taller than
             // 1080, so this only ever lowers.
-            let heights = [(480_u32, "480"), (720, "720"), (1080, "1080")];
+            // The reducer halves rather than scales, so only powers of two
+            // below the source are reachable: asking a 1080 skim for 720
+            // gives 540. Offer what it can actually deliver, labelled by
+            // the picture rather than by a number that would be a lie.
+            let heights = [(1080_u32, "Full"), (540, "Half"), (270, "Quarter")];
             let current = heights
                 .iter()
                 .find(|(v, _)| *v == prefs.playback.skim_resolution)
                 .map(|(_, l)| *l)
-                .unwrap_or("720");
+                .unwrap_or("Full");
             // Right-to-left inside the widget area: the ComboBox first so
             // it lands on the right, then the badge to its left.
             egui::ComboBox::from_id_salt("skim_h")
@@ -3165,10 +3169,10 @@ impl PreferencesPanel {
                  It does not affect the frame you stop on, playback, or \
                  export — those are always full size. It does affect how \
                  dense the waveform and parade look while skimming.\n\n\
-                 \u{2022}  480   — smoothest, sparsest scopes\n\
-                 \u{2022}  720   — the balance, and the default\n\
-                 \u{2022}  1080  — sharpest preview and densest scopes, \
-                 at the most decode cost",
+                 \u{2022}  Full    — what skimming has always shown, \
+                 the default\n\
+                 \u{2022}  Half    — a cheaper decode, sparser scopes\n\
+                 \u{2022}  Quarter — cheapest, for slow media",
             );
         });
 
