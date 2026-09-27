@@ -755,6 +755,8 @@ impl ToolbarPanel {
             // default could be too small to read, and the setting was
             // only in Preferences.
             ui.menu_button("Interface Size", |ui| {
+                // Wide enough that the check mark stays on its entry's line.
+                ui.set_min_width(96.0);
                 for (label, pct) in [("Auto", 0u32), ("100%", 100), ("125%", 125), ("150%", 150), ("175%", 175), ("200%", 200)] {
                     let check = if state.ui_scale_percent == pct { "\u{2714} " } else { "  " };
                     if ui.button(format!("{check}{label}")).clicked() {

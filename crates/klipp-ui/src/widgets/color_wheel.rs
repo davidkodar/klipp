@@ -120,7 +120,13 @@ pub fn color_wheel_sized(
     // third of a pixel at the wheel's own scale — and the puck must not
     // jump to the pointer on the first press. A click still places it.
     let fine = ui.input(|i| i.modifiers.shift);
-    let wheel_resp = wheel_resp.on_hover_text("Drag to adjust, Shift for fine steps.\nClick to place, double-click to reset.");
+    // Not while dragging: the hint sat over the R/G/B pills exactly when
+    // they were the thing to read.
+    let wheel_resp = if wheel_resp.dragged() {
+        wheel_resp
+    } else {
+        wheel_resp.on_hover_text("Drag to adjust, Shift for fine steps.\nClick to place, double-click to reset.")
+    };
     if wheel_resp.dragged() {
         let d = wheel_resp.drag_delta();
         if d != egui::Vec2::ZERO {
@@ -252,8 +258,10 @@ pub fn color_wheel_sized(
         // fill or stroke of its own, so the channel colouring survives
         // and the field is the whole pill.
         let mut v = val;
-        // Three decimals where they fit: a fine step is 0.001.
-        let decimals = if pill_w >= 32.0 { 3 } else { 2 };
+        // Three decimals where they fit (a fine step is 0.001), else two,
+        // else a point smaller: measured, because a width guess let
+        // "+0.025" run past its pill into the next one at 4K.
+        let (decimals, font_size) = pill_text_fit(ui, pill_w, pill_font_size);
         let resp = {
             let mut pill_ui = ui.new_child(
                 egui::UiBuilder::new().max_rect(pill_rect).layout(
@@ -263,7 +271,13 @@ pub fn color_wheel_sized(
             let st = pill_ui.style_mut();
             st.spacing.interact_size = egui::vec2(pill_w, pill_h);
             st.spacing.button_padding = egui::vec2(0.0, 0.0);
-            st.override_font_id = Some(egui::FontId::monospace(pill_font_size));
+            // A DragValue draws in `drag_value_text_style`, not the
+            // override font: set on the override alone, the pills showed
+            // the proportional button font, far wider than measured.
+            let pill_style = egui::TextStyle::Name("wheel_pill".into());
+            st.text_styles.insert(pill_style.clone(), egui::FontId::monospace(font_size));
+            st.drag_value_text_style = pill_style;
+            st.override_font_id = Some(egui::FontId::monospace(font_size));
             for w in [
                 &mut st.visuals.widgets.inactive,
                 &mut st.visuals.widgets.hovered,
@@ -392,5 +406,22 @@ pub fn color_wheel_sized(
         changed,
         drag_started,
         drag_ended,
+    }
+}
+
+/// The decimals and monospace size a pill `pill_w` wide shows "+0.000"
+/// at: three decimals at `size` when they fit with a little room, else
+/// two, else two a point smaller.
+fn pill_text_fit(ui: &egui::Ui, pill_w: f32, size: f32) -> (usize, f32) {
+    let width = |text: &str, size: f32| {
+        ui.fonts(|f| f.layout_no_wrap(text.to_string(), egui::FontId::monospace(size), egui::Color32::WHITE).size().x)
+    };
+    let room = pill_w - 4.0;
+    if width("+0.000", size) <= room {
+        (3, size)
+    } else if width("+0.00", size) <= room {
+        (2, size)
+    } else {
+        (2, (size - 1.0).max(6.0))
     }
 }

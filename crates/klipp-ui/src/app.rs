@@ -2043,6 +2043,7 @@ impl KlippApp {
         }
         self.ui_scale_applied = Some(key);
         let want = if pct == 0 { auto_zoom_factor(width) } else { pct as f32 / 100.0 };
+        tracing::debug!("interface size: {pct}% (0 = Auto), screen {width:.0} pt at the system scale (monitor {monitor:?}, window {window:.0}, zoom {zoom}), zoom {want}");
         if (zoom - want).abs() > 0.001 {
             ctx.set_zoom_factor(want);
         }

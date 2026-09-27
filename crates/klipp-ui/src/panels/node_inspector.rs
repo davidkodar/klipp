@@ -1759,10 +1759,14 @@ impl NodeInspectorPanel {
                 let avail_w = ui.available_width();
                 let four_col = wide_layout && avail_w >= 450.0;
                 let two_col = !four_col && avail_w >= 250.0;
+                // The wheels grow with the panel: capped at 110 in two
+                // columns they sat small in an inspector 600 points wide
+                // at 4K, most of it empty (#264). 180 is where a puck's
+                // travel stops getting finer to the eye.
                 let wheel_d = if four_col {
-                    ((avail_w - 40.0) / 4.0).clamp(50.0, 130.0)
+                    ((avail_w - 40.0) / 4.0).clamp(50.0, 170.0)
                 } else if two_col {
-                    ((avail_w - 20.0) / 2.0).clamp(50.0, 110.0)
+                    ((avail_w - 20.0) / 2.0).clamp(50.0, 180.0)
                 } else {
                     (avail_w - 10.0).clamp(60.0, 140.0)
                 };
