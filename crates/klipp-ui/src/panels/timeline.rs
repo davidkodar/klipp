@@ -892,8 +892,45 @@ struct TrimState {
     original_source_out: Timecode,
     original_timeline_in: Timecode,
     original_timeline_out: Timecode,
+    ripple: bool,
     /// For ripple trim: original positions of clips after the trimmed clip
     subsequent_clips: Vec<(ClipId, Timecode, Timecode)>, // (id, original_timeline_in, original_timeline_out)
+}
+
+impl TrimState {
+    fn finish(&self, seq: &mut klipp_timeline::Sequence) -> Option<AppCommand> {
+        let command = seq.tracks.get(self.track_idx).and_then(|t| t.find_clip(self.clip_id)).map(|c| AppCommand::TrimClip {
+            clip_id: self.clip_id,
+            old_source_in: self.original_source_in,
+            old_source_out: self.original_source_out,
+            old_timeline_in: self.original_timeline_in,
+            old_timeline_out: self.original_timeline_out,
+            new_source_in: c.source_in,
+            new_source_out: c.source_out,
+            new_timeline_in: c.timeline_in,
+            new_timeline_out: c.timeline_out,
+            ripple: self.ripple,
+        });
+        self.restore_preview(seq);
+        command
+    }
+
+    fn restore_preview(&self, seq: &mut klipp_timeline::Sequence) {
+        if let Some(track) = seq.tracks.get_mut(self.track_idx) {
+            if let Some(clip) = track.find_clip_mut(self.clip_id) {
+                clip.source_in = self.original_source_in;
+                clip.source_out = self.original_source_out;
+                clip.timeline_in = self.original_timeline_in;
+                clip.timeline_out = self.original_timeline_out;
+            }
+            for (id, start, end) in &self.subsequent_clips {
+                if let Some(clip) = track.find_clip_mut(*id) {
+                    clip.timeline_in = *start;
+                    clip.timeline_out = *end;
+                }
+            }
+        }
+    }
 }
 
 /// Roll trim: adjusts the boundary between two adjacent clips simultaneously.
@@ -7694,6 +7731,7 @@ impl TimelinePanel {
                         original_source_out: hit_src_out,
                         original_timeline_in: hit_tl_in,
                         original_timeline_out: hit_tl_out,
+                        ripple: state.ripple_enabled,
                         subsequent_clips: subsequent,
                     });
                 }
@@ -10445,7 +10483,7 @@ impl TimelinePanel {
                             };
                             let source_delta = new_source_in - trim.original_source_in;
 
-                            if trim.subsequent_clips.is_empty() {
+                            if !trim.ripple {
                                 // Non-ripple: move timeline_in, keep timeline_out fixed
                                 let mut new_timeline_in = trim.original_timeline_in + source_delta;
                                 // Clamp so timeline_in doesn't go negative
@@ -10571,7 +10609,7 @@ impl TimelinePanel {
                                     c.timeline_out = new_timeline_out;
                                 }
                                 // Ripple: shift subsequent clips by the out-point change
-                                if !trim.subsequent_clips.is_empty() {
+                                if trim.ripple {
                                     let ripple_delta = new_timeline_out - trim.original_timeline_out;
                                     for (sub_id, orig_in, orig_out) in &trim.subsequent_clips {
                                         if let Some(sc) = track.find_clip_mut(*sub_id) {
@@ -10600,21 +10638,10 @@ impl TimelinePanel {
             }
 
             if pointer_released && trim.track_idx == track_idx {
-                if let Some(track) = state.sequence().tracks.get(trim.track_idx) {
-                    if let Some(c) = track.find_clip(trim.clip_id) {
-                        cmds.push(AppCommand::TrimClip {
-                            clip_id: trim.clip_id,
-                            old_source_in: trim.original_source_in,
-                            old_source_out: trim.original_source_out,
-                            old_timeline_in: trim.original_timeline_in,
-                            old_timeline_out: trim.original_timeline_out,
-                            new_source_in: c.source_in,
-                            new_source_out: c.source_out,
-                            new_timeline_in: c.timeline_in,
-                            new_timeline_out: c.timeline_out,
-                            ripple: state.ripple_enabled,
-                        });
-                    }
+                // Restore the preview before the handler plans both
+                // linked halves, or refuses without changing either.
+                if let Some(command) = trim.finish(state.sequence_mut()) {
+                    cmds.push(command);
                 }
                 self.trimming_clip = None;
                 self.press_origin = None;
@@ -18493,5 +18520,96 @@ mod scrub_preview_tests {
             klipp_engine::skim_audio::determine_skim_mode(state.skim_speed_px_per_sec),
             klipp_engine::skim_audio::SkimMode::Silent,
         );
+    }
+}
+
+#[cfg(test)]
+mod trim_preview_tests {
+    use super::{TrimEdge, TrimState};
+    use klipp_core::{AppCommand, Fps, RationalTime};
+    use klipp_document::apply::DocumentView;
+    use klipp_media::{MediaItem, MediaPool};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn tc(s: f64) -> RationalTime { RationalTime::from_secs_f64(s, 25) }
+
+    #[test]
+    fn a_released_preview_is_restored_before_the_linked_trim_is_planned() {
+        for locked in [false, true] {
+            let mut pool = MediaPool::new();
+            let mut media = MediaItem::synthetic_for_test("/tmp/trim-preview.mov".into(), None);
+            media.duration = tc(20.0);
+            let media_id = pool.add(media);
+            let mut seq = Sequence::new_default();
+            seq.fps = Fps::new(25, 1);
+            let mut v = Track::new("V1", TrackKind::Video);
+            let mut a = Track::new("A1", TrackKind::Audio);
+            for i in 0..2 {
+                let start = i as f64 * 4.0;
+                let mut video = Clip::media(media_id, tc(start), tc(start + 4.0), tc(start), tc(start + 4.0));
+                let mut audio = video.clone();
+                audio.id = klipp_core::ClipId::new();
+                video.linked_clip_id = Some(audio.id);
+                audio.linked_clip_id = Some(video.id);
+                v.clips.push(video);
+                a.clips.push(audio);
+            }
+            a.locked = locked;
+            seq.tracks = vec![v, a];
+            let before = serde_json::to_value(&seq).unwrap();
+            let clip = &seq.tracks[0].clips[0];
+            let drag = TrimState {
+                clip_id: clip.id, track_idx: 0, edge: TrimEdge::Right, start_x: 0.0,
+                original_source_in: clip.source_in, original_source_out: clip.source_out,
+                original_timeline_in: clip.timeline_in, original_timeline_out: clip.timeline_out,
+                ripple: true,
+                subsequent_clips: vec![(seq.tracks[0].clips[1].id, tc(4.0), tc(8.0))],
+            };
+            // Exactly the speculative mutation made while the pointer
+            // is down: only the drawn track has been changed so far.
+            seq.tracks[0].clips[0].source_out = tc(3.0);
+            seq.tracks[0].clips[0].timeline_out = tc(3.0);
+            seq.tracks[0].clips[1].timeline_in = tc(3.0);
+            seq.tracks[0].clips[1].timeline_out = tc(7.0);
+            let command = drag.finish(&mut seq).unwrap();
+            assert_eq!(serde_json::to_value(&seq).unwrap(), before);
+            let edit = crate::clip_edits::trim(&seq, &pool, &command);
+            if locked {
+                assert!(edit.unwrap_err().contains("locked"));
+                assert_eq!(serde_json::to_value(&seq).unwrap(), before);
+            } else {
+                let edit = edit.unwrap().unwrap();
+                let mut fps = seq.fps;
+                let mut seqs = vec![seq];
+                DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_forward(&edit);
+                for track in &seqs[0].tracks {
+                    assert_eq!(track.clips[0].timeline_out, tc(3.0));
+                    assert_eq!(track.clips[1].timeline_in, tc(3.0), "shifted once, never twice");
+                }
+                DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps }.apply_inverse(&edit);
+                assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn the_last_clip_keeps_the_drag_ripple_mode_without_following_clips() {
+        let mut seq = Sequence::new_default();
+        let mut track = Track::new("V1", TrackKind::Video);
+        let c = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        let drag = TrimState {
+            clip_id: c.id, track_idx: 0, edge: TrimEdge::Left, start_x: 0.0,
+            original_source_in: c.source_in, original_source_out: c.source_out,
+            original_timeline_in: c.timeline_in, original_timeline_out: c.timeline_out,
+            ripple: true, subsequent_clips: vec![],
+        };
+        track.clips.push(c);
+        seq.tracks = vec![track];
+        seq.tracks[0].clips[0].source_in = tc(1.0);
+        seq.tracks[0].clips[0].timeline_out = tc(3.0);
+        let command = drag.finish(&mut seq).unwrap();
+        assert!(matches!(command, AppCommand::TrimClip { ripple: true, .. }));
+        assert_eq!(seq.tracks[0].clips[0].source_in, tc(0.0));
+        assert_eq!(seq.tracks[0].clips[0].timeline_out, tc(4.0));
     }
 }

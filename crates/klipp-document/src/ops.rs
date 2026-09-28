@@ -1862,24 +1862,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
 
         Op::Trim { clip_id: clip_ref, edge, to, ripple, linked } => {
-            let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            let (_, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let target = resolve_anchor(seq, fps, to, i)?;
-            let (what, edit, mut ids) = trim_clip(seq, pool, fps, i, ti, ci, clip, *edge, target, *ripple)?;
-            // The clip it is linked to goes with it, by the same amount —
-            // from wherever its own edge is, so a J-cut keeps its lead.
-            // A trim that moved the picture alone left the two out of
-            // sync, and said nothing.
-            let partner = clip.linked_clip_id.filter(|_| *linked).and_then(|lid| find_clip(seq, lid));
-            let Some((pti, pci, p)) = partner else { return Ok((what, edit, ids)) };
-            let delta = target - match edge { Edge::In => clip.timeline_in, Edge::Out => clip.timeline_out };
-            let p_target = match edge { Edge::In => p.timeline_in, Edge::Out => p.timeline_out } + delta;
-            let (p_what, p_edit, p_ids) = trim_clip(seq, pool, fps, i, pti, pci, p, *edge, p_target, *ripple).map_err(|mut r| {
-                r.why = format!("its linked {} cannot follow: {}", if seq.tracks[pti].kind == TrackKind::Audio { "sound" } else { "picture" }, r.why);
-                r.hint = format!("{}; or trim with linked false to move this clip alone", r.hint);
-                r
-            })?;
-            ids.extend(p_ids);
-            Ok((format!("{what}; with it, {p_what}"), EditCommand::Batch(vec![edit, p_edit]), ids))
+            resolve_trim(seq, pool, i, clip.id, *edge, target, *ripple, *linked)
         }
 
         Op::JCut { incoming_clip, frames } => split_edit(seq, pool, fps, i, clip_ref_id(seq, fps, incoming_clip, i)?, *frames, true),
@@ -2358,9 +2343,36 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
     Ok((what, edit, vec![clip.id]))
 }
 
-/// One clip's edge to `target`: the geometry, the refusals and the
-/// recorded edit. [`Op::Trim`] is this for the clip named and, by the
-/// same amount, for the clip it is linked to.
+/// Plan a trim at an exact timeline time for the GUI. The same planner
+/// serves `Op::Trim`, preserving a linked partner's own source and
+/// timeline offsets and refusing the whole edit if either side cannot
+/// follow. No sequence is changed until the returned command is applied.
+pub fn trim_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool) -> Result<EditCommand, Refusal> {
+    resolve_trim(seq, pool, 0, clip_id, edge, target, ripple, true).map(|(_, edit, _)| edit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_trim(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId, edge: Edge, target: Timecode, ripple: bool, linked: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (ti, ci, clip) = resolve_clip(seq, seq.fps, &ClipRef::Id(clip_id), i)?;
+    let fps = seq.fps;
+    let (what, edit, mut ids) = trim_clip(seq, pool, fps, i, ti, ci, clip, edge, target, ripple)?;
+    // The clip it is linked to goes with it, by the same amount —
+    // from wherever its own edge is, so a J-cut keeps its lead.
+    // A trim that moved the picture alone left the two out of
+    // sync, and said nothing.
+    let partner = clip.linked_clip_id.filter(|_| linked).and_then(|lid| find_clip(seq, lid));
+    let Some((pti, pci, p)) = partner else { return Ok((what, edit, ids)) };
+    let delta = target - match edge { Edge::In => clip.timeline_in, Edge::Out => clip.timeline_out };
+    let p_target = match edge { Edge::In => p.timeline_in, Edge::Out => p.timeline_out } + delta;
+    let (p_what, p_edit, p_ids) = trim_clip(seq, pool, fps, i, pti, pci, p, edge, p_target, ripple).map_err(|mut r| {
+        r.why = format!("its linked {} cannot follow: {}", if seq.tracks[pti].kind == TrackKind::Audio { "sound" } else { "picture" }, r.why);
+        r.hint = format!("{}; or trim with linked false to move this clip alone", r.hint);
+        r
+    })?;
+    ids.extend(p_ids);
+    Ok((format!("{what}; with it, {p_what}"), EditCommand::Batch(vec![edit, p_edit]), ids))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let clip_id = &clip.id;
