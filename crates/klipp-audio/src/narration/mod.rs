@@ -9,37 +9,70 @@ use std::path::{Path, PathBuf};
 
 pub mod kokoro;
 
-/// The voice a take is spoken in when none is named: public domain, so a
-/// take made in it can go into any piece, paid work included.
-pub const DEFAULT_VOICE: &str = "piper_en_us_ljspeech_high";
+/// The voice a take is spoken in when none is named: Kokoro's Heart,
+/// natural-sounding and free for any use. Where Kokoro cannot run (a build
+/// without ONNX Runtime, or no espeak-ng) [`default_voice`] falls back to
+/// [`FALLBACK_VOICE`].
+pub const DEFAULT_VOICE: &str = "kokoro_voice_af_heart";
+
+/// The default where Kokoro cannot run: a public-domain Piper voice.
+pub const FALLBACK_VOICE: &str = "piper_en_us_ljspeech_high";
+
+/// The voice a take is spoken in when none is named, on this machine.
+pub fn default_voice() -> &'static str {
+    if cfg!(feature = "kokoro") && kokoro::espeak().is_ok() {
+        DEFAULT_VOICE
+    } else {
+        FALLBACK_VOICE
+    }
+}
 
 /// The voice takes were named without: the default before the voices
 /// were checked for their licences. Its takes keep the names they have,
 /// and every other voice is in its take's name.
 const UNNAMED_VOICE: &str = "piper_en_us_lessac_medium";
 
-/// A voice the manifest offers.
+/// Which engine speaks a voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// Kokoro-82M: natural, one shared model, needs espeak-ng.
+    Kokoro,
+    /// Piper: lighter and more robotic, a model per voice, needs piper.
+    Piper,
+}
+
+/// A voice the manifest offers, as a person chooses it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Voice {
     /// The manifest id, which `narrate` takes as `voice`.
     pub id: String,
     /// As the manifest names it.
     pub name: String,
-    /// The download, model and settings together.
+    /// Its own name: "Heart", "George", "LJSpeech".
+    pub label: String,
+    /// Who it is, in a few words: "female, US English".
+    pub about: String,
+    pub engine: Engine,
+    /// What is still to download before it speaks, in bytes.
     pub size_bytes: u64,
-    /// Both its files are in the model cache.
+    /// Everything it needs is in the model cache.
     pub installed: bool,
+    /// The manifest ids still to download before it speaks: for a Kokoro
+    /// voice the model and every Kokoro voice, fetched as one.
+    pub missing: Vec<String>,
     /// What the voice may be used for, as the manifest says.
     pub license: String,
     /// Its terms allow a take in a piece that is sold or paid for.
     pub commercial_use: bool,
+    /// A few seconds of it, bundled, to hear before anything downloads.
+    pub sample: Option<&'static [u8]>,
 }
 
 /// What to say, and how.
 #[derive(Debug, Clone)]
 pub struct Request<'a> {
     pub text: &'a str,
-    /// A manifest voice id; `None` is [`DEFAULT_VOICE`].
+    /// A manifest voice id; `None` is [`default_voice`].
     pub voice: Option<&'a str>,
     /// Above 1 quicker, below 1 slower; `None` is as the voice speaks.
     pub speed: Option<f32>,
@@ -53,43 +86,125 @@ pub struct Request<'a> {
     pub dir: &'a Path,
 }
 
-/// Every voice in the manifest, the default first.
+/// A bundled sample of a Kokoro voice ("Hi, I'm Heart. This is how your
+/// narration will sound."), made with the voice itself.
+pub fn sample(voice: &str) -> Option<&'static [u8]> {
+    Some(match voice.strip_prefix(kokoro::VOICE_PREFIX)? {
+        "af_heart" => include_bytes!("../../../../assets/narration-samples/af_heart.mp3"),
+        "af_bella" => include_bytes!("../../../../assets/narration-samples/af_bella.mp3"),
+        "af_nicole" => include_bytes!("../../../../assets/narration-samples/af_nicole.mp3"),
+        "am_michael" => include_bytes!("../../../../assets/narration-samples/am_michael.mp3"),
+        "am_fenrir" => include_bytes!("../../../../assets/narration-samples/am_fenrir.mp3"),
+        "am_puck" => include_bytes!("../../../../assets/narration-samples/am_puck.mp3"),
+        "bf_emma" => include_bytes!("../../../../assets/narration-samples/bf_emma.mp3"),
+        "bf_isabella" => include_bytes!("../../../../assets/narration-samples/bf_isabella.mp3"),
+        "bm_george" => include_bytes!("../../../../assets/narration-samples/bm_george.mp3"),
+        "bm_fable" => include_bytes!("../../../../assets/narration-samples/bm_fable.mp3"),
+        _ => return None,
+    })
+}
+
+/// A voice's own name and a few words about it, from its id and its
+/// manifest name: `kokoro_voice_bm_george` is "George", "male, UK English";
+/// "Piper voice — English (US), Kristin, medium" is "Kristin", "English (US)".
+fn label_of(id: &str, display_name: &str) -> (String, String) {
+    if let Some(v) = id.strip_prefix(kokoro::VOICE_PREFIX) {
+        let mut chars = v.chars();
+        let accent = match chars.next() { Some('b') => "UK English", _ => "US English" };
+        let gender = match chars.next() { Some('m') => "male", _ => "female" };
+        let name = v.split('_').nth(1).unwrap_or(v);
+        let name = name[..1].to_uppercase() + &name[1..];
+        return (name, format!("{gender}, {accent}"));
+    }
+    let parts: Vec<&str> = display_name.split(" — ").nth(1).unwrap_or(display_name).split(", ").collect();
+    let label = parts.get(1).copied().unwrap_or(display_name).to_string();
+    (label, parts.first().copied().unwrap_or("").to_string())
+}
+
+/// Whether the AI model manager lists this entry as a row of its own. A
+/// Piper voice's settings file and each small Kokoro voice come with the
+/// voice or the Kokoro download they belong to, so they are not rows.
+pub fn shown_in_model_manager(id: &str) -> bool {
+    !(kokoro::is_kokoro(id) || (id.starts_with("piper_") && id.ends_with("_config")))
+}
+
+/// Every voice in the manifest: the Kokoro ones first, the default at
+/// the top, then Piper's.
 pub fn voices() -> Result<Vec<Voice>, String> {
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
-    let kokoro_model = manifest.get(kokoro::MODEL);
+    let absent = |id: &str| manifest.get(id).filter(|e| !cache.path_for(e).is_file());
+    // Every Kokoro voice needs the model, and they are fetched as one.
+    let kokoro_bundle: Vec<&klipp_ml::manifest::ModelEntry> = manifest
+        .models
+        .iter()
+        .filter(|e| e.id == kokoro::MODEL || kokoro::is_kokoro(&e.id))
+        .filter(|e| !cache.path_for(e).is_file())
+        .collect();
     let mut voices: Vec<Voice> = manifest
         .models
         .iter()
         .filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != kokoro::MODEL)
         .map(|e| {
-            if kokoro::is_kokoro(&e.id) {
-                // A Kokoro voice is a small style file spoken by one shared
-                // model: installed when both are there, and the model's
-                // size counted until it is.
-                let model_there = kokoro_model.is_some_and(|m| cache.path_for(m).is_file());
-                return Voice {
-                    id: e.id.clone(),
-                    name: e.display_name.clone(),
-                    size_bytes: e.size_bytes + if model_there { 0 } else { kokoro_model.map_or(0, |m| m.size_bytes) },
-                    installed: model_there && cache.path_for(e).is_file(),
-                    license: e.license.clone(),
-                    commercial_use: commercial_use(&e.license),
-                };
-            }
-            let config = manifest.get(&format!("{}_config", e.id));
+            let (label, about) = label_of(&e.id, &e.display_name);
+            let (engine, missing): (Engine, Vec<&klipp_ml::manifest::ModelEntry>) = if kokoro::is_kokoro(&e.id) {
+                (Engine::Kokoro, kokoro_bundle.clone())
+            } else {
+                (Engine::Piper, [absent(&e.id), absent(&format!("{}_config", e.id))].into_iter().flatten().collect())
+            };
             Voice {
                 id: e.id.clone(),
                 name: e.display_name.clone(),
-                size_bytes: e.size_bytes + config.map_or(0, |c| c.size_bytes),
-                installed: cache.path_for(e).is_file() && config.is_some_and(|c| cache.path_for(c).is_file()),
+                label,
+                about,
+                engine,
+                size_bytes: missing.iter().map(|m| m.size_bytes).sum(),
+                installed: missing.is_empty(),
+                missing: missing.iter().map(|m| m.id.clone()).collect(),
                 license: e.license.clone(),
                 commercial_use: commercial_use(&e.license),
+                sample: sample(&e.id),
             }
         })
         .collect();
-    voices.sort_by_key(|v| v.id != DEFAULT_VOICE);
+    voices.sort_by_key(|v| (v.id != DEFAULT_VOICE, v.engine != Engine::Kokoro, v.id.clone()));
     Ok(voices)
+}
+
+/// Download `ids` through the verified cache, counting the bytes into
+/// `done` as they come and stopping when `cancel` is set. What finished
+/// before a cancel stays; the next download fetches only the rest.
+pub fn download(ids: &[String], done: &std::sync::atomic::AtomicU64, cancel: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+    struct Count<'a>(&'a std::sync::atomic::AtomicU64);
+    impl klipp_ml::download::ProgressSink for Count<'_> {
+        fn started(&mut self, _: u64) {}
+        fn advance(&mut self, bytes: u64) {
+            self.0.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn finished(&mut self) {}
+    }
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    for id in ids {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let entry = manifest.get(id).ok_or_else(|| format!("no {id} in the model manifest"))?;
+        if cache.path_for(entry).is_file() {
+            continue;
+        }
+        klipp_ml::download::download_to_cache(&cache, entry, &mut Count(done), cancel).map_err(|e| format!("{}: {e:?}", entry.display_name))?;
+    }
+    Ok(())
+}
+
+/// Why `engine` cannot speak on this machine, or `None` when it can.
+pub fn engine_missing(engine: Engine) -> Option<String> {
+    match engine {
+        Engine::Kokoro if !cfg!(feature = "kokoro") => Some("this build of Klipp has no ONNX Runtime, which Kokoro voices need".into()),
+        Engine::Kokoro => kokoro::espeak().err(),
+        Engine::Piper => piper().err(),
+    }
 }
 
 /// Whether a voice's licence allows commercial work: anything but one
@@ -120,7 +235,7 @@ fn cached(id: &str, download: bool) -> Result<PathBuf, String> {
     let p = cache.path_for(entry);
     if !p.is_file() {
         if !download {
-            return Err(format!("{} is not downloaded ({} MB); ask with download_models true, or download it in Preferences", entry.display_name, entry.size_bytes.div_ceil(1_000_000)));
+            return Err(format!("{} is not downloaded ({} MB); ask with download_models true, or download it in Window > Narrate", entry.display_name, entry.size_bytes.div_ceil(1_000_000)));
         }
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let mut progress = klipp_ml::download::NoOpProgress;
@@ -239,7 +354,10 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
         return Err("narrate needs the words to say".into());
     }
     let delivery = delivery_args(req.speed, req.pause_secs)?;
-    let voice = req.voice.unwrap_or(DEFAULT_VOICE);
+    let voice = match req.voice {
+        Some(v) => v,
+        None => default_voice(),
+    };
     let out = match &req.path {
         Some(p) => p.clone(),
         None => {
@@ -321,6 +439,27 @@ mod tests {
         assert_eq!(voices.iter().filter(|v| !commercial_use(&v.license)).count(), 1, "only Lessac is restricted");
         assert!(!commercial_use("CC BY-NC-SA 4.0"));
         assert!(commercial_use("CC BY 4.0 (LibriTTS): credit LibriTTS"));
+    }
+
+    /// A person picks "Heart, female, US English", not an id; each
+    /// Kokoro voice has a sample to hear before downloading; and the model
+    /// manager shows voices, not their parts.
+    #[test]
+    fn voices_have_plain_names_samples_and_one_row_each() {
+        assert_eq!(super::label_of("kokoro_voice_af_heart", "Kokoro voice — English (US), Heart, grade A"), ("Heart".to_string(), "female, US English".to_string()));
+        assert_eq!(super::label_of("kokoro_voice_bm_george", ""), ("George".to_string(), "male, UK English".to_string()));
+        assert_eq!(super::label_of("piper_en_us_kristin_medium", "Piper voice — English (US), Kristin, medium"), ("Kristin".to_string(), "English (US)".to_string()));
+        let manifest = klipp_ml::manifest::ModelManifest::parse(klipp_ml::manifest::BUILTIN_MANIFEST).unwrap();
+        for e in manifest.models.iter().filter(|e| super::kokoro::is_kokoro(&e.id)) {
+            let s = super::sample(&e.id).unwrap_or_else(|| panic!("{} has no bundled sample", e.id));
+            assert!(s.len() > 5_000 && s.len() < 60_000, "{}: {} bytes", e.id, s.len());
+        }
+        assert!(super::shown_in_model_manager(super::kokoro::MODEL), "the Kokoro download is a row");
+        assert!(!super::shown_in_model_manager("kokoro_voice_af_heart"));
+        assert!(!super::shown_in_model_manager("piper_en_us_kristin_medium_config"));
+        assert!(super::shown_in_model_manager("piper_en_us_kristin_medium"));
+        assert!(super::shown_in_model_manager("whisper_base_ggml"));
+        assert!(manifest.get(super::FALLBACK_VOICE).is_some());
     }
 
     #[test]

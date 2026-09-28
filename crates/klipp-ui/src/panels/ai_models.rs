@@ -216,6 +216,9 @@ fn filter_and_sort<'m>(
         .iter()
         .filter(|e| match_task_filter(prompt_kinds_to_capabilities(e.prompts), state))
         .filter(|e| match_installed_filter(e, cache, state))
+        // A voice is one row: its settings file and the small Kokoro
+        // voices come with the download they belong to.
+        .filter(|e| klipp_audio::narration::shown_in_model_manager(&e.id))
         .filter(|e| {
             match_search(
                 &state.search,

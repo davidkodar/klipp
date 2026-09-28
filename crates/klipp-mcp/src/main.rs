@@ -1215,18 +1215,18 @@ fn tool_definitions() -> Vec<Value> {
               draft render (seconds to a minute).",
              json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_narrate",
-             "Narration from text: spoken by a Piper voice (voice, a manifest id; the default is \
-              piper_en_us_ljspeech_high, public domain, 114 MB. Others: piper_en_us_kristin_medium, \
-              piper_en_us_norman_medium, piper_en_us_john_medium, piper_en_us_libritts_high (CC BY: \
-              credit LibriTTS), piper_en_gb_cori_high, piper_sv_se_nst_medium (Swedish); \
-              piper_en_us_lessac_medium is research only, never for paid work. Kokoro voices, far more \
-              natural, need the espeak-ng program: kokoro_voice_af_heart (the best), kokoro_voice_af_bella, \
-              kokoro_voice_af_nicole, kokoro_voice_am_michael, kokoro_voice_am_fenrir, kokoro_voice_am_puck (US), \
-              kokoro_voice_bf_emma, kokoro_voice_bf_isabella, kokoro_voice_bm_george, kokoro_voice_bm_fable (UK); \
-              Apache-2.0, an 86 MB model shared by all. A voice downloads only \
-              with download_models true or from Preferences) through the \
-              piper program on the machine (pacman -S piper-tts / pip install piper-tts; KLIPP_PIPER \
-              names it otherwise), imported into the pool, and with apply true placed on a Voice \
+             "Narration from text, made on the machine. voice is a manifest id; the default is \
+              kokoro_voice_af_heart (natural, female, US English; Apache-2.0). The other Kokoro voices: \
+              kokoro_voice_af_bella, kokoro_voice_af_nicole, kokoro_voice_am_michael, kokoro_voice_am_fenrir, \
+              kokoro_voice_am_puck (US); kokoro_voice_bf_emma, kokoro_voice_bf_isabella, kokoro_voice_bm_george, \
+              kokoro_voice_bm_fable (UK). They need the espeak-ng program and one 87 MB download for all ten. \
+              Lighter, more robotic Piper voices (the piper program): piper_en_us_ljspeech_high, \
+              piper_en_us_kristin_medium, piper_en_us_norman_medium, piper_en_us_john_medium, \
+              piper_en_us_libritts_high (CC BY: credit LibriTTS), piper_en_gb_cori_high, piper_sv_se_nst_medium \
+              (Swedish); piper_en_us_lessac_medium is research only, never for paid work. Where Kokoro cannot \
+              run, the default is piper_en_us_ljspeech_high. Nothing downloads unless download_models is true \
+              (or the person downloads it in Window > Narrate); a refusal names the size. The take is \
+              imported into the pool, and with apply true placed on a Voice \
               track at at_secs as dialogue. speed (0.5 to 2, 1 as the voice speaks; 0.85 for an \
               unhurried read) and pause_secs (the silence between sentences, 0 to 3) shape the \
               delivery. Then duck the music under it and transcript gives the \
