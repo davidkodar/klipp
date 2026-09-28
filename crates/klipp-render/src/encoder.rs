@@ -1687,6 +1687,13 @@ impl Encoder {
         let mut packet = ffmpeg_next::Packet::empty();
         while self.video_encoder.receive_packet(&mut packet).is_ok() {
             packet.set_stream(self.video_stream_idx);
+            // An encoder that reorders (x264's B-frames) hands packets back
+            // with no duration. The MP4 muxer then takes the last frame to
+            // last no time and ends the edit list where it starts, so a
+            // player drops it (#557). The time base is one frame a tick.
+            if packet.duration() == 0 {
+                packet.set_duration(1);
+            }
             packet.rescale_ts(
                 self.video_time_base,
                 self.output_ctx
@@ -2052,6 +2059,36 @@ mod tests {
         FAIL_SOFTWARE_OPEN.with(|f| f.set(false));
         let Err(RenderError::Encode(message)) = opened else { panic!("both failing must fail the render") };
         assert!(message.contains(hw) && message.contains("then libx264"), "{message}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #557: a player shows every frame the render wrote. The encoder
+    /// reorders frames (x264's B-frames start the stream at a negative
+    /// dts), so the MP4 needs an edit list, and that list ended a frame
+    /// early: the last frame was in the file but marked to be discarded.
+    #[test]
+    #[serial]
+    fn every_frame_rendered_is_played() {
+        let (path, settings, snapshot) = fallback_settings("test_last_frame.mp4");
+        let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
+        for colour in [[0u8, 128, 255, 255], [255, 64, 0, 255]] {
+            let rgba = colour.repeat(320 * 240);
+            for _ in 0..5 {
+                enc.encode_video_frame(&rgba, 320, 240).unwrap();
+            }
+        }
+        enc.finalise().unwrap();
+        match std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+            .arg(&path)
+            .output()
+        {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert_eq!(text.trim(), "10", "a player shows every frame rendered");
+            }
+            Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 
