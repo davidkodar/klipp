@@ -408,6 +408,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "text": arg_str(args, "text")?,
             "at_secs": args.get("at_secs").cloned().unwrap_or(serde_json::Value::Null),
             "voice": args.get("voice").cloned().unwrap_or(serde_json::Value::Null),
+            "speed": args.get("speed").cloned().unwrap_or(serde_json::Value::Null),
+            "pause_secs": args.get("pause_secs").cloned().unwrap_or(serde_json::Value::Null),
             "download_models": args.get("download_models").and_then(|v| v.as_bool()).unwrap_or(false),
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
@@ -1211,10 +1213,12 @@ fn tool_definitions() -> Vec<Value> {
               63 MB, downloaded only with download_models true or from Preferences) through the \
               piper program on the machine (pacman -S piper-tts / pip install piper-tts; KLIPP_PIPER \
               names it otherwise), imported into the pool, and with apply true placed on a Voice \
-              track at at_secs as dialogue. Then duck the music under it and transcript gives the \
+              track at at_secs as dialogue. speed (0.5 to 2, 1 as the voice speaks; 0.85 for an \
+              unhurried read) and pause_secs (the silence between sentences, 0 to 3) shape the \
+              delivery. Then duck the music under it and transcript gives the \
               words with their times. A scratch voice to cut to; replace the file with a recorded \
               one later.",
-             json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
+             json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
         tool("klipp_record",
              "Record the screen for secs with the recorder on the machine (gpu-screen-recorder, else \
               wf-recorder): target \"focused\" (the focused window, the default), \"screen\", a \

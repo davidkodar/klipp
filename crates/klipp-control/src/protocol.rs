@@ -309,13 +309,18 @@ pub enum ControlCommand {
     /// voice, downloaded with `download_models`) through the piper
     /// program, imported, and with `apply` placed on a Voice track at
     /// `at_secs` as dialogue. Without apply the file is made and
-    /// imported only.
+    /// imported only. `speed` above 1 is quicker, below 1 slower;
+    /// `pause_secs` is the silence between sentences.
     Narrate {
         text: String,
         #[serde(default)]
         at_secs: Option<f64>,
         #[serde(default)]
         voice: Option<String>,
+        #[serde(default)]
+        speed: Option<f32>,
+        #[serde(default)]
+        pause_secs: Option<f32>,
         #[serde(default)]
         download_models: bool,
         #[serde(default)]

@@ -1767,6 +1767,40 @@ fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::Value) -> R
     protocol::brief_from_value(serde_json::Value::Object(merged))
 }
 
+/// The hash in a narration's file name: the text, and the delivery
+/// when one was asked for, so a slower take is a file of its own while
+/// a take with no delivery keeps the name it always had.
+fn narration_key(text: &str, delivery: &[String]) -> u64 {
+    if delivery.is_empty() {
+        seahash(text)
+    } else {
+        seahash(&format!("{text}\u{0}{}", delivery.join(" ")))
+    }
+}
+
+/// Piper's arguments for a delivery: `speed` above 1 quicker and below
+/// 1 slower (Piper's length scale is its inverse), `pause_secs` the
+/// silence it leaves between sentences. Neither given: Piper's own, and
+/// no arguments, so earlier takes keep their names (#112).
+fn piper_delivery_args(speed: Option<f32>, pause_secs: Option<f32>) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(s) = speed {
+        if !(0.5..=2.0).contains(&s) {
+            return Err(format!("a speed of {s} is outside 0.5 to 2 (1 is as the voice speaks)"));
+        }
+        args.push("--length_scale".to_string());
+        args.push(format!("{:.3}", 1.0 / s));
+    }
+    if let Some(p) = pause_secs {
+        if !(0.0..=3.0).contains(&p) {
+            return Err(format!("a pause of {p} s between sentences is outside 0 to 3"));
+        }
+        args.push("--sentence_silence".to_string());
+        args.push(format!("{p:.3}"));
+    }
+    Ok(args)
+}
+
 /// The look a frame is judged against: the brief's, else neutral; a
 /// screen recording (the beat sheet found holds) is judged as one when
 /// the brief names no look.
@@ -3307,7 +3341,7 @@ fn handle(
             }))
         }
 
-        ControlCommand::Narrate { text, at_secs, voice, download_models, apply, path } => {
+        ControlCommand::Narrate { text, at_secs, voice, speed, pause_secs, download_models, apply, path } => {
             if in_batch {
                 return Err("narrate synthesises and imports; send it on its own".into());
             }
@@ -3317,6 +3351,7 @@ fn handle(
             }
             let piper = std::env::var("KLIPP_PIPER").ok().map(std::path::PathBuf::from).filter(|p| p.is_file()).or_else(|| which("piper")).or_else(|| which("piper-tts"))
                 .ok_or("the piper program is not installed; on Arch: pacman -S piper-tts, elsewhere pip install piper-tts, or set KLIPP_PIPER to the program")?;
+            let delivery = piper_delivery_args(speed, pause_secs)?;
             let voice = voice.unwrap_or_else(|| "piper_en_us_lessac_medium".into());
             let (model, config) = voice_files(&voice, download_models)?;
             let out = match path {
@@ -3325,12 +3360,14 @@ fn handle(
                     let dir = klipp_audio_search::download_dir().join("narration");
                     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                     let stem: String = text.chars().filter(|c| c.is_alphanumeric() || *c == ' ').take(40).collect::<String>().trim().replace(' ', "-").to_lowercase();
-                    dir.join(format!("{}-{:x}.wav", if stem.is_empty() { "narration".into() } else { stem }, seahash(&text)))
+                    // The delivery is in the name: a slower take is a
+                    // file of its own, not the last one overwritten.
+                    dir.join(format!("{}-{:x}.wav", if stem.is_empty() { "narration".into() } else { stem }, narration_key(&text, &delivery)))
                 }
             };
             let t = std::time::Instant::now();
             let mut child = std::process::Command::new(&piper)
-                .arg("--model").arg(&model).arg("--config").arg(&config).arg("--output_file").arg(&out)
+                .arg("--model").arg(&model).arg("--config").arg(&config).args(&delivery).arg("--output_file").arg(&out)
                 .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
                 .spawn().map_err(|e| format!("could not run {}: {e}", piper.display()))?;
             {
@@ -5576,7 +5613,27 @@ mod tests {
 
 #[cfg(test)]
 mod piper_config_tests {
-    use super::piper_config_beside;
+    use super::{narration_key, piper_config_beside, piper_delivery_args, seahash};
+
+    #[test]
+    fn a_take_keeps_its_name_unless_a_delivery_is_asked_for() {
+        let line = "Some walks you plan.";
+        assert_eq!(narration_key(line, &[]), seahash(line), "no delivery: the name it always had");
+        let slower = piper_delivery_args(Some(0.8), None).unwrap();
+        let paused = piper_delivery_args(None, Some(0.6)).unwrap();
+        assert_ne!(narration_key(line, &slower), seahash(line));
+        assert_ne!(narration_key(line, &slower), narration_key(line, &paused));
+    }
+
+    #[test]
+    fn speed_and_pause_become_piper_arguments() {
+        assert!(piper_delivery_args(None, None).unwrap().is_empty(), "nothing asked, nothing passed");
+        assert_eq!(piper_delivery_args(Some(0.8), Some(0.6)).unwrap(), ["--length_scale", "1.250", "--sentence_silence", "0.600"]);
+        assert_eq!(piper_delivery_args(Some(2.0), None).unwrap(), ["--length_scale", "0.500"]);
+        assert!(piper_delivery_args(Some(0.0), None).is_err());
+        assert!(piper_delivery_args(Some(f32::NAN), None).is_err());
+        assert!(piper_delivery_args(None, Some(-0.1)).is_err());
+    }
 
     #[test]
     fn the_config_is_copied_beside_the_model_once() {
