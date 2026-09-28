@@ -10,19 +10,26 @@
 
 Klipp is a native Linux NLE built around three ideas:
 
-- **A real editor.** A magnetic timeline with video, audio, title and subtitle tracks; real-time playback that stays on the GPU from decode to display; import of OTIO, FCPXML and MLT projects; and a `.klipp` project format of its own.
+- **A real editor.** A magnetic timeline with video, audio, title and subtitle tracks; synced multicam; real-time playback that stays on the GPU from decode to display; import of OTIO, FCPXML and MLT projects; and a `.klipp` project format of its own.
 - **A colourist's pipeline, measured.** Grading happens in scene-linear light with an ACEScg working space and camera-log decoders (Sony, Canon, Panasonic, ARRI, Apple, RED). Node-graph grading covers primaries, HSL secondaries, curves, colour wheels and a colour warper; there are ~300 bundled 3D LUTs, GPU scopes, false colour, and real HDR (PQ / HLG) grading and export. On top of that, every colour judgement Klipp makes is a **number against a published target** — CIELAB readings, skin held to a band derived from photographed faces, and a synthesised ColorChecker sent through the render path to prove the pipeline itself isn't moving colour.
-- **An AI-first surface.** A control socket and a Model Context Protocol server expose a running Klipp as **84 tools**, so an agent can do the whole job: read the footage, propose a paper edit a person approves, assemble it, grade it to the numbers, design the sound, caption it, quality-check it and export — every step one undo. Every model runs on the machine.
+- **An AI-first surface.** A control socket and a Model Context Protocol server expose a running Klipp as **96 tools**, so an agent can do the whole job: read the footage, propose a paper edit a person approves, assemble it, grade it to the numbers, design the sound, caption it, quality-check it and export — every step one undo. Every model runs on the machine.
 
 ## What it can do today
 
 ### Editing
 
-Magnetic multi-track timeline; insert and ripple edits, splits and ripple deletes; J and L cuts; markers; per-clip retime and reframe. Clips can be moved by motion rather than by hand: `zoom`, `pan`, `follow` (the frame tracks a subject), `highlight` and `ramp` are first-class operations on the timeline, not keyframes you draw.
+Magnetic multi-track timeline; insert and ripple edits, splits and ripple deletes; J and L cuts; markers with notes, colours and kinds, every change one undo; per-clip retime and reframe with speed ramps. Editing by transcript: select words in the transcript and delete them, and the picture and sound go with them; or sweep out the long pauses in one step. Clips can be moved by motion rather than by hand: `zoom`, `pan`, `follow` (the frame tracks a subject), `highlight` and `ramp` are first-class operations on the timeline, not keyframes you draw.
+
+### Multicam
+
+Synced multicam groups, lined up by timecode, by their sound, or by timecode then sound, with each angle on a track of its own. Cut to an angle with the keys 1–9, the angle bar or the menu; the Source viewer becomes a grid of every angle, with the live one marked; and each cut is one undo step. The group decides whose sound is heard: one angle throughout, the sound following the picture, or none when a separate recorder carries it. Playback and export follow the same rule.
 
 ### Colour
 
 - **Grading** — scene-linear node-graph grading (primary + HSL secondary qualifiers, curves, wheels, warper), 3D-LUT looks, BT.1886 and HDR grade encodings.
+- **White balance** — Auto WB balances on the frame's typical neutral and refuses a reference it can't trust; the eyedropper beside it balances on the grey you click.
+- **Timeline and shared grades** — a grade over the whole timeline alongside each clip's own, and stills and looks that carry a grade between clips without applying the source clip's log decode a second time.
+- **Viewer LUT** — a monitor LUT applied to the picture on screen only; scopes, measurements and exports keep the graded frame.
 - **Scopes** — GPU waveform, parade, vectorscope and histogram at native size, plus **false colour** whose skin band comes from the look the piece is being held to, not a fixed IRE window — so it agrees with the grading loop instead of offering a second opinion.
 - **Measurement** — a **Colour Check** window reads the frame in the viewer and names the fault and the knob to turn: exposure metered off the face, casts on the neutrals, noise floor, banding, gamut, and whether the grade's nodes are in an order that can settle. A trend strip beneath it fills as you watch the piece, so drift across a sequence shows up on one axis.
 - **Matching** — shots grouped into scenes by how they were lit, a hero picked per scene, the rest graded onto it, and the remaining distance reported. Matching compares the light, not the people.
@@ -31,7 +38,7 @@ Magnetic multi-track timeline; insert and ripple edits, splits and ripple delete
 
 ### Audio
 
-Multi-track mixer with one pan law for playback and export; per-clip DSP (noise reduction, mains-hum removal, de-esser, gate, compressor, EQ, limiter); EBU R128 loudness metering and normalisation; dual-system sound sync by cross-correlation. A **Sound Over Time** window shows a whole file as frequency against time — where a hum starts, when a radio mic began to hiss, which two minutes have the air conditioning in them — with the findings named.
+Multi-track mixer with one pan law for playback and export, and each clip's own volume, gain, pan and channel setting applied in the mix; audio crossfades; playback at 48 kHz with sinc resampling to whatever the output device runs at, on the device chosen in Preferences. Per-clip DSP: noise reduction, **Voice Isolation** (DeepFilterNet3 speech enhancement, on the machine), mains-hum removal, de-esser, gate, compressor, EQ, limiter. Volume keyframes; EBU R128 loudness metering and normalisation; dual-system sound sync by cross-correlation. A **Sound Over Time** window shows a whole file as frequency against time — where a hum starts, when a radio mic began to hiss, which two minutes have the air conditioning in them — with the findings named.
 
 ### Titles, transitions, effects
 
@@ -55,11 +62,11 @@ Bins and rule-based smart bins, markers, shot logging, metadata (EXIF stills, So
 
 ### On-device AI
 
-Subject masking and segmentation (BiRefNet, MobileSAM, RF-DETR-Seg), speech transcription (Whisper Large v3 Turbo on the GPU via Vulkan), face detection (YuNet), on-screen text (PP-OCR) and a scratch narration voice (Piper) — all local, all downloaded on demand and verified against a bundled manifest.
+Subject masking and segmentation (BiRefNet, MobileSAM, RF-DETR-Seg), speech transcription (Whisper Large v3 Turbo on the GPU via Vulkan), face detection (YuNet), on-screen text (PP-OCR) and a scratch narration voice (Piper) and speech enhancement for Voice Isolation (DeepFilterNet3) — all local, all downloaded on demand and verified against a bundled manifest.
 
 ### Delivery
 
-Export with CPU/GPU render parity and real HDR output; burnt-in or sidecar captions; and a delivery check that covers picture **and** sound against the project's brief.
+Export with CPU/GPU render parity and real HDR output; hardware encoding (NVENC, AMF) that falls back to the software encoder when no hardware session is free; web presets that normalise to −14 LUFS, where those platforms play, while masters keep their level and Broadcast its R128 −23; an export with no path set goes to your Videos folder, named after the project; burnt-in or sidecar captions; and a delivery check that covers picture **and** sound against the project's brief.
 
 ### Plugins
 
@@ -90,6 +97,8 @@ cd klipp/packaging
 makepkg -si
 klipp
 ```
+
+`klipp --version` prints the version, commit and build profile, which a bug report asks for; `klipp --help` lists the options.
 
 Run `makepkg` as your normal user; it asks for sudo only to install dependencies
 and the resulting package. If prompted for an `onnxruntime` provider, choose
@@ -184,7 +193,9 @@ An agent never clicks and never does frame arithmetic: it names clips and media 
 
 The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft/) — the guide, the recipes and the reference are read by the model, not by the code, so they can be argued with and improved without a rebuild.
 
-It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later.
+It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses.
+
+The socket also covers the things an agent would otherwise have to ask a person to do: create a project or a sequence, change the brief one field at a time, shape a clip's volume by hand (`volume`) and duck the music under dialogue (`duck`, which doesn't count clips marked as music, effects or ambience as dialogue), build a multicam group and cut its angles, tag and relink media, take a screenshot of the whole window, and use markers as a note channel both ways. The agent marks what it is unsure of and why, and treats the editor's todo markers as work asked for.
 
 ### Turning it off
 
@@ -198,7 +209,7 @@ Update checks are **off by default**. Choosing **Check for updates** in About or
 
 ## Architecture
 
-Klipp is a 33-crate Cargo workspace organised into layers, with dependencies flowing one way and no cycles. Every crate carries a `//!` overview; `ARCHITECTURE.md` is the system map.
+Klipp is a 34-crate Cargo workspace organised into layers, with dependencies flowing one way and no cycles. Every crate carries a `//!` overview; `ARCHITECTURE.md` is the system map.
 
 | Crate | Responsibility |
 |---|---|
@@ -207,6 +218,7 @@ Klipp is a 33-crate Cargo workspace organised into layers, with dependencies flo
 | `klipp-timeline` | Sequence / track / clip model, the magnetic-timeline editor, the brief and the edit plan |
 | `klipp-media` | Media pool, bins, thumbnails, waveforms, on-disk caches |
 | `klipp-audio` | DSP effects, LUFS metering, multi-track mixer |
+| `klipp-deepfilter` | DeepFilterNet3 inference for Voice Isolation, vendored from DeepFilterNet's libDF without `unsafe` |
 | `klipp-audio-search` | Royalty-free music and SFX search (Jamendo, Freesound) |
 | `klipp-color` | Colour grading, LUTs, scopes, camera-log decoders, CIELAB measurement, false colour, the chart self-check |
 | `klipp-grade-model` | The primary grade's maths (lift/gamma/gain/offset, contrast, BT.1886) |
@@ -264,6 +276,7 @@ Models are downloaded on demand, verified by SHA-256 against the bundled manifes
 | YuNet | Face detection for the colour measurements | 233 KB | MIT |
 | PP-OCRv3 det + PP-OCRv4 rec | On-screen text in screen recordings | ~2.4 MB + ~7.7 MB | Apache-2.0 |
 | Piper en_US Lessac (medium) | Scratch narration voice | 63 MB | MIT (Piper); voice public domain |
+| DeepFilterNet3 | Voice Isolation (speech enhancement) | ~8 MB | MIT OR Apache-2.0 |
 
 See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full picture, including licence audit notes.
 
