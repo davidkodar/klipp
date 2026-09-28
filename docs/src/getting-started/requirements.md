@@ -66,7 +66,7 @@ GTX 900 series and later are supported for NVDEC. RTX 20-series and later are re
 |---|---|
 | Klipp source + dev build | ~6 GB |
 | Klipp release build | ~250 MB |
-| AI model cache (`~/.cache/klipp/models/`) | up to ~500 MB with all models installed |
+| AI model cache (`~/.local/share/klipp/models/`) | about 1.4 GB with every model installed; each downloads only when first asked for |
 | AI mask cache (`~/.cache/klipp/ai_masks/`) | capped at 2 GB, LRU-evicted |
 | Font registry cache | < 1 MB |
 

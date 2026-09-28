@@ -381,7 +381,7 @@ thread_local! {
     static PREVIEW: std::cell::RefCell<Option<Preview>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Play preview audio (decoded mp3 bytes) through the default output,
+/// Play preview audio (the bytes of an mp3 or wav file) through the default output,
 /// replacing anything already previewing. Best-effort: a machine with no
 /// audio output returns an error the caller can show.
 pub fn preview_play(bytes: Vec<u8>) -> Result<(), String> {

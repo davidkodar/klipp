@@ -1767,40 +1767,6 @@ fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::Value) -> R
     protocol::brief_from_value(serde_json::Value::Object(merged))
 }
 
-/// The hash in a narration's file name: the text, and the delivery
-/// when one was asked for, so a slower take is a file of its own while
-/// a take with no delivery keeps the name it always had.
-fn narration_key(text: &str, delivery: &[String]) -> u64 {
-    if delivery.is_empty() {
-        seahash(text)
-    } else {
-        seahash(&format!("{text}\u{0}{}", delivery.join(" ")))
-    }
-}
-
-/// Piper's arguments for a delivery: `speed` above 1 quicker and below
-/// 1 slower (Piper's length scale is its inverse), `pause_secs` the
-/// silence it leaves between sentences. Neither given: Piper's own, and
-/// no arguments, so earlier takes keep their names (#112).
-fn piper_delivery_args(speed: Option<f32>, pause_secs: Option<f32>) -> Result<Vec<String>, String> {
-    let mut args = Vec::new();
-    if let Some(s) = speed {
-        if !(0.5..=2.0).contains(&s) {
-            return Err(format!("a speed of {s} is outside 0.5 to 2 (1 is as the voice speaks)"));
-        }
-        args.push("--length_scale".to_string());
-        args.push(format!("{:.3}", 1.0 / s));
-    }
-    if let Some(p) = pause_secs {
-        if !(0.0..=3.0).contains(&p) {
-            return Err(format!("a pause of {p} s between sentences is outside 0 to 3"));
-        }
-        args.push("--sentence_silence".to_string());
-        args.push(format!("{p:.3}"));
-    }
-    Ok(args)
-}
-
 /// The look a frame is judged against: the brief's, else neutral; a
 /// screen recording (the beat sheet found holds) is judged as one when
 /// the brief names no look.
@@ -1888,63 +1854,11 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(name)).find(|p| p.is_file()))
 }
 
-/// A short hash of a text, for a file name that follows its words.
-fn seahash(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
-    h.finish()
-}
-
 /// Seconds since the epoch, for a file name.
 fn chrono_stamp() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// The voice's model and settings files from the model cache, downloaded
-/// when asked and not there: the voice `id` in the manifest and its
-/// `<id>_config` companion.
-fn voice_files(voice: &str, download: bool) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
-    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
-    let ids = [voice.to_string(), format!("{voice}_config")];
-    let mut paths = Vec::new();
-    for id in &ids {
-        let entry = manifest.get(id).ok_or_else(|| {
-            let voices: Vec<&str> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config")).map(|e| e.id.as_str()).collect();
-            format!("no voice {id} in the manifest; the voices are {}", voices.join(", "))
-        })?;
-        let p = cache.path_for(entry);
-        if !p.is_file() {
-            if !download {
-                return Err(format!("the voice {voice} is not downloaded ({} MB); ask with download_models true, or download it in Preferences", entry.size_bytes / 1_000_000));
-            }
-            let cancel = std::sync::atomic::AtomicBool::new(false);
-            let mut progress = klipp_ml::download::NoOpProgress;
-            klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
-        }
-        paths.push(cache.path_for(entry));
-    }
-    let (model, config) = (paths.remove(0), paths.remove(0));
-    piper_config_beside(&model, &config)?;
-    Ok((model, config))
-}
-
-/// Put the voice's config where piper also looks for it: `<model>.json`
-/// beside the model. piper-tts 1.8 takes `--config` and then loads the
-/// voice from the model path alone, which reads `<model>.json`; the cache
-/// keeps the config under its own id, so narration failed with the file
-/// not found even with everything installed (#113). `--config` is still
-/// passed, for a piper that honours it.
-fn piper_config_beside(model: &std::path::Path, config: &std::path::Path) -> Result<(), String> {
-    let mut beside = model.as_os_str().to_owned();
-    beside.push(".json");
-    let beside = std::path::PathBuf::from(beside);
-    if beside.is_file() {
-        return Ok(());
-    }
-    std::fs::copy(config, &beside).map(|_| ()).map_err(|e| format!("the voice config for piper at {}: {e}", beside.display()))
-}
 
 fn temp_output(path: Option<String>, stem: &str, ext: &str) -> Result<std::path::PathBuf, String> {
     match path {
@@ -3349,57 +3263,28 @@ fn handle(
             if text.is_empty() {
                 return Err("narrate needs the words to say".into());
             }
-            let piper = std::env::var("KLIPP_PIPER").ok().map(std::path::PathBuf::from).filter(|p| p.is_file()).or_else(|| which("piper")).or_else(|| which("piper-tts"))
-                .ok_or("the piper program is not installed; on Arch: pacman -S piper-tts, elsewhere pip install piper-tts, or set KLIPP_PIPER to the program")?;
-            let delivery = piper_delivery_args(speed, pause_secs)?;
-            let voice = voice.unwrap_or_else(|| "piper_en_us_lessac_medium".into());
-            let (model, config) = voice_files(&voice, download_models)?;
-            let out = match path {
-                Some(p) => std::path::PathBuf::from(p),
-                None => {
-                    let dir = klipp_audio_search::download_dir().join("narration");
-                    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                    let stem: String = text.chars().filter(|c| c.is_alphanumeric() || *c == ' ').take(40).collect::<String>().trim().replace(' ', "-").to_lowercase();
-                    // The delivery is in the name: a slower take is a
-                    // file of its own, not the last one overwritten.
-                    dir.join(format!("{}-{:x}.wav", if stem.is_empty() { "narration".into() } else { stem }, narration_key(&text, &delivery)))
-                }
-            };
             let t = std::time::Instant::now();
-            let mut child = std::process::Command::new(&piper)
-                .arg("--model").arg(&model).arg("--config").arg(&config).args(&delivery).arg("--output_file").arg(&out)
-                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
-                .spawn().map_err(|e| format!("could not run {}: {e}", piper.display()))?;
-            {
-                use std::io::Write as _;
-                let mut stdin = child.stdin.take().ok_or("piper's stdin")?;
-                stdin.write_all(text.as_bytes()).and_then(|_| stdin.write_all(b"\n")).map_err(|e| format!("writing to piper: {e}"))?;
-            }
-            let done = child.wait_with_output().map_err(|e| format!("piper: {e}"))?;
-            if !done.status.success() || !out.is_file() {
-                return Err(format!("piper failed ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).trim()));
-            }
+            let dir = klipp_audio_search::download_dir().join("narration");
+            let out = klipp_audio::narration::synthesize(&klipp_audio::narration::Request {
+                text: &text,
+                voice: voice.as_deref(),
+                speed,
+                pause_secs,
+                download: download_models,
+                path: path.map(std::path::PathBuf::from),
+                dir: &dir,
+            })?;
             let mut v = handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string(), analyze: true }, &mut None)?;
             let media_id = imported_id(ctx, &out).ok_or("the narration was made but did not reach the media pool")?;
             v["media_id"] = json!(media_id);
             v["path"] = json!(out);
             v["synth_secs"] = json!(t.elapsed().as_secs_f64());
             if apply {
-                use klipp_document::ops::{Anchor, ClipRef, Op, TrackRef};
                 let at = at_secs.unwrap_or(0.0).max(0.0);
-                let ops: Vec<Op> = {
+                let ops = {
                     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                    let mut ops = Vec::new();
-                    let track = match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio && t.name.eq_ignore_ascii_case("voice")) {
-                        Some(ti) => ti,
-                        None => {
-                            ops.push(Op::AddTrack { kind: "audio".into(), name: Some("Voice".into()) });
-                            seq.tracks.len()
-                        }
-                    };
-                    ops.push(Op::Place { media_id: klipp_core::MediaId(media_id.parse().map_err(|e| format!("media id: {e}"))?), track: TrackRef::Index(track), at: Anchor::Secs(at), source_in: None, source_out: None, insert: false, with_audio: true });
-                    ops.push(Op::Role { clip_id: ClipRef::At { track, secs: at + 0.05 }, role: "dialogue".into() });
-                    ops
+                    let media_id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media id: {e}"))?);
+                    klipp_document::ops::place_narration(&seq, media_id, at)
                 };
                 let (plan, revision) = resolve_plan(ctx, &ops)?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
@@ -5608,48 +5493,6 @@ mod tests {
         assert_eq!(apply_label(std::slice::from_ref(&cut)), "Cut");
         assert_eq!(apply_label(&[cut, split.clone(), split]), "Cut and 2 more");
         assert_eq!(apply_label(&[]), "Apply");
-    }
-}
-
-#[cfg(test)]
-mod piper_config_tests {
-    use super::{narration_key, piper_config_beside, piper_delivery_args, seahash};
-
-    #[test]
-    fn a_take_keeps_its_name_unless_a_delivery_is_asked_for() {
-        let line = "Some walks you plan.";
-        assert_eq!(narration_key(line, &[]), seahash(line), "no delivery: the name it always had");
-        let slower = piper_delivery_args(Some(0.8), None).unwrap();
-        let paused = piper_delivery_args(None, Some(0.6)).unwrap();
-        assert_ne!(narration_key(line, &slower), seahash(line));
-        assert_ne!(narration_key(line, &slower), narration_key(line, &paused));
-    }
-
-    #[test]
-    fn speed_and_pause_become_piper_arguments() {
-        assert!(piper_delivery_args(None, None).unwrap().is_empty(), "nothing asked, nothing passed");
-        assert_eq!(piper_delivery_args(Some(0.8), Some(0.6)).unwrap(), ["--length_scale", "1.250", "--sentence_silence", "0.600"]);
-        assert_eq!(piper_delivery_args(Some(2.0), None).unwrap(), ["--length_scale", "0.500"]);
-        assert!(piper_delivery_args(Some(0.0), None).is_err());
-        assert!(piper_delivery_args(Some(f32::NAN), None).is_err());
-        assert!(piper_delivery_args(None, Some(-0.1)).is_err());
-    }
-
-    #[test]
-    fn the_config_is_copied_beside_the_model_once() {
-        let dir = std::env::temp_dir().join(format!("klipp-piper-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let model = dir.join("voice.bin");
-        let config = dir.join("voice_config.bin");
-        std::fs::write(&model, b"onnx").unwrap();
-        std::fs::write(&config, b"{\"audio\":{}}").unwrap();
-        piper_config_beside(&model, &config).unwrap();
-        assert_eq!(std::fs::read(dir.join("voice.bin.json")).unwrap(), b"{\"audio\":{}}");
-        // Already there: left alone.
-        std::fs::write(dir.join("voice.bin.json"), b"kept").unwrap();
-        piper_config_beside(&model, &config).unwrap();
-        assert_eq!(std::fs::read(dir.join("voice.bin.json")).unwrap(), b"kept");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

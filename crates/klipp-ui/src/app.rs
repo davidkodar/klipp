@@ -381,6 +381,7 @@ pub struct KlippApp {
     /// The Sound Over Time window's own state: the reading in hand or
     /// the thread still making it.
     sound_over_time: crate::panels::sound_over_time::SoundOverTimePanel,
+    narrate: crate::panels::narrate::NarratePanel,
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
     timeline: TimelinePanel,
@@ -1044,6 +1045,7 @@ impl KlippApp {
             transcript_source: Default::default(),
             colour_check: Default::default(),
             sound_over_time: Default::default(),
+            narrate: Default::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
             timeline: {
@@ -29405,6 +29407,14 @@ impl eframe::App for KlippApp {
             let mut open = self.state.show_sound_over_time;
             self.sound_over_time.show(ctx, &self.state, &self.theme, &mut open);
             self.state.show_sound_over_time = open;
+        }
+
+        // Narrate window: a scratch voice from text.
+        if self.state.show_narrate {
+            let mut open = self.state.show_narrate;
+            let cmds = self.narrate.show(ctx, &mut self.state, &mut open);
+            self.state.show_narrate = open;
+            self.send_commands(cmds);
         }
 
         // Edit Plan window: the paper edit awaiting the person's word.

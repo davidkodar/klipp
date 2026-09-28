@@ -45,6 +45,7 @@ pub mod lv2;
 pub mod lufs;
 pub mod pdc;
 pub mod mixer;
+pub mod narration;
 pub mod spectrum;
 pub mod synth;
 pub mod true_peak;
