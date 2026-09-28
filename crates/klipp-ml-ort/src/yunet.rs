@@ -17,7 +17,10 @@ pub struct Face {
     pub landmarks: [(f32, f32); 5],
 }
 
+/// Without ONNX Runtime in the build it cannot be opened, and says so;
+/// the decoding below is plain Rust and always there.
 pub struct FaceDetector {
+    #[cfg(feature = "ort")]
     session: ort::session::Session,
 }
 
@@ -26,6 +29,18 @@ pub const SCORE_THRESHOLD: f32 = 0.6;
 /// Two boxes overlapping this much are one face.
 pub const NMS_IOU: f32 = 0.3;
 
+#[cfg(not(feature = "ort"))]
+impl FaceDetector {
+    pub fn open(_weights: &std::path::Path) -> Result<Self, String> {
+        Err("this build of Klipp has no ONNX Runtime, which face detection needs".into())
+    }
+
+    pub fn detect(&mut self, _rgba: &[u8], _width: u32, _height: u32) -> Result<Vec<Face>, String> {
+        Err("no ONNX Runtime in this build".into())
+    }
+}
+
+#[cfg(feature = "ort")]
 impl FaceDetector {
     pub fn open(weights: &std::path::Path) -> Result<Self, String> {
         use ort::session::builder::GraphOptimizationLevel;
@@ -220,5 +235,16 @@ mod tests {
         assert!((f.x - 4.0 / 32.0).abs() < 1e-5 && (f.y - 0.0).abs() < 1e-5, "{f:?}");
         assert!((f.w - 1.0).abs() < 1e-5 && (f.h - 1.0).abs() < 1e-5);
         assert!((f.landmarks[2].0 - 20.0 / 32.0).abs() < 1e-5);
+    }
+}
+
+/// Without ONNX Runtime the detector is refused with a reason, rather
+/// than the crate not building at all (#537).
+#[cfg(all(test, not(feature = "ort")))]
+mod without_ort {
+    #[test]
+    fn opening_the_detector_says_there_is_no_runtime() {
+        let err = super::FaceDetector::open(std::path::Path::new("/nowhere/yunet.onnx")).err().expect("no detector without ONNX Runtime");
+        assert!(err.contains("no ONNX Runtime"), "{err}");
     }
 }
