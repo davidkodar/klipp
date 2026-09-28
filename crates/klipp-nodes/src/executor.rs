@@ -1523,8 +1523,17 @@ impl GraphExecutor {
             // static params (an exposure ramp from 0) must not be bypassed
             // for the whole clip. `params_for_frame` borrows when the node
             // has no keyframes, so the common case costs nothing extra.
+            // A Corrector with no stage active changes no pixel either,
+            // judged by the same test that decides whether it can chain.
+            // It was in neither list: not bypassed, and not chainable, so
+            // a grade reset to neutral (a look over a default Corrector)
+            // ran the Corrector on the CPU and read a GPU-resident frame
+            // back for it, about 105 ms a frame at 2160x3840.
+            let neutral_corrector = node.kind == NodeKind::Corrector
+                && !corrector_has_active_stage(&params_for_frame(node, clip_time_secs));
             let bypass = !effective_enabled(node, clip_time_secs)
                 || (is_param_driven_filter && params_for_frame(node, clip_time_secs).is_default())
+                || neutral_corrector
                 || noop_input_transform;
 
             // If a chain is live, see whether this node can extend it or
