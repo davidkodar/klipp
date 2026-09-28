@@ -18,9 +18,9 @@ Every pair in this table is one FFmpeg writes. The audio menu lists only what th
 
 | Codec | Encoder | Rate control | Bit depth | Hardware |
 |---|---|---|---|---|
-| H.264 | libx264 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF (8-bit only) |
-| H.265 | libx265 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF |
-| AV1 | SVT-AV1 (`libsvtav1`) | CRF, CBR, VBR | 8 | NVENC |
+| H.264 | libx264 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF, VAAPI (8-bit only) |
+| H.265 | libx265 | CRF, CBR, VBR | 8 or 10 | NVENC, AMF, VAAPI |
+| AV1 | SVT-AV1 (`libsvtav1`) | CRF, CBR, VBR | 8 | NVENC, AMF, VAAPI |
 | VP9 | `libvpx-vp9` | CRF, CBR, VBR | 8 | — |
 | ProRes 422 | `prores_ks`, profile 2 | fixed | 10, 4:2:2 | — |
 | ProRes 422 HQ | `prores_ks`, profile 3 | fixed | 10, 4:2:2 | — |

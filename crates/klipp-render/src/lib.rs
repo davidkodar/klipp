@@ -48,6 +48,7 @@ pub mod clip_decoder;
 pub mod error;
 pub mod snapshot;
 mod sws_colour;
+mod vaapi;
 
 pub mod audio_mixdown;
 pub mod encoder;
