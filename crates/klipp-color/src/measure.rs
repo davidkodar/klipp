@@ -1446,7 +1446,7 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         if let Some(s) = m.skin_all {
             let off = hue_off_skin_band(s.hue);
             if s.pct >= 2.0 && off > 6.0 {
-                out.push(Finding { rule: "skin_hue", verdict: Verdict::Pass, reading: s.hue, target: skin_target, tolerance: 6.0, what: format!("skin-coloured pixels ({:.0}% of the frame, no face detected) sit at hue {:.0}°, {off:.0}° outside the skin band", s.pct, s.hue), fix: "if a face is in the picture, analyze with the detector for a proper read; else temperature and tint" });
+                out.push(Finding { rule: "skin_hue", verdict: Verdict::Pass, reading: s.hue, target: skin_target, tolerance: 6.0, what: format!("skin-coloured pixels ({:.0}% of the frame, no face detected) sit at hue {:.0}°, {off:.0}° outside the skin band", s.pct, s.hue), fix: "information only: with no face read, colour cannot tell skin from sand, grass or a wall; analyze with the detector for a face's own read" });
             }
         }
     }

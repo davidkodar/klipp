@@ -618,7 +618,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => {
             let brief = args.get("brief").cloned().ok_or("missing required argument: brief")?;
-            if args.get("merge").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // A merge flag that is not a boolean is refused: read as
+            // false, "true" as a string would replace the whole brief.
+            let merge = match args.get("merge") {
+                None | Some(serde_json::Value::Null) => false,
+                Some(v) => v.as_bool().ok_or("merge is true or false")?,
+            };
+            if merge {
                 json!({ "method": "update_brief", "fields": brief })
             } else {
                 json!({ "method": "set_brief", "brief": brief })
@@ -2068,6 +2074,7 @@ mod wait_tests {
         assert_eq!(whole, json!({ "method": "set_brief", "brief": { "notes": "n" } }));
         let merged = tool_to_command("klipp_set_brief", &json!({ "brief": { "notes": "n" }, "merge": true })).unwrap();
         assert_eq!(merged, json!({ "method": "update_brief", "fields": { "notes": "n" } }));
+        assert!(tool_to_command("klipp_set_brief", &json!({ "brief": { "notes": "n" }, "merge": "true" })).is_err(), "a string is not a yes");
     }
 
     #[test]
