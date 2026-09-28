@@ -193,7 +193,7 @@ An agent never clicks and never does frame arithmetic: it names clips and media 
 
 The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft/) — the guide, the recipes and the reference are read by the model, not by the code, so they can be argued with and improved without a rebuild.
 
-It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses.
+It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses. A person does the same in **Window → Narrate**: type the words, pick a voice, set the speed and pauses, preview it, and place it at the playhead on the Voice track.
 
 The socket also covers the things an agent would otherwise have to ask a person to do: create a project or a sequence, change the brief one field at a time, shape a clip's volume by hand (`volume`) and duck the music under what is heard over it (`duck`: a clip marked as music, effects or ambience doesn't count, nor does one set well under the music), build a multicam group and cut its angles, tag and relink media, take a screenshot of the whole window, and use markers as a note channel both ways. The agent marks what it is unsure of and why, and treats the editor's todo markers as work asked for.
 
@@ -264,7 +264,7 @@ Useful entry points: [Installation](docs/src/getting-started/installation.md), [
 
 ## AI Models
 
-Models are downloaded on demand, verified by SHA-256 against the bundled manifest, and stored in `~/.cache/klipp/models/`. Klipp does not redistribute weights — the manifest points at upstream HuggingFace mirrors.
+Models are downloaded on demand, verified by SHA-256 against the bundled manifest, and stored in `~/.local/share/klipp/models/`. Klipp does not redistribute weights — the manifest points at upstream HuggingFace mirrors.
 
 | Model | Role | Size | Licence |
 |---|---|---|---|

@@ -2343,6 +2343,25 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
     Ok((what, edit, vec![clip.id]))
 }
 
+/// The ops that place a narration take: on the audio track named Voice,
+/// added when there is none, at `at` seconds, with the dialogue role, so
+/// a duck comes down under it. The socket's `narrate` and the Narrate
+/// window both place a take this way.
+pub fn place_narration(seq: &Sequence, media_id: MediaId, at: f64) -> Vec<Op> {
+    let at = at.max(0.0);
+    let mut ops = Vec::new();
+    let track = match seq.tracks.iter().position(|t| t.kind == TrackKind::Audio && t.name.eq_ignore_ascii_case("voice")) {
+        Some(ti) => ti,
+        None => {
+            ops.push(Op::AddTrack { kind: "audio".into(), name: Some("Voice".into()) });
+            seq.tracks.len()
+        }
+    };
+    ops.push(Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(at), source_in: None, source_out: None, insert: false, with_audio: true });
+    ops.push(Op::Role { clip_id: ClipRef::At { track, secs: at + 0.05 }, role: "dialogue".into() });
+    ops
+}
+
 /// Plan a trim at an exact timeline time for the GUI. The same planner
 /// serves `Op::Trim`, preserving a linked partner's own source and
 /// timeline offsets and refusing the whole edit if either side cannot
@@ -6494,6 +6513,25 @@ mod tests {
         let sound = seq.tracks[1].clips[0].id;
         let (_, after, _) = replay(&[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: true }]);
         assert_eq!(after.tracks[0].clips.len(), 1);
+    }
+
+    /// A take goes on the Voice track as dialogue: the track is added
+    /// when there is none, and the one there is used, whatever its case.
+    #[test]
+    fn a_narration_take_is_placed_on_the_voice_track_as_dialogue() {
+        let (mut seq, pool, media, _, _) = fixture();
+        let ops = place_narration(&seq, media, 2.0);
+        assert!(matches!(&ops[0], Op::AddTrack { kind, name: Some(n) } if kind == "audio" && n == "Voice"), "{ops:?}");
+        let voice = seq.tracks.len();
+        assert!(matches!(&ops[1], Op::Place { track: TrackRef::Index(t), at: Anchor::Secs(at), .. } if *t == voice && *at == 2.0), "{ops:?}");
+        assert!(matches!(&ops[2], Op::Role { role, .. } if role == "dialogue"), "{ops:?}");
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert_eq!(plan.steps.len(), 3);
+
+        seq.tracks.push(klipp_timeline::Track::new("VOICE", TrackKind::Audio));
+        let ops = place_narration(&seq, media, -1.0);
+        assert_eq!(ops.len(), 2, "the Voice track there is used: {ops:?}");
+        assert!(matches!(&ops[0], Op::Place { track: TrackRef::Index(t), at: Anchor::Secs(at), .. } if *t == seq.tracks.len() - 1 && *at == 0.0), "{ops:?}");
     }
 
     #[test]

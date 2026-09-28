@@ -68,7 +68,7 @@ Background rendering pre-computes effects-heavy sections so they play back smoot
 | Frame cache | `~/.cache/klipp/frames/` | 10 GB |
 | Thumbnails | `~/.cache/klipp/thumbnails/` | 2 GB |
 | AI mask cache | `~/.cache/klipp/ai_masks/` | 2 GB (LRU) |
-| AI models | `~/.cache/klipp/models/` | uncapped (model size driven) |
+| AI models | `~/.local/share/klipp/models/` | uncapped (model size driven) |
 | Font registry | `~/.cache/klipp/font_registry.json` | small |
 
 **Clear cache** — delete cached data to free disk space. Models persist (they have their own management in the AI Models dialog).

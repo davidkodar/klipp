@@ -28,6 +28,7 @@ pub mod framerate_mismatch_dialog;
 pub mod preferences;
 pub mod render_queue;
 pub mod sequence_settings_dialog;
+pub mod narrate;
 pub mod sound_over_time;
 pub mod status_bar;
 pub mod subtitle_editor;
