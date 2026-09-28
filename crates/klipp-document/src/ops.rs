@@ -169,7 +169,10 @@ pub enum Op {
     Split { clip_id: ClipRef, at: Anchor },
     /// A clip off its track, and its linked partner (a picture's sound,
     /// a sound's picture) with it unless `linked` is false; with
-    /// `ripple`, the clips after each on its track close the gap.
+    /// `ripple`, the clips after each on its track close the gap. A
+    /// linked ripple is refused if the partner is locked or the pair
+    /// has different timeline ranges; use a non-ripple remove to lift
+    /// such a pair without moving later clips.
     Remove {
         clip_id: ClipRef,
         #[serde(default)]
@@ -1953,8 +1956,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             };
             // The linked partner goes too, as it does with a split, so the
             // picture's sound is not left behind to block the next place
-            // (#458). One on a locked track stays, and the reply says so.
+            // (#458). A lift can leave a locked partner with a notice;
+            // a ripple must refuse before moving just one side.
             let partner = clip.linked_clip_id.filter(|_| *linked).and_then(|pid| find_clip(seq, pid));
+            if *ripple {
+                if let Some((pti, _, p)) = partner {
+                    if seq.tracks[pti].locked {
+                        return Err(refuse(i, format!("the linked clip is on locked track {pti}; rippling only one track would change sync"), "unlock the linked track, or use ripple: false to leave later clips in place"));
+                    }
+                    // Compare the times, not their stored tick rates: a
+                    // sound clip may use a different rate from picture.
+                    if !clip.timeline_in.cmp(&p.timeline_in).is_eq() || !clip.timeline_out.cmp(&p.timeline_out).is_eq() {
+                        return Err(refuse(i, "the linked clips have different timeline ranges; closing their gaps separately would change sync", "use ripple: false to lift the pair without moving later clips, or cut an explicit timeline range"));
+                    }
+                }
+            }
             let (main, mut ids) = take(ti, ci, clip);
             let (edit, with) = match partner {
                 Some((pti, _, _)) if seq.tracks[pti].locked => (main, format!(", its linked clip left on locked track {pti}")),
@@ -6466,6 +6482,109 @@ mod tests {
         let sound = seq.tracks[1].clips[0].id;
         let (_, after, _) = replay(&[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: true }]);
         assert_eq!(after.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn linked_ripple_remove_refuses_split_edits_before_returning_a_plan() {
+        let (seq, pool, _, a, b) = fixture();
+        let before = serde_json::to_value(&seq).unwrap();
+        for split in [
+            Op::JCut { incoming_clip: ClipRef::Id(b), frames: 10 },
+            Op::LCut { outgoing_clip: ClipRef::Id(a), frames: 5 },
+        ] {
+            // Both sides of the edit, selected by picture or by sound.
+            for id in [a, b, seq.tracks[1].clips[0].id, seq.tracks[1].clips[1].id] {
+                let remove = Op::Remove { clip_id: ClipRef::Id(id), ripple: true, linked: true };
+                let err = resolve(&seq, &pool, &[split.clone(), remove]).unwrap_err();
+                assert_eq!(err.step, 1, "the split edit is valid; its ripple removal is not");
+                assert!(err.why.contains("different timeline ranges"), "{err}");
+                assert!(err.hint.contains("ripple: false"), "{err}");
+                assert_eq!(serde_json::to_value(&seq).unwrap(), before, "a refused plan changes nothing");
+
+                // Lifting the pair without closing a gap remains valid.
+                let lift = Op::Remove { clip_id: ClipRef::Id(id), ripple: false, linked: true };
+                assert!(resolve(&seq, &pool, &[split.clone(), lift]).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn linked_ripple_remove_refuses_a_locked_partner() {
+        let (mut seq, pool, _, a, _) = fixture();
+        for selected_track in 0..2 {
+            seq.tracks[0].locked = selected_track == 1;
+            seq.tracks[1].locked = selected_track == 0;
+            let id = seq.tracks[selected_track].clips[0].id;
+            let err = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(id), ripple: true, linked: true }]).unwrap_err();
+            assert!(err.why.contains("locked"), "{err}");
+            assert!(err.hint.contains("unlock"), "{err}");
+        }
+        seq.tracks[0].locked = false;
+        seq.tracks[1].locked = true;
+        // Explicitly independent editing retains its existing meaning.
+        assert!(resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(a), ripple: true, linked: false }]).is_ok());
+        assert!(resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(a), ripple: false, linked: true }]).is_ok());
+    }
+
+    #[test]
+    fn linked_ripple_remove_requires_the_same_range_not_just_the_same_length() {
+        let (mut seq, pool, _, _, b) = fixture();
+        // One frame later, but still four seconds long: equality of
+        // durations alone does not mean the same interval is removed.
+        seq.tracks[1].clips[1].timeline_in += tc(0.04);
+        seq.tracks[1].clips[1].timeline_out += tc(0.04);
+        let err = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(b), ripple: true, linked: true }]).unwrap_err();
+        assert!(err.why.contains("different timeline ranges"), "{err}");
+    }
+
+    #[test]
+    fn linked_ripple_remove_preserves_sync_through_undo_redo_and_serialization() {
+        for rate in [Fps::new(25, 1), Fps::new(24000, 1001)] {
+            for selected_track in 0..2 {
+                let (mut seq, mut pool, _, _, _) = fixture();
+                seq.fps = rate;
+                for (track_index, track) in seq.tracks.iter_mut().enumerate() {
+                    for (index, clip) in track.clips.iter_mut().enumerate() {
+                        let start = RationalTime::from_frames(index as i64 * 100 * rate.den as i64, rate.num);
+                        let end = RationalTime::from_frames((index as i64 + 1) * 100 * rate.den as i64, rate.num);
+                        // Equal times need not have identical stored rates.
+                        let stored_rate = rate.num * (track_index as u32 + 1);
+                        clip.timeline_in = start.rescale_to(stored_rate);
+                        clip.source_in = start;
+                        clip.timeline_out = end.rescale_to(stored_rate);
+                        clip.source_out = end;
+                    }
+                }
+                let before = serde_json::to_value(&seq).unwrap();
+                let id = seq.tracks[selected_track].clips[0].id;
+                let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(id), ripple: true, linked: true }]).unwrap();
+                assert_eq!(plan.steps.len(), 1);
+                let mut sequences = vec![seq];
+                let mut fps = rate;
+                {
+                    let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+                    view.apply_forward(&plan.steps[0].edit);
+                }
+                let (picture, sound) = (&sequences[0].tracks[0].clips[0], &sequences[0].tracks[1].clips[0]);
+                assert_eq!(picture.timeline_in.to_secs_f64(), 0.0);
+                assert!(picture.timeline_in.cmp(&sound.timeline_in).is_eq());
+                assert!(picture.timeline_out.cmp(&sound.timeline_out).is_eq());
+                assert_eq!(picture.linked_clip_id, Some(sound.id));
+                assert_eq!(sound.linked_clip_id, Some(picture.id));
+                let after = serde_json::to_value(&sequences[0]).unwrap();
+                sequences[0] = serde_json::from_value(after.clone()).unwrap();
+                {
+                    let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+                    view.apply_inverse(&plan.steps[0].edit);
+                }
+                assert_eq!(serde_json::to_value(&sequences[0]).unwrap(), before);
+                {
+                    let mut view = crate::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+                    view.apply_forward(&plan.steps[0].edit);
+                }
+                assert_eq!(serde_json::to_value(&sequences[0]).unwrap(), after);
+            }
+        }
     }
 
     #[test]
