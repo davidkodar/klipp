@@ -739,7 +739,9 @@ pub struct BrowserPanel {
     /// as not yet wired up. No effect today; lays the groundwork for the
     /// missing-binding sweep.
     pub audio_fx_hide_unsupported: bool,
-    // ── Titles tab state ──
+    // ── Titles & Graphics tab state ──
+    /// Show reusable project compositions instead of title presets.
+    pub show_project_graphics: bool,
     /// Selected sub-category in the Titles sidebar. `None` = All.
     pub titles_category: Option<&'static str>,
     /// Preview background swatch shown behind every title card.
@@ -993,6 +995,7 @@ impl Default for BrowserPanel {
             audio_fx_source_filter: audio_fx_tab::AudioSourceFilter::All,
             audio_fx_sort: effects_tab::EffectSort::NameAsc,
             titles_category: None,
+            show_project_graphics: false,
             titles_preview_bg: titles_tab::TitlesPreviewBg::default(),
             titles_preview_text: String::new(),
             titles_source_filter: titles_tab::TitlesSourceFilter::All,
@@ -1314,11 +1317,10 @@ impl BrowserPanel {
             BrowserTab::Library => match self.library_category {
                 LibraryCategory::VideoFx => "Search effects\u{2026}",
                 LibraryCategory::AudioFx => "Search audio effects\u{2026}",
-                LibraryCategory::Titles => "Search titles\u{2026}",
+                LibraryCategory::Titles => "Search titles and graphics\u{2026}",
                 LibraryCategory::Transitions => "Search transitions\u{2026}",
                 LibraryCategory::Generators => "Search generators\u{2026}",
                 LibraryCategory::Audio => "",
-                LibraryCategory::Templates => "Search templates\u{2026}",
             },
         };
 
@@ -4616,14 +4618,13 @@ impl BrowserPanel {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         // ── Category tabs: the same strip as every other tab row ──
-        let categories: [(LibraryCategory, &str, &str); 7] = [
+        let categories: [(LibraryCategory, &str, &str); 6] = [
             (LibraryCategory::VideoFx, "VIDEO FX", "VFX"),
             (LibraryCategory::AudioFx, "AUDIO FX", "AFX"),
-            (LibraryCategory::Titles, "TITLES", "TTL"),
+            (LibraryCategory::Titles, "TITLES & GRAPHICS", "T&G"),
             (LibraryCategory::Transitions, "TRANSITIONS", "TRN"),
             (LibraryCategory::Generators, "GENERATORS", "GEN"),
             (LibraryCategory::Audio, "MUSIC & SFX", "AUD"),
-            (LibraryCategory::Templates, "TEMPLATES", "TPL"),
         ];
         let labels: Vec<&str> = categories.iter().map(|c| c.1).collect();
         let brief: Vec<&str> = categories.iter().map(|c| c.2).collect();
@@ -4807,6 +4808,14 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Titles => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut self.show_project_graphics, false, "Title presets");
+                    ui.selectable_value(&mut self.show_project_graphics, true, "Project graphics");
+                });
+                ui.add_space(4.0);
+                if self.show_project_graphics {
+                    return templates_tab::show(ui, state, theme, &mut self.search_query);
+                }
                 {
                     let mut displaced = Vec::new();
                     self.title_previews.poll(ui.ctx(), &mut displaced);
@@ -4872,7 +4881,6 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Audio => self.show_audio_library(ui, state, theme),
-            LibraryCategory::Templates => templates_tab::show(ui, state, theme, &self.search_query),
         }
     }
 
