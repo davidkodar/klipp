@@ -128,6 +128,21 @@ pub fn shown_in_model_manager(id: &str) -> bool {
     !(kokoro::is_kokoro(id) || (id.starts_with("piper_") && id.ends_with("_config")))
 }
 
+/// The files that come with a model manager row and go when it is
+/// uninstalled: with the Kokoro download, every Kokoro voice; with a
+/// Piper voice, its settings and the copy of them made beside the model.
+pub fn extra_files(cache: &klipp_ml::cache::ModelCache, manifest: &klipp_ml::manifest::ModelManifest, id: &str) -> Vec<PathBuf> {
+    if id == kokoro::MODEL {
+        return manifest.models.iter().filter(|e| kokoro::is_kokoro(&e.id)).map(|e| cache.path_for(e)).collect();
+    }
+    if id.starts_with("piper_") && !id.ends_with("_config") {
+        let mut beside = cache.path_for_id(id).into_os_string();
+        beside.push(".json");
+        return vec![cache.path_for_id(&format!("{id}_config")), PathBuf::from(beside)];
+    }
+    Vec::new()
+}
+
 /// Every voice in the manifest: the Kokoro ones first, the default at
 /// the top, then Piper's.
 pub fn voices() -> Result<Vec<Voice>, String> {
@@ -460,6 +475,33 @@ mod tests {
         assert!(super::shown_in_model_manager("piper_en_us_kristin_medium"));
         assert!(super::shown_in_model_manager("whisper_base_ggml"));
         assert!(manifest.get(super::FALLBACK_VOICE).is_some());
+    }
+
+    /// Uninstalling the Kokoro row takes its ten voices with it, and a
+    /// Piper voice its settings; nothing is left with no row to remove it.
+    #[test]
+    fn a_row_uninstalls_the_files_that_came_with_it() {
+        let manifest = klipp_ml::manifest::ModelManifest::parse(klipp_ml::manifest::BUILTIN_MANIFEST).unwrap();
+        let cache = klipp_ml::cache::ModelCache::open_at("/nowhere");
+        let kokoro = super::extra_files(&cache, &manifest, super::kokoro::MODEL);
+        assert_eq!(kokoro.len(), 10);
+        assert!(kokoro.iter().all(|p| p.file_name().unwrap().to_string_lossy().starts_with("kokoro_voice_")));
+        let piper = super::extra_files(&cache, &manifest, "piper_en_us_kristin_medium");
+        assert_eq!(piper, [std::path::PathBuf::from("/nowhere/piper_en_us_kristin_medium_config.bin"), std::path::PathBuf::from("/nowhere/piper_en_us_kristin_medium.bin.json")]);
+        assert!(super::extra_files(&cache, &manifest, "whisper_base_ggml").is_empty());
+        // Every file a row hides comes with some row.
+        for e in manifest.models.iter().filter(|e| !super::shown_in_model_manager(&e.id)) {
+            let owner = if super::kokoro::is_kokoro(&e.id) { super::kokoro::MODEL.to_string() } else { e.id.trim_end_matches("_config").to_string() };
+            assert!(super::extra_files(&cache, &manifest, &owner).contains(&cache.path_for(e)), "{} is hidden and would be left behind", e.id);
+        }
+    }
+
+    /// Without Kokoro in the build, a take with no voice named is spoken
+    /// by the public-domain Piper fallback.
+    #[test]
+    #[cfg(not(feature = "kokoro"))]
+    fn without_kokoro_the_default_is_the_piper_fallback() {
+        assert_eq!(super::default_voice(), super::FALLBACK_VOICE);
     }
 
     #[test]

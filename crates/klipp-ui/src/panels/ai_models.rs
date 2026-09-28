@@ -2344,6 +2344,13 @@ fn execute_uninstall(
         let _ = g.clear_instance(&entry.id);
     }
 
+    // A row stands for the files that come with it (the Kokoro voices,
+    // a Piper voice's settings), and they go with it.
+    if let Ok(manifest) = klipp_ml::manifest::load_effective() {
+        for extra in klipp_audio::narration::extra_files(c, &manifest, &entry.id) {
+            let _ = std::fs::remove_file(extra);
+        }
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => {
             state
