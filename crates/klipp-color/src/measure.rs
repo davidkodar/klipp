@@ -1436,13 +1436,17 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         out.push(Finding { rule: "gamut", verdict: level(m.gamut_clip_pct, GAMUT_WARN, GAMUT_FAIL), reading: m.gamut_clip_pct, target: 0.0, tolerance: GAMUT_WARN, what: format!("{:.1}% of the picture has a channel pinned at the rail — colour the delivery cannot hold", m.gamut_clip_pct), fix: "saturation down, or pull the offending colour back with a secondary" });
     }
     let skin_target = t.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
-    // A whole-frame skin read is advisory, and never on a screen
-    // recording, whose orange buttons are not skin.
+    // A whole-frame skin read is information, never a fault to fix,
+    // and never on a screen recording, whose orange buttons are not
+    // skin. With no face to read it cannot tell skin from the sand, the
+    // dry grass or the wall that share its colour, and as a warning it
+    // asked for temperature and tint on nearly every landscape (#515).
+    // A face that is read is judged below.
     if !t.screencast && m.faces.iter().all(|f| !f.readable()) {
         if let Some(s) = m.skin_all {
             let off = hue_off_skin_band(s.hue);
             if s.pct >= 2.0 && off > 6.0 {
-                out.push(Finding { rule: "skin_hue", verdict: Verdict::Warn, reading: s.hue, target: skin_target, tolerance: 6.0, what: format!("skin-coloured pixels ({:.0}% of the frame, no face detected) sit at hue {:.0}°, {off:.0}° outside the skin band", s.pct, s.hue), fix: "if a face is in the picture, analyze with the detector for a proper read; else temperature and tint" });
+                out.push(Finding { rule: "skin_hue", verdict: Verdict::Pass, reading: s.hue, target: skin_target, tolerance: 6.0, what: format!("skin-coloured pixels ({:.0}% of the frame, no face detected) sit at hue {:.0}°, {off:.0}° outside the skin band", s.pct, s.hue), fix: "if a face is in the picture, analyze with the detector for a proper read; else temperature and tint" });
             }
         }
     }
@@ -1948,6 +1952,22 @@ mod match_tests {
             hue_off_band_wb: hue_off_skin_band(skin.hue()),
         }];
         m
+    }
+
+    /// Sand-coloured pixels over half the frame, off the skin band, and
+    /// no face read: what a beach, a dune or a yellow wall measures, with
+    /// or without someone walking in it. The reading is kept, but it is
+    /// not a fault to fix (#515).
+    #[test]
+    fn a_whole_frame_skin_read_is_information_not_a_fault() {
+        let look = LookTarget::preset("broadcast_neutral").unwrap();
+        let mut beach = flat(60.0, 0.0, 0.0);
+        beach.skin_all = Some(SkinRead { hue: 86.0, chroma: 24.0, l: 62.0, pct: 48.0 });
+        assert!(beach.faces.is_empty(), "the real flow: no face region was passed in");
+        let findings = judge(&beach, &look);
+        let skin = findings.iter().find(|f| f.rule == "skin_hue").expect("the reading is still there");
+        assert_eq!(skin.verdict, Verdict::Pass, "{skin:?}");
+        assert!(findings.iter().all(|f| f.rule != "skin_hue" || f.verdict == Verdict::Pass));
     }
 
     #[test]
