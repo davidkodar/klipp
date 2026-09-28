@@ -46,8 +46,11 @@ pub struct Encoder {
     audio_frame: Option<ffmpeg_next::frame::Audio>,
     /// Name of the video encoder in use (for reporting).
     video_codec_name: &'static str,
-    /// The hardware encoder that could not open, when the render fell
-    /// back to software (#381).
+    /// The pictures' layout in memory. The encoder's own format, except
+    /// for VAAPI, which takes surfaces and is sent these uploaded.
+    frame_format: ffmpeg_next::format::Pixel,
+    /// The first hardware encoder that could not open, when the render
+    /// fell back to software (#381).
     hardware_fallback: Option<&'static str>,
     /// Audio resampler (f32 packed stereo → encoder's required format).
     /// Reserved for future use when format conversion is needed beyond FLTP.
@@ -79,10 +82,27 @@ pub struct Encoder {
     gif_filter: Option<crate::gif_filter::GifFilter>,
 }
 
-/// Pick the best available video encoder for the given codec.
-/// Returns (encoder_name, is_hw_accelerated).
-/// Tries NVENC (NVIDIA) → AMF (AMD) → software fallback.
-/// NVENC requires minimum 128x128 resolution.
+/// One encoder a render may try, in the order [`video_encoder_attempts`]
+/// lists them.
+#[derive(Debug, Clone, PartialEq)]
+struct EncoderAttempt {
+    name: &'static str,
+    /// On the GPU (NVENC, AMF or VAAPI) rather than the CPU.
+    hardware: bool,
+    /// For a VAAPI encoder: the render node, and whether to ask for the
+    /// low-power entrypoint, which is the only one some Intel GPUs have
+    /// for HEVC and AV1.
+    vaapi: Option<(std::path::PathBuf, bool)>,
+}
+
+/// The hardware encoders this FFmpeg has for `codec`: NVENC (NVIDIA), then
+/// AMF (AMD), then VAAPI (AMD and Intel).
+///
+/// A distribution's FFmpeg is built with all three whatever the machine
+/// has, so being listed here says nothing about the GPU: it is
+/// `avcodec_open2` that finds out, and the render then moves on to the
+/// next. NVENC needs at least 128×128, and the others are held to the
+/// same.
 ///
 /// `want_10bit` matters for H.264 and only H.264: **no hardware H.264
 /// encoder does ten bits.** NVENC's and AMF's H.264 blocks are 8-bit
@@ -98,52 +118,99 @@ pub struct Encoder {
 ///
 /// Since the export UI only offers HDR at ten bits, every HDR H.264
 /// render hit this.
-fn pick_video_encoder(
+fn hardware_video_encoders(codec: &ExportVideoCodec, width: u32, height: u32, want_10bit: bool) -> Vec<&'static str> {
+    if width < 128 || height < 128 {
+        return Vec::new();
+    }
+    let names: &[&'static str] = match codec {
+        ExportVideoCodec::H264 if !want_10bit => &["h264_nvenc", "h264_amf", "h264_vaapi"],
+        ExportVideoCodec::H265 => &["hevc_nvenc", "hevc_amf", "hevc_vaapi"],
+        ExportVideoCodec::Av1 => &["av1_nvenc", "av1_amf", "av1_vaapi"],
+        _ => &[],
+    };
+    names.iter().copied().filter(|name| ffmpeg_next::encoder::find_by_name(name).is_some()).collect()
+}
+
+/// Every encoder a render tries for `codec`, best first: each hardware
+/// encoder in [`hardware_video_encoders`], VAAPI once per node in
+/// `vaapi_nodes` (and again there in low power), then the software one.
+fn video_encoder_attempts(
     codec: &ExportVideoCodec,
     width: u32,
     height: u32,
     want_10bit: bool,
-) -> (&'static str, bool) {
-    // NVENC/AMF have minimum resolution requirements (~128x128)
-    let hw_eligible = width >= 128 && height >= 128;
+    vaapi_nodes: &[std::path::PathBuf],
+) -> Vec<EncoderAttempt> {
+    let mut attempts = Vec::new();
+    for name in hardware_video_encoders(codec, width, height, want_10bit) {
+        if name.ends_with("_vaapi") {
+            for node in vaapi_nodes {
+                for low_power in [false, true] {
+                    attempts.push(EncoderAttempt { name, hardware: true, vaapi: Some((node.clone(), low_power)) });
+                }
+            }
+        } else {
+            attempts.push(EncoderAttempt { name, hardware: true, vaapi: None });
+        }
+    }
+    attempts.push(EncoderAttempt { name: software_video_encoder(codec), hardware: false, vaapi: None });
+    attempts
+}
 
-    match codec {
-        ExportVideoCodec::H264 => {
-            if hw_eligible && !want_10bit {
-                if ffmpeg_next::encoder::find_by_name("h264_nvenc").is_some() {
-                    return ("h264_nvenc", true);
-                }
-                if ffmpeg_next::encoder::find_by_name("h264_amf").is_some() {
-                    return ("h264_amf", true);
-                }
-            }
-            ("libx264", false)
+/// The encoder a render on this machine tries first, and whether it is
+/// hardware.
+#[cfg(test)]
+fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32, want_10bit: bool) -> (&'static str, bool) {
+    let first = video_encoder_attempts(codec, width, height, want_10bit, &crate::vaapi::encode_nodes()).remove(0);
+    (first.name, first.hardware)
+}
+
+/// A hardware encoder's constant-quality settings, from the software
+/// encoders' CRF number. Each family spells it differently: NVENC as VBR
+/// with a `cq` target, AMF and VAAPI as a constant QP. AV1's quantiser
+/// runs to 255 on AMF and VAAPI, so its CRF (to 63) is scaled up.
+fn hardware_quality(
+    name: &str,
+    settings: &ExportSettings,
+    video_ctx: &mut ffmpeg_next::codec::encoder::video::Video,
+    video_opts: &mut ffmpeg_next::Dictionary,
+) {
+    video_ctx.set_bit_rate(0);
+    let av1 = settings.video_codec == ExportVideoCodec::Av1;
+    let qp = if av1 { (settings.crf * 4).min(255) } else { settings.crf };
+    if name.ends_with("_nvenc") {
+        // NVENC: use VBR with constant quality (cq) — equivalent to CRF
+        video_opts.set("rc", "vbr");
+        video_opts.set("cq", &settings.crf.to_string());
+        if !av1 {
+            // Set a high bitrate cap so VBR has room (0 = uncapped)
+            video_opts.set("b:v", "0");
+            // NVENC preset: p1(fastest)..p7(best quality)
+            let nvenc_preset = match settings.preset {
+                klipp_core::EncoderPreset::Fast => "p4",
+                klipp_core::EncoderPreset::Medium => "p5",
+                klipp_core::EncoderPreset::Slow => "p6",
+                klipp_core::EncoderPreset::VerySlow => "p7",
+            };
+            video_opts.set("preset", nvenc_preset);
         }
-        ExportVideoCodec::H265 => {
-            if hw_eligible {
-                if ffmpeg_next::encoder::find_by_name("hevc_nvenc").is_some() {
-                    return ("hevc_nvenc", true);
-                }
-                if ffmpeg_next::encoder::find_by_name("hevc_amf").is_some() {
-                    return ("hevc_amf", true);
-                }
-            }
-            ("libx265", false)
-        }
-        ExportVideoCodec::ProRes422
-        | ExportVideoCodec::ProRes422HQ
-        | ExportVideoCodec::ProRes4444 => ("prores_ks", false),
-        ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => ("dnxhd", false),
-        ExportVideoCodec::Av1 => {
-            // Try NVENC AV1 first, then SVT-AV1
-            if hw_eligible
-                && ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
-                    return ("av1_nvenc", true);
-                }
-            ("libsvtav1", false)
-        }
-        ExportVideoCodec::Vp9 => ("libvpx-vp9", false),
-        ExportVideoCodec::Gif => ("gif", false),
+    } else if name.ends_with("_amf") {
+        // AMF refuses NVENC's `rc vbr` and `preset p5` outright, so the
+        // encoder never opened when it was given them.
+        video_opts.set("rc", "cqp");
+        video_opts.set("qp_i", &qp.to_string());
+        video_opts.set("qp_p", &qp.to_string());
+        video_opts.set("qp_b", &qp.to_string());
+        let amf_preset = match settings.preset {
+            klipp_core::EncoderPreset::Fast => "speed",
+            klipp_core::EncoderPreset::Medium => "balanced",
+            klipp_core::EncoderPreset::Slow => "quality",
+            klipp_core::EncoderPreset::VerySlow => "high_quality",
+        };
+        video_opts.set("preset", amf_preset);
+    } else if name.ends_with("_vaapi") {
+        video_opts.set("rc_mode", "CQP");
+        video_ctx.set_global_quality(qp as i32);
     }
 }
 
@@ -153,10 +220,12 @@ thread_local! {
     /// card's NVENC sessions are taken, and optionally software ones too.
     static FAIL_HARDWARE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_SOFTWARE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: the encoders to try, in place of this machine's.
+    static ATTEMPTS: std::cell::RefCell<Option<Vec<EncoderAttempt>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The software encoder for `codec`: what a render falls back to when the
-/// hardware encoder [`pick_video_encoder`] chose cannot open.
+/// hardware encoders cannot open.
 fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
     match codec {
         ExportVideoCodec::H264 => "libx264",
@@ -314,30 +383,31 @@ impl Encoder {
         // VIDEO ENCODER
         // ═══════════════════════════════════════════════════════════
 
-        // Try GPU-accelerated encoder first (NVENC for NVIDIA, AMF for AMD),
-        // fall back to software (libx264/libx265).
-        // Hardware first. A consumer card allows only a few NVENC sessions
-        // at once, and OBS, a call, a proxy job or another export can hold
-        // the last one: `pick_video_encoder` only knows the encoder exists,
-        // and it is `avcodec_open2` that refuses. The render then goes to
-        // the software encoder once rather than failing (#381).
-        let picked = pick_video_encoder(
+        // Hardware first: NVENC for NVIDIA, AMF for AMD, VAAPI for AMD and
+        // Intel, then software (libx264/libx265). Which of them the GPU
+        // actually has is only found out by opening them, and a consumer
+        // card allows only a few NVENC sessions at once, so OBS, a call, a
+        // proxy job or another export can hold the last one. A refusal
+        // moves on to the next encoder rather than failing the render
+        // (#381, #555).
+        let attempts = video_encoder_attempts(
             &settings.video_codec,
             snapshot.width,
             snapshot.height,
             settings.bit_depth == 10,
+            &crate::vaapi::encode_nodes(),
         );
-        let mut attempts = vec![picked];
-        if picked.1 {
-            attempts.push((software_video_encoder(&settings.video_codec), false));
-        }
+        #[cfg(test)]
+        let attempts = ATTEMPTS.with(|a| a.borrow().clone()).unwrap_or(attempts);
         let last_attempt = attempts.len() - 1;
         let mut hardware_fallback = None;
-        // Why an earlier attempt failed, named in the error if the fallback
-        // fails too, so a double failure still says the hardware was tried.
+        // Why the earlier attempts failed, named in the error if the last
+        // fails too, so it still says which hardware encoders were tried.
         let mut earlier_failure: Option<String> = None;
         let (video_encoder, video_codec_name, pix_fmt, out_w, out_h) = 'open: {
-            for (attempt, (video_codec_name, is_hw_encoder)) in attempts.into_iter().enumerate() {
+            for (attempt, EncoderAttempt { name: video_codec_name, hardware: is_hw_encoder, vaapi: vaapi_node }) in
+                attempts.into_iter().enumerate()
+            {
                     let Some(video_codec) = ffmpeg_next::encoder::find_by_name(video_codec_name) else {
                         // An FFmpeg built with nvenc but not libx264 lands
                         // here on the fallback; it fails like an open does.
@@ -348,9 +418,12 @@ impl Encoder {
                                 None => format!("codec not found: {video_codec_name}"),
                             }));
                         }
-                        tracing::warn!("{failure}; trying the software encoder");
-                        hardware_fallback = Some(video_codec_name);
-                        earlier_failure = Some(failure);
+                        tracing::warn!("{failure}; trying the next encoder");
+                        hardware_fallback.get_or_insert(video_codec_name);
+                        earlier_failure = Some(match earlier_failure.take() {
+                            Some(earlier) => format!("{earlier}; then {failure}"),
+                            None => failure,
+                        });
                         continue;
                     };
 
@@ -430,21 +503,11 @@ impl Encoder {
                     // Codec-specific options
                     let mut video_opts = ffmpeg_next::Dictionary::new();
                     match settings.video_codec {
-                        ExportVideoCodec::H264 if is_hw_encoder => {
-                            // NVENC: use VBR with constant quality (cq) — equivalent to CRF
-                            video_opts.set("rc", "vbr");
-                            video_opts.set("cq", &settings.crf.to_string());
-                            // Set a high bitrate cap so VBR has room (0 = uncapped)
-                            video_ctx.set_bit_rate(0);
-                            video_opts.set("b:v", "0");
-                            // NVENC preset: p1(fastest)..p7(best quality)
-                            let nvenc_preset = match settings.preset {
-                                klipp_core::EncoderPreset::Fast => "p4",
-                                klipp_core::EncoderPreset::Medium => "p5",
-                                klipp_core::EncoderPreset::Slow => "p6",
-                                klipp_core::EncoderPreset::VerySlow => "p7",
-                            };
-                            video_opts.set("preset", nvenc_preset);
+                        ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1 if is_hw_encoder => {
+                            hardware_quality(video_codec_name, settings, &mut video_ctx, &mut video_opts);
+                            if let Some((_, true)) = vaapi_node {
+                                video_opts.set("low_power", "1");
+                            }
                             // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
                             apply_color_tags(&mut video_ctx, settings);
                         }
@@ -452,20 +515,6 @@ impl Encoder {
                             video_ctx.set_bit_rate(0); // CRF mode
                             video_opts.set("crf", &settings.crf.to_string());
                             video_opts.set("preset", settings.preset.ffmpeg_value());
-                            apply_color_tags(&mut video_ctx, settings);
-                        }
-                        ExportVideoCodec::H265 if is_hw_encoder => {
-                            video_opts.set("rc", "vbr");
-                            video_opts.set("cq", &settings.crf.to_string());
-                            video_ctx.set_bit_rate(0);
-                            video_opts.set("b:v", "0");
-                            let nvenc_preset = match settings.preset {
-                                klipp_core::EncoderPreset::Fast => "p4",
-                                klipp_core::EncoderPreset::Medium => "p5",
-                                klipp_core::EncoderPreset::Slow => "p6",
-                                klipp_core::EncoderPreset::VerySlow => "p7",
-                            };
-                            video_opts.set("preset", nvenc_preset);
                             apply_color_tags(&mut video_ctx, settings);
                         }
                         ExportVideoCodec::H265 => {
@@ -489,11 +538,6 @@ impl Encoder {
                         }
                         ExportVideoCodec::DNxHD145 => {
                             video_ctx.set_bit_rate(145_000_000);
-                        }
-                        ExportVideoCodec::Av1 if is_hw_encoder => {
-                            video_opts.set("rc", "vbr");
-                            video_opts.set("cq", &settings.crf.to_string());
-                            video_ctx.set_bit_rate(0);
                         }
                         ExportVideoCodec::Av1 => {
                             // SVT-AV1 uses CRF
@@ -547,6 +591,12 @@ impl Encoder {
                                 video_opts.set("bufsize", &format!("{}k", br_kbps * 2));
                                 // Remove CRF if it was set
                                 video_opts.set("crf", "-1");
+                                // AMF and VAAPI name their rate control.
+                                if video_codec_name.ends_with("_vaapi") {
+                                    video_opts.set("rc_mode", "CBR");
+                                } else if video_codec_name.ends_with("_amf") {
+                                    video_opts.set("rc", "cbr");
+                                }
                             }
                         }
                         klipp_core::RateControl::Vbr => {
@@ -554,6 +604,11 @@ impl Encoder {
                                 video_ctx.set_bit_rate(br_kbps as usize * 1000);
                                 video_opts.set("maxrate", &format!("{}k", br_kbps * 2));
                                 video_opts.set("bufsize", &format!("{}k", br_kbps * 4));
+                                if video_codec_name.ends_with("_vaapi") {
+                                    video_opts.set("rc_mode", "VBR");
+                                } else if video_codec_name.ends_with("_amf") {
+                                    video_opts.set("rc", "vbr_peak");
+                                }
                             }
                         }
                         klipp_core::RateControl::Crf => {} // Already handled above
@@ -579,13 +634,26 @@ impl Encoder {
                 };
                 #[cfg(not(test))]
                 let refused = false;
+                // A VAAPI encoder takes surfaces rather than frames in
+                // memory, so it is given a pool of them on its node first.
                 let opened = if refused {
-                    Err(ffmpeg_next::Error::External)
+                    Err(ffmpeg_next::Error::External.to_string())
+                } else if let Some((node, _)) = &vaapi_node {
+                    crate::vaapi::attach(&mut video_ctx, node, pix_fmt, out_w, out_h).and_then(|()| {
+                        video_ctx.open_as_with(video_codec, video_opts).map_err(|e| format!("{e} on {}", node.display()))
+                    })
                 } else {
-                    video_ctx.open_as_with(video_codec, video_opts)
+                    video_ctx.open_as_with(video_codec, video_opts).map_err(|e| e.to_string())
                 };
                 match opened {
-                    Ok(encoder) => break 'open (encoder, video_codec_name, pix_fmt, out_w, out_h),
+                    Ok(encoder) => {
+                        // A later hardware encoder that opened is not a
+                        // fallback to software.
+                        if is_hw_encoder {
+                            hardware_fallback = None;
+                        }
+                        break 'open (encoder, video_codec_name, pix_fmt, out_w, out_h);
+                    }
                     Err(e) => {
                         // Naming the combination, because the library's own
                         // message for a configuration the hardware cannot do
@@ -603,9 +671,12 @@ impl Encoder {
                                 None => format!("open video encoder: {failure}"),
                             }));
                         }
-                        tracing::warn!("open video encoder: {failure}; encoding in software instead");
-                        hardware_fallback = Some(video_codec_name);
-                        earlier_failure = Some(failure);
+                        tracing::warn!("open video encoder: {failure}; trying the next encoder");
+                        hardware_fallback.get_or_insert(video_codec_name);
+                        earlier_failure = Some(match earlier_failure.take() {
+                            Some(earlier) => format!("{earlier}; then {failure}"),
+                            None => failure,
+                        });
                     }
                 }
             }
@@ -965,6 +1036,7 @@ impl Encoder {
                 _ => None,
             },
             video_codec_name,
+            frame_format: pix_fmt,
             hardware_fallback,
             subtitle_stream_idx,
             hdr_mode: settings.delivery(),
@@ -980,15 +1052,18 @@ impl Encoder {
         })
     }
 
-    /// The pixel format the encoder takes frames in.
+    /// The pixel format the encoder takes frames in (for VAAPI, the
+    /// layout it uploads from).
     pub fn video_format(&self) -> ffmpeg_next::format::Pixel {
-        self.video_encoder.format()
+        self.frame_format
     }
 
     /// Human-readable hardware info for the video encoder.
     pub fn hw_info(&self) -> &'static str {
         if let Some(hw) = self.hardware_fallback {
-            return if hw.contains("nvenc") {
+            // Every machine's FFmpeg tries NVENC first, so it only means
+            // something to name it on an NVIDIA one.
+            return if hw.contains("nvenc") && klipp_core::GpuVendor::detect() == klipp_core::GpuVendor::Nvidia {
                 "Software (CPU): NVENC unavailable"
             } else {
                 "Software (CPU): hardware encoder unavailable"
@@ -998,6 +1073,8 @@ impl Encoder {
             "NVENC (NVIDIA)"
         } else if self.video_codec_name.contains("amf") {
             "AMF (AMD)"
+        } else if self.video_codec_name.contains("vaapi") {
+            "VAAPI (AMD/Intel)"
         } else if self.video_codec_name.contains("prores") {
             "ProRes (CPU)"
         } else if self.video_codec_name.contains("dnxhd") {
@@ -1064,7 +1141,7 @@ impl Encoder {
         if self.gif_filter.is_some() {
             return None;
         }
-        let (semi, bits, shift) = match self.video_encoder.format() {
+        let (semi, bits, shift) = match self.frame_format {
             P::YUV420P => (false, 8, 0),
             P::NV12 => (true, 8, 0),
             P::YUV420P10LE => (false, 10, 0),
@@ -1153,7 +1230,7 @@ impl Encoder {
                 pixels: l.pixels,
             });
         }
-        let fmt = self.video_encoder.format();
+        let fmt = self.frame_format;
         let Some(target) = self.gpu_yuv420_params() else {
             return Err(RenderError::Encode(format!("{fmt:?} takes no GPU planes")));
         };
@@ -1192,10 +1269,20 @@ impl Encoder {
         }
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.video_encoder
-            .send_frame(&frame)
-            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.send_video_frame(&frame)?;
         self.drain_video_packets()
+    }
+
+    /// Send one picture to the video encoder, by way of a VAAPI surface
+    /// when the encoder takes those.
+    fn send_video_frame(&mut self, frame: &ffmpeg_next::frame::Video) -> Result<(), RenderError> {
+        let sent = if crate::vaapi::is_attached(&self.video_encoder) {
+            let surface = crate::vaapi::upload(&self.video_encoder, frame).map_err(RenderError::Encode)?;
+            self.video_encoder.send_frame(&surface)
+        } else {
+            self.video_encoder.send_frame(frame)
+        };
+        sent.map_err(|e| RenderError::Encode(format!("send video frame: {e}")))
     }
 
     /// Record a PQ frame's light levels (other deliveries signal none).
@@ -1216,7 +1303,7 @@ impl Encoder {
     fn encode_linear_direct(&mut self, linear: &[f32], w: u32, h: u32) -> Result<Option<FrameLight>, RenderError> {
         use ffmpeg_next::format::Pixel as P;
         use rayon::prelude::*;
-        let fmt = self.video_encoder.format();
+        let fmt = self.frame_format;
         let (bits, semi, sw, sh) = match fmt {
             P::YUV420P => (8u32, false, 1usize, 1usize),
             P::YUV422P => (8, false, 1, 0),
@@ -1317,9 +1404,7 @@ impl Encoder {
 
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.video_encoder
-            .send_frame(&frame)
-            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.send_video_frame(&frame)?;
         self.drain_video_packets()?;
         Ok(Some(light))
     }
@@ -1327,7 +1412,7 @@ impl Encoder {
     /// Whether the output format holds more than 8 bits per sample.
     pub fn is_deep(&self) -> bool {
         use ffmpeg_next::format::Pixel as P;
-        matches!(self.video_encoder.format(), P::P010LE | P::YUV420P10LE | P::YUV422P10LE | P::YUV444P10LE)
+        matches!(self.frame_format, P::P010LE | P::YUV420P10LE | P::YUV422P10LE | P::YUV444P10LE)
     }
 
     /// Encode one 16-bit display-encoded RGBA frame (`width * height * 4`
@@ -1339,7 +1424,7 @@ impl Encoder {
                 Pixel::RGBA64LE,
                 width,
                 height,
-                self.video_encoder.format(),
+                self.frame_format,
                 self.output_width,
                 self.output_height,
                 ffmpeg_next::software::scaling::Flags::LANCZOS,
@@ -1362,7 +1447,7 @@ impl Encoder {
                 }
             }
         }
-        let mut yuv = ffmpeg_next::frame::Video::new(self.video_encoder.format(), self.output_width, self.output_height);
+        let mut yuv = ffmpeg_next::frame::Video::new(self.frame_format, self.output_width, self.output_height);
         self.rgba64_to_yuv
             .as_mut()
             .unwrap()
@@ -1370,9 +1455,7 @@ impl Encoder {
             .map_err(|e| RenderError::Encode(format!("RGBA64→YUV scale: {e}")))?;
         yuv.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.video_encoder
-            .send_frame(&yuv)
-            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.send_video_frame(&yuv)?;
         self.drain_video_packets()?;
         Ok(())
     }
@@ -1415,7 +1498,7 @@ impl Encoder {
 
         // Convert RGBA → YUV using pre-created scaler (may resize if export res differs from snapshot)
         let mut yuv_frame = ffmpeg_next::frame::Video::new(
-            self.video_encoder.format(),
+            self.frame_format,
             self.output_width,
             self.output_height,
         );
@@ -1427,9 +1510,7 @@ impl Encoder {
         self.video_pts += 1;
 
         // Send to encoder
-        self.video_encoder
-            .send_frame(&yuv_frame)
-            .map_err(|e| RenderError::Encode(format!("send video frame: {e}")))?;
+        self.send_video_frame(&yuv_frame)?;
 
         self.drain_video_packets()?;
         Ok(())
@@ -2086,6 +2167,146 @@ mod tests {
             Ok(out) => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 assert_eq!(text.trim(), "10", "a player shows every frame rendered");
+            }
+            Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #555: every hardware encoder FFmpeg has is tried before software,
+    /// NVENC then AMF then VAAPI, and VAAPI on each AMD or Intel node, in
+    /// low power too. Before, only the first one FFmpeg had was tried, so
+    /// an AMD or Intel machine (whose FFmpeg has NVENC too) went straight
+    /// to software.
+    #[test]
+    fn every_hardware_encoder_is_tried_before_software() {
+        ffmpeg_next::init().unwrap();
+        let nodes = [std::path::PathBuf::from("/dev/dri/renderD128"), std::path::PathBuf::from("/dev/dri/renderD129")];
+        let attempts = video_encoder_attempts(&ExportVideoCodec::H265, 1920, 1080, true, &nodes);
+        let software = attempts.last().unwrap();
+        assert_eq!((software.name, software.hardware, &software.vaapi), ("libx265", false, &None));
+        let have = |name| ffmpeg_next::encoder::find_by_name(name).is_some();
+        let mut expected: Vec<(&str, Option<(&str, bool)>)> = Vec::new();
+        for name in ["hevc_nvenc", "hevc_amf"].into_iter().filter(|n| have(n)) {
+            expected.push((name, None));
+        }
+        if have("hevc_vaapi") {
+            for node in ["/dev/dri/renderD128", "/dev/dri/renderD129"] {
+                expected.push(("hevc_vaapi", Some((node, false))));
+                expected.push(("hevc_vaapi", Some((node, true))));
+            }
+        }
+        let got: Vec<(&str, Option<(&str, bool)>)> = attempts[..attempts.len() - 1]
+            .iter()
+            .map(|a| {
+                assert!(a.hardware, "{} is listed before software", a.name);
+                (a.name, a.vaapi.as_ref().map(|(node, low)| (node.to_str().unwrap(), *low)))
+            })
+            .collect();
+        assert_eq!(got, expected);
+
+        // No VAAPI node, no VAAPI attempt; too small or 10-bit H.264, no
+        // hardware at all.
+        let none = video_encoder_attempts(&ExportVideoCodec::H264, 1920, 1080, false, &[]);
+        assert!(none.iter().all(|a| a.vaapi.is_none()));
+        for (w, h, deep) in [(64, 64, false), (1920, 1080, true)] {
+            let only = video_encoder_attempts(&ExportVideoCodec::H264, w, h, deep, &nodes);
+            assert_eq!(only.iter().map(|a| a.name).collect::<Vec<_>>(), ["libx264"], "{w}x{h} 10-bit={deep}");
+        }
+    }
+
+    /// #555: AMF was given NVENC's options, `rc vbr` and `preset p5`,
+    /// which it refuses while parsing them — so on AMD hardware it never
+    /// opened, and every render went to software. Its own options parse:
+    /// here, with no AMD runtime, the open gets as far as looking for the
+    /// hardware, and on an AMD machine it opens.
+    #[test]
+    fn amf_is_given_options_it_accepts() {
+        ffmpeg_next::init().unwrap();
+        for (codec, name) in [
+            (ExportVideoCodec::H264, "h264_amf"),
+            (ExportVideoCodec::H265, "hevc_amf"),
+            (ExportVideoCodec::Av1, "av1_amf"),
+        ] {
+            let Some(amf) = ffmpeg_next::encoder::find_by_name(name) else {
+                eprintln!("skipped {name}: not in this FFmpeg");
+                continue;
+            };
+            let settings = make_settings(codec, "/dev/null");
+            let mut ctx = ffmpeg_next::codec::context::Context::new_with_codec(amf).encoder().video().unwrap();
+            ctx.set_width(320);
+            ctx.set_height(240);
+            ctx.set_time_base(ffmpeg_next::Rational::new(1, 24));
+            ctx.set_format(ffmpeg_next::format::Pixel::NV12);
+            let mut opts = ffmpeg_next::Dictionary::new();
+            hardware_quality(name, &settings, &mut ctx, &mut opts);
+            if let Err(e) = ctx.open_as_with(amf, opts) {
+                assert_ne!(
+                    e,
+                    ffmpeg_next::Error::Other { errno: ffmpeg_next::util::error::EINVAL },
+                    "{name} refused its options"
+                );
+            }
+        }
+    }
+
+    /// #555: a render tries VAAPI and, where it cannot encode, goes on to
+    /// software. On an AMD or Intel machine the VAAPI encoder opens and
+    /// writes the file; on an NVIDIA one its VAAPI driver makes the
+    /// surfaces but cannot encode, so this exercises the real fallback.
+    #[test]
+    #[serial]
+    fn a_vaapi_render_encodes_or_falls_back_to_software() {
+        ffmpeg_next::init().unwrap();
+        let Some((node, _)) = klipp_core::GpuVendor::render_nodes().into_iter().next() else {
+            eprintln!("skipped: no render node");
+            return;
+        };
+        if ffmpeg_next::encoder::find_by_name("h264_vaapi").is_none() {
+            eprintln!("skipped: this FFmpeg has no VAAPI encoder");
+            return;
+        }
+        let (path, settings, snapshot) = fallback_settings("test_vaapi.mp4");
+        // Surfaces are at least 128 on a side for every hardware encoder.
+        let snapshot = SequenceSnapshot { width: 320, height: 240, ..snapshot };
+        ATTEMPTS.with(|a| {
+            *a.borrow_mut() = Some(vec![
+                EncoderAttempt { name: "h264_vaapi", hardware: true, vaapi: Some((node.clone(), false)) },
+                EncoderAttempt { name: "libx264", hardware: false, vaapi: None },
+            ])
+        });
+        let opened = Encoder::open(&path, &settings, &snapshot);
+        ATTEMPTS.with(|a| *a.borrow_mut() = None);
+        let mut enc = opened.expect("VAAPI encodes or the render falls back; it does not fail");
+        match enc.video_codec_name {
+            "h264_vaapi" => {
+                assert_eq!(enc.hardware_fallback, None);
+                assert_eq!(enc.hw_info(), "VAAPI (AMD/Intel)");
+            }
+            "libx264" => assert_eq!(enc.hardware_fallback, Some("h264_vaapi")),
+            other => panic!("opened {other}"),
+        }
+        // The picture goes in as NV12 or planar YUV, whichever the encoder
+        // took, and the frame paths write that layout.
+        assert!(matches!(enc.video_format(), ffmpeg_next::format::Pixel::NV12 | ffmpeg_next::format::Pixel::YUV420P));
+        let rgba = [0u8, 128, 255, 255].repeat(320 * 240);
+        for _ in 0..5 {
+            enc.encode_video_frame(&rgba, 320, 240).unwrap();
+        }
+        let linear = [0.2f32, 0.4, 0.8, 1.0].repeat(320 * 240);
+        for _ in 0..5 {
+            enc.encode_linear_frame(&linear, 320, 240).unwrap();
+        }
+        enc.finalise().unwrap();
+        match std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,nb_read_frames", "-of", "csv=p=0"])
+            .arg(&path)
+            .output()
+        {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(text.contains("h264"), "an H.264 video: {text}");
+                assert!(text.trim().ends_with(",10"), "all ten frames play: {text}");
             }
             Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
         }

@@ -39,15 +39,51 @@ impl GpuVendor {
         for n in 0..4u32 {
             let path = base.join(format!("card{n}")).join("device").join("vendor");
             if let Ok(contents) = std::fs::read_to_string(&path) {
-                match contents.trim() {
-                    "0x10de" => return GpuVendor::Nvidia,
-                    "0x1002" => return GpuVendor::Amd,
-                    "0x8086" => return GpuVendor::Intel,
-                    _ => continue,
+                match Self::from_pci_id(&contents) {
+                    GpuVendor::Unknown => continue,
+                    vendor => return vendor,
                 }
             }
         }
         GpuVendor::Unknown
+    }
+
+    /// The vendor a sysfs `vendor` file names.
+    fn from_pci_id(id: &str) -> Self {
+        match id.trim() {
+            "0x10de" => GpuVendor::Nvidia,
+            "0x1002" => GpuVendor::Amd,
+            "0x8086" => GpuVendor::Intel,
+            _ => GpuVendor::Unknown,
+        }
+    }
+
+    /// Every DRM render node, `/dev/dri/renderD*`, with its GPU's vendor,
+    /// in node order.
+    ///
+    /// Where [`Self::detect`] answers for the first card, this lets a
+    /// caller pick a device by vendor: a laptop with an Intel iGPU and an
+    /// NVIDIA dGPU has one render node for each.
+    pub fn render_nodes() -> Vec<(std::path::PathBuf, Self)> {
+        Self::render_nodes_in(std::path::Path::new("/sys/class/drm"), std::path::Path::new("/dev/dri"))
+    }
+
+    pub(crate) fn render_nodes_in(sys: &std::path::Path, dev: &std::path::Path) -> Vec<(std::path::PathBuf, Self)> {
+        let mut nodes: Vec<(u32, std::path::PathBuf, Self)> = std::fs::read_dir(sys)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let n: u32 = name.strip_prefix("renderD")?.parse().ok()?;
+                let vendor = std::fs::read_to_string(entry.path().join("device").join("vendor"))
+                    .map(|id| Self::from_pci_id(&id))
+                    .unwrap_or(GpuVendor::Unknown);
+                Some((n, dev.join(&name), vendor))
+            })
+            .collect();
+        nodes.sort_by_key(|(n, ..)| *n);
+        nodes.into_iter().map(|(_, path, vendor)| (path, vendor)).collect()
     }
 
     /// Should VAAPI be attempted for this vendor?
@@ -79,6 +115,28 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn render_nodes_are_listed_in_order_with_their_vendors() {
+        let base = tmp_base("render_nodes");
+        for (node, id) in [("renderD129", "0x10de"), ("renderD128", "0x8086"), ("renderD130", "0xbeef")] {
+            let dir = base.join(node).join("device");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("vendor"), format!("{id}\n")).unwrap();
+        }
+        // A card entry is not a render node.
+        write_vendor(&base, 0, "0x1002");
+        let dev = std::path::Path::new("/dev/dri");
+        assert_eq!(
+            GpuVendor::render_nodes_in(&base, dev),
+            vec![
+                (dev.join("renderD128"), GpuVendor::Intel),
+                (dev.join("renderD129"), GpuVendor::Nvidia),
+                (dev.join("renderD130"), GpuVendor::Unknown),
+            ]
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

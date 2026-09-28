@@ -66,7 +66,7 @@ Subject masking and segmentation (BiRefNet, MobileSAM, RF-DETR-Seg), speech tran
 
 ### Delivery
 
-Export with CPU/GPU render parity and real HDR output; hardware encoding (NVENC, AMF) that falls back to the software encoder when no hardware session is free; web presets that normalise to −14 LUFS, where those platforms play, while masters keep their level and Broadcast its R128 −23; an export with no path set goes to your Videos folder, named after the project; burnt-in or sidecar captions; and a delivery check that covers picture **and** sound against the project's brief.
+Export with CPU/GPU render parity and real HDR output; hardware encoding (NVENC on NVIDIA, AMF and VAAPI on AMD, VAAPI on Intel) that falls back to the software encoder when no hardware session is free; web presets that normalise to −14 LUFS, where those platforms play, while masters keep their level and Broadcast its R128 −23; an export with no path set goes to your Videos folder, named after the project; burnt-in or sidecar captions; and a delivery check that covers picture **and** sound against the project's brief.
 
 ### Plugins
 

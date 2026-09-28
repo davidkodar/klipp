@@ -86,9 +86,9 @@ Still-image RAW files (`.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.orf`, `.rw2`, `
 
 | Codec | Containers | Hardware encode | Notes |
 |-------|-----------|------|----------------|
-| H.264 / AVC | MP4, MKV, MOV | NVENC, AMF (8-bit) | 8- or 10-bit; CRF, CBR or VBR |
-| H.265 / HEVC | MP4, MKV, MOV | NVENC, AMF | 8- or 10-bit; HLG and HDR10 with mastering metadata |
-| AV1 | MP4, MKV, WebM | NVENC | SVT-AV1 in software |
+| H.264 / AVC | MP4, MKV, MOV | NVENC, AMF, VAAPI (8-bit) | 8- or 10-bit; CRF, CBR or VBR |
+| H.265 / HEVC | MP4, MKV, MOV | NVENC, AMF, VAAPI | 8- or 10-bit; HLG and HDR10 with mastering metadata |
+| AV1 | MP4, MKV, WebM | NVENC, AMF, VAAPI | SVT-AV1 in software |
 | VP9 | WebM, MKV, MP4 | no | libvpx-vp9 |
 | ProRes 422 / 422 HQ / 4444 | MOV, MKV | no | 10-bit; HLG and HDR10 |
 | DNxHD 115 / 145 | MOV, MKV | no | 8-bit 4:2:2 |

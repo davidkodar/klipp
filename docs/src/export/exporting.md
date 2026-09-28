@@ -87,16 +87,17 @@ For each job the queue shows progress, the estimated time remaining, render spee
 
 ## Hardware Encoding
 
-Klipp picks a hardware encoder when FFmpeg has one for the codec:
+Klipp tries every hardware encoder FFmpeg has for the codec, in turn, before the software one:
 
-- **H.264 and H.265** — NVENC (NVIDIA), then AMF (AMD), then libx264 / libx265.
-- **AV1** — NVENC, then SVT-AV1.
+- **H.264 and H.265** — NVENC (NVIDIA), then AMF (AMD), then VAAPI (AMD and Intel), then libx264 / libx265.
+- **AV1** — NVENC, then AMF, then VAAPI, then SVT-AV1.
+- **VAAPI** is tried on each AMD or Intel GPU's render node (`/dev/dri/renderD*`), and again there in low-power mode, which is the only one some Intel GPUs have for HEVC and AV1. It is not tried on NVIDIA's, whose VAAPI driver only decodes.
 - **10-bit H.264** always uses libx264, because no hardware H.264 encoder writes ten bits.
 - A sequence smaller than 128×128 always encodes in software.
 
 ProRes, DNxHD, VP9 and GIF always encode in software.
 
-A hardware encoder can be listed by FFmpeg and still refuse to open, for instance when every NVENC session on the card is taken by other programs or other exports. When it refuses, Klipp tries once more with the software encoder for the same codec, and the job's hardware line reads **Software (CPU): NVENC unavailable** (or **hardware encoder unavailable** for AMF). If the software encoder fails too, the export fails with both errors. Only an encoder that refuses to open falls back: one that opens and then fails on its first frame still fails the export.
+A distribution's FFmpeg usually has all three families whatever GPU the machine has, so being listed says nothing: a hardware encoder can refuse to open because the GPU is another vendor's, or because every NVENC session on the card is taken by other programs or other exports. When one refuses, Klipp goes on to the next, and in the end to the software encoder for the same codec. The job's hardware line then reads **Software (CPU): NVENC unavailable** on an NVIDIA machine, and **Software (CPU): hardware encoder unavailable** otherwise. If the software encoder fails too, the export fails with every encoder's error. Only an encoder that refuses to open falls back: one that opens and then fails on its first frame still fails the export.
 
 ## Cinema (DCP) Delivery
 
