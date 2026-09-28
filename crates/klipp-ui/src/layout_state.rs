@@ -175,8 +175,6 @@ pub enum LibraryCategory {
     Generators,
     /// Royalty-free music and sound-effect search (Jamendo, Freesound).
     Audio,
-    /// User-authored composition templates with exposed parameters.
-    Templates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
