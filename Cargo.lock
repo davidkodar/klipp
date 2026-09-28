@@ -2832,6 +2832,7 @@ dependencies = [
  "klipp-core",
  "klipp-deepfilter",
  "klipp-ml",
+ "klipp-ml-ort",
  "libloading 0.8.9",
  "livi",
  "ndarray 0.15.6",
