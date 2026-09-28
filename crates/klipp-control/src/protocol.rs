@@ -24,17 +24,22 @@ fn strict_motion_fields(value: &serde_json::Value) -> Result<(), String> {
 }
 
 fn strict_brief<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_timeline::Brief, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
+    brief_from_value(serde_json::Value::deserialize(d)?).map_err(serde::de::Error::custom)
+}
+
+/// A brief from JSON, its type styles' motion held to the known fields:
+/// what `set_brief` reads, and what `update_brief` reads once merged.
+pub(crate) fn brief_from_value(value: serde_json::Value) -> Result<klipp_timeline::Brief, String> {
     if let Some(styles) = value.get("type_styles").and_then(serde_json::Value::as_array) {
         for style in styles {
             for side in ["enter", "exit"] {
                 if let Some(motion) = style.get(side) {
-                    strict_motion_fields(motion).map_err(serde::de::Error::custom)?;
+                    strict_motion_fields(motion)?;
                 }
             }
         }
     }
-    serde_json::from_value(value).map_err(serde::de::Error::custom)
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 fn strict_edit_plan<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_timeline::EditPlan, D::Error> {
@@ -828,6 +833,10 @@ pub enum ControlCommand {
         #[serde(deserialize_with = "strict_brief")]
         brief: klipp_timeline::Brief,
     },
+    /// Change the named fields of the brief, as one undo step: every
+    /// field not given stays as it is, and one given as null goes back to
+    /// empty. Held to the same checks as `set_brief`.
+    UpdateBrief { fields: serde_json::Value },
     /// The edit plan: the paper edit, proposed and approved before it is
     /// built, with the ops it lowers to.
     EditPlan,
@@ -961,6 +970,12 @@ fn default_analyze() -> bool { true }
 mod tests {
     use super::Request;
     use serde_json::json;
+
+    #[test]
+    fn update_brief_arrives_as_a_field_object() {
+        let r: Request = serde_json::from_value(json!({ "method": "update_brief", "fields": { "notes": "n" } })).unwrap();
+        assert!(matches!(r.command, super::ControlCommand::UpdateBrief { .. }), "{r:?}");
+    }
 
     #[test]
     fn incoming_brief_and_plan_motion_reject_unknown_fields() {

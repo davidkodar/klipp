@@ -1744,6 +1744,29 @@ fn picture_track(seq: &klipp_timeline::Sequence) -> Option<&klipp_timeline::Trac
     seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible && t.clips.iter().any(is_picture_clip))
 }
 
+/// `current` with `fields` laid over it by name: what `update_brief`
+/// sets. A field given as null goes back to its empty value; a name
+/// the brief does not have is refused, where a whole `set_brief` would
+/// drop it without a word (#498).
+fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::Value) -> Result<klipp_timeline::Brief, String> {
+    let object = |b: &klipp_timeline::Brief| match serde_json::to_value(b) {
+        Ok(serde_json::Value::Object(m)) => Ok(m),
+        _ => Err("the brief does not serialise as an object".to_string()),
+    };
+    let serde_json::Value::Object(fields) = fields else {
+        return Err("fields is an object: the brief's fields to change, by name".into());
+    };
+    let empty = object(&klipp_timeline::Brief::default())?;
+    let mut merged = object(current)?;
+    for (name, value) in fields {
+        let Some(cleared) = empty.get(name) else {
+            return Err(format!("{name:?} is not a field of the brief; it has {}", empty.keys().cloned().collect::<Vec<_>>().join(", ")));
+        };
+        merged.insert(name.clone(), if value.is_null() { cleared.clone() } else { value.clone() });
+    }
+    protocol::brief_from_value(serde_json::Value::Object(merged))
+}
+
 /// The look a frame is judged against: the brief's, else neutral; a
 /// screen recording (the beat sheet found holds) is judged as one when
 /// the brief names no look.
@@ -4869,6 +4892,15 @@ reference:   {}",
             Ok(v)
         }
 
+        ControlCommand::UpdateBrief { fields } => {
+            if in_batch {
+                return Err("update_brief is its own undo step; send it on its own".into());
+            }
+            let current = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone().unwrap_or_default();
+            let brief = merge_brief(&current, &fields)?;
+            handle(ctx, ControlCommand::SetBrief { brief }, &mut None)
+        }
+
         ControlCommand::SetBrief { mut brief } => {
             if in_batch {
                 return Err("set_brief is its own undo step; send it on its own".into());
@@ -5505,6 +5537,30 @@ mod tests {
         assert_eq!(picture_track(&seq).map(|t| t.name.as_str()), Some("Video 1"));
         seq.tracks.retain(|t| t.name != "Video 1");
         assert!(picture_track(&seq).is_none(), "a hidden track and a track of gaps hold nothing to grade");
+    }
+
+    /// An update changes what it names and nothing else, clears what it
+    /// gives as null, and refuses a name the brief does not have (#498).
+    #[test]
+    fn an_update_changes_only_the_fields_it_names() {
+        let current: klipp_timeline::Brief = serde_json::from_value(serde_json::json!({
+            "title": "Wherever We Walk", "tone": "calm", "target_secs": 150.0,
+            "cast": [{"name": "Tove", "role": "walking in Bangkok"}], "notes": "sparse voiceover",
+        })).unwrap();
+        let updated = merge_brief(&current, &serde_json::json!({ "notes": "stylised transitions at the chapter changes", "tone": null })).unwrap();
+        assert_eq!(updated.notes, "stylised transitions at the chapter changes");
+        assert_eq!(updated.tone, "", "null clears");
+        assert_eq!(updated.title, "Wherever We Walk");
+        assert_eq!(updated.target_secs, Some(150.0));
+        assert_eq!(updated.cast.len(), 1);
+
+        let err = merge_brief(&current, &serde_json::json!({ "notse": "x" })).unwrap_err();
+        assert!(err.contains("\"notse\" is not a field of the brief"), "{err}");
+        assert!(merge_brief(&current, &serde_json::json!(["notes"])).is_err());
+        // The type styles' motion is held to its fields as in set_brief.
+        assert!(merge_brief(&current, &serde_json::json!({
+            "type_styles": [{"name": "place", "enter": {"kind": "rise", "delai_secs": 1.0}}]
+        })).is_err());
     }
 
     #[test]

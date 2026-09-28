@@ -614,7 +614,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
-        "klipp_set_brief" => json!({ "method": "set_brief", "brief": args.get("brief").cloned().ok_or("missing required argument: brief")? }),
+        "klipp_set_brief" => {
+            let brief = args.get("brief").cloned().ok_or("missing required argument: brief")?;
+            if args.get("merge").and_then(|v| v.as_bool()).unwrap_or(false) {
+                json!({ "method": "update_brief", "fields": brief })
+            } else {
+                json!({ "method": "set_brief", "brief": brief })
+            }
+        }
         "klipp_edit_plan" => json!({ "method": "edit_plan" }),
         "klipp_set_edit_plan" => json!({ "method": "set_edit_plan", "plan": args.get("plan").cloned().ok_or("missing required argument: plan")? }),
         "klipp_approve_edit_plan" => json!({ "method": "approve_edit_plan" }),
@@ -1772,7 +1779,9 @@ fn tool_definitions() -> Vec<Value> {
               the user for what it should say and set it.",
              json!({}), vec![]),
         tool("klipp_set_brief",
-             "Replace the brief, as one undo step. A brief is an object with any of: title, \
+             "Replace the brief, as one undo step; with merge true, change only the fields \
+              given and keep the rest (a field given as null is cleared, a name the brief \
+              does not have is refused). A brief is an object with any of: title, \
               type_styles (the brand's type system: [{name, font?, bold?, size?, color?, \
               fill?, backing?, full_frame?, x?, y?, align?, outline?, outline_color?, glow?, \
               glow_color?, gradient?, animate?, animate_secs?, stagger?, enter?, exit?, loop_effect?}] — a \
@@ -1793,7 +1802,7 @@ fn tool_definitions() -> Vec<Value> {
               speech-to-text: run klipp_analyze after setting it), notes. What is left out asks for nothing. Names in lower thirds \
               come from the cast, klipp_check holds the piece to the brief, and an export \
               that names no size or loudness takes the brief's.",
-             json!({ "brief": { "type": "object" } }), vec!["brief"]),
+             json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
              "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \
               the ops it lowers to. Read it to show the user what is proposed, or to see what \
@@ -2047,6 +2056,14 @@ mod wait_tests {
                 assert!(!error.starts_with("unknown tool:"), "advertised tool is not dispatchable: {name}");
             }
         }
+    }
+
+    #[test]
+    fn set_brief_with_merge_sends_only_the_fields() {
+        let whole = tool_to_command("klipp_set_brief", &json!({ "brief": { "notes": "n" } })).unwrap();
+        assert_eq!(whole, json!({ "method": "set_brief", "brief": { "notes": "n" } }));
+        let merged = tool_to_command("klipp_set_brief", &json!({ "brief": { "notes": "n" }, "merge": true })).unwrap();
+        assert_eq!(merged, json!({ "method": "update_brief", "fields": { "notes": "n" } }));
     }
 
     #[test]
