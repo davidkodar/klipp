@@ -1731,6 +1731,19 @@ fn measure_at(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Resul
     Ok(klipp_color::measure::measure_frame(&data, w, h, &faces))
 }
 
+/// Whether the colour tools grade this clip: an enabled clip of media.
+fn is_picture_clip(c: &klipp_timeline::Clip) -> bool {
+    c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
+}
+
+/// The track the colour tools work on: the top visible video track
+/// with a picture clip on it. A track above holding only titles, or
+/// nothing, is passed over; taking the first video track as it came
+/// left every tool with nothing to grade (#513).
+fn picture_track(seq: &klipp_timeline::Sequence) -> Option<&klipp_timeline::Track> {
+    seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible && t.clips.iter().any(is_picture_clip))
+}
+
 /// The look a frame is judged against: the brief's, else neutral; a
 /// screen recording (the beat sheet found holds) is judged as one when
 /// the brief names no look.
@@ -2572,15 +2585,15 @@ fn handle(
                     let shots: Vec<(f64, f64, String)> = {
                         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                         let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                        seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                        picture_track(&seq).into_iter()
                             .flat_map(|t| t.clips.iter())
-                            .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                            .filter(|c| is_picture_clip(c))
                             .map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64(), c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into())))
                             .take(24)
                             .collect()
                     };
                     if shots.is_empty() {
-                        return Err("no picture clip on the top video track to take a look from".into());
+                        return Err("no picture clip on a video track to take a look from".into());
                     }
                     // The shot already closest to a defensible picture:
                     // the fewest findings, and a face in it if any shot
@@ -2674,9 +2687,9 @@ fn handle(
             let shots: Vec<(String, f64, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-                seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                picture_track(&seq).into_iter()
                     .flat_map(|t| t.clips.iter())
-                    .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                    .filter(|c| is_picture_clip(c))
                     .map(|c| (
                         c.id.0.to_string(),
                         c.timeline_in.to_secs_f64(),
@@ -2687,7 +2700,7 @@ fn handle(
                     .collect()
             };
             if shots.len() < 2 {
-                return Err("matching needs at least two shots on the top video track".into());
+                return Err("matching needs at least two shots on one video track".into());
             }
             // Every shot read the way a colourist checks one: three
             // frames, the middle reading grading it.
@@ -3101,15 +3114,24 @@ fn handle(
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
-                seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).take(1)
+                // One clip asked for is found on whichever video track
+                // holds it; the whole pass takes the picture track.
+                let tracks: Vec<&klipp_timeline::Track> = match want {
+                    Some(_) => seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).collect(),
+                    None => picture_track(&seq).into_iter().collect(),
+                };
+                tracks.into_iter()
                     .flat_map(|t| t.clips.iter())
-                    .filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) && want.is_none_or(|w| c.id.0 == w))
+                    .filter(|c| is_picture_clip(c) && want.is_none_or(|w| c.id.0 == w))
                     .map(|c| (c.id.0.to_string(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into())))
                     .take(48)
                     .collect()
             };
             if shots.is_empty() {
-                return Err("no picture clip to grade on the top video track".into());
+                return Err(match &clip_id {
+                    Some(id) => format!("{id} is not a picture clip on a visible video track"),
+                    None => "no picture clip to grade on a video track".into(),
+                });
             }
             let n_rounds = if apply { rounds.unwrap_or(3).clamp(1, 5) } else { 0 };
             let mut per_shot = Vec::new();
@@ -5461,6 +5483,28 @@ mod tests {
         }
         assert_eq!(seen.len(), 19, "wire_name has 19 arms; every one must be listed");
         assert!(parse_log_format("slog3").is_err(), "names are case-sensitive");
+    }
+
+    /// A video track above the footage holding no picture (a title, a
+    /// gap) or hidden is passed over: the colour tools grade the track
+    /// the footage is on (#513).
+    #[test]
+    fn the_picture_track_is_the_top_one_with_footage() {
+        use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+        let tc = |s: i64| klipp_core::Timecode::from_frames(s * 25, 25);
+        let media = || Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0), tc(2)) };
+        let mut empty = Track::new("Credits", TrackKind::Video);
+        empty.clips = vec![Clip::gap(tc(0), tc(2))];
+        let mut hidden = Track::new("Hidden", TrackKind::Video);
+        hidden.clips = vec![media()];
+        hidden.visible = false;
+        let mut footage = Track::new("Video 1", TrackKind::Video);
+        footage.clips = vec![media()];
+        let mut seq = Sequence::new_default();
+        seq.tracks = vec![hidden, empty, footage, Track::new("Audio 1", TrackKind::Audio)];
+        assert_eq!(picture_track(&seq).map(|t| t.name.as_str()), Some("Video 1"));
+        seq.tracks.retain(|t| t.name != "Video 1");
+        assert!(picture_track(&seq).is_none(), "a hidden track and a track of gaps hold nothing to grade");
     }
 
     #[test]
