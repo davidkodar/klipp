@@ -16,8 +16,8 @@ Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`
 | **RF-DETR-Seg (Medium)** | 139 MB | Apache-2.0 | ort | Detect Objects and framing analysis |
 | **YuNet** | 233 KB | MIT | ort | Face detection for the colour measurements |
 | **PP-OCR detector + recogniser** | 2.4 MB + 7.7 MB | Apache-2.0 | ort | On-screen text in screen recordings |
-| **Piper voices** (LJSpeech, the default; Kristin, Norman, John, LibriTTS; Cori UK; NST Swedish) | 63–137 MB each | public domain or CC0; LibriTTS CC BY 4.0 | Piper | Scratch narration, chosen in Window → Narrate |
-| **Kokoro-82M** (8-bit) and 10 voices (Heart, Bella, Nicole, Michael, Fenrir, Puck; Emma, Isabella, George, Fable) | 86 MB + 0.5 MB a voice | Apache-2.0 | ort, espeak-ng | Natural-sounding narration |
+| **Piper voices** (LJSpeech, the fallback where Kokoro cannot run; Kristin, Norman, John, LibriTTS; Cori UK; NST Swedish) | 63–137 MB each | public domain or CC0; LibriTTS CC BY 4.0 | Piper | Scratch narration, chosen in Window → Narrate |
+| **Kokoro-82M** (8-bit) and 10 voices, one download (Heart, the default; Bella, Nicole, Michael, Fenrir, Puck; Emma, Isabella, George, Fable) | 86 MB + 0.5 MB a voice | Apache-2.0 | ort, espeak-ng | Natural-sounding narration |
 | **Piper en_US Lessac (medium)** | 63 MB | research only, **not for commercial use** | Piper | Kept for older projects that use it |
 | **DeepFilterNet3** | 8 MB | MIT OR Apache-2.0 | tract | Voice Isolation (speech enhancement) |
 | SAM 2.1 Tiny / Small / Base+ / Large | (pending) | Apache-2.0 | ort | Track Object (future) |

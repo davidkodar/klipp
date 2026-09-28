@@ -193,7 +193,7 @@ An agent never clicks and never does frame arithmetic: it names clips and media 
 
 The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft/) — the guide, the recipes and the reference are read by the model, not by the code, so they can be argued with and improved without a rebuild.
 
-It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses. A person does the same in **Window → Narrate**: type the words, pick a voice, set the speed and pauses, preview it, and place it at the playhead on the Voice track.
+It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses. A person does the same in **Window → Narrate**: type the words, pick a voice by name (each has a bundled sample to hear first), set the speed and pauses, preview it, and place it at the playhead on the Voice track. The ten natural-sounding Kokoro voices are one download of 87 MB; Heart is the default.
 
 The socket also covers the things an agent would otherwise have to ask a person to do: create a project or a sequence, change the brief one field at a time, shape a clip's volume by hand (`volume`) and duck the music under what is heard over it (`duck`: a clip marked as music, effects or ambience doesn't count, nor does one set well under the music), build a multicam group and cut its angles, tag and relink media, take a screenshot of the whole window, and use markers as a note channel both ways. The agent marks what it is unsure of and why, and treats the editor's todo markers as work asked for.
 
@@ -275,8 +275,8 @@ Models are downloaded on demand, verified by SHA-256 against the bundled manifes
 | RF-DETR-Seg (Preview / Medium) | Detection + segmentation, framing analysis | 134 / 139 MB | Apache-2.0 |
 | YuNet | Face detection for the colour measurements | 233 KB | MIT |
 | PP-OCRv3 det + PP-OCRv4 rec | On-screen text in screen recordings | ~2.4 MB + ~7.7 MB | Apache-2.0 |
-| Piper voices: LJSpeech (default), Kristin, Norman, John, LibriTTS (US); Cori (UK); NST (Swedish) | Scratch narration voices | 63–137 MB each | MIT (Piper); voices public domain or CC0, LibriTTS CC BY 4.0 |
-| Kokoro-82M (8-bit) + 10 voices: Heart, Bella, Nicole, Michael, Fenrir, Puck (US); Emma, Isabella, George, Fable (UK) | Natural-sounding narration (needs `espeak-ng`) | 86 MB + 0.5 MB a voice | Apache-2.0 |
+| Piper voices (lighter, under "More voices"): LJSpeech (the fallback where Kokoro cannot run), Kristin, Norman, John, LibriTTS (US); Cori (UK); NST (Swedish) | Scratch narration voices | 63–137 MB each | MIT (Piper); voices public domain or CC0, LibriTTS CC BY 4.0 |
+| Kokoro-82M (8-bit) + 10 voices, one download: Heart (the default), Bella, Nicole, Michael, Fenrir, Puck (US); Emma, Isabella, George, Fable (UK) | Natural-sounding narration (needs `espeak-ng`) | 86 MB + 0.5 MB a voice | Apache-2.0 |
 | Piper en_US Lessac (medium) | Scratch narration voice, kept for older projects | 63 MB | **Research only, not for commercial use** (Blizzard 2013 Lessac licence) |
 | DeepFilterNet3 | Voice Isolation (speech enhancement) | ~8 MB | MIT OR Apache-2.0 |
 
@@ -308,6 +308,10 @@ Klipp bundles these typefaces for its title tool, each under the **SIL Open Font
 ### Icons
 
 - **Phosphor Icons** — [phosphoricons.com](https://phosphoricons.com/). Licensed under **MIT**.
+
+### Narration samples
+
+`assets/narration-samples/` holds a few seconds of each Kokoro voice, so a voice can be heard before it is downloaded. They were spoken by [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) through Klipp's own narration path.
 
 ### Colour reference data
 

@@ -483,7 +483,7 @@ prompts = ""
 
 [[model]]
 id = "kokoro_v1_0_q8f16"
-display_name = "Kokoro-82M speech model (8-bit)"
+display_name = "Narration voices — Kokoro, 10 natural voices"
 size_bytes = 86033585
 sha256 = "04c658aec1b6008857c2ad10f8c589d4180d0ec427e7e6118ceb487e215c3cd0"
 license = "Apache-2.0 (Kokoro-82M weights, trained on permissive and non-copyrighted audio)"
