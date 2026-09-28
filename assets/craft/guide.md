@@ -151,6 +151,11 @@ exist until the plan runs.
   It comes down for speech only: not for clips marked music, sfx,
   ambience, foley or broll, nor for any set twelve decibels or more
   under the music (a camera's street sound under a bed).
+- `role {clip_id, role}`: what a clip is to the mix and the checks:
+  dialogue, voiceover, music, sfx, ambience, foley, broll or graphics.
+  Mark a camera's own sound `ambience` (or the shot `broll`) when it
+  runs under music, so a `duck` does not take it for speech; narration
+  is marked dialogue when `narrate` places it.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
   levels in decibels from the clip's own level (0 as set, -9 a duck,
   -60 near silence) at timeline

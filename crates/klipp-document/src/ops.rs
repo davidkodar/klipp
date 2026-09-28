@@ -2228,7 +2228,11 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     let music_level = settings.volume * settings.gain;
     let speaks = |c: &Clip| {
         let s = sound_settings_clip(seq, c);
-        let quiet = s.volume * s.gain < music_level * db_to_linear(-12.0);
+        // Twelve dB under or more, the guide's word: exactly 12 under was
+        // counted as speech by a strict comparison (a film's camera sound
+        // at -15 under music at -3 ducked it for 100 s, #457). A hundredth
+        // of a dB takes the rounding of two levels set in dB.
+        let quiet = s.volume * s.gain <= music_level * db_to_linear(-12.0 + 0.01);
         let not_speech = matches!(
             s.role,
             klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll
@@ -5394,6 +5398,18 @@ mod tests {
             c.volume = db_to_linear(-20.0);
         }
         assert!(duck(&quiet).unwrap_err().why.contains("no speech"), "quiet ambience is not ducked under");
+        // Exactly 12 dB under counts as under: camera sound at -15 dB
+        // beneath a bed at -3, as a film had it (#457).
+        let set = |seq: &Sequence, others_db: f32, music_db: f32| {
+            let mut s = seq.clone();
+            for c in s.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+                c.volume = db_to_linear(if c.id == music_id { music_db } else { others_db });
+            }
+            s
+        };
+        assert!(duck(&set(&seq, -15.0, -3.0)).unwrap_err().why.contains("no speech"), "12 dB under the music is not speech");
+        // 11 dB under is still heard over the music, and ducked under.
+        assert!(duck(&set(&seq, -14.0, -3.0)).is_ok(), "11 dB under is ducked under");
         // Marked ambience at full level: not speech either.
         let mut marked = seq.clone();
         for c in marked.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id != music_id) {
