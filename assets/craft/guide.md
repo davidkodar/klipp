@@ -265,8 +265,9 @@ exist until the plan runs.
   the later clips on the track close up by the change; a head trim
   then keeps the clip's start and shortens it from the front.
 - `split {clip_id, at}`: into two, the linked sound with it.
-- `remove {clip_id, ripple?}`: off the track; with ripple, later clips
-  close the gap.
+- `remove {clip_id, ripple?, linked?}`: off the track, and its linked
+  sound (or picture) with it unless `linked` is false; with ripple,
+  later clips close the gap on each track.
 - `move {clip_id, to}`: the clip's start to an anchor; a linked audio
   or video partner goes with it.
 - `j_cut {incoming_clip, frames}`: the incoming clip's sound starts so
