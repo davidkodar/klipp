@@ -179,3 +179,31 @@ fn a_picture_on_another_track_after_the_last_shot_is_played() {
     assert!(reached > 1.7, "the picture on V2 (1.0-1.8 s) was not played: reached {reached:.2} s");
     assert!(stopped, "playback did not stop at the end");
 }
+
+/// Looping over a timeline that ends on an end card: each pass runs to
+/// the card's end and wraps back to the shot, which plays again. The
+/// loop leaves clock-only for the shot it lands on.
+#[test]
+fn a_loop_through_the_end_card_wraps_back_to_the_shot() {
+    let Some(src) = common::ffv1_avi_ramp() else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let fps = Fps::new(common::FPS, 1);
+    let id = MediaId::new();
+    let tc = |f| common::frame_tc(f, fps);
+    let card = Clip { kind: ClipKind::Title(TitleData::default()), ..Clip::gap(tc(10), tc(50)) };
+    let seq = sequence(vec![track("Text 1", TrackKind::Text, vec![card]), track("V1", TrackKind::Video, vec![shot(id, 0, 20, fps)])], fps);
+    let e = Engine::start(seq, pool_of(id, &src, fps));
+    e.cmd.send(AppCommand::SetLoopPlayback(true)).unwrap();
+
+    let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(6));
+    assert!(!stopped, "a looping playback paused");
+    // Count the wraps: the playhead falling back from the card's end to
+    // the shot at the start.
+    let wraps = moves.windows(2).filter(|w| w[0].1 > 1.8 && w[1].1 < 0.4).count();
+    assert!(wraps >= 2, "{wraps} wraps in 6 s of a 2 s loop");
+    // After a wrap the shot plays: the playhead moves on through it.
+    let after_wrap = moves.windows(2).position(|w| w[0].1 > 1.8 && w[1].1 < 0.4).unwrap();
+    assert!(moves[after_wrap + 1..].iter().any(|m| m.1 > 0.5 && m.1 < 0.8), "the shot did not play after the wrap");
+}
