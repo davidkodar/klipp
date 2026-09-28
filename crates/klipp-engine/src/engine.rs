@@ -5090,6 +5090,9 @@ impl PlaybackEngine {
         // new anchor so the video catches up to where the free-running
         // audio actually is — zero drift, no accumulation.
         let t_cut = std::time::Instant::now();
+        // A clip change leaves clock-only; the branches below enter it
+        // again where the next place has no picture.
+        self.clock_only = false;
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let old_clip = self.v1_clip_id(&seq);
 
@@ -5749,6 +5752,9 @@ impl PlaybackEngine {
 
     fn execute_loop(&mut self, target: Timecode) {
         debug!("[Loop] Executing loop-back to {:.3}s", target.to_secs_f64());
+        // The loop lands on its target by either path below; whatever
+        // is there decides the mode, not the tail it left.
+        self.clock_only = false;
         let was_playing = self.state == PlaybackState::Playing;
 
         // Reset pre-seek state for next iteration
