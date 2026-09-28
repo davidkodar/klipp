@@ -167,12 +167,15 @@ pub enum Op {
     LCut { outgoing_clip: ClipRef, frames: i64 },
     /// A clip into two at an anchor strictly inside it.
     Split { clip_id: ClipRef, at: Anchor },
-    /// A clip off its track; with `ripple`, the clips after it on that
-    /// track close the gap.
+    /// A clip off its track, and its linked partner (a picture's sound,
+    /// a sound's picture) with it unless `linked` is false; with
+    /// `ripple`, the clips after each on its track close the gap.
     Remove {
         clip_id: ClipRef,
         #[serde(default)]
         ripple: bool,
+        #[serde(default = "default_true")]
+        linked: bool,
     },
     /// A clip's start to an anchor, its length unchanged; a linked audio
     /// or video partner goes with it. Refused into another clip.
@@ -1930,24 +1933,45 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             Ok((what, edit, ids))
         }
 
-        Op::Remove { clip_id: clip_ref, ripple } => {
+        Op::Remove { clip_id: clip_ref, ripple, linked } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
-            let _ = clip_ref;
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
             let name = clip_name(seq, pool, clip);
-            if *ripple {
-                let gap = clip.timeline_out - clip.timeline_in;
-                let shifted: Vec<(ClipId, Timecode, Timecode)> =
-                    seq.tracks[ti].clips[ci + 1..].iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
-                let what = format!("remove {} ({:.2}-{:.2} s) and close the gap: {} clips move {:.2} s earlier", name, secs(clip.timeline_in), secs(clip.timeline_out), shifted.len(), secs(gap));
-                let ids: Vec<ClipId> = shifted.iter().map(|s| s.0).collect();
-                Ok((what, EditCommand::LegacyRippleRemove { removed_clip: clip.clone(), track_index: ti, position: ci, shifted_clips: shifted }, ids))
+            // One clip's removal on its own track, and the clips after it
+            // there that a ripple moves.
+            let take = |ti: usize, ci: usize, clip: &Clip| -> (EditCommand, Vec<ClipId>) {
+                if *ripple {
+                    let shifted: Vec<(ClipId, Timecode, Timecode)> =
+                        seq.tracks[ti].clips[ci + 1..].iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect();
+                    let ids = shifted.iter().map(|s| s.0).collect();
+                    (EditCommand::LegacyRippleRemove { removed_clip: clip.clone(), track_index: ti, position: ci, shifted_clips: shifted }, ids)
+                } else {
+                    (EditCommand::LegacyRemoveClip { clip: clip.clone(), track_index: ti, position: ci }, Vec::new())
+                }
+            };
+            // The linked partner goes too, as it does with a split, so the
+            // picture's sound is not left behind to block the next place
+            // (#458). One on a locked track stays, and the reply says so.
+            let partner = clip.linked_clip_id.filter(|_| *linked).and_then(|pid| find_clip(seq, pid));
+            let (main, mut ids) = take(ti, ci, clip);
+            let (edit, with) = match partner {
+                Some((pti, _, _)) if seq.tracks[pti].locked => (main, format!(", its linked clip left on locked track {pti}")),
+                Some((pti, pci, p)) => {
+                    let (pe, pids) = take(pti, pci, p);
+                    ids.extend(pids);
+                    (EditCommand::Batch(vec![main, pe]), ", its linked clip with it".to_string())
+                }
+                None => (main, String::new()),
+            };
+            let what = if *ripple {
+                let moved = ids.len();
+                format!("remove {} ({:.2}-{:.2} s){with} and close the gap: {moved} clips move {:.2} s earlier", name, secs(clip.timeline_in), secs(clip.timeline_out), secs(clip.timeline_out - clip.timeline_in))
             } else {
-                let what = format!("remove {} ({:.2}-{:.2} s), leaving the gap", name, secs(clip.timeline_in), secs(clip.timeline_out));
-                Ok((what, EditCommand::LegacyRemoveClip { clip: clip.clone(), track_index: ti, position: ci }, Vec::new()))
-            }
+                format!("remove {} ({:.2}-{:.2} s){with}, leaving the gap", name, secs(clip.timeline_in), secs(clip.timeline_out))
+            };
+            Ok((what, edit, ids))
         }
 
         Op::Cut { from, to } => {
@@ -6374,7 +6398,7 @@ mod tests {
     #[test]
     fn a_ripple_remove_closes_the_gap_and_the_commands_replay_on_the_document() {
         let (seq, pool, _, a, b) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(a), ripple: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Remove { clip_id: ClipRef::Id(a), ripple: true, linked: true }]).unwrap();
         assert_eq!(plan.steps[0].after[0].clip_id, b);
         assert!((plan.steps[0].after[0].timeline_in_secs).abs() < 1e-9, "b moved to the start");
         // Applying the plan's commands to the real document gives the
@@ -6394,6 +6418,54 @@ mod tests {
         }
         assert_eq!(seqs[0].tracks[0].clips.len(), 2);
         assert_eq!(seqs[0].tracks[0].clips[1].timeline_in, tc(4.0));
+    }
+
+    /// A picture's linked sound goes with it, so re-placing the picture
+    /// is not refused by the sound left behind; `linked: false` leaves
+    /// it; a ripple closes both tracks together, and undo puts both
+    /// back (#458).
+    #[test]
+    fn a_remove_takes_the_linked_sound_with_it() {
+        let (seq, pool, _, a, b) = fixture();
+        let shape = |s: &Sequence| -> Vec<Vec<(ClipId, Timecode, Timecode)>> {
+            s.tracks.iter().map(|t| t.clips.iter().map(|c| (c.id, c.timeline_in, c.timeline_out)).collect()).collect()
+        };
+        let replay = |ops: &[Op]| {
+            let plan = resolve(&seq, &pool, ops).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            for s in &plan.steps {
+                view.apply_forward(&s.edit);
+            }
+            let after = seqs[0].clone();
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            for s in plan.steps.iter().rev() {
+                view.apply_inverse(&s.edit);
+            }
+            (plan, after, seqs.remove(0))
+        };
+
+        let (plan, after, undone) = replay(&[Op::Remove { clip_id: ClipRef::Id(a), ripple: false, linked: true }]);
+        assert!(plan.steps[0].what.contains("its linked clip with it"), "{}", plan.steps[0].what);
+        assert_eq!(after.tracks[0].clips.len(), 1);
+        assert_eq!(after.tracks[1].clips.len(), 1, "the sound under a went with it");
+        assert_eq!(after.tracks[1].clips[0].linked_clip_id, Some(b), "b's sound stays");
+        assert_eq!(shape(&undone), shape(&seq), "undo puts both back");
+
+        let (_, after, _) = replay(&[Op::Remove { clip_id: ClipRef::Id(a), ripple: false, linked: false }]);
+        assert_eq!(after.tracks[1].clips.len(), 2, "linked false leaves the sound");
+
+        let (_, after, undone) = replay(&[Op::Remove { clip_id: ClipRef::Id(a), ripple: true, linked: true }]);
+        assert_eq!(after.tracks[0].clips[0].timeline_in, tc(0.0));
+        assert_eq!(after.tracks[1].clips.len(), 1);
+        assert_eq!(after.tracks[1].clips[0].timeline_in, tc(0.0), "b's sound closed up with b");
+        assert_eq!(shape(&undone), shape(&seq));
+
+        // Removing the sound takes the picture, the other way round.
+        let sound = seq.tracks[1].clips[0].id;
+        let (_, after, _) = replay(&[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: true }]);
+        assert_eq!(after.tracks[0].clips.len(), 1);
     }
 
     #[test]
