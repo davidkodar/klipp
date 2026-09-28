@@ -7,8 +7,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// The voice a take is spoken in when none is named.
-pub const DEFAULT_VOICE: &str = "piper_en_us_lessac_medium";
+/// The voice a take is spoken in when none is named: public domain, so a
+/// take made in it can go into any piece, paid work included.
+pub const DEFAULT_VOICE: &str = "piper_en_us_ljspeech_high";
+
+/// The voice takes were named without: the default before the voices
+/// were checked for their licences. Its takes keep the names they have,
+/// and every other voice is in its take's name.
+const UNNAMED_VOICE: &str = "piper_en_us_lessac_medium";
 
 /// A voice the manifest offers.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +27,10 @@ pub struct Voice {
     pub size_bytes: u64,
     /// Both its files are in the model cache.
     pub installed: bool,
+    /// What the voice may be used for, as the manifest says.
+    pub license: String,
+    /// Its terms allow a take in a piece that is sold or paid for.
+    pub commercial_use: bool,
 }
 
 /// What to say, and how.
@@ -56,11 +66,20 @@ pub fn voices() -> Result<Vec<Voice>, String> {
                 name: e.display_name.clone(),
                 size_bytes: e.size_bytes + config.map_or(0, |c| c.size_bytes),
                 installed: cache.path_for(e).is_file() && config.is_some_and(|c| cache.path_for(c).is_file()),
+                license: e.license.clone(),
+                commercial_use: commercial_use(&e.license),
             }
         })
         .collect();
     voices.sort_by_key(|v| v.id != DEFAULT_VOICE);
     Ok(voices)
+}
+
+/// Whether a voice's licence allows commercial work: anything but one
+/// marked research only or non-commercial.
+pub fn commercial_use(license: &str) -> bool {
+    let l = license.to_ascii_lowercase();
+    !(l.contains("research only") || l.contains("non-commercial") || l.contains("noncommercial") || l.contains("-nc"))
 }
 
 /// The piper program: `KLIPP_PIPER`, else `piper` or `piper-tts` on the
@@ -111,12 +130,12 @@ fn text_hash(text: &str) -> u64 {
 }
 
 /// The hash in a take's file name: the text, the delivery when one was
-/// asked for, and the voice when it is not the default. A slower take or
-/// another voice is a file of its own, while a take in the default voice
-/// with no delivery keeps the name it always had.
+/// asked for, and the voice. A slower take or another voice is a file of
+/// its own, while a Lessac take, the voice takes were first named
+/// without, keeps the name it always had.
 pub fn take_key(text: &str, voice: &str, delivery: &[String]) -> u64 {
     let mut extra = delivery.join(" ");
-    if voice != DEFAULT_VOICE {
+    if voice != UNNAMED_VOICE {
         extra = format!("{voice}\u{0}{extra}");
     }
     if extra.is_empty() {
@@ -222,23 +241,42 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_beside, delivery_args, take_key, text_hash, DEFAULT_VOICE};
+    use super::{commercial_use, config_beside, delivery_args, take_key, text_hash, DEFAULT_VOICE, UNNAMED_VOICE};
 
     #[test]
     fn a_take_keeps_its_name_unless_a_delivery_or_another_voice_is_asked_for() {
         let line = "Some walks you plan.";
-        assert_eq!(take_key(line, DEFAULT_VOICE, &[]), text_hash(line), "no delivery, default voice: the name it always had");
+        assert_eq!(take_key(line, UNNAMED_VOICE, &[]), text_hash(line), "a Lessac take with no delivery: the name it always had");
         let slower = delivery_args(Some(0.8), None).unwrap();
         let paused = delivery_args(None, Some(0.6)).unwrap();
-        assert_ne!(take_key(line, DEFAULT_VOICE, &slower), text_hash(line));
-        assert_ne!(take_key(line, DEFAULT_VOICE, &slower), take_key(line, DEFAULT_VOICE, &paused));
-        // #523's names are kept: a delivery in the default voice hashes
-        // as it did before voices were in the key.
-        assert_eq!(take_key(line, DEFAULT_VOICE, &slower), text_hash(&format!("{line}\u{0}{}", slower.join(" "))));
-        // Another voice is another file, with or without a delivery.
-        let other = "piper_en_gb_alan_medium";
-        assert_ne!(take_key(line, other, &[]), text_hash(line));
-        assert_ne!(take_key(line, other, &slower), take_key(line, DEFAULT_VOICE, &slower));
+        assert_ne!(take_key(line, UNNAMED_VOICE, &slower), text_hash(line));
+        assert_ne!(take_key(line, UNNAMED_VOICE, &slower), take_key(line, UNNAMED_VOICE, &paused));
+        // #523's names are kept: a delivery in Lessac hashes as it did
+        // before voices were in the key.
+        assert_eq!(take_key(line, UNNAMED_VOICE, &slower), text_hash(&format!("{line}\u{0}{}", slower.join(" "))));
+        // Any other voice, the default included, is another file.
+        assert_ne!(take_key(line, DEFAULT_VOICE, &[]), text_hash(line));
+        assert_ne!(take_key(line, DEFAULT_VOICE, &slower), take_key(line, UNNAMED_VOICE, &slower));
+        assert_ne!(take_key(line, "piper_en_gb_cori_high", &[]), take_key(line, DEFAULT_VOICE, &[]));
+    }
+
+    /// Every voice the manifest offers is there with both its files, the
+    /// default is free for any use, and only a voice labelled so is not.
+    #[test]
+    fn the_manifest_voices_and_their_licences() {
+        let manifest = klipp_ml::manifest::ModelManifest::parse(klipp_ml::manifest::BUILTIN_MANIFEST).unwrap();
+        let voices: Vec<_> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config")).collect();
+        assert!(voices.len() >= 8, "{}", voices.len());
+        for v in &voices {
+            assert!(manifest.get(&format!("{}_config", v.id)).is_some(), "{} has no settings entry", v.id);
+        }
+        let default = voices.iter().find(|v| v.id == DEFAULT_VOICE).expect("the default voice is in the manifest");
+        assert!(commercial_use(&default.license), "{}", default.license);
+        let lessac = voices.iter().find(|v| v.id == UNNAMED_VOICE).expect("Lessac stays, labelled");
+        assert!(!commercial_use(&lessac.license), "{}", lessac.license);
+        assert_eq!(voices.iter().filter(|v| !commercial_use(&v.license)).count(), 1, "only Lessac is restricted");
+        assert!(!commercial_use("CC BY-NC-SA 4.0"));
+        assert!(commercial_use("CC BY 4.0 (LibriTTS): credit LibriTTS"));
     }
 
     #[test]
@@ -251,25 +289,28 @@ mod tests {
         assert!(delivery_args(None, Some(-0.1)).is_err());
     }
 
-    /// The real thing, where piper and the default voice are installed:
-    /// a WAV file with speech in it, named after its words, and a slower
-    /// take a file of its own and longer. `cargo test -- --ignored`.
+    /// The real thing, where piper is installed: the default voice and
+    /// the Swedish one fetched through the verified cache (their hashes
+    /// checked against the manifest), each speaking a WAV file named
+    /// after its words, and a slower take a file of its own and longer.
+    /// `cargo test -- --ignored`; downloads about 180 MB the first time.
     #[test]
-    #[ignore = "needs the piper program and the default voice downloaded"]
+    #[ignore = "needs the piper program, and downloads two voices"]
     fn piper_speaks_a_take_into_a_wav_file() {
         let dir = std::env::temp_dir().join(format!("klipp-narration-{}", std::process::id()));
-        let say = |speed| {
-            super::synthesize(&super::Request { text: "Some walks you plan.", voice: None, speed, pause_secs: None, download: false, path: None, dir: &dir })
-                .expect("piper and the default voice are installed")
+        let say = |text: &str, voice: Option<&str>, speed| {
+            super::synthesize(&super::Request { text, voice, speed, pause_secs: None, download: true, path: None, dir: &dir })
+                .expect("piper is installed and the voice downloads")
         };
-        let plain = say(None);
+        let plain = say("Some walks you plan.", None, None);
         assert!(plain.file_name().unwrap().to_string_lossy().starts_with("some-walks-you-plan-"), "{}", plain.display());
-        let bytes = std::fs::read(&plain).unwrap();
-        assert_eq!(&bytes[..4], b"RIFF", "a wav file");
-        let slower = say(Some(0.7));
+        assert_eq!(&std::fs::read(&plain).unwrap()[..4], b"RIFF", "a wav file");
+        let slower = say("Some walks you plan.", None, Some(0.7));
         assert_ne!(slower, plain, "a slower take is a file of its own");
         let len = |p: &std::path::Path| std::fs::metadata(p).unwrap().len();
         assert!(len(&slower) > len(&plain) * 11 / 10, "slower is longer: {} vs {}", len(&slower), len(&plain));
+        let swedish = say("Vissa promenader planerar man.", Some("piper_sv_se_nst_medium"), None);
+        assert_eq!(&std::fs::read(&swedish).unwrap()[..4], b"RIFF");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

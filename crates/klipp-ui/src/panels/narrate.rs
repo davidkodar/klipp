@@ -242,6 +242,16 @@ impl NarratePanel {
                     ui.end_row();
                 });
 
+                // What the voice may be used for, and a plain warning
+                // when it is not for paid work.
+                if let Some(v) = self.voice() {
+                    if v.commercial_use {
+                        ui.label(egui::RichText::new(format!("Licence: {}", v.license)).weak().small());
+                    } else {
+                        ui.colored_label(ui.visuals().warn_fg_color, format!("Not for commercial use: {}. Choose another voice for paid work.", v.license));
+                    }
+                }
+
                 ui.add_space(8.0);
                 let busy = self.working.is_some();
                 let ready = !busy && !self.text.trim().is_empty() && self.voices.as_ref().is_some_and(|v| v.is_ok());
