@@ -10,7 +10,7 @@ default = []
 # the AI Tools panel auto-registers BiRefNet for Remove Background.
 # Requires libonnxruntime.so on the user's machine + ORT_DYLIB_PATH
 # pointing at it (see klipp-ml-ort docs).
-ai-ort = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
+ai-ort = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "klipp-audio/kokoro"]
 # NVIDIA acceleration via ort's CUDA execution provider. Implies
 # ai-ort. Requires CUDA 12.8+/cuDNN 9.19+ on the user's machine.
 ai-ort-cuda = ["ai-ort", "klipp-ml-ort/cuda", "klipp-analysis/cuda"]

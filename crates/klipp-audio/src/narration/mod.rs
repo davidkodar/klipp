@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod kokoro;
+
 /// The voice a take is spoken in when none is named: public domain, so a
 /// take made in it can go into any piece, paid work included.
 pub const DEFAULT_VOICE: &str = "piper_en_us_ljspeech_high";
@@ -55,11 +57,26 @@ pub struct Request<'a> {
 pub fn voices() -> Result<Vec<Voice>, String> {
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    let kokoro_model = manifest.get(kokoro::MODEL);
     let mut voices: Vec<Voice> = manifest
         .models
         .iter()
-        .filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config"))
+        .filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != kokoro::MODEL)
         .map(|e| {
+            if kokoro::is_kokoro(&e.id) {
+                // A Kokoro voice is a small style file spoken by one shared
+                // model: installed when both are there, and the model's
+                // size counted until it is.
+                let model_there = kokoro_model.is_some_and(|m| cache.path_for(m).is_file());
+                return Voice {
+                    id: e.id.clone(),
+                    name: e.display_name.clone(),
+                    size_bytes: e.size_bytes + if model_there { 0 } else { kokoro_model.map_or(0, |m| m.size_bytes) },
+                    installed: model_there && cache.path_for(e).is_file(),
+                    license: e.license.clone(),
+                    commercial_use: commercial_use(&e.license),
+                };
+            }
             let config = manifest.get(&format!("{}_config", e.id));
             Voice {
                 id: e.id.clone(),
@@ -92,6 +109,24 @@ pub fn piper() -> Result<PathBuf, String> {
         .or_else(|| which("piper"))
         .or_else(|| which("piper-tts"))
         .ok_or_else(|| "the piper program is not installed; on Arch: pacman -S piper-tts, elsewhere pip install piper-tts, or set KLIPP_PIPER to the program".to_string())
+}
+
+/// A manifest entry's file in the model cache, fetched first with
+/// `download`.
+fn cached(id: &str, download: bool) -> Result<PathBuf, String> {
+    let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
+    let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    let entry = manifest.get(id).ok_or_else(|| format!("no {id} in the model manifest"))?;
+    let p = cache.path_for(entry);
+    if !p.is_file() {
+        if !download {
+            return Err(format!("{} is not downloaded ({} MB); ask with download_models true, or download it in Preferences", entry.display_name, entry.size_bytes.div_ceil(1_000_000)));
+        }
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut progress = klipp_ml::download::NoOpProgress;
+        klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {id}: {e:?}"))?;
+    }
+    Ok(cache.path_for(entry))
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -203,10 +238,8 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
     if text.is_empty() {
         return Err("narrate needs the words to say".into());
     }
-    let piper = piper()?;
     let delivery = delivery_args(req.speed, req.pause_secs)?;
     let voice = req.voice.unwrap_or(DEFAULT_VOICE);
-    let (model, config) = voice_files(voice, req.download)?;
     let out = match &req.path {
         Some(p) => p.clone(),
         None => {
@@ -214,6 +247,12 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
             take_path(req.dir, text, voice, &delivery)
         }
     };
+    if kokoro::is_kokoro(voice) {
+        kokoro::speak(text, voice, req.speed, req.pause_secs, req.download, &out)?;
+        return Ok(out);
+    }
+    let piper = piper()?;
+    let (model, config) = voice_files(voice, req.download)?;
     let mut child = std::process::Command::new(&piper)
         .arg("--model")
         .arg(&model)
@@ -265,10 +304,15 @@ mod tests {
     #[test]
     fn the_manifest_voices_and_their_licences() {
         let manifest = klipp_ml::manifest::ModelManifest::parse(klipp_ml::manifest::BUILTIN_MANIFEST).unwrap();
-        let voices: Vec<_> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config")).collect();
-        assert!(voices.len() >= 8, "{}", voices.len());
+        let voices: Vec<_> = manifest.models.iter().filter(|e| e.kind == klipp_ml::manifest::ModelKind::Voice && !e.id.ends_with("_config") && e.id != super::kokoro::MODEL).collect();
+        assert!(voices.len() >= 18, "{}", voices.len());
+        assert!(manifest.get(super::kokoro::MODEL).is_some(), "the Kokoro model every Kokoro voice needs");
         for v in &voices {
-            assert!(manifest.get(&format!("{}_config", v.id)).is_some(), "{} has no settings entry", v.id);
+            if super::kokoro::is_kokoro(&v.id) {
+                assert_eq!(v.size_bytes, 522_240, "{}: a Kokoro voice is 510 style rows of 256 floats", v.id);
+            } else {
+                assert!(manifest.get(&format!("{}_config", v.id)).is_some(), "{} has no settings entry", v.id);
+            }
         }
         let default = voices.iter().find(|v| v.id == DEFAULT_VOICE).expect("the default voice is in the manifest");
         assert!(commercial_use(&default.license), "{}", default.license);

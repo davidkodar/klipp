@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+kokoro = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
+
 [dependencies]
 klipp-core = { workspace = true }
 serde = { workspace = true }
@@ -41,6 +45,10 @@ dirs = { workspace = true }
 klipp-deepfilter = { workspace = true }
 ndarray = "0.15"
 klipp-ml = { workspace = true }
+# Kokoro voices: the model runs through ONNX Runtime, which the
+# `kokoro` feature brings in (klipp-ui's ai-ort turns it on). Without
+# it a Kokoro voice is refused and the Piper voices work as before.
+klipp-ml-ort = { workspace = true, optional = true }
 
 [lints]
 workspace = true

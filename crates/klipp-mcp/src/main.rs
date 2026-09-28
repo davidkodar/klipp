@@ -1219,7 +1219,11 @@ fn tool_definitions() -> Vec<Value> {
               piper_en_us_ljspeech_high, public domain, 114 MB. Others: piper_en_us_kristin_medium, \
               piper_en_us_norman_medium, piper_en_us_john_medium, piper_en_us_libritts_high (CC BY: \
               credit LibriTTS), piper_en_gb_cori_high, piper_sv_se_nst_medium (Swedish); \
-              piper_en_us_lessac_medium is research only, never for paid work. A voice downloads only \
+              piper_en_us_lessac_medium is research only, never for paid work. Kokoro voices, far more \
+              natural, need the espeak-ng program: kokoro_voice_af_heart (the best), kokoro_voice_af_bella, \
+              kokoro_voice_af_nicole, kokoro_voice_am_michael, kokoro_voice_am_fenrir, kokoro_voice_am_puck (US), \
+              kokoro_voice_bf_emma, kokoro_voice_bf_isabella, kokoro_voice_bm_george, kokoro_voice_bm_fable (UK); \
+              Apache-2.0, an 86 MB model shared by all. A voice downloads only \
               with download_models true or from Preferences) through the \
               piper program on the machine (pacman -S piper-tts / pip install piper-tts; KLIPP_PIPER \
               names it otherwise), imported into the pool, and with apply true placed on a Voice \
