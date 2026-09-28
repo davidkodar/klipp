@@ -242,13 +242,20 @@ runtime = "ort"
 prompts = ""
 
 # ── Narration: a Piper voice (run by the piper program, installed apart) ──
+#
+# Only voices whose data and weights are free for any use: public domain,
+# CC0 or CC BY, trained from scratch or fine-tuned from a clean voice. Most
+# English Piper voices are fine-tuned from Lessac, whose Blizzard 2013
+# licence is research only, and are left out for that reason. Lessac is
+# kept, labelled, for projects that already use it; the default is
+# LJSpeech. Checked against each voice's MODEL_CARD at v1.0.0, 2026-09-28.
 
 [[model]]
 id = "piper_en_us_lessac_medium"
-display_name = "Piper voice — English (US), Lessac, medium"
+display_name = "Piper voice — English (US), Lessac, medium — research only"
 size_bytes = 63201294
 sha256 = "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
-license = "MIT (Piper) / voice: public domain (Lessac, blizzard 2013)"
+license = "Research only, not for commercial use (Blizzard 2013 Lessac licence); Piper itself MIT"
 attribution = "rhasspy/piper-voices on HuggingFace, en_US-lessac-medium"
 sources = [
     { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx" },
@@ -259,13 +266,209 @@ prompts = ""
 
 [[model]]
 id = "piper_en_us_lessac_medium_config"
-display_name = "Piper voice — English (US), Lessac, medium (settings)"
+display_name = "Piper voice — English (US), Lessac, medium — research only (settings)"
 size_bytes = 4885
 sha256 = "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
-license = "MIT (Piper) / voice: public domain (Lessac, blizzard 2013)"
+license = "Research only, not for commercial use (Blizzard 2013 Lessac licence); Piper itself MIT"
 attribution = "rhasspy/piper-voices on HuggingFace, en_US-lessac-medium"
 sources = [
     { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_ljspeech_high"
+display_name = "Piper voice — English (US), LJSpeech, high"
+size_bytes = 114199011
+sha256 = "5d4f08ba6a2a48c44592eed3ce56bf85e9de3dd4e20df90541ae68a8310c029a"
+license = "Public domain (LJ Speech); Piper itself MIT"
+attribution = "LJ Speech dataset (Keith Ito), trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ljspeech/high/en_US-ljspeech-high.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_ljspeech_high_config"
+display_name = "Piper voice — English (US), LJSpeech, high (settings)"
+size_bytes = 4970
+sha256 = "7e1f4634af596d83cca997fb7a931ba80b70f8a316a2655ee69c55365e0ace14"
+license = "Public domain (LJ Speech); Piper itself MIT"
+attribution = "LJ Speech dataset (Keith Ito), trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ljspeech/high/en_US-ljspeech-high.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_kristin_medium"
+display_name = "Piper voice — English (US), Kristin, medium"
+size_bytes = 63531379
+sha256 = "5849957f929cbf720c258f8458692d6103fff2f0e3d3b19c8259474bb06a18d4"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/kristin/medium/en_US-kristin-medium.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_kristin_medium_config"
+display_name = "Piper voice — English (US), Kristin, medium (settings)"
+size_bytes = 4968
+sha256 = "5681426d4aead22195de70531eeeeddb46493cfaffc5764b2ea3db73428b651c"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/kristin/medium/en_US-kristin-medium.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_norman_medium"
+display_name = "Piper voice — English (US), Norman, medium"
+size_bytes = 63531379
+sha256 = "b9739443232a80a59c7d18810dd856899bf16a7964725f5ab81ea49b1351cb71"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/norman/medium/en_US-norman-medium.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_norman_medium_config"
+display_name = "Piper voice — English (US), Norman, medium (settings)"
+size_bytes = 4968
+sha256 = "6c2db7f558a4a8deb9fe822583c1c5105f6c4e834dd0f9de8ad17a888ee9fe1d"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/norman/medium/en_US-norman-medium.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_john_medium"
+display_name = "Piper voice — English (US), John, medium"
+size_bytes = 63531379
+sha256 = "789c6c875726e627ddee93d51d8727859abe9c091c3d141591f4b83c2072e988"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, fine-tuned from Kristin by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/john/medium/en_US-john-medium.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_john_medium_config"
+display_name = "Piper voice — English (US), John, medium (settings)"
+size_bytes = 4965
+sha256 = "af60f177b6b550f3d7a302720c0fb89e7f94a82b5dca464775ef63b1c69ba09a"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, fine-tuned from Kristin by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/john/medium/en_US-john-medium.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_libritts_high"
+display_name = "Piper voice — English (US), LibriTTS, high, 904 speakers"
+size_bytes = 136673811
+sha256 = "9127a559e11603f10b366d1a20ac7426826081dbc521de4c2420c57728d73f0f"
+license = "CC BY 4.0 (LibriTTS): credit LibriTTS; Piper itself MIT"
+attribution = "LibriTTS (Zen et al., openslr.org/60), train-clean-360; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/libritts/high/en_US-libritts-high.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_us_libritts_high_config"
+display_name = "Piper voice — English (US), LibriTTS, high, 904 speakers (settings)"
+size_bytes = 20163
+sha256 = "2efdc6d7f954588b8180132cbd9b8001933fdd00932c92bc92fd0d2028a9eb3d"
+license = "CC BY 4.0 (LibriTTS): credit LibriTTS; Piper itself MIT"
+attribution = "LibriTTS (Zen et al., openslr.org/60), train-clean-360; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/libritts/high/en_US-libritts-high.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_gb_cori_high"
+display_name = "Piper voice — English (UK), Cori, high"
+size_bytes = 114219352
+sha256 = "470b4dd634c98f8a4850d7626ffc3dfc90774628eeef6605a6dd8f88f30a5903"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/high/en_GB-cori-high.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_en_gb_cori_high_config"
+display_name = "Piper voice — English (UK), Cori, high (settings)"
+size_bytes = 4963
+sha256 = "9e7fb5b5671612c22f3c81cbe46c1ae87b031a4632bcb509e499dad6f1e2adec"
+license = "Public domain (LibriVox); Piper itself MIT"
+attribution = "LibriVox, trained by Bryce Beattie; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/high/en_GB-cori-high.onnx.json" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_sv_se_nst_medium"
+display_name = "Piper voice — Swedish, NST, medium"
+size_bytes = 63104526
+sha256 = "df011f56825a59dd1efc080c38a65a1ef70407e60f63050e9246f43a3d7e471e"
+license = "CC0 (NST, Språkbanken); Piper itself MIT"
+attribution = "NST Swedish, trained by KBLab at the National Library of Sweden; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx" },
+]
+kind = "voice"
+runtime = "piper"
+prompts = ""
+
+[[model]]
+id = "piper_sv_se_nst_medium_config"
+display_name = "Piper voice — Swedish, NST, medium (settings)"
+size_bytes = 4157
+sha256 = "d45dd74cbb4eca58694bf04a97e243044092476f28a55ae26424f0653086980a"
+license = "CC0 (NST, Språkbanken); Piper itself MIT"
+attribution = "NST Swedish, trained by KBLab at the National Library of Sweden; rhasspy/piper-voices"
+sources = [
+    { url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx.json" },
 ]
 kind = "voice"
 runtime = "piper"

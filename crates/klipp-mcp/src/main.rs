@@ -1215,8 +1215,12 @@ fn tool_definitions() -> Vec<Value> {
               draft render (seconds to a minute).",
              json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_narrate",
-             "Narration from text: spoken by a Piper voice (the manifest's piper_en_us_lessac_medium, \
-              63 MB, downloaded only with download_models true or from Preferences) through the \
+             "Narration from text: spoken by a Piper voice (voice, a manifest id; the default is \
+              piper_en_us_ljspeech_high, public domain, 114 MB. Others: piper_en_us_kristin_medium, \
+              piper_en_us_norman_medium, piper_en_us_john_medium, piper_en_us_libritts_high (CC BY: \
+              credit LibriTTS), piper_en_gb_cori_high, piper_sv_se_nst_medium (Swedish); \
+              piper_en_us_lessac_medium is research only, never for paid work. A voice downloads only \
+              with download_models true or from Preferences) through the \
               piper program on the machine (pacman -S piper-tts / pip install piper-tts; KLIPP_PIPER \
               names it otherwise), imported into the pool, and with apply true placed on a Voice \
               track at at_secs as dialogue. speed (0.5 to 2, 1 as the voice speaks; 0.85 for an \

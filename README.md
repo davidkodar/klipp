@@ -275,7 +275,8 @@ Models are downloaded on demand, verified by SHA-256 against the bundled manifes
 | RF-DETR-Seg (Preview / Medium) | Detection + segmentation, framing analysis | 134 / 139 MB | Apache-2.0 |
 | YuNet | Face detection for the colour measurements | 233 KB | MIT |
 | PP-OCRv3 det + PP-OCRv4 rec | On-screen text in screen recordings | ~2.4 MB + ~7.7 MB | Apache-2.0 |
-| Piper en_US Lessac (medium) | Scratch narration voice | 63 MB | MIT (Piper); voice public domain |
+| Piper voices: LJSpeech (default), Kristin, Norman, John, LibriTTS (US); Cori (UK); NST (Swedish) | Scratch narration voices | 63–137 MB each | MIT (Piper); voices public domain or CC0, LibriTTS CC BY 4.0 |
+| Piper en_US Lessac (medium) | Scratch narration voice, kept for older projects | 63 MB | **Research only, not for commercial use** (Blizzard 2013 Lessac licence) |
 | DeepFilterNet3 | Voice Isolation (speech enhancement) | ~8 MB | MIT OR Apache-2.0 |
 
 See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full picture, including licence audit notes.
