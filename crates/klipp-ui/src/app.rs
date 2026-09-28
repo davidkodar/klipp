@@ -6633,33 +6633,8 @@ impl KlippApp {
                                     &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_in);
                                 self.state.push_history(EditCommand::Magnetic(result.command));
                             } else {
-                                // Legacy track: route through Track::ripple_trim_left so downstream
-                                // clips shift correctly and capture their pre-shift positions for undo.
-                                let seq_idx = self.state.active_sequence_idx;
-                                let track = &mut self.state.sequences[seq_idx].tracks[track_idx];
-                                let old_source_in = track.clips[clip_idx].source_in;
-                                let old_source_out = track.clips[clip_idx].source_out;
-                                let old_timeline_in = track.clips[clip_idx].timeline_in;
-                                let old_timeline_out = track.clips[clip_idx].timeline_out;
-                                let delta = new_timeline_in - old_timeline_in;
-                                let new_source_in = old_source_in + delta;
-                                let shifted: Vec<_> = track.clips.iter()
-                                    .skip(clip_idx + 1)
-                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                    .collect();
-                                track.ripple_trim_left(*clip_id, new_source_in, new_timeline_in);
-                                self.state.push_history(EditCommand::LegacyRippleTrimClip {
-                                        clip_id: *clip_id,
-                                        old_source_in,
-                                        old_source_out,
-                                        old_timeline_in,
-                                        old_timeline_out,
-                                        new_source_in,
-                                        new_source_out: old_source_out,
-                                        new_timeline_in,
-                                        new_timeline_out: old_timeline_out,
-                                        shifted_clips: shifted,
-                                    });
+                                self.trim_clip_at(*clip_id, klipp_document::ops::Edge::In, playhead);
+                                return true;
                             }
                             self.state.dirty = true;
                             self.sync_sequence_to_engine();
@@ -6682,33 +6657,8 @@ impl KlippApp {
                                     &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_out);
                                 self.state.push_history(EditCommand::Magnetic(result.command));
                             } else {
-                                // Legacy track: route through Track::ripple_trim_right so downstream
-                                // clips shift correctly and capture their pre-shift positions for undo.
-                                let seq_idx = self.state.active_sequence_idx;
-                                let track = &mut self.state.sequences[seq_idx].tracks[track_idx];
-                                let old_source_in = track.clips[clip_idx].source_in;
-                                let old_source_out = track.clips[clip_idx].source_out;
-                                let old_timeline_in = track.clips[clip_idx].timeline_in;
-                                let old_timeline_out = track.clips[clip_idx].timeline_out;
-                                let delta = new_timeline_out - old_timeline_out;
-                                let new_source_out = old_source_out + delta;
-                                let shifted: Vec<_> = track.clips.iter()
-                                    .skip(clip_idx + 1)
-                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                    .collect();
-                                track.ripple_trim_right(*clip_id, new_source_out, new_timeline_out);
-                                self.state.push_history(EditCommand::LegacyRippleTrimClip {
-                                        clip_id: *clip_id,
-                                        old_source_in,
-                                        old_source_out,
-                                        old_timeline_in,
-                                        old_timeline_out,
-                                        new_source_in: old_source_in,
-                                        new_source_out,
-                                        new_timeline_in: old_timeline_in,
-                                        new_timeline_out,
-                                        shifted_clips: shifted,
-                                    });
+                                self.trim_clip_at(*clip_id, klipp_document::ops::Edge::Out, playhead);
+                                return true;
                             }
                             self.state.dirty = true;
                             self.sync_sequence_to_engine();
@@ -6795,8 +6745,31 @@ impl KlippApp {
         }
     }
 
+    fn trim_clip_at(&mut self, clip_id: ClipId, edge: klipp_document::ops::Edge, target: klipp_core::Timecode) {
+        match klipp_document::ops::trim_at(self.state.sequence(), &self.state.media_pool, clip_id, edge, target, true) {
+            Ok(edit) => self.apply_edits_as_one(&[edit], "Ripple Trim"),
+            Err(r) => self.state.toast.show(format!("Trim unchanged: {}", r.why)),
+        }
+    }
+
     fn remove_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
         if self.clip_track_is_locked(&clip_id) { return; }
+        let Some((ti, _)) = self.state.sequence().find_clip(clip_id) else { return };
+        if !self.is_magnetic_track(ti) {
+            match crate::clip_edits::remove(self.state.sequence(), &self.state.media_pool, clip_id) {
+                Ok(edit) => {
+                    self.apply_edits_as_one(&[edit], "Remove Clip");
+                    if self.state.selected_clip.is_some_and(|id| self.state.sequence().find_clip(id).is_none()) {
+                        self.state.selected_clip = None;
+                    }
+                    return;
+                }
+                Err(r) => {
+                    self.state.toast.show(format!("Remove unchanged: {}. Unlock the linked track or use Lift to leave a gap.", r.why));
+                    return;
+                }
+            }
+        }
 
         // Cross-field invariant: any clip that pointed at this one as a matte
         // source must have its binding cleared so we don't orphan it. Done
@@ -6817,72 +6790,14 @@ impl KlippApp {
             }
         }
 
-        // Check if this clip is on a magnetic track
-        let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-            .position(|t| t.clips.iter().any(|c| c.id == clip_id));
-
-        if let Some(ti) = track_index {
-            if self.is_magnetic_track(ti) {
-                // Magnetic path: ripple delete
-                let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
-                    &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
-                self.state.push_history(EditCommand::Magnetic(result.command));
-                if self.state.selected_clip == Some(clip_id) {
-                    self.state.selected_clip = None;
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
-            } else {
-                // Legacy path (existing code)
-                let linked_id = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                    .flat_map(|t| t.clips.iter())
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.linked_clip_id);
-
-                let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[ti];
-                let pos = track.clips.iter().position(|c| c.id == clip_id);
-                if let Some(pos) = pos {
-                    let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                        .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                        .collect();
-                    if let Some(removed) = track.ripple_remove(clip_id) {
-                        self.state.push_history(EditCommand::LegacyRippleRemove {
-                            removed_clip: removed,
-                            track_index: ti,
-                            position: pos,
-                            shifted_clips: shifted,
-                        });
-                    }
-                }
-                if self.state.selected_clip == Some(clip_id) {
-                    self.state.selected_clip = None;
-                }
-                // Also remove linked partner
-                if let Some(lid) = linked_id {
-                    let ltrack_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.clips.iter().any(|c| c.id == lid));
-                    if let Some(lti) = ltrack_index {
-                        let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[lti];
-                        let pos = track.clips.iter().position(|c| c.id == lid);
-                        if let Some(pos) = pos {
-                            let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                                .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                .collect();
-                            if let Some(removed) = track.ripple_remove(lid) {
-                                self.state.push_history(EditCommand::LegacyRippleRemove {
-                                    removed_clip: removed,
-                                    track_index: lti,
-                                    position: pos,
-                                    shifted_clips: shifted,
-                                });
-                            }
-                        }
-                    }
-                }
-                self.sync_sequence_to_engine();
-                self.state.dirty = true;
-            }
+        let result = klipp_timeline::magnetic::MagneticEditor::ripple_delete(
+            &mut self.state.sequences[self.state.active_sequence_idx], clip_id);
+        self.state.push_history(EditCommand::Magnetic(result.command));
+        if self.state.selected_clip == Some(clip_id) {
+            self.state.selected_clip = None;
         }
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
     }
 
     /// Pro-NLE Q/W: pick a target clip by playhead proximity (no selection
@@ -7818,111 +7733,17 @@ impl KlippApp {
                     }
                     true
                 }
-                AppCommand::TrimClip {
-                    clip_id,
-                    old_source_in,
-                    old_source_out,
-                    old_timeline_in,
-                    old_timeline_out,
-                    new_source_in,
-                    new_source_out,
-                    new_timeline_in,
-                    new_timeline_out,
-                    ripple,
-                } => {
-                    if self.clip_track_is_locked(clip_id) { return true; }
-                    // Get linked partner info before mutating
-                    let linked_id = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .flat_map(|t| t.clips.iter())
-                        .find(|c| c.id == *clip_id)
-                        .and_then(|c| c.linked_clip_id);
-
-                    // Trim main clip
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                        .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
-                    {
-                        let clip_pos = track.clips.iter().position(|c| c.id == *clip_id);
-                        if let Some(pos) = clip_pos {
-                            if *ripple {
-                                let ripple_delta = *new_timeline_out - *old_timeline_out;
-                                // Detect whether the drag UI already applied these changes
-                                let drag_already_applied = track.clips[pos].timeline_out == *new_timeline_out;
-
-                                // Compute downstream clips' PRE-TRIM positions for undo
-                                let shifted: Vec<_> = if drag_already_applied {
-                                    // Drag shifted them already — reverse the delta to recover originals
-                                    track.clips[pos + 1..].iter()
-                                        .map(|c| (c.id, c.timeline_in - ripple_delta, c.timeline_out - ripple_delta))
-                                        .collect()
-                                } else {
-                                    // Programmatic call — current positions ARE the originals
-                                    track.clips[pos + 1..].iter()
-                                        .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                        .collect()
-                                };
-
-                                // Apply trim to the clip
-                                track.clips[pos].source_in = *new_source_in;
-                                track.clips[pos].source_out = *new_source_out;
-                                track.clips[pos].timeline_in = *new_timeline_in;
-                                track.clips[pos].timeline_out = *new_timeline_out;
-
-                                // Apply ripple shift to downstream clips (no-op if drag already did it)
-                                if !drag_already_applied {
-                                    for c in &mut track.clips[pos + 1..] {
-                                        c.timeline_in += ripple_delta;
-                                        c.timeline_out += ripple_delta;
-                                    }
-                                }
-
-                                self.state.push_history(EditCommand::LegacyRippleTrimClip {
-                                    clip_id: *clip_id,
-                                    old_source_in: *old_source_in,
-                                    old_source_out: *old_source_out,
-                                    old_timeline_in: *old_timeline_in,
-                                    old_timeline_out: *old_timeline_out,
-                                    new_source_in: *new_source_in,
-                                    new_source_out: *new_source_out,
-                                    new_timeline_in: *new_timeline_in,
-                                    new_timeline_out: *new_timeline_out,
-                                    shifted_clips: shifted,
-                                });
-                            } else {
-                                // Non-ripple: just trim the clip, no downstream shifting
-                                track.clips[pos].source_in = *new_source_in;
-                                track.clips[pos].source_out = *new_source_out;
-                                track.clips[pos].timeline_in = *new_timeline_in;
-                                track.clips[pos].timeline_out = *new_timeline_out;
-
-                                self.state.push_history(EditCommand::LegacyTrimClip {
-                                    clip_id: *clip_id,
-                                    old_source_in: *old_source_in,
-                                    old_source_out: *old_source_out,
-                                    old_timeline_in: *old_timeline_in,
-                                    old_timeline_out: *old_timeline_out,
-                                    new_source_in: *new_source_in,
-                                    new_source_out: *new_source_out,
-                                    new_timeline_in: *new_timeline_in,
-                                    new_timeline_out: *new_timeline_out,
-                                });
-                            }
+                AppCommand::TrimClip { .. } => {
+                    match crate::clip_edits::trim(self.state.sequence(), &self.state.media_pool, cmd) {
+                        Ok(Some(edit)) => self.apply_edits_as_one(&[edit], "Trim Clip"),
+                        Ok(None) => {},
+                        Err(why) => {
+                            self.state.toast.show(format!("Trim unchanged: {why}"));
+                            // A live preview may already have reached the
+                            // engine; publish the restored document too.
+                            self.sync_sequence_to_engine();
                         }
                     }
-                    // Trim linked partner by same values
-                    if let Some(lid) = linked_id {
-                        if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                            .find(|t| t.clips.iter().any(|c| c.id == lid))
-                        {
-                            if let Some(lclip) = track.find_clip_mut(lid) {
-                                lclip.source_in = *new_source_in;
-                                lclip.source_out = *new_source_out;
-                                lclip.timeline_in = *new_timeline_in;
-                                lclip.timeline_out = *new_timeline_out;
-                            }
-                        }
-                    }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::RollTrimClip {
