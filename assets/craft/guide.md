@@ -267,7 +267,10 @@ exist until the plan runs.
 - `split {clip_id, at}`: into two, the linked sound with it.
 - `remove {clip_id, ripple?, linked?}`: off the track, and its linked
   sound (or picture) with it unless `linked` is false; with ripple,
-  later clips close the gap on each track.
+  later clips close the gap on each track. A ripple is refused when
+  the linked pair's timeline ranges differ (a J or L cut) or the
+  partner's track is locked, since the tracks would close up by
+  different amounts; lift it with `ripple: false` instead.
 - `move {clip_id, to}`: the clip's start to an anchor; a linked audio
   or video partner goes with it.
 - `j_cut {incoming_clip, frames}`: the incoming clip's sound starts so

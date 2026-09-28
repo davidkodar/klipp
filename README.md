@@ -195,7 +195,7 @@ The craft guidance the assistant follows lives in [`assets/craft/`](assets/craft
 
 It can also make its own footage: `record` captures the screen (the focused window, a monitor or a region) and imports it, and `narrate` speaks a scratch voice track to cut to and replace later, at a speed and with a pause between sentences it chooses.
 
-The socket also covers the things an agent would otherwise have to ask a person to do: create a project or a sequence, change the brief one field at a time, shape a clip's volume by hand (`volume`) and duck the music under dialogue (`duck`, which doesn't count clips marked as music, effects or ambience as dialogue), build a multicam group and cut its angles, tag and relink media, take a screenshot of the whole window, and use markers as a note channel both ways. The agent marks what it is unsure of and why, and treats the editor's todo markers as work asked for.
+The socket also covers the things an agent would otherwise have to ask a person to do: create a project or a sequence, change the brief one field at a time, shape a clip's volume by hand (`volume`) and duck the music under what is heard over it (`duck`: a clip marked as music, effects or ambience doesn't count, nor does one set well under the music), build a multicam group and cut its angles, tag and relink media, take a screenshot of the whole window, and use markers as a note channel both ways. The agent marks what it is unsure of and why, and treats the editor's todo markers as work asked for.
 
 ### Turning it off
 
