@@ -1153,6 +1153,13 @@ pub struct PlaybackEngine {
     /// Last sequence-frame number rendered by the synthetic playback path.
     /// Avoids re-rendering the same generator/title frame ~1000x per second.
     last_synth_frame_rendered: Option<i64>,
+    /// No picture clip is under the playhead but the timeline goes on
+    /// (titles on a text track, music, a gap before the next shot): the
+    /// playhead follows the master clock, in timeline seconds, and the
+    /// renderer draws whatever is there. Set only where that is so, by a
+    /// seek or by the last shot ending; cleared by every seek and every
+    /// clip change, so no other path sees it (#542).
+    clock_only: bool,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -1980,6 +1987,7 @@ impl PlaybackEngine {
             ramp_last_clock_speed: 1.0,
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
+            clock_only: false,
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
             dbg_update_playback_count: 0,
@@ -2543,7 +2551,7 @@ impl PlaybackEngine {
                 }
                 self.set_source_audio_owner(false);
                 if self.state == PlaybackState::Paused
-                    && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
+                    && (self.v1_decoder.is_some() || !self.audio_sources.is_empty() || self.clock_only)
                 {
                     // Compute current source position from playhead. With a
                     // speed ramp, integrate the curve from clip start to the
@@ -4747,6 +4755,10 @@ impl PlaybackEngine {
                 (self.repaint_cb)();
                 return;
             }
+            if self.clock_only {
+                self.tick_clock_only(current_source_secs);
+                return;
+            }
         }
 
         // Pop frames from the queue, presenting the one closest to current time
@@ -5106,9 +5118,37 @@ impl PlaybackEngine {
         drop(seq);
 
         let Some((actual_idx, next_clip)) = next_clip_info else {
+            // The last shot on this track has ended. The timeline may
+            // not have: an end card on a text track, music running on.
+            // Play on the clock to its end rather than stopping here
+            // (#542).
+            if self.playhead < self.sequence_duration() {
+                self.retire_v1_decoder(old_clip);
+                let at = self.playhead;
+                self.enter_clock_only(at);
+                self.master_clock.resume();
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.sync_streams();
+                return;
+            }
             self.stop_at_end();
             return;
         };
+
+        // Empty time before the next shot is time too: it was skipped,
+        // the playhead jumping from this shot's end to the next one's
+        // start, and whatever other tracks hold there (a title over
+        // black) never showed. Play it on the clock; the next shot takes
+        // over when the playhead reaches it (#542).
+        if next_clip.timeline_in.to_secs_f64() - self.playhead.to_secs_f64() > self.fps.frame_duration_secs() * 0.5 {
+            self.retire_v1_decoder(old_clip);
+            let at = self.playhead;
+            self.enter_clock_only(at);
+            self.master_clock.resume();
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.sync_streams();
+            return;
+        }
 
         let timeline_in = next_clip.timeline_in;
         let next_clip_speed = next_clip.speed;
@@ -5491,6 +5531,71 @@ impl PlaybackEngine {
     }
 
 
+    /// Play on from `at` with no picture clip under the playhead: the
+    /// master clock runs in timeline seconds from `at`, and no clip of
+    /// the picture track is current (its index one past the last, so
+    /// the next-clip search finds nothing). See `clock_only`.
+    fn enter_clock_only(&mut self, at: Timecode) {
+        self.clock_only = true;
+        self.v1_decoder = None;
+        self.current_file = None;
+        self.current_clip_index = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index).map_or(0, |t| t.clips.len())
+        };
+        self.last_synth_frame_rendered = None;
+        self.clip_source_start = at.to_secs_f64();
+        self.clip_timeline_start = at;
+        self.clip_speed = 1.0;
+        self.refresh_speed_keyframes();
+        self.last_frame_time = std::time::Instant::now();
+        self.master_clock.seek((at.to_secs_f64().max(0.0) * 1_000_000.0) as u64);
+    }
+
+    /// A tick of clock-only playback: the playhead follows the clock; a
+    /// picture clip starting under it takes over as a seek there would;
+    /// the end of the timeline stops; otherwise the frame is drawn once
+    /// per new frame, whatever other tracks show there.
+    fn tick_clock_only(&mut self, clock_secs: f64) {
+        let secs = self.clip_timeline_start.to_secs_f64() + (clock_secs - self.clip_source_start).max(0.0);
+        self.playhead = RationalTime::from_secs_f64(secs, self.fps.rate());
+        let end = self.sequence_duration();
+        if self.playhead >= end {
+            self.playhead = end;
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.stop_at_end();
+            return;
+        }
+        let picture_here = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let tc = self.playhead;
+            seq.tracks
+                .iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .any(|t| t.clip_at_timecode(tc).is_some_and(|(_, c)| c.media_id().is_some() || c.title_data().is_some() || c.generator_data().is_some()))
+        };
+        if picture_here {
+            let tc = self.playhead;
+            self.seek_in_sequence(tc);
+            // A title or generator takes over on the synthetic path, which
+            // reads the clock as the clip's own seconds.
+            if self.v1_decoder.is_none() && self.current_file.is_none() {
+                let at = self.clip_source_start + (tc - self.clip_timeline_start).to_secs_f64().max(0.0) * self.clip_speed;
+                self.master_clock.seek((at * 1_000_000.0) as u64);
+                self.master_clock.resume();
+            }
+            return;
+        }
+        let frame = self.playhead.value;
+        if Some(frame) != self.last_synth_frame_rendered {
+            self.last_synth_frame_rendered = Some(frame);
+            self.present_frame(None);
+            self.frames_consumed += 1;
+        }
+        let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+        (self.repaint_cb)();
+    }
+
     fn stop_at_end(&mut self) {
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
             self.loop_enabled, self.playhead.to_secs_f64());
@@ -5505,6 +5610,7 @@ impl PlaybackEngine {
         }
 
         self.v1_decoder = None;
+        self.clock_only = false;
         self.streams.clear();
         self.stop_all_audio();
         self.last_synth_frame_rendered = None;
@@ -5936,6 +6042,7 @@ impl PlaybackEngine {
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
         let t_seek = std::time::Instant::now();
+        self.clock_only = false;
         self.sync_fps_to_sequence();
         // A frame held back for the previous seek is not this one's.
         self.paused_refresh_best = None;
@@ -6151,6 +6258,12 @@ impl PlaybackEngine {
             // The viewer shows what is there: nothing.
             self.v1_decoder = None;
             self.playhead = tc;
+            // The clip the playhead left is not this place's: without
+            // this, Play resumed it past its end and the playhead stood
+            // still. Where the timeline goes on, play on the clock (#542).
+            if tc < self.sequence_duration() {
+                self.enter_clock_only(tc);
+            }
             self.present_frame(None);
 
             // Check if any audio track has a clip here
