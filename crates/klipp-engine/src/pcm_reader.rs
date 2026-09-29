@@ -185,6 +185,16 @@ fn load_pcm(path: &Path) -> Result<Arc<[f32]>, PcmFeederError> {
     Ok(data)
 }
 
+/// Let go of every PCM cache held in memory: on a project closed or
+/// replaced, whose sound will not play again. A feeder still playing one
+/// keeps its own copy until it stops. Kept over a pause or a stop, as
+/// playing on would read the files again.
+pub fn release_all() {
+    let mut cache = PCM_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.entries.clear();
+    cache.bytes = 0;
+}
+
 /// Load the PCM cache at `path` into memory ahead of need, so a feeder
 /// opened on it later reads nothing: for the next clip's sound, from the
 /// video preroll before a cut. Any thread; a second call for an unchanged
@@ -761,6 +771,14 @@ mod tests {
         let cache = PCM_CACHE.lock().unwrap();
         assert_eq!(cache.entries.iter().filter(|e| e.path == path).count(), 1, "the stale copy is dropped");
         drop(cache);
+
+        // A closed project's sound is let go; a feeder's copy lives on.
+        release_all();
+        let cache = PCM_CACHE.lock().unwrap();
+        assert!(cache.entries.iter().all(|e| e.path != path));
+        drop(cache);
+        assert_eq!(&third[..], &[0.5; 12]);
+        assert!(!Arc::ptr_eq(&third, &load_pcm(&path).unwrap()), "read again after the release");
         let _ = std::fs::remove_file(&path);
     }
 
