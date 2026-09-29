@@ -127,6 +127,11 @@ pub(crate) fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Serial with the encoder tests: on an NVIDIA machine these load
+    // nvidia-vaapi-driver, whose constructor calls cuInit inside dlopen,
+    // and an NVENC test opening at the same time holds cuInit's lock while
+    // it waits for the loader's: the test binary hung for good (#568).
+    use serial_test::serial;
 
     /// The render nodes of this machine, whatever their vendor: NVIDIA's
     /// VAAPI driver makes surfaces and takes uploads, it just cannot
@@ -145,6 +150,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn a_picture_goes_up_to_a_surface_with_its_timestamp() {
         ffmpeg_next::init().unwrap();
         let Some(node) = any_vaapi_node() else {
@@ -172,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn a_node_that_is_not_there_is_an_error_not_a_crash() {
         ffmpeg_next::init().unwrap();
         let mut ctx = context(320, 180);
