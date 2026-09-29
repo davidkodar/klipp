@@ -460,7 +460,7 @@ impl Encoder {
                     video_ctx.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
 
                     // Set pixel format based on codec + HW/SW.
-                    // #65 baseline: for H.264/H.265, bit_depth == 10 selects a 10-bit
+                    // #65 baseline: for H.264/H.265/AV1, bit_depth == 10 selects a 10-bit
                     // format. NVENC needs P010LE (semi-planar, 10 bits in MSBs of a
                     // 16-bit word); software encoders take planar YUV420P10LE.
                     let want_10bit = settings.bit_depth == 10;
@@ -485,13 +485,16 @@ impl Encoder {
                                 ffmpeg_next::format::Pixel::YUV420P
                             }
                         }
-                        ExportVideoCodec::Av1 => {
-                            if is_hw_encoder {
-                                ffmpeg_next::format::Pixel::NV12
-                            } else {
-                                ffmpeg_next::format::Pixel::YUV420P
-                            }
-                        }
+                        // AV1 was always 8-bit here, so a 10-bit or HDR AV1
+                        // export carried its PQ or HLG in 8 bits (#560).
+                        // Every AV1 encoder takes ten: NVENC, AMF and VAAPI
+                        // as P010, SVT-AV1 planar.
+                        ExportVideoCodec::Av1 => match (is_hw_encoder, want_10bit) {
+                            (true, true) => ffmpeg_next::format::Pixel::P010LE,
+                            (true, false) => ffmpeg_next::format::Pixel::NV12,
+                            (false, true) => ffmpeg_next::format::Pixel::YUV420P10LE,
+                            (false, false) => ffmpeg_next::format::Pixel::YUV420P,
+                        },
                         ExportVideoCodec::Vp9 => ffmpeg_next::format::Pixel::YUV420P,
                         // GIF encoder takes 8-bit palettized frames. The two-pass
                         // palette path inside encode_video_frame / finalise feeds
@@ -2311,6 +2314,60 @@ mod tests {
             Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #560: a 10-bit AV1 export is ten bits in the file, through the
+    /// hardware encoder and through SVT-AV1 alike. Both used to be given
+    /// 8-bit pictures whatever the depth asked for.
+    #[test]
+    #[serial]
+    fn ten_bit_av1_is_ten_bits_in_the_file() {
+        ffmpeg_next::init().unwrap();
+        let mut candidates = vec![EncoderAttempt { name: "libsvtav1", hardware: false, vaapi: None }];
+        if ffmpeg_next::encoder::find_by_name("av1_nvenc").is_some() {
+            candidates.push(EncoderAttempt { name: "av1_nvenc", hardware: true, vaapi: None });
+        }
+        for attempt in candidates {
+            let name = attempt.name;
+            if ffmpeg_next::encoder::find_by_name(name).is_none() {
+                eprintln!("skipped {name}: not in this FFmpeg");
+                continue;
+            }
+            let (path, mut settings, snapshot) = fallback_settings(&format!("test_av1_10bit_{name}.mkv"));
+            settings.video_codec = ExportVideoCodec::Av1;
+            settings.format = ExportFormat::Mkv;
+            settings.bit_depth = 10;
+            ATTEMPTS.with(|a| *a.borrow_mut() = Some(vec![attempt]));
+            let opened = Encoder::open(&path, &settings, &snapshot);
+            ATTEMPTS.with(|a| *a.borrow_mut() = None);
+            let mut enc = match opened {
+                Ok(enc) => enc,
+                // A GPU without AV1 encoding (before Ada, or none at all).
+                Err(e) if name != "libsvtav1" => {
+                    eprintln!("skipped {name}: {e}");
+                    continue;
+                }
+                Err(e) => panic!("{name}: {e}"),
+            };
+            assert!(enc.is_deep(), "{name} takes 8-bit pictures for a 10-bit export: {:?}", enc.video_format());
+            let linear = [0.2f32, 0.4, 0.8, 1.0].repeat(320 * 240);
+            for _ in 0..5 {
+                enc.encode_linear_frame(&linear, 320, 240).unwrap();
+            }
+            enc.finalise().unwrap();
+            match std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0"])
+                .arg(&path)
+                .output()
+            {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    assert_eq!(text.trim(), "av1,yuv420p10le", "{name}");
+                }
+                Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
+            }
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
