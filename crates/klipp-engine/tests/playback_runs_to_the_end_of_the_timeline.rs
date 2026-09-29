@@ -18,6 +18,10 @@ const H: u32 = common::RAMP_H;
 
 struct Engine {
     cmd: crossbeam_channel::Sender<AppCommand>,
+    /// The engine's thread, joined when the test is done: left running,
+    /// it was still freeing its GPU objects when the test binary exited
+    /// and the driver was torn down under it, a SIGSEGV (#567).
+    thread: Option<std::thread::JoinHandle<()>>,
     /// Every playhead the engine reported, and when.
     moves: Arc<Mutex<Vec<(Instant, f64)>>>,
     paused: Arc<Mutex<Option<Instant>>>,
@@ -44,8 +48,8 @@ impl Engine {
             Arc::new(RwLock::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
-        std::thread::spawn(move || engine.run());
-        Engine { cmd, moves, paused }
+        let thread = Some(std::thread::spawn(move || engine.run()));
+        Engine { cmd, thread, moves, paused }
     }
 
     /// Seek to `secs`, let it land, then play; wait until playback
@@ -70,6 +74,9 @@ impl Engine {
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.cmd.send(AppCommand::Quit);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
