@@ -111,9 +111,16 @@ fn the_frame_on_screen_reads_back_from_the_viewer_texture() {
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
     fb.note_gpu_frame();
+    let at = klipp_core::RationalTime { value: 489, rate: 30 };
+    fb.set_presented(at, true);
     let snapshot = fb.gpu_output_snapshot().expect("the newest frame is in the texture");
     assert_eq!((snapshot.width, snapshot.height), (w, h));
     assert_eq!(snapshot.read().expect("read back"), bytes);
+    // It says which moment it is, and a newer frame counts past it, which
+    // is how a screenshot knows its copy may have read that newer frame.
+    assert_eq!(snapshot.presented, Some(at));
+    fb.note_gpu_frame();
+    assert_ne!(fb.gpu_output_snapshot().unwrap().frame, snapshot.frame);
 
     fb.write_frame(vec![0; (w * h * 4) as usize], w, h);
     assert!(fb.gpu_output_snapshot().is_none(), "a frame of bytes is newer than the texture");
