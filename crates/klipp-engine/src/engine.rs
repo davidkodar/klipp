@@ -1757,7 +1757,12 @@ impl PlaybackEngine {
         // made on, so the SequenceUpdated push may still read the old
         // values; checking each tick while playing picks the new ones up.
         self.push_audio_effect_settings();
-        let tc = self.playhead;
+        // Sources are swapped where the mix thread is working, not at the
+        // playhead: a source opened at the playhead was heard a mix lead
+        // (~200 ms) late, the old clip's sound running on into the new
+        // shot. Swapped at the heard position, a cut's new sound is
+        // already mixing when the picture gets there.
+        let tc = self.audio_heard_at();
         let rows = self.audio_rows_at(tc);
         let wanted: std::collections::HashMap<usize, (MediaId, u64)> = rows
             .iter()
@@ -3782,6 +3787,16 @@ impl PlaybackEngine {
     /// fade from the sequence: every source its own clip's, as the export
     /// mixes them. Called every tick while playing, on start_all_audio
     /// and on SequenceUpdated.
+    /// Where the samples the mix thread is making now will be heard: the
+    /// playhead plus the mix lead while playing, the playhead otherwise.
+    fn audio_heard_at(&self) -> Timecode {
+        let lead = match (&self.mix_thread, self.state) {
+            (Some(mt), PlaybackState::Playing) => mix_lead_secs(mt.buffered_samples(), self.cpal_sample_rate),
+            _ => 0.0,
+        };
+        self.playhead + RationalTime::from_secs_f64(lead, self.fps.rate())
+    }
+
     fn sync_clip_volumes(&self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // A blade join's continuing sound takes no fade-in; the flag is
@@ -3791,15 +3806,13 @@ impl PlaybackEngine {
         // so a keyframed volume, pan or gain is evaluated where the
         // samples mixed now will be heard, as the export evaluates each
         // sample at its own time; at the playhead a duck came ~200 ms early.
-        let lead = match (&self.mix_thread, self.state) {
-            (Some(mt), PlaybackState::Playing) => mix_lead_secs(mt.buffered_samples(), self.cpal_sample_rate),
-            _ => 0.0,
-        };
-        let heard_at = self.playhead.to_secs_f64() + lead;
+        let heard_tc = self.audio_heard_at();
+        let heard_at = heard_tc.to_secs_f64();
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
-                if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, self.playhead).map(|s| s.clip) {
+                let own_tc = own_clip_tc(&seq, &self.fadeable_media, active, self.playhead, heard_tc);
+                if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, own_tc).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
 
@@ -3878,7 +3891,8 @@ impl PlaybackEngine {
         // Every source inside a crossfade gets its crossfade envelope in
         // place of the clip fade set above: both sides of the join fade.
         for active in &self.audio_sources {
-            set_crossfade_envelope(&seq, &self.fadeable_media, active, self.playhead);
+            let own_tc = own_clip_tc(&seq, &self.fadeable_media, active, self.playhead, heard_tc);
+            set_crossfade_envelope(&seq, &self.fadeable_media, active, own_tc);
         }
     }
 
@@ -4047,6 +4061,27 @@ impl Envelope {
 ///
 /// Only the PCM feeder applies an envelope; a clip on the decoder
 /// fallback is not crossfaded at all (see [`fadeable_media`]).
+/// Where to look up the clip a source plays: the playhead while the
+/// source still plays the clip under it, else the heard position. A
+/// source swapped in for the next clip ahead of a cut (see
+/// `reconcile_audio_sources`) takes that clip's fades and gain, not the
+/// ones of the clip still on screen, whose range would fade it out.
+fn own_clip_tc(seq: &klipp_timeline::Sequence, fadeable: &FadeableMedia, active: &ActiveAudioSource, playhead: Timecode, heard_at: Timecode) -> Timecode {
+    source_clip_tc(seq, fadeable, (active.track_index, active.media_id, active.audio_chain_fingerprint), playhead, heard_at)
+}
+
+/// [`own_clip_tc`] over a source's key, media and chain fingerprint.
+fn source_clip_tc(seq: &klipp_timeline::Sequence, fadeable: &FadeableMedia, (key, media, fp): (usize, MediaId, u64), playhead: Timecode, heard_at: Timecode) -> Timecode {
+    let plays_it = sounding_for_key(seq, fadeable, key, playhead).is_some_and(|s| {
+        s.clip.media_id() == Some(media) && audio_chain_fingerprint_for(&s.clip.audio_effects, &s.clip.audio_effect_keyframes) == fp
+    });
+    if plays_it {
+        playhead
+    } else {
+        heard_at
+    }
+}
+
 fn set_crossfade_envelope(seq: &klipp_timeline::Sequence, fadeable: &FadeableMedia, active: &ActiveAudioSource, tc: Timecode) {
     let Some(sounding) = sounding_for_key(seq, fadeable, active.track_index, tc) else { return };
     if sounding.extent.is_none() {
@@ -4406,6 +4441,11 @@ impl PlaybackEngine {
         for active_src in &self.audio_sources {
             if seq.tracks.get(key_track(active_src.track_index)).is_some() {
                 if let Some(new_clip) = sounding_for_key(&seq, &self.fadeable_media, active_src.track_index, tc).map(|s| s.clip) {
+                    // A source already swapped in for a later clip keeps
+                    // that clip's fades from `sync_clip_volumes`.
+                    if new_clip.media_id() != Some(active_src.media_id) {
+                        continue;
+                    }
                     let new_source_in = new_clip.source_in.to_secs_f64();
                     let new_clip_dur = new_clip.duration().to_secs_f64();
                     active_src.source.set_fade(
@@ -4442,12 +4482,21 @@ impl PlaybackEngine {
     /// `0.0` so the video anchors on the boundary, matching the freshly
     /// positioned audio.
     fn advance_audio_over_video_cut(&mut self, t_cut: std::time::Instant) -> f64 {
+        self.swap_changed_audio_at_cut();
+        self.refresh_audio_fades(self.playhead);
+        t_cut.elapsed().as_secs_f64()
+    }
+
+    /// At a cut, swap only the audio sources whose track changes there
+    /// (other media, a chain change, no clip), leaving the rest, the mix
+    /// thread and the output running. Restarting every source reread
+    /// every track's PCM cache on this thread, 140–250 ms at a cut
+    /// between files, and put a gap in the music (#572). Usually
+    /// `reconcile_audio_sources` has made the swap a mix lead ahead of
+    /// the cut already and nothing is left to do.
+    fn swap_changed_audio_at_cut(&mut self) {
         if self.audio_needs_resync_at(self.playhead) {
-            self.seek_all_audio_to_timecode(self.playhead);
-            0.0
-        } else {
-            self.refresh_audio_fades(self.playhead);
-            t_cut.elapsed().as_secs_f64()
+            self.reconcile_audio_sources();
         }
     }
 
@@ -5239,10 +5288,10 @@ impl PlaybackEngine {
             // the previous media, so a `set_fade` update would silence them
             // once the old media runs out. Scan the audio sources and, if
             // any sits on a media that no longer matches the clip at the
-            // new playhead, delegate to `start_all_audio` to stop-and-reopen
-            // the decoders. Video stays contiguous regardless.
+            // new playhead, swap that track's source (only that track's:
+            // the others play on). Video stays contiguous regardless.
             //
-            // We also restart when the AUDIO CHAIN changed — two clips
+            // We also swap when the AUDIO CHAIN changed — two clips
             // that share the same media file can carry different
             // audio_effects / audio_effect_keyframes, and without this
             // check the prior clip's chain bleeds into the next one
@@ -5254,11 +5303,9 @@ impl PlaybackEngine {
             // video cut is contiguous or a jump.
             if self.audio_needs_resync_at(self.playhead) {
                 info!(
-                    "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — restarting audio sources",
+                    "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — swapping the changed audio sources",
                 );
-                self.start_all_audio(self.playhead);
-                self.sync_streams();
-                return;
+                self.swap_changed_audio_at_cut();
             }
 
             // CRITICAL: Immediately update fade parameters on audio sources,
@@ -5371,24 +5418,14 @@ impl PlaybackEngine {
 
             info!("Advancing to clip {} ({:?})", actual_idx, path);
 
-            // Decide the audio fate BEFORE touching the video decoder. This
-            // full-open path (different video file, no preroll) normally tears
-            // down and reopens every audio source, which gaps a continuous
-            // music clip exactly like a flush would. When the audio is
-            // continuous across this boundary, keep every source streaming
-            // through the video reopen and only refresh fades — the audio
+            // Settle the audio BEFORE touching the video decoder. The audio
             // pipeline runs on its own threads, so it plays straight through
             // even while this thread blocks opening the new video decoder.
-            let audio_continuous = !self.audio_needs_resync_at(self.playhead);
+            // Only the tracks that change here are swapped, before the
+            // decoder opens, so the old clip's sound stops on time.
+            self.swap_changed_audio_at_cut();
 
             self.retire_v1_decoder(old_clip);
-            if !audio_continuous {
-                for active in &mut self.audio_sources {
-                    active.source.stop_detached();
-                }
-                self.audio_sources.clear();
-                self.audio_output = None;
-            }
 
             // Open new video decoder
             let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
@@ -5408,35 +5445,18 @@ impl PlaybackEngine {
                 }
             }
 
-            if audio_continuous {
-                // Audio streamed straight through the video reopen; only the
-                // fade envelope needs refreshing. Advance the video anchor to
-                // where the free-running audio now is (opening the decoder
-                // took wall time during which the audio played on).
-                self.refresh_audio_fades(self.playhead);
-                let audio_catch_up = t_cut.elapsed().as_secs_f64();
-                let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
-                let start_us = (anchor_secs * 1_000_000.0) as u64;
-                self.master_clock.seek(start_us);
-                self.master_clock.resume();
-                self.playhead =
-                    timeline_in + RationalTime::from_secs_f64(audio_catch_up, self.fps.rate());
-            } else {
-                // Audio genuinely changes here — reopen at the new position.
-                let start_us = (source_in_secs * 1_000_000.0) as u64;
-                self.master_clock.seek(start_us);
-                self.start_all_audio(self.playhead);
-
-                // Pre-fill + resume
-                for active in &self.audio_sources {
-                    active.source.resume();
-                }
-                std::thread::sleep(Duration::from_millis(10));
-                if let Some(aout) = &self.audio_output {
-                    aout.0.resume();
-                }
-                self.master_clock.resume();
-            }
+            // The audio streamed on through the video reopen; only the
+            // fade envelope needs refreshing. Advance the video anchor to
+            // where the free-running audio now is (opening the decoder
+            // took wall time during which the audio played on).
+            self.refresh_audio_fades(self.playhead);
+            let audio_catch_up = t_cut.elapsed().as_secs_f64();
+            let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
+            let start_us = (anchor_secs * 1_000_000.0) as u64;
+            self.master_clock.seek(start_us);
+            self.master_clock.resume();
+            self.playhead =
+                timeline_in + RationalTime::from_secs_f64(audio_catch_up, self.fps.rate());
 
             self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
@@ -12147,6 +12167,26 @@ mod audio_continuity_tests {
             !audio_resync_needed(&s, &Default::default(), tc(48), active),
             "continuous audio across a video jump cut must NOT trigger a resync",
         );
+    }
+
+    /// #572: a source swapped in for the next clip a mix lead ahead of
+    /// the cut takes that clip's fades, while the source still playing
+    /// the clip on screen keeps its own.
+    #[test]
+    fn a_source_swapped_in_ahead_of_a_cut_reads_its_own_clip() {
+        let music_a = MediaId::new();
+        let music_b = MediaId::new();
+        let mut s = Sequence::new_default();
+        s.tracks.clear();
+        let mut a = Track::new("A1", TrackKind::Audio);
+        a.clips.push(Clip::media(music_a, tc(0), tc(48), tc(0), tc(48)));
+        a.clips.push(Clip::media(music_b, tc(48), tc(96), tc(0), tc(48)));
+        s.tracks.push(a);
+        let (playhead, heard_at) = (tc(44), tc(49));
+        let fadeable = Default::default();
+        let own = |media| super::source_clip_tc(&s, &fadeable, (0, media, empty_fp()), playhead, heard_at);
+        assert_eq!(own(music_a), playhead, "A's source plays the clip on screen");
+        assert_eq!(own(music_b), heard_at, "B's source plays the clip heard next");
     }
 
     #[test]
