@@ -5709,6 +5709,7 @@ impl PlaybackEngine {
     }
 
     fn stop_at_end(&mut self) {
+        self.clear_preroll();
         info!("stop_at_end called — loop_enabled={}, playhead={:.3}s",
             self.loop_enabled, self.playhead.to_secs_f64());
         // Loop: if enabled, seek back to in_point (or start)
@@ -5860,6 +5861,7 @@ impl PlaybackEngine {
     }
 
     fn execute_loop(&mut self, target: Timecode) {
+        self.clear_preroll();
         debug!("[Loop] Executing loop-back to {:.3}s", target.to_secs_f64());
         // The loop lands on its target by either path below; whatever
         // is there decides the mode, not the tail it left.
@@ -6156,6 +6158,9 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        // A preroll made for where the playhead was, or remembered as
+        // failing there, is not for where it lands.
+        self.clear_preroll();
         let t_seek = std::time::Instant::now();
         self.clock_only = false;
         self.sync_fps_to_sequence();
@@ -12444,7 +12449,15 @@ mod preroll_retry_tests {
 
         engine.clear_preroll();
         engine.start_preroll_for_next_clip();
-        assert!(engine.preroll_pending.is_some(), "after a cut or a seek it is tried again");
+        assert!(engine.preroll_pending.is_some(), "after a cut it is tried again");
+
+        // A seek forgets it too, and drops a preroll made for where the
+        // playhead was.
+        engine.take_ready_preroll(Some(Duration::from_secs(5)));
+        assert_eq!(engine.preroll_failed, Some(1));
+        engine.seek_in_sequence_with_timeout(tc(0.2), Duration::from_millis(50));
+        assert_eq!(engine.preroll_failed, None, "a seek forgets the failure");
+        assert!(engine.preroll_pending.is_none() && engine.preroll_clip_index.is_none());
         engine.clear_preroll();
     }
 }
