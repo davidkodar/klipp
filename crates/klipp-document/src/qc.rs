@@ -94,6 +94,17 @@ fn is_picture(c: &Clip) -> bool {
     c.enabled && !matches!(c.kind, ClipKind::Gap | ClipKind::AdjustmentLayer)
 }
 
+/// Whether a clip on a text track fills the frame: a title on a full-frame
+/// card, like an end card, or a generator. Text over nothing does not.
+fn fills_frame(c: &Clip) -> bool {
+    c.enabled
+        && match &c.kind {
+            ClipKind::Title(td) => matches!(td.background, klipp_timeline::TitleBackground::FullFrame { color } if color[3] > 0),
+            ClipKind::Generator(_) => true,
+            _ => false,
+        }
+}
+
 /// The stretches of `0..end` that none of `spans` covers, each at least `min` long.
 fn uncovered(mut spans: Vec<(f64, f64)>, end: f64, min: f64) -> Vec<(f64, f64)> {
     spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -157,8 +168,17 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let in_montage = |a: f64, b: f64| montages.iter().any(|(start, end)| a + 1e-6 >= *start && b <= *end + 1e-6);
     let video_tracks: Vec<(usize, &klipp_timeline::Track)> = seq.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video && t.visible).collect();
     let pictures: Vec<(usize, &Clip)> = video_tracks.iter().flat_map(|(ti, t)| t.clips.iter().filter(|c| is_picture(c)).map(move |c| (*ti, c))).collect();
+    // Where there is something on screen: the pictures, and the cards on
+    // the text tracks that fill the frame, so an end card is not "black"
+    // and the picture does not end before it (#517).
+    let on_screen: Vec<(f64, f64)> = pictures
+        .iter()
+        .map(|(_, c)| *c)
+        .chain(seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible).flat_map(|t| t.clips.iter()).filter(|c| fills_frame(c)))
+        .map(|c| (secs(c.timeline_in), secs(c.timeline_out)))
+        .collect();
 
-    if pictures.is_empty() {
+    if on_screen.is_empty() {
         add(Severity::Error, "empty", None, "there is no picture on the timeline".into(), "Place the piece first");
     }
 
@@ -176,9 +196,9 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     }
 
     // Black: time with no picture under it.
-    if !pictures.is_empty() {
-        let picture_end = pictures.iter().map(|(_, c)| secs(c.timeline_out)).fold(0.0, f64::max);
-        for (a, b) in uncovered(pictures.iter().map(|(_, c)| (secs(c.timeline_in), secs(c.timeline_out))).collect(), picture_end, frame * 0.9) {
+    if !on_screen.is_empty() {
+        let picture_end = on_screen.iter().map(|(_, b)| *b).fold(0.0, f64::max);
+        for (a, b) in uncovered(on_screen.clone(), picture_end, frame * 0.9) {
             add(Severity::Error, "black", Some(a), format!("no picture from {a:.2} to {b:.2} s: {:.0} frame{} of black", (b - a) * fps, if (b - a) * fps >= 1.5 { "s" } else { "" }), "Close the gap, or cover it");
         }
         // Picture and sound ending apart.
@@ -724,6 +744,42 @@ mod tests {
         assert_eq!(rules(&r), vec!["no_brief"], "{}", r.text());
         assert_eq!((r.errors, r.warnings), (0, 0));
         assert!(r.text().starts_with("Checked 8.00 s: 0 errors, 0 warnings, 1 note."), "{}", r.text());
+    }
+
+    /// #517: a full-frame title is picture. The film ended on a 7.6 s end
+    /// card over the music's fade, and the check said the picture had
+    /// ended while the sound ran on. A card over a gap is not black either;
+    /// a plain title, text over nothing, still is neither.
+    #[test]
+    fn a_full_frame_card_is_picture() {
+        let (mut seq, pool, talk, music) = piece();
+        let card = |a: f64, b: f64, background| {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Wherever We Walk".into(), ..Default::default() });
+            td.background = background;
+            Clip { kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(b - a), ..Clip::gap(tc(a), tc(b)) }
+        };
+        let full = || klipp_timeline::TitleBackground::FullFrame { color: [20, 17, 14, 255] };
+        let mut bed = Track::new("A2", TrackKind::Audio);
+        bed.clips = vec![Clip::media(music, tc(0.0), tc(12.0), tc(0.0), tc(12.0))];
+        seq.tracks.push(bed);
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips = vec![card(8.0, 12.0, klipp_timeline::TitleBackground::None)];
+        seq.tracks.insert(0, text);
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"ends_apart"), "text over nothing is not picture: {}", r.text());
+
+        seq.tracks[0].clips = vec![card(8.0, 12.0, full())];
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"ends_apart") && !rules(&r).contains(&"black"), "{}", r.text());
+
+        // The second shot a second later: black, unless a card covers it.
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let c = &mut seq.tracks[v].clips[1];
+        (c.timeline_in, c.timeline_out) = (tc(5.0), tc(8.0));
+        assert!(rules(&check(&seq, &pool, &Spoken(talk))).contains(&"black"));
+        seq.tracks[0].clips.insert(0, card(4.0, 5.0, full()));
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"black"), "{}", r.text());
     }
 
     #[test]
