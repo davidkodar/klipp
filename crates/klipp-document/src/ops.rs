@@ -1753,14 +1753,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 return Err(refuse(i, format!("source {s_in:.2}-{s_out:.2} s is not inside {} ({media_dur:.2} s)", item.filename), "give source_in and source_out within the file, in order"));
             }
             // An empty sequence takes the first picture's size and rate,
-            // as an append in the app does; that place is already snapped
-            // at the rate the sequence is about to have.
-            let no_video_yet = !seq.tracks.iter().any(|t| t.kind == TrackKind::Video && !t.clips.is_empty());
-            let autoset = if no_video_yet && item.resolution.width > 0 && item.fps.as_f64() > 0.0 && (seq.resolution != item.resolution || seq.fps != item.fps) {
-                Some(((seq.resolution, seq.fps), (item.resolution, item.fps)))
-            } else {
-                None
-            };
+            // as an append in the app does, by the same rule: only what was
+            // left automatic, and only from a picture on a picture track. A
+            // sound file placed first turned a 25 fps project to its pool
+            // entry's 24 (#534). That place is already snapped at the rate
+            // the sequence is about to have.
+            let picture = t.kind == TrackKind::Video && !item.video_codec.is_empty() && item.fps.as_f64() > 0.0;
+            let autoset = if picture { seq.first_clip_format(item.resolution, item.fps).filter(|(old, new)| old != new) } else { None };
             let fps = autoset.map(|(_, (_, f))| f).unwrap_or(fps);
             // Stills have no file end, but their authored time must
             // still fit the integer frame clock (including NTSC ticks).
@@ -6529,6 +6528,52 @@ mod tests {
         let sound = seq.tracks[1].clips[0].id;
         let (_, after, _) = replay(&[Op::Remove { clip_id: ClipRef::Id(sound), ripple: false, linked: true }]);
         assert_eq!(after.tracks[0].clips.len(), 1);
+    }
+
+    /// #534: a first clip sets the sequence's size and rate only where
+    /// they were left automatic, and only a picture on a picture track
+    /// does. A sound file placed first turned a project made at 25 fps to
+    /// its pool entry's 24.
+    #[test]
+    fn a_first_clip_keeps_a_chosen_format_and_sound_never_sets_it() {
+        use klipp_core::Resolution;
+        use klipp_timeline::FirstClipAutoSet;
+        let (hd, pal) = (Resolution { width: 1920, height: 1080 }, Fps::new(25, 1));
+        let (small, thirty) = (Resolution { width: 1280, height: 720 }, Fps::new(30, 1));
+        let mut pool = MediaPool::new();
+        let mut sound = klipp_media::MediaItem::synthetic_for_test("/tmp/tone.wav".into(), None);
+        (sound.duration, sound.video_codec, sound.has_audio) = (tc(2.0), String::new(), true);
+        // A sound file's pool entry still carries a size and a rate.
+        (sound.resolution, sound.fps) = (hd, Fps::new(24, 1));
+        let sound = pool.add(sound);
+        let mut picture = klipp_media::MediaItem::synthetic_for_test("/tmp/thirty.mp4".into(), None);
+        (picture.duration, picture.video_codec, picture.has_audio) = (tc(3.0), "h264".into(), false);
+        (picture.resolution, picture.fps) = (small, thirty);
+        let picture = pool.add(picture);
+
+        let empty = |auto: FirstClipAutoSet| {
+            let mut seq = Sequence::new_default();
+            (seq.resolution, seq.fps, seq.first_clip_autoset) = (hd, pal, auto);
+            seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
+            seq
+        };
+        let place = |media_id, track| Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(0.0), source_in: None, source_out: None, insert: false, with_audio: true };
+        let format_after = |seq: Sequence, op: Op| {
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            for step in &plan.steps {
+                view.apply_forward(&step.edit);
+            }
+            (seqs[0].resolution, seqs[0].fps)
+        };
+        let chosen = FirstClipAutoSet { resolution: false, fps: false };
+
+        for auto in [chosen, FirstClipAutoSet::default()] {
+            assert_eq!(format_after(empty(auto), place(sound, 1)), (hd, pal), "sound placed first sets nothing ({auto:?})");
+        }
+        assert_eq!(format_after(empty(chosen), place(picture, 0)), (hd, pal), "a chosen size and rate are kept");
+        assert_eq!(format_after(empty(FirstClipAutoSet::default()), place(picture, 0)), (small, thirty), "automatic ones follow the first picture");
     }
 
     /// A take goes on the Voice track as dialogue: the track is added

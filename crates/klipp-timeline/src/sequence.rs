@@ -205,13 +205,15 @@ impl Camera {
 }
 
 impl Sequence {
-    /// Take the size and rate of the first video clip placed, where
-    /// [`Self::first_clip_autoset`] allows it. `None` when the sequence
-    /// already has a video clip or neither setting follows the footage;
-    /// otherwise the settings before and after, for the undo history.
+    /// The size and rate the sequence would take from a first video clip
+    /// of `resolution` and `fps`, where [`Self::first_clip_autoset`] allows
+    /// it, without taking them: the settings before and after. `None` when
+    /// the sequence already has a video clip or neither setting follows the
+    /// footage. The one rule for every way a first clip is placed, the
+    /// app's appends and the document's `place` alike (#496, #534).
     #[allow(clippy::type_complexity)]
-    pub fn adopt_first_clip(
-        &mut self,
+    pub fn first_clip_format(
+        &self,
         resolution: Resolution,
         fps: Fps,
     ) -> Option<((Resolution, Fps), (Resolution, Fps))> {
@@ -221,13 +223,23 @@ impl Sequence {
             return None;
         }
         let prev = (self.resolution, self.fps);
-        if auto.resolution {
-            self.resolution = resolution;
-        }
-        if auto.fps {
-            self.fps = fps;
-        }
-        Some((prev, (self.resolution, self.fps)))
+        let new = (if auto.resolution { resolution } else { self.resolution }, if auto.fps { fps } else { self.fps });
+        Some((prev, new))
+    }
+
+    /// Take the size and rate of the first video clip placed, where
+    /// [`Self::first_clip_autoset`] allows it: [`Self::first_clip_format`],
+    /// applied. `None` when nothing may change; otherwise the settings
+    /// before and after, for the undo history.
+    #[allow(clippy::type_complexity)]
+    pub fn adopt_first_clip(
+        &mut self,
+        resolution: Resolution,
+        fps: Fps,
+    ) -> Option<((Resolution, Fps), (Resolution, Fps))> {
+        let change = self.first_clip_format(resolution, fps)?;
+        (self.resolution, self.fps) = change.1;
+        Some(change)
     }
 
     /// The id the timeline grade runs under as a clip (see
