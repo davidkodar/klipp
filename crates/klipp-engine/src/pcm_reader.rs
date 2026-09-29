@@ -118,6 +118,111 @@ pub struct PcmAudioFeeder {
     pub effect_settings: crate::audio_source::EffectSettingsSlot,
 }
 
+/// PCM caches kept in memory once read, shared by every feeder that plays
+/// them. A cut to another file used to stop every source and open each
+/// track's cache again, reading the whole file: a 9-minute recording is
+/// 213 MB and took 120-150 ms on the engine thread, at every cut (#572).
+/// Now only the first open reads it.
+///
+/// Held strongly, since at a cut every feeder is dropped before the next
+/// ones open, within [`PCM_CACHE_BUDGET`] bytes; the least recently used
+/// go first. An entry is the file's as it was: a cache written again
+/// (another size or modification time) is read again.
+struct PcmCache {
+    entries: Vec<PcmCacheEntry>,
+    bytes: usize,
+}
+
+struct PcmCacheEntry {
+    path: std::path::PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    data: Arc<[f32]>,
+}
+
+/// What the PCM caches in memory may add up to before the least recently
+/// used is let go: a feature's worth of stereo 48 kHz sound.
+const PCM_CACHE_BUDGET: usize = 1 << 30;
+
+static PCM_CACHE: std::sync::Mutex<PcmCache> = std::sync::Mutex::new(PcmCache { entries: Vec::new(), bytes: 0 });
+
+/// The samples of the PCM cache at `path`: from memory when it was read
+/// before and has not changed, else read now and kept.
+fn load_pcm(path: &Path) -> Result<Arc<[f32]>, PcmFeederError> {
+    let meta = std::fs::metadata(path).map_err(|e| PcmFeederError::Open(format!("read {path:?}: {e}")))?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    {
+        let mut cache = PCM_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = cache.entries.iter().position(|e| e.path == path && e.len == len && e.modified == modified) {
+            // Most recently used last.
+            let entry = cache.entries.remove(i);
+            let data = entry.data.clone();
+            cache.entries.push(entry);
+            return Ok(data);
+        }
+    }
+    let data = read_pcm(path)?;
+    let size = data.len() * 4;
+    let mut cache = PCM_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    // The same path at another size or time is a stale copy.
+    let mut freed = 0;
+    cache.entries.retain(|e| {
+        let keep = e.path != path;
+        if !keep {
+            freed += e.data.len() * 4;
+        }
+        keep
+    });
+    cache.bytes -= freed;
+    while cache.bytes + size > PCM_CACHE_BUDGET && !cache.entries.is_empty() {
+        let gone = cache.entries.remove(0);
+        cache.bytes -= gone.data.len() * 4;
+    }
+    if size <= PCM_CACHE_BUDGET {
+        cache.bytes += size;
+        cache.entries.push(PcmCacheEntry { path: path.to_path_buf(), len, modified, data: data.clone() });
+    }
+    Ok(data)
+}
+
+/// Load the PCM cache at `path` into memory ahead of need, so a feeder
+/// opened on it later reads nothing: for the next clip's sound, from the
+/// video preroll before a cut. Any thread; a second call for an unchanged
+/// file does nothing. Two calls at once may both read it, and the cache
+/// keeps one copy.
+pub fn warm(path: &Path) -> Result<(), PcmFeederError> {
+    load_pcm(path).map(|_| ())
+}
+
+/// Read a PCM cache file whole, as 32-bit float samples.
+fn read_pcm(pcm_path: &Path) -> Result<Arc<[f32]>, PcmFeederError> {
+    let pcm_bytes = std::fs::read(pcm_path)
+        .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
+
+    if pcm_bytes.len() % 4 != 0 {
+        return Err(PcmFeederError::Open("PCM file size not aligned to f32".into()));
+    }
+    // Treat zero-length (or too-short-to-contain-a-stereo-sample) PCM
+    // files as a load failure so the engine falls back to AudioDecoder
+    // instead of silently succeeding with a feeder that produces
+    // silence. Previously a ghost 0-byte cache file was opened here,
+    // `total_floats == 0`, and the clip played mute on the timeline
+    // even though the source media had audio.
+    if pcm_bytes.len() < 16 {
+        return Err(PcmFeederError::Open(
+            format!("PCM cache file too small ({} bytes) — treating as absent", pcm_bytes.len()),
+        ));
+    }
+
+    // Copy the raw bytes into f32 samples: the allocation is 4-byte
+    // aligned, while a plain `Vec<u8>` is only 1-byte aligned and
+    // `bytemuck::cast_slice` panics if the pointer isn't aligned to the
+    // target type.
+    let mut pcm_data = vec![0f32; pcm_bytes.len() / 4];
+    bytemuck::cast_slice_mut::<f32, u8>(&mut pcm_data).copy_from_slice(&pcm_bytes);
+    Ok(pcm_data.into())
+}
+
 impl PcmAudioFeeder {
     /// Open a PCM cache file and create a feeder + ring buffer consumer.
     /// The PCM file must be 48kHz stereo f32 interleaved (as produced by conform_audio).
@@ -131,33 +236,8 @@ impl PcmAudioFeeder {
         audio_effects: Vec<AudioEffectInstance>,
         audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     ) -> Result<(Self, AudioConsumer), PcmFeederError> {
-        let pcm_bytes = std::fs::read(pcm_path)
-            .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
-
-        if pcm_bytes.len() % 4 != 0 {
-            return Err(PcmFeederError::Open("PCM file size not aligned to f32".into()));
-        }
-        // Treat zero-length (or too-short-to-contain-a-stereo-sample) PCM
-        // files as a load failure so the engine falls back to AudioDecoder
-        // instead of silently succeeding with a feeder that produces
-        // silence. Previously a ghost 0-byte cache file was opened here,
-        // `total_floats == 0`, and the clip played mute on the timeline
-        // even though the source media had audio.
-        if pcm_bytes.len() < 16 {
-            return Err(PcmFeederError::Open(
-                format!("PCM cache file too small ({} bytes) — treating as absent", pcm_bytes.len()),
-            ));
-        }
-
-        // Copy the raw bytes into a `Vec<f32>` — the Vec's allocation is
-        // guaranteed to be 4-byte aligned, while a plain `Vec<u8>` is only
-        // 1-byte aligned and `bytemuck::cast_slice` panics if the pointer
-        // isn't aligned to the target type. Single allocation + copy on
-        // open; the feeder thread then operates on aligned f32 samples
-        // directly with zero per-frame cost.
-        let total_floats = pcm_bytes.len() / 4;
-        let mut pcm_data = vec![0f32; total_floats];
-        bytemuck::cast_slice_mut::<f32, u8>(&mut pcm_data).copy_from_slice(&pcm_bytes);
+        let pcm_data = load_pcm(pcm_path)?;
+        let total_floats = pcm_data.len();
         let total_mono_samples = total_floats / CHANNELS;
         let duration_secs = total_mono_samples as f64 / SAMPLE_RATE as f64;
 
@@ -325,7 +405,7 @@ impl std::fmt::Display for PcmFeederError {
 
 #[allow(clippy::too_many_arguments)]
 fn pcm_feed_thread(
-    pcm_data: Vec<f32>,
+    pcm_data: Arc<[f32]>,
     output_rate: u32,
     needs_resample: bool,
     mut producer: AudioProducer,
@@ -354,7 +434,7 @@ fn pcm_feed_thread(
     // PCM data already comes in as `Vec<f32>` (converted at open() time so
     // the buffer is guaranteed 4-byte aligned — see the comment in
     // `PcmAudioFeeder::open`). No per-thread cast needed.
-    let samples: &[f32] = &pcm_data;
+    let samples: &[f32] = &pcm_data[..];
     let total_floats = samples.len();
 
     // Build audio effect chain from per-clip effects + keyframe tracks.
@@ -658,6 +738,31 @@ impl PlaybackResampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_pcm(path: &Path, samples: &[f32]) {
+        std::fs::write(path, bytemuck::cast_slice::<f32, u8>(samples)).unwrap();
+    }
+
+    /// #572: a cut reopened every track's PCM cache from disk on the
+    /// engine thread. A second open of an unchanged file shares the copy
+    /// in memory; a rewritten one is read again.
+    #[test]
+    fn pcm_cache_shares_an_unchanged_file_and_rereads_a_changed_one() {
+        let path = std::env::temp_dir().join(format!("klipp-pcm-cache-test-{}.pcm", std::process::id()));
+        write_pcm(&path, &[0.25; 8]);
+        let first = load_pcm(&path).unwrap();
+        let second = load_pcm(&path).unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "an unchanged file is read once");
+
+        write_pcm(&path, &[0.5; 12]);
+        let third = load_pcm(&path).unwrap();
+        assert!(!Arc::ptr_eq(&first, &third));
+        assert_eq!(&third[..], &[0.5; 12]);
+        let cache = PCM_CACHE.lock().unwrap();
+        assert_eq!(cache.entries.iter().filter(|e| e.path == path).count(), 1, "the stale copy is dropped");
+        drop(cache);
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// #421: the slow path converts to the device rate with a windowed
     /// sinc and trims the conversion's delay, so a tone arrives on time and
