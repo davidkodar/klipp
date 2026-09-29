@@ -1130,6 +1130,10 @@ pub struct PlaybackEngine {
     /// Fingerprint of audio-relevant state. Prevents redundant audio teardown+rebuild
     /// when SequenceUpdated fires for non-audio changes (title edits, color changes).
     last_audio_fingerprint: u64,
+    /// The clips, one per track, `last_audio_fingerprint` was taken over.
+    /// Other clips under the playhead mean playback or a seek moved on,
+    /// not that the sound was edited: see [`Self::audio_edited_at`].
+    last_audio_clips: Vec<Option<klipp_core::ClipId>>,
     // Master clock — single source of truth for A/V timing
     master_clock: Arc<MasterClock>,
     // Timeline offset: maps source PTS to sequence timeline.
@@ -1990,6 +1994,7 @@ impl PlaybackEngine {
             spectrum_sample_rate,
             cpal_sample_rate,
             last_audio_fingerprint: 0,
+            last_audio_clips: Vec::new(),
             master_clock,
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
@@ -3260,9 +3265,7 @@ impl PlaybackEngine {
                 // affect audio — skipping the teardown+rebuild prevents a storm that
                 // freezes the playhead during live editing.
                 if !self.audio_sources.is_empty() {
-                    let audio_fingerprint = self.compute_audio_fingerprint();
-                    if audio_fingerprint != self.last_audio_fingerprint {
-                        self.last_audio_fingerprint = audio_fingerprint;
+                    if self.audio_edited_at(self.playhead) {
                         let tc = self.playhead;
                         self.start_all_audio(tc);
                         if self.state == PlaybackState::Playing {
@@ -3687,7 +3690,7 @@ impl PlaybackEngine {
     fn reposition_audio_or_defer(&mut self, tc: Timecode, source_secs: f64) -> bool {
         let cheap = !self.audio_sources.is_empty()
             && self.audio_output.is_some()
-            && self.audio_fingerprint_at(tc) == self.last_audio_fingerprint
+            && !self.audio_edited_at(tc)
             && self.audio_sources.len() == self.audio_source_count_at(tc);
         // A scrub only has a listener when scrub audio is on: the chirps play
         // from `audio_sources.first()`. Counting a silent scrub as listening
@@ -3733,10 +3736,9 @@ impl PlaybackEngine {
     }
 
     fn reposition_audio(&mut self, tc: Timecode) {
-        let fingerprint = self.audio_fingerprint_at(tc);
         let same_set = !self.audio_sources.is_empty()
             && self.audio_output.is_some()
-            && fingerprint == self.last_audio_fingerprint
+            && !self.audio_edited_at(tc)
             && self.audio_sources.len() == self.audio_source_count_at(tc);
         if same_set {
             self.seek_all_audio_to_timecode(tc);
@@ -3755,7 +3757,7 @@ impl PlaybackEngine {
         self.pending_audio_reposition = None;
         // Update fingerprint so SequenceUpdated knows the current audio state
         // (prevents redundant restart on the next SequenceUpdated after a seek/play).
-        self.last_audio_fingerprint = self.compute_audio_fingerprint();
+        self.record_audio_at(tc);
         self.stop_all_audio();
 
         let track_audio = self.audio_rows_at(tc);
@@ -3928,6 +3930,7 @@ impl PlaybackEngine {
         self.stop_all_audio();
         crate::pcm_reader::release_all();
         self.last_audio_fingerprint = 0;
+        self.last_audio_clips.clear();
 
         // Clear caches (frame, render hot, pre-grade, grade hash)
         self.cached_pregrade_frame = None;
@@ -4020,8 +4023,33 @@ impl PlaybackEngine {
     /// When the playhead reaches the edited clip, `open_audio_source`
     /// clones the clip's audio_effect_keyframes fresh, so the edit is
     /// picked up at clip-transition time.
-    fn compute_audio_fingerprint(&self) -> u64 {
-        self.audio_fingerprint_at(self.playhead)
+    /// Record the sound at `tc` as the sound playing: its fingerprint and
+    /// the clips it was taken over.
+    fn record_audio_at(&mut self, tc: Timecode) {
+        self.last_audio_fingerprint = self.audio_fingerprint_at(tc);
+        self.last_audio_clips = self.clips_at(tc);
+    }
+
+    /// Whether the sound at `tc` was edited since it was recorded: the
+    /// same clips, with other media, speed or effects. Other clips there
+    /// mean playback crossed a cut, a swap took the next clip, or a seek
+    /// landed elsewhere; the sound is recorded again, and nothing counts
+    /// as edited. Compared as a fingerprint alone, every cut read as an
+    /// edit, and the SequenceUpdated the UI sends around cuts restarted
+    /// every source mid-play: the mix thread stopped, each track's PCM
+    /// reopened, 100–190 ms and the playhead stepping back (#580).
+    fn audio_edited_at(&mut self, tc: Timecode) -> bool {
+        if self.clips_at(tc) != self.last_audio_clips {
+            self.record_audio_at(tc);
+            return false;
+        }
+        self.audio_fingerprint_at(tc) != self.last_audio_fingerprint
+    }
+
+    /// The clip under `tc` on each track, in track order.
+    fn clips_at(&self, tc: Timecode) -> Vec<Option<klipp_core::ClipId>> {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        seq.tracks.iter().map(|t| t.clip_at_timecode(tc).map(|(_, c)| c.id)).collect()
     }
 
     fn audio_fingerprint_at(&self, tc: Timecode) -> u64 {
@@ -11719,7 +11747,7 @@ mod param_change_queue_tests {
 // ═══════════════════════════════════════════════════════════════════
 // Audio fingerprint sensitivity to audio_effect_keyframes
 //
-// `compute_audio_fingerprint` is what gates chain rebuild on
+// `audio_fingerprint_at` is what gates chain rebuild on
 // `SequenceUpdated` — if the kf state isn't part of the hash, the
 // running chain misses every kf edit until the next seek/play. The
 // per-clip portion is extracted into `audio_fingerprint_for_clip`
@@ -11827,7 +11855,7 @@ mod audio_fingerprint_kf_tests {
              produces different smoothing in the kf-evaluation path");
     }
 
-    /// Pin the intentional scope of compute_audio_fingerprint: only
+    /// Pin the intentional scope of audio_fingerprint_at: only
     /// clips that are CURRENTLY at the playhead contribute. Non-playhead
     /// clips are excluded by design — when the playhead reaches them,
     /// `open_audio_source` clones their kfs fresh, so edits land at
@@ -12400,6 +12428,54 @@ mod mix_lead_tests {
         assert!((super::mix_lead_secs(48_000 * 2 / 5, 48_000) - 0.2).abs() < 1e-9);
         assert_eq!(super::mix_lead_secs(0, 48_000), 0.0);
         assert_eq!(super::mix_lead_secs(1024, 0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod audio_edited_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// #580: playback crossing a cut changes the clips under the playhead
+    /// and so the audio fingerprint; that is not an edit, and the
+    /// SequenceUpdated the UI sends around cuts must not restart every
+    /// source. The same clips with other speed or effects are an edit.
+    #[test]
+    fn a_cut_is_not_an_edit_and_a_speed_change_is() {
+        let (a, b) = (MediaId::new(), MediaId::new());
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![
+            klipp_timeline::Clip::media(a, tc(0.0), tc(1.0), tc(0.0), tc(1.0)),
+            klipp_timeline::Clip::media(b, tc(1.0), tc(2.0), tc(0.0), tc(1.0)),
+        ];
+        let mut music = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        music.clips = vec![klipp_timeline::Clip::media(b, tc(0.0), tc(2.0), tc(0.0), tc(2.0))];
+        seq.tracks = vec![v1, music];
+        let sequence = Arc::new(RwLock::new(seq));
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::clone(&sequence), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.record_audio_at(tc(0.5));
+
+        // A video-only cut over continuous music: other clips, no edit.
+        let before = engine.last_audio_fingerprint;
+        assert!(!engine.audio_edited_at(tc(1.2)), "crossing a cut is not an edit");
+        assert_ne!(engine.last_audio_fingerprint, before, "the sound at the new clip is recorded");
+        assert!(!engine.audio_edited_at(tc(1.5)), "nor is playing on in it");
+
+        // The clip under the playhead sped up: an edit.
+        sequence.write().unwrap().tracks[0].clips[1].speed = 2.0;
+        assert!(engine.audio_edited_at(tc(1.5)), "a speed change is an edit");
+
+        // A seek back to the first clips is not an edit either.
+        assert!(!engine.audio_edited_at(tc(0.2)));
     }
 }
 
