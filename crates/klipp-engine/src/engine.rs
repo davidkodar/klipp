@@ -3920,6 +3920,7 @@ impl PlaybackEngine {
 
         // Stop audio
         self.stop_all_audio();
+        crate::pcm_reader::release_all();
         self.last_audio_fingerprint = 0;
 
         // Clear caches (frame, render hot, pre-grade, grade hash)
