@@ -2318,7 +2318,9 @@ mod tests {
 
     /// #560: a 10-bit AV1 export is ten bits in the file, through the
     /// hardware encoder and through SVT-AV1 alike. Both used to be given
-    /// 8-bit pictures whatever the depth asked for.
+    /// 8-bit pictures whatever the depth asked for. Delivered as HDR10,
+    /// since the export dialog now offers AV1 that: the file says PQ on
+    /// BT.2020.
     #[test]
     #[serial]
     fn ten_bit_av1_is_ten_bits_in_the_file() {
@@ -2337,6 +2339,7 @@ mod tests {
             settings.video_codec = ExportVideoCodec::Av1;
             settings.format = ExportFormat::Mkv;
             settings.bit_depth = 10;
+            settings.hdr_mode = klipp_core::HdrMode::Pq;
             ATTEMPTS.with(|a| *a.borrow_mut() = Some(vec![attempt]));
             let opened = Encoder::open(&path, &settings, &snapshot);
             ATTEMPTS.with(|a| *a.borrow_mut() = None);
@@ -2356,13 +2359,15 @@ mod tests {
             }
             enc.finalise().unwrap();
             match std::process::Command::new("ffprobe")
-                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0"])
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt,color_transfer,color_primaries", "-of", "default=nw=1"])
                 .arg(&path)
                 .output()
             {
                 Ok(out) => {
                     let text = String::from_utf8_lossy(&out.stdout);
-                    assert_eq!(text.trim(), "av1,yuv420p10le", "{name}");
+                    for field in ["codec_name=av1", "pix_fmt=yuv420p10le", "color_transfer=smpte2084", "color_primaries=bt2020"] {
+                        assert!(text.lines().any(|l| l == field), "{name}: no {field} in\n{text}");
+                    }
                 }
                 Err(e) => eprintln!("ffprobe not available ({e}); the file was written but not probed"),
             }

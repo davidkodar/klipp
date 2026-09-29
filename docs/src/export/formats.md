@@ -30,7 +30,7 @@ Every pair in this table is one FFmpeg writes. The audio menu lists only what th
 
 - **H.264** is the most widely playable. At 10 bits it becomes the High 10 profile, which only libx264 writes and many players cannot decode; use H.265 for HDR.
 - **H.265** is what HDR10 is specified on, and encodes on the GPU at 10 bits.
-- **AV1** compresses best and is slow in software.
+- **AV1** compresses best, and takes 8 or 10 bits and HLG or HDR10 like H.265. It is slow in software; NVENC on RTX 40 cards and newer, and recent AMD and Intel GPUs, encode it in hardware.
 - **VP9** is for web video in WebM. Klipp writes it in SDR only, at 8 bits.
 - **ProRes** is the mastering and interchange format. ProRes 4444 is written as 4:4:4 Y'CbCr; Klipp writes no alpha channel.
 - **DNxHD** at these two bitrates is 8-bit and cannot carry HDR; ProRes 422 HQ is the 10-bit equivalent.

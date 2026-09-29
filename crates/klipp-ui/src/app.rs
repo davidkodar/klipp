@@ -290,9 +290,9 @@ struct ExportDialogState {
     loudness_preset: u8,
     custom_lufs: f32,
     /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
-    /// Only meaningful for H.264/H.265. (#65)
+    /// Only meaningful for H.264, H.265 and AV1. (#65, #560)
     bit_depth: u8,
-    /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264/H.265. (#65)
+    /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264, H.265 or AV1. (#65)
     hdr_mode: klipp_core::HdrMode,
     /// Display-boundary tone-map operator picked by the user.
     /// Default Hable matches prior behaviour.
@@ -31866,20 +31866,20 @@ impl KlippApp {
         }); });
         section_card(ui, "VIDEO", None, &theme, |ui| { indent(ui, &mut |ui| {
                 grid("export_grid_video").show(ui, |ui| {
-                        // #65: bit-depth + HDR controls. H.264/H.265 pick
-                        // their depth and take HDR at 10 bits; ProRes is
-                        // always 10-bit, so always can. DNxHD is 8-bit,
-                        // AV1/VP9 are beyond baseline scope for this phase.
-                        let h26x = matches!(
+                        // #65: bit-depth + HDR controls. H.264, H.265 and
+                        // AV1 pick their depth and take HDR at 10 bits;
+                        // ProRes is always 10-bit, so always can. DNxHD is
+                        // 8-bit, and VP9 stays 8-bit and SDR here.
+                        let picks_depth = matches!(
                             self.export_dialog.video_codec,
-                            ExportVideoCodec::H264 | ExportVideoCodec::H265
+                            ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1
                         );
                         let prores = matches!(
                             self.export_dialog.video_codec,
                             ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ | ExportVideoCodec::ProRes4444
                         );
-                        if h26x || prores {
-                            if h26x {
+                        if picks_depth || prores {
+                            if picks_depth {
                                 ui.label("Bit depth:");
                                 ui.horizontal(|ui| {
                                     ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");

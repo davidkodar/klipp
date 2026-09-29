@@ -37,8 +37,8 @@ Despite its name, **Audio Only MP3** writes an MP4 with a video stream as well a
 
 ### Video
 
-- **Bit depth** — 8-bit or 10-bit, for H.264 and H.265. ProRes is always 10-bit and DNxHD always 8-bit.
-- **HDR** — SDR, HLG or HDR10 (PQ). Offered for ProRes, and for H.264 and H.265 at 10 bits. Choosing H.264 for an HDR delivery shows a warning and a button to switch to H.265: 10-bit H.264 is the High 10 profile, which no hardware encoder writes and many players cannot decode.
+- **Bit depth** — 8-bit or 10-bit, for H.264, H.265 and AV1. ProRes is always 10-bit and DNxHD always 8-bit.
+- **HDR** — SDR, HLG or HDR10 (PQ). Offered for ProRes, and for H.264, H.265 and AV1 at 10 bits. Choosing H.264 for an HDR delivery shows a warning and a button to switch to H.265: 10-bit H.264 is the High 10 profile, which no hardware encoder writes and many players cannot decode.
 - **Mastering peak** — for a PQ delivery, the display the master is graded for: 1000, 2000 or 4000 nits. HLG is fixed at 1000 nits.
 - **Tone map** — for SDR deliveries: None, Reinhard, Hable (the default) or ACES.
 - **Output transform** — see below.
