@@ -22,71 +22,7 @@
 # verification means we'll know immediately if upstream replaces a
 # file with bytes we didn't bless.
 #
-# Entries with `size_bytes = 0` are placeholders — model exists in
-# concept but no public download URL is ready yet. The AI Models
-# dialog renders these as "Pending release" so users see the roadmap
-# without being able to install them.
-
 version = "1"
-
-[[model]]
-id = "sam2_1_hiera_tiny_onnx"
-display_name = "SAM2.1 Tiny (ONNX)"
-# TODO release-CI: fill size_bytes + sha256 once conversion runs.
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-license = "Apache-2.0"
-attribution = "Meta AI Research"
-sources = [
-    # TODO release-CI: replace placeholder with the real klipp-models
-    # GitHub Release asset URL once the converted ONNX is published.
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_tiny.onnx" },
-]
-kind = "mask_generator"
-runtime = "ort"
-prompts = "point | box | scribble | temporal"
-
-[[model]]
-id = "sam2_1_hiera_small_onnx"
-display_name = "SAM2.1 Small (ONNX)"
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-license = "Apache-2.0"
-attribution = "Meta AI Research"
-sources = [
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_small.onnx" },
-]
-kind = "mask_generator"
-runtime = "ort"
-prompts = "point | box | scribble | temporal"
-
-[[model]]
-id = "sam2_1_hiera_base_plus_onnx"
-display_name = "SAM2.1 Base+ (ONNX)"
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-license = "Apache-2.0"
-attribution = "Meta AI Research"
-sources = [
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_base_plus.onnx" },
-]
-kind = "mask_generator"
-runtime = "ort"
-prompts = "point | box | scribble | temporal"
-
-[[model]]
-id = "sam2_1_hiera_large_onnx"
-display_name = "SAM2.1 Large (ONNX)"
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-license = "Apache-2.0"
-attribution = "Meta AI Research"
-sources = [
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_large.onnx" },
-]
-kind = "mask_generator"
-runtime = "ort"
-prompts = "point | box | scribble | temporal"
 
 # ── Remove Background ─────────────────────────────────────────────
 # BiRefNet_lite — Swin-Tiny backbone, MIT license, single-input

@@ -364,6 +364,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,
+        first_clip_autoset: seq.first_clip_autoset,
         tracks,
         in_point: seq.in_point,
         out_point: seq.out_point,

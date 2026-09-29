@@ -20,9 +20,6 @@ Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`
 | **Kokoro-82M** (8-bit) and 10 voices, one download (Heart, the default; Bella, Nicole, Michael, Fenrir, Puck; Emma, Isabella, George, Fable) | 86 MB + 0.5 MB a voice | Apache-2.0 | ort, espeak-ng | Natural-sounding narration |
 | **Piper en_US Lessac (medium)** | 63 MB | research only, **not for commercial use** | Piper | Kept for older projects that use it |
 | **DeepFilterNet3** | 8 MB | MIT OR Apache-2.0 | tract | Voice Isolation (speech enhancement) |
-| SAM 2.1 Tiny / Small / Base+ / Large | (pending) | Apache-2.0 | ort | Track Object (future) |
-
-The four SAM 2.1 entries appear in the dialog as **Pending release** until the SAM 2 video-tracking backend lands.
 
 ## Hosting
 

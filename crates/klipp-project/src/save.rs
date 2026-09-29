@@ -179,6 +179,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         name: seq.name.clone(),
         fps: FpsJson { num: seq.fps.num, den: seq.fps.den },
         resolution: ResolutionJson { width: seq.resolution.width, height: seq.resolution.height },
+        first_clip_autoset: seq.first_clip_autoset,
         in_point: seq.in_point.as_ref().map(timecode_to_json),
         out_point: seq.out_point.as_ref().map(timecode_to_json),
         global_lut_path: color.global_lut_path.as_ref().map(|p| {
