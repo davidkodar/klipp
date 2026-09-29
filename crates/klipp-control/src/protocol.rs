@@ -193,6 +193,8 @@ pub enum ControlCommand {
     // ── Observation ────────────────────────────────────────────────
     /// Write the current viewer frame to a PNG. Returns the path and
     /// dimensions. Without `path`, writes into the system temp dir.
+    /// While playing, it is the frame on screen, read back from the
+    /// viewer's GPU texture (`playing_frame: true` in the reply).
     Screenshot {
         #[serde(default)]
         path: Option<String>,

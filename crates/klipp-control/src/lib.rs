@@ -4013,7 +4013,25 @@ fn handle(
             }
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
+            let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
+            let mut from_gpu = false;
             let (data, width, height, generation) = loop {
+                // While playing, the frame on screen is only in the
+                // viewer's GPU texture, and the bytes here are an older
+                // frame: a paused one, or a decode without its titles or
+                // rotation (#544). Read the texture back then, outside the
+                // lock. A generation counts frames of bytes, which playing
+                // writes none of, so only a paused capture waits for one.
+                let gpu = {
+                    let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                    (min_generation.is_none() || playing).then(|| fb.gpu_output_snapshot()).flatten()
+                };
+                if let Some(snapshot) = gpu {
+                    let data = snapshot.read()?;
+                    let generation = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
+                    from_gpu = true;
+                    break (data, snapshot.width, snapshot.height, generation);
+                }
                 {
                     let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                     let (d, w, h, g) = fb.latest_frame();
@@ -4092,6 +4110,9 @@ fn handle(
                 "height": height,
                 "generation": generation,
             });
+            if from_gpu {
+                v["playing_frame"] = json!(true);
+            }
             // The capture is always the whole graded frame. When the viewer
             // is showing a compare split, what the person sees is not that,
             // and a reader comparing notes with them needs to know.

@@ -7464,8 +7464,9 @@ impl PlaybackEngine {
         if !should_publish_gpu_viewer() {
             return None;
         }
-        let device = self.renderer.executor().gpu_pipeline_or_init()?.device();
-        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).ensure_gpu_output(&device, w, h)
+        let pipeline = self.renderer.executor().gpu_pipeline_or_init()?;
+        let (device, queue) = (pipeline.device(), pipeline.queue());
+        self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).ensure_gpu_output(&device, &queue, w, h)
     }
 
     fn gpu_composite_allowed(&self) -> bool {
