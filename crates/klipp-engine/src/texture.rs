@@ -16,6 +16,68 @@ pub struct ScopeTextureEntry {
     pub generation: u64,
 }
 
+/// The viewer's GPU frame, taken from [`FrameBuffer::gpu_output_snapshot`]
+/// to be read back without holding the frame-buffer lock.
+pub struct GpuOutputSnapshot {
+    texture: Arc<wgpu::Texture>,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    pub width: u32,
+    pub height: u32,
+    /// [`FrameBuffer::gpu_output_frame`] when it was taken.
+    pub frame: u64,
+    /// Where on the timeline the frame is, when the engine said.
+    pub presented: Option<klipp_core::RationalTime>,
+}
+
+impl GpuOutputSnapshot {
+    /// The frame's display-encoded RGBA bytes, `width * height * 4`,
+    /// tightly packed: the same bytes a paused frame is published as.
+    ///
+    /// The copy is queued behind whatever the engine has submitted, so it
+    /// reads a whole frame, never one half written.
+    pub fn read(&self) -> Result<Vec<u8>, String> {
+        let (w, h) = (self.width, self.height);
+        let row = w * 4;
+        // A copy's rows are 256-byte aligned; they are packed after.
+        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let size = padded as u64 * h as u64;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("klipp_viewer_readback"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("klipp_viewer_readback") });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &self.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer {
+                buffer: &staging,
+                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .map_err(|_| "the viewer readback was dropped".to_string())?
+            .map_err(|e| format!("the viewer readback failed: {e}"))?;
+        let mapped = slice.get_mapped_range();
+        let mut out = Vec::with_capacity((row * h) as usize);
+        for r in mapped.chunks_exact(padded as usize) {
+            out.extend_from_slice(&r[..row as usize]);
+        }
+        drop(mapped);
+        staging.unmap();
+        Ok(out)
+    }
+}
+
 pub struct FrameBuffer {
     pub data: Vec<u8>,
     /// Pre-grade original frame for Before/After split view.
@@ -137,6 +199,8 @@ pub struct FrameBuffer {
     /// naming them with its time paired a reader's bytes with another
     /// frame's position.
     gpu_presented: Option<klipp_core::RationalTime>,
+    /// The device and queue `gpu_output` lives on, to read it back.
+    gpu_output_queue: Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>,
 
     /// Per-node output thumbnails for the V2 canvas, keyed by node
     /// id. Each entry is a ~96×54 sRGB u8 RGBA buffer. Populated by
@@ -198,6 +262,7 @@ impl FrameBuffer {
             gpu_output_generation: 0,
             gpu_output_live: false,
             gpu_presented: None,
+            gpu_output_queue: None,
             gpu_output_frame: 0,
             node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
@@ -224,6 +289,7 @@ impl FrameBuffer {
     pub fn ensure_gpu_output(
         &mut self,
         device: &std::sync::Arc<wgpu::Device>,
+        queue: &std::sync::Arc<wgpu::Queue>,
         width: u32,
         height: u32,
     ) -> Option<std::sync::Arc<wgpu::Texture>> {
@@ -243,8 +309,11 @@ impl FrameBuffer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
+                // COPY_SRC so a screenshot can read back what the
+                // viewer shows while it plays (#544).
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::STORAGE_BINDING,
                 // The stack stores display-encoded bytes through the
                 // plain view (a storage view cannot be sRGB); the viewer
@@ -253,6 +322,7 @@ impl FrameBuffer {
                 view_formats: &[GPU_VIEWER_SAMPLE_FORMAT],
             });
             self.gpu_output = Some(std::sync::Arc::new(tex));
+            self.gpu_output_queue = Some((Arc::clone(device), Arc::clone(queue)));
             self.gpu_output_width = width;
             self.gpu_output_height = height;
             self.gpu_output_generation = self.gpu_output_generation.wrapping_add(1);
@@ -266,6 +336,27 @@ impl FrameBuffer {
     pub fn note_gpu_frame(&mut self) {
         self.gpu_output_live = true;
         self.gpu_output_frame = self.gpu_output_frame.wrapping_add(1);
+    }
+
+    /// The frame on screen when it is only in `gpu_output`, as it is
+    /// while playing: a handle to read it back with
+    /// [`GpuOutputSnapshot::read`] after the lock is released. `None`
+    /// when the newest frame is in bytes, which [`Self::latest_frame`]
+    /// has.
+    pub fn gpu_output_snapshot(&self) -> Option<GpuOutputSnapshot> {
+        if !self.gpu_output_live {
+            return None;
+        }
+        let (device, queue) = self.gpu_output_queue.clone()?;
+        Some(GpuOutputSnapshot {
+            texture: Arc::clone(self.gpu_output.as_ref()?),
+            device,
+            queue,
+            width: self.gpu_output_width,
+            height: self.gpu_output_height,
+            frame: self.gpu_output_frame,
+            presented: self.gpu_presented,
+        })
     }
 
     /// Engine writes to pending buffer — fast, minimal lock time.

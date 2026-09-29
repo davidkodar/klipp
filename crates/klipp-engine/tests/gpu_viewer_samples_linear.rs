@@ -71,7 +71,7 @@ fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
     };
     let (device, queue) = (ctx.device(), ctx.queue());
     let mut fb = FrameBuffer::new(4, 4);
-    let tex = fb.ensure_gpu_output(&device, 4, 4).expect("a viewer texture");
+    let tex = fb.ensure_gpu_output(&device, &queue, 4, 4).expect("a viewer texture");
     // Display-encoded mid-grey, as the stack's display encode leaves it.
     queue.write_texture(
         tex.as_image_copy(),
@@ -86,4 +86,35 @@ fn the_viewer_texture_samples_as_the_linear_light_it_encodes() {
         assert!((got[c] - want).abs() < 0.01, "channel {c}: sampled {}, the linear light of code 128 is {want}", got[c]);
     }
     assert!((got[3] - 1.0).abs() < 0.01);
+}
+
+/// #544: while playing, the frame on screen is only in the viewer texture,
+/// and a screenshot reads it back from there. Every byte comes back where
+/// it was, at a width whose rows are not a copy's 256-byte multiple; and
+/// once a frame of bytes follows, the texture is no longer the one to read.
+#[test]
+fn the_frame_on_screen_reads_back_from_the_viewer_texture() {
+    let Some(ctx) = klipp_effects::gpu_context::GpuContext::new() else {
+        eprintln!("no GPU; skipping");
+        return;
+    };
+    let (device, queue) = (ctx.device(), ctx.queue());
+    let (w, h) = (37u32, 5u32);
+    let mut fb = FrameBuffer::new(w, h);
+    let tex = fb.ensure_gpu_output(&device, &queue, w, h).expect("a viewer texture");
+    assert!(fb.gpu_output_snapshot().is_none(), "no frame has been written there yet");
+    let bytes: Vec<u8> = (0..w * h * 4).map(|i| (i * 7 % 251) as u8).collect();
+    queue.write_texture(
+        tex.as_image_copy(),
+        &bytes,
+        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    fb.note_gpu_frame();
+    let snapshot = fb.gpu_output_snapshot().expect("the newest frame is in the texture");
+    assert_eq!((snapshot.width, snapshot.height), (w, h));
+    assert_eq!(snapshot.read().expect("read back"), bytes);
+
+    fb.write_frame(vec![0; (w * h * 4) as usize], w, h);
+    assert!(fb.gpu_output_snapshot().is_none(), "a frame of bytes is newer than the texture");
 }
