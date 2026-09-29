@@ -4014,7 +4014,8 @@ fn handle(
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(timeout_ms.unwrap_or(3000));
             let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
-            let mut from_gpu = false;
+            // Where on the timeline a playing capture is, when the engine said.
+            let mut from_gpu: Option<Option<klipp_core::RationalTime>> = None;
             let (data, width, height, generation) = loop {
                 // While playing, the frame on screen is only in the
                 // viewer's GPU texture, and the bytes here are an older
@@ -4026,10 +4027,23 @@ fn handle(
                     let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                     (min_generation.is_none() || playing).then(|| fb.gpu_output_snapshot()).flatten()
                 };
-                if let Some(snapshot) = gpu {
-                    let data = snapshot.read()?;
+                if let Some(mut snapshot) = gpu {
+                    // The engine submits a frame's drawing, then names it
+                    // under the lock. A copy queued in between reads the
+                    // new frame under the old one's name, so a frame
+                    // counted while reading means read again (#564).
+                    let mut data = snapshot.read()?;
+                    for _ in 0..4 {
+                        let newer = {
+                            let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
+                            fb.gpu_output_snapshot().filter(|s| s.frame != snapshot.frame)
+                        };
+                        let Some(next) = newer else { break };
+                        snapshot = next;
+                        data = snapshot.read()?;
+                    }
                     let generation = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
-                    from_gpu = true;
+                    from_gpu = Some(snapshot.presented);
                     break (data, snapshot.width, snapshot.height, generation);
                 }
                 {
@@ -4110,8 +4124,16 @@ fn handle(
                 "height": height,
                 "generation": generation,
             });
-            if from_gpu {
+            if let Some(at) = from_gpu {
                 v["playing_frame"] = json!(true);
+                // Which moment the capture shows: the playhead has moved on
+                // by the time the reply arrives.
+                if let Some(at) = at {
+                    let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps.as_f64();
+                    let secs = at.to_secs_f64();
+                    v["secs"] = json!(secs);
+                    v["frame"] = json!((secs * fps).round() as i64);
+                }
             }
             // The capture is always the whole graded frame. When the viewer
             // is showing a compare split, what the person sees is not that,
