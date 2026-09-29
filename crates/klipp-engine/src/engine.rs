@@ -1507,6 +1507,11 @@ pub struct PlaybackEngine {
     /// done on the engine thread, that took 35–43 ms of a tick at every
     /// preroll (#572). It arrives in `preroll_decoder`.
     preroll_pending: Option<std::sync::mpsc::Receiver<Option<VideoDecoder>>>,
+    /// The next clip whose preroll failed to open. The look-ahead asks
+    /// on every frame of the last 1.5 s, and a file that will not open
+    /// was tried again each time, a worker thread a frame (#576). Kept
+    /// until the preroll is cleared: the cut opens the clip itself.
+    preroll_failed: Option<usize>,
     preroll_clip_index: Option<usize>,
     preroll_source_in: f64,
 }
@@ -2111,6 +2116,7 @@ impl PlaybackEngine {
             pre_seek_started: false,
             preroll_decoder: None,
             preroll_pending: None,
+            preroll_failed: None,
             preroll_clip_index: None,
             preroll_source_in: 0.0,
         }
@@ -5552,10 +5558,11 @@ impl PlaybackEngine {
                 self.preroll_pending = None;
                 self.preroll_decoder = Some(dec);
             }
-            // It failed to open, or its thread is gone.
+            // It failed to open, or its thread is gone: not again for
+            // this clip.
             Ok(None) | Err(true) => {
                 self.preroll_pending = None;
-                self.preroll_clip_index = None;
+                self.preroll_failed = self.preroll_clip_index.take();
             }
             // Still opening.
             Err(false) => {}
@@ -5570,6 +5577,7 @@ impl PlaybackEngine {
         }
         self.preroll_pending = None;
         self.preroll_clip_index = None;
+        self.preroll_failed = None;
     }
 
     /// Start pre-decoding the next clip so frames are ready when the cut arrives.
@@ -5596,8 +5604,8 @@ impl PlaybackEngine {
         drop(seq);
 
         if let Some((idx, media_id, source_in_secs, preroll_rotation, cut_at)) = next_info {
-            if self.preroll_clip_index == Some(idx) {
-                return; // Already pre-rolling this clip
+            if self.preroll_clip_index == Some(idx) || self.preroll_failed == Some(idx) {
+                return; // Already pre-rolling this clip, or it will not open
             }
             if let Some(path) = self.path_for_media(media_id) {
                 let effective_preroll_rot = self.effective_decode_rotation(media_id, &path, preroll_rotation);
@@ -12386,5 +12394,56 @@ mod mix_lead_tests {
         assert!((super::mix_lead_secs(48_000 * 2 / 5, 48_000) - 0.2).abs() < 1e-9);
         assert_eq!(super::mix_lead_secs(0, 48_000), 0.0);
         assert_eq!(super::mix_lead_secs(1024, 0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod preroll_retry_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// #576: the look-ahead asks for the next clip's preroll on every frame
+    /// of the last 1.5 s. When that clip's file will not open, the failure
+    /// is remembered, so no second worker is started for it; clearing the
+    /// preroll (a cut, a seek, a stop) forgets it.
+    #[test]
+    fn a_preroll_that_failed_is_not_started_again_for_that_clip() {
+        let missing = MediaId::new();
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/nonexistent/klipp-preroll-test.mov".into(), None);
+        item.id = missing;
+        pool.add(item);
+        let tc = |s: f64| RationalTime::from_secs_f64(s, 30);
+        let mut seq = Sequence::new_default();
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![
+            klipp_timeline::Clip::media(missing, tc(0.0), tc(1.0), tc(0.0), tc(1.0)),
+            klipp_timeline::Clip::media(missing, tc(1.0), tc(2.0), tc(0.0), tc(1.0)),
+        ];
+        seq.tracks = vec![v1];
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, fb(), fb(),
+            Arc::new(RwLock::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.current_track_index = 0;
+        engine.current_clip_index = 0;
+
+        engine.start_preroll_for_next_clip();
+        assert!(engine.preroll_pending.is_some(), "the first ask starts a worker");
+        engine.take_ready_preroll(Some(Duration::from_secs(5)));
+        assert!(engine.preroll_pending.is_none() && engine.preroll_decoder.is_none());
+        assert_eq!(engine.preroll_failed, Some(1), "the failure is remembered for clip 1");
+
+        engine.start_preroll_for_next_clip();
+        assert!(engine.preroll_pending.is_none(), "no second worker for a clip that will not open");
+
+        engine.clear_preroll();
+        engine.start_preroll_for_next_clip();
+        assert!(engine.preroll_pending.is_some(), "after a cut or a seek it is tried again");
+        engine.clear_preroll();
     }
 }
