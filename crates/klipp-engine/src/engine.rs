@@ -1503,6 +1503,10 @@ pub struct PlaybackEngine {
     // Clip look-ahead: pre-decoder for the next clip, opened ~1s before the cut point.
     // When the cut arrives, this decoder is swapped in as v1_decoder — zero stall.
     preroll_decoder: Option<VideoDecoder>,
+    /// The next clip's decoder while a worker thread opens and seeks it:
+    /// done on the engine thread, that took 35–43 ms of a tick at every
+    /// preroll (#572). It arrives in `preroll_decoder`.
+    preroll_pending: Option<std::sync::mpsc::Receiver<Option<VideoDecoder>>>,
     preroll_clip_index: Option<usize>,
     preroll_source_in: f64,
 }
@@ -2106,6 +2110,7 @@ impl PlaybackEngine {
             pre_seek_generation: 0,
             pre_seek_started: false,
             preroll_decoder: None,
+            preroll_pending: None,
             preroll_clip_index: None,
             preroll_source_in: 0.0,
         }
@@ -3910,10 +3915,7 @@ impl PlaybackEngine {
         self.streams.clear();
         self.pending_stream_refresh = false;
         self.pending_audio_reposition = None;
-        if let Some(mut dec) = self.preroll_decoder.take() {
-            dec.stop_detached();
-        }
-        self.preroll_clip_index = None;
+        self.clear_preroll();
         self.preroll_source_in = 0.0;
 
         // Stop audio
@@ -4988,7 +4990,8 @@ impl PlaybackEngine {
 
             // Look-ahead: pre-decode next clip when within 1.5s of source_out
             let dist_to_out = clip.source_out.to_secs_f64() - frame.pts_secs();
-            if dist_to_out < 1.5 && dist_to_out > 0.0 && self.preroll_decoder.is_none() {
+            self.take_ready_preroll(None);
+            if dist_to_out < 1.5 && dist_to_out > 0.0 && self.preroll_decoder.is_none() && self.preroll_pending.is_none() {
                 self.start_preroll_for_next_clip();
             }
 
@@ -5321,6 +5324,11 @@ impl PlaybackEngine {
         self.last_synth_frame_rendered = None;
 
         // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
+        // One still opening started well over a second ago and is all but
+        // there: waiting for it is shorter than opening the file again.
+        if self.preroll_clip_index == Some(actual_idx) {
+            self.take_ready_preroll(Some(Duration::from_millis(250)));
+        }
         if self.preroll_clip_index == Some(actual_idx) {
             if let Some(preroll_dec) = self.preroll_decoder.take() {
                 info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
@@ -5366,10 +5374,7 @@ impl PlaybackEngine {
             }
         }
         // Clear stale preroll if it didn't match
-        if let Some(mut old) = self.preroll_decoder.take() {
-            old.stop_detached();
-        }
-        self.preroll_clip_index = None;
+        self.clear_preroll();
 
         if let Some(path) = self.path_for_media(media_id) {
             // Same-file optimization: reuse decoder if same file
@@ -5501,6 +5506,72 @@ impl PlaybackEngine {
         dec.stop_detached();
     }
 
+    /// Read the sound heard from `at` into the shared PCM cache on a worker
+    /// thread, while the picture prerolls: whichever of it is not playing
+    /// now opens at the cut from memory, not by reading a whole cache file
+    /// on the engine thread, 120–150 ms for a long take (#572). The paths
+    /// are found here, where the sequence is; only they cross.
+    fn warm_sound_at(&self, at: Timecode) {
+        let playing: std::collections::HashSet<MediaId> = self.audio_sources.iter().map(|s| s.media_id).collect();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for row in self.audio_rows_at(at) {
+            if playing.contains(&row.1) {
+                continue;
+            }
+            if let Some(pcm) = self.pcm_cache_path(row.1).filter(|p| p.exists()) {
+                if !paths.contains(&pcm) {
+                    paths.push(pcm);
+                }
+            }
+        }
+        if paths.is_empty() {
+            return;
+        }
+        std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-pcm-warm", move || {
+            for path in paths {
+                if let Err(e) = crate::pcm_reader::warm(&path) {
+                    debug!("warming {}: {e}", path.display());
+                }
+            }
+        }));
+    }
+
+    /// Move a preroll decoder the worker has finished opening into
+    /// `preroll_decoder`, waiting up to `wait` for it (`None`: not at all).
+    /// One that failed to open clears the preroll, so the cut opens the
+    /// clip itself.
+    fn take_ready_preroll(&mut self, wait: Option<Duration>) {
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+        let Some(rx) = &self.preroll_pending else { return };
+        let got = match wait {
+            None => rx.try_recv().map_err(|e| e == TryRecvError::Disconnected),
+            Some(d) => rx.recv_timeout(d).map_err(|e| e == RecvTimeoutError::Disconnected),
+        };
+        match got {
+            Ok(Some(dec)) => {
+                self.preroll_pending = None;
+                self.preroll_decoder = Some(dec);
+            }
+            // It failed to open, or its thread is gone.
+            Ok(None) | Err(true) => {
+                self.preroll_pending = None;
+                self.preroll_clip_index = None;
+            }
+            // Still opening.
+            Err(false) => {}
+        }
+    }
+
+    /// Drop the preroll, ready or still opening. A decoder that arrives
+    /// after this finds no receiver and is stopped on its worker thread.
+    fn clear_preroll(&mut self) {
+        if let Some(mut old) = self.preroll_decoder.take() {
+            old.stop_detached();
+        }
+        self.preroll_pending = None;
+        self.preroll_clip_index = None;
+    }
+
     /// Start pre-decoding the next clip so frames are ready when the cut arrives.
     fn start_preroll_for_next_clip(&mut self) {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -5514,7 +5585,7 @@ impl PlaybackEngine {
                     for idx in next_idx..track.clips.len() {
                         let clip = &track.clips[idx];
                         if let Some(media_id) = clip.media_id() {
-                            result = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.source_rotation));
+                            result = Some((idx, media_id, clip.source_in.to_secs_f64(), clip.source_rotation, clip.timeline_in));
                             break;
                         }
                     }
@@ -5524,31 +5595,40 @@ impl PlaybackEngine {
         };
         drop(seq);
 
-        if let Some((idx, media_id, source_in_secs, preroll_rotation)) = next_info {
+        if let Some((idx, media_id, source_in_secs, preroll_rotation, cut_at)) = next_info {
             if self.preroll_clip_index == Some(idx) {
                 return; // Already pre-rolling this clip
             }
             if let Some(path) = self.path_for_media(media_id) {
                 let effective_preroll_rot = self.effective_decode_rotation(media_id, &path, preroll_rotation);
-                match VideoDecoder::open(&path, effective_preroll_rot) {
-                    Ok(dec) => {
-                        if source_in_secs > 0.01 {
-                            dec.seek(source_in_secs);
+                // Close any previous preroll
+                self.clear_preroll();
+                // Opened on a worker thread, not this one: the open and
+                // the seek cost the engine's tick 35–43 ms (#572).
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preroll", move || {
+                    match VideoDecoder::open(&path, effective_preroll_rot) {
+                        Ok(dec) => {
+                            if source_in_secs > 0.01 {
+                                dec.seek(source_in_secs);
+                            }
+                            dec.resume();
+                            info!("CUT-DIAG PREROLL started: idx={} source_in={:.4}s", idx, source_in_secs);
+                            // Nobody waiting any more: the playhead moved on.
+                            if let Err(std::sync::mpsc::SendError(Some(mut dec))) = tx.send(Some(dec)) {
+                                dec.stop_detached();
+                            }
                         }
-                        dec.resume();
-                        info!("CUT-DIAG PREROLL started: idx={} source_in={:.4}s", idx, source_in_secs);
-                        // Close any previous preroll
-                        if let Some(mut old) = self.preroll_decoder.take() {
-                            old.stop_detached();
+                        Err(e) => {
+                            warn!("Failed to open preroll decoder: {e}");
+                            let _ = tx.send(None);
                         }
-                        self.preroll_decoder = Some(dec);
-                        self.preroll_clip_index = Some(idx);
-                        self.preroll_source_in = source_in_secs;
                     }
-                    Err(e) => {
-                        warn!("Failed to open preroll decoder: {e}");
-                    }
-                }
+                }));
+                self.preroll_pending = Some(rx);
+                self.preroll_clip_index = Some(idx);
+                self.preroll_source_in = source_in_secs;
+                self.warm_sound_at(cut_at);
             }
         }
     }
