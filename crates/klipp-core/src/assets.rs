@@ -54,16 +54,27 @@ pub fn portable_lut_path(path: &Path, library: Option<&Path>) -> String {
 /// names were portable — one into some install's or checkout's
 /// `assets/luts/` — when this library holds the same file: it is the
 /// bundled look, and taking it from here means the next save stores it
-/// portably. Everything else is taken as it is.
+/// portably. So does a bare `<path inside the library>`, the name a
+/// build that could not find its library once saved for a `bundled:`
+/// one. Everything else is taken as it is.
 pub fn resolve_lut_path(stored: &str, library: Option<&Path>) -> PathBuf {
     if let Some(rel) = stored.strip_prefix(BUNDLED_LUT_PREFIX) {
         return match library {
             Some(lib) => lib.join(rel),
-            None => PathBuf::from(rel),
+            // Kept whole, so the next save writes the name back as it
+            // was: stripped to `rel`, it was saved as a path relative to
+            // nothing and the look was lost for good.
+            None => PathBuf::from(stored),
         };
     }
     if let (Some(lib), Some(i)) = (library, stored.find("/assets/luts/")) {
         let here = lib.join(&stored[i + "/assets/luts/".len()..]);
+        if here.exists() {
+            return here;
+        }
+    }
+    if let Some(lib) = library.filter(|_| Path::new(stored).is_relative()) {
+        let here = lib.join(stored);
         if here.exists() {
             return here;
         }
@@ -123,6 +134,28 @@ mod tests {
         let lib = Path::new("/opt/klipp/assets/luts");
         assert_eq!(portable_lut_path(Path::new("/home/u/looks/mine.cube"), Some(lib)), "/home/u/looks/mine.cube");
         assert_eq!(resolve_lut_path("/home/u/looks/mine.cube", Some(lib)), PathBuf::from("/home/u/looks/mine.cube"));
+    }
+
+    /// A build without the library keeps a `bundled:` name as it is, so
+    /// saving writes it back, and a build with the library opens it.
+    #[test]
+    fn a_bundled_name_survives_a_build_without_the_library() {
+        let name = "bundled:film-slide/kodak_kodachrome_64.cube";
+        let held = resolve_lut_path(name, None);
+        assert_eq!(portable_lut_path(&held, None), name);
+        let lib = Path::new("/opt/klipp/assets/luts");
+        assert_eq!(resolve_lut_path(&portable_lut_path(&held, None), Some(lib)), lib.join("film-slide/kodak_kodachrome_64.cube"));
+    }
+
+    /// A project that such a build saved with the bare name inside the
+    /// library opens with the bundled look again.
+    #[test]
+    fn a_bare_library_name_finds_the_lut_here() {
+        let Some(lib) = bundled_luts_dir() else { return };
+        let here = lib.join("film-slide/kodak_kodachrome_64.cube");
+        assert!(here.exists(), "the bundled library should hold this LUT");
+        assert_eq!(resolve_lut_path("film-slide/kodak_kodachrome_64.cube", Some(lib)), here);
+        assert_eq!(portable_lut_path(&here, Some(lib)), "bundled:film-slide/kodak_kodachrome_64.cube");
     }
 
     /// #331: a project saved with the library's absolute path in another
