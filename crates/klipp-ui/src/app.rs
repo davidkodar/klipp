@@ -12194,12 +12194,8 @@ impl KlippApp {
                         // Auto-set sequence resolution + FPS from first video clip
                         if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
                             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let has_video_clips = seq.tracks.iter()
-                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                                .any(|t| !t.clips.is_empty());
-                            if !has_video_clips {
-                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
-                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
+                            if seq.adopt_first_clip(item.resolution, item.fps).is_some() {
+                                self.state.fps = seq.fps;
                             }
                         }
                         if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
@@ -12504,12 +12500,8 @@ impl KlippApp {
                         // Auto-set sequence resolution + FPS from first video clip (FCP behavior)
                         if !is_audio_only && item.resolution.width > 0 && item.resolution.height > 0 {
                             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let has_video_clips = seq.tracks.iter()
-                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                                .any(|t| !t.clips.is_empty());
-                            if !has_video_clips {
-                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
-                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
+                            if seq.adopt_first_clip(item.resolution, item.fps).is_some() {
+                                self.state.fps = seq.fps;
                             }
                         }
 
@@ -12715,14 +12707,9 @@ impl KlippApp {
                         // Auto-set sequence resolution + FPS from first video clip
                         if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
                             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let has_video_clips = seq.tracks.iter()
-                                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                                .any(|t| !t.clips.is_empty());
-                            if !has_video_clips {
-                                let prev = (seq.resolution, seq.fps);
-                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
-                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
-                                if seq.first_clip_autoset.resolution || seq.first_clip_autoset.fps { hist_autoset = Some((prev, (seq.resolution, seq.fps))); }
+                            hist_autoset = seq.adopt_first_clip(item.resolution, item.fps);
+                            if hist_autoset.is_some() {
+                                self.state.fps = seq.fps;
                             }
                         }
                         // Check for browser range selection (trimmed source in/out)
@@ -24046,14 +24033,9 @@ impl KlippApp {
         let mut autoset = None;
         if has_video && item.resolution.width > 0 && item.resolution.height > 0 {
             let seq = &mut self.state.sequences[seq_idx];
-            let has_video_clips = seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .any(|t| !t.clips.is_empty());
-            if !has_video_clips {
-                let prev = (seq.resolution, seq.fps);
-                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
-                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
-                if seq.first_clip_autoset.resolution || seq.first_clip_autoset.fps { autoset = Some((prev, (seq.resolution, seq.fps))); }
+            autoset = seq.adopt_first_clip(item.resolution, item.fps);
+            if autoset.is_some() {
+                self.state.fps = seq.fps;
             }
         }
 

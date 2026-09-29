@@ -108,6 +108,9 @@ pub struct Sequence {
     pub drop_frame: bool,
 }
 
+/// Which of a sequence's settings the first video clip placed on it may
+/// set: an "Automatic" size or rate follows the footage (as in Final Cut),
+/// while one the person or an agent chose is kept (#496).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirstClipAutoSet {
     #[serde(default = "default_true")]
@@ -202,6 +205,31 @@ impl Camera {
 }
 
 impl Sequence {
+    /// Take the size and rate of the first video clip placed, where
+    /// [`Self::first_clip_autoset`] allows it. `None` when the sequence
+    /// already has a video clip or neither setting follows the footage;
+    /// otherwise the settings before and after, for the undo history.
+    #[allow(clippy::type_complexity)]
+    pub fn adopt_first_clip(
+        &mut self,
+        resolution: Resolution,
+        fps: Fps,
+    ) -> Option<((Resolution, Fps), (Resolution, Fps))> {
+        let auto = self.first_clip_autoset;
+        let has_video = self.tracks.iter().filter(|t| t.kind == TrackKind::Video).any(|t| !t.clips.is_empty());
+        if has_video || !(auto.resolution || auto.fps) || resolution.width == 0 || resolution.height == 0 {
+            return None;
+        }
+        let prev = (self.resolution, self.fps);
+        if auto.resolution {
+            self.resolution = resolution;
+        }
+        if auto.fps {
+            self.fps = fps;
+        }
+        Some((prev, (self.resolution, self.fps)))
+    }
+
     /// The id the timeline grade runs under as a clip (see
     /// [`Clip::timeline_grade_of`]): fixed for the sequence, and never a
     /// real clip's.
@@ -2369,6 +2397,45 @@ pub fn effective_timeline_duration_for_keyframes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #496: an explicit size and rate survive the first clip; an
+    /// "Automatic" one follows it, and only while the sequence has no
+    /// video yet.
+    #[test]
+    fn the_first_clip_sets_only_what_was_left_automatic() {
+        let vertical = Resolution { width: 1080, height: 1920 };
+        let uhd = Resolution { width: 3840, height: 2160 };
+        let (pal, ntsc) = (Fps::new(25, 1), Fps::new(30000, 1001));
+        let fresh = |auto: FirstClipAutoSet| {
+            let mut seq = Sequence::new_default();
+            seq.resolution = vertical;
+            seq.fps = pal;
+            seq.first_clip_autoset = auto;
+            seq
+        };
+
+        let mut chosen = fresh(FirstClipAutoSet { resolution: false, fps: false });
+        assert_eq!(chosen.adopt_first_clip(uhd, ntsc), None);
+        assert_eq!((chosen.resolution, chosen.fps), (vertical, pal));
+
+        let mut rate_only = fresh(FirstClipAutoSet { resolution: false, fps: true });
+        assert_eq!(rate_only.adopt_first_clip(uhd, ntsc), Some(((vertical, pal), (vertical, ntsc))));
+
+        let mut automatic = fresh(FirstClipAutoSet::default());
+        assert_eq!(automatic.adopt_first_clip(uhd, ntsc), Some(((vertical, pal), (uhd, ntsc))));
+
+        // Once there is picture, a later clip changes nothing.
+        let mut placed = fresh(FirstClipAutoSet::default());
+        let video = placed.tracks.iter().position(|t| t.kind == TrackKind::Video).expect("a video track");
+        let tc = |f| Timecode::from_frames(f, 25);
+        placed.tracks[video].clips.push(crate::Clip::media(MediaId::new(), tc(0), tc(25), tc(0), tc(25)));
+        assert_eq!(placed.adopt_first_clip(uhd, ntsc), None);
+        assert_eq!((placed.resolution, placed.fps), (vertical, pal));
+
+        // A project saved before the setting existed follows the footage.
+        let old: FirstClipAutoSet = serde_json::from_str("{}").unwrap();
+        assert_eq!(old, FirstClipAutoSet::default());
+    }
     use klipp_core::MediaId;
 
     const RATE: u32 = 24;
