@@ -100,25 +100,29 @@ impl NewProjectDialog {
         let mut result = None;
         let mut close = false;
 
+        let screen_width = ctx.screen_rect().width();
+        let control_scale = (screen_width / 1920.0).clamp(1.0, 1.5);
+        let dialog_width = (screen_width * 0.34).clamp(560.0, 760.0);
         egui::Window::new("New Project")
             .collapsible(false)
             .resizable(false)
-            .default_width(460.0)
+            .default_width(dialog_width)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+                scale_dialog_style(ui, control_scale);
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0) * control_scale;
 
                 // Project Name
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Project Name")
-                            .size(12.0)
+                            .size(12.0 * control_scale)
                             .color(theme.text_secondary),
                     );
-                    ui.add_space(16.0);
+                    ui.add_space(16.0 * control_scale);
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.project_name)
-                            .desired_width(280.0)
+                            .desired_width(280.0 * control_scale)
                             .hint_text("My Project"),
                     );
                     // Auto-sync sequence name if not manually edited
@@ -133,14 +137,14 @@ impl NewProjectDialog {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Location")
-                            .size(12.0)
+                            .size(12.0 * control_scale)
                             .color(theme.text_secondary),
                     );
-                    ui.add_space(40.0);
+                    ui.add_space(40.0 * control_scale);
                     let loc_str = self.location.to_string_lossy().to_string();
                     ui.add(
                         egui::TextEdit::singleline(&mut self.location.to_string_lossy().to_string())
-                            .desired_width(230.0)
+                            .desired_width(230.0 * control_scale)
                             .interactive(false)
                             .text_color(theme.text_dim),
                     );
@@ -167,7 +171,7 @@ impl NewProjectDialog {
                 // Sequence Settings header
                 ui.label(
                     egui::RichText::new("Sequence Settings")
-                        .size(11.0)
+                        .size(11.0 * control_scale)
                         .color(theme.text_dim),
                 );
 
@@ -175,13 +179,14 @@ impl NewProjectDialog {
 
                 // Template
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Template").size(12.0).color(theme.text_secondary));
-                    ui.add_space(38.0);
+                    ui.label(egui::RichText::new("Template").size(12.0 * control_scale).color(theme.text_secondary));
+                    ui.add_space(38.0 * control_scale);
                     let old_idx = self.template_idx;
-                    egui::ComboBox::from_id_salt("project_template")
+                egui::ComboBox::from_id_salt("project_template")
                         .selected_text(TEMPLATES[self.template_idx].0)
-                        .width(200.0)
+                        .width(200.0 * control_scale)
                         .show_ui(ui, |ui| {
+                            scale_dialog_style(ui, control_scale);
                             for (i, (label, _, _)) in TEMPLATES.iter().enumerate() {
                                 ui.selectable_value(&mut self.template_idx, i, *label);
                             }
@@ -199,15 +204,16 @@ impl NewProjectDialog {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Resolution")
-                            .size(12.0)
+                            .size(12.0 * control_scale)
                             .color(theme.text_secondary),
                     );
-                    ui.add_space(30.0);
+                    ui.add_space(30.0 * control_scale);
                     let current_label = RESOLUTION_PRESETS[self.resolution_idx].0;
                     egui::ComboBox::from_id_salt("res_preset")
                         .selected_text(current_label)
-                        .width(200.0)
+                        .width(200.0 * control_scale)
                         .show_ui(ui, |ui| {
+                            scale_dialog_style(ui, control_scale);
                             for (i, (label, _, _)) in RESOLUTION_PRESETS.iter().enumerate() {
                                 ui.selectable_value(&mut self.resolution_idx, i, *label);
                             }
@@ -217,26 +223,25 @@ impl NewProjectDialog {
                 // Custom resolution fields (shown when "Custom..." selected)
                 if self.resolution_idx == RESOLUTION_PRESETS.len() - 1 {
                     ui.horizontal(|ui| {
-                        ui.add_space(108.0);
+                        ui.add_space(108.0 * control_scale);
+                        let field_height = ui.spacing().interact_size.y;
                         ui.label(
                             egui::RichText::new("W")
-                                .size(11.0)
+                                .size(11.0 * control_scale)
                                 .color(theme.text_dim),
                         );
-                        ui.add(
-                            egui::DragValue::new(&mut self.custom_width)
-                                .range(64..=8192)
-                                .speed(2),
+                        ui.add_sized(
+                            egui::vec2(48.0 * control_scale, field_height),
+                            egui::DragValue::new(&mut self.custom_width).range(64..=8192).speed(2),
                         );
                         ui.label(
                             egui::RichText::new("H")
-                                .size(11.0)
+                                .size(11.0 * control_scale)
                                 .color(theme.text_dim),
                         );
-                        ui.add(
-                            egui::DragValue::new(&mut self.custom_height)
-                                .range(64..=8192)
-                                .speed(2),
+                        ui.add_sized(
+                            egui::vec2(48.0 * control_scale, field_height),
+                            egui::DragValue::new(&mut self.custom_height).range(64..=8192).speed(2),
                         );
                     });
                 }
@@ -245,15 +250,16 @@ impl NewProjectDialog {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Frame Rate")
-                            .size(12.0)
+                            .size(12.0 * control_scale)
                             .color(theme.text_secondary),
                     );
-                    ui.add_space(26.0);
+                    ui.add_space(26.0 * control_scale);
                     let current_fps_label = FPS_PRESETS[self.fps_idx].0;
                     egui::ComboBox::from_id_salt("fps_preset")
                         .selected_text(current_fps_label)
-                        .width(200.0)
+                        .width(200.0 * control_scale)
                         .show_ui(ui, |ui| {
+                            scale_dialog_style(ui, control_scale);
                             for (i, (label, _, _)) in FPS_PRESETS.iter().enumerate() {
                                 ui.selectable_value(&mut self.fps_idx, i, *label);
                             }
@@ -264,13 +270,13 @@ impl NewProjectDialog {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Sequence Name")
-                            .size(12.0)
+                            .size(12.0 * control_scale)
                             .color(theme.text_secondary),
                     );
-                    ui.add_space(8.0);
+                    ui.add_space(8.0 * control_scale);
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.sequence_name)
-                            .desired_width(280.0)
+                            .desired_width(280.0 * control_scale)
                             .hint_text("Main Sequence"),
                     );
                     if resp.changed() {
@@ -299,7 +305,7 @@ impl NewProjectDialog {
                             .add_enabled(
                                 can_create,
                                 egui::Button::new(
-                                    egui::RichText::new("Create Project").size(13.0),
+                                    egui::RichText::new("Create Project").size(13.0 * control_scale),
                                 ),
                             )
                             .on_disabled_hover_text("Give the project a name first");
@@ -324,7 +330,7 @@ impl NewProjectDialog {
                             close = true;
                         }
 
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(egui::RichText::new("Cancel").size(11.0 * control_scale)).clicked() {
                             close = true;
                         }
 
@@ -336,7 +342,7 @@ impl NewProjectDialog {
                             ui.add_space(8.0);
                             ui.label(
                                 egui::RichText::new("Name the project to continue")
-                                    .size(11.0)
+                                    .size(11.0 * control_scale)
                                     .color(theme.text_dim),
                             );
                         }
@@ -374,6 +380,13 @@ impl NewProjectDialog {
             (num, den)
         }
     }
+}
+
+fn scale_dialog_style(ui: &mut egui::Ui, scale: f32) {
+    for font in ui.style_mut().text_styles.values_mut() {
+        font.size *= scale;
+    }
+    ui.spacing_mut().interact_size.y *= scale;
 }
 
 /// Replace characters that are unsafe in filenames.

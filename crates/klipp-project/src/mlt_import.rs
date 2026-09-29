@@ -1371,6 +1371,7 @@ pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
             width: mlt.profile.width,
             height: mlt.profile.height,
         },
+        first_clip_autoset: Default::default(),
         tracks: Vec::new(),
         in_point: None,
         out_point: None,

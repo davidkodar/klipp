@@ -77,6 +77,8 @@ pub struct SequenceJson {
     pub name: String,
     pub fps: FpsJson,
     pub resolution: ResolutionJson,
+    #[serde(default)]
+    pub first_clip_autoset: klipp_timeline::FirstClipAutoSet,
     pub tracks: Vec<TrackJson>,
     #[serde(default)]
     pub in_point: Option<TimecodeJson>,

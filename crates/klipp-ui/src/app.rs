@@ -5264,6 +5264,7 @@ impl KlippApp {
             name: name.clone(),
             fps,
             resolution: res,
+            first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false },
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
@@ -12197,9 +12198,8 @@ impl KlippApp {
                                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                                 .any(|t| !t.clips.is_empty());
                             if !has_video_clips {
-                                seq.resolution = item.resolution;
-                                seq.fps = item.fps;
-                                self.state.fps = item.fps;
+                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
+                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
                             }
                         }
                         if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(*track_index) {
@@ -12508,9 +12508,8 @@ impl KlippApp {
                                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                                 .any(|t| !t.clips.is_empty());
                             if !has_video_clips {
-                                seq.resolution = item.resolution;
-                                seq.fps = item.fps;
-                                self.state.fps = item.fps;
+                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
+                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
                             }
                         }
 
@@ -12721,10 +12720,9 @@ impl KlippApp {
                                 .any(|t| !t.clips.is_empty());
                             if !has_video_clips {
                                 let prev = (seq.resolution, seq.fps);
-                                seq.resolution = item.resolution;
-                                seq.fps = item.fps;
-                                self.state.fps = item.fps;
-                                hist_autoset = Some((prev, (item.resolution, item.fps)));
+                                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
+                                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
+                                if seq.first_clip_autoset.resolution || seq.first_clip_autoset.fps { hist_autoset = Some((prev, (seq.resolution, seq.fps))); }
                             }
                         }
                         // Check for browser range selection (trimmed source in/out)
@@ -19422,6 +19420,10 @@ impl KlippApp {
                     name: seq_name,
                     fps,
                     resolution,
+                    first_clip_autoset: klipp_timeline::FirstClipAutoSet {
+                        resolution: *width == 0 || *height == 0,
+                        fps: *fps_num == 0 || *fps_den == 0,
+                    },
                     tracks: {
                         let mut tracks = vec![
                             klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
@@ -19528,6 +19530,7 @@ impl KlippApp {
                     name: name.clone(),
                     fps: klipp_core::Fps::new(*fps_num, *fps_den),
                     resolution: klipp_core::Resolution { width: *width, height: *height },
+                    first_clip_autoset: klipp_timeline::FirstClipAutoSet { resolution: false, fps: false },
                     tracks: {
                         let mut tracks = vec![
                             klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
@@ -19730,6 +19733,7 @@ impl KlippApp {
                 if *sequence_idx < self.state.sequences.len() && *width > 0 && *height > 0 {
                     let res = klipp_core::Resolution { width: *width, height: *height };
                     self.state.sequences[*sequence_idx].resolution = res;
+                    self.state.sequences[*sequence_idx].first_clip_autoset.resolution = false;
                     self.state.dirty = true;
                 }
                 true
@@ -19737,6 +19741,7 @@ impl KlippApp {
             AppCommand::SetSequenceFps { sequence_idx, fps_num, fps_den } => {
                 if *sequence_idx < self.state.sequences.len() && *fps_num > 0 && *fps_den > 0 {
                     self.state.sequences[*sequence_idx].fps = klipp_core::Fps::new(*fps_num, *fps_den);
+                    self.state.sequences[*sequence_idx].first_clip_autoset.fps = false;
                     if *sequence_idx == self.state.active_sequence_idx {
                         // Engine reads `state.fps` for the active sequence.
                         self.state.fps = self.state.sequences[*sequence_idx].fps;
@@ -24046,10 +24051,9 @@ impl KlippApp {
                 .any(|t| !t.clips.is_empty());
             if !has_video_clips {
                 let prev = (seq.resolution, seq.fps);
-                seq.resolution = item.resolution;
-                seq.fps = item.fps;
-                self.state.fps = item.fps;
-                autoset = Some((prev, (item.resolution, item.fps)));
+                if seq.first_clip_autoset.resolution { seq.resolution = item.resolution; }
+                if seq.first_clip_autoset.fps { seq.fps = item.fps; self.state.fps = item.fps; }
+                if seq.first_clip_autoset.resolution || seq.first_clip_autoset.fps { autoset = Some((prev, (seq.resolution, seq.fps))); }
             }
         }
 
@@ -39381,6 +39385,7 @@ mod compound_clip_cycle_tests {
             name: name.to_string(),
             fps: Fps::new(24, 1),
             resolution: Resolution { width: 1920, height: 1080 },
+            first_clip_autoset: Default::default(),
             tracks: Vec::new(),
             in_point: None,
             out_point: None,

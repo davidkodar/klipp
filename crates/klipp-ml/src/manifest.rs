@@ -235,8 +235,7 @@ pub struct ModelEntry {
     pub sources: Vec<Source>,
     /// Which trait this entry implements. Defaults to
     /// `MaskGenerator` so v1-shape manifests (without this field)
-    /// keep parsing — the existing SAM2 placeholders are all mask
-    /// generators.
+    /// keep parsing — older SAM2 placeholders were mask generators.
     #[serde(default)]
     pub kind: ModelKind,
     /// Which backend crate runs the model. Defaults to `Stub` so
@@ -793,27 +792,10 @@ prompts = "point | box | scribble | temporal"
     }
 
     #[test]
-    fn shipping_manifest_populates_new_fields_for_sam2_entries() {
-        // The shipped `assets/models.toml` is expected to advertise
-        // kind=mask_generator, runtime=ort, and the SAM-family
-        // prompt set on every SAM2 entry. Lock that in so a stray
-        // edit can't strip the metadata.
+    fn shipping_manifest_does_not_advertise_unavailable_sam2_models() {
         let m = ModelManifest::parse(BUILTIN_MANIFEST).expect("builtin parses");
         assert!(!m.models.is_empty(), "builtin should have entries");
-
-        let expected_prompts =
-            PromptKinds::POINT | PromptKinds::BOX | PromptKinds::SCRIBBLE | PromptKinds::TEMPORAL;
-        for entry in &m.models {
-            if !entry.id.starts_with("sam2") {
-                continue;
-            }
-            assert_eq!(entry.kind, ModelKind::MaskGenerator,
-                "{} kind", entry.id);
-            assert_eq!(entry.runtime, ModelRuntime::Ort,
-                "{} runtime", entry.id);
-            assert_eq!(entry.prompts, expected_prompts,
-                "{} prompts", entry.id);
-        }
+        assert!(m.models.iter().all(|entry| !entry.id.starts_with("sam2")));
     }
 
     #[test]

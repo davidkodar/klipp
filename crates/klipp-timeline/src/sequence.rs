@@ -61,6 +61,10 @@ pub struct Sequence {
     pub name: String,
     pub fps: Fps,
     pub resolution: Resolution,
+    /// Which settings may be inferred from the first video clip.
+    /// Persisted so explicit project settings survive undo and reopening.
+    #[serde(default)]
+    pub first_clip_autoset: FirstClipAutoSet,
     pub tracks: Vec<Track>,
     #[serde(default)]
     pub in_point: Option<Timecode>,
@@ -103,6 +107,19 @@ pub struct Sequence {
     #[serde(default)]
     pub drop_frame: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirstClipAutoSet {
+    #[serde(default = "default_true")]
+    pub resolution: bool,
+    #[serde(default = "default_true")]
+    pub fps: bool,
+}
+
+impl Default for FirstClipAutoSet {
+    fn default() -> Self { Self { resolution: true, fps: true } }
+}
+
 
 /// A move over the whole sequence, rather than over one clip.
 ///
@@ -220,6 +237,7 @@ impl Sequence {
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
+            first_clip_autoset: FirstClipAutoSet::default(),
             tracks: {
                 let mut tracks = vec![
                     Track::new("Video 1", TrackKind::Video),
@@ -3337,6 +3355,7 @@ mod tests {
             name: "test".to_string(),
             fps: Fps::new(24, 1),
             resolution: Resolution::hd_1080(),
+            first_clip_autoset: Default::default(),
             tracks: vec![make_track(vec![])],
             in_point: None,
             out_point: None,

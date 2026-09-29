@@ -569,6 +569,7 @@ mod tests {
             name: name.to_string(),
             fps: Fps::new(24, 1),
             resolution: Resolution { width: 1920, height: 1080 },
+            first_clip_autoset: Default::default(),
             tracks: Vec::new(),
             in_point: None,
             out_point: None,

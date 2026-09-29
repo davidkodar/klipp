@@ -15,6 +15,9 @@ PHASE_*_PLAN.md
 
 # Editor / harness local state.
 .claude/
+.worktrees/
+/packaging/pkg/
+/packaging/*.pkg.tar.zst
 
 # Model weights (large binary blobs).
 *.pt

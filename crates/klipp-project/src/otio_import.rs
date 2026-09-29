@@ -785,6 +785,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
             width: 1920,
             height: 1080,
         },
+        first_clip_autoset: Default::default(),
         tracks,
         in_point: None,
         out_point: None,

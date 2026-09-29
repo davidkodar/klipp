@@ -331,6 +331,7 @@ mod tests {
             name: "Test Sequence".into(),
             fps,
             resolution: Resolution::hd_1080(),
+            first_clip_autoset: Default::default(),
             tracks: vec![Track::new("V1", TrackKind::Video)],
             in_point: None,
             out_point: None,

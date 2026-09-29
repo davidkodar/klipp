@@ -422,6 +422,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             seq_json.resolution.width,
             seq_json.resolution.height,
         ),
+        first_clip_autoset: seq_json.first_clip_autoset,
         tracks: seq_json.tracks.iter().map(|t| {
             let kind = match t.kind.as_str() {
                 "Audio" => TrackKind::Audio,
