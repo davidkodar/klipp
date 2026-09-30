@@ -1063,13 +1063,13 @@ pub fn boxes_overlap(a: [f32; 4], b: [f32; 4], margin: f32) -> bool {
 /// The box a title covers, as fractions of the frame: its text boxes
 /// sized from their type and words, its shapes and images from their
 /// transforms. `None` for a title with nothing visible.
-pub fn title_box(td: &klipp_timeline::TitleData) -> Option<[f32; 4]> {
+pub fn title_box(td: &klipp_timeline::TitleData, frame: klipp_core::Resolution) -> Option<[f32; 4]> {
     use klipp_timeline::TitleObjectContent;
     let mut acc: Option<[f32; 4]> = None;
     for o in td.objects.iter().filter(|o| o.visible) {
         let (cx, cy) = (o.transform.center.x, o.transform.center.y);
         let (w, h) = match &o.content {
-            TitleObjectContent::TextBox(tb) => text_extent(&tb.text, tb.font_size),
+            TitleObjectContent::TextBox(tb) => text_extent(&tb.text, tb.font_size, frame),
             _ => (o.transform.size.x, o.transform.size.y),
         };
         let b = [cx - w / 2.0, cy - h / 2.0, w, h];
@@ -1085,13 +1085,19 @@ pub fn title_box(td: &klipp_timeline::TitleData) -> Option<[f32; 4]> {
     acc
 }
 
-/// About how much of the frame text of `size` (px of a 1080-line frame)
-/// covers: the longest line at a bit over half an em a character, the
-/// lines at 1.3 em.
-pub fn text_extent(text: &str, size: f32) -> (f32, f32) {
+/// About how much of a `frame` text of `size` covers: the longest line at
+/// a bit over half an em a character, the lines at 1.3 em. `size` is
+/// pixels at 1080 on the frame's short side, as the renderer draws it
+/// (`klipp_title::frame_scale`), so a vertical frame's estimate is its own
+/// and not a landscape one's.
+pub fn text_extent(text: &str, size: f32, frame: klipp_core::Resolution) -> (f32, f32) {
     let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
     let lines = text.lines().count().max(1) as f32;
-    ((longest * size * 0.55 / 1920.0).min(0.94), (lines * size * 1.3 / 1080.0).min(0.9))
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    let px = size * w.min(h) / 1080.0;
+    // Never wider than the renderer's text box, 0.9 of the frame: it wraps
+    // inside that.
+    ((longest * px * 0.55 / w).min(0.9), (lines * px * 1.3 / h).min(0.9))
 }
 
 /// The nine zones of the frame a title can sit in, by the centre they
@@ -4709,6 +4715,17 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             }
         }
     }
+    // And the whole of it, not only its centre: a heading placed near the
+    // top of a vertical frame had its first line cut off above the frame
+    // (#460).
+    if a.full_frame.is_none() {
+        let (w, h) = text_extent(text, td.font_size(), seq.resolution);
+        if let Some(obj) = td.objects.get_mut(0) {
+            let keep = |c: f32, half: f32| if half < 0.45 { c.clamp(0.05 + half, 0.95 - half) } else { 0.5 };
+            obj.transform.center.x = keep(obj.transform.center.x, w / 2.0);
+            obj.transform.center.y = keep(obj.transform.center.y, h / 2.0);
+        }
+    }
     // Never over a face: the words move to the nearest clear zone and
     // the reply says so. A full-frame card has nothing behind it to keep
     // clear of.
@@ -4716,7 +4733,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     if !a.keep_out.is_empty() && a.full_frame.is_none() {
         let font = td.font_size();
         if let Some(obj) = td.objects.get_mut(0) {
-            let size = text_extent(text, font);
+            let size = text_extent(text, font, seq.resolution);
             let center = (obj.transform.center.x, obj.transform.center.y);
             match clear_zone(center, size, &a.keep_out) {
                 Some((c, Some(zone))) => {
@@ -5002,6 +5019,26 @@ mod tests {
         assert_eq!(clear_zone((0.5, 0.5), (0.2, 0.1), &[]).unwrap().1, None);
     }
 
+
+    /// #460: a heading at the top of a vertical frame stays whole inside
+    /// title-safe, and the size estimate is the frame's own: on 16:9 it is
+    /// the same as it always was.
+    #[test]
+    fn a_heading_on_a_vertical_frame_stays_inside_title_safe() {
+        let hd = klipp_core::Resolution { width: 1920, height: 1080 };
+        let (w, h) = text_extent("Hello", 72.0, hd);
+        assert!((w - 5.0 * 72.0 * 0.55 / 1920.0).abs() < 1e-6 && (h - 72.0 * 1.3 / 1080.0).abs() < 1e-6, "16:9 as before");
+
+        let (mut seq, pool, _, _, _) = fixture();
+        seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
+        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None };
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let ClipKind::Title(td) = &clip.kind else { panic!() };
+        let b = title_box(td, seq.resolution).unwrap();
+        assert!(b[1] >= 0.05 - 1e-4 && b[1] + b[3] <= 0.95 + 1e-4, "the box {b:?} is inside title-safe");
+        assert!(b[0] >= 0.05 - 1e-4 && b[0] + b[2] <= 0.95 + 1e-4, "and across: {b:?}");
+    }
 
     /// Where the transform puts a picture point on screen, as the renderer
     /// does (`cpu.rs`: scale about the middle, then offset; the camera

@@ -337,7 +337,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             }
         }
         // Over a face: the first thing the eye goes to, under words.
-        if let Some(tb) = crate::ops::title_box(td) {
+        if let Some(tb) = crate::ops::title_box(td, seq.resolution) {
             let faces = crate::ops::faces_under(seq, pool, transcripts, a, b);
             if let Some(face) = faces.iter().find(|f| crate::ops::boxes_overlap(tb, **f, 0.04)) {
                 let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &faces).and_then(|(_, z)| z);

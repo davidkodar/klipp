@@ -90,10 +90,10 @@ pub(crate) fn paint(
         return;
     }
     let mut contours = contours(pose, transform, width, height);
-    let half = pose.stroke_width * height as f32 / 1080.0 * 0.5;
+    let half = pose.stroke_width * crate::frame_scale(width, height) * 0.5;
     let glow_radius = pose
         .stroke_glow
-        .map_or(0.0, |g| g.radius * height as f32 / 1080.0)
+        .map_or(0.0, |g| g.radius * crate::frame_scale(width, height))
         .round();
     let glow_strength = pose.stroke_glow.map_or(0.0, |g| g.strength);
     // Bound all coverage and blending to the visible geometry.

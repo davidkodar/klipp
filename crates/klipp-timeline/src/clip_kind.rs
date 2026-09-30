@@ -713,8 +713,9 @@ impl ImageLayer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextBox {
     pub text: String,
-    /// Font size in points, default 72.0. The renderer scales by
-    /// `frame_h / 1080` so this stays resolution-stable.
+    /// Font size in points, default 72.0. The renderer scales by the
+    /// frame's short side over 1080 (`klipp_title::frame_scale`) so this
+    /// stays resolution-stable, and reads the same on a vertical frame.
     pub font_size: f32,
     pub font_name: String,
     #[serde(default)]
