@@ -351,12 +351,53 @@ fn gallery_body(
     picked
 }
 
-/// Forget a closed picker's focus, so it takes the keyboard again when
-/// it next opens.
-fn gallery_closed(ui: &mut egui::Ui, popup_id: egui::Id, id: egui::Id) {
-    if !ui.memory(|m| m.is_popup_open(popup_id)) {
-        ui.memory_mut(|m| m.data.remove::<bool>(id.with("focused")));
+/// Which of the tab's pickers is open, if any: one at a time, so the tab
+/// never shows two grids of effects at once (#604).
+fn open_picker(ui: &egui::Ui) -> Option<egui::Id> {
+    ui.memory(|m| m.data.get_temp(egui::Id::new("title_open_picker"))).flatten()
+}
+
+fn set_open_picker(ui: &egui::Ui, id: Option<egui::Id>) {
+    ui.memory_mut(|m| m.data.insert_temp(egui::Id::new("title_open_picker"), id));
+}
+
+/// A picker field (#604): what is chosen, by name, or what choosing does,
+/// on a full-width button that opens the picker below it inside the
+/// inspector. It reads as a place to choose from many, where a small
+/// "None ▾" read as a plain dropdown. Returns true when clicked.
+fn picker_field(ui: &mut egui::Ui, theme: &KlippTheme, text: &str, open: bool) -> bool {
+    let arrow = if open { "\u{25b4}" } else { "\u{25be}" };
+    let label = egui::RichText::new(format!("{text}   {arrow}")).size(crate::theme::type_scale::CONTROL).color(theme.text_primary);
+    ui.add(egui::Button::new(label).min_size(egui::vec2(ui.available_width(), crate::theme::control::COMPACT + 4.0)))
+        .on_hover_text("Choose from every effect, with a live preview of each")
+        .clicked()
+}
+
+/// The picker, open inside the inspector under its field: the shared
+/// body in a frame, closed by Esc or by its field. Returns the entry
+/// picked, if any; picking closes it.
+fn inline_picker(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    id: egui::Id,
+    recent_key: &str,
+    entries: &[GalleryEntry],
+    draw: impl FnMut(&mut egui::Ui, usize) -> egui::Response,
+) -> Option<usize> {
+    let mut picked = None;
+    egui::Frame::none()
+        .fill(theme.bg_panel_alt)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border))
+        .rounding(crate::theme::radius::PANEL)
+        .inner_margin(egui::Margin::same(8.0))
+        .show(ui, |ui| {
+            picked = gallery_body(ui, theme, id.with("body"), recent_key, entries, draw);
+        });
+    if picked.is_some() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        set_open_picker(ui, None);
+        ui.memory_mut(|m| m.data.remove::<bool>(id.with("body").with("focused")));
     }
+    picked
 }
 
 // ─── Motion card ─────────────────────────────────────────────────────
@@ -368,10 +409,23 @@ enum Direction {
 }
 
 impl Direction {
+    /// The key its picker's state and Recent are kept under.
     fn label(self) -> &'static str {
         match self {
             Direction::Enter => "In",
             Direction::Exit => "Out",
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Direction::Enter => "Entrance",
+            Direction::Exit => "Exit",
+        }
+    }
+    fn prompt(self) -> &'static str {
+        match self {
+            Direction::Enter => "Choose entrance\u{2026}",
+            Direction::Exit => "Choose exit\u{2026}",
         }
     }
     /// The rest moment and hover loop for a chip of this direction.
@@ -407,22 +461,21 @@ fn motion_row(
 ) -> bool {
     let mut changed = false;
     let (rest, hover_from, hover_len) = dir.timing();
-    let popup_id = ui.id().with(("title_motion_gallery", dir.label()));
-    let mut open_gallery = false;
-    // The motion row contains four controls and is wider than the compact
-    // Inspector at its normal width.  Wrapping keeps every control inside
-    // the panel instead of letting the final duration field disappear past
-    // the right edge.
-    ui.horizontal_wrapped(|ui| {
+    let picker_id = egui::Id::new(("title_motion_picker", dir.label()));
+    let open = open_picker(ui) == Some(picker_id);
+    let presets = klipp_core::title_motion::MotionPreset::all();
+    // The chosen motion by its preset's name where it is one, else its kind.
+    let name = slot.map(|m| presets.iter().find(|p| p.motion.kind == m.kind && p.motion.stagger == m.stagger).map_or(m.kind.label(), |p| p.name));
+    ui.horizontal(|ui| {
         ui.add_sized(
-            [28.0, ROW_CHIP.y],
-            egui::Label::new(egui::RichText::new(dir.label()).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
+            [58.0, ROW_CHIP.y],
+            egui::Label::new(egui::RichText::new(dir.title()).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
         );
         let current = *slot;
         let s_c = subject.clone();
         let fx_c = fx.clone();
         let make = move || motion_chip_title(&s_c, &fx_c, dir, current);
-        let kind_id = current.map(|m| format!("{:?}:{:.2}:{:?}", m.kind, m.duration_secs, m.easing)).unwrap_or_else(|| "none".into());
+        let kind_id = current.map(|m| format!("{:?}:{:.2}:{:?}:{:?}", m.kind, m.duration_secs, m.easing, m.stagger)).unwrap_or_else(|| "none".into());
         let resp = chip(
             ui,
             theme,
@@ -431,43 +484,30 @@ fn motion_row(
             ROW_CHIP,
             make,
         );
-        if resp.clicked() {
-            open_gallery = true;
-        }
-        let name = current.map(|m| m.kind.label()).unwrap_or("None");
-        let kind_width = ui.available_width().clamp(86.0, 120.0);
-        let btn = ui.add_sized(
-            [kind_width, crate::theme::control::COMPACT],
-            egui::Button::new(egui::RichText::new(format!("{name}  \u{25be}")).size(crate::theme::type_scale::CONTROL)),
-        );
-        if btn.clicked() {
-            open_gallery = true;
-        }
-        if let Some(m) = slot.as_mut() {
-            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=5.0).speed(0.02).suffix(" s").fixed_decimals(2)).on_hover_text("Duration").changed() {
-                changed = true;
-            }
+        let clicked_field = ui.vertical(|ui| picker_field(ui, theme, name.unwrap_or(dir.prompt()), open)).inner;
+        if resp.clicked() || clicked_field {
+            set_open_picker(ui, if open { None } else { Some(picker_id) });
         }
     });
-    if open_gallery {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    if let Some(m) = slot.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add_space(58.0 + 8.0);
+            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=5.0).speed(0.02).prefix("Duration ").suffix(" s").fixed_decimals(2)).changed() {
+                changed = true;
+            }
+        });
     }
-    // The gallery: None and every kind, rendered on this text.
-    let anchor = ui.min_rect();
-    let anchor_resp = ui.interact(egui::Rect::from_min_size(anchor.left_bottom(), egui::vec2(1.0, 1.0)), popup_id.with("anchor"), egui::Sense::hover());
+    // The picker, inside the inspector under its field: None and every
+    // preset, rendered on this text.
     let mut pick: Option<Option<Motion>> = None;
-    let gallery_id = popup_id.with("body");
-    egui::popup_below_widget(ui, popup_id, &anchor_resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        // None, then every preset: a kind with its own timing and, for the
-        // ones that go piece by piece, its stagger.
-        let presets = klipp_core::title_motion::MotionPreset::all();
+    if open {
         let items: Vec<Option<klipp_core::title_motion::MotionPreset>> = std::iter::once(None).chain(presets.into_iter().map(Some)).collect();
         let entries: Vec<GalleryEntry> = items
             .iter()
             .map(|p| GalleryEntry { key: p.map_or("none".into(), |p| p.name.to_string()), label: p.map_or("None", |p| p.name), group: p.map_or("", |p| p.group) })
             .collect();
         let current = slot.map(|m| (m.kind, m.stagger));
-        let picked = gallery_body(ui, theme, gallery_id, dir.label(), &entries, |ui, i| {
+        let picked = inline_picker(ui, theme, picker_id, dir.label(), &entries, |ui, i| {
             let m = items[i].map(|p| p.motion);
             let s_c = subject.clone();
             let fx_c = fx.clone();
@@ -480,8 +520,7 @@ fn motion_row(
         if let Some(i) = picked {
             pick = Some(items[i].map(|p| p.motion));
         }
-    });
-    gallery_closed(ui, popup_id, gallery_id);
+    }
     if let Some(p) = pick {
         // The preset whole (its easing, timing and stagger), keeping the
         // delay the slot had.
@@ -493,7 +532,6 @@ fn motion_row(
             m
         });
         changed = true;
-        ui.memory_mut(|m| m.close_popup());
     }
     // Details: delay, easing, stagger, travel.
     if let Some(m) = slot.as_mut() {
@@ -607,49 +645,34 @@ fn show_loops(
     let mut loops = fx.loops.clone();
     let mut changed = false;
     let mut remove: Option<usize> = None;
-    let popup_id = ui.id().with("title_loop_gallery");
-    let mut add_btn: Option<egui::Response> = None;
-    ui.horizontal(|ui| {
-        caption(ui, theme, "LOOPS");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let b = ui.add(egui::Button::new(egui::RichText::new("+ Add").size(crate::theme::type_scale::CAPTION)).min_size(egui::vec2(0.0, crate::theme::control::COMPACT)));
-            if b.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(popup_id));
-            }
-            add_btn = Some(b);
+    let picker_id = egui::Id::new("title_loop_picker");
+    let open = open_picker(ui) == Some(picker_id);
+    caption(ui, theme, "LOOPS");
+    if picker_field(ui, theme, "Add loop\u{2026}", open) {
+        set_open_picker(ui, if open { None } else { Some(picker_id) });
+    }
+    if open {
+        let presets = TitleLoop::presets();
+        let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
+        let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
+        let picked = inline_picker(ui, theme, picker_id, "Loops", &entries, |ui, i| {
+            let l = &items[i];
+            let s_c = subject.clone();
+            let fx_c = fx.clone();
+            let l_c = l.clone();
+            let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
+            chip(
+                ui,
+                theme,
+                chips,
+                ChipSpec { id: format!("loop:{}", entries[i].label), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(entries[i].label) },
+                GALLERY_CHIP,
+                make,
+            )
         });
-    });
-    if let Some(b) = add_btn {
-        let mut pick: Option<TitleLoop> = None;
-        let gallery_id = popup_id.with("body");
-        egui::popup_below_widget(ui, popup_id, &b, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            let presets = TitleLoop::presets();
-            let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
-            let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
-            let picked = gallery_body(ui, theme, gallery_id, "Loops", &entries, |ui, i| {
-                let l = &items[i];
-                let s_c = subject.clone();
-                let fx_c = fx.clone();
-                let l_c = l.clone();
-                let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
-                chip(
-                    ui,
-                    theme,
-                    chips,
-                    ChipSpec { id: format!("loop:{}", entries[i].label), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(entries[i].label) },
-                    GALLERY_CHIP,
-                    make,
-                )
-            });
-            if let Some(i) = picked {
-                pick = Some(items[i].clone());
-            }
-        });
-        gallery_closed(ui, popup_id, gallery_id);
-        if let Some(l) = pick {
-            loops.push(l);
+        if let Some(i) = picked {
+            loops.push(items[i].clone());
             changed = true;
-            ui.memory_mut(|m| m.close_popup());
         }
     }
     if loops.is_empty() {
@@ -1199,6 +1222,106 @@ mod gallery_tests {
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(ctx, vec![egui::Event::PointerMoved(at), button(true)]);
         frame(ctx, vec![button(false)]).1
+    }
+
+    /// #604: the picker opens inside the inspector, one at a time; it
+    /// closes when an effect is picked, and on Esc.
+    #[test]
+    fn the_inline_picker_closes_on_a_pick_and_on_escape() {
+        use super::{inline_picker, open_picker};
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("inline_test");
+        let list = entries();
+        let run = |events: Vec<egui::Event>| {
+            let mut picked = None;
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), events, ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if open_picker(ui) == Some(id) {
+                            picked = inline_picker(ui, &KlippTheme::default(), id, "inline", &list, |ui, i| ui.button(list[i].label));
+                        }
+                    });
+                },
+            );
+            let texts: Vec<(String, egui::Pos2)> = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                })
+                .collect();
+            (texts, picked)
+        };
+        let is_open = || ctx.memory(|m| m.data.get_temp::<Option<egui::Id>>(egui::Id::new("title_open_picker"))).flatten() == Some(id);
+        ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("title_open_picker"), Some(id)));
+        let (texts, _) = run(Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "Rise"), "open, it shows the effects");
+        let at = texts.iter().find(|(t, _)| t == "Rise").unwrap().1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(vec![egui::Event::PointerMoved(at), button(true)]);
+        let (_, picked) = run(vec![button(false)]);
+        assert_eq!(picked, Some(2));
+        assert!(!is_open(), "a pick closes it");
+
+        ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("title_open_picker"), Some(id)));
+        run(Vec::new());
+        run(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        assert!(!is_open(), "Esc closes it");
+    }
+
+    /// #604: the whole path, as the user clicks it. The Entrance field
+    /// opens the picker and it stays open frame after frame (the popup of
+    /// #601 closed on the click that opened it: it blinked); picking Pop
+    /// sets the slot to it and closes the picker.
+    #[test]
+    fn the_entrance_field_opens_a_picker_that_stays_and_picks() {
+        use super::{motion_row, ChipSubject, Direction, TitleChips};
+        let ctx = egui::Context::default();
+        let mut chips = TitleChips::default();
+        let subject = ChipSubject::Text(klipp_timeline::TextBox { text: "Credits".into(), ..Default::default() });
+        let fx = klipp_timeline::LayerFx::default();
+        let mut slot: Option<klipp_timeline::Motion> = None;
+        let mut run = |events: Vec<egui::Event>, slot: &mut Option<klipp_timeline::Motion>| -> Vec<(String, egui::Pos2)> {
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 2000.0))), events, ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        motion_row(ui, &KlippTheme::default(), &mut chips, &subject, &fx, Direction::Enter, slot);
+                    });
+                },
+            );
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let find = |texts: &[(String, egui::Pos2)], prefix: &str| texts.iter().find(|(t, _)| t.starts_with(prefix)).map(|(_, p)| *p);
+        let texts = run(Vec::new(), &mut slot);
+        let field = find(&texts, "Choose entrance").expect("the field says what it is for");
+        assert!(find(&texts, "Pop").is_none(), "closed at first");
+        let click = |at: egui::Pos2, pressed: bool| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(vec![egui::Event::PointerMoved(field), click(field, true)], &mut slot);
+        run(vec![click(field, false)], &mut slot);
+        for _ in 0..4 {
+            let texts = run(Vec::new(), &mut slot);
+            assert!(find(&texts, "Fade").is_some() && find(&texts, "Search").is_some(), "the picker stays open");
+        }
+        // The search field has the keyboard as the picker opens: typing
+        // narrows it to Pop, which was further down than the view shows.
+        run(vec![egui::Event::Text("pop".into())], &mut slot);
+        let texts = run(Vec::new(), &mut slot);
+        let pop = texts.iter().find(|(t, _)| t == "Pop").map(|(_, p)| *p).expect("Pop is shown when searched for");
+        run(vec![egui::Event::PointerMoved(pop), click(pop, true)], &mut slot);
+        run(vec![click(pop, false)], &mut slot);
+        assert_eq!(slot.map(|m| m.kind), Some(klipp_timeline::MotionKind::Pop), "picking Pop sets it");
+        let texts = run(Vec::new(), &mut slot);
+        assert!(find(&texts, "Pop letters").is_none(), "and closes the picker");
+        assert!(find(&texts, "Pop").is_some(), "the field now names it");
     }
 
     /// #596: search narrows the picker by name or group, a group's pill
