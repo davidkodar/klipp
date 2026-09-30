@@ -60,7 +60,7 @@ pub trait AlphaMaskProcessor {
 /// a frame 2160 wide, where 2 was meant: a `size: 120` headline filled the
 /// width and broke inside its words (#460, #508).
 pub fn frame_scale(width: u32, height: u32) -> f32 {
-    width.min(height).max(1) as f32 / 1080.0
+    klipp_core::title_motion::frame_scale(width as f32, height as f32)
 }
 
 /// Result of the layout phase — alpha mask + bounding box info.
@@ -1667,15 +1667,8 @@ impl TitleRenderer {
                     return None;
                 }
                 let font_px = tb.font_size * scale;
-                let lines = tb.text.lines().count().max(1) as f32;
-                let max_chars = tb.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
-                let geo = klipp_timeline::LoopGeometry {
-                    frame_w: width as f32,
-                    frame_h: height as f32,
-                    text_w: max_chars * font_px * 0.55,
-                    text_h: lines * font_px * tb.line_spacing.max(0.5) * 1.4,
-                    font_px,
-                };
+                let (text_w, text_h) = tb.loop_extent(font_px);
+                let geo = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w, text_h, font_px };
                 Some((i, klipp_core::title_motion::eval_loops(&fx.loops, time_secs, window, geo, tb.color)))
             })
             .collect();

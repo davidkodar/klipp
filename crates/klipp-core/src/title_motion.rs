@@ -365,6 +365,32 @@ pub struct LoopGeometry {
     pub font_px: f32,
 }
 
+/// How much bigger than on a 1080p frame a title's pixel measures are
+/// drawn: by the frame's short side, so a vertical frame reads as a
+/// landscape one of the same resolution. `klipp_title::frame_scale` is
+/// this.
+pub fn frame_scale(frame_w: f32, frame_h: f32) -> f32 {
+    frame_w.min(frame_h).max(1.0) / 1080.0
+}
+
+/// How far a travelling loop carries its layer, in the pixels `frame`
+/// and `extent` are given in: from just past one edge of the frame to
+/// just past the other, the layer's own length included.
+pub fn travel_distance(frame: f32, extent: f32) -> f32 {
+    frame * 1.04 + extent
+}
+
+/// Seconds a travel of `distance` takes at `speed` (the same pixels per
+/// second), or at the clip's pace when `speed` is zero: fitted, the
+/// whole travel takes the clip.
+pub fn travel_secs(distance: f32, speed: f32, clip_secs: f32) -> f32 {
+    if speed > 0.0 {
+        distance / speed
+    } else {
+        clip_secs
+    }
+}
+
 /// Where a travelling loop is at `t`: from `+offset` to `-offset`,
 /// over the clip when `speed` is zero, else at `speed` px/s centred in
 /// the clip when it fits and starting at once when it does not.
@@ -457,14 +483,17 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
             }
             // The travel runs from just past one edge to just past the
             // other, so the text is on its way in from the first frame.
+            // A speed is pixels per second of a 1080p frame, as the
+            // field says: scaled to this frame, a roll takes as long on
+            // 4K or a vertical frame as on 1080p.
             TitleLoop::Scroll { direction, speed_px_per_sec } => {
-                let offset = (geo.frame_h + geo.text_h) * 0.5 + geo.frame_h * 0.02;
-                let y = travel(offset, *speed_px_per_sec, t, window, false);
+                let offset = travel_distance(geo.frame_h, geo.text_h) * 0.5;
+                let y = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, false);
                 pose.dy += match direction { ScrollDirection::Up => y, ScrollDirection::Down => -y };
             }
             TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
-                let offset = (geo.frame_w + geo.text_w) * 0.5 + geo.frame_w * 0.02;
-                let x = travel(offset, *speed_px_per_sec, t, window, *repeat);
+                let offset = travel_distance(geo.frame_w, geo.text_w) * 0.5;
+                let x = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, *repeat);
                 pose.dx += match direction { CrawlDirection::Left => x, CrawlDirection::Right => -x };
             }
             TitleLoop::Counter { from, to, duration_secs, decimals } => {
@@ -489,6 +518,21 @@ mod loop_tests {
 
     fn geo() -> LoopGeometry {
         LoopGeometry { frame_w: 1920.0, frame_h: 1080.0, text_w: 400.0, text_h: 80.0, font_px: 72.0 }
+    }
+
+    /// #588: a speed is pixels per second of a 1080p frame, so a roll
+    /// is as far along on 4K as on 1080p at any moment.
+    #[test]
+    fn a_speed_is_1080p_pixels_so_a_roll_keeps_its_pace_on_4k() {
+        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 200.0 }];
+        let along = |w: f32, h: f32, t: f32| {
+            let s = frame_scale(w, h);
+            let geo = LoopGeometry { frame_w: w, frame_h: h, text_w: 400.0 * s, text_h: 300.0 * s, font_px: 72.0 * s };
+            eval_loops(&loops, t, Some(60.0), geo, [255; 4]).dy / h
+        };
+        for t in [0.0, 20.0, 27.5, 33.0] {
+            assert!((along(1920.0, 1080.0, t) - along(3840.0, 2160.0, t)).abs() < 1e-4, "at {t} s: {} vs {}", along(1920.0, 1080.0, t), along(3840.0, 2160.0, t));
+        }
     }
 
     #[test]

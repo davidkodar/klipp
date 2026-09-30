@@ -4697,7 +4697,11 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             "wave" => TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
             "shake" => TitleLoop::Shake { amplitude: 0.04, rate_hz: 10.0 },
             "color_cycle" | "colour_cycle" | "rainbow" => TitleLoop::ColorCycle { rate_hz: 0.4 },
-            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake or color_cycle")),
+            // A credits roll and a ticker, fitted to the title's length
+            // (#588): the speed is set in the Title tab.
+            "scroll" | "roll" | "credits" => TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 },
+            "crawl" | "ticker" => TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false },
+            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, scroll (a credits roll) or crawl (a ticker)")),
         };
         fx.loops = vec![l];
     }
@@ -5020,6 +5024,22 @@ mod tests {
         assert_eq!(clear_zone((0.5, 0.5), (0.2, 0.1), &[]).unwrap().1, None);
     }
 
+
+    /// #588: a title can be a credits roll or a ticker, fitted to its
+    /// length, and nothing else is.
+    #[test]
+    fn a_title_rolls_as_credits_or_crawls_as_a_ticker() {
+        let (seq, pool, _, _, _) = fixture();
+        let looped = |name: &str| {
+            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+            let ClipKind::Title(td) = &clip.kind else { panic!() };
+            td.primary_fx().loops.clone()
+        };
+        assert!(matches!(looped("credits")[..], [klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec }] if speed_px_per_sec == 0.0));
+        assert!(matches!(looped("ticker")[..], [klipp_timeline::TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, .. }]));
+    }
 
     /// #460: a heading at the top of a vertical frame stays whole inside
     /// title-safe, and the size estimate is the frame's own: on 16:9 it is
