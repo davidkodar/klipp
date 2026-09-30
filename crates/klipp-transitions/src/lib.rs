@@ -175,6 +175,12 @@ pub fn render_transition_with_params(
                 }
             }
         }
+        TransitionKind::WhipPan => {
+            // This 8-bit renderer is not the render path (see the crate
+            // docs): a whip draws here as the push it is built on, eased,
+            // without the blur the shader adds.
+            output = render_transition_with_params(TransitionKind::PushLeft, from, to, p * p * (3.0 - 2.0 * p), width, height, user_params);
+        }
         TransitionKind::PushLeft => {
             // Push: hard slide, no blending. param0 = direction.
             // 0 = Left (default), 1 = Right, 2 = Up, 3 = Down

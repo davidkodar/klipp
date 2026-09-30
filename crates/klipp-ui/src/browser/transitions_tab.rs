@@ -1406,6 +1406,23 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        kind: klipp_core::TransitionKind::WhipPan,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _, _progress| {
+            preview_split_h(p, r, 0.5, PREVIEW_A, PREVIEW_B);
+            // Speed lines across the join.
+            let cy = r.center().y;
+            for i in -2..=2i32 {
+                let y = cy + i as f32 * r.height() * 0.12;
+                let half = r.width() * (0.3 - 0.04 * i.abs() as f32);
+                p.line_segment(
+                    [egui::pos2(r.center().x - half, y), egui::pos2(r.center().x + half, y)],
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(170)),
+                );
+            }
+        },
+    },
+    TransitionDef {
         kind: klipp_core::TransitionKind::WaterDrop,
         category: TransitionCategory::Cinematic,
         preview: |p, r, _, progress| {
@@ -2786,6 +2803,7 @@ fn paint_kind_motion_overlay(
         K::SlideUp => slide_in_from(0.0, 1.0),
         K::SlideDown => slide_in_from(0.0, -1.0),
         K::PushLeft => push(-1.0, 0.0),
+        K::WhipPan => push(-1.0, 0.0),
         K::CoverLeft => slide_in_from(1.0, 0.0),
         K::CoverRight => slide_in_from(-1.0, 0.0),
         K::UncoverLeft => {

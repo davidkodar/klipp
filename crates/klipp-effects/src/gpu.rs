@@ -11422,6 +11422,25 @@ fn rand3(a: u32, b: u32, c: u32) -> f32 {
     return f32(hash_u(a ^ hash_u(b ^ hash_u(c)))) / 4294967295.0;
 }
 
+// Smooth value noise for the film burn's edge: `rand3` at the corners of
+// a unit grid, blended with a smoothstep. Integer-hashed, so the same on
+// every GPU and on the CPU.
+fn burn_noise(px: f32, py: f32) -> f32 {
+    let ix = floor(px);
+    let iy = floor(py);
+    let tx = px - ix;
+    let ty = py - iy;
+    let ux = tx * tx * (3.0 - 2.0 * tx);
+    let uy = ty * ty * (3.0 - 2.0 * ty);
+    let x0 = u32(ix);
+    let y0 = u32(iy);
+    let a = rand3(x0, y0, 7u);
+    let b = rand3(x0 + 1u, y0, 7u);
+    let c = rand3(x0, y0 + 1u, 7u);
+    let d = rand3(x0 + 1u, y0 + 1u, 7u);
+    return mix(mix(a, b, ux), mix(c, d, ux), uy);
+}
+
 // Bilinear samples for the kinds that move pixels by fractional amounts
 // (spin, wave, zoom): smooth motion, where nearest-pixel sampling
 // stair-stepped — and picked a different pixel on each GPU wherever a
@@ -11844,29 +11863,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let b_val = lerp_pixel(to_bytes(unpack(from_buf[b_idx])), to_bytes(unpack(to_buf[b_idx])), p).z;
         result = vec4<f32>(r_val, base_g, b_val, 255.0);
     } else if params.kind_id == 24u {
-        // Film Burn: hot-spot bleach toward burn color, with grain.
-        // param0 = temperature, param1 = speed, param2 = grain
-        let temp = params.param0;
-        let speed = params.param1;
+        // Film Burn: a hot spot that blooms in from the right edge and
+        // sweeps across, warm at its rim and near white at its core, laid
+        // over the pictures so both show through, the cut hidden under it.
+        // Its edge is ragged with low-frequency noise. Each pixel drew its
+        // own random threshold before, which made a flat grain field with
+        // no shape at all (#511).
+        // param0 = temperature (0 white, 1 amber), param1 = sweep speed,
+        // param2 = grain
+        let temp = clamp(params.param0, 0.0, 1.0);
+        let speed = max(params.param1, 0.1);
         let grain = params.param2;
-        let burn_r = 1.0;
-        let burn_g = 1.0 - temp * 0.35;
-        let burn_b = 1.0 - temp * 0.75;
-        let shaped_p = pow(p * speed, 0.6);
-        let envelope = sin(min(shaped_p, 1.0) * 3.14159265);
-        let hash = rand3(x, y, 1u);
-        let hash2 = rand3(x, y, 2u);
-        let pixel_thresh = hash * 0.6 + 0.2;
-        let burn_t = clamp((envelope - pixel_thresh) / 0.3, 0.0, 1.0);
-        let grain_val = (hash2 - 0.5) * grain * envelope;
-        // to_bytes() returns 0..255 floats in this shader; normalize for the burn math.
-        let base_rn = (from_px.x * (1.0 - p) + to_px.x * p) / 255.0;
-        let base_gn = (from_px.y * (1.0 - p) + to_px.y * p) / 255.0;
-        let base_bn = (from_px.z * (1.0 - p) + to_px.z * p) / 255.0;
-        let rn = clamp(base_rn + (burn_r - base_rn) * burn_t + grain_val, 0.0, 1.0);
-        let gn = clamp(base_gn + (burn_g - base_gn) * burn_t + grain_val, 0.0, 1.0);
-        let bn = clamp(base_bn + (burn_b - base_bn) * burn_t + grain_val, 0.0, 1.0);
-        result = vec4<f32>(rn * 255.0, gn * 255.0, bn * 255.0, 255.0);
+        let pc = clamp(p, 0.0, 1.0);
+        let env = max(sin(pc * 3.14159265), 0.0);
+        let w = f32(params.width);
+        let h = f32(params.height);
+        let short_side = min(w, h);
+        let travel = clamp(pc * speed, 0.0, 1.0);
+        let cx = w * (1.1 - 0.7 * travel);
+        let cy = h * (0.3 + 0.1 * travel);
+        let radius = short_side * (0.3 + 0.85 * env);
+        let fx = f32(x);
+        let fy = f32(y);
+        let n = burn_noise(fx / (short_side * 0.3), fy / (short_side * 0.3));
+        let d = length(vec2<f32>(fx - cx, fy - cy)) / radius + (n - 0.5) * 0.3;
+        let heat = pow(clamp(1.0 - d, 0.0, 1.0), 1.4) * env;
+        let warm = mix(vec3<f32>(1.0, 0.9, 0.75), vec3<f32>(1.0, 0.3, 0.05), temp);
+        let col = mix(warm, vec3<f32>(1.0, 0.95, 0.85), smoothstep(0.7, 1.0, heat));
+        let cut_t = smoothstep(0.35, 0.65, pc);
+        // The picture under the burn is warmed as well as lit.
+        let base = mix(from_px.xyz, to_px.xyz, cut_t) / 255.0 * mix(vec3<f32>(1.0, 1.0, 1.0), warm, min(heat * 1.5, 1.0));
+        let g = (rand3(x, y, u32(pc * 1000.0)) - 0.5) * grain * 0.08 * heat;
+        let burned = clamp(base + col * (heat * 1.2) + vec3<f32>(g, g, g), vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0));
+        result = vec4<f32>(burned.x * 255.0, burned.y * 255.0, burned.z * 255.0, 255.0);
     } else if params.kind_id == 25u {
         // Star Wipe: N-pointed star expanding from center.
         // param0=softness, param1=point count, param2=inner radius ratio
@@ -12171,6 +12200,58 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let col = lerp_pixel(from_s, to_s, reveal);
         let glint = crest * params.param3 * env * 255.0;
         result = vec4<f32>(min(col.x + glint, 255.0), min(col.y + glint, 255.0), min(col.z + glint, 255.0), col.w);
+    } else if params.kind_id == 67u {
+        // Whip Pan: the outgoing picture is flung off and the incoming one
+        // follows, fastest at the cut, smeared along the move by a blur
+        // that follows the speed (#512). The two pictures lie side by side
+        // on a strip, and the frame slides along it.
+        // param0 = direction (0 left, 1 right, 2 up, 3 down), param1 = blur
+        let dir = u32(params.param0 + 0.5);
+        let horizontal = dir < 2u;
+        var len_axis: f32 = f32(params.height);
+        var a: f32 = f32(y);
+        if horizontal {
+            len_axis = f32(params.width);
+            a = f32(x);
+        }
+        let s = p * p * (3.0 - 2.0 * p);
+        let speed = 6.0 * p * (1.0 - p);
+        let blur = max(params.param1, 0.0) * speed * len_axis * 0.12;
+        var sgn: f32 = 1.0;
+        if dir == 1u || dir == 3u {
+            sgn = -1.0;
+        }
+        // 24 taps, each pixel's set shifted by its own hash, so the
+        // spacing of the taps shows as fine noise and not as ghost copies.
+        let jitter = rand3(x, y, 11u);
+        var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        for (var k: u32 = 0u; k < 24u; k = k + 1u) {
+            let off = ((f32(k) + jitter) / 24.0 - 0.5) * blur;
+            let u = a + sgn * s * len_axis + off;
+            var to_side = false;
+            var v: f32 = u;
+            if sgn > 0.0 {
+                if u >= len_axis {
+                    to_side = true;
+                    v = u - len_axis;
+                }
+            } else {
+                if u < 0.0 {
+                    to_side = true;
+                    v = u + len_axis;
+                }
+            }
+            v = clamp(v, 0.0, len_axis - 1.0);
+            var sx: f32 = f32(x);
+            var sy: f32 = f32(y);
+            if horizontal {
+                sx = v;
+            } else {
+                sy = v;
+            }
+            acc = acc + bilinear(to_side, sx, sy);
+        }
+        result = acc / 24.0;
     } else if params.kind_id == 63u || params.kind_id == 64u || params.kind_id == 65u {
         // Zoom family: scale from/to around frame center.
         let zoom_amount = max(params.param0, 1.001);

@@ -6706,6 +6706,27 @@ fn show_transition_inspector(
                     });
                 }
             }
+            if matches!(transition.kind, klipp_timeline::TransitionKind::WhipPan) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Blur")
+                            .color(theme.text_secondary)
+                            .size(11.0),
+                    );
+                    let mut v = transition.user_params.param1;
+                    let resp = ui.add(egui::DragValue::new(&mut v).range(0.0..=3.0).speed(0.02));
+                    if resp.changed() {
+                        let mut new_params = transition.user_params;
+                        new_params.param1 = v;
+                        cmds.push(AppCommand::SetTransitionParam {
+                            track_index: track_idx,
+                            transition_id: transition.id,
+                            user_params: new_params,
+                        });
+                    }
+                });
+            }
             if matches!(transition.kind, klipp_timeline::TransitionKind::WaterDrop) {
                 ui.add_space(6.0);
                 for (label, field, range, speed) in [
@@ -6869,7 +6890,7 @@ fn show_transition_inspector(
                     }
                 });
             }
-            if matches!(transition.kind, klipp_timeline::TransitionKind::PushLeft) {
+            if matches!(transition.kind, klipp_timeline::TransitionKind::PushLeft | klipp_timeline::TransitionKind::WhipPan) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(

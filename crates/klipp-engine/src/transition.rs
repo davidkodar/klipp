@@ -23,11 +23,12 @@ pub fn transition_kind_from_id(id: u8) -> TransitionKind {
 pub fn all_transition_kinds() -> &'static [(u8, &'static str)] {
     // This is used by UI combo boxes. The labels here are the full display_name
     // from the registry. Built once at compile time via a const array.
-    const ALL: [(u8, &str); 67] = {
+    // Sized from the registry, so a new kind is never left out of the list.
+    const ALL: [(u8, &str); klipp_core::TRANSITION_SPECS.len()] = {
         let specs = &klipp_core::TRANSITION_SPECS;
-        let mut arr = [(0u8, ""); 67];
+        let mut arr = [(0u8, ""); klipp_core::TRANSITION_SPECS.len()];
         let mut i = 0;
-        while i < 67 {
+        while i < specs.len() {
             arr[i] = (specs[i].kind_id, specs[i].display_name);
             i += 1;
         }
@@ -819,12 +820,13 @@ mod tests {
     #[test]
     fn unknown_kind_id_defaults_to_cross_dissolve() {
         assert_eq!(transition_kind_from_id(255), TransitionKind::CrossDissolve);
-        assert_eq!(transition_kind_from_id(67), TransitionKind::CrossDissolve);
+        assert_eq!(transition_kind_from_id(68), TransitionKind::CrossDissolve);
     }
 
     #[test]
     fn all_transition_kinds_returns_every_registered_kind() {
         assert_eq!(all_transition_kinds().len(), klipp_core::TRANSITION_SPECS.len());
+        assert!(all_transition_kinds().iter().all(|(_, name)| !name.is_empty()), "every kind is named, the last included");
     }
 
     // ========================================================================
@@ -1854,6 +1856,7 @@ mod tests {
             TransitionKind::ZoomOutDissolve,
             TransitionKind::CrossZoom,
             TransitionKind::WaterDrop,
+            TransitionKind::WhipPan,
         ];
         for kind in &kinds {
             let result = render_transition(*kind, &from, &to, 0.5, 1, 1);
@@ -1927,6 +1930,7 @@ mod tests {
             TransitionKind::ZoomOutDissolve,
             TransitionKind::CrossZoom,
             TransitionKind::WaterDrop,
+            TransitionKind::WhipPan,
         ];
         for kind in &kinds {
             for &p in &[0.0f32, 0.25, 0.5, 0.75, 1.0] {
