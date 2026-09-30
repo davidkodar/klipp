@@ -4713,8 +4713,12 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             // A credits roll and a ticker, fitted to the title's length
             // (#588): the speed is set in the Title tab.
             "scroll" | "roll" | "credits" => TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0, shape: a.roll_shape.unwrap_or_default() },
+            "float" | "bob" => TitleLoop::Float { amplitude: 0.08, rate_hz: 0.5 },
+            "sway" => TitleLoop::Sway { amplitude: 0.1, rate_hz: 0.4 },
+            "neon_flicker" | "flicker_loop" => TitleLoop::Flicker { rate_hz: 6.0, depth: 0.25 },
+            "drift" => TitleLoop::Drift { dx: -0.04, dy: 0.0 },
             "crawl" | "ticker" => TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false, shape: a.roll_shape.unwrap_or_default() },
-            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, scroll (a credits roll) or crawl (a ticker)")),
+            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, float, sway, neon_flicker, drift, scroll (a credits roll) or crawl (a ticker)")),
         };
         fx.loops = vec![l];
     }

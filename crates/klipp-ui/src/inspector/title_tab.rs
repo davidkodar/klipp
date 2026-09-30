@@ -374,12 +374,6 @@ impl Direction {
             Direction::Exit => "Out",
         }
     }
-    fn default_kind(self) -> MotionKind {
-        match self {
-            Direction::Enter => MotionKind::Rise,
-            Direction::Exit => MotionKind::Fade,
-        }
-    }
     /// The rest moment and hover loop for a chip of this direction.
     fn timing(self) -> (f32, f32, f32) {
         match self {
@@ -461,39 +455,41 @@ fn motion_row(
     // The gallery: None and every kind, rendered on this text.
     let anchor = ui.min_rect();
     let anchor_resp = ui.interact(egui::Rect::from_min_size(anchor.left_bottom(), egui::vec2(1.0, 1.0)), popup_id.with("anchor"), egui::Sense::hover());
-    let mut pick: Option<Option<MotionKind>> = None;
+    let mut pick: Option<Option<Motion>> = None;
     let gallery_id = popup_id.with("body");
     egui::popup_below_widget(ui, popup_id, &anchor_resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        let mut items: Vec<Option<MotionKind>> = vec![None];
-        items.extend(MotionKind::ALL.iter().map(|k| Some(*k)));
+        // None, then every preset: a kind with its own timing and, for the
+        // ones that go piece by piece, its stagger.
+        let presets = klipp_core::title_motion::MotionPreset::all();
+        let items: Vec<Option<klipp_core::title_motion::MotionPreset>> = std::iter::once(None).chain(presets.into_iter().map(Some)).collect();
         let entries: Vec<GalleryEntry> = items
             .iter()
-            .map(|k| GalleryEntry { key: k.map_or("none".into(), |k| format!("{k:?}")), label: k.map_or("None", |k| k.label()), group: k.map_or("", |k| k.category()) })
+            .map(|p| GalleryEntry { key: p.map_or("none".into(), |p| p.name.to_string()), label: p.map_or("None", |p| p.name), group: p.map_or("", |p| p.group) })
             .collect();
-        let selected_kind = slot.map(|m| m.kind);
+        let current = slot.map(|m| (m.kind, m.stagger));
         let picked = gallery_body(ui, theme, gallery_id, dir.label(), &entries, |ui, i| {
-            let k = items[i];
-            let m = k.map(|k| {
-                let mut m = slot.unwrap_or_else(|| Motion::new(k));
-                m.kind = k;
-                m
-            });
+            let m = items[i].map(|p| p.motion);
             let s_c = subject.clone();
             let fx_c = fx.clone();
             let make = move || motion_chip_title(&s_c, &fx_c, dir, m);
             let label = entries[i].label;
             let id = format!("gallery:{}:{}", dir.label(), label);
-            chip(ui, theme, chips, ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected: k == selected_kind, label: Some(label) }, GALLERY_CHIP, make)
+            let selected = m.map(|m| (m.kind, m.stagger)) == current;
+            chip(ui, theme, chips, ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected, label: Some(label) }, GALLERY_CHIP, make)
         });
         if let Some(i) = picked {
-            pick = Some(items[i]);
+            pick = Some(items[i].map(|p| p.motion));
         }
     });
     gallery_closed(ui, popup_id, gallery_id);
-    if let Some(k) = pick {
-        *slot = k.map(|k| {
-            let mut m = slot.unwrap_or_else(|| Motion::new(dir.default_kind()));
-            m.kind = k;
+    if let Some(p) = pick {
+        // The preset whole (its easing, timing and stagger), keeping the
+        // delay the slot had.
+        let delay = slot.map(|m| m.delay_secs);
+        *slot = p.map(|mut m| {
+            if let Some(d) = delay {
+                m.delay_secs = d;
+            }
             m
         });
         changed = true;
@@ -627,8 +623,9 @@ fn show_loops(
         let mut pick: Option<TitleLoop> = None;
         let gallery_id = popup_id.with("body");
         egui::popup_below_widget(ui, popup_id, &b, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            let items = TitleLoop::catalogue();
-            let entries: Vec<GalleryEntry> = items.iter().map(|l| GalleryEntry { key: l.label().into(), label: l.label(), group: l.category() }).collect();
+            let presets = TitleLoop::presets();
+            let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
+            let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
             let picked = gallery_body(ui, theme, gallery_id, "Loops", &entries, |ui, i| {
                 let l = &items[i];
                 let s_c = subject.clone();
@@ -639,7 +636,7 @@ fn show_loops(
                     ui,
                     theme,
                     chips,
-                    ChipSpec { id: format!("loop:{}", l.label()), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(l.label()) },
+                    ChipSpec { id: format!("loop:{}", entries[i].label), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(entries[i].label) },
                     GALLERY_CHIP,
                     make,
                 )
@@ -676,6 +673,26 @@ fn show_loops(
                 TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
                     changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
                     changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Float { amplitude, rate_hz } | TitleLoop::Sway { amplitude, rate_hz } => {
+                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Flicker { rate_hz, depth } => {
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
+                    changed |= ui.add(egui::DragValue::new(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Drift { dx, dy } => {
+                    let mut x = *dx * 100.0;
+                    if ui.add(egui::DragValue::new(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
+                        *dx = x / 100.0;
+                        changed = true;
+                    }
+                    let mut y = *dy * 100.0;
+                    if ui.add(egui::DragValue::new(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
+                        *dy = y / 100.0;
+                        changed = true;
+                    }
                 }
                 TitleLoop::ColorCycle { rate_hz } => {
                     changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();

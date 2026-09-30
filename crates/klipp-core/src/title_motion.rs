@@ -99,21 +99,62 @@ pub enum MotionKind {
     MaskDrop,
     /// Appears one unit at a time with no easing.
     Typewriter,
+    /// Springs up from small, overshooting a little before it settles.
+    Pop,
+    /// Lands from very large, fast.
+    Slam,
+    /// Flies in from far off the left.
+    FlyLeft,
+    /// Flies in from far off the right.
+    FlyRight,
+    /// Flies down from far above.
+    FlyTop,
+    /// Flies up from far below.
+    FlyBottom,
+    /// Falls into place and bounces.
+    Bounce,
+    /// Flickers on like a failing sign.
+    Flicker,
+    /// Comes into focus while it settles down from a little larger.
+    FocusIn,
+    /// Rises into place out of a blur.
+    SoftRise,
 }
 
 impl MotionKind {
-    pub const ALL: [MotionKind; 11] = [
-        MotionKind::Fade, MotionKind::Rise, MotionKind::Drop, MotionKind::SlideLeft, MotionKind::SlideRight,
-        MotionKind::ScaleUp, MotionKind::ScaleDown, MotionKind::Blur, MotionKind::MaskRise, MotionKind::MaskDrop,
-        MotionKind::Typewriter,
+    pub const ALL: [MotionKind; 21] = [
+        MotionKind::Fade, MotionKind::Blur, MotionKind::FocusIn, MotionKind::Flicker,
+        MotionKind::Rise, MotionKind::Drop, MotionKind::SoftRise, MotionKind::Bounce, MotionKind::SlideLeft, MotionKind::SlideRight,
+        MotionKind::FlyLeft, MotionKind::FlyRight, MotionKind::FlyTop, MotionKind::FlyBottom,
+        MotionKind::ScaleUp, MotionKind::ScaleDown, MotionKind::Pop, MotionKind::Slam,
+        MotionKind::MaskRise, MotionKind::MaskDrop, MotionKind::Typewriter,
     ];
+
+    /// Whether the motion blurs: a blur cannot be posed glyph by glyph,
+    /// so a staggered one is rastered.
+    pub fn blurs(self) -> bool {
+        matches!(self, MotionKind::Blur | MotionKind::FocusIn | MotionKind::SoftRise)
+    }
+
+    /// The easing a new motion of this kind takes: the overshoot of a pop,
+    /// the bounce of a bounce, a flicker's steps unsmoothed.
+    pub fn default_easing(self) -> Easing {
+        match self {
+            MotionKind::Pop => Easing::OutBack,
+            MotionKind::Bounce => Easing::OutBounce,
+            MotionKind::Slam | MotionKind::FlyLeft | MotionKind::FlyRight | MotionKind::FlyTop | MotionKind::FlyBottom => Easing::OutExpo,
+            MotionKind::Flicker => Easing::Linear,
+            _ => Easing::OutCubic,
+        }
+    }
 
     /// The picker's group for this motion: what it does to the text.
     pub fn category(self) -> &'static str {
         match self {
-            MotionKind::Fade | MotionKind::Blur => "Fade",
-            MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight => "Move",
-            MotionKind::ScaleUp | MotionKind::ScaleDown => "Scale",
+            MotionKind::Fade | MotionKind::Blur | MotionKind::FocusIn | MotionKind::Flicker => "Fade",
+            MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight | MotionKind::SoftRise | MotionKind::Bounce => "Move",
+            MotionKind::FlyLeft | MotionKind::FlyRight | MotionKind::FlyTop | MotionKind::FlyBottom => "Fly",
+            MotionKind::ScaleUp | MotionKind::ScaleDown | MotionKind::Pop | MotionKind::Slam => "Scale",
             MotionKind::MaskRise | MotionKind::MaskDrop | MotionKind::Typewriter => "Reveal",
         }
     }
@@ -131,7 +172,60 @@ impl MotionKind {
             MotionKind::MaskRise => "Mask rise",
             MotionKind::MaskDrop => "Mask drop",
             MotionKind::Typewriter => "Typewriter",
+            MotionKind::Pop => "Pop",
+            MotionKind::Slam => "Slam",
+            MotionKind::FlyLeft => "Fly from left",
+            MotionKind::FlyRight => "Fly from right",
+            MotionKind::FlyTop => "Fly from top",
+            MotionKind::FlyBottom => "Fly from bottom",
+            MotionKind::Bounce => "Bounce",
+            MotionKind::Flicker => "Flicker",
+            MotionKind::FocusIn => "Focus in",
+            MotionKind::SoftRise => "Soft rise",
         }
+    }
+}
+
+/// A motion the picker offers by name: a kind with its timing, and for
+/// the ones that go piece by piece, the stagger (#596).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionPreset {
+    pub name: &'static str,
+    pub group: &'static str,
+    pub motion: Motion,
+}
+
+impl MotionPreset {
+    /// Every motion kind as it comes, then the ones that read best piece
+    /// by piece, letter, word or line at a time.
+    pub fn all() -> Vec<MotionPreset> {
+        let mut out: Vec<MotionPreset> = MotionKind::ALL
+            .iter()
+            .map(|&k| {
+                let motion = match k {
+                    // Typing is one letter at a time or it is not typing.
+                    MotionKind::Typewriter => Motion::new(k).duration(0.02).stagger(StaggerUnit::Char, 0.04),
+                    _ => Motion::new(k),
+                };
+                MotionPreset { name: k.label(), group: k.category(), motion }
+            })
+            .collect();
+        let each = |name, kind, unit, secs| MotionPreset { name, group: "By letter or word", motion: Motion::new(kind).stagger(unit, secs) };
+        out.extend([
+            each("Fade letters", MotionKind::Fade, StaggerUnit::Char, 0.03),
+            each("Fade words", MotionKind::Fade, StaggerUnit::Word, 0.08),
+            each("Rise letters", MotionKind::Rise, StaggerUnit::Char, 0.03),
+            each("Rise words", MotionKind::Rise, StaggerUnit::Word, 0.08),
+            each("Rise lines", MotionKind::Rise, StaggerUnit::Line, 0.15),
+            each("Pop letters", MotionKind::Pop, StaggerUnit::Char, 0.035),
+            each("Pop words", MotionKind::Pop, StaggerUnit::Word, 0.08),
+            each("Bouncing letters", MotionKind::Bounce, StaggerUnit::Char, 0.04),
+            each("Slide words", MotionKind::SlideRight, StaggerUnit::Word, 0.08),
+            each("Mask rise lines", MotionKind::MaskRise, StaggerUnit::Line, 0.12),
+            each("Flicker letters", MotionKind::Flicker, StaggerUnit::Char, 0.025),
+            MotionPreset { name: "Typewriter words", group: "By letter or word", motion: Motion::new(MotionKind::Typewriter).duration(0.02).stagger(StaggerUnit::Word, 0.12) },
+        ]);
+        out
     }
 }
 
@@ -191,7 +285,7 @@ impl Default for Motion {
 
 impl Motion {
     pub fn new(kind: MotionKind) -> Self {
-        Self { kind, ..Default::default() }
+        Self { kind, easing: kind.default_easing(), ..Default::default() }
     }
     pub fn duration(mut self, secs: f32) -> Self { self.duration_secs = secs; self }
     pub fn delay(mut self, secs: f32) -> Self { self.delay_secs = secs; self }
@@ -216,8 +310,33 @@ impl Motion {
             MotionKind::MaskRise => (1.0, 0.0, (1.0 - p) * font_px * 1.15, 1.0, 0.0, true),
             MotionKind::MaskDrop => (1.0, 0.0, -(1.0 - p) * font_px * 1.15, 1.0, 0.0, true),
             MotionKind::Typewriter => (if p > 0.0 { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0, 0.0, false),
+            MotionKind::Pop => ((p * 3.0).min(1.0), 0.0, 0.0, 0.4 + 0.6 * p, 0.0, false),
+            MotionKind::Slam => ((p * 2.5).min(1.0), 0.0, 0.0, 2.6 - 1.6 * p, 0.0, false),
+            MotionKind::FlyLeft => ((p * 3.0).min(1.0), -(1.0 - p) * travel * 8.0, 0.0, 1.0, 0.0, false),
+            MotionKind::FlyRight => ((p * 3.0).min(1.0), (1.0 - p) * travel * 8.0, 0.0, 1.0, 0.0, false),
+            MotionKind::FlyTop => ((p * 3.0).min(1.0), 0.0, -(1.0 - p) * travel * 6.0, 1.0, 0.0, false),
+            MotionKind::FlyBottom => ((p * 3.0).min(1.0), 0.0, (1.0 - p) * travel * 6.0, 1.0, 0.0, false),
+            MotionKind::Bounce => ((p * 4.0).min(1.0), 0.0, -(1.0 - p) * travel * 2.5, 1.0, 0.0, false),
+            MotionKind::Flicker => (flicker(p), 0.0, 0.0, 1.0, 0.0, false),
+            MotionKind::FocusIn => (p, 0.0, 0.0, 1.25 - 0.25 * p, (1.0 - p) * font_px * 0.14, false),
+            MotionKind::SoftRise => (p, 0.0, (1.0 - p) * travel, 1.0, (1.0 - p) * font_px * 0.08, false),
         }
     }
+}
+
+/// A failing sign coming on at progress `p`: dark and lit in steps, lit
+/// more and more often, and steadily lit at the end. The same numbers on
+/// every machine: a hash of the step, not a random number.
+fn flicker(p: f32) -> f32 {
+    if p >= 1.0 {
+        return 1.0;
+    }
+    if p <= 0.0 {
+        return 0.0;
+    }
+    let step = (p.max(0.0) * 14.0).floor() as u32;
+    let r = (step.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
+    if r < p * 1.15 { 1.0 } else { 0.12 }
 }
 
 /// A text layer's entrance and exit. Both are optional; a title with
@@ -479,6 +598,16 @@ pub enum TitleLoop {
         #[serde(default)]
         shape: RollShape,
     },
+    /// The layer bobs gently up and down, `amplitude` in font sizes.
+    Float { amplitude: f32, rate_hz: f32 },
+    /// The layer sways from side to side, `amplitude` in font sizes.
+    Sway { amplitude: f32, rate_hz: f32 },
+    /// The layer flickers like a neon sign: now and then it dips to
+    /// `depth` of its opacity, `rate_hz` times a second at most.
+    Flicker { rate_hz: f32, depth: f32 },
+    /// The layer drifts slowly over the clip, `dx` and `dy` as fractions
+    /// of the frame from start to end, through its resting place halfway.
+    Drift { dx: f32, dy: f32 },
     /// The text becomes a number counting from `from` to `to`.
     Counter { from: f64, to: f64, duration_secs: f32, decimals: u8 },
 }
@@ -507,7 +636,26 @@ impl TitleLoop {
             TitleLoop::Shake { .. } | TitleLoop::Wave { .. } => "Motion",
             TitleLoop::ColorCycle { .. } | TitleLoop::ColorBlend { .. } => "Colour",
             TitleLoop::Counter { .. } => "Text",
+            TitleLoop::Float { .. } | TitleLoop::Sway { .. } | TitleLoop::Drift { .. } => "Motion",
+            TitleLoop::Flicker { .. } => "Opacity",
         }
+    }
+
+    /// The loops the picker offers by name: every kind, and a few set up
+    /// for a common use (a strobe, a repeating ticker, a rainbow).
+    pub fn presets() -> Vec<(&'static str, TitleLoop)> {
+        let mut out: Vec<(&'static str, TitleLoop)> = TitleLoop::catalogue().into_iter().map(|l| (l.label(), l)).collect();
+        out.extend([
+            ("Float", TitleLoop::Float { amplitude: 0.08, rate_hz: 0.5 }),
+            ("Sway", TitleLoop::Sway { amplitude: 0.1, rate_hz: 0.4 }),
+            ("Flicker", TitleLoop::Flicker { rate_hz: 6.0, depth: 0.25 }),
+            ("Drift", TitleLoop::Drift { dx: -0.04, dy: 0.0 }),
+            ("Strobe", TitleLoop::Blink { rate_hz: 8.0, duty: 0.5 }),
+            ("Breathe", TitleLoop::Pulse { rate_hz: 0.3, min_opacity: 0.55 }),
+            ("Ticker", TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 160.0, repeat: true, shape: Default::default() }),
+            ("Rainbow", TitleLoop::ColorCycle { rate_hz: 0.5 }),
+        ]);
+        out
     }
 
     pub fn label(&self) -> &'static str {
@@ -521,6 +669,10 @@ impl TitleLoop {
             TitleLoop::Scroll { .. } => "Scroll",
             TitleLoop::Crawl { .. } => "Crawl",
             TitleLoop::Counter { .. } => "Counter",
+            TitleLoop::Float { .. } => "Float",
+            TitleLoop::Sway { .. } => "Sway",
+            TitleLoop::Flicker { .. } => "Flicker",
+            TitleLoop::Drift { .. } => "Drift",
         }
     }
 
@@ -658,6 +810,27 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
                 let min = min_opacity.clamp(0.0, 1.0);
                 pose.opacity *= min + (1.0 - min) * s;
             }
+            TitleLoop::Float { amplitude, rate_hz } => {
+                pose.dy += amplitude * geo.font_px * (t * rate_hz * std::f32::consts::TAU).sin();
+            }
+            TitleLoop::Sway { amplitude, rate_hz } => {
+                pose.dx += amplitude * geo.font_px * (t * rate_hz * std::f32::consts::TAU).sin();
+            }
+            TitleLoop::Flicker { rate_hz, depth } => {
+                // A step of the flicker's clock, hashed: about one step
+                // in four dips, and a dip holds for its step.
+                let step = (t.max(0.0) * rate_hz.max(0.1)).floor() as u32;
+                let r = (step.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
+                if r < 0.25 {
+                    pose.opacity *= depth.clamp(0.0, 1.0);
+                }
+            }
+            TitleLoop::Drift { dx, dy } => {
+                let clip = window.unwrap_or(5.0).max(0.001);
+                let k = (t / clip).clamp(0.0, 1.0) - 0.5;
+                pose.dx += dx * geo.frame_w * k;
+                pose.dy += dy * geo.frame_h * k;
+            }
             TitleLoop::Shake { amplitude, rate_hz } => {
                 let amp = amplitude * geo.font_px;
                 let p = t * rate_hz * std::f32::consts::TAU;
@@ -719,6 +892,73 @@ mod loop_tests {
 
     fn geo() -> LoopGeometry {
         LoopGeometry { frame_w: 1920.0, frame_h: 1080.0, text_w: 400.0, text_h: 80.0, font_px: 72.0 }
+    }
+
+    /// #596: every motion rests at progress 1 (whole, in place, its own
+    /// size, sharp) and is hidden or away at 0, the new ones included.
+    #[test]
+    fn every_motion_rests_at_one_and_is_away_at_zero() {
+        for k in MotionKind::ALL {
+            let m = Motion::new(k);
+            let (a, dx, dy, s, b, _) = m.pose(1.0, 100.0);
+            assert!((a - 1.0).abs() < 1e-6 && dx.abs() < 1e-3 && dy.abs() < 1e-3 && (s - 1.0).abs() < 1e-6 && b.abs() < 1e-6, "{k:?} at rest: {:?}", m.pose(1.0, 100.0));
+            let (a0, dx0, dy0, s0, b0, clip) = m.pose(0.0, 100.0);
+            let away = a0 < 0.01 || dx0.abs() > 1.0 || dy0.abs() > 1.0 || (s0 - 1.0).abs() > 0.1 || b0 > 1.0 || clip;
+            assert!(away, "{k:?} at the start is not in its resting pose: {:?}", m.pose(0.0, 100.0));
+        }
+        // The fliers start far off: several fonts away.
+        assert!(Motion::new(MotionKind::FlyLeft).pose(0.0, 100.0).1 < -300.0);
+        assert_eq!(Motion::new(MotionKind::Pop).easing, Easing::OutBack, "a pop overshoots");
+        assert_eq!(Motion::new(MotionKind::Bounce).easing, Easing::OutBounce);
+        assert!(MotionKind::FocusIn.blurs() && MotionKind::SoftRise.blurs() && !MotionKind::Pop.blurs());
+    }
+
+    /// A flicker is the same on every run and every machine, and comes
+    /// fully on.
+    #[test]
+    fn a_flicker_is_deterministic_and_ends_lit() {
+        let a: Vec<f32> = (0..=20).map(|i| flicker(i as f32 / 20.0)).collect();
+        let b: Vec<f32> = (0..=20).map(|i| flicker(i as f32 / 20.0)).collect();
+        assert_eq!(a, b);
+        assert_eq!(flicker(0.0), 0.0);
+        assert_eq!(flicker(1.0), 1.0);
+        assert!(a.contains(&1.0) && a[1..20].iter().any(|v| *v < 1.0), "it flickers on the way: {a:?}");
+    }
+
+    /// The picker offers thirty or more entrances and exits, each by a
+    /// name of its own, in groups; and the loops by name too.
+    #[test]
+    fn the_picker_has_a_catalogue() {
+        let presets = MotionPreset::all();
+        assert!(presets.len() >= 30, "{} presets", presets.len());
+        let mut names: Vec<&str> = presets.iter().map(|p| p.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), presets.len(), "no two presets share a name");
+        assert!(presets.iter().all(|p| !p.group.is_empty()));
+        let loops = TitleLoop::presets();
+        let mut loop_names: Vec<&str> = loops.iter().map(|(n, _)| *n).collect();
+        loop_names.sort_unstable();
+        loop_names.dedup();
+        assert_eq!(loop_names.len(), loops.len(), "no two loops share a name");
+        assert!(loops.len() >= 15, "{} loops", loops.len());
+    }
+
+    /// The new loops: float bobs, sway sways, drift passes through its
+    /// resting place halfway, a flicker dips now and then.
+    #[test]
+    fn the_new_loops_move_and_dip() {
+        let at = |l: TitleLoop, t: f32| eval_loops(&[l], t, Some(4.0), geo(), [255; 4]);
+        let float = TitleLoop::Float { amplitude: 0.1, rate_hz: 0.5 };
+        assert!(at(float.clone(), 0.5).dy.abs() > 1.0 && at(float, 0.5).dx == 0.0);
+        let sway = TitleLoop::Sway { amplitude: 0.1, rate_hz: 0.5 };
+        assert!(at(sway.clone(), 0.5).dx.abs() > 1.0 && at(sway, 0.5).dy == 0.0);
+        let drift = TitleLoop::Drift { dx: -0.1, dy: 0.0 };
+        assert!((at(drift.clone(), 2.0).dx).abs() < 1e-3, "at rest halfway");
+        assert!(at(drift.clone(), 0.0).dx > 0.0 && at(drift, 4.0).dx < 0.0, "from one side to the other");
+        let flicker = TitleLoop::Flicker { rate_hz: 6.0, depth: 0.2 };
+        let dips = (0..60).filter(|i| at(flicker.clone(), *i as f32 / 6.0).opacity < 1.0).count();
+        assert!(dips > 0 && dips < 40, "it dips now and then: {dips} of 60");
     }
 
     /// #592: an edge fade ramps in over its zone at each edge and is

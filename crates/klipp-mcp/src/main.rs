@@ -1454,7 +1454,7 @@ fn tool_definitions() -> Vec<Value> {
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
@@ -1616,7 +1616,7 @@ fn tool_definitions() -> Vec<Value> {
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
+              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
@@ -1835,7 +1835,7 @@ fn tool_definitions() -> Vec<Value> {
               placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
               heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
               bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
-              typewriter|mask_rise|mask_drop, animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
+              typewriter|mask_rise|mask_drop|pop|slam|fly_left|fly_right|fly_top|fly_bottom|bounce|flicker|focus_in|soft_rise, animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
               (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
               {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
               segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \
