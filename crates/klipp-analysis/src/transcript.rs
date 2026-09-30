@@ -50,6 +50,18 @@ pub const MODEL_ID: &str = MODELS[0];
 /// no-speech probability read 0.00 on all of them (#499).
 pub const VAD_MODEL_ID: &str = "silero_vad_v5_ggml";
 
+/// Download the voice activity model; a failure is logged, and the
+/// transcript is then made without it, as before.
+fn fetch_vad_model() {
+    let (Ok(manifest), Ok(cache)) = (klipp_ml::manifest::load_effective(), klipp_ml::cache::ModelCache::open()) else { return };
+    let Some(entry) = manifest.get(VAD_MODEL_ID) else { return };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut progress = klipp_ml::download::NoOpProgress;
+    if let Err(e) = klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel) {
+        tracing::warn!("voice activity model download: {e:?}");
+    }
+}
+
 /// The voice activity model in the app's model cache, if downloaded.
 pub fn vad_model_path() -> Option<std::path::PathBuf> {
     let manifest = klipp_ml::manifest::load_effective().ok()?;
@@ -204,6 +216,12 @@ pub fn model_path() -> Option<std::path::PathBuf> {
 /// verified against the manifest if it is not there yet; without, the
 /// best one installed.
 pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf), String> {
+    // Voice activity detection rides along, under a megabyte and what
+    // keeps whisper from writing sentences into noise: fetched on any
+    // ask for transcription, with the transcriber there already or not.
+    if download && vad_model_path().is_none() {
+        fetch_vad_model();
+    }
     match installed_model() {
         Some(found) if !download || found.0 == MODEL_ID => return Ok(found),
         None if !download => return Err(format!("no transcription model is downloaded; ask with download_models ({MODEL_ID})")),
@@ -212,17 +230,6 @@ pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf)
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let entry = manifest.get(MODEL_ID).ok_or_else(|| format!("no manifest entry {MODEL_ID}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
-    // Voice activity detection rides along: under a megabyte, and what
-    // keeps whisper from writing sentences into noise.
-    if let Some(vad) = manifest.get(VAD_MODEL_ID) {
-        if !cache.path_for(vad).is_file() {
-            let cancel = std::sync::atomic::AtomicBool::new(false);
-            let mut progress = klipp_ml::download::NoOpProgress;
-            if let Err(e) = klipp_ml::download::download_to_cache(&cache, vad, &mut progress, &cancel) {
-                tracing::warn!("voice activity model download: {e:?}");
-            }
-        }
-    }
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut progress = klipp_ml::download::NoOpProgress;
     let path = klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))?;
@@ -533,15 +540,13 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     // says where it thinks nobody is speaking.
     params.set_suppress_nst(true);
     params.set_no_speech_thold(NO_SPEECH_THRESHOLD);
-    // Where someone speaks, when the voice activity model is here. None
-    // at all and there is nothing to transcribe; otherwise whisper runs
-    // on the whole sound, for its timings, and what it writes outside
-    // the speech is dropped below. (whisper.cpp's own VAD switch left a
+    // Where someone speaks, when the voice activity model is here.
+    // Whisper still runs on the whole sound, for its timings and for a
+    // line said under loud music, which the detector can miss even in a
+    // file where it hears nothing else; what it writes outside the
+    // speech is judged below. (whisper.cpp's own VAD switch left a
     // street walk's invented sentences as they were.)
     let speech = vad_model_path().and_then(|p| speech_spans(&p, audio, threads));
-    if speech.as_ref().is_some_and(|s| s.is_empty()) {
-        return Ok(Transcript { duration_secs, model: model_id.into(), vocabulary: words.to_vec(), vad: true, ..Default::default() });
-    }
     let t_run = std::time::Instant::now();
     state.full(params, audio).map_err(|e| format!("whisper run: {e}"))?;
     tracing::info!(
