@@ -59,11 +59,20 @@ fn a_step_forward_keeps_the_read_ahead_and_a_seek_back_does_not() {
     // seek's first frame there, or a frame it was decoding for the old
     // epoch, which the engine drops as stale. Asserting emptiness raced
     // it and refused unrelated pushes on a loaded machine (#490).
+    // Under one lock: every frame is looked at, the stale ones dropped
+    // and the seek's own put back in order, so the checks below still
+    // see its first frame.
     {
         let mut q = dec.frame_queue().lock().unwrap();
+        let mut fresh = Vec::new();
         while let Some(f) = q.pop() {
-            let fresh = f.seek_epoch == e3 && (f.pts_secs() - 0.5).abs() < 0.1;
-            assert!(f.seek_epoch < e3 || fresh, "a seek back kept a frame at {:.3}s under its new epoch", f.pts_secs());
+            if f.seek_epoch >= e3 {
+                assert!((f.pts_secs() - 0.5).abs() < 0.1, "a seek back kept a frame at {:.3}s under its new epoch", f.pts_secs());
+                fresh.push(f);
+            }
+        }
+        for f in fresh {
+            q.push(f);
         }
     }
     assert!(wait_for_frames(&dec, 0.5, e3, 1), "no frame arrived for the seek back");
