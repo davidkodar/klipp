@@ -808,6 +808,25 @@ pub(crate) fn apply(
                 ]
             })
         }
+        FocusBlur { radius, vertical, band } => {
+            if radius < 0.5 || band >= 0.999 {
+                return p;
+            }
+            // Every channel, alpha too: a title's words live in alpha,
+            // and a blur that kept it sharp would not soften them.
+            let blurred = gaussian(&p, w, h, radius, true);
+            each_pixel(&p, w, h, |x, y, f| {
+                let m = focus_blur_mix(if vertical { (y as f32 + 0.5) / hf } else { (x as f32 + 0.5) / wf }, band);
+                let o = f.at(x, y);
+                let i = (y * w as usize + x) * 4;
+                [
+                    o[0] + (blurred[i] - o[0]) * m,
+                    o[1] + (blurred[i + 1] - o[1]) * m,
+                    o[2] + (blurred[i + 2] - o[2]) * m,
+                    o[3] + (blurred[i + 3] - o[3]) * m,
+                ]
+            })
+        }
         OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
             let fseed = seed.wrapping_mul(2654435761);
             let flick = 1.0 + (noise_hash(fseed) - 0.5) * flicker * 0.4;
@@ -1116,4 +1135,13 @@ fn mul3(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 pub fn apply_3d_lut(mut linear: Vec<f32>, data: &[f32], size: u32, opacity: f32, tetrahedral: bool) -> Vec<f32> {
     apply_3d_lut_bracketed(&mut linear, data, size as usize, opacity, None, None, tetrahedral);
     linear
+}
+
+/// How much of the blurred layer a focus blur takes at `u` along its
+/// axis: none inside `band` around the middle, all of it at the frame's
+/// edges, smoothly between. Mirrored by `SHADER_FOCUS_BLUR_BLEND`.
+pub(crate) fn focus_blur_mix(u: f32, band: f32) -> f32 {
+    let d = (u - 0.5).abs() * 2.0;
+    let t = ((d - band) / (1.0 - band).max(0.001)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }

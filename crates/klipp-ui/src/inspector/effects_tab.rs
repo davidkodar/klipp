@@ -1153,6 +1153,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::NoiseGenerator { .. } => Cow::Borrowed("Noise"),
         klipp_effects::BuiltinEffect::FilmGrain { .. } => Cow::Borrowed("Film Grain"),
         klipp_effects::BuiltinEffect::TiltShift { .. } => Cow::Borrowed("Tilt-Shift"),
+        klipp_effects::BuiltinEffect::FocusBlur { .. } => Cow::Borrowed("Focus Blur"),
         klipp_effects::BuiltinEffect::OldFilm { .. } => Cow::Borrowed("Old Film"),
         klipp_effects::BuiltinEffect::Vhs { .. } => Cow::Borrowed("VHS"),
         klipp_effects::BuiltinEffect::MedianFilter { .. } => Cow::Borrowed("Median Filter"),
@@ -1272,6 +1273,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::TiltShift { .. } => BuiltinEffect::TiltShift {
             center: 0.5, width: 0.3, softness: 0.2, radius: 12.0,
         },
+        BuiltinEffect::FocusBlur { .. } => BuiltinEffect::FocusBlur { radius: 8.0, vertical: true, band: 0.3 },
         BuiltinEffect::OldFilm { .. } => BuiltinEffect::OldFilm {
             flicker: 0.4, scratches: 0.5, dust: 0.5, weave: 0.5, sepia: 0.6, seed: 0,
         },
@@ -2492,6 +2494,11 @@ fn show_builtin_effect_params(
             let r_c = ui.checkbox(&mut col, "Colour grain");
             *color = u32::from(col);
             changed |= r_c.changed();
+        }
+        klipp_effects::BuiltinEffect::FocusBlur { .. } => {
+            // Put on a title layer by the compositor from its roll's focus
+            // band; set there, in the Title tab.
+            ui.label(egui::RichText::new("Set by the roll's focus band in the Title tab").size(11.0).color(theme.text_dim));
         }
         klipp_effects::BuiltinEffect::TiltShift { center, width, softness, radius } => {
             *center = eval_effect_kf(clip, effect_index, "center", clip_time_secs, *center, keyframe_tolerance);

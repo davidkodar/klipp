@@ -287,6 +287,17 @@ pub enum BuiltinEffect {
         /// Blur radius in pixels
         radius: f32,
     },
+    /// A credits roll's focus band going soft (#592): the layer mixed
+    /// with itself blurred by `radius`, by how far each pixel is from the
+    /// band around the frame's middle — sharp inside `band` (the part of
+    /// the frame, 0 to 1), fully blurred at the frame's edges, down the
+    /// frame when `vertical`, across it otherwise. Put on a title layer
+    /// by the compositor; not one of the effects a clip is given.
+    FocusBlur {
+        radius: f32,
+        vertical: bool,
+        band: f32,
+    },
     Sharpen {
         /// Sharpen amount (0.0–2.0)
         amount: f32,
@@ -947,7 +958,8 @@ impl BuiltinEffect {
             | BuiltinEffect::Glow { radius, .. }
             | BuiltinEffect::Diffusion { radius, .. }
             | BuiltinEffect::FilmHalation { radius, .. }
-            | BuiltinEffect::TiltShift { radius, .. } => px(radius),
+            | BuiltinEffect::TiltShift { radius, .. }
+            | BuiltinEffect::FocusBlur { radius, .. } => px(radius),
             BuiltinEffect::LightWrap { width, .. } => px(width),
             BuiltinEffect::AnamorphicStreak { length, .. } => px(length),
             // A block never smaller than a pixel.
@@ -990,6 +1002,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
             *progress >= 0.9999 || *duration_secs <= 0.0
         }
         BuiltinEffect::GaussianBlur { radius } => *radius < 0.5,
+        BuiltinEffect::FocusBlur { radius, band, .. } => *radius < 0.5 || *band >= 0.999,
         BuiltinEffect::RoundedCorners { radius, .. } => *radius <= 0.0,
         BuiltinEffect::DropShadow { offset_x, offset_y, blur, opacity, .. } => {
             *opacity <= 0.0 || (*offset_x == 0.0 && *offset_y == 0.0 && *blur <= 0.0)

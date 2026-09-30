@@ -805,6 +805,14 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
                 focus.edge_opacity = edge / 100.0;
                 changed = true;
             }
+            ui.label(dim("blur"));
+            if ui
+                .add(egui::DragValue::new(&mut focus.blur).range(0.0..=60.0).speed(0.2).suffix(" px").fixed_decimals(1))
+                .on_hover_text("How soft it goes towards the frame's edges, in pixels of a 1080p frame; 0 for sharp")
+                .changed()
+            {
+                changed = true;
+            }
         }
     });
     changed

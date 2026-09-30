@@ -167,7 +167,7 @@ fn a_faded_roll_fades_by_where_it_is_on_both_paths() {
     use klipp_core::title_motion::{EdgeFade, FocusBand, RampAxis, RollShape, ScreenFade};
     use klipp_timeline::{ScrollDirection, TitleLoop};
     let edges = EdgeFade { top: 0.25, bottom: 0.25, ..EdgeFade::NONE };
-    let focus = FocusBand { band: 0.3, edge_opacity: 0.3 };
+    let focus = FocusBand { band: 0.3, edge_opacity: 0.3, blur: 0.0 };
     let roll = |faded: bool, raster: bool| {
         let shape = RollShape { focus: faded.then_some(focus) };
         let mut td = TitleData::single_text_fx(
@@ -261,4 +261,50 @@ fn a_still_layer_fades_into_its_edge_and_its_neighbour_does_not() {
         }
     }
     assert!(faded_px > 0, "the faded layer does fade");
+}
+
+/// #592: a focus band gone soft blurs the roll away from the band, on the
+/// raster path too (forced here by a constant opacity key): towards the
+/// frame's top the credits spread into the gaps between their lines, in
+/// the band they are as sharp as without it. The placed path hands the
+/// blur to the compositor (`last_focus_blur`).
+#[test]
+fn a_soft_focus_band_blurs_the_roll_away_from_the_band() {
+    use klipp_core::title_motion::{FocusBand, RollShape};
+    use klipp_timeline::{ScrollDirection, TitleLoop};
+    let roll = |blur: f32, raster: bool| {
+        let shape = RollShape { focus: Some(FocusBand { band: 0.3, edge_opacity: 1.0, blur }) };
+        let mut td = TitleData::single_text_fx(
+            TextBox { text: "One\n\nTwo\n\nThree\n\nFour\n\nFive\n\nSix".into(), font_size: 120.0, ..Default::default() },
+            klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape }], ..Default::default() },
+        );
+        if raster {
+            td.objects[0].opacity_keyframes = vec![klipp_core::Keyframe {
+                time_secs: 0.0,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Linear,
+                tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+            }];
+        }
+        td
+    };
+    let (w, h) = (320usize, 180usize);
+    let mut r = TitleRenderer::new();
+    let _ = r.frame_with_window(&roll(6.0, false), w as u32, h as u32, None, 2.0, Some(4.0));
+    let (radius, _, band) = r.last_focus_blur().expect("the placed frame asks for the focus blur");
+    assert!((radius - 6.0 / 6.0).abs() < 1e-3 && (band - 0.3).abs() < 1e-6, "radius at this frame's scale (180 of 1080) and the band: {radius} {band}");
+    let sharp = r.render_with_window(&roll(0.0, true), w as u32, h as u32, None, 2.0, Some(4.0));
+    let soft = r.render_with_window(&roll(12.0, true), w as u32, h as u32, None, 2.0, Some(4.0));
+    let alpha_rows = |px: &[u8], y0: usize, y1: usize| (y0..y1).map(|y| (0..w).filter(|x| px[(y * w + x) * 4 + 3] > 8).count()).sum::<usize>();
+    // Towards the top the soft frame covers more pixels (spread); in the
+    // band it is the sharp one.
+    assert!(alpha_rows(&soft, 0, 30) > alpha_rows(&sharp, 0, 30), "soft at the top: {} vs {}", alpha_rows(&soft, 0, 30), alpha_rows(&sharp, 0, 30));
+    let band_rows = (h * 45 / 100)..(h * 55 / 100);
+    for y in band_rows {
+        for x in 0..w {
+            let i = (y * w + x) * 4;
+            assert_eq!(soft[i + 3], sharp[i + 3], "sharp in the band at ({x}, {y})");
+        }
+    }
 }

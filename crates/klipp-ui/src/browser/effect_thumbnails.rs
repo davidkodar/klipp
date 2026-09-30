@@ -589,6 +589,9 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::TiltShift { .. } => {
             klipp_effects::BuiltinEffect::TiltShift { center: 0.5, width: 0.25, softness: 0.15, radius: 8.0 }
         }
+        klipp_effects::BuiltinEffect::FocusBlur { .. } => {
+            klipp_effects::BuiltinEffect::FocusBlur { radius: 8.0, vertical: true, band: 0.3 }
+        }
         klipp_effects::BuiltinEffect::MedianFilter { .. } => {
             klipp_effects::BuiltinEffect::MedianFilter { radius: 2 }
         }

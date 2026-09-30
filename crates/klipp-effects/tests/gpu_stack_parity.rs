@@ -236,7 +236,7 @@ fn a_faded_sprite_is_the_cpu_fade_uploaded() {
     let roll = EdgeFade { top: 0.3, bottom: 0.3, ..EdgeFade::NONE };
     let lower_third = EdgeFade { left: 0.25, ..EdgeFade::NONE };
     let all = EdgeFade { top: 0.1, bottom: 0.2, left: 0.15, right: 0.05 };
-    let band = |axis, band, edge_opacity| Some((axis, FocusBand { band, edge_opacity }));
+    let band = |axis, band, edge_opacity| Some((axis, FocusBand { band, edge_opacity, blur: 0.0 }));
     let cases = [
         (roll, None, 0, 3, 1.0, 1.0, None),
         (EdgeFade::NONE, band(RampAxis::Vertical, 0.3, 0.1), 0, -2, 0.8, 1.0, None),
@@ -281,6 +281,50 @@ fn a_faded_sprite_is_the_cpu_fade_uploaded() {
             let edge = if across { alpha(0, H / 2) } else { alpha(W / 2, 0) };
             assert!(edge < middle, "{edges:?} {focus:?}: edge {edge} is fainter than the middle {middle}");
         }
+    }
+}
+
+/// A focus blur on a title layer (#592) — words on transparency — is the
+/// CPU's to a level, alpha included: soft outside the band, the words
+/// as they are inside it.
+#[test]
+fn a_focus_blur_on_a_layer_is_the_cpu_one() {
+    let Some(mut gpu) = pipeline() else { return };
+    // "Words": bars of opaque colour on a transparent layer, top to bottom.
+    let mut layer = vec![0f32; (W * H * 4) as usize];
+    for y in 0..H {
+        for x in 0..W {
+            if y % 8 < 3 && (8..W - 8).contains(&x) && x % 5 != 0 {
+                let i = ((y * W + x) * 4) as usize;
+                layer[i..i + 4].copy_from_slice(&[0.9, 0.8, 0.2, 1.0]);
+            }
+        }
+    }
+    for (vertical, band) in [(true, 0.3), (false, 0.2)] {
+        let fx = [klipp_effects::BuiltinEffect::FocusBlur { radius: 3.0, vertical, band }];
+        let want = klipp_effects::apply_effects(&fx, layer.clone(), W, H);
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_linear(0, &layer));
+        assert!(gpu.stack_layer_apply_effects(0, &fx));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        let cpu_stack = {
+            assert!(gpu.stack_begin(W, H, 1));
+            assert!(gpu.stack_layer_from_linear(0, &want));
+            assert!(gpu.stack_blend(0, 1.0, 0));
+            assert!(gpu.stack_finish_into_chain(true));
+            gpu.stack_download_linear()
+        };
+        let worst = worst_level(&cpu_stack, &got);
+        assert!(worst <= 1.0, "focus blur (vertical {vertical}, band {band}) differs by {worst:.3} levels");
+        // Soft at the edge of the axis, sharp in the middle: alpha between
+        // the bars is lifted there and not here.
+        let a = |x: u32, y: u32| want[((y * W + x) * 4 + 3) as usize];
+        // Gaps: the rows between bars going down, the columns (x % 5 == 0)
+        // between their pieces going across.
+        let (edge_gap, middle_gap) = if vertical { (a(W / 2, 4), a(W / 2, H / 2 - H / 2 % 8 + 4)) } else { (a(10, 1), a(W / 2 - W / 2 % 5, 1)) };
+        assert!(edge_gap > middle_gap + 0.05, "vertical {vertical}: the edge is soft ({edge_gap}) where the middle is not ({middle_gap})");
     }
 }
 

@@ -338,6 +338,38 @@ fn a_rolling_title_placed_on_the_gpu_matches() {
     }
 }
 
+/// A rolling title with an edge fade and a focus band gone soft (#592):
+/// faded and blurred where it is, the same on the GPU stack as on the
+/// CPU renderer an export uses.
+#[test]
+fn a_soft_focus_roll_on_the_gpu_matches() {
+    use klipp_core::title_motion::{EdgeFade, FocusBand, RollShape};
+    let (mut seq, mut src) = stack();
+    let td = klipp_timeline::TitleData::single_text_fx(
+        klipp_timeline::TextBox { text: "Rolling\ncredits\nover the\npicture".into(), font_size: 48.0, ..Default::default() },
+        klipp_timeline::LayerFx {
+            loops: vec![klipp_timeline::TitleLoop::Scroll {
+                direction: klipp_timeline::ScrollDirection::Up,
+                speed_px_per_sec: 0.0,
+                shape: RollShape { focus: Some(FocusBand { band: 0.3, edge_opacity: 0.3, blur: 8.0 }) },
+            }],
+            edge_fade: EdgeFade { top: 0.15, bottom: 0.15, ..EdgeFade::NONE },
+            ..Default::default()
+        },
+    );
+    seq.tracks[0].clips = vec![clip(ClipKind::Title(td), 0.0, 5.0)];
+    for t in [1.0, 2.5, 4.0] {
+        let mut r = renderer();
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
+            eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+            return;
+        };
+        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 2, "soft-focus roll at {t}s: GPU differs from the CPU renderer by {d} levels");
+    }
+}
+
 /// A decoded frame on the GPU that is not the timeline's size: sRGB
 /// bytes `w` by `h`, seeding by the GPU fit, read back as linear.
 struct OtherSize {
