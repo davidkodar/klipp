@@ -1731,8 +1731,8 @@ impl TitleRenderer {
         let staggered: Option<&TitleObject> = if any_motion_live && motion_pose.is_none() && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
                 TitleObjectContent::TextBox(_)
-                    if o.fx().motion.enter.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur)
-                        && o.fx().motion.exit.is_none_or(|m| m.kind != klipp_timeline::MotionKind::Blur) =>
+                    if o.fx().motion.enter.is_none_or(|m| !m.kind.blurs())
+                        && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs()) =>
                 {
                     Some(o)
                 }

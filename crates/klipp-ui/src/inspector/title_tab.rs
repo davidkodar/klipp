@@ -247,6 +247,118 @@ fn caption(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
     ui.label(egui::RichText::new(text).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
 }
 
+// ─── The effect picker ───────────────────────────────────────────────
+
+/// One entry of an effect picker: its key (for Recent), name and group.
+/// An empty group is shown under All only (None).
+struct GalleryEntry {
+    key: String,
+    label: &'static str,
+    group: &'static str,
+}
+
+/// How many picks a picker's Recent keeps.
+const RECENT_PICKS: usize = 6;
+
+/// The body of an effect picker (#596), one for In, Out and Loops: a
+/// search field, the groups as pills (All, Recent once there is any,
+/// then each group), and the matching entries as live chips, three to a
+/// row, scrolling. `draw` draws entry `i`'s chip; the entry clicked comes
+/// back and goes to the front of the picker's Recent, kept under
+/// `recent_key` for the session. A row of buttons, one per effect, did
+/// not scale past a handful and duplicated the pickers.
+fn gallery_body(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    id: egui::Id,
+    recent_key: &str,
+    entries: &[GalleryEntry],
+    mut draw: impl FnMut(&mut egui::Ui, usize) -> egui::Response,
+) -> Option<usize> {
+    let (search_id, group_id, focus_id) = (id.with("search"), id.with("group"), id.with("focused"));
+    let recent_id = egui::Id::new(("title_gallery_recent", recent_key));
+    let mut search: String = ui.memory(|m| m.data.get_temp(search_id)).unwrap_or_default();
+    let mut group: Option<String> = ui.memory(|m| m.data.get_temp(group_id)).unwrap_or_default();
+    let mut recent: Vec<String> = ui.memory(|m| m.data.get_temp(recent_id)).unwrap_or_default();
+    recent.retain(|k| entries.iter().any(|e| &e.key == k));
+
+    ui.set_min_width(3.0 * GALLERY_CHIP.x + 2.0 * 8.0 + 16.0);
+    ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+    let field = ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY));
+    if !ui.memory(|m| m.data.get_temp::<bool>(focus_id).unwrap_or(false)) {
+        field.request_focus();
+        ui.memory_mut(|m| m.data.insert_temp(focus_id, true));
+    }
+    let mut groups: Vec<&'static str> = Vec::new();
+    for e in entries {
+        if !e.group.is_empty() && !groups.contains(&e.group) {
+            groups.push(e.group);
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let pill = |ui: &mut egui::Ui, on: bool, text: &str| {
+            ui.selectable_label(on, egui::RichText::new(text).size(crate::theme::type_scale::CAPTION)).clicked()
+        };
+        if pill(ui, group.is_none(), "All") {
+            group = None;
+        }
+        if !recent.is_empty() && pill(ui, group.as_deref() == Some("Recent"), "Recent") {
+            group = Some("Recent".into());
+        }
+        for g in &groups {
+            if pill(ui, group.as_deref() == Some(*g), g) {
+                group = Some((*g).to_string());
+            }
+        }
+    });
+    let needle = search.trim().to_lowercase();
+    let shown: Vec<usize> = match group.as_deref() {
+        Some("Recent") => recent.iter().filter_map(|k| entries.iter().position(|e| &e.key == k)).collect::<Vec<usize>>(),
+        g => (0..entries.len()).filter(|&i| g.is_none_or(|g| entries[i].group == g)).collect(),
+    }
+    .into_iter()
+    .filter(|&i| needle.is_empty() || entries[i].label.to_lowercase().contains(&needle) || entries[i].group.to_lowercase().contains(&needle))
+    .collect();
+    let mut picked = None;
+    egui::ScrollArea::vertical().max_height(330.0).auto_shrink([false, true]).show(ui, |ui| {
+        if shown.is_empty() {
+            ui.label(egui::RichText::new("Nothing matches").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+        }
+        for row in shown.chunks(3) {
+            ui.horizontal(|ui| {
+                for &i in row {
+                    if draw(ui, i).clicked() {
+                        picked = Some(i);
+                    }
+                }
+            });
+        }
+    });
+    if let Some(i) = picked {
+        let key = entries[i].key.clone();
+        recent.retain(|k| *k != key);
+        recent.insert(0, key);
+        recent.truncate(RECENT_PICKS);
+        search.clear();
+        ui.memory_mut(|m| m.data.remove::<bool>(focus_id));
+    }
+    ui.memory_mut(|m| {
+        m.data.insert_temp(search_id, search);
+        m.data.insert_temp(group_id, group);
+        m.data.insert_temp(recent_id, recent);
+    });
+    picked
+}
+
+/// Forget a closed picker's focus, so it takes the keyboard again when
+/// it next opens.
+fn gallery_closed(ui: &mut egui::Ui, popup_id: egui::Id, id: egui::Id) {
+    if !ui.memory(|m| m.is_popup_open(popup_id)) {
+        ui.memory_mut(|m| m.data.remove::<bool>(id.with("focused")));
+    }
+}
+
 // ─── Motion card ─────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,12 +372,6 @@ impl Direction {
         match self {
             Direction::Enter => "In",
             Direction::Exit => "Out",
-        }
-    }
-    fn default_kind(self) -> MotionKind {
-        match self {
-            Direction::Enter => MotionKind::Rise,
-            Direction::Exit => MotionKind::Fade,
         }
     }
     /// The rest moment and hover loop for a chip of this direction.
@@ -349,45 +455,41 @@ fn motion_row(
     // The gallery: None and every kind, rendered on this text.
     let anchor = ui.min_rect();
     let anchor_resp = ui.interact(egui::Rect::from_min_size(anchor.left_bottom(), egui::vec2(1.0, 1.0)), popup_id.with("anchor"), egui::Sense::hover());
-    let mut pick: Option<Option<MotionKind>> = None;
+    let mut pick: Option<Option<Motion>> = None;
+    let gallery_id = popup_id.with("body");
     egui::popup_below_widget(ui, popup_id, &anchor_resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-        ui.set_min_width(3.0 * GALLERY_CHIP.x + 2.0 * 8.0 + 16.0);
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-        let mut items: Vec<Option<MotionKind>> = vec![None];
-        items.extend(MotionKind::ALL.iter().map(|k| Some(*k)));
-        let selected_kind = slot.map(|m| m.kind);
-        for row in items.chunks(3) {
-            ui.horizontal(|ui| {
-                for k in row {
-                    let m = k.map(|k| {
-                        let mut m = slot.unwrap_or_else(|| Motion::new(k));
-                        m.kind = k;
-                        m
-                    });
-                    let s_c = subject.clone();
-                    let fx_c = fx.clone();
-                    let make = move || motion_chip_title(&s_c, &fx_c, dir, m);
-                    let label = k.map(|k| k.label()).unwrap_or("None");
-                    let id = format!("gallery:{}:{}", dir.label(), label);
-                    let resp = chip(
-                        ui,
-                        theme,
-                        chips,
-                        ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected: *k == selected_kind, label: Some(label) },
-                        GALLERY_CHIP,
-                        make,
-                    );
-                    if resp.clicked() {
-                        pick = Some(*k);
-                    }
-                }
-            });
+        // None, then every preset: a kind with its own timing and, for the
+        // ones that go piece by piece, its stagger.
+        let presets = klipp_core::title_motion::MotionPreset::all();
+        let items: Vec<Option<klipp_core::title_motion::MotionPreset>> = std::iter::once(None).chain(presets.into_iter().map(Some)).collect();
+        let entries: Vec<GalleryEntry> = items
+            .iter()
+            .map(|p| GalleryEntry { key: p.map_or("none".into(), |p| p.name.to_string()), label: p.map_or("None", |p| p.name), group: p.map_or("", |p| p.group) })
+            .collect();
+        let current = slot.map(|m| (m.kind, m.stagger));
+        let picked = gallery_body(ui, theme, gallery_id, dir.label(), &entries, |ui, i| {
+            let m = items[i].map(|p| p.motion);
+            let s_c = subject.clone();
+            let fx_c = fx.clone();
+            let make = move || motion_chip_title(&s_c, &fx_c, dir, m);
+            let label = entries[i].label;
+            let id = format!("gallery:{}:{}", dir.label(), label);
+            let selected = m.map(|m| (m.kind, m.stagger)) == current;
+            chip(ui, theme, chips, ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected, label: Some(label) }, GALLERY_CHIP, make)
+        });
+        if let Some(i) = picked {
+            pick = Some(items[i].map(|p| p.motion));
         }
     });
-    if let Some(k) = pick {
-        *slot = k.map(|k| {
-            let mut m = slot.unwrap_or_else(|| Motion::new(dir.default_kind()));
-            m.kind = k;
+    gallery_closed(ui, popup_id, gallery_id);
+    if let Some(p) = pick {
+        // The preset whole (its easing, timing and stagger), keeping the
+        // delay the slot had.
+        let delay = slot.map(|m| m.delay_secs);
+        *slot = p.map(|mut m| {
+            if let Some(d) = delay {
+                m.delay_secs = d;
+            }
             m
         });
         changed = true;
@@ -472,46 +574,6 @@ pub fn show_motion_card(
     ui.add_space(4.0);
     let mut motion = fx.motion;
     let mut changed = false;
-
-    // Keep the most common title actions one click away.  The full motion
-    // gallery remains below, but users should not have to discover that a
-    // thumbnail opens a picker just to fade or type a title on.
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
-        if ui.small_button("Fade In").on_hover_text("Fade this text layer in").clicked() {
-            motion.enter = Some(Motion::new(MotionKind::Fade));
-            changed = true;
-        }
-        if ui.small_button("Fade Out").on_hover_text("Fade this text layer out").clicked() {
-            motion.exit = Some(Motion::new(MotionKind::Fade));
-            changed = true;
-        }
-        if ui.small_button("Type On").on_hover_text("Reveal the text one character at a time").clicked() {
-            motion.enter = Some(Motion::new(MotionKind::Typewriter));
-            changed = true;
-        }
-        if ui.small_button("Rise").on_hover_text("Bring the text up into place").clicked() {
-            motion.enter = Some(Motion::new(MotionKind::Rise));
-            changed = true;
-        }
-        if ui.small_button("Slide").on_hover_text("Slide the text into place").clicked() {
-            motion.enter = Some(Motion::new(MotionKind::SlideRight));
-            changed = true;
-        }
-        if ui.small_button("Clear").on_hover_text("Remove entrance and exit animation").clicked() {
-            motion.enter = None;
-            motion.exit = None;
-            changed = true;
-        }
-    });
-    let in_label = motion.enter.map(|m| m.kind.label()).unwrap_or("None");
-    let out_label = motion.exit.map(|m| m.kind.label()).unwrap_or("None");
-    ui.label(
-        egui::RichText::new(format!("In: {in_label}  ·  Out: {out_label}"))
-            .size(crate::theme::type_scale::CAPTION)
-            .color(theme.text_dim),
-    );
-    ui.add_space(4.0);
     changed |= motion_row(ui, theme, chips, subject, fx, Direction::Enter, &mut motion.enter);
     ui.add_space(4.0);
     changed |= motion_row(ui, theme, chips, subject, fx, Direction::Exit, &mut motion.exit);
@@ -559,32 +621,31 @@ fn show_loops(
     });
     if let Some(b) = add_btn {
         let mut pick: Option<TitleLoop> = None;
+        let gallery_id = popup_id.with("body");
         egui::popup_below_widget(ui, popup_id, &b, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-            ui.set_min_width(3.0 * GALLERY_CHIP.x + 2.0 * 8.0 + 16.0);
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-            let items = TitleLoop::catalogue();
-            for row in items.chunks(3) {
-                ui.horizontal(|ui| {
-                    for l in row {
-                        let s_c = subject.clone();
-                        let fx_c = fx.clone();
-                        let l_c = l.clone();
-                        let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
-                        let resp = chip(
-                            ui,
-                            theme,
-                            chips,
-                            ChipSpec { id: format!("loop:{}", l.label()), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(l.label()) },
-                            GALLERY_CHIP,
-                            make,
-                        );
-                        if resp.clicked() {
-                            pick = Some(l.clone());
-                        }
-                    }
-                });
+            let presets = TitleLoop::presets();
+            let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
+            let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
+            let picked = gallery_body(ui, theme, gallery_id, "Loops", &entries, |ui, i| {
+                let l = &items[i];
+                let s_c = subject.clone();
+                let fx_c = fx.clone();
+                let l_c = l.clone();
+                let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
+                chip(
+                    ui,
+                    theme,
+                    chips,
+                    ChipSpec { id: format!("loop:{}", entries[i].label), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(entries[i].label) },
+                    GALLERY_CHIP,
+                    make,
+                )
+            });
+            if let Some(i) = picked {
+                pick = Some(items[i].clone());
             }
         });
+        gallery_closed(ui, popup_id, gallery_id);
         if let Some(l) = pick {
             loops.push(l);
             changed = true;
@@ -612,6 +673,26 @@ fn show_loops(
                 TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
                     changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
                     changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Float { amplitude, rate_hz } | TitleLoop::Sway { amplitude, rate_hz } => {
+                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Flicker { rate_hz, depth } => {
+                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
+                    changed |= ui.add(egui::DragValue::new(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
+                }
+                TitleLoop::Drift { dx, dy } => {
+                    let mut x = *dx * 100.0;
+                    if ui.add(egui::DragValue::new(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
+                        *dx = x / 100.0;
+                        changed = true;
+                    }
+                    let mut y = *dy * 100.0;
+                    if ui.add(egui::DragValue::new(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
+                        *dy = y / 100.0;
+                        changed = true;
+                    }
                 }
                 TitleLoop::ColorCycle { rate_hz } => {
                     changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
@@ -1064,5 +1145,89 @@ mod roll_speed_tests {
             assert!((dy(pad + secs) + offset).abs() < 0.5, "{w}x{h}: has just left it {secs:.2} s later: {} vs {}", dy(pad + secs), -offset);
             assert!(dy(pad + secs * 0.9) > -offset + 1.0, "{w}x{h}: and not before");
         }
+    }
+}
+
+#[cfg(test)]
+mod gallery_tests {
+    use super::{gallery_body, GalleryEntry};
+    use crate::theme::KlippTheme;
+
+    fn entries() -> Vec<GalleryEntry> {
+        let e = |key: &str, label: &'static str, group: &'static str| GalleryEntry { key: key.into(), label, group };
+        vec![
+            e("none", "None", ""),
+            e("fade", "Fade", "Fading"),
+            e("rise", "Rise", "Move"),
+            e("slide_l", "Slide from left", "Move"),
+            e("slide_r", "Slide from right", "Move"),
+            e("up", "Scale up", "Scale"),
+        ]
+    }
+
+    /// One frame of the picker; the labels it drew with where they are,
+    /// and the entry picked, if any.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (Vec<(String, egui::Pos2)>, Option<usize>) {
+        let list = entries();
+        let mut picked = None;
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), events, ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    picked = gallery_body(ui, &KlippTheme::default(), egui::Id::new("test_gallery"), "test", &list, |ui, i| ui.button(list[i].label));
+                });
+            },
+        );
+        let texts = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            })
+            .collect();
+        (texts, picked)
+    }
+
+    fn shown(texts: &[(String, egui::Pos2)]) -> Vec<&str> {
+        let names = ["None", "Fade", "Rise", "Slide from left", "Slide from right", "Scale up"];
+        names.into_iter().filter(|n| texts.iter().any(|(t, _)| t == n)).collect()
+    }
+
+    fn click(ctx: &egui::Context, texts: &[(String, egui::Pos2)], label: &str) -> Option<usize> {
+        let at = texts.iter().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label} is drawn"));
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(ctx, vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(ctx, vec![button(false)]).1
+    }
+
+    /// #596: search narrows the picker by name or group, a group's pill
+    /// narrows it to the group, and what is picked comes back first under
+    /// Recent. None sits under All only.
+    #[test]
+    fn the_picker_searches_groups_and_remembers() {
+        let ctx = egui::Context::default();
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(shown(&texts), ["None", "Fade", "Rise", "Slide from left", "Slide from right", "Scale up"]);
+        assert!(!texts.iter().any(|(t, _)| t == "Recent"), "no Recent before a pick");
+
+        ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("test_gallery").with("search"), "slide".to_string()));
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(shown(&texts), ["Slide from left", "Slide from right"], "search by name");
+        ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("test_gallery").with("search"), "scale".to_string()));
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(shown(&texts), ["Scale up"], "and by group");
+        ctx.memory_mut(|m| m.data.insert_temp(egui::Id::new("test_gallery").with("search"), String::new()));
+
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(click(&ctx, &texts, "Move"), None, "a pill is not a pick");
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(shown(&texts), ["Rise", "Slide from left", "Slide from right"], "the group, without None");
+
+        assert_eq!(click(&ctx, &texts, "Rise"), Some(2));
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(click(&ctx, &texts, "Recent"), None);
+        let (texts, _) = frame(&ctx, Vec::new());
+        assert_eq!(shown(&texts), ["Rise"], "Recent holds the pick");
     }
 }

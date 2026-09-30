@@ -26,12 +26,16 @@ fn motion_kind(name: &str) -> Result<klipp_core::title_motion::MotionKind, Strin
         "fade" => Fade, "rise" => Rise, "drop" => Drop,
         "slide_left" | "slide" | "slideleft" => SlideLeft,
         "slide_right" | "slideright" => SlideRight,
-        "scale_up" | "scaleup" | "zoom_in" | "pop" => ScaleUp,
-        "scale_down" | "scaledown" => ScaleDown,
+        "scale_up" | "scaleup" | "zoom_in" | "grow" => ScaleUp,
+        "scale_down" | "scaledown" | "settle" => ScaleDown,
         "blur" | "focus" => Blur,
         "mask_rise" => MaskRise, "mask_drop" => MaskDrop,
         "typewriter" | "type" => Typewriter,
-        _ => return Err(format!("{name:?} is not a motion kind; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop or typewriter")),
+        "pop" => Pop, "slam" => Slam,
+        "fly_left" | "fly_from_left" => FlyLeft, "fly_right" | "fly_from_right" => FlyRight,
+        "fly_top" | "fly_from_top" => FlyTop, "fly_bottom" | "fly_from_bottom" => FlyBottom,
+        "bounce" => Bounce, "flicker" => Flicker, "focus_in" => FocusIn, "soft_rise" => SoftRise,
+        _ => return Err(format!("{name:?} is not a motion kind; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in or soft_rise")),
     })
 }
 
