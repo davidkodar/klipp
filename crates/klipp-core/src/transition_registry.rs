@@ -94,6 +94,9 @@ pub enum TransitionKind {
     /// A ring spreads from the centre; the incoming picture is revealed
     /// inside it, refracted at the crest, with ripples trailing behind.
     WaterDrop,
+    /// A whip pan: the outgoing picture is flung off and the incoming one
+    /// follows, fastest at the cut, smeared by a blur along the move.
+    WhipPan,
 }
 
 // ---------------------------------------------------------------------------
@@ -112,10 +115,10 @@ pub struct TransitionSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — const array of all 67 specs
+// Registry — const array of all 68 specs
 // ---------------------------------------------------------------------------
 
-pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
+pub const TRANSITION_SPECS: [TransitionSpec; 68] = [
     TransitionSpec {
         kind: TransitionKind::CrossDissolve,
         kind_id: 0,
@@ -654,10 +657,19 @@ pub const TRANSITION_SPECS: [TransitionSpec; 67] = [
         // the crest, trailing ripples, crest highlight.
         default_params: TransitionUserParams { param0: 0.14, param1: 26.0, param2: 3.0, param3: 0.35, color: [1.0, 1.0, 1.0, 1.0] },
     },
+    TransitionSpec {
+        kind: TransitionKind::WhipPan,
+        kind_id: 67,
+        string_key: "WhipPan",
+        display_name: "Whip Pan",
+        short_label: "Whip",
+        // direction (0 left, 1 right, 2 up, 3 down), blur strength.
+        default_params: TransitionUserParams { param0: 0.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+    },
 ];
 
-// Compile-time assertion: exactly 67 entries.
-const _: () = assert!(TRANSITION_SPECS.len() == 67);
+// Compile-time assertion: exactly 68 entries.
+const _: () = assert!(TRANSITION_SPECS.len() == 68);
 
 // ---------------------------------------------------------------------------
 // Lookup helpers
@@ -730,7 +742,7 @@ mod tests {
 
     #[test]
     fn test_spec_count() {
-        assert_eq!(TRANSITION_SPECS.len(), 67);
+        assert_eq!(TRANSITION_SPECS.len(), 68);
     }
 
     #[test]
@@ -951,6 +963,7 @@ mod tests {
             TransitionKind::ZoomOutDissolve => check(TransitionKind::ZoomOutDissolve),
             TransitionKind::CrossZoom => check(TransitionKind::CrossZoom),
             TransitionKind::WaterDrop => check(TransitionKind::WaterDrop),
+            TransitionKind::WhipPan => check(TransitionKind::WhipPan),
         }
     }
 

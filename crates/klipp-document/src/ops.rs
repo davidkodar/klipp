@@ -4257,7 +4257,8 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
         "dip_to_white" | "dip_white" | "fade_to_white" | "flash_white" => "DipToWhite",
         "zoom" | "zoom_in" | "punch_in" => "ZoomInDissolve",
         "zoom_out" => "ZoomOutDissolve",
-        "whip" | "whip_pan" | "swish" | "shake" => "CrossZoom",
+        "whip" | "whip_pan" | "swish" => "WhipPan",
+        "shake" => "CrossZoom",
         "glitch" | "digital" => "GlitchDissolve",
         "film_burn" | "burn" | "light_leak" => "FilmBurn",
         "vanish" | "dip" => "DipToBlack",
@@ -5540,7 +5541,7 @@ mod tests {
         let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4 }]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
         let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
-        assert_eq!(transition.kind, klipp_core::TransitionKind::CrossZoom);
+        assert_eq!(transition.kind, klipp_core::TransitionKind::WhipPan, "a whip is a whip pan, not a zoom (#512)");
 
         // Refusals: the last clip has no next; an unknown kind; too long.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
