@@ -357,8 +357,18 @@ fn open_picker(ui: &egui::Ui) -> Option<egui::Id> {
     ui.memory(|m| m.data.get_temp(egui::Id::new("title_open_picker"))).flatten()
 }
 
+/// Open picker `id`, or none. Whichever way a picker closes or opens —
+/// a pick, Esc, its field clicked again, another one opened — its search
+/// field is forgotten as focused, so the next time it opens it takes the
+/// keyboard again (#605 review).
 fn set_open_picker(ui: &egui::Ui, id: Option<egui::Id>) {
-    ui.memory_mut(|m| m.data.insert_temp(egui::Id::new("title_open_picker"), id));
+    let was = open_picker(ui);
+    ui.memory_mut(|m| {
+        for p in [was, id].into_iter().flatten() {
+            m.data.remove::<bool>(p.with("body").with("focused"));
+        }
+        m.data.insert_temp(egui::Id::new("title_open_picker"), id);
+    });
 }
 
 /// A picker field (#604): what is chosen, by name, or what choosing does,
@@ -395,7 +405,6 @@ fn inline_picker(
         });
     if picked.is_some() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         set_open_picker(ui, None);
-        ui.memory_mut(|m| m.data.remove::<bool>(id.with("body").with("focused")));
     }
     picked
 }
@@ -1321,7 +1330,18 @@ mod gallery_tests {
         assert_eq!(slot.map(|m| m.kind), Some(klipp_timeline::MotionKind::Pop), "picking Pop sets it");
         let texts = run(Vec::new(), &mut slot);
         assert!(find(&texts, "Pop letters").is_none(), "and closes the picker");
-        assert!(find(&texts, "Pop").is_some(), "the field now names it");
+        let field = find(&texts, "Pop").expect("the field now names it");
+
+        // Opened, closed by its own field, opened again: it takes the
+        // keyboard again, so typing still searches (#605 review).
+        for _ in 0..3 {
+            run(vec![egui::Event::PointerMoved(field), click(field, true)], &mut slot);
+            run(vec![click(field, false)], &mut slot);
+            run(Vec::new(), &mut slot);
+        }
+        run(vec![egui::Event::Text("slam".into())], &mut slot);
+        let texts = run(Vec::new(), &mut slot);
+        assert!(find(&texts, "Slam").is_some() && find(&texts, "Fly from left").is_none(), "reopened, typing searches again");
     }
 
     /// #596: search narrows the picker by name or group, a group's pill
