@@ -80,6 +80,16 @@ impl<'a> Entry<'a> {
 
     /// Identity for selection, hover and the preview cache. A user
     /// template may share a built-in's name, and may be saved over.
+    /// The key in Favourites and Recent: a saved template's name
+    /// marked as one, so it has its own star beside a built-in of the
+    /// same name, and no revision, so a save keeps the star.
+    fn list_key(&self) -> String {
+        match self {
+            Entry::Builtin(t) => t.name.to_string(),
+            Entry::User(t) => format!("user:{}", t.name),
+        }
+    }
+
     fn key(&self) -> String {
         match self {
             Entry::Builtin(t) => t.name.to_string(),
@@ -606,7 +616,7 @@ pub fn show(
                 // Counts (registry-wide, ignore the active filter so
                 // sidebar numbers don't dance as the user types).
                 let installed_total = entries.len();
-                let in_list = |keys: &[String]| entries.iter().filter(|t| keys.iter().any(|k| k == t.name())).count();
+                let in_list = |keys: &[String]| entries.iter().filter(|t| keys.iter().any(|k| *k == t.list_key())).count();
                 for (target, icon, label, count) in [
                     (LibraryList::Favourites, Icon::Star, "Favorites", in_list(favourites)),
                     (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", in_list(&recent)),
@@ -716,8 +726,8 @@ pub fn show(
                 None => true,
             })
             .filter(|t| match list {
-                Some(LibraryList::Favourites) => favourites.iter().any(|k| k == t.name()),
-                Some(LibraryList::Recent) => recent.iter().any(|k| k == t.name()),
+                Some(LibraryList::Favourites) => favourites.iter().any(|k| *k == t.list_key()),
+                Some(LibraryList::Recent) => recent.iter().any(|k| *k == t.list_key()),
                 None => true,
             })
             .collect();
@@ -804,7 +814,7 @@ pub fn show(
         }
         // Recent reads newest first, whatever the sort.
         if *list == Some(LibraryList::Recent) {
-            filtered.sort_by_key(|t| recent.iter().position(|k| k == t.name()));
+            filtered.sort_by_key(|t| recent.iter().position(|k| *k == t.list_key()));
         }
 
         // ── Result strip: count + sort dropdown ──
@@ -882,10 +892,10 @@ pub fn show(
                                 if active {
                                     ui.ctx().request_repaint();
                                 }
-                                let is_fav = favourites.iter().any(|k| k == title.name());
+                                let is_fav = favourites.iter().any(|k| *k == title.list_key());
                                 let star = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, title.key());
                                 if handle_title_interaction(state, &mut cmds, title, &resp, selected, is_fav) || star {
-                                    crate::browser::library_card::toggle_favourite(favourites, title.name());
+                                    crate::browser::library_card::toggle_favourite(favourites, &title.list_key());
                                 }
                                 if i % 2 == 1 {
                                     ui.end_row();
@@ -921,10 +931,10 @@ pub fn show(
                         if active {
                             ui.ctx().request_repaint();
                         }
-                        let is_fav = favourites.iter().any(|k| k == title.name());
+                        let is_fav = favourites.iter().any(|k| *k == title.list_key());
                         let star = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, title.key());
                         if handle_title_interaction(state, &mut cmds, title, &resp, selected, is_fav) || star {
-                            crate::browser::library_card::toggle_favourite(favourites, title.name());
+                            crate::browser::library_card::toggle_favourite(favourites, &title.list_key());
                         }
                     }
                 }
@@ -978,7 +988,7 @@ fn handle_title_interaction(
         }
     });
     if resp.double_clicked() {
-        crate::browser::library_card::push_recent(&mut state.library_recent.titles, title.name());
+        crate::browser::library_card::push_recent(&mut state.library_recent.titles, &title.list_key());
         let title_data = title.data();
         state.pending_title_data = Some(title_data);
         let ph = state.playhead;
@@ -1025,6 +1035,7 @@ fn handle_title_interaction(
         let data = title.data();
         state.drag_drop.begin(DragPayload::Title {
             template_name: title.name().to_string(),
+            list_key: title.list_key(),
             title_data: data,
         });
     }

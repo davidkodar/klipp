@@ -2542,7 +2542,14 @@ impl NodeInspectorPanel {
             }
             NodeKind::Qualifier => {
                 let qual = params.qualifier.get_or_insert_with(Default::default);
-                ui.checkbox(&mut qual.enabled, "Enabled");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut qual.enabled, "Enabled");
+                    let pick = ui.add(egui::Button::image(Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
+                        .on_hover_text("Pick a colour: click it in the viewer to key it");
+                    if pick.clicked() {
+                        cmds.push(AppCommand::PickQualifierColour { clip_id, node_id });
+                    }
+                });
                 if qual.enabled {
                     let mut hc = qual.hue_center;
                     if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id, theme) { qual.hue_center = hc; }

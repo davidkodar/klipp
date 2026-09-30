@@ -1556,9 +1556,13 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_space(6.0);
                 let total = TRANSITIONS.len();
+                // Counted against the registry, as the other tabs count:
+                // a key saved by another build that names no transition
+                // here is not one.
+                let in_list = |keys: &[String]| TRANSITIONS.iter().filter(|t| keys.iter().any(|k| k == klipp_core::spec_for_kind(t.kind).string_key)).count();
                 for (target, icon, label, count) in [
-                    (LibraryList::Favourites, Icon::Star, "Favorites", favourites.len()),
-                    (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", recent.len()),
+                    (LibraryList::Favourites, Icon::Star, "Favorites", in_list(favourites)),
+                    (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", in_list(&recent)),
                 ] {
                     if tx_general_row(ui, theme, icon, label, count, *list == Some(target), &format!("tx_{label}")) {
                         *list = Some(target);
@@ -1779,8 +1783,8 @@ pub fn show(
                         }
                         let is_fav = favourites.iter().any(|k| k == spec.string_key);
                         let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, spec.string_key);
-                                resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
-                                if toggle {
+                        resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                        if toggle {
                             crate::browser::library_card::toggle_favourite(favourites, spec.string_key);
                         }
                         handle_transition_interaction(

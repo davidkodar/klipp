@@ -1859,6 +1859,10 @@ pub enum AppCommand {
     /// click picks the grey the clip is balanced on
     /// (`RequestWhiteBalanceSample`).
     PickWhiteBalance { clip_id: ClipId },
+    /// Arm the viewer's qualifier eyedropper for a Qualifier node: the
+    /// next click keys the node on the colour picked
+    /// (`RequestQualifierSample`).
+    PickQualifierColour { clip_id: ClipId, node_id: uuid::Uuid },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },
