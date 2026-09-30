@@ -133,6 +133,10 @@ fn the_shot_after_a_gap_is_taken_over_warm() {
     assert!(stopped && furthest(&moves) > 1.5, "played to {:.2} s", furthest(&moves));
     let (warm2, cold2) = klipp_engine::engine::gap_hand_overs();
     assert_eq!((warm2 - warm, cold2 - cold), (1, 0), "the shot after the gap came from its preroll, not a seek");
+    // Taken over a tick late at most, and anchored where the sound is:
+    // the playhead never steps back to the shot's start.
+    let back = moves.windows(2).find(|w| w[1].1 < w[0].1 - 1e-6);
+    assert!(back.is_none(), "the playhead stepped back: {back:?}");
     drop(e);
 
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps), shot(id, 16, 30, fps)])], fps);

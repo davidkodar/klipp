@@ -5235,6 +5235,11 @@ impl PlaybackEngine {
         // new anchor so the video catches up to where the free-running
         // audio actually is — zero drift, no accumulation.
         let t_cut = std::time::Instant::now();
+        // Where the playhead is as the cut is taken: at the next shot's
+        // start for a cut between adjacent shots, up to a tick past it
+        // when the shot after a gap is taken over (#546). The sound,
+        // streaming on, is there, so the picture is anchored there too.
+        let entered_at = self.playhead;
         // A clip change leaves clock-only; the branches below enter it
         // again where the next place has no picture.
         self.clock_only = false;
@@ -5457,7 +5462,7 @@ impl PlaybackEngine {
                 // untouched (no mix-staging flush, no PCM reseek), exactly as
                 // the video-contiguous branch does; only refresh its fade
                 // envelope. Reseed audio only when it actually changes.
-                let audio_catch_up = self.advance_audio_over_video_cut(t_cut);
+                let audio_catch_up = self.advance_audio_over_video_cut(t_cut) + (entered_at - timeline_in).to_secs_f64().max(0.0);
 
                 let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
                 let start_us = (anchor_secs * 1_000_000.0) as u64;
@@ -5505,7 +5510,7 @@ impl PlaybackEngine {
                 // returned catch-up advances the video anchor to where the
                 // free-running audio now is (the master clock was paused for
                 // the seek while the audio played on).
-                let audio_catch_up = self.advance_audio_over_video_cut(t_cut);
+                let audio_catch_up = self.advance_audio_over_video_cut(t_cut) + (entered_at - timeline_in).to_secs_f64().max(0.0);
 
                 let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
                 let start_us = (anchor_secs * 1_000_000.0) as u64;
@@ -5565,7 +5570,7 @@ impl PlaybackEngine {
             // where the free-running audio now is (opening the decoder
             // took wall time during which the audio played on).
             self.refresh_audio_fades(self.playhead);
-            let audio_catch_up = t_cut.elapsed().as_secs_f64();
+            let audio_catch_up = t_cut.elapsed().as_secs_f64() + (entered_at - timeline_in).to_secs_f64().max(0.0);
             let anchor_secs = source_in_secs + audio_catch_up * next_clip_speed;
             let start_us = (anchor_secs * 1_000_000.0) as u64;
             self.master_clock.seek(start_us);
