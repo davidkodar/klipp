@@ -1516,7 +1516,17 @@ pub struct PrimaryStep {
     pub temperature: f32,
     pub tint: f32,
     pub saturation: f32,
+    /// The exposure was held short of the target because more would
+    /// clip a large part of the frame (see `HIGHLIGHT_HEADROOM_L`).
+    #[serde(default)]
+    pub held_for_highlights: bool,
 }
+
+/// How bright the frame's 95th percentile may be taken, in L*, when a
+/// step brightens it: past this, a twentieth of the picture goes to
+/// white. Chasing a face target took a warm evening shot up 1.5 stops
+/// and clipped the window, 6.6% of the frame (#501).
+pub const HIGHLIGHT_HEADROOM_L: f32 = 97.0;
 
 pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     const DAMP: f32 = 0.7;
@@ -1545,6 +1555,14 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
             if clipping {
                 s.exposure = s.exposure.min(0.0);
                 s.gain = s.gain.min(0.0);
+            }
+            // Nor brighten one into losing them: at about 15 L* a stop,
+            // the headroom above the 95th percentile says how far it can
+            // go before a large part of the frame is white.
+            let room = ((HIGHLIGHT_HEADROOM_L - m.l_p95) / 15.0).max(0.0);
+            if s.exposure > room + 0.01 {
+                s.exposure = room;
+                s.held_for_highlights = true;
             }
         }
         match face {
@@ -1581,6 +1599,24 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #501: exposing for a dark face stops short of blowing the window
+    /// behind it, and says so; with headroom the face gets its step.
+    #[test]
+    fn exposing_for_a_face_stops_before_the_highlights_go() {
+        let face = FaceMeasure {
+            region: [0.4, 0.2, 0.2, 0.3], patches: 9, grid: 3, median: Lab { l: 26.0, a: 12.0, b: 16.0 }, hue: 53.0, chroma: 20.0,
+            hue_iqr: 0.0, l_iqr: 0.0, worst_hue: 53.0, mixed_light: false, hue_off_band: 0.0, hue_wb: 53.0, hue_off_band_wb: 0.0,
+        };
+        let target = LookTarget { skin_l: Some(58.0), ..LookTarget::default() };
+        let bright_window = FrameMeasure { l_p50: 40.0, l_p95: 88.0, l_p99: 95.0, faces: vec![face.clone()], ..FrameMeasure::default() };
+        let s = primaries_toward(&bright_window, &target);
+        assert!(s.held_for_highlights, "{s:?}");
+        assert!((s.exposure - 0.6).abs() < 0.01, "9 L* of headroom is 0.6 stop: {s:?}");
+        let dim_room = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, faces: vec![face], ..FrameMeasure::default() };
+        let s = primaries_toward(&dim_room, &target);
+        assert!(!s.held_for_highlights && s.exposure > 1.4, "{s:?}");
+    }
 
     /// The ColorChecker's published Lab values (X-Rite, D50), against
     /// the sRGB rendering of the same patches: within the tolerance of

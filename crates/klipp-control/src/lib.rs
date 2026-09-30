@@ -3180,6 +3180,11 @@ fn handle(
                     }
                     step = klipp_color::measure::primaries_toward(&m, &look);
                 }
+                // Short of the target because brighter would blow the
+                // highlights: said, with what does reach it (#501).
+                if step.held_for_highlights && stalled.is_none() {
+                    stalled = Some("held short of the exposure target: brighter would take more than a twentieth of the frame to white. Lift the face on its own, with a window or a secondary, rather than the whole picture".into());
+                }
                 let after = colour_report(&m, &look, *mid);
                 let short: String = name.chars().take(28).collect();
                 lines.push(format!(

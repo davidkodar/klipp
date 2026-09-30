@@ -43,6 +43,21 @@ pub fn transcribe_on_cpu() -> bool {
 /// The model a download fetches.
 pub const MODEL_ID: &str = MODELS[0];
 
+/// Voice activity detection, fetched with the model: whisper runs only
+/// where someone speaks. Without it, a street walk came back as "I'm
+/// going to go to the next place." twice and wind as "The wind is blowing
+/// up." five times, each stretched over thirty seconds; whisper.cpp's
+/// no-speech probability read 0.00 on all of them (#499).
+pub const VAD_MODEL_ID: &str = "silero_vad_v5_ggml";
+
+/// The voice activity model in the app's model cache, if downloaded.
+pub fn vad_model_path() -> Option<std::path::PathBuf> {
+    let manifest = klipp_ml::manifest::load_effective().ok()?;
+    let cache = klipp_ml::cache::ModelCache::open().ok()?;
+    let path = cache.path_for(manifest.get(VAD_MODEL_ID)?);
+    path.is_file().then_some(path)
+}
+
 /// How things are spelt: names and terms given to whisper as its
 /// prompt, so "Omarchy" is not "a matchy". Set by whoever asks for
 /// analysis, from the brief; a transcript made with another list is
@@ -86,6 +101,9 @@ pub struct Transcript {
     /// The names and terms whisper was given.
     #[serde(default)]
     pub vocabulary: Vec<String>,
+    /// Whisper ran only where voice activity detection heard speech.
+    #[serde(default)]
+    pub vad: bool,
     pub segments: Vec<Segment>,
     pub words: Vec<Word>,
 }
@@ -194,6 +212,17 @@ pub fn ensure_model(download: bool) -> Result<(&'static str, std::path::PathBuf)
     let manifest = klipp_ml::manifest::load_effective().map_err(|e| format!("model manifest: {e:?}"))?;
     let entry = manifest.get(MODEL_ID).ok_or_else(|| format!("no manifest entry {MODEL_ID}"))?;
     let cache = klipp_ml::cache::ModelCache::open().map_err(|e| format!("model cache: {e:?}"))?;
+    // Voice activity detection rides along: under a megabyte, and what
+    // keeps whisper from writing sentences into noise.
+    if let Some(vad) = manifest.get(VAD_MODEL_ID) {
+        if !cache.path_for(vad).is_file() {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let mut progress = klipp_ml::download::NoOpProgress;
+            if let Err(e) = klipp_ml::download::download_to_cache(&cache, vad, &mut progress, &cancel) {
+                tracing::warn!("voice activity model download: {e:?}");
+            }
+        }
+    }
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut progress = klipp_ml::download::NoOpProgress;
     let path = klipp_ml::download::download_to_cache(&cache, entry, &mut progress, &cancel).map_err(|e| format!("download of {MODEL_ID}: {e:?}"))?;
@@ -360,10 +389,15 @@ impl crate::Analyser for TranscriptAnalyser {
         // hallucinates a sentence and repeats it for the whole file.
         item.has_audio && item.duration.to_secs_f64() > 0.0 && model_path().is_some() && !crate::is_licensed_audio(&item.path)
     }
-    /// Made by a lesser model than the one installed now, or with
-    /// another list of how things are spelt.
+    /// Made by a lesser model than the one installed now, with another
+    /// list of how things are spelt, or over the whole sound when voice
+    /// activity detection is there now to say where the speech is.
     fn stale(&self, stored: &serde_json::Value) -> bool {
         let model = stored.get("model").and_then(|m| m.as_str()).unwrap_or("");
+        let vad = stored.get("vad").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !vad && vad_model_path().is_some() {
+            return true;
+        }
         let words: Vec<String> = stored.get("vocabulary").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
         // Spellings asked for now that the stored one was not given. One
         // made with more is as good; with none asked for, any will do.
@@ -374,7 +408,7 @@ impl crate::Analyser for TranscriptAnalyser {
         let words = vocabulary();
         let audio = decode_audio(&ctx.ffmpeg, &item.path)?;
         if audio.len() < 16000 / 2 {
-            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, ..Default::default() };
+            let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, vad: vad_model_path().is_some(), ..Default::default() };
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
         let mut transcript = transcribe(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
@@ -499,6 +533,15 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     // says where it thinks nobody is speaking.
     params.set_suppress_nst(true);
     params.set_no_speech_thold(NO_SPEECH_THRESHOLD);
+    // Where someone speaks, when the voice activity model is here. None
+    // at all and there is nothing to transcribe; otherwise whisper runs
+    // on the whole sound, for its timings, and what it writes outside
+    // the speech is dropped below. (whisper.cpp's own VAD switch left a
+    // street walk's invented sentences as they were.)
+    let speech = vad_model_path().and_then(|p| speech_spans(&p, audio, threads));
+    if speech.as_ref().is_some_and(|s| s.is_empty()) {
+        return Ok(Transcript { duration_secs, model: model_id.into(), vocabulary: words.to_vec(), vad: true, ..Default::default() });
+    }
     let t_run = std::time::Instant::now();
     state.full(params, audio).map_err(|e| format!("whisper run: {e}"))?;
     tracing::info!(
@@ -519,6 +562,12 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
         let Some(seg) = state.get_segment(i) else { continue };
         let text = seg.to_str_lossy().map(|c| c.into_owned()).unwrap_or_default();
         let (t0, t1) = (seg.start_timestamp() as f64 / 100.0, seg.end_timestamp() as f64 / 100.0);
+        if std::env::var_os("KLIPP_TRANSCRIPT_DEBUG").is_some() {
+            let ps: Vec<f32> = (0..seg.n_tokens()).filter_map(|j| seg.get_token(j)).map(|t| t.token_data().p).collect();
+            let mean = ps.iter().sum::<f32>() / ps.len().max(1) as f32;
+            let mean_log = ps.iter().map(|p| p.max(1e-6).ln()).sum::<f32>() / ps.len().max(1) as f32;
+            eprintln!("segment {t0:.2}-{t1:.2} no_speech {:.2} mean_p {mean:.2} mean_logp {mean_log:.2} tokens {} {text:?}", seg.no_speech_probability(), ps.len());
+        }
         if seg.no_speech_probability() > NO_SPEECH_THRESHOLD || !is_speech(&text) {
             continue;
         }
@@ -533,6 +582,15 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
             tokens.push(Token { text, t0, t1, p: d.p });
         }
     }
+    // What whisper wrote where nobody speaks is its invention.
+    if let Some(spans) = &speech {
+        let (kept, heard) = keep_spoken(&segments, &tokens, spans);
+        if kept.len() < segments.len() {
+            tracing::info!("transcript: {} segments outside the speech dropped", segments.len() - kept.len());
+        }
+        segments = kept;
+        tokens = heard;
+    }
     // Music or noise makes the model repeat one sentence for the whole
     // file; those segments are not speech and are dropped with their
     // tokens.
@@ -546,8 +604,55 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
     let spoken = group_words(&tokens);
     // A language detected over silence is a guess; say nothing instead.
     let language = if segments.is_empty() { None } else { lang };
-    Ok(Transcript { duration_secs, language, model: model_id.into(), vocabulary: words.to_vec(), segments, words: spoken })
+    Ok(Transcript { duration_secs, language, model: model_id.into(), vocabulary: words.to_vec(), vad: speech.is_some(), segments, words: spoken })
 }
+
+/// Where in 16 kHz mono `audio` someone speaks, as (start, end) seconds,
+/// from the voice activity model at `model`. `None` when the model would
+/// not run: the transcript is then made as before, over everything.
+fn speech_spans(model: &std::path::Path, audio: &[f32], threads: i32) -> Option<Vec<(f64, f64)>> {
+    use whisper_rs::{WhisperVadContext, WhisperVadContextParams, WhisperVadParams};
+    let mut cparams = WhisperVadContextParams::new();
+    cparams.set_n_threads(threads.min(4));
+    cparams.set_use_gpu(false);
+    let mut ctx = WhisperVadContext::new(model.to_str()?, cparams).map_err(|e| tracing::warn!("voice activity model: {e}")).ok()?;
+    let segments = ctx.segments_from_samples(WhisperVadParams::new(), audio).map_err(|e| tracing::warn!("voice activity: {e}")).ok()?;
+    // Centiseconds.
+    Some(segments.map(|s| (s.start as f64 / 100.0, s.end as f64 / 100.0)).collect())
+}
+
+/// Slack around a stretch of speech: a word's aligned time can sit a
+/// little before the voice is loud enough to be heard as one.
+const SPEECH_PAD_SECS: f64 = 0.4;
+
+/// The segments that overlap speech, and those outside it that read as
+/// speech all the same, with their tokens.
+///
+/// Voice activity misses a line shouted under a film's score ("Captain,
+/// we have to abort!"), which whisper still hears at a speaking pace and
+/// sure of it. What it invents over noise is nothing like that: one
+/// sentence stretched over a thirty-second window, a third of a token a
+/// second. So outside the speech a segment stays only at a speaking pace
+/// (`SPOKEN_TOKENS_PER_SEC`) and sure of its words (`SPOKEN_MEAN_LOG_P`).
+pub fn keep_spoken(segments: &[Segment], tokens: &[Token], speech: &[(f64, f64)]) -> (Vec<Segment>, Vec<Token>) {
+    let overlap = |a: f64, b: f64| speech.iter().map(|(s, e)| (b.min(*e + SPEECH_PAD_SECS) - a.max(*s - SPEECH_PAD_SECS)).max(0.0)).sum::<f64>();
+    let within = |t: &Token, s: &Segment| t.t0 >= s.start_secs - 0.01 && t.t0 < s.end_secs + 0.01;
+    let reads_as_speech = |s: &Segment| {
+        let ps: Vec<f32> = tokens.iter().filter(|t| within(t, s)).map(|t| t.p).collect();
+        let secs = (s.end_secs - s.start_secs).max(0.1);
+        let mean_log_p = ps.iter().map(|p| p.max(1e-6).ln()).sum::<f32>() / ps.len().max(1) as f32;
+        !ps.is_empty() && ps.len() as f64 / secs >= SPOKEN_TOKENS_PER_SEC && mean_log_p >= SPOKEN_MEAN_LOG_P
+    };
+    let kept: Vec<Segment> = segments.iter().filter(|s| overlap(s.start_secs, s.end_secs) > 0.2 || reads_as_speech(s)).cloned().collect();
+    let heard: Vec<Token> = tokens.iter().filter(|t| kept.iter().any(|s| within(t, s))).cloned().collect();
+    (kept, heard)
+}
+
+/// Outside detected speech, a segment is kept at this pace or faster:
+/// speech runs at three to five tokens a second.
+const SPOKEN_TOKENS_PER_SEC: f64 = 1.0;
+/// And this sure of its tokens, as the mean of their log probability.
+const SPOKEN_MEAN_LOG_P: f32 = -0.7;
 
 /// An aligned token has a time and no end: it ends where the next one
 /// starts, or a little after its own start at the end of a segment —
@@ -744,6 +849,27 @@ mod tests {
         let t = Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 1.0, text: "Hello world.".into() }], words: w, ..Default::default() };
         assert_eq!(t.search("WORLD").len(), 1);
         assert_eq!(t.words_within(0.0, 0.25).len(), 1);
+    }
+
+    /// #499: what whisper writes where voice activity heard nobody is
+    /// dropped, segment and words, unless it reads as speech; what
+    /// overlaps speech stays.
+    #[test]
+    fn segments_and_words_outside_the_speech_are_dropped() {
+        let seg = |a: f64, b: f64, t: &str| Segment { start_secs: a, end_secs: b, text: t.into() };
+        let segments = vec![seg(0.0, 29.98, "I'm going to go to the next place."), seg(31.0, 33.0, "Over here."), seg(40.0, 42.0, "Thank you."), seg(50.0, 51.0, "Abort!")];
+        // Three tokens in thirty seconds; one unsure token in two; two
+        // sure ones in a second, under a score the detector missed.
+        let tokens = vec![
+            tok(" I'm", 3.0, 3.2, 0.7), tok(" going", 12.0, 12.2, 0.8), tok(" place", 25.0, 25.2, 0.8),
+            tok(" Over", 31.1, 31.4, 0.9), tok(" here", 31.9, 32.2, 0.9),
+            tok(" Thank", 40.2, 40.5, 0.3),
+            tok(" Ab", 50.1, 50.3, 0.9), tok("ort", 50.3, 50.6, 0.85),
+        ];
+        let speech = [(31.2, 32.8)];
+        let (kept, heard) = keep_spoken(&segments, &tokens, &speech);
+        assert_eq!(kept.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["Over here.", "Abort!"]);
+        assert_eq!(heard.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), vec![" Over", " here", " Ab", "ort"]);
     }
 
     #[test]

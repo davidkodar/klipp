@@ -693,6 +693,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         (ModelKind::FaceDetector, "FACES"),
                         (ModelKind::Voice, "NARRATION (VOICE)"),
                         (ModelKind::SpeechEnhancer, "VOICE ISOLATION"),
+                        (ModelKind::VoiceActivity, "SPEECH DETECTION"),
                     ];
                     for (kind, header) in kinds_in_order {
                         let entries: Vec<&ModelEntry> = visible_entries
@@ -2824,6 +2825,7 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
         ModelKind::Voice => "Narration Voice",
         ModelKind::FaceDetector => "Face Detector",
         ModelKind::SpeechEnhancer => "Voice Isolation",
+        ModelKind::VoiceActivity => "Speech Detection",
     }
 }
 

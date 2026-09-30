@@ -142,6 +142,24 @@ prompts = ""
 kind = "transcriber"
 runtime = "whisper_cpp"
 
+# Silero VAD for whisper.cpp: where in a sound someone speaks. The
+# transcriber is run on those stretches only, so it does not write
+# sentences into street noise and wind (#499). Fetched with the
+# transcription model.
+[[model]]
+id = "silero_vad_v5_ggml"
+display_name = "Silero VAD v5.1.2 (whisper.cpp)"
+size_bytes = 885098
+sha256 = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
+license = "MIT"
+attribution = "Silero Team (silero-vad); ggml-org (ggml conversion)"
+sources = [
+    { url = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" },
+]
+prompts = ""
+kind = "voice_activity"
+runtime = "whisper_cpp"
+
 # ── Screen text (OCR) ─────────────────────────────────────────────
 # PP-OCR mobile models (PaddleOCR, Apache-2.0) in ONNX: a DBNet text
 # detector and a PP-OCRv4 English CRNN recogniser. Small, fast on the
