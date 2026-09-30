@@ -20,9 +20,12 @@ const CHIP_H: u32 = 126;
 const GALLERY_CHIP: egui::Vec2 = egui::vec2(104.0, 58.5);
 /// The chip in an In / Out row.
 const ROW_CHIP: egui::Vec2 = egui::vec2(72.0, 40.5);
-/// Hover playback: the frame step and the loop length.
-const FRAME_STEP: f32 = 1.0 / 20.0;
-const HOVER_LOOP: f32 = 1.6;
+/// The picker's large preview, rendered at this size (#608).
+const BIG_W: u32 = 480;
+const BIG_H: u32 = 270;
+/// Playback: the frame step, and how long a loop plays before it starts
+/// over.
+const FRAME_STEP: f32 = 1.0 / 25.0;
 const LOOPS_HOVER_LOOP: f32 = 3.0;
 /// The moment an entrance chip shows at rest: mid-entrance, so the
 /// kind is visible in a still.
@@ -156,11 +159,62 @@ fn hover_elapsed(ui: &egui::Ui, id: egui::Id, hovered: bool) -> Option<f32> {
     Some((now - start).max(0.0) as f32)
 }
 
-/// The moment a hovered chip shows `elapsed` seconds into its hover,
-/// looping over `[from, from + len)` in frame steps.
-fn hover_time(elapsed: f32, from: f32, len: f32) -> f32 {
-    let t = elapsed % len;
-    from + (t / FRAME_STEP).floor() * FRAME_STEP
+/// How a chip plays while it is watched (#608): the whole effect at its
+/// own speed, with a moment on either side so the eye sees where the
+/// text comes from and where it ends up. A loop of the first 1.6 s,
+/// starting the instant it was hovered, was over before it was seen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Play {
+    /// An entrance `span` seconds long: nothing yet, the entrance, then
+    /// the text at rest.
+    Enter { span: f32 },
+    /// An exit `span` seconds long, which ends at the chip title's end:
+    /// the text at rest, the exit, then nothing.
+    Exit { span: f32 },
+    /// A loop, straight through `len` seconds.
+    Loop { len: f32 },
+    /// A still at `at`: a style, which does not move.
+    Still { at: f32 },
+}
+
+/// Before an entrance, and after an exit: the empty frame.
+const PLAY_EMPTY: f32 = 0.45;
+/// After an entrance, and before an exit: the text at rest.
+const PLAY_REST: f32 = 1.0;
+
+impl Play {
+    fn len(self) -> f32 {
+        match self {
+            Play::Enter { span } | Play::Exit { span } => PLAY_EMPTY + span + PLAY_REST,
+            Play::Loop { len } => len,
+            Play::Still { .. } => FRAME_STEP,
+        }
+    }
+
+    /// The chip title's time `elapsed` seconds into watching it, in
+    /// frame steps.
+    fn time(self, elapsed: f32) -> f32 {
+        let u = ((elapsed % self.len().max(FRAME_STEP)) / FRAME_STEP).floor() * FRAME_STEP;
+        match self {
+            Play::Enter { .. } => (u - PLAY_EMPTY).clamp(0.0, WINDOW),
+            Play::Exit { span } => (WINDOW - span - PLAY_REST + u).clamp(0.0, WINDOW),
+            Play::Loop { .. } => u,
+            Play::Still { at } => at,
+        }
+    }
+}
+
+/// How long `m` takes on `text`: its delay and duration, and the stagger
+/// across the text's pieces, to the last one.
+fn motion_span(m: &Motion, text: &str) -> f32 {
+    let units = match m.stagger {
+        StaggerUnit::None => 1,
+        StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count(),
+        StaggerUnit::Word => text.split_whitespace().count(),
+        StaggerUnit::Line => text.lines().count(),
+    }
+    .max(1);
+    m.delay_secs + m.duration_secs + m.stagger_secs * (units - 1) as f32
 }
 
 struct ChipSpec<'a> {
@@ -169,12 +223,16 @@ struct ChipSpec<'a> {
     subject: &'a ChipSubject,
     /// The layer's stack, which is where the style a chip shows lives.
     fx: &'a LayerFx,
-    /// The moment shown at rest, and the hover loop's start and length.
+    /// The moment shown at rest, and how it plays while watched.
     rest: f32,
-    hover_from: f32,
-    hover_len: f32,
+    play: Play,
     selected: bool,
     label: Option<&'a str>,
+    /// Played all the time, not only while hovered: the picker's large
+    /// preview.
+    always: bool,
+    /// The size it is rendered at.
+    render: (u32, u32),
 }
 
 /// Draw one chip: the rendered still at rest, the motion playing while
@@ -193,25 +251,28 @@ fn chip(
     let template = format!("chip:{}:{:x}", spec.id, style_signature(spec.subject, spec.fx));
     let text = chip_text(spec.subject);
     let hovered = resp.hovered();
-    let elapsed = hover_elapsed(ui, resp.id, hovered);
+    // The clock is the effect's own, so a large preview that turns to
+    // another effect starts it from the beginning.
+    let elapsed = hover_elapsed(ui, resp.id.with(&spec.id), hovered || spec.always);
     let time = match elapsed {
-        Some(e) => hover_time(e, spec.hover_from, spec.hover_len),
+        Some(e) => spec.play.time(e),
         None => spec.rest,
     };
-    if elapsed.is_some() {
-        // The next few steps, so hover play never waits on a render.
-        for k in 1..=6 {
-            let t = hover_time(elapsed.unwrap_or(0.0) + k as f32 * FRAME_STEP, spec.hover_from, spec.hover_len);
+    let (rw, rh) = spec.render;
+    if elapsed.is_some() && !matches!(spec.play, Play::Still { .. }) {
+        // The next few steps, so play never waits on a render.
+        for k in 1..=8 {
+            let t = spec.play.time(elapsed.unwrap_or(0.0) + k as f32 * FRAME_STEP);
             let key = TitlePreviews::key(&template, &text, t);
             let mk = make.clone();
-            chips.previews.request_sized(&key, t, CHIP_W, CHIP_H, mk);
+            chips.previews.request_sized(&key, t, rw, rh, mk);
         }
         ui.ctx().request_repaint();
     }
     let key = TitlePreviews::key(&template, &text, time);
     let tex = chips
         .previews
-        .get_or_request_sized(&key, time, CHIP_W, CHIP_H, make.clone())
+        .get_or_request_sized(&key, time, rw, rh, make.clone())
         .cloned()
         .or_else(|| chips.previews.nearest_for(&template, &text, time).cloned());
 
@@ -240,6 +301,12 @@ fn chip(
         );
     }
     resp
+}
+
+/// The large preview's size: the picker's width, at 16:9.
+fn big_size(ui: &egui::Ui) -> egui::Vec2 {
+    let w = ui.available_width();
+    egui::vec2(w, w * 9.0 / 16.0)
 }
 
 /// A caption above a card section, in the tab's own voice.
@@ -273,7 +340,7 @@ fn gallery_body(
     id: egui::Id,
     recent_key: &str,
     entries: &[GalleryEntry],
-    mut draw: impl FnMut(&mut egui::Ui, usize) -> egui::Response,
+    mut draw: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
 ) -> Option<usize> {
     let (search_id, group_id, focus_id) = (id.with("search"), id.with("group"), id.with("focused"));
     let recent_id = egui::Id::new(("title_gallery_recent", recent_key));
@@ -328,8 +395,12 @@ fn gallery_body(
         for row in shown.chunks(3) {
             ui.horizontal(|ui| {
                 for &i in row {
-                    if draw(ui, i).clicked() {
+                    let resp = draw(ui, i, false);
+                    if resp.clicked() {
                         picked = Some(i);
+                    }
+                    if resp.hovered() {
+                        ui.memory_mut(|m| m.data.insert_temp(id.with("hovered"), Some(i)));
                     }
                 }
             });
@@ -383,26 +454,55 @@ fn picker_field(ui: &mut egui::Ui, theme: &KlippTheme, text: &str, open: bool) -
         .clicked()
 }
 
-/// The picker, open inside the inspector under its field: the shared
-/// body in a frame, closed by Esc or by its field. Returns the entry
-/// picked, if any; picking closes it.
+/// The picker, open inside the inspector under its field: a large
+/// preview, then the shared body, in a frame, closed by Esc or by its
+/// field. `draw(ui, i, big)` draws entry `i`'s chip, or with `big` its
+/// large preview. Returns the entry picked, if any; picking closes it.
+///
+/// The large preview plays the effect under the pointer, else `current`,
+/// the whole of it, over and over (#608): a small chip playing its first
+/// moment while hovered went by too fast to tell a Drop from a Rise.
+#[allow(clippy::too_many_arguments)]
 fn inline_picker(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     id: egui::Id,
     recent_key: &str,
     entries: &[GalleryEntry],
-    draw: impl FnMut(&mut egui::Ui, usize) -> egui::Response,
+    current: Option<usize>,
+    mut draw: impl FnMut(&mut egui::Ui, usize, bool) -> egui::Response,
 ) -> Option<usize> {
     let mut picked = None;
-    egui::Frame::none()
+    let hovered_id = id.with("body").with("hovered");
+    // The chip under the pointer last frame, kept while the pointer moves
+    // across the gaps between chips so the preview does not jump back.
+    let hovered: Option<usize> = ui.memory(|m| m.data.get_temp(hovered_id)).flatten();
+    let frame = egui::Frame::none()
         .fill(theme.bg_panel_alt)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(crate::theme::radius::PANEL)
         .inner_margin(egui::Margin::same(8.0))
         .show(ui, |ui| {
-            picked = gallery_body(ui, theme, id.with("body"), recent_key, entries, draw);
+            // The picture, then its name: the same height either way, so
+            // the chips below never move under the pointer.
+            let name = match hovered.or(current).filter(|&i| i < entries.len()) {
+                Some(i) => {
+                    draw(ui, i, true);
+                    egui::RichText::new(entries[i].label).color(theme.text_primary)
+                }
+                None => {
+                    let (rect, _) = ui.allocate_exact_size(big_size(ui), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
+                    egui::RichText::new("Point at an effect to see it play").color(theme.text_dim)
+                }
+            };
+            ui.label(name.size(crate::theme::type_scale::CONTROL));
+            ui.add_space(4.0);
+            picked = gallery_body(ui, theme, id.with("body"), recent_key, entries, &mut draw);
         });
+    if !ui.rect_contains_pointer(frame.response.rect) {
+        ui.memory_mut(|m| m.data.remove::<Option<usize>>(hovered_id));
+    }
     if picked.is_some() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         set_open_picker(ui, None);
     }
@@ -437,11 +537,19 @@ impl Direction {
             Direction::Exit => "Choose exit\u{2026}",
         }
     }
-    /// The rest moment and hover loop for a chip of this direction.
-    fn timing(self) -> (f32, f32, f32) {
+    /// The moment a chip of this direction shows at rest.
+    fn rest(self) -> f32 {
         match self {
-            Direction::Enter => (REST_IN, 0.0, HOVER_LOOP),
-            Direction::Exit => (WINDOW - REST_IN, WINDOW - HOVER_LOOP, HOVER_LOOP),
+            Direction::Enter => REST_IN,
+            Direction::Exit => WINDOW - REST_IN,
+        }
+    }
+    /// How `m` plays in this direction on `text`.
+    fn play(self, m: Option<Motion>, text: &str) -> Play {
+        let span = m.map_or(0.0, |m| motion_span(&m, text)).min(WINDOW - PLAY_EMPTY - PLAY_REST);
+        match self {
+            Direction::Enter => Play::Enter { span },
+            Direction::Exit => Play::Exit { span },
         }
     }
 }
@@ -469,7 +577,8 @@ fn motion_row(
     slot: &mut Option<Motion>,
 ) -> bool {
     let mut changed = false;
-    let (rest, hover_from, hover_len) = dir.timing();
+    let rest = dir.rest();
+    let text = chip_text(subject);
     let picker_id = egui::Id::new(("title_motion_picker", dir.label()));
     let open = open_picker(ui) == Some(picker_id);
     let presets = klipp_core::title_motion::MotionPreset::all();
@@ -489,7 +598,17 @@ fn motion_row(
             ui,
             theme,
             chips,
-            ChipSpec { id: format!("row:{}:{}", dir.label(), kind_id), subject, fx, rest, hover_from, hover_len, selected: false, label: None },
+            ChipSpec {
+                id: format!("row:{}:{}", dir.label(), kind_id),
+                subject,
+                fx,
+                rest,
+                play: dir.play(current, &text),
+                selected: false,
+                label: None,
+                always: false,
+                render: (CHIP_W, CHIP_H),
+            },
             ROW_CHIP,
             make,
         );
@@ -516,15 +635,24 @@ fn motion_row(
             .map(|p| GalleryEntry { key: p.map_or("none".into(), |p| p.name.to_string()), label: p.map_or("None", |p| p.name), group: p.map_or("", |p| p.group) })
             .collect();
         let current = slot.map(|m| (m.kind, m.stagger));
-        let picked = inline_picker(ui, theme, picker_id, dir.label(), &entries, |ui, i| {
+        let current_i = items.iter().position(|p| p.map(|p| (p.motion.kind, p.motion.stagger)) == current);
+        let picked = inline_picker(ui, theme, picker_id, dir.label(), &entries, current_i, |ui, i, big| {
             let m = items[i].map(|p| p.motion);
             let s_c = subject.clone();
             let fx_c = fx.clone();
             let make = move || motion_chip_title(&s_c, &fx_c, dir, m);
             let label = entries[i].label;
-            let id = format!("gallery:{}:{}", dir.label(), label);
             let selected = m.map(|m| (m.kind, m.stagger)) == current;
-            chip(ui, theme, chips, ChipSpec { id, subject, fx, rest, hover_from, hover_len, selected, label: Some(label) }, GALLERY_CHIP, make)
+            if big {
+                let id = format!("big:{}:{}", dir.label(), label);
+                let spec = ChipSpec { id, subject, fx, rest, play: dir.play(m, &text), selected: false, label: None, always: true, render: (BIG_W, BIG_H) };
+                return chip(ui, theme, chips, spec, big_size(ui), make);
+            }
+            // The large preview plays the chip under the pointer, so the
+            // chip itself holds still.
+            let id = format!("gallery:{}:{}", dir.label(), label);
+            let spec = ChipSpec { id, subject, fx, rest, play: Play::Still { at: rest }, selected, label: Some(label), always: false, render: (CHIP_W, CHIP_H) };
+            chip(ui, theme, chips, spec, GALLERY_CHIP, make)
         });
         if let Some(i) = picked {
             pick = Some(items[i].map(|p| p.motion));
@@ -664,20 +792,39 @@ fn show_loops(
         let presets = TitleLoop::presets();
         let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
         let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
-        let picked = inline_picker(ui, theme, picker_id, "Loops", &entries, |ui, i| {
+        let picked = inline_picker(ui, theme, picker_id, "Loops", &entries, None, |ui, i, big| {
             let l = &items[i];
             let s_c = subject.clone();
             let fx_c = fx.clone();
             let l_c = l.clone();
             let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
-            chip(
-                ui,
-                theme,
-                chips,
-                ChipSpec { id: format!("loop:{}", entries[i].label), subject, fx, rest: 0.35, hover_from: 0.0, hover_len: LOOPS_HOVER_LOOP, selected: false, label: Some(entries[i].label) },
-                GALLERY_CHIP,
-                make,
-            )
+            let label = entries[i].label;
+            if big {
+                let spec = ChipSpec {
+                    id: format!("bigloop:{label}"),
+                    subject,
+                    fx,
+                    rest: 0.35,
+                    play: Play::Loop { len: LOOPS_HOVER_LOOP },
+                    selected: false,
+                    label: None,
+                    always: true,
+                    render: (BIG_W, BIG_H),
+                };
+                return chip(ui, theme, chips, spec, big_size(ui), make);
+            }
+            let spec = ChipSpec {
+                id: format!("loop:{label}"),
+                subject,
+                fx,
+                rest: 0.35,
+                play: Play::Still { at: 0.35 },
+                selected: false,
+                label: Some(label),
+                always: false,
+                render: (CHIP_W, CHIP_H),
+            };
+            chip(ui, theme, chips, spec, GALLERY_CHIP, make)
         });
         if let Some(i) = picked {
             loops.push(items[i].clone());
@@ -1005,7 +1152,17 @@ pub fn show_style_card(
                 ui,
                 theme,
                 chips,
-                ChipSpec { id: format!("preset:{pid}"), subject: &subject, fx, rest: 1.0, hover_from: 1.0, hover_len: FRAME_STEP, selected: false, label: Some(label) },
+                ChipSpec {
+                    id: format!("preset:{pid}"),
+                    subject: &subject,
+                    fx,
+                    rest: 1.0,
+                    play: Play::Still { at: 1.0 },
+                    selected: false,
+                    label: Some(label),
+                    always: false,
+                    render: (CHIP_W, CHIP_H),
+                },
                 ROW_CHIP,
                 make,
             );
@@ -1181,6 +1338,68 @@ mod roll_speed_tests {
 }
 
 #[cfg(test)]
+mod play_tests {
+    use super::*;
+
+    /// Every piece of `text` at `t` into the chip title, entering by `m`.
+    fn pieces(m: Motion, text: &str, t: f32, dir: Direction) -> Vec<f32> {
+        let motion = match dir {
+            Direction::Enter => TitleMotion { enter: Some(m), exit: None },
+            Direction::Exit => TitleMotion { enter: None, exit: Some(m) },
+        };
+        let n = match m.stagger {
+            StaggerUnit::None => 1,
+            StaggerUnit::Char => text.chars().filter(|c| !c.is_whitespace()).count(),
+            StaggerUnit::Word => text.split_whitespace().count(),
+            StaggerUnit::Line => text.lines().count(),
+        };
+        (0..n)
+            .map(|u| {
+                let (a, b) = motion.progress(t, Some(WINDOW), u);
+                a.min(b)
+            })
+            .collect()
+    }
+
+    /// The preview plays an effect whole (#608): nothing at first, every
+    /// piece, the last of a stagger too, at rest after it, and for an
+    /// exit the text at rest first and gone at the end.
+    #[test]
+    fn a_preview_plays_the_whole_effect_with_a_moment_either_side() {
+        let text = "Coming soon";
+        for m in [
+            Motion::new(MotionKind::Drop).duration(0.6),
+            Motion::new(MotionKind::Fade).duration(0.4).delay(0.3),
+            Motion::new(MotionKind::Rise).duration(0.5).stagger(StaggerUnit::Char, 0.06),
+        ] {
+            let span = motion_span(&m, text);
+            let enter = Direction::Enter.play(Some(m), text);
+            assert!(pieces(m, text, enter.time(0.0), Direction::Enter).iter().all(|&p| p <= 0.0), "{m:?}: nothing yet");
+            let settled = enter.time(PLAY_EMPTY + span + FRAME_STEP);
+            assert!(pieces(m, text, settled, Direction::Enter).iter().all(|&p| p >= 1.0), "{m:?}: every piece at rest");
+            let half = enter.time(PLAY_EMPTY + span * 0.5);
+            assert!(pieces(m, text, half, Direction::Enter).iter().any(|&p| p > 0.0 && p < 1.0), "{m:?}: moving half way");
+
+            let exit = Direction::Exit.play(Some(m), text);
+            assert!(pieces(m, text, exit.time(0.0), Direction::Exit).iter().all(|&p| p >= 1.0), "{m:?}: at rest first");
+            let gone = exit.time(PLAY_REST + span + FRAME_STEP);
+            assert!(pieces(m, text, gone, Direction::Exit).iter().all(|&p| p <= 0.0), "{m:?}: gone after");
+            // And it starts over.
+            assert_eq!(exit.time(exit.len() + 0.001), exit.time(0.0));
+        }
+    }
+
+    /// A stagger's span reaches its last piece, not its first.
+    #[test]
+    fn a_staggered_span_covers_every_piece() {
+        let m = Motion::new(MotionKind::Rise).duration(0.5).stagger(StaggerUnit::Char, 0.1);
+        assert!((motion_span(&m, "ab cd") - (0.5 + 3.0 * 0.1)).abs() < 1e-5);
+        let w = m.stagger(StaggerUnit::Word, 0.2);
+        assert!((motion_span(&w, "ab cd") - (0.5 + 0.2)).abs() < 1e-5);
+    }
+}
+
+#[cfg(test)]
 mod gallery_tests {
     use super::{gallery_body, GalleryEntry};
     use crate::theme::KlippTheme;
@@ -1206,7 +1425,7 @@ mod gallery_tests {
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0))), events, ..Default::default() },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    picked = gallery_body(ui, &KlippTheme::default(), egui::Id::new("test_gallery"), "test", &list, |ui, i| ui.button(list[i].label));
+                    picked = gallery_body(ui, &KlippTheme::default(), egui::Id::new("test_gallery"), "test", &list, |ui, i, _| ui.button(list[i].label));
                 });
             },
         );
@@ -1248,7 +1467,13 @@ mod gallery_tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         if open_picker(ui) == Some(id) {
-                            picked = inline_picker(ui, &KlippTheme::default(), id, "inline", &list, |ui, i| ui.button(list[i].label));
+                            picked = inline_picker(ui, &KlippTheme::default(), id, "inline", &list, None, |ui, i, big| {
+                                if big {
+                                    ui.allocate_exact_size(super::big_size(ui), egui::Sense::click()).1
+                                } else {
+                                    ui.button(list[i].label)
+                                }
+                            });
                         }
                     });
                 },
