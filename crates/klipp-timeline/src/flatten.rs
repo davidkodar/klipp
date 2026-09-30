@@ -35,7 +35,7 @@
 
 use crate::{Clip, ClipKind, Sequence, Track, TrackKind};
 use klipp_core::{ClipId, RationalTime, SequenceId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 fn binding_parts(property: &str) -> Result<(usize, &str), String> {
@@ -142,10 +142,11 @@ pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence 
 fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Vec<SequenceId>, namespace: Option<ClipId>) -> Sequence {
     ancestors.push(seq.id);
     let mut flat = seq.clone();
+    let mut graded = HashSet::new();
     flat.tracks = seq
         .tracks
         .iter()
-        .map(|track| flatten_track(track, all_sequences, 0))
+        .map(|track| flatten_track(track, all_sequences, 0, &mut graded))
         .collect();
     if let Some(ns) = namespace {
         let ids: HashMap<ClipId, ClipId> = flat
@@ -155,6 +156,7 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
             .map(|c| (c.id, instance_id(ns, c.id)))
             .collect();
         reidentify(&mut flat, &ids);
+        graded = graded.iter().map(|id| ids.get(id).copied().unwrap_or(*id)).collect();
     }
     let mut sound = Vec::new();
     for track in &mut flat.tracks {
@@ -163,7 +165,10 @@ fn flatten_within(seq: &Sequence, all_sequences: &[Sequence], ancestors: &mut Ve
             if let ClipKind::Precomposition { sequence_id, .. } | ClipKind::TemplatePrecomposition { sequence_id, .. } = clip.kind {
                 // A clip that is off is off: no scene, no sound.
                 clip.precomp = if clip.enabled { resolve_precomposition(clip, sequence_id, all_sequences, ancestors) } else { None };
-                if let Some(scene) = &clip.precomp {
+                // A graded compound's sound stays with its own audio
+                // clip, which is flattened as before: taken from the
+                // scene too, it would play twice.
+                if let Some(scene) = clip.precomp.as_ref().filter(|_| !graded.contains(&clip.id)) {
                     sound.extend(scene_sound(clip, scene, &carrier));
                 }
             }
@@ -377,7 +382,17 @@ fn track_kinds_compatible(parent_kind: TrackKind, inner_kind: TrackKind) -> bool
     }
 }
 
-fn flatten_track(track: &Track, all_sequences: &[Sequence], depth: u8) -> Track {
+/// Whether a compound's inner sequence has a timeline grade of its own.
+fn has_timeline_grade(sequence_id: SequenceId, all_sequences: &[Sequence]) -> bool {
+    all_sequences.iter().find(|s| s.id == sequence_id).and_then(|s| s.timeline_graph.as_ref()).is_some_and(|g| !g.is_identity())
+}
+
+/// `graded` collects the compounds on picture tracks whose inner sequence
+/// has a timeline grade: they are left whole and drawn as the scene they
+/// are, so the grade has the scene's own composite to go over (#370).
+/// Inlined, the inner clips joined the parent's layers and the grade had
+/// nothing of its own to grade, so it was dropped without a word.
+fn flatten_track(track: &Track, all_sequences: &[Sequence], depth: u8, graded: &mut HashSet<ClipId>) -> Track {
     let mut flat = track.clone();
     let track_kind = track.kind;
     flat.clips = track
@@ -385,6 +400,12 @@ fn flatten_track(track: &Track, all_sequences: &[Sequence], depth: u8) -> Track 
         .iter()
         .flat_map(|clip| {
             if let ClipKind::Sequence { sequence_id, .. } = &clip.kind {
+                if track_kind == TrackKind::Video && has_timeline_grade(*sequence_id, all_sequences) {
+                    let mut scene = clip.clone();
+                    scene.kind = ClipKind::Precomposition { sequence_id: *sequence_id };
+                    graded.insert(scene.id);
+                    return vec![scene];
+                }
                 if depth < MAX_COMPOUND_DEPTH {
                     return flatten_clip_for_track(
                         clip,
@@ -577,6 +598,61 @@ mod tests {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+        }
+    }
+
+    /// #370: a compound whose sequence has a timeline grade is left whole
+    /// on its picture track, drawn as the scene it is so the grade has a
+    /// composite to go over; its sound is still flattened from its own
+    /// audio clip, and taken once, not a second time from the scene. An
+    /// ungraded compound is inlined as it always was.
+    #[test]
+    fn a_graded_compound_is_drawn_whole_and_heard_once() {
+        let make_inner = |graded: bool| {
+            let mut inner = make_seq("scene");
+            let media = MediaId::new();
+            let mut v = Track::new("V1", TrackKind::Video);
+            let mut a = Track::new("A1", TrackKind::Audio);
+            let mut pic = Clip::media(media, t(0), t(48), t(0), t(48));
+            let mut snd = Clip::media(media, t(0), t(48), t(0), t(48));
+            pic.linked_clip_id = Some(snd.id);
+            snd.linked_clip_id = Some(pic.id);
+            v.clips.push(pic);
+            a.clips.push(snd);
+            inner.tracks = vec![v, a];
+            if graded {
+                let mut g = klipp_nodes::NodeGraph::default();
+                g.nodes.iter_mut().for_each(|n| {
+                    if n.kind == klipp_nodes::NodeKind::Corrector {
+                        n.params.exposure = Some(-1.0);
+                    }
+                });
+                inner.timeline_graph = Some(g);
+            }
+            inner
+        };
+        for graded in [true, false] {
+            let inner = make_inner(graded);
+            if graded {
+                assert!(has_timeline_grade(inner.id, std::slice::from_ref(&inner)), "the fixture's grade is a grade");
+            }
+            let mut outer = make_seq("reel");
+            let mut v = Track::new("V1", TrackKind::Video);
+            let mut a = Track::new("A1", TrackKind::Audio);
+            v.clips.push(Clip::sequence(inner.id, t(0), t(48)));
+            a.clips.push(Clip::sequence(inner.id, t(0), t(48)));
+            outer.tracks = vec![v, a];
+            let flat = flatten_sequence(&outer, &[outer.clone(), inner.clone()]);
+            assert_eq!(flat.tracks.len(), 2, "graded={graded}: no second copy of the sound");
+            let pic = &flat.tracks[0].clips;
+            assert_eq!(pic.len(), 1);
+            if graded {
+                assert!(matches!(pic[0].kind, ClipKind::Precomposition { sequence_id } if sequence_id == inner.id), "drawn whole: {:?}", pic[0].kind);
+                assert!(pic[0].precomp.as_ref().is_some_and(|s| s.timeline_graph.is_some()), "with its scene, grade and all");
+            } else {
+                assert!(matches!(pic[0].kind, ClipKind::Media { .. }), "inlined: {:?}", pic[0].kind);
+            }
+            assert!(flat.tracks[1].clips.iter().all(|c| matches!(c.kind, ClipKind::Media { .. })) && flat.tracks[1].clips.len() == 1, "graded={graded}: the sound from the compound's own audio clip");
         }
     }
 
