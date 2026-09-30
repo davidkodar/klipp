@@ -659,8 +659,8 @@ fn show_loops(
         });
         // The travelling loops' speed on a line of its own, always shown.
         match l {
-            TitleLoop::Scroll { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true),
-            TitleLoop::Crawl { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false),
+            TitleLoop::Scroll { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false),
+            TitleLoop::Crawl { speed_px_per_sec, repeat, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat),
             _ => {}
         }
     }
@@ -707,7 +707,7 @@ impl Travel {
 /// length gives, and editing it sets that rate. It used to be hidden
 /// until "Fit clip" was unticked, and fitted there was no telling how
 /// fast a roll went (#588). Returns true when it changed.
-fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Travel, vertical: bool) -> bool {
+fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Travel, vertical: bool, repeat: bool) -> bool {
     let mut changed = false;
     let distance = travel.distance(vertical);
     let clip = travel.clip_secs;
@@ -741,7 +741,9 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
             changed = true;
         }
     });
-    if *speed > 0.0 {
+    // A repeating crawl starts again as it leaves, from the first
+    // frame: it is neither centred in the clip nor cut off by it.
+    if *speed > 0.0 && !repeat {
         let secs = distance / *speed;
         let note = if secs > clip + 0.05 {
             Some(format!("Longer than the clip ({clip:.1} s): the end is cut off"))
