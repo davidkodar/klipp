@@ -6657,6 +6657,10 @@ impl KlippApp {
         }
     }
 
+    fn clipboard_of(&self, clip_id: klipp_core::ClipId) -> Option<ClipboardContent> {
+        clipboard_of(self.state.sequence(), &self.state.media_pool, clip_id)
+    }
+
     fn remove_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
         if self.clip_track_is_locked(&clip_id) { return; }
         let Some((ti, _)) = self.state.sequence().find_clip(clip_id) else { return };
@@ -8035,142 +8039,54 @@ impl KlippApp {
         match cmd {
                 // Phase 4: Cut/Copy/Paste
                 AppCommand::CutClip { clip_id } => {
-                    let cid = *clip_id;
-                    let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.find_clip(cid).is_some())
-                        .unwrap_or(0);
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index) {
-                        if let Some(clip) = track.find_clip(cid).cloned() {
-                            if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)).cloned() {
-                                let pos = track.clips.iter().position(|c| c.id == cid).unwrap_or(0);
-                                let shifted: Vec<_> = track.clips[pos + 1..].iter()
-                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
-                                    .collect();
-                                self.state.clipboard = Some(ClipboardContent {
-                                    clips: vec![(clip.clone(), media.clone())],
-                                    source_track_index: track_index,
-                                });
-                                track.ripple_remove(cid);
-                                self.state.push_history(EditCommand::LegacyCutClip {
-                                    clip,
-                                    media_item: media,
-                                    track_index,
-                                    position: pos,
-                                    shifted_clips: shifted,
-                                });
-                                if self.state.selected_clip == Some(cid) {
-                                    self.state.selected_clip = None;
-                                }
-                                self.state.dirty = true;
-                            }
-                        }
+                    // The clip and its linked partner onto the clipboard,
+                    // then removed as Delete removes them: both, in sync,
+                    // one undo step. Cut took the selected half alone and
+                    // left the sound it was linked to (#458).
+                    if let Some(cb) = self.clipboard_of(*clip_id) {
+                        self.state.clipboard = Some(cb);
+                        self.remove_clip_impl(*clip_id);
                     }
-                    self.sync_sequence_to_engine();
                     true
                 }
                 AppCommand::CopyClip { clip_id } => {
                     let cid = *clip_id;
-                    let track_index = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-                        .position(|t| t.find_clip(cid).is_some())
-                        .unwrap_or(0);
-                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get(track_index) {
-                        if let Some(clip) = track.find_clip(cid).cloned() {
-                            if let Some(media) = clip.media_id().and_then(|mid| self.state.media_pool.get(&mid)).cloned() {
-                                // Its attributes too, as Resolve does: copy a
-                                // clip, then Paste Attributes onto others.
-                                // Paste Attributes stayed greyed out after
-                                // Copy, with nothing saying why (#325).
-                                self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(&clip));
-                                self.state.clipboard = Some(ClipboardContent {
-                                    clips: vec![(clip, media)],
-                                    source_track_index: track_index,
-                                });
-                            }
-                        }
+                    // Its attributes too, as Resolve does: copy a clip, then
+                    // Paste Attributes onto others. Paste Attributes stayed
+                    // greyed out after Copy, with nothing saying why (#325).
+                    let attributes = self.state.sequence().all_clips().find(|c| c.id == cid).map(crate::state::AttributesClipboard::of);
+                    if attributes.is_some() {
+                        self.state.attributes_clipboard = attributes;
+                    }
+                    if let Some(cb) = self.clipboard_of(cid) {
+                        self.state.clipboard = Some(cb);
                     }
                     true
                 }
                 AppCommand::PasteClip => {
-                    if let Some(ref cb) = self.state.clipboard.clone() {
-                        for (clip, _media) in &cb.clips {
-                            let track_index = cb.source_track_index;
-                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(track_index) {
-                                let new_id = klipp_core::ClipId::new();
-                                let timeline_in = self.state.playhead;
-                                let dur = clip.duration();
-                                let new_clip = klipp_timeline::Clip {
-                                    id: new_id,
-                                    kind: clip.kind.clone(),
-                                    timeline_in,
-                                    timeline_out: timeline_in + dur,
-                                    source_in: clip.source_in,
-                                    source_out: clip.source_out,
-                                    node_graph: clip.node_graph.clone(),
-                                    effects: clip.effects.clone(),
-                                    builtin_effects: clip.builtin_effects.clone(),
-                                    builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
-                                    linked_clip_id: None,
-                                    linked_title_asset_id: None,
-                                    group_id: None,
-                                    magnetic_anchor: None,
-                                    gain: clip.gain,
-                                    volume: clip.volume,
-                                    pan: clip.pan,
-                                    fade_in_secs: clip.fade_in_secs,
-                                    fade_out_secs: clip.fade_out_secs,
-                                    fade_in_curve: clip.fade_in_curve,
-                                    fade_out_curve: clip.fade_out_curve,
-                                    channel_config: clip.channel_config,
-                                    volume_keyframes: clip.volume_keyframes.clone(),
-                                    pan_keyframes: clip.pan_keyframes.clone(),
-                                    gain_keyframes: clip.gain_keyframes.clone(),
-                                    opacity_keyframes: clip.opacity_keyframes.clone(),
-                                    transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
-                                    transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
-                                    transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
-                                    transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
-                                    transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes.clone(),
-                                    transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes.clone(),
-                                    matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
-                                    matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
-                                    clip_markers: clip.clip_markers.clone(),
-                                    effect_keyframes: clip.effect_keyframes.clone(),
-                                    role: clip.role,
-                                    param_modifiers: clip.param_modifiers.clone(),
-                                    speed: clip.speed,
-                                    speed_keyframes: clip.speed_keyframes.clone(),
-                                    source_rotation: clip.source_rotation,
-                                    enabled: clip.enabled,
-                                    solo: clip.solo,
-                                    blend_mode: clip.blend_mode,
-                                    depth: clip.depth,
-                                    matte_source: clip.matte_source.clone(),
-                                    matte_stencil: clip.matte_stencil.clone(),
-                                    consumed_as_matte: clip.consumed_as_matte,
-                                    transform_link: None,
-                                    grade_versions: clip.grade_versions.clone(),
-                                    active_grade_version: clip.active_grade_version,
-                                    multicam_group: clip.multicam_group,
-                                    multicam_angle: clip.multicam_angle,
-                                    multicam_cuts: clip.multicam_cuts.clone(),
-                                    multicam_sound: clip.multicam_sound,
-                                    audio_effects: clip.audio_effects.clone(),
-                                    audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
-                                    deflicker_data: None,
-                                    deflicker_gains: None,
-                                    stabilization_data: None,
-                                    smoothed_trajectory: None,
-                                    track_points: Vec::new(),
-                                    precomp: None,
-                                };
+                    if let Some(cb) = self.state.clipboard.clone() {
+                        // At the playhead, each clip on its own track and at
+                        // its own offset from the first, a linked pair linked
+                        // again, as one undo step (#458).
+                        let batching = self.state.active_history_mut().is_batching();
+                        if !batching {
+                            self.state.active_history_mut().begin_batch();
+                        }
+                        let mut selected = None;
+                        for (new_clip, track_index) in pasted_clips(&cb, self.state.playhead) {
+                            let seq_idx = self.state.active_sequence_idx;
+                            if let Some(track) = self.state.sequences[seq_idx].tracks.get_mut(track_index) {
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
-                                self.state.push_history(EditCommand::LegacyPasteClip {
-                                    clip: new_clip,
-                                    track_index,
-                                });
-                                self.state.selected_clip = Some(new_id);
-                                self.state.dirty = true;
+                                selected.get_or_insert(new_clip.id);
+                                self.state.push_history(EditCommand::LegacyPasteClip { clip: new_clip, track_index });
                             }
+                        }
+                        if !batching {
+                            self.state.active_history_mut().end_batch();
+                        }
+                        if selected.is_some() {
+                            self.state.selected_clip = selected;
+                            self.state.dirty = true;
                         }
                     }
                     self.sync_sequence_to_engine();
@@ -42685,5 +42601,98 @@ mod skim_decode_height_tests {
     fn a_nonsense_preference_cannot_decode_a_two_pixel_frame() {
         assert_eq!(KlippApp::skim_decode_height(1080, 2), 240);
         assert_eq!(KlippApp::skim_decode_height(1080, 0), 240);
+    }
+}
+
+/// What Cut and Copy put on the clipboard: the clip and its linked
+/// partner, each with its file and its track, in timeline order (#458).
+fn clipboard_of(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, clip_id: klipp_core::ClipId) -> Option<ClipboardContent> {
+    let entry = |id: klipp_core::ClipId| {
+        let (ti, _) = seq.find_clip(id)?;
+        let clip = seq.tracks[ti].find_clip(id)?.clone();
+        let media = clip.media_id().and_then(|mid| pool.get(&mid)).cloned()?;
+        Some((clip, media, ti))
+    };
+    let first = entry(clip_id)?;
+    let partner = first.0.linked_clip_id.and_then(entry);
+    let mut clips: Vec<_> = std::iter::once(first).chain(partner).collect();
+    clips.sort_by_key(|(c, _, ti)| (c.timeline_in, *ti));
+    Some(ClipboardContent { clips })
+}
+
+/// The clips a paste at `at` makes from `cb`, each with its track: new
+/// ids, each at its own offset from the first, a linked pair linked to
+/// each other again, and what belongs to the original alone left behind.
+fn pasted_clips(cb: &ClipboardContent, at: klipp_core::Timecode) -> Vec<(klipp_timeline::Clip, usize)> {
+    let first = cb.clips.iter().map(|(c, _, _)| c.timeline_in).min();
+    let ids: std::collections::HashMap<klipp_core::ClipId, klipp_core::ClipId> = cb.clips.iter().map(|(c, _, _)| (c.id, klipp_core::ClipId::new())).collect();
+    cb.clips
+        .iter()
+        .map(|(clip, _, ti)| {
+            let timeline_in = at + first.map_or(klipp_core::Timecode::zero(), |f| clip.timeline_in - f);
+            let pasted = klipp_timeline::Clip {
+                id: ids[&clip.id],
+                timeline_in,
+                timeline_out: timeline_in + clip.duration(),
+                linked_clip_id: clip.linked_clip_id.and_then(|l| ids.get(&l).copied()),
+                linked_title_asset_id: None,
+                group_id: None,
+                magnetic_anchor: None,
+                transform_link: None,
+                deflicker_data: None,
+                deflicker_gains: None,
+                stabilization_data: None,
+                smoothed_trajectory: None,
+                track_points: Vec::new(),
+                precomp: None,
+                ..clip.clone()
+            };
+            (pasted, *ti)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod linked_clipboard_tests {
+    use super::*;
+
+    fn t(s: f64) -> klipp_core::Timecode {
+        klipp_core::Timecode::from_secs_f64(s, 25)
+    }
+
+    /// #458: a clip cut or copied takes its linked sound, each from its
+    /// own track; pasted, both land on their own tracks at the playhead,
+    /// at their own offset, linked to each other and not to the originals.
+    #[test]
+    fn a_linked_pair_goes_to_the_clipboard_and_comes_back_linked() {
+        let mut pool = klipp_media::MediaPool::new();
+        let media = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/pair.mov".into(), None));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Clip::media(media, t(2.0), t(6.0), t(0.0), t(4.0));
+        // A J-cut: the sound starts 0.4 s before the picture.
+        let mut a = klipp_timeline::Clip::media(media, t(1.6), t(6.0), t(0.0), t(4.4));
+        v.linked_clip_id = Some(a.id);
+        a.linked_clip_id = Some(v.id);
+        let (vid, aid) = (v.id, a.id);
+        let mut vt = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        vt.clips = vec![v];
+        let mut at = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        at.clips = vec![a];
+        seq.tracks = vec![vt, at];
+
+        let cb = clipboard_of(&seq, &pool, vid).expect("on the clipboard");
+        assert_eq!(cb.clips.iter().map(|(c, _, ti)| (c.id, *ti)).collect::<Vec<_>>(), vec![(aid, 1), (vid, 0)], "both, each from its own track, in time order");
+
+        let pasted = pasted_clips(&cb, t(10.0));
+        let (pa, ta) = &pasted[0];
+        let (pv, tv) = &pasted[1];
+        assert_eq!((*ta, *tv), (1, 0));
+        assert_eq!((pa.timeline_in, pv.timeline_in), (t(10.0), t(10.4)), "the J-cut's offset kept");
+        assert_eq!((pa.linked_clip_id, pv.linked_clip_id), (Some(pv.id), Some(pa.id)), "linked to each other");
+        assert!(pa.id != aid && pv.id != vid);
+        // A clip with no partner comes alone.
+        let mut lone = seq.clone();
+        lone.tracks[0].clips[0].linked_clip_id = None;
+        assert_eq!(clipboard_of(&lone, &pool, vid).unwrap().clips.len(), 1);
     }
 }

@@ -3418,8 +3418,9 @@ impl PlayheadFollow {
 
 #[derive(Debug, Clone)]
 pub struct ClipboardContent {
-    pub clips: Vec<(Clip, MediaItem)>,
-    pub source_track_index: usize,
+    /// Each clip with its file and the track it came from: a clip and its
+    /// linked sound go back to their own tracks, linked (#458).
+    pub clips: Vec<(Clip, MediaItem, usize)>,
 }
 
 /// Snapshot of a clip's attributes for Paste Attributes.

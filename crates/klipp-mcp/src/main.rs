@@ -1662,8 +1662,9 @@ fn tool_definitions() -> Vec<Value> {
               step: use it for anything that is one action in your plan (an append and \
               its grade, a set of parameter changes). Every call is checked before any \
               is applied; a bad one refuses the whole batch and nothing changes. Reads \
-              (status, lists, screenshots) are refused inside a batch. Replies with the \
-              document revision after the batch.",
+              (status, lists, screenshots) are refused inside a batch. klipp_look calls \
+              batch too, but only with other looks: one look on many clips is one call \
+              and one undo step. Replies with the document revision after the batch.",
              json!({ "calls": { "type": "array", "description": "In order. Each: {\"tool\": name, \"args\": {...}}",
                  "items": { "type": "object", "properties": {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),

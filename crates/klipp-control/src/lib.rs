@@ -2136,17 +2136,25 @@ fn send_full_envelope(
     }
 }
 
+/// What a batch gathers: the writes that are app commands, and the ones
+/// that are document ops (a look), resolved together when it is sent.
+#[derive(Default)]
+struct Collected {
+    commands: Vec<AppCommand>,
+    ops: Vec<klipp_document::ops::Op>,
+}
+
 /// `collect` is `Some` inside a batch: writes are gathered there instead
 /// of being sent, so the batch goes to the UI whole or not at all.
 fn handle(
     ctx: &ControlContext,
     cmd: ControlCommand,
-    collect: &mut Option<Vec<AppCommand>>,
+    collect: &mut Option<Collected>,
 ) -> Result<serde_json::Value, String> {
     let in_batch = collect.is_some();
     let mut send = |c: AppCommand| -> Result<serde_json::Value, String> {
         if let Some(buf) = collect.as_mut() {
-            buf.push(c);
+            buf.commands.push(c);
             return Ok(json!({ "queued": true }));
         }
         send_envelope(ctx, vec![c], false)
@@ -4422,9 +4430,6 @@ fn handle(
         }
 
         ControlCommand::Look { clip_id: c, name, opacity, remove } => {
-            if in_batch {
-                return Err("look applies a grade; send it on its own, not in a batch".into());
-            }
             let target_id = clip_id(&c)?;
             use klipp_document::ops::{ClipRef, Op};
             let op = if remove {
@@ -4434,6 +4439,12 @@ fn handle(
                 let (path, display) = resolve_look(&name)?;
                 Op::Look { clip_id: ClipRef::Id(target_id), lut_path: path.to_string_lossy().to_string(), name: Some(display), opacity, remove: false }
             };
+            // In a batch, one look on many clips is one call and one undo
+            // step (#458): the looks resolve together when it is sent.
+            if let Some(buf) = collect.as_mut() {
+                buf.ops.push(op);
+                return Ok(json!({ "queued": true }));
+            }
             let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
             let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(plan.steps.first().map(|s| s.what.clone()).unwrap_or_else(|| "look".into())))?;
@@ -5225,14 +5236,28 @@ reference:   {}",
             if commands.is_empty() {
                 return Err("an empty batch".into());
             }
-            let mut buf = Some(Vec::with_capacity(commands.len()));
+            let mut buf = Some(Collected::default());
             for (i, c) in commands.into_iter().enumerate() {
                 // Every command checked and translated before any is sent:
                 // a bad one refuses the batch whole.
                 handle(ctx, c, &mut buf).map_err(|e| format!("batch command {i}: {e}"))?;
             }
-            let cmds = buf.take().unwrap_or_default();
-            send_envelope(ctx, cmds, true)
+            let Collected { commands: cmds, ops } = buf.take().unwrap_or_default();
+            if ops.is_empty() {
+                return send_envelope(ctx, cmds, true);
+            }
+            // Looks are resolved edits and apply as one history entry of
+            // their own; with other writes beside them the batch would be
+            // two undo steps, not the one it promises.
+            if !cmds.is_empty() {
+                return Err("a batch with looks holds only looks; send the other writes in a batch of their own".into());
+            }
+            let (plan, revision) = resolve_plan(ctx, &ops)?;
+            let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let label = if ops.len() == 1 { "look".to_string() } else { format!("look on {} clips", ops.len()) };
+            let mut v = send_full_envelope(ctx, cmds, edits, true, Some(revision), Some(label))?;
+            v["text"] = json!(plan.text_folded());
+            Ok(v)
         }
 
         ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions } => {
