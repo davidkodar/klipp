@@ -322,6 +322,8 @@ impl NewInspectorPanel {
                             linked_clip_id: None,
                             linked_title_asset_id: None,
                             group_id: None,
+                            grade_group: None,
+                            own_node_graph: None,
                             magnetic_anchor: None,
                             gain: 1.0, volume: 1.0, pan: 0.0,
                             fade_in_secs: 0.0, fade_out_secs: 0.0,

@@ -1,6 +1,6 @@
 use crate::clip_kind::ClipKind;
 use crate::marker::Marker;
-use klipp_core::{AudioEffectInstance, ClipId, Fps, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
+use klipp_core::{AudioEffectInstance, ClipId, Fps, GradeGroupId, GroupId, MarkerColor, MediaId, ModifierStack, ParamId, RationalTime, Resolution, SequenceId, Timecode, TrackId, TransitionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -92,6 +92,12 @@ pub struct Sequence {
     /// `None` is no timeline grade, as every sequence made before this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_graph: Option<klipp_nodes::NodeGraph>,
+    /// Grade groups (#237): clips that share a pre-clip grade, run before
+    /// each member's own, and a post-clip grade, run after it. Change a
+    /// group's grade once and every member follows. Empty for every
+    /// sequence made before this.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grade_groups: Vec<GradeGroup>,
     /// Whether positions on this sequence are counted drop-frame.
     ///
     /// Only 29.97 and 59.94 have drop-frame at all — it skips frame
@@ -204,6 +210,83 @@ impl Camera {
     }
 }
 
+/// Which of a grade group's two grades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradeStage {
+    /// Before each member's own grade: a normalisation every member
+    /// shares, on the footage as it is decoded.
+    Pre,
+    /// After each member's own grade: the scene's look.
+    Post,
+}
+
+/// A grade group (#237), as a colourist's group in Resolve: the clips of
+/// a scene or a camera share a pre-clip grade, run on the decoded
+/// footage before each member's own grade, and a post-clip grade, run
+/// after it. Membership is [`Clip::grade_group`]; a clip is in one group
+/// at most. The clips keep their own grades.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradeGroup {
+    pub id: GradeGroupId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre: Option<klipp_nodes::NodeGraph>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<klipp_nodes::NodeGraph>,
+}
+
+impl GradeGroup {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { id: GradeGroupId::new(), name: name.into(), pre: None, post: None }
+    }
+
+    pub fn stage(&self, stage: GradeStage) -> Option<&klipp_nodes::NodeGraph> {
+        match stage {
+            GradeStage::Pre => self.pre.as_ref(),
+            GradeStage::Post => self.post.as_ref(),
+        }
+    }
+
+    pub fn stage_mut(&mut self, stage: GradeStage) -> &mut Option<klipp_nodes::NodeGraph> {
+        match stage {
+            GradeStage::Pre => &mut self.pre,
+            GradeStage::Post => &mut self.post,
+        }
+    }
+
+    /// The id a stage of this group is edited under as a clip, as the
+    /// timeline grade is (see [`Sequence::timeline_grade_clip_id`]):
+    /// fixed for the group, and never a real clip's.
+    pub fn stage_clip_id(&self, stage: GradeStage) -> ClipId {
+        const PRE: u128 = 0x6772_6f75_702d_7072_652d_6772_6164_0001;
+        const POST: u128 = 0x6772_6f75_702d_706f_7374_2d67_7261_0002;
+        ClipId(uuid::Uuid::from_u128(self.id.0.as_u128() ^ if stage == GradeStage::Pre { PRE } else { POST }))
+    }
+
+    /// `clip`'s grade inside this group: the pre-clip grade, then the
+    /// clip's own, then the post-clip grade, every node keeping its id.
+    /// A stage that does nothing is left out; a stage pinned to another
+    /// working space than the clip's grade cannot run in it and is left
+    /// out too rather than shifting the colour (the splice refuses it and
+    /// changes nothing).
+    pub fn wrap(&self, clip_graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
+        let mut g = clip_graph.clone();
+        if let Some(pre) = self.pre.as_ref().filter(|p| !p.is_identity()) {
+            let _ = g.prepend_keeping_ids(pre);
+        }
+        if let Some(post) = self.post.as_ref().filter(|p| !p.is_identity()) {
+            let _ = g.append_keeping_ids(post);
+        }
+        g
+    }
+
+    /// Whether this group grades anything.
+    pub fn grades(&self) -> bool {
+        self.pre.as_ref().is_some_and(|g| !g.is_identity()) || self.post.as_ref().is_some_and(|g| !g.is_identity())
+    }
+}
+
 impl Sequence {
     /// The size and rate the sequence would take from a first video clip
     /// of `resolution` and `fps`, where [`Self::first_clip_autoset`] allows
@@ -242,6 +325,57 @@ impl Sequence {
         Some(change)
     }
 
+    /// The grade group `id`, if this sequence has it.
+    pub fn grade_group(&self, id: GradeGroupId) -> Option<&GradeGroup> {
+        self.grade_groups.iter().find(|g| g.id == id)
+    }
+
+    /// The group and stage `clip_id` stands for, when it is a group
+    /// stage's editing id (see [`GradeGroup::stage_clip_id`]).
+    pub fn grade_group_stage_of(&self, clip_id: ClipId) -> Option<(GradeGroupId, GradeStage)> {
+        self.grade_groups.iter().find_map(|g| {
+            [GradeStage::Pre, GradeStage::Post].into_iter().find(|s| g.stage_clip_id(*s) == clip_id).map(|s| (g.id, s))
+        })
+    }
+
+    /// Every member clip's grade with its group's around it (#237): what
+    /// the renderer runs, so the viewer and export alike grade a member
+    /// pre-clip, own, post-clip. Done on the render copy (see
+    /// [`crate::flatten::flatten_sequence`]), never on the document: the
+    /// clip keeps its own grade and the group keeps its own.
+    pub fn bake_grade_groups(&mut self) {
+        if !self.grade_groups.iter().any(GradeGroup::grades) {
+            return;
+        }
+        let groups: HashMap<GradeGroupId, GradeGroup> = self.grade_groups.iter().filter(|g| g.grades()).map(|g| (g.id, g.clone())).collect();
+        for track in &mut self.tracks {
+            for clip in &mut track.clips {
+                if let Some(group) = clip.grade_group.and_then(|id| groups.get(&id)) {
+                    let wrapped = group.wrap(&clip.node_graph);
+                    let own = std::mem::replace(&mut clip.node_graph, wrapped);
+                    clip.own_node_graph = Some(Box::new(own));
+                }
+            }
+        }
+    }
+
+    /// This sequence as the document has it, from a render copy: each
+    /// clip's own grade in place of its grade inside its group's (see
+    /// [`Sequence::bake_grade_groups`]). A copy only when there is
+    /// something to take back out.
+    pub fn with_own_grades(&self) -> std::borrow::Cow<'_, Sequence> {
+        if !self.all_clips().any(|c| c.own_node_graph.is_some()) {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut seq = self.clone();
+        for clip in seq.all_clips_mut() {
+            if let Some(own) = clip.own_node_graph.take() {
+                clip.node_graph = *own;
+            }
+        }
+        std::borrow::Cow::Owned(seq)
+    }
+
     /// The id the timeline grade runs under as a clip (see
     /// [`Clip::timeline_grade_of`]): fixed for the sequence, and never a
     /// real clip's.
@@ -273,6 +407,7 @@ impl Sequence {
             id: SequenceId::new(),
             camera: Camera::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             drop_frame: Self::default_drop_frame(Fps::film_24()),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
@@ -917,6 +1052,8 @@ impl Track {
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
+            grade_group: None,
+            own_node_graph: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -1191,6 +1328,8 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
+            grade_group: clip.grade_group,
+            own_node_graph: None,
             magnetic_anchor: clip.magnetic_anchor.clone(),
             gain: clip.gain,
             volume: clip.volume,
@@ -1258,6 +1397,8 @@ impl Track {
             linked_clip_id: clip.linked_clip_id,
             linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
+            grade_group: clip.grade_group,
+            own_node_graph: None,
             magnetic_anchor: None, // right half gets no anchor
             gain: clip.gain,
             volume: clip.volume,
@@ -1673,6 +1814,19 @@ pub struct Clip {
     pub linked_title_asset_id: Option<klipp_core::MediaId>,
     #[serde(default)]
     pub group_id: Option<GroupId>,
+    /// The grade group this clip's grade runs inside (#237), whose
+    /// pre-clip and post-clip grades wrap its own. A different thing from
+    /// `group_id`, which moves clips together on the timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade_group: Option<GradeGroupId>,
+    /// On a render copy whose grade groups are baked in (see
+    /// [`Sequence::bake_grade_groups`]), this clip's own grade, with
+    /// `node_graph` its grade inside its group's. Never saved, and `None`
+    /// on the document. What reads the render copy to describe or change
+    /// a clip's grade reads [`Clip::own_grade`], or a group's nodes would
+    /// be copied into the clip's own grade.
+    #[serde(skip)]
+    pub own_node_graph: Option<Box<klipp_nodes::NodeGraph>>,
     /// If Some, this clip is connected to an anchor on the primary storyline.
     #[serde(default)]
     pub magnetic_anchor: Option<MagneticAnchor>,
@@ -2053,6 +2207,8 @@ impl Clip {
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
+            grade_group: None,
+            own_node_graph: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2113,6 +2269,12 @@ impl Clip {
     /// sequence (see [`Sequence::timeline_grade_clip_id`]), so per-clip
     /// caches keyed on it hold from frame to frame. `None` when there is
     /// no timeline grade, or it changes nothing.
+    /// The clip's own grade: on a render copy with grade groups baked in,
+    /// without its group's (see [`Clip::own_node_graph`]).
+    pub fn own_grade(&self) -> &klipp_nodes::NodeGraph {
+        self.own_node_graph.as_deref().unwrap_or(&self.node_graph)
+    }
+
     pub fn timeline_grade_of(seq: &Sequence) -> Option<Self> {
         seq.timeline_graph.as_ref().filter(|g| !g.is_identity())?;
         Some(Self::timeline_grade_proxy(seq))
@@ -2153,6 +2315,8 @@ impl Clip {
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
+            grade_group: None,
+            own_node_graph: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -2248,6 +2412,8 @@ impl Clip {
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
+            grade_group: None,
+            own_node_graph: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -3430,6 +3596,7 @@ mod tests {
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             id: SequenceId::new(),
             name: "test".to_string(),
             fps: Fps::new(24, 1),

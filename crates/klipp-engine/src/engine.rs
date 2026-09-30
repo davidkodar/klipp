@@ -1051,7 +1051,26 @@ pub fn apply_param_changes(
             }
             continue;
         }
+        // A drag on a grade group's pre-clip or post-clip node (#237). The
+        // engine's copy runs each member with its group's grade baked in,
+        // node ids kept, so the node is found in every member's graph.
+        if let Some((group, stage)) = seq.grade_group_stage_of(change.clip_id) {
+            if let Some(graph) = seq.grade_groups.iter_mut().find(|g| g.id == group).and_then(|g| g.stage_mut(stage).as_mut()) {
+                apply_override_recursive(graph, change.node_id, &change.param, change.value);
+            }
+            for clip in seq.all_clips_mut().filter(|c| c.grade_group == Some(group)) {
+                if apply_override_recursive(&mut clip.node_graph, change.node_id, &change.param, change.value) {
+                    applied += 1;
+                }
+            }
+            continue;
+        }
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
+            // A member of a grade group keeps its own grade beside the one
+            // it runs; both take the drag (#237).
+            if let Some(own) = clip.own_node_graph.as_deref_mut() {
+                apply_override_recursive(own, change.node_id, &change.param, change.value);
+            }
             if apply_override_recursive(
                 &mut clip.node_graph,
                 change.node_id,

@@ -116,6 +116,10 @@ pub struct SequenceJson {
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_graph: Option<klipp_nodes::NodeGraph>,
+    /// Grade groups and their pre-clip and post-clip grades (#237).
+    /// Absent in every project saved before there could be one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grade_groups: Vec<klipp_timeline::GradeGroup>,
     /// Whether positions are counted drop-frame; see
     /// `Sequence::drop_frame`.
     ///
@@ -260,6 +264,9 @@ pub struct ClipJson {
     pub linked_title_asset_id: Option<String>,
     #[serde(default)]
     pub group_id: Option<String>,
+    /// The grade group the clip's grade runs inside (#237).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade_group: Option<String>,
     #[serde(default)]
     pub gain: Option<f32>,
     #[serde(default)]
@@ -971,6 +978,7 @@ mod tests {
             linked_clip_id: None,
             linked_title_asset_id: None,
             group_id: None,
+            grade_group: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
             fade_in_curve: None, fade_out_curve: None,
@@ -1040,7 +1048,7 @@ mod tests {
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
             effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
-            linked_clip_id: None, linked_title_asset_id: None, group_id: None,
+            linked_clip_id: None, linked_title_asset_id: None, group_id: None, grade_group: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
             fade_in_curve: None, fade_out_curve: None,
@@ -1209,7 +1217,7 @@ mod tests {
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
             effects: vec![], builtin_effects: None, builtin_effects_enabled: Vec::new(), magnetic_anchor: None,
-            linked_clip_id: None, linked_title_asset_id: None, group_id: None,
+            linked_clip_id: None, linked_title_asset_id: None, group_id: None, grade_group: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
             fade_in_curve: None, fade_out_curve: None,

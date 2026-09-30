@@ -4849,7 +4849,13 @@ impl KlippApp {
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter()
                     .find_map(|t| t.clips.iter().find(|c| c.id == cid))
                 {
-                    let graph = &clip.node_graph;
+                    // Inside its grade group's grades, as the engine runs it (#237).
+                    let seq = &self.state.sequences[seq_idx];
+                    let graph = match clip.grade_group.and_then(|g| seq.grade_group(g)).filter(|g| g.grades()) {
+                        Some(group) => std::borrow::Cow::Owned(group.wrap(&clip.node_graph)),
+                        None => std::borrow::Cow::Borrowed(&clip.node_graph),
+                    };
+                    let graph = graph.as_ref();
                     if !graph.is_identity() {
                         // Here, and not before: an identity graph gets no
                         // preview, and for an HDR source this encode is tens
@@ -5161,6 +5167,7 @@ impl KlippApp {
             // back into its parent is moved by the parent's.
             camera: klipp_timeline::Camera::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
@@ -8161,6 +8168,8 @@ impl KlippApp {
                             linked_clip_id: None,
                             linked_title_asset_id: None,
                             group_id: None,
+                            grade_group: None,
+                            own_node_graph: None,
                             magnetic_anchor: None,
                             gain: clip.gain,
                             volume: clip.volume,
@@ -16411,6 +16420,8 @@ impl KlippApp {
                     linked_clip_id: None,
                     linked_title_asset_id: None,
                     group_id: None,
+                    grade_group: None,
+                    own_node_graph: None,
                     magnetic_anchor: None,
                     gain: 1.0,
                     volume: 1.0,
@@ -16771,6 +16782,8 @@ impl KlippApp {
             linked_clip_id: None,
             linked_title_asset_id: Some(asset_media_id),
             group_id: None,
+            grade_group: None,
+            own_node_graph: None,
             magnetic_anchor: None,
             gain: 1.0,
             volume: 1.0,
@@ -19301,6 +19314,7 @@ impl KlippApp {
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
                     timeline_graph: None,
+                    grade_groups: Vec::new(),
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
@@ -19409,6 +19423,7 @@ impl KlippApp {
                     // back into its parent is moved by the parent's.
                     camera: klipp_timeline::Camera::default(),
                     timeline_graph: None,
+                    grade_groups: Vec::new(),
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(
                         klipp_core::Fps::new(*fps_num, *fps_den),
                     ),
@@ -24251,6 +24266,8 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 linked_title_asset_id: clip.linked_title_asset_id,
                 group_id: clip.group_id,
+                grade_group: clip.grade_group,
+                own_node_graph: None,
                 magnetic_anchor: None,
                 gain: clip.gain,
                 volume: clip.volume,
@@ -24385,6 +24402,8 @@ impl KlippApp {
                 linked_clip_id: clip.linked_clip_id,
                 linked_title_asset_id: clip.linked_title_asset_id,
                 group_id: clip.group_id,
+                grade_group: clip.grade_group,
+                own_node_graph: None,
                 magnetic_anchor: None,
                 gain: clip.gain,
                 volume: clip.volume,
@@ -39297,6 +39316,7 @@ mod compound_clip_cycle_tests {
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),

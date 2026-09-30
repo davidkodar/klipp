@@ -185,3 +185,26 @@ fn a_timeline_grade_comes_back() {
     let none = round_trip("no-timeline-grade", Sequence::new_default());
     assert!(none.timeline_graph.is_none(), "a sequence with none reads back with none");
 }
+
+/// #237: a grade group, its two grades and its members come back.
+#[test]
+fn a_grade_group_comes_back() {
+    let mut seq = Sequence::new_default();
+    let mut group = klipp_timeline::GradeGroup::new("Day exterior");
+    let mut post = klipp_nodes::NodeGraph::default();
+    post.ensure_lut3d();
+    group.post = Some(post);
+    group.pre = Some(klipp_nodes::NodeGraph::default());
+    let mut member = media_clip(0, 48);
+    member.grade_group = Some(group.id);
+    let outsider = media_clip(48, 96);
+    seq.tracks[0].clips = vec![member, outsider];
+    seq.grade_groups = vec![group.clone()];
+    let back = round_trip("grade-group", seq);
+    assert_eq!(back.grade_groups, vec![group.clone()]);
+    let groups: Vec<_> = back.tracks[0].clips.iter().map(|c| c.grade_group).collect();
+    assert_eq!(groups, vec![Some(group.id), None]);
+
+    let none = round_trip("no-grade-group", Sequence::new_default());
+    assert!(none.grade_groups.is_empty());
+}

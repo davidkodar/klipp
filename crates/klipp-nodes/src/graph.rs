@@ -1062,12 +1062,27 @@ impl NodeGraph {
     /// nothing follows the project, and joins or takes a pinned one as
     /// it is; the pin, if any, stays this graph's.
     pub fn append(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
-        if let (Some(ours), Some(theirs)) = (self.working_space_override, other.working_space_override) {
-            if ours != theirs {
-                return Err(CannotAppend::WorkingSpace { ours, theirs });
-            }
+        self.splice_after(other.remap_ids())
+    }
+
+    /// [`Self::append`] with `other`'s node ids kept: a group's post-clip
+    /// grade run after each member clip's own (#237). The same node then
+    /// sits in every member's graph, so a change to it, a slider drag
+    /// included, finds it by its id in all of them. `other`'s ids must not
+    /// be this graph's, which ids made fresh for each node never are.
+    pub fn append_keeping_ids(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
+        self.splice_after(other.clone())
+    }
+
+    fn working_spaces_agree(&self, other: &NodeGraph) -> Result<(), CannotAppend> {
+        match (self.working_space_override, other.working_space_override) {
+            (Some(ours), Some(theirs)) if ours != theirs => Err(CannotAppend::WorkingSpace { ours, theirs }),
+            _ => Ok(()),
         }
-        let mut other = other.remap_ids();
+    }
+
+    fn splice_after(&mut self, mut other: NodeGraph) -> Result<(), CannotAppend> {
+        self.working_spaces_agree(&other)?;
         other.strip_input_transforms();
         let Some(src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else {
             return Err(CannotAppend::NoSource);
@@ -1119,6 +1134,58 @@ impl NodeGraph {
             note.pos.x += shift;
             self.sticky_notes.push(note);
         }
+        Ok(())
+    }
+
+    /// Run `other` before this graph's grade, its node ids kept: a group's
+    /// pre-clip grade (#237). Its nodes go between the footage as this
+    /// graph decodes it — the Source, or the Input Transform the Source
+    /// feeds — and everything that read it, so the clip's own grade, and
+    /// any node of it keyed on the footage, reads the group's balance.
+    /// `other`'s own Input Transform is left behind: this graph's decodes.
+    /// Refused, and nothing changed, as [`Self::append`] refuses.
+    pub fn prepend_keeping_ids(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
+        self.working_spaces_agree(other)?;
+        let mut other = other.clone();
+        other.strip_input_transforms();
+        let Some(o_src) = other.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else {
+            return Err(CannotAppend::NoSource);
+        };
+        let Some(src) = self.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else {
+            return Err(CannotAppend::NoSource);
+        };
+        let o_out = other.output_node_id;
+        let middle: Vec<Node> = other.nodes.iter().filter(|n| n.id != o_src && n.id != o_out).cloned().collect();
+        if middle.is_empty() {
+            return Ok(());
+        }
+        let Some(o_feed) = other.edges.iter().find(|e| e.to_node == o_out && e.to_port == 0).map(|e| (e.from_node, e.from_port)) else {
+            return Err(CannotAppend::NothingFeedsOutput);
+        };
+        // The footage as this graph decodes it.
+        let head = self
+            .edges
+            .iter()
+            .find(|e| e.from_node == src && self.nodes.iter().any(|n| n.id == e.to_node && n.kind == NodeKind::InputTransform))
+            .map_or(src, |e| e.to_node);
+        let tail = if o_feed.0 == o_src { (head, 0) } else { o_feed };
+        for e in self.edges.iter_mut().filter(|e| e.from_node == head && e.from_port == 0) {
+            (e.from_node, e.from_port) = tail;
+        }
+        for e in &other.edges {
+            if e.to_node == o_out || e.to_node == o_src {
+                continue;
+            }
+            let (from_node, from_port) = if e.from_node == o_src { (head, 0) } else { (e.from_node, e.from_port) };
+            self.edges.push(Edge { from_node, from_port, to_node: e.to_node, to_port: e.to_port });
+        }
+        for n in &middle {
+            if let Some(p) = other.node_positions.get(&n.id) {
+                self.node_positions.insert(n.id, *p);
+            }
+        }
+        let at = self.nodes.iter().position(|n| n.id == head).map_or(0, |i| i + 1);
+        self.nodes.splice(at..at, middle);
         Ok(())
     }
 
@@ -1629,6 +1696,54 @@ mod chain_order_tests {
             frames: vec![],
             sticky_notes: vec![],
         }
+    }
+
+    /// The node kinds from Source to Output along port 0.
+    fn path_kinds(g: &NodeGraph) -> Vec<NodeKind> {
+        let mut at = g.output_node_id;
+        let mut out = vec![];
+        loop {
+            let n = g.nodes.iter().find(|n| n.id == at).unwrap();
+            out.push(n.kind);
+            match g.edges.iter().find(|e| e.to_node == at && e.to_port == 0) {
+                Some(e) => at = e.from_node,
+                None => break,
+            }
+        }
+        out.reverse();
+        out
+    }
+
+    /// #237: a group's pre-clip grade runs on the decoded footage before
+    /// the clip's own, its post-clip grade after, their node ids kept so
+    /// one change reaches every member; their own Input Transforms stay
+    /// behind.
+    #[test]
+    fn a_group_grade_wraps_the_clip_grade_with_its_ids() {
+        let mut clip = chain_of(&[NodeKind::InputTransform, NodeKind::Corrector]);
+        let pre = chain_of(&[NodeKind::InputTransform, NodeKind::Lut3D]);
+        let post = chain_of(&[NodeKind::Qualifier]);
+        clip.prepend_keeping_ids(&pre).unwrap();
+        clip.append_keeping_ids(&post).unwrap();
+        assert_eq!(
+            path_kinds(&clip),
+            vec![NodeKind::Source, NodeKind::InputTransform, NodeKind::Lut3D, NodeKind::Corrector, NodeKind::Qualifier, NodeKind::Output]
+        );
+        let lut = pre.nodes.iter().find(|n| n.kind == NodeKind::Lut3D).unwrap().id;
+        let q = post.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).unwrap().id;
+        assert!(clip.nodes.iter().any(|n| n.id == lut) && clip.nodes.iter().any(|n| n.id == q), "the group's nodes keep their ids");
+        assert_eq!(clip.nodes.iter().filter(|n| n.kind == NodeKind::InputTransform).count(), 1, "the clip decodes once");
+        assert!(clip.topo_sort().is_ok());
+
+        // A clip with no Input Transform: the pre-clip grade reads the Source.
+        let mut plain = chain_of(&[NodeKind::Corrector]);
+        plain.prepend_keeping_ids(&pre).unwrap();
+        assert_eq!(path_kinds(&plain), vec![NodeKind::Source, NodeKind::Lut3D, NodeKind::Corrector, NodeKind::Output]);
+        // An empty group stage changes nothing.
+        let before = plain.clone();
+        plain.prepend_keeping_ids(&chain_of(&[])).unwrap();
+        plain.append_keeping_ids(&chain_of(&[])).unwrap();
+        assert!(plain == before, "an empty stage left the graph as it was");
     }
 
     #[test]

@@ -607,7 +607,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_look" => {
-            let mut v = json!({ "method": "look", "clip_id": arg_str(args, "clip_id")?, "remove": args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false) });
+            let mut v = json!({ "method": "look", "remove": args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false) });
+            if let Some(c) = args.get("clip_id").and_then(|v| v.as_str()) { v["clip_id"] = json!(c); }
+            if let Some(on) = args.get("on").filter(|v| !v.is_null()) { v["on"] = on.clone(); }
             if let Some(n) = args.get("name").and_then(|v| v.as_str()) { v["name"] = json!(n); }
             if let Some(o) = args.get("opacity").and_then(|v| v.as_f64()) { v["opacity"] = json!(o); }
             v
@@ -1365,6 +1367,14 @@ fn tool_definitions() -> Vec<Value> {
               vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              grade_group {group, clips:[clip_id…], leave?} — picture clips into a named grade group \
+              (made when new; a clip is in one group at most), or out of it with leave; \
+              remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
+              share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
+              post-clip grade (after it: the scene's look). grade and look take on in place of \
+              clip_id: on {group, stage?: \"pre\"|\"post\" (default)} grades the group once for \
+              every member; on \"timeline\" grades the whole sequence after every clip. One look \
+              over a scene is a group and one look on it, not the same look on every shot.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
               secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
@@ -1530,6 +1540,14 @@ fn tool_definitions() -> Vec<Value> {
               vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
+              grade_group {group, clips:[clip_id…], leave?} — picture clips into a named grade group \
+              (made when new; a clip is in one group at most), or out of it with leave; \
+              remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
+              share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
+              post-clip grade (after it: the scene's look). grade and look take on in place of \
+              clip_id: on {group, stage?: \"pre\"|\"post\" (default)} grades the group once for \
+              every member; on \"timeline\" grades the whole sequence after every clip. One look \
+              over a scene is a group and one look on it, not the same look on every shot.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
               secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
@@ -1788,9 +1806,12 @@ fn tool_definitions() -> Vec<Value> {
               klipp_looks), as one node after the grade so it sits on the corrected image. name \
               is category/name or any words that pick one out; opacity (0-1, default 1) fades it \
               in; remove clears it. Applied as one undo step. Grade for exposure and continuity \
-              first, then a look for style. See it with frame_at.",
-             json!({ "clip_id": { "type": "string" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
-             vec!["clip_id"]),
+              first, then a look for style. See it with frame_at. One look over a whole piece or \
+              a scene: on \"timeline\" puts it on the timeline grade, after every clip's own; on \
+              {group} puts it on a grade group's post-clip grade (make the group with the \
+              grade_group op) — one call, one undo step, and every clip follows a later change.",
+             json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", or {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
+             vec![]),
         tool("klipp_orient",
              "Start here. One call for where you are: the build, the project and whether it is \
               saved, the brief, every media item with its analysis state, the sequence so far, \

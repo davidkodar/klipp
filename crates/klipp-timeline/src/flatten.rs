@@ -33,7 +33,7 @@
 //! within those instances may be incorrect. Re-IDing flattened clips is
 //! deferred to a follow-up PRD.
 
-use crate::{Clip, ClipKind, Sequence, Track, TrackKind};
+use crate::{Clip, ClipKind, GradeGroup, Sequence, Track, TrackKind};
 use klipp_core::{ClipId, RationalTime, SequenceId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -127,6 +127,18 @@ pub const MAX_COMPOUND_DEPTH: u8 = 8;
 /// The returned `Sequence` shares `seq`'s id, name, fps, resolution,
 /// markers, in_point, out_point, and last_playhead — only `tracks` differ.
 pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence {
+    // Grade groups wrap each member's grade before anything is expanded,
+    // each sequence with its own groups, so a scene inside a compound
+    // grades as it does on its own (#237).
+    if seq.grade_groups.iter().any(GradeGroup::grades) || all_sequences.iter().any(|s| s.grade_groups.iter().any(GradeGroup::grades)) {
+        let bake = |s: &Sequence| {
+            let mut s = s.clone();
+            s.bake_grade_groups();
+            s
+        };
+        let all: Vec<Sequence> = all_sequences.iter().map(bake).collect();
+        return flatten_within(&bake(seq), &all, &mut Vec::new(), None);
+    }
     flatten_within(seq, all_sequences, &mut Vec::new(), None)
 }
 
@@ -586,6 +598,7 @@ mod tests {
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),
@@ -599,6 +612,55 @@ mod tests {
             brief: None,
             edit_plan: None,
         }
+    }
+
+    /// #237: the render copy grades a group's members pre-clip, own,
+    /// post-clip; a clip outside the group, and the document itself, are
+    /// left as they were; a member inside a compound is wrapped by its own
+    /// sequence's group.
+    #[test]
+    fn a_grade_group_wraps_its_members_in_the_render_copy() {
+        let exposed = |ev: f32| {
+            let mut g = klipp_nodes::NodeGraph::default();
+            g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.params.exposure = Some(ev));
+            g
+        };
+        let mut seq = make_seq("scene");
+        let mut group = GradeGroup::new("Day exterior");
+        group.pre = Some(exposed(0.5));
+        group.post = Some(exposed(-1.0));
+        let pre_node = group.pre.as_ref().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let post_node = group.post.as_ref().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let mut v = Track::new("V1", TrackKind::Video);
+        let mut member = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
+        member.grade_group = Some(group.id);
+        let own_node = member.node_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let outsider = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
+        v.clips = vec![member, outsider];
+        seq.tracks = vec![v];
+        seq.grade_groups = vec![group];
+        let before = seq.clone();
+
+        let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
+        let ids = |c: &Clip| c.node_graph.topo_sort().unwrap().into_iter().filter(|id| [pre_node, own_node, post_node].contains(id)).collect::<Vec<_>>();
+        assert_eq!(ids(&flat.tracks[0].clips[0]), vec![pre_node, own_node, post_node], "pre, own, post in that order");
+        assert!(flat.tracks[0].clips[1].node_graph.is_identity(), "a clip outside the group is not graded by it");
+        let graphs = |s: &Sequence| s.all_clips().map(|c| c.node_graph.clone()).collect::<Vec<_>>();
+        assert!(graphs(&seq) == graphs(&before) && seq.grade_groups == before.grade_groups, "the document is untouched");
+        // What reads the render copy to change a clip's grade reads the
+        // clip's own: the group's nodes never travel into it.
+        assert!(graphs(&flat.with_own_grades()) == graphs(&seq), "the render copy gives back each clip's own grade");
+        assert_eq!(flat.tracks[0].clips[0].own_grade(), &seq.tracks[0].clips[0].node_graph);
+
+        // The same scene as a graded compound's content: its member still
+        // runs inside its group.
+        let mut reel = make_seq("reel");
+        let mut rv = Track::new("V1", TrackKind::Video);
+        rv.clips.push(Clip::sequence(seq.id, t(0), t(48)));
+        reel.tracks = vec![rv];
+        let flat = flatten_sequence(&reel, &[reel.clone(), seq.clone()]);
+        let member = flat.all_clips().find(|c| c.grade_group.is_some()).expect("the member is in the flattened reel");
+        assert_eq!(ids(member), vec![pre_node, own_node, post_node]);
     }
 
     /// #370: a compound whose sequence has a timeline grade is left whole

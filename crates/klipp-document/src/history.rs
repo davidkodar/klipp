@@ -176,6 +176,13 @@ pub enum EditCommand {
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
+    /// The sequence's grade groups, the whole list either side: a group
+    /// made, renamed or removed (#237). Their grades change through
+    /// `SetNodeGraph` under each stage's editing id.
+    SetGradeGroups { old: Vec<klipp_timeline::GradeGroup>, new: Vec<klipp_timeline::GradeGroup> },
+    /// Clips put into, moved between or taken out of grade groups, each
+    /// as (clip, group before, group after) (#237).
+    SetClipGradeGroups { changes: Vec<(ClipId, Option<klipp_core::GradeGroupId>, Option<klipp_core::GradeGroupId>)> },
     /// Replace the persisted values of an inserted composition template.
     SetTemplateInstance { clip_id: ClipId, parameter: String, old: Box<klipp_core::TemplateInstance>, new: Box<klipp_core::TemplateInstance> },
     /// Title clip added (with optional track creation for undo)
@@ -717,6 +724,8 @@ impl EditCommand {
             EditCommand::SetMarkers { .. } => "Markers",
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetClipDepth { .. } => "Depth",
+            EditCommand::SetGradeGroups { .. } => "Grade Groups",
+            EditCommand::SetClipGradeGroups { .. } => "Grade Group",
             EditCommand::SetTemplateInstance { .. } => "Template Parameter",
             EditCommand::LegacyAppendClip { .. } => "Append Clip",
             EditCommand::LinkedImport { .. } => "Add to Timeline",

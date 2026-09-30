@@ -346,7 +346,7 @@ fn existing_node_id(
         .iter()
         .flat_map(|t| t.clips.iter())
         .find(|c| c.id == clip)
-        .map(|c| &c.node_graph)
+        .map(|c| c.own_grade())
         .ok_or_else(|| format!("no clip with id {} on the timeline", clip.0))?;
     if find_node(graph, want) {
         return Ok(want);
@@ -471,8 +471,13 @@ fn timeline_text(
             if !matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
                 let _ = write!(line, "  blend {:?}", c.blend_mode);
             }
-            let grade = if c.node_graph.is_identity() { "none".to_string() } else { format!("{} nodes", c.node_graph.nodes.len()) };
+            let own = c.own_grade();
+            let grade = if own.is_identity() { "none".to_string() } else { format!("{} nodes", own.nodes.len()) };
             let _ = write!(line, "  grade {grade}");
+            // The grade group it grades inside (#237).
+            if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
+                let _ = write!(line, " in group \"{}\"", g.name);
+            }
             if !c.builtin_effects.is_empty() {
                 let names: Vec<String> = c
                     .builtin_effects
@@ -1346,6 +1351,9 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
     }
     let revision = ctx.shared.revision();
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+    // The engine's copy runs grade groups baked into their members; an op
+    // changes a clip's own grade, and must not copy its group's into it.
+    let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
@@ -1836,7 +1844,7 @@ fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::mea
 /// The clip's Corrector knobs as they are: what a grade step adds to.
 fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
     let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
-    if let Some(n) = clip.node_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
+    if let Some(n) = clip.own_grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
         s.exposure = n.params.exposure.unwrap_or(0.0);
         s.lift = n.params.lift_master.unwrap_or(0.0);
         s.gain = n.params.gain_master.unwrap_or(0.0);
@@ -2283,8 +2291,9 @@ fn handle(
                             "source_out_secs": c.source_out.to_secs_f64(),
                             "speed": c.speed,
                             "blend_mode": format!("{:?}", c.blend_mode),
-                            "grade_is_identity": c.node_graph.is_identity(),
-                            "grade_nodes": c.node_graph.nodes.len(),
+                            "grade_is_identity": c.own_grade().is_identity(),
+                            "grade_nodes": c.own_grade().nodes.len(),
+                            "grade_group": c.grade_group.and_then(|g| seq.grade_group(g)).map(|g| g.name.clone()),
                             "media": c.media_id()
                                 .and_then(|id| pool.get(&id))
                                 .map(|m| json!({
@@ -2972,8 +2981,8 @@ fn handle(
             let mut out = Vec::new();
             for c in &clips {
                 let name: String = c.media_id().and_then(|m| pool.get(&m)).map(|it| it.filename.clone()).unwrap_or_else(|| "clip".into()).chars().take(28).collect();
-                let chain = c.node_graph.chain();
-                let faults = c.node_graph.chain_out_of_order();
+                let chain = c.own_grade().chain();
+                let faults = c.own_grade().chain_out_of_order();
                 let shown: Vec<String> = chain.iter()
                     .filter(|l| !matches!(l.stage, klipp_nodes::GradeStage::Plumbing) || l.kind == klipp_nodes::NodeKind::Source)
                     .map(|l| format!("{} [{}]{}{}", l.label, l.stage.label(), if l.gated { ", gated by a key" } else { "" }, if l.enabled { "" } else { ", bypassed" }))
@@ -4081,11 +4090,18 @@ fn handle(
             // so what the viewer shows is both; say so, or a reader of this
             // graph alone would misjudge the picture.
             let timeline = seq.timeline_graph.as_ref().filter(|g| !g.is_identity());
+            // Likewise its grade group's grades, before and after its own (#237).
+            let group = clip.grade_group.and_then(|g| seq.grade_group(g)).filter(|g| g.grades());
             Ok(json!({
                 "clip_id": c,
-                "is_identity": clip.node_graph.is_identity(),
-                "graph": serde_json::to_value(&clip.node_graph)
+                "is_identity": clip.own_grade().is_identity(),
+                "graph": serde_json::to_value(clip.own_grade())
                     .map_err(|e| format!("serialising graph: {e}"))?,
+                "grade_group": group.map(|g| json!({
+                    "name": g.name,
+                    "pre": g.pre.as_ref().filter(|p| !p.is_identity()),
+                    "post": g.post.as_ref().filter(|p| !p.is_identity()),
+                })),
                 "timeline_graph": timeline
                     .map(serde_json::to_value)
                     .transpose()
@@ -4429,15 +4445,20 @@ fn handle(
             Ok(json!({ "text": text, "categories": cats, "total": looks.len(), "next": "Apply one with look {clip_id, name}. Pass a category name here to see all of its looks." }))
         }
 
-        ControlCommand::Look { clip_id: c, name, opacity, remove } => {
-            let target_id = clip_id(&c)?;
+        ControlCommand::Look { clip_id: c, on, name, opacity, remove } => {
             use klipp_document::ops::{ClipRef, Op};
+            // A clip, or with `on` the timeline or a grade group (#237).
+            let target = match (&c, &on) {
+                (_, Some(_)) => None,
+                (Some(c), None) => Some(ClipRef::Id(clip_id(c)?)),
+                (None, None) => return Err("give clip_id, or on: \"timeline\" or {\"group\": name}".into()),
+            };
             let op = if remove {
-                Op::Look { clip_id: ClipRef::Id(target_id), lut_path: String::new(), name: None, opacity: None, remove: true }
+                Op::Look { clip_id: target, on, lut_path: String::new(), name: None, opacity: None, remove: true }
             } else {
                 let name = name.ok_or("give a look name (see looks), or remove to clear")?;
                 let (path, display) = resolve_look(&name)?;
-                Op::Look { clip_id: ClipRef::Id(target_id), lut_path: path.to_string_lossy().to_string(), name: Some(display), opacity, remove: false }
+                Op::Look { clip_id: target, on, lut_path: path.to_string_lossy().to_string(), name: Some(display), opacity, remove: false }
             };
             // In a batch, one look on many clips is one call and one undo
             // step (#458): the looks resolve together when it is sent.
@@ -4505,7 +4526,8 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
             }
             use klipp_document::ops::{ClipRef, Op};
             let op = Op::Grade {
-                clip_id: ClipRef::Id(target_id),
+                clip_id: Some(ClipRef::Id(target_id)),
+                on: None,
                 exposure: knobs.exposure, contrast: None, saturation: None,
                 temperature: knobs.temperature, tint: knobs.tint,
                 lift: knobs.lift, gamma: None, gain: knobs.gain,
@@ -5145,7 +5167,7 @@ reference:   {}",
                 {
                     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                     if let Some(c) = seq.tracks.iter().flat_map(|tr| tr.clips.iter()).find(|c| c.timeline_in.to_secs_f64() <= *t && c.timeline_out.to_secs_f64() > *t && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })) {
-                        for fault in c.node_graph.chain_out_of_order() {
+                        for fault in c.own_grade().chain_out_of_order() {
                             found.push(("warning".to_string(), *t, format!("{fault} [grade order]"), "grade_chain shows the chain; the order is input, balance, secondary, look, output".to_string()));
                         }
                     }

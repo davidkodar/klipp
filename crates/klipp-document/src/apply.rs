@@ -45,8 +45,9 @@ impl Effects {
 }
 
 /// A graph edit lands on the clip it names, or, under the sequence's
-/// timeline-grade id, on the timeline grade: the Colour workspace edits
-/// that through the same node commands as a clip's grade.
+/// timeline-grade id, on the timeline grade, or under a grade group
+/// stage's id, on that stage: the Colour workspace edits those through
+/// the same node commands as a clip's grade.
 fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &klipp_nodes::NodeGraph) {
     for track in &mut seq.tracks {
         if let Some(clip) = track.find_clip_mut(clip_id) {
@@ -56,6 +57,14 @@ fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &k
     }
     if clip_id == seq.timeline_grade_clip_id() {
         seq.timeline_graph = Some(graph.clone());
+        return;
+    }
+    // A grade group's pre-clip or post-clip grade, under its stage's
+    // editing id (#237).
+    if let Some((group, stage)) = seq.grade_group_stage_of(clip_id) {
+        if let Some(g) = seq.grade_groups.iter_mut().find(|g| g.id == group) {
+            *g.stage_mut(stage) = Some(graph.clone());
+        }
     }
 }
 
@@ -104,6 +113,17 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { old, .. } => {
                 self.sequences[self.active].markers = old.clone();
+            }
+            EditCommand::SetGradeGroups { old, .. } => {
+                self.sequences[self.active].grade_groups = old.clone();
+            }
+            EditCommand::SetClipGradeGroups { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (clip_id, old, _) in changes {
+                    if let Some(c) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        c.grade_group = *old;
+                    }
+                }
             }
             EditCommand::SetSequenceFormat { old, .. } => {
                 let seq = &mut self.sequences[self.active];
@@ -729,6 +749,17 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { new, .. } => {
                 self.sequences[self.active].markers = new.clone();
+            }
+            EditCommand::SetGradeGroups { new, .. } => {
+                self.sequences[self.active].grade_groups = new.clone();
+            }
+            EditCommand::SetClipGradeGroups { changes } => {
+                let seq = &mut self.sequences[self.active];
+                for (clip_id, _, new) in changes {
+                    if let Some(c) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        c.grade_group = *new;
+                    }
+                }
             }
             EditCommand::SetSequenceFormat { new, .. } => {
                 let seq = &mut self.sequences[self.active];
@@ -1376,5 +1407,49 @@ mod timeline_grade_tests {
         assert_eq!(len(&view.sequences[0]), Some(new_graph.nodes.len()));
         view.apply_inverse(&edit);
         assert_eq!(len(&view.sequences[0]), Some(klipp_nodes::NodeGraph::default().nodes.len()));
+    }
+}
+
+#[cfg(test)]
+mod grade_group_tests {
+    use super::*;
+    use klipp_core::Timecode;
+    use klipp_timeline::{GradeGroup, GradeStage};
+
+    /// #237: making a group, putting a clip in it, and grading its
+    /// post-clip stage under the stage's editing id each undo and redo.
+    #[test]
+    fn a_grade_group_and_its_grades_undo_and_redo() {
+        let mut seq = Sequence::new_default();
+        let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), Timecode::zero(), Timecode { value: 24, rate: 24 }, Timecode::zero(), Timecode { value: 24, rate: 24 });
+        let clip_id = clip.id;
+        seq.tracks[0].clips.push(clip);
+        let group = GradeGroup::new("Interview");
+        let (gid, post_id) = (group.id, group.stage_clip_id(GradeStage::Post));
+        let mut sequences = vec![seq];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+
+        let make = EditCommand::SetGradeGroups { old: vec![], new: vec![group] };
+        let join = EditCommand::SetClipGradeGroups { changes: vec![(clip_id, None, Some(gid))] };
+        let mut look = klipp_nodes::NodeGraph::default();
+        look.ensure_lut3d();
+        let empty = klipp_nodes::NodeGraph::default();
+        let grade = EditCommand::SetNodeGraph { clip_id: post_id, old_graph: empty.clone(), new_graph: look.clone() };
+        for e in [&make, &join, &grade] {
+            view.apply_forward(e);
+        }
+        let seq = &view.sequences[0];
+        assert_eq!(seq.grade_groups[0].post.as_ref(), Some(&look), "the post-clip grade landed on the group");
+        assert_eq!(seq.all_clips().find(|c| c.id == clip_id).unwrap().grade_group, Some(gid));
+        assert_eq!(seq.grade_group_stage_of(post_id), Some((gid, GradeStage::Post)));
+
+        view.apply_inverse(&grade);
+        assert_eq!(view.sequences[0].grade_groups[0].post.as_ref(), Some(&empty));
+        view.apply_inverse(&join);
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().grade_group, None);
+        view.apply_inverse(&make);
+        assert!(view.sequences[0].grade_groups.is_empty());
     }
 }

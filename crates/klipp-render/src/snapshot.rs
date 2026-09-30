@@ -1238,6 +1238,31 @@ mod tests {
         );
     }
 
+    /// #237: the export's picture runs a grade group's members with the
+    /// group's grade around their own, as the viewer does.
+    #[test]
+    fn the_export_runs_a_grade_groups_grade() {
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+        let mut seq = make_sequence();
+        let mut group = klipp_timeline::GradeGroup::new("Scene");
+        let mut post = klipp_nodes::NodeGraph::default();
+        let node = post.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).map(|n| {
+            n.params.exposure = Some(-1.0);
+            n.id
+        }).unwrap();
+        group.post = Some(post);
+        let mut clip = media_clip(media_id, 0, 48);
+        clip.grade_group = Some(group.id);
+        seq.grade_groups = vec![group];
+        seq.tracks[0].clips.push(clip);
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let graph = &snap.video.sequence.tracks[0].clips[0].node_graph;
+        assert!(graph.nodes.iter().any(|n| n.id == node), "the group's post-clip grade is in the exported clip's grade");
+        assert!(seq.tracks[0].clips[0].node_graph.nodes.iter().all(|n| n.id != node), "and not in the document's");
+    }
+
     /// The export decoder gets the same log format the viewer's decoder
     /// registry holds: the user's choice, else detection; and nothing for
     /// media that is not camera log, including an explicit sRGB override
