@@ -1523,6 +1523,7 @@ pub fn show(
     favourites: &mut Vec<String>,
     view_mode: &mut EffectViewMode,
     sort_mode: &mut EffectSort,
+    card_size: &mut CardSize,
     selected: &mut Option<String>,
     previews: &mut TransitionPreviews,
 ) -> Vec<AppCommand> {
@@ -1641,6 +1642,18 @@ pub fn show(
                         |ui| {
                             view_mode_button(ui, theme, view_mode, EffectViewMode::List, Icon::List, "List view");
                             view_mode_button(ui, theme, view_mode, EffectViewMode::Grid, Icon::GridFour, "Grid view");
+                            if *view_mode == EffectViewMode::Grid {
+                                ui.add_space(4.0);
+                                for size in [CardSize::Large, CardSize::Medium, CardSize::Small] {
+                                    let on = *card_size == size;
+                                    let b = egui::Button::new(egui::RichText::new(size.label()).size(11.0).color(if on { theme.text_primary } else { theme.text_dim }))
+                                        .fill(if on { theme.bg_raised } else { egui::Color32::TRANSPARENT })
+                                        .min_size(egui::vec2(20.0, 20.0));
+                                    if ui.add(b).on_hover_text(size.hint()).clicked() {
+                                        *card_size = size;
+                                    }
+                                }
+                            }
                         },
                     );
                 });
@@ -1702,6 +1715,12 @@ pub fn show(
 
         // Result strip
         tx_result_strip(ui, theme, filtered.len(), sort_mode);
+        // Where the pictures come from: the same two samples in every
+        // project, said so the cards are not read as the project's (#547).
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Played between two sample pictures").size(10.0).color(theme.text_dim));
+        });
         ui.add_space(4.0);
 
         // Card grid
@@ -1732,10 +1751,13 @@ pub fn show(
                 let spacing = 6.0;
                 let render_grid = *view_mode == EffectViewMode::Grid;
                 if render_grid {
-                    let card_w = ((avail_w - spacing) / 2.0).floor();
-                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0) + crate::browser::library_card::CAPTION_H;
+                    // As many columns as fit cards no wider than the size
+                    // asks: a wide panel shows more of them, not the same
+                    // two blown up past the pictures' own resolution (#548).
+                    let (cols, card_w) = grid_columns(avail_w, spacing, card_size.max_width());
+                    let card_h = (card_w * 9.0 / 16.0).round() + crate::browser::library_card::CAPTION_H;
                     egui::Grid::new("transitions_grid")
-                        .num_columns(2)
+                        .num_columns(cols)
                         .spacing([spacing, spacing])
                         .min_col_width(card_w)
                         .show(ui, |ui| {
@@ -1743,12 +1765,17 @@ pub fn show(
                                 let spec = klipp_core::spec_for_kind(tr.kind);
                                 let is_selected = selected.as_deref() == Some(spec.display_name);
                                 let elapsed = tx_read_anim_elapsed(ui, spec.display_name);
-                                let tex = preview_texture(previews, tr, spec, elapsed);
+                                // A card scrolled out of view asks for no
+                                // pictures (#549).
+                                let visible = ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(card_w, card_h)));
+                                let tex = if visible { preview_texture(previews, tr, spec, elapsed) } else { None };
                                 let resp = transition_card(
                                     ui, tr, spec, theme, card_w, card_h,
                                     is_selected, elapsed, tex.as_ref(),
                                 );
-                                let active = resp.hovered() || is_selected;
+                                // Played while pointed at; a selection is a
+                                // highlight, not a loop that never stops (#549).
+                                let active = resp.hovered();
                                 tx_update_anim_state(ui, spec.display_name, active);
                                 if active {
                                     ui.ctx().request_repaint();
@@ -1762,7 +1789,7 @@ pub fn show(
                                 handle_transition_interaction(
                                     state, &mut cmds, tr, spec, &resp, selected,
                                 );
-                                if i % 2 == 1 {
+                                if i % cols == cols - 1 {
                                     ui.end_row();
                                 }
                             }
@@ -1772,11 +1799,12 @@ pub fn show(
                         let spec = klipp_core::spec_for_kind(tr.kind);
                         let is_selected = selected.as_deref() == Some(spec.display_name);
                         let elapsed = tx_read_anim_elapsed(ui, spec.display_name);
-                        let tex = preview_texture(previews, tr, spec, elapsed);
+                        let visible = ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), LIST_ROW_H)));
+                        let tex = if visible { preview_texture(previews, tr, spec, elapsed) } else { None };
                         let resp = transition_list_row(
                             ui, tr, spec, theme, is_selected, elapsed, tex.as_ref(),
                         );
-                        let active = resp.hovered() || is_selected;
+                        let active = resp.hovered();
                         tx_update_anim_state(ui, spec.display_name, active);
                         if active {
                             ui.ctx().request_repaint();
@@ -1810,7 +1838,7 @@ fn preview_texture(
     spec: &klipp_core::TransitionSpec,
     elapsed_secs: f32,
 ) -> Option<egui::TextureHandle> {
-    use crate::browser::transition_previews::{PROGRESS_STEP, REST_PROGRESS};
+    use crate::browser::transition_previews::PROGRESS_STEP;
     let eased_for = |p: f32| {
         if matches!(tr.kind, klipp_core::TransitionKind::CrossDissolve) {
             klipp_transitions::apply_easing(p, spec.default_params.param0)
@@ -1821,7 +1849,7 @@ fn preview_texture(
     let progress = if elapsed_secs > 0.0 {
         TransitionPreviews::hover_progress(tx_progress(elapsed_secs))
     } else {
-        REST_PROGRESS
+        crate::browser::transition_previews::rest_progress(tr.kind)
     };
     if elapsed_secs > 0.0 {
         // The steps a hover is about to reach, queued ahead so the
@@ -1838,24 +1866,6 @@ fn preview_texture(
         .get_or_request(&key, spec.kind_id as u32, eased_for(progress), &spec.default_params)
         .cloned()
         .or_else(|| previews.nearest_for(spec.display_name, progress).cloned())
-}
-
-/// Two frames of the project's footage for the previews: the posters
-/// of the first two media items, or one poster and a darker copy, or
-/// nothing yet.
-pub fn project_frames(state: &AppState) -> Option<crate::browser::transition_previews::Frames> {
-    use crate::browser::transition_previews::{counterpart, frame_from_rgba, Frames};
-    let mut posters = state.media_pool.all().filter_map(|m| match state.thumbnail_cache.get(&m.id) {
-        Some(klipp_media::ThumbnailEntry::Ready { rgba, width, height }) => Some((m.id, rgba, *width, *height)),
-        _ => None,
-    });
-    let (id_a, rgba_a, wa, ha) = posters.next()?;
-    let from = frame_from_rgba(rgba_a, wa, ha);
-    let (source, to) = match posters.next() {
-        Some((id_b, rgba_b, wb, hb)) => (format!("{id_a:?}+{id_b:?}"), frame_from_rgba(rgba_b, wb, hb)),
-        None => (format!("{id_a:?}"), counterpart(&from)),
-    };
-    Some(Frames { from, to, source })
 }
 
 fn tx_read_anim_elapsed(ui: &egui::Ui, name: &str) -> f32 {
@@ -1889,13 +1899,15 @@ fn tx_update_anim_state(ui: &egui::Ui, name: &str, active: bool) {
 /// Compute the looped progress (0..=1) for a hovered card. The
 /// transition plays over `LOOP_SECS` then snaps back so the user can
 /// keep watching the cycle as long as they hover.
+/// A hovered card's cycle: the transition, then a pause on its end.
+const TX_LOOP_SECS: f32 = 1.6;
+const TX_HOLD_SECS: f32 = 0.4;
+
 fn tx_progress(elapsed: f32) -> f32 {
-    const LOOP_SECS: f32 = 1.6;
-    const HOLD_SECS: f32 = 0.4; // pause briefly at the end before resetting
-    let cycle = elapsed.rem_euclid(LOOP_SECS + HOLD_SECS);
-    if cycle < LOOP_SECS {
+    let cycle = elapsed.rem_euclid(TX_LOOP_SECS + TX_HOLD_SECS);
+    if cycle < TX_LOOP_SECS {
         // Smoothstep ease so the transition reads as eased-in/out.
-        let t = cycle / LOOP_SECS;
+        let t = cycle / TX_LOOP_SECS;
         t * t * (3.0 - 2.0 * t)
     } else {
         1.0
@@ -1976,15 +1988,17 @@ fn transition_card(
         // mid-pose so the card communicates the transition's shape at
         // a glance.
         let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
-        let caption = format!("{} \u{00B7} Built-in", tr.category.label());
-        crate::browser::library_card::library_card(ui, rect, spec.display_name, &caption, is_selected, hovered, theme, |p, preview| {
+        // The category; every transition is built in, which the tooltip
+        // says rather than every card (#548).
+        let caption = tr.category.label();
+        crate::browser::library_card::library_card(ui, rect, spec.display_name, caption, is_selected, hovered, theme, |p, preview| {
             // Static A/B halves give every card the same identity;
             // the per-transition closure paints its shape over them,
             // and the category overlay adds motion while hovered.
             let canvas = preview.shrink(1.0);
             if let Some(t) = rendered {
                 p.rect_filled(canvas, 0.0, egui::Color32::BLACK);
-                p.image(t.id(), canvas, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                p.image(t.id(), fit_16_9(canvas), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
             } else {
                 paint_ab_canvas(p, canvas, progress);
                 let clip_painter = p.with_clip_rect(canvas);
@@ -2013,11 +2027,79 @@ fn transition_card(
                 p.rect_filled(ind_rect, crate::theme::radius::CONTROL, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180));
                 p.text(ind_rect.center(), egui::Align2::CENTER_CENTER, g, egui::FontId::proportional(11.0), theme.text_primary);
             }
+            if elapsed_secs > 0.0 {
+                paint_play_progress(p, canvas, elapsed_secs, theme);
+            }
         });
     }
 
-    resp
+    resp.on_hover_text(format!("{} \u{00B7} {}, built in", spec.display_name, tr.category.label()))
 }
+
+/// Where a playing card is in its cycle (#549): a thin bar along the
+/// bottom of the picture, full while it holds on the last frame.
+fn paint_play_progress(p: &egui::Painter, canvas: egui::Rect, elapsed_secs: f32, theme: &KlippTheme) {
+    let (play, hold) = (TX_LOOP_SECS, TX_HOLD_SECS);
+    let t = (elapsed_secs.rem_euclid(play + hold) / play).min(1.0);
+    let track = egui::Rect::from_min_max(egui::pos2(canvas.min.x, canvas.max.y - 3.0), canvas.max);
+    p.rect_filled(track, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120));
+    p.rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(track.min.x + track.width() * t, track.max.y)), 0.0, theme.accent);
+}
+
+/// A card's size in the grid (#548): the widest a card may be, which
+/// sets how many fit across. The largest is the width the previews are
+/// rendered at, at 1.25 display scale, so no card is a blown-up picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl CardSize {
+    fn max_width(self) -> f32 {
+        match self {
+            CardSize::Small => 150.0,
+            CardSize::Medium => 200.0,
+            CardSize::Large => 256.0,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            CardSize::Small => "S",
+            CardSize::Medium => "M",
+            CardSize::Large => "L",
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            CardSize::Small => "Small cards: more at a glance",
+            CardSize::Medium => "Medium cards",
+            CardSize::Large => "Large cards: the most detail",
+        }
+    }
+}
+
+/// How many cards fit across `avail` with `spacing` between them, none
+/// wider than `max_w`, and how wide they are: the fewest columns that
+/// keep every card within `max_w`, filling the row.
+fn grid_columns(avail: f32, spacing: f32, max_w: f32) -> (usize, f32) {
+    let cols = ((avail + spacing) / (max_w + spacing)).ceil().max(1.0) as usize;
+    let w = ((avail - spacing * (cols - 1) as f32) / cols as f32).floor().max(1.0);
+    (cols, w)
+}
+
+/// The largest 16:9 rectangle centred in `r`: a preview is shown at its
+/// own shape, never stretched (#548).
+fn fit_16_9(r: egui::Rect) -> egui::Rect {
+    let h = r.height().min(r.width() * 9.0 / 16.0);
+    let w = h * 16.0 / 9.0;
+    egui::Rect::from_center_size(r.center(), egui::vec2(w, h))
+}
+
+/// A list row's height.
+const LIST_ROW_H: f32 = 56.0;
 
 fn transition_list_row(
     ui: &mut egui::Ui,
@@ -2029,7 +2111,7 @@ fn transition_list_row(
     rendered: Option<&egui::TextureHandle>,
 ) -> egui::Response {
     let avail_w = ui.available_width();
-    let row_h = 56.0;
+    let row_h = LIST_ROW_H;
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(avail_w, row_h),
         egui::Sense::click_and_drag(),
@@ -2043,10 +2125,11 @@ fn transition_list_row(
     } else if hovered {
         ui.painter().rect_filled(rect, egui::Rounding::same(4.0), theme.bg_raised);
     }
-    let mini_w = 96.0;
+    // At the pictures' own 16:9, not stretched into a wider box (#548).
+    let mini_h = row_h - 12.0;
     let mini_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + 8.0, rect.min.y + 6.0),
-        egui::vec2(mini_w, row_h - 12.0),
+        egui::vec2(mini_h * 16.0 / 9.0, mini_h),
     );
     let progress = if elapsed_secs > 0.0 { tx_progress(elapsed_secs) } else { 0.5 };
     if let Some(t) = rendered {
@@ -2059,6 +2142,9 @@ fn transition_list_row(
         if elapsed_secs > 0.0 {
             paint_kind_motion_overlay(&clip_painter, mini_rect, tr.kind, progress);
         }
+    }
+    if elapsed_secs > 0.0 {
+        paint_play_progress(ui.painter(), mini_rect, elapsed_secs, theme);
     }
     let text_x = mini_rect.max.x + 12.0;
     let text_y = rect.center().y;
@@ -3179,6 +3265,7 @@ mod tests {
         favourites: Vec<String>,
         view: EffectViewMode,
         sort: EffectSort,
+        size: CardSize,
         previews: TransitionPreviews,
     }
 
@@ -3195,7 +3282,7 @@ mod tests {
                     let (mut search, mut selected) = (String::new(), None);
                     show(
                         ui, state, &KlippTheme::default(), &mut search, &mut tab.category, &mut tab.list,
-                        &mut tab.favourites, &mut tab.view, &mut tab.sort, &mut selected, &mut tab.previews,
+                        &mut tab.favourites, &mut tab.view, &mut tab.sort, &mut tab.size, &mut selected, &mut tab.previews,
                     );
                 });
             },
@@ -3232,6 +3319,7 @@ mod tests {
             favourites: vec!["DipToBlack".into()],
             view: EffectViewMode::List,
             sort: EffectSort::NameAsc,
+            size: CardSize::default(),
             previews: TransitionPreviews::default(),
         };
         let [dissolve, wipe, dip] = ["CrossDissolve", "WipeLeft", "DipToBlack"].map(|k| spec_for_string_key(k).display_name);
@@ -3258,6 +3346,20 @@ mod tests {
         for gone in ["GPU only", "OFX", "Installed"] {
             assert!(!texts.iter().any(|(t, _)| t == gone), "{gone} is not offered");
         }
+    }
+
+    /// #548: a wide panel fits more cards, none wider than its size, and
+    /// a narrow one still one; a picture keeps its 16:9.
+    #[test]
+    fn cards_fit_the_panel_at_their_size_and_pictures_keep_their_shape() {
+        let (cols, w) = grid_columns(900.0, 6.0, CardSize::Medium.max_width());
+        assert!(cols >= 4 && w <= 200.0 && (cols as f32 * w + (cols - 1) as f32 * 6.0) <= 900.0, "{cols} of {w}");
+        let (cols, w) = grid_columns(120.0, 6.0, CardSize::Large.max_width());
+        assert_eq!(cols, 1);
+        assert!((w - 120.0).abs() < 1.0);
+        assert!(grid_columns(900.0, 6.0, CardSize::Small.max_width()).0 > grid_columns(900.0, 6.0, CardSize::Large.max_width()).0);
+        let r = fit_16_9(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 60.0)));
+        assert!((r.width() / r.height() - 16.0 / 9.0).abs() < 1e-3 && r.height() <= 60.0);
     }
 
     fn spec_for_string_key(key: &str) -> &'static klipp_core::TransitionSpec {

@@ -1,6 +1,11 @@
-//! Transition cards rendered by the real transition code between two
-//! frames of the project's own footage, on a worker thread: the card at
-//! rest shows the midpoint, hovering plays the transition.
+//! Transition cards rendered by the real transition code, on a worker
+//! thread, between two sample pictures: the card at rest shows a moment
+//! that says what the transition does, hovering plays it.
+//!
+//! The pictures are the same in every project. They were the first two
+//! thumbnails the media pool happened to hand out, in no order: a face
+//! from imported artwork turned up over street footage on every card, and
+//! changed between projects and reloads (#547).
 
 use crossbeam_channel::{Receiver, Sender};
 use std::collections::{HashMap, HashSet};
@@ -22,13 +27,17 @@ pub struct Frames {
     pub source: String,
 }
 
+/// Every job and result carries the generation of the frames it is for,
+/// so a picture rendered from frames since replaced can never satisfy,
+/// or take the place of, a request for the frames now there (#550).
 enum Job {
-    Frames(Frames),
-    Render { key: String, kind_id: u32, progress: f32, params: klipp_core::TransitionUserParams },
+    Frames(Frames, u64),
+    Render { key: String, generation: u64, kind_id: u32, progress: f32, params: klipp_core::TransitionUserParams },
 }
 
 struct Done {
     key: String,
+    generation: u64,
     rgba: Vec<u8>,
 }
 
@@ -40,6 +49,8 @@ pub struct TransitionPreviews {
     /// step stays resident, so a hover loop never re-renders.
     wanted_prefixes: HashSet<String>,
     frames_source: Option<String>,
+    /// The frames' generation, moved on by every change of frames.
+    generation: u64,
     jobs: Sender<Job>,
     done: Receiver<Done>,
 }
@@ -53,18 +64,21 @@ impl Default for TransitionPreviews {
         std::thread::Builder::new()
             .name("transition-previews".into())
             .spawn(move || {
-                let mut frames: Option<Frames> = None;
+                let mut frames: Option<(Frames, u64)> = None;
                 while let Ok(job) = job_rx.recv() {
                     match job {
-                        Job::Frames(f) => frames = Some(f),
-                        Job::Render { key, kind_id, progress, params } => {
-                            let Some(f) = frames.as_ref() else { continue };
+                        Job::Frames(f, g) => frames = Some((f, g)),
+                        Job::Render { key, generation, kind_id, progress, params } => {
+                            // Rendered from the frames asked for or not at
+                            // all: frames since replaced make the wrong
+                            // picture.
+                            let Some((f, _)) = frames.as_ref().filter(|(_, g)| *g == generation) else { continue };
                             let out = klipp_effects::render_transition_linear(
                                 &f.from, &f.to, kind_id, progress, PREVIEW_W, PREVIEW_H,
                                 params.param0, params.param1, params.param2, params.param3, params.color,
                             );
                             let rgba = klipp_effects::linear_f32_rgba_to_srgb_u8(&out);
-                            if done_tx.send(Done { key, rgba }).is_err() {
+                            if done_tx.send(Done { key, generation, rgba }).is_err() {
                                 break;
                             }
                         }
@@ -72,7 +86,7 @@ impl Default for TransitionPreviews {
                 }
             })
             .expect("transition preview thread");
-        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), wanted_prefixes: HashSet::new(), frames_source: None, jobs, done }
+        Self { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), wanted_prefixes: HashSet::new(), frames_source: None, generation: 0, jobs, done }
     }
 }
 
@@ -93,9 +107,20 @@ impl TransitionPreviews {
             return;
         }
         self.frames_source = Some(frames.source.clone());
+        self.generation += 1;
         displaced.extend(self.textures.drain().map(|(_, t)| t));
         self.pending.clear();
-        let _ = self.jobs.send(Job::Frames(frames));
+        let _ = self.jobs.send(Job::Frames(frames, self.generation));
+    }
+
+    /// No frames to render from: every picture made from the old ones
+    /// goes, and so does every request still out for them.
+    pub fn clear_frames(&mut self, displaced: &mut Vec<egui::TextureHandle>) {
+        if self.frames_source.take().is_some() {
+            self.generation += 1;
+            displaced.extend(self.textures.drain().map(|(_, t)| t));
+            self.pending.clear();
+        }
     }
 
     pub fn has_frames(&self) -> bool {
@@ -115,7 +140,7 @@ impl TransitionPreviews {
         }
         if self.frames_source.is_some() && !self.textures.contains_key(key) && !self.pending.contains(key) {
             self.pending.insert(key.to_string());
-            let _ = self.jobs.send(Job::Render { key: key.to_string(), kind_id, progress, params: *params });
+            let _ = self.jobs.send(Job::Render { key: key.to_string(), generation: self.generation, kind_id, progress, params: *params });
         }
         self.textures.get(key)
     }
@@ -143,15 +168,17 @@ impl TransitionPreviews {
         }
         if self.frames_source.is_some() && !self.textures.contains_key(key) && !self.pending.contains(key) {
             self.pending.insert(key.to_string());
-            let _ = self.jobs.send(Job::Render { key: key.to_string(), kind_id, progress, params: *params });
+            let _ = self.jobs.send(Job::Render { key: key.to_string(), generation: self.generation, kind_id, progress, params: *params });
         }
     }
 
     pub fn poll(&mut self, ctx: &egui::Context, displaced: &mut Vec<egui::TextureHandle>) {
         let mut any = false;
         while let Ok(done) = self.done.try_recv() {
-            if !self.pending.remove(&done.key) {
-                continue; // from frames since replaced
+            // From frames since replaced: it neither shows nor clears the
+            // request for the same key made for the frames now there.
+            if done.generation != self.generation || !self.pending.remove(&done.key) {
+                continue;
             }
             let pixels: Vec<egui::Color32> = done
                 .rgba
@@ -224,10 +251,63 @@ pub fn frame_from_rgba(rgba: &[u8], w: u32, h: u32) -> Arc<Vec<f32>> {
     Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&out))
 }
 
-/// A darker, slightly shifted copy of a frame, for a project with only
-/// one picture to transition between.
-pub fn counterpart(frame: &[f32]) -> Arc<Vec<f32>> {
-    Arc::new(frame.iter().enumerate().map(|(i, v)| if i % 4 == 3 { *v } else { v * 0.45 }).collect())
+/// The two sample pictures every card runs between: a warm dusk with a
+/// sun over dark hills, then a cool day over a green treeline. Unlike in
+/// colour and in shape, so a wipe's edge, a slide's travel and a
+/// dissolve's blend all read at a glance, and drawn here, so they are the
+/// same everywhere and cost nothing to fetch.
+pub fn sample_frames() -> Frames {
+    let (w, h) = (PREVIEW_W as usize, PREVIEW_H as usize);
+    let paint = |f: &dyn Fn(f32, f32) -> [u8; 3]| -> Arc<Vec<f32>> {
+        let mut rgba = vec![255u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let c = f(x as f32 / w as f32, y as f32 / h as f32);
+                rgba[(y * w + x) * 4..(y * w + x) * 4 + 3].copy_from_slice(&c);
+            }
+        }
+        Arc::new(klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba))
+    };
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| -> [u8; 3] { std::array::from_fn(|i| (a[i] + (b[i] - a[i]) * t.clamp(0.0, 1.0)).round() as u8) };
+    let from = paint(&|u, v| {
+        let hill = 0.68 + 0.07 * (u * 7.0).sin() + 0.04 * (u * 17.0 + 1.0).sin();
+        let sun = ((u - 0.7).powi(2) * 3.2 + (v - 0.42).powi(2)).sqrt();
+        if v > hill {
+            mix([62.0, 36.0, 46.0], [30.0, 18.0, 26.0], (v - hill) * 3.0)
+        } else if sun < 0.09 {
+            [255, 236, 190]
+        } else {
+            mix([236.0, 112.0, 70.0], [252.0, 196.0, 120.0], v / hill)
+        }
+    });
+    let to = paint(&|u, v| {
+        let ground = 0.62;
+        // A row of trees: triangles standing on the ground line.
+        let (cell, x) = ((u * 9.0).floor(), (u * 9.0).fract());
+        let tree_h = 0.22 + 0.08 * ((cell * 2.3).sin() * 0.5 + 0.5);
+        let tree = v > ground - tree_h * (1.0 - (x - 0.5).abs() * 2.0) && v <= ground;
+        if v > ground {
+            mix([96.0, 138.0, 64.0], [58.0, 92.0, 40.0], (v - ground) * 2.5)
+        } else if tree {
+            [34, 84, 58]
+        } else {
+            mix([70.0, 128.0, 206.0], [176.0, 214.0, 238.0], v / ground)
+        }
+    });
+    Frames { from, to, source: "sample".into() }
+}
+
+/// The moment a card shows at rest: one that says what the transition
+/// does (#547). Half way is a wipe's edge, a slide's travel, a zoom's
+/// push; a dip through a colour is solid colour half way, an empty card,
+/// so it rests on the first picture going down into it.
+pub fn rest_progress(kind: klipp_core::TransitionKind) -> f32 {
+    let name = format!("{kind:?}");
+    if name.starts_with("Dip") || name.contains("Flash") {
+        0.3
+    } else {
+        REST_PROGRESS
+    }
 }
 
 #[cfg(test)]
@@ -235,7 +315,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_cover_the_preview_and_the_counterpart_is_darker() {
+    fn frames_cover_the_preview() {
         // A 4:3 picture, solid mid grey.
         let (w, h) = (40u32, 30u32);
         let rgba = vec![128u8; (w * h * 4) as usize];
@@ -243,8 +323,51 @@ mod tests {
         assert_eq!(frame.len(), (PREVIEW_W * PREVIEW_H * 4) as usize);
         assert!(frame.iter().all(|v| v.is_finite()));
         assert!(frame[3] > 0.99, "alpha is opaque");
-        let dark = counterpart(&frame);
-        assert!(dark[0] < frame[0] && (dark[3] - frame[3]).abs() < 1e-6);
+    }
+
+    /// #547: the samples are the preview's size, opaque, the same every
+    /// time, and unlike each other: warm against cool.
+    #[test]
+    fn the_sample_pair_is_fixed_and_the_two_differ() {
+        let (a, b) = (sample_frames(), sample_frames());
+        assert!(a.from == b.from && a.to == b.to, "the same every time");
+        assert_eq!(a.from.len(), (PREVIEW_W * PREVIEW_H * 4) as usize);
+        let mean = |f: &[f32], c: usize| f.chunks_exact(4).map(|p| p[c]).sum::<f32>() / (f.len() / 4) as f32;
+        assert!(mean(&a.from, 0) > mean(&a.from, 2), "the first is warm");
+        assert!(mean(&a.to, 2) > mean(&a.to, 0), "the second is cool");
+        assert!(a.from.chunks_exact(4).all(|p| p[3] > 0.99));
+    }
+
+    /// #550: a result rendered from frames since replaced neither shows
+    /// nor clears the request for the same key made for the frames now
+    /// there, whatever order the two arrive in.
+    #[test]
+    fn a_result_from_older_frames_never_stands_for_the_current_ones() {
+        let ctx = egui::Context::default();
+        let (jobs, _job_rx) = crossbeam_channel::unbounded::<Job>();
+        let (done_tx, done) = crossbeam_channel::unbounded::<Done>();
+        let mut p = TransitionPreviews { textures: HashMap::new(), pending: HashSet::new(), wanted: HashSet::new(), wanted_prefixes: HashSet::new(), frames_source: None, generation: 0, jobs, done };
+        let mut displaced = Vec::new();
+        let frames = |source: &str| Frames { from: Arc::new(vec![0.0; 4]), to: Arc::new(vec![0.0; 4]), source: source.into() };
+        let params = klipp_core::TransitionUserParams::default();
+        let key = TransitionPreviews::key("Wipe Left", 0.5);
+        let rgba = vec![0u8; (PREVIEW_W * PREVIEW_H * 4) as usize];
+        p.set_frames(frames("old"), &mut displaced);
+        let old = p.generation;
+        p.request(&key, 1, 0.5, &params);
+        p.set_frames(frames("new"), &mut displaced);
+        p.request(&key, 1, 0.5, &params);
+        // The old frames' picture arrives first.
+        done_tx.send(Done { key: key.clone(), generation: old, rgba: rgba.clone() }).unwrap();
+        p.poll(&ctx, &mut displaced);
+        assert!(!p.textures.contains_key(&key), "the old picture is not shown");
+        assert!(p.pending.contains(&key), "and the current request is still out");
+        done_tx.send(Done { key: key.clone(), generation: p.generation, rgba }).unwrap();
+        p.poll(&ctx, &mut displaced);
+        assert!(p.textures.contains_key(&key) && !p.pending.contains(&key), "the current one is");
+        // No frames at all: everything made from the last ones goes.
+        p.clear_frames(&mut displaced);
+        assert!(p.textures.is_empty() && !p.has_frames());
     }
 
     #[test]
