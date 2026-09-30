@@ -778,6 +778,36 @@ struct FrameCacheEntry {
     bytes: usize,
 }
 
+
+/// A pending eyedropper read: the render that answers it taps `tap`, the
+/// node feeding `node`, and reads it at `(nx, ny)`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NodeSample {
+    pub(crate) clip: klipp_core::ClipId,
+    pub(crate) node: klipp_nodes::NodeId,
+    pub(crate) tap: klipp_nodes::NodeId,
+    pub(crate) nx: f32,
+    pub(crate) ny: f32,
+}
+
+/// Whether `clip` draws unmoved at `at`: its own transform the identity,
+/// no link to another's, no tilt or corner pin and no sequence camera
+/// moving it, so a point of the frame is the same point of its picture.
+fn sits_unmoved(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, at: Timecode) -> bool {
+    let ctx = klipp_compose::eval::eval_context(clip, at, seq.fps.as_f64());
+    let (px, py, sx, sy, rot, _, _) = klipp_compose::eval::evaluate_clip_own_transform(clip, ctx.clip_time_secs, &ctx);
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    near(px, 0.0) && near(py, 0.0) && near(sx, 1.0) && near(sy, 1.0) && near(rot, 0.0)
+        && clip.transform_link.is_none()
+        && clip.builtin_effects.iter().all(|e| {
+            !matches!(e, klipp_effects::BuiltinEffect::Transform { .. } | klipp_effects::BuiltinEffect::CornerPin { .. })
+                || klipp_effects::is_identity_effect(e)
+        })
+        && clip.transform_tilt_x_keyframes.is_empty()
+        && clip.transform_tilt_y_keyframes.is_empty()
+        && (seq.camera.is_still() || clip.depth <= 0.0)
+}
+
 #[cfg(test)]
 mod frame_cache_tests {
     use super::{FrameCache, Pregrade, PregradePixels};
@@ -1223,6 +1253,9 @@ pub struct PlaybackEngine {
     inspector_matte_preview_target: Option<klipp_core::ClipId>,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
+    /// An eyedropper read of a node's input, waiting on the render
+    /// `sample_node_input` asked for. See `NodeSample`.
+    node_sample: Option<NodeSample>,
     /// Solo target — when set, the engine returns this node's output
     /// as the final image instead of the Output-node-input. Single
     /// global slot; auto-inactive when the id doesn't exist in the
@@ -2032,6 +2065,7 @@ impl PlaybackEngine {
             hdr_writer: None,
             inspector_matte_preview_target: None,
             scope_tap_node: None,
+            node_sample: None,
             solo_node: None,
             visible_node_thumbs: std::collections::HashSet::new(),
             inspect_clip: None,
@@ -3169,6 +3203,9 @@ impl PlaybackEngine {
                         }
                     }
                 }
+            }
+            AppCommand::SampleNodeInput { clip_id, node_id, nx, ny } => {
+                self.sample_node_input(clip_id, node_id, nx, ny);
             }
             AppCommand::SetScopeTapNode { clip_id, node_id } => {
                 self.inspect_clip = Some(clip_id);
@@ -7464,6 +7501,9 @@ impl PlaybackEngine {
                 if self.scope_tap_node.is_some() {
                     blockers.push("scope tap on a node");
                 }
+                if self.node_sample.is_some() {
+                    blockers.push("eyedropper read of a node's input");
+                }
                 if self.inspector_matte_preview_target.is_some() {
                     blockers.push("inspector matte preview");
                 }
@@ -8234,6 +8274,50 @@ impl PlaybackEngine {
         {
             self.state = PlaybackState::Paused;
             let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+        }
+    }
+
+    /// Read the picture `node_id` receives at `(nx, ny)` of the parked
+    /// frame, for the qualifier eyedropper (#587). The frame on screen is
+    /// the grade's result, the key's own correction in it after a first
+    /// pick; the node reads what the node before it made. That node's
+    /// output comes back from one render with the scope tap on it, at
+    /// the frame's size and in the clip's own layout, which is the
+    /// screen's only while the clip sits unmoved in the frame.
+    fn sample_node_input(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId, nx: f32, ny: f32) {
+        let answer = |this: &Self, sample| {
+            let _ = this.event_tx.send(AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample });
+        };
+        let why = |s: &str| Err(klipp_core::NodeSampleRefusal::Why(s.to_string()));
+        if self.state == PlaybackState::Playing {
+            return answer(self, why("pause playback first — it reads the parked frame"));
+        }
+        let tap = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let Some(clip) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else {
+                drop(seq);
+                return answer(self, why("the clip is no longer on the timeline"));
+            };
+            if self.playhead < clip.timeline_in || self.playhead >= clip.timeline_out {
+                drop(seq);
+                return answer(self, why("the frame on screen is not of this clip — park the playhead on it first"));
+            }
+            if !sits_unmoved(clip, &seq, self.playhead) {
+                drop(seq);
+                return answer(self, Err(klipp_core::NodeSampleRefusal::Placed));
+            }
+            clip.node_graph.input_of(node_id, 0)
+        };
+        let Some(tap) = tap else {
+            return answer(self, why("the node has no input to read"));
+        };
+        self.inspect_clip = Some(clip_id);
+        self.node_sample = Some(NodeSample { clip: clip_id, node: node_id, tap, nx, ny });
+        self.regrade_cached_frame();
+        // Answered by the render (`show_inspection`), unless it drew
+        // without the clip's grade: nothing there to read.
+        if self.node_sample.take().is_some() {
+            answer(self, why("the node's picture could not be read on this frame"));
         }
     }
 

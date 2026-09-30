@@ -1632,6 +1632,10 @@ pub enum AppCommand {
     PasteColorNodes { clip_id: ClipId },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
+    /// Read the picture node `node_id` of `clip_id` receives, at `(nx,
+    /// ny)` (0..=1 over the frame) of the parked frame: the qualifier
+    /// eyedropper's sample. Answered by `AppEvent::NodeInputSampled`.
+    SampleNodeInput { clip_id: ClipId, node_id: uuid::Uuid, nx: f32, ny: f32 },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
     /// Set the union of scope modes the UI currently needs rendered per tick.
@@ -3530,8 +3534,22 @@ pub struct MediaLoadedPayload {
     pub truncated_from_secs: Option<f64>,
 }
 
+/// Why the engine could not read a node's input for the eyedropper.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeSampleRefusal {
+    /// The clip is moved, scaled or turned here, so the point on screen
+    /// is not the same point of its picture: read the screen instead.
+    Placed,
+    /// Nothing to read, and why, for the user.
+    Why(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    /// The picture a node receives at the eyedropper's point, in the
+    /// working space's linear light: the mean of a 5×5 patch. Answers
+    /// `AppCommand::SampleNodeInput`.
+    NodeInputSampled { clip_id: ClipId, node_id: uuid::Uuid, nx: f32, ny: f32, sample: Result<[f32; 3], NodeSampleRefusal> },
     // Playback state
     PlaybackStarted,
     PlaybackPaused,
