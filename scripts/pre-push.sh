@@ -60,6 +60,20 @@ if [ "$KLIPP_SKIP_TESTS" = "1" ]; then
     exit 0
 fi
 
+# A push that only deletes refs carries no code to check. Git hands the
+# hook one line per ref, "<local ref> <local sha> <remote ref> <remote
+# sha>", and a deletion's local sha is all zeros. Without this a
+# `git push origin --delete <branch>` queued a whole gate behind every
+# other session's (2026-09-30). Run by hand from a terminal there is no
+# list, and the checks run as always.
+if [ ! -t 0 ]; then
+    _refs=$(cat)
+    if [ -n "$_refs" ] && ! printf '%s\n' "$_refs" | awk '$2 !~ /^0+$/ { code = 1 } END { exit !code }'; then
+        printf '\n  pre-push: only deleting refs, nothing to check.\n\n' >&2
+        exit 0
+    fi
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
     printf '\n  pre-push: cargo not on PATH; cannot run the tests. Refusing rather\n' >&2
     printf '            than letting an unchecked push through silently. Set\n' >&2
