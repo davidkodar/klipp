@@ -608,7 +608,8 @@ impl TitleRenderer {
         if tb.text_direction == TextDirection::Rtl {
             resolved_text = resolved_text.chars().rev().collect();
         }
-        let font_px = fit_widest_word(font, &resolved_text, font_px, text_box_extent(title, width, height).0);
+        let fit = fit_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), text_box_extent(title, width, height).0);
+        let font_px = font_px * fit;
 
         // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
         // character. The straightforward "drop initial" path appends
@@ -787,7 +788,7 @@ impl TitleRenderer {
                 }
                 if run_end > pos {
                     let segment = &resolved_text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale;
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -2313,7 +2314,8 @@ impl TitleRenderer {
             _ => 1.0,
         };
         let font_px = tb.font_size * scale * case_scale;
-        let font_px = fit_widest_word(font, &resolved_text, font_px, text_box_extent(title, width, height).0);
+        let fit = fit_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), text_box_extent(title, width, height).0);
+        let font_px = font_px * fit;
 
         let h_align = match tb.alignment {
             TextAlignment::Left => HorizontalAlign::Left,
@@ -2354,7 +2356,7 @@ impl TitleRenderer {
                 let run_end = run.end.min(resolved_text.len());
                 if run_end > pos {
                     let segment = &resolved_text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale;
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -3665,26 +3667,45 @@ fn paint_image_layer(
     }
 }
 
-/// Full-frame text keeps the historical five-percent margin. Explicit
-/// boxes use their authored dimensions for wrapping and cursor layout.
-/// `font_px`, or smaller so the widest word fits `max_width`. The layout
-/// wraps between words, and a single word wider than the box it can only
-/// break between letters: "Wherever" came out as "Whereve / r" (#508).
-/// Shrunk instead, the word stays whole; text that fits is untouched.
-fn fit_widest_word(font: &fontdue::Font, text: &str, font_px: f32, max_width: f32) -> f32 {
-    let widest = text
-        .split_whitespace()
-        .map(|word| word.chars().map(|c| font.metrics(c, font_px).advance_width).sum::<f32>())
-        .fold(0.0f32, f32::max);
-    if widest > max_width && widest > 0.0 && max_width > 0.0 {
+/// How much to shrink a text box's type so its widest word fits
+/// `max_width`: 1 when it fits already. The layout wraps between words,
+/// and a single word wider than the box it can only break between
+/// letters: "Wherever" came out as "Whereve / r" (#508). Each character
+/// is measured at its own size, `px_at(byte offset)`, so a style run set
+/// larger counts; the ratio then scales the base size and every run's
+/// alike, and the title keeps its proportions.
+fn fit_ratio(font: &fontdue::Font, text: &str, px_at: impl Fn(usize) -> f32, max_width: f32) -> f32 {
+    let mut widest = 0.0f32;
+    let mut word = 0.0f32;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            word = 0.0;
+        } else {
+            word += font.metrics(c, px_at(i)).advance_width;
+            widest = widest.max(word);
+        }
+    }
+    if widest > max_width && max_width > 0.0 {
         // A little under the box, so rounding in the layout cannot put
         // the last letter over the edge.
-        font_px * max_width / widest * 0.98
+        max_width / widest * 0.98
     } else {
-        font_px
+        1.0
     }
 }
 
+/// The size a character at byte offset `i` is laid out at: its style
+/// run's own size when it has one, else `base_px`. `scale` turns a run's
+/// points into pixels as the base size was.
+fn run_px_at(runs: &[klipp_timeline::StyleRun], i: usize, base_px: f32, scale: f32) -> f32 {
+    runs.iter()
+        .find(|r| r.start <= i && i < r.end)
+        .and_then(|r| r.font_size)
+        .map_or(base_px, |pt| pt * scale)
+}
+
+/// Full-frame text keeps the historical five-percent margin. Explicit
+/// boxes use their authored dimensions for wrapping and cursor layout.
 fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
     let size = title.objects.iter().find_map(|o| {
         matches!(o.content, TitleObjectContent::TextBox(_)).then_some(o.transform.size)
@@ -5524,6 +5545,30 @@ mod tests {
         let fits = renderer.compute_char_positions(&text_title("Wherever We Walk", 72.0), w, h);
         let unfitted = TitleRenderer::new().compute_char_positions(&text_title("Hi", 72.0), w, h);
         assert!((fits[0].height - unfitted[0].height).abs() < 0.5, "text that fits keeps its size");
+    }
+
+    /// #508 review: the fit shrinks the whole title alike, a style run
+    /// with it. A colour-only highlight over the oversized word stays the
+    /// same size as the words round it, and a run set larger is measured,
+    /// so it fits too.
+    #[test]
+    fn a_fitted_title_keeps_its_style_runs_in_proportion() {
+        let mut renderer = TitleRenderer::new();
+        let (w, h) = (1920, 1080);
+        let titled = |runs: Vec<klipp_timeline::StyleRun>| {
+            let tb = klipp_timeline::TextBox { text: "Wherever We Walk".into(), font_size: 420.0, style_runs: runs, ..Default::default() };
+            klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default())
+        };
+        let highlight = klipp_timeline::StyleRun { color: Some([255, 200, 0, 255]), ..klipp_timeline::StyleRun::default_for_range(0, 8) };
+        let pos = renderer.compute_char_positions(&titled(vec![highlight]), w, h);
+        let (inside, outside) = (pos[0].height, pos[9].height);
+        assert!((inside - outside).abs() < 0.5, "the highlighted word is {inside} px high, the rest {outside}");
+
+        let bigger = klipp_timeline::StyleRun { font_size: Some(560.0), ..klipp_timeline::StyleRun::default_for_range(0, 8) };
+        let pos = renderer.compute_char_positions(&titled(vec![bigger]), w, h);
+        assert!(pos[..8].windows(2).all(|p| p[1].x > p[0].x), "the larger word stays whole");
+        let right = pos[..8].iter().map(|c| c.x + c.advance).fold(0.0f32, f32::max) - pos[0].x;
+        assert!(right <= 0.9 * w as f32 + 1.0, "and inside the box: {right} px");
     }
 
     #[test]
