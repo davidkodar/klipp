@@ -82,7 +82,7 @@ fn a_placed_frame_is_the_rendered_frame() {
     let mut r = TitleRenderer::new();
     let td = TitleData::single_text_fx(
         TextBox { text: "Rolling\ncredits\nhere".into(), font_size: 40.0, ..Default::default() },
-        klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() },
+        klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() }], ..Default::default() },
     );
     let (w, h) = (320, 180);
     let mut ids = Vec::new();
@@ -156,4 +156,53 @@ fn a_motion_without_stagger_rests_as_soon_as_it_has_run() {
     }
     assert!(!placed(&staggered, 1.0), "the last of 22 letters starts at 1.05 s");
     assert!(placed(&staggered, 1.7));
+}
+
+/// #592: a roll's shape fades it by where it is on screen, on the path
+/// that places the resting render and on the one that rasters every
+/// layer (forced here by a constant opacity key): each pixel's alpha is
+/// the unshaped frame's times the ramp at its row.
+#[test]
+fn a_shaped_roll_fades_by_where_it_is_on_both_paths() {
+    use klipp_core::title_motion::{FocusBand, RampAxis, RollShape};
+    use klipp_timeline::{ScrollDirection, TitleLoop};
+    let shape = RollShape { edge_fade: 0.25, focus: Some(FocusBand { band: 0.3, edge_opacity: 0.3 }) };
+    let roll = |shape: RollShape, raster: bool| {
+        let mut td = TitleData::single_text_fx(
+            TextBox { text: "Rolling\ncredits\nhere\nand\nmore".into(), font_size: 40.0, ..Default::default() },
+            klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape }], ..Default::default() },
+        );
+        if raster {
+            td.objects[0].opacity_keyframes = vec![klipp_core::Keyframe {
+                time_secs: 0.0,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Linear,
+                tangent_out: (0.0, 0.0),
+                tangent_in: (0.0, 0.0),
+            }];
+        }
+        td
+    };
+    let ramp = shape.ramp(RampAxis::Vertical).unwrap();
+    let (w, h) = (320usize, 180usize);
+    let mut r = TitleRenderer::new();
+    for raster in [false, true] {
+        for t in [0.8f32, 2.0, 3.2] {
+            let shaped_td = roll(shape, raster);
+            if !raster {
+                let frame = r.frame_with_window(&shaped_td, w as u32, h as u32, None, t, Some(4.0));
+                assert!(matches!(frame, klipp_title::TitleFrame::Placed { shape: Some(_), .. }), "a shaped roll is still the resting render placed");
+            }
+            let plain = r.render_with_window(&roll(RollShape::default(), raster), w as u32, h as u32, None, t, Some(4.0));
+            let shaped = r.render_with_window(&shaped_td, w as u32, h as u32, None, t, Some(4.0));
+            let mut lit = 0;
+            for (i, (p, s)) in plain.chunks_exact(4).zip(shaped.chunks_exact(4)).enumerate() {
+                let y = i / w;
+                let want = p[3] as f32 * ramp.alpha_at((y as f32 + 0.5) / h as f32);
+                assert!((s[3] as f32 - want).abs() <= 1.0, "raster {raster}, t {t}: row {y} alpha {} where {want:.1}", s[3]);
+                lit += (p[3] > 0) as usize;
+            }
+            assert!(lit > 100, "raster {raster}, t {t}: the credits are on screen");
+        }
+    }
 }

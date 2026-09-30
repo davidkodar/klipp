@@ -401,7 +401,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()),
         animate: motion.animate, enter: motion.enter, exit: motion.exit,
         animate_secs: motion.animate_secs, stagger: motion.stagger,
-        loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None,
+        loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None, roll_shape: None,
     }
 }
 

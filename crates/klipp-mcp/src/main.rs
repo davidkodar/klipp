@@ -1455,7 +1455,7 @@ fn tool_definitions() -> Vec<Value> {
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
               rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
-              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker); \
+              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {edge_fade, focus {band, edge_opacity}} fades a roll by where it is on screen); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
@@ -1617,7 +1617,7 @@ fn tool_definitions() -> Vec<Value> {
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
               a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
               rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter) with stagger \
-              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker); \
+              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {edge_fade, focus {band, edge_opacity}} fades a roll by where it is on screen); \
               glitch and chromatic (0..1) for a digital edge.\n\
               set_text {clip_id, text} — the words of a title or a caption, its look, place and \
               timing kept: for a cue the transcript misheard or a name it cannot spell.\n\

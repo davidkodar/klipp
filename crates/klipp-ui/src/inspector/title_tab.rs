@@ -657,10 +657,17 @@ fn show_loops(
                 remove = Some(i);
             }
         });
-        // The travelling loops' speed on a line of its own, always shown.
+        // The travelling loops' speed on a line of its own, always shown,
+        // and how they fade with where they are on screen.
         match l {
-            TitleLoop::Scroll { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false),
-            TitleLoop::Crawl { speed_px_per_sec, repeat, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat),
+            TitleLoop::Scroll { speed_px_per_sec, shape, .. } => {
+                changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false);
+                changed |= roll_shape(ui, theme, shape, true);
+            }
+            TitleLoop::Crawl { speed_px_per_sec, repeat, shape, .. } => {
+                changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat);
+                changed |= roll_shape(ui, theme, shape, false);
+            }
             _ => {}
         }
     }
@@ -755,6 +762,64 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
         if let Some(note) = note {
             ui.label(dim(&note));
         }
+    }
+    changed
+}
+
+/// How a roll or a crawl fades with where it is on screen (#592): an
+/// edge fade over a zone at each end of its travel, and a focus band
+/// around the frame's middle it thins away from. Returns true when it
+/// changed.
+fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::title_motion::RollShape, vertical: bool) -> bool {
+    let mut changed = false;
+    let dim = |t: &str| egui::RichText::new(t).size(crate::theme::type_scale::CAPTION).color(theme.text_dim);
+    let ends = if vertical { "top and bottom" } else { "left and right" };
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(4.0);
+        ui.label(dim("Edge fade"));
+        let mut zone = shape.edge_fade * 100.0;
+        if ui
+            .add(egui::DragValue::new(&mut zone).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
+            .on_hover_text(format!("Fade in and out over this much of the frame at the {ends}; 0 for none"))
+            .changed()
+        {
+            shape.edge_fade = zone / 100.0;
+            changed = true;
+        }
+        let mut on = shape.focus.is_some();
+        if ui
+            .checkbox(&mut on, "Focus band")
+            .on_hover_text("Full strength in a band around the middle of the frame, thinning towards its edges")
+            .changed()
+        {
+            shape.focus = on.then(klipp_core::title_motion::FocusBand::default);
+            changed = true;
+        }
+    });
+    if let Some(focus) = &mut shape.focus {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(4.0);
+            ui.label(dim("Band"));
+            let mut band = focus.band * 100.0;
+            if ui
+                .add(egui::DragValue::new(&mut band).range(0.0..=99.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                .on_hover_text("How much of the frame, around its middle, is at full strength")
+                .changed()
+            {
+                focus.band = band / 100.0;
+                changed = true;
+            }
+            ui.label(dim("edges at"));
+            let mut edge = focus.edge_opacity * 100.0;
+            if ui
+                .add(egui::DragValue::new(&mut edge).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                .on_hover_text("How much of the layer shows at the frame's edges")
+                .changed()
+            {
+                focus.edge_opacity = edge / 100.0;
+                changed = true;
+            }
+        });
     }
     changed
 }
@@ -960,7 +1025,7 @@ mod roll_speed_tests {
     fn the_roll_time_shown_is_the_time_the_render_takes() {
         let tb = TextBox { text: "Director\nA Name\n\nEditor\nA Name".into(), font_size: 60.0, ..Default::default() };
         let (clip, speed) = (40.0f32, 150.0f32);
-        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: speed }];
+        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: speed, shape: Default::default() }];
         for (w, h) in [(1920u32, 1080u32), (3840, 2160), (2160, 3840)] {
             let travel = Travel::new(klipp_core::Resolution { width: w, height: h }, tb.loop_extent(tb.font_size), clip as f64);
             let secs = travel_secs(travel.distance(true), speed, clip);

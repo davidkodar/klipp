@@ -5368,14 +5368,15 @@ impl GpuEffectsPipeline {
     /// it covers, the rest of the layer is cleared.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_layer_place_sprite(&mut self, i: usize, id: u64, pixels: &[u8], dx: i32, dy: i32, opacity: f32, y0: u32, y1: u32) -> bool {
-        self.stack_layer_place_sprite_posed(i, id, pixels, dx, dy, opacity, 1.0, (0.0, 0.0), None, y0, y1)
+        self.stack_layer_place_sprite_posed(i, id, pixels, dx, dy, opacity, 1.0, (0.0, 0.0), None, None, y0, y1)
     }
 
     /// [`Self::stack_layer_place_sprite`] with the whole pose: the
     /// sprite scaled by `scale` about `anchor` (bilinear, premultiplied,
     /// in the sprite's sRGB-encoded units) and laid over a full-frame
-    /// `under` colour (sRGB8, straight alpha) when there is one. The
-    /// twin of `klipp_title::pose_sprite`.
+    /// `under` colour (sRGB8, straight alpha) when there is one, its
+    /// alpha shaped by where it is on the frame when `shape` is given.
+    /// The twin of `klipp_title::pose_sprite`.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_layer_place_sprite_posed(
         &mut self,
@@ -5388,6 +5389,7 @@ impl GpuEffectsPipeline {
         scale: f32,
         anchor: (f32, f32),
         under: Option<[u8; 4]>,
+        shape: Option<SpriteShape>,
         y0: u32,
         y1: u32,
     ) -> bool {
@@ -5449,6 +5451,14 @@ impl GpuEffectsPipeline {
             under_g: under[1],
             under_b: under[2],
             under_a: under[3],
+            shape_axis: match shape {
+                None => 0,
+                Some(s) if s.vertical => 1,
+                Some(_) => 2,
+            },
+            edge_fade: shape.map_or(0.0, |s| s.edge_fade),
+            band: shape.map_or(0.5, |s| s.band),
+            edge_opacity: shape.map_or(1.0, |s| s.edge_opacity),
             _pad0: 0,
             _pad1: 0,
         });
@@ -7325,8 +7335,24 @@ struct SpritePlaceParams {
     under_g: f32,
     under_b: f32,
     under_a: f32,
+    /// [`SpriteShape`]: axis 0 none, 1 down, 2 across.
+    shape_axis: u32,
+    edge_fade: f32,
+    band: f32,
+    edge_opacity: f32,
     _pad0: u32,
     _pad1: u32,
+}
+
+/// How a placed sprite fades with where it is on the frame: a credits
+/// roll's or a ticker's shape (#592), as the title crate's
+/// `ShapeRamp` gives it. `vertical` is the axis it varies along.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpriteShape {
+    pub vertical: bool,
+    pub edge_fade: f32,
+    pub band: f32,
+    pub edge_opacity: f32,
 }
 
 /// A title's resting render on the GPU; see `stack_sprites`.
@@ -9843,7 +9869,8 @@ struct Params {
     width: u32, height: u32, y0: u32, y1: u32,
     dx: i32, dy: i32, opacity: f32, scale: f32,
     anchor_x: f32, anchor_y: f32, under_r: f32, under_g: f32,
-    under_b: f32, under_a: f32, _pad0: u32, _pad1: u32,
+    under_b: f32, under_a: f32, shape_axis: u32, edge_fade: f32,
+    band: f32, edge_opacity: f32, _pad0: u32, _pad1: u32,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -9852,6 +9879,21 @@ struct Params {
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
     return pow((c + 0.055) / 1.055, 2.4);
+}
+
+// A roll's shape (#592): the opacity at this pixel's place along the
+// axis the layer travels, `klipp_core::title_motion::ShapeRamp::alpha_at`.
+// Axis 0 is none, 1 down the frame, 2 across it.
+fn shape_alpha(x: i32, y: i32) -> f32 {
+    if params.shape_axis == 0u { return 1.0; }
+    var u = (f32(y) + 0.5) / f32(params.height);
+    if params.shape_axis == 2u { u = (f32(x) + 0.5) / f32(params.width); }
+    var a = 1.0;
+    if params.edge_fade > 0.0 {
+        a = a * smoothstep(0.0, params.edge_fade, u) * smoothstep(0.0, params.edge_fade, 1.0 - u);
+    }
+    let d = abs(u - 0.5) * 2.0;
+    return a * (1.0 - smoothstep(params.band, 1.0, d) * (1.0 - params.edge_opacity));
 }
 
 // A tap of the sprite, premultiplied, in its sRGB-encoded 0..255 units
@@ -9909,8 +9951,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         a8 = s.w * 255.0;
     }
-    if params.opacity < 0.9999 || params.scale != 1.0 {
-        a8 = clamp(floor(a8 * params.opacity + 0.5), 0.0, 255.0);
+    let k = params.opacity * shape_alpha(x, y);
+    if k < 0.9999 || params.scale != 1.0 {
+        a8 = clamp(floor(a8 * k + 0.5), 0.0, 255.0);
     }
     if params.scale != 1.0 && a8 <= 0.0 {
         rgb = vec3<f32>(0.0);

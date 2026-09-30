@@ -186,7 +186,7 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         (0, 6, 1.0, 1.0, None, (8, 16)),
     ];
     for (dx, dy, opacity, scale, under, rows) in cases {
-        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, rows);
+        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, None, rows);
         assert!(gpu.stack_begin(W, H, 1));
         assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
         assert!(gpu.stack_blend(0, 1.0, 0));
@@ -194,7 +194,7 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         let want = gpu.stack_download_linear();
 
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, rows.0, rows.1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
@@ -216,6 +216,63 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
             &got[px * 4..px * 4 + 4],
             &want_u8[px * 4..px * 4 + 4],
         );
+    }
+}
+
+/// A roll's shape (#592) — an edge fade, a focus band, down the frame or
+/// across it, on a sprite moved, scaled and laid over a colour — is
+/// `klipp_title::pose_sprite` with the same `ShapeRamp`, to a level: the
+/// credits fade the same in the viewer as in an export.
+#[test]
+fn a_shaped_sprite_is_the_cpu_shape_uploaded() {
+    use klipp_core::title_motion::{FocusBand, RampAxis, RollShape};
+    let Some(mut gpu) = pipeline() else { return };
+    // Solid across the frame, so the ramp is all there is to see.
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+        px.copy_from_slice(&[(i * 7 % 256) as u8, 180, 60, 255]);
+    }
+    let fade = RollShape { edge_fade: 0.3, focus: None };
+    let band = RollShape { edge_fade: 0.0, focus: Some(FocusBand { band: 0.3, edge_opacity: 0.1 }) };
+    let both = RollShape { edge_fade: 0.15, focus: Some(FocusBand { band: 0.5, edge_opacity: 0.4 }) };
+    let cases = [
+        (fade, RampAxis::Vertical, 0, 3, 1.0, 1.0, None),
+        (band, RampAxis::Vertical, 0, -2, 0.8, 1.0, None),
+        (both, RampAxis::Horizontal, 4, 0, 1.0, 1.0, None),
+        (fade, RampAxis::Horizontal, 0, 0, 0.6, 1.2, None),
+        (both, RampAxis::Vertical, 1, 2, 1.0, 1.0, Some([20, 24, 40, 255])),
+    ];
+    for (shape, axis, dx, dy, opacity, scale, under) in cases {
+        let ramp = shape.ramp(axis).unwrap();
+        let rows = (0, H);
+        let anchor = (W as f32 / 2.0, H as f32 / 2.0);
+        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, Some(ramp), rows);
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let want = gpu.stack_download_linear();
+
+        let sprite_shape = klipp_effects::gpu::SpriteShape { vertical: axis == RampAxis::Vertical, edge_fade: ramp.edge_fade, band: ramp.band, edge_opacity: ramp.edge_opacity };
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 93, &rgba, dx, dy, opacity, scale, anchor, under, Some(sprite_shape), rows.0, rows.1));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        // The ramp is the same smoothstep on both sides; where alpha
+        // lands on a half code the GPU's float can round the other way.
+        let worst = worst_level(&want, &got);
+        assert!(worst <= 2.3, "shaped sprite ({shape:?}, {axis:?}, {dx}, {dy}, {opacity}, ×{scale}, {under:?}) differs by {worst:.3} levels");
+        // And the shape shows: the frame's edge along the axis is fainter
+        // than its middle.
+        let alpha = |x: u32, y: u32| got[((y * W + x) * 4 + 3) as usize];
+        let (edge, middle) = match axis {
+            RampAxis::Vertical => (alpha(W / 2, 0), alpha(W / 2, H / 2)),
+            RampAxis::Horizontal => (alpha(0, H / 2), alpha(W / 2, H / 2)),
+        };
+        if under.is_none() {
+            assert!(edge < middle, "{shape:?} {axis:?}: edge {edge} is fainter than the middle {middle}");
+        }
     }
 }
 

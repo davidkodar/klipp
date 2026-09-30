@@ -112,7 +112,7 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
     assert_eq!(loaded.animation_type, TitleAnimationType::Static, "the old kind should be folded away");
     assert_eq!(
         loaded.primary_fx().loops,
-        vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 40.0 }]
+        vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 40.0, shape: Default::default() }]
     );
     assert!(clip.transform_pos_y_keyframes.is_empty(), "the baked keyframes should go with it");
 }

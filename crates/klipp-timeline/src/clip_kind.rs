@@ -1209,11 +1209,11 @@ impl TitleData {
                 let typing = |cps: f32| Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, 1.0 / cps.max(0.5));
                 match legacy {
                     T::Static => {}
-                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec }),
-                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec }),
-                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false }),
-                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false }),
-                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true }),
+                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec, shape: Default::default() }),
+                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec, shape: Default::default() }),
+                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false, shape: Default::default() }),
+                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false, shape: Default::default() }),
+                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true, shape: Default::default() }),
                     T::Typewriter { chars_per_sec } => tb.motion.enter = Some(typing(chars_per_sec)),
                     T::TypewriterOut { chars_per_sec } => tb.motion.exit = Some(typing(chars_per_sec)),
                     T::OutlineDrawOn { duration_secs } => {
@@ -3948,7 +3948,7 @@ mod legacy_animation_migration_tests {
         assert!(matches!(td.animation_type, TitleAnimationType::Static));
         assert_eq!(
             td.primary_fx().loops,
-            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 }]
+            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0, shape: Default::default() }]
         );
     }
 

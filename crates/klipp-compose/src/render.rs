@@ -1490,7 +1490,7 @@ impl Renderer {
                 // keeps that render on the GPU: no raster, no upload, one
                 // pass. Anything else is rendered here and goes up as rows.
                 match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
-                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, rows: r } => {
+                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
                         rows = r;
                         if blur > 0.5 {
                             // The blur entrance: the placed sprite, blurred
@@ -1498,7 +1498,14 @@ impl Renderer {
                             fx.push(BuiltinEffect::GaussianBlur { radius: blur });
                         }
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, r.0, r.1)
+                            // A roll's shape, the sprite shader's own (#592).
+                            let shape = shape.map(|s| klipp_effects::gpu::SpriteShape {
+                                vertical: s.axis == klipp_core::title_motion::RampAxis::Vertical,
+                                edge_fade: s.edge_fade,
+                                band: s.band,
+                                edge_opacity: s.edge_opacity,
+                            });
+                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
                         })
                     }
                     klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {

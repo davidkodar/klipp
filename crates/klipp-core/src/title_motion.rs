@@ -270,6 +270,131 @@ pub enum CrawlDirection {
     Right,
 }
 
+/// How a travelling layer (a credits roll, a ticker) changes with where
+/// it is on screen: it can fade in and out over a zone at each end of
+/// its travel, and thin out away from a band around the frame's middle.
+/// Stored on the Scroll or Crawl loop; the default changes nothing, so
+/// a roll saved before it plays as it did.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RollShape {
+    /// The zone at each end of the travel over which the layer fades
+    /// in and out, as a fraction of the frame (0 to 0.5). 0 for none.
+    pub edge_fade: f32,
+    /// A band around the frame's middle where the layer is at full
+    /// strength; away from it the layer thins towards the edges.
+    pub focus: Option<FocusBand>,
+}
+
+/// The focus band of a [`RollShape`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FocusBand {
+    /// How much of the frame, around its middle, is at full strength
+    /// (0 to 1).
+    pub band: f32,
+    /// The layer's opacity at the frame's edges (0 to 1).
+    pub edge_opacity: f32,
+}
+
+impl Default for FocusBand {
+    fn default() -> Self {
+        Self { band: 0.4, edge_opacity: 0.15 }
+    }
+}
+
+impl RollShape {
+    /// Whether the shape changes nothing.
+    pub fn is_none(&self) -> bool {
+        self.edge_fade <= 0.0 && self.focus.is_none()
+    }
+
+    /// The shape on the axis a loop travels along, packed as the
+    /// renderers take it; `None` when it changes nothing.
+    pub fn ramp(&self, axis: RampAxis) -> Option<ShapeRamp> {
+        if self.is_none() {
+            return None;
+        }
+        let (band, edge_opacity) = match self.focus {
+            Some(f) => (f.band.clamp(0.0, 0.999), f.edge_opacity.clamp(0.0, 1.0)),
+            None => (0.5, 1.0),
+        };
+        Some(ShapeRamp { axis, edge_fade: self.edge_fade.clamp(0.0, 0.5), band, edge_opacity })
+    }
+}
+
+/// The frame axis a [`ShapeRamp`] varies along: down it for a roll,
+/// across it for a crawl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RampAxis {
+    Vertical,
+    Horizontal,
+}
+
+/// A [`RollShape`] ready to apply: the opacity a placed layer takes at
+/// each place along `axis`. The CPU title renderer and the GPU sprite
+/// shader evaluate [`ShapeRamp::alpha_at`] alike, so the viewer and an
+/// export fade the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeRamp {
+    pub axis: RampAxis,
+    pub edge_fade: f32,
+    pub band: f32,
+    pub edge_opacity: f32,
+}
+
+/// GLSL/WGSL `smoothstep`, for an `edge1` above `edge0`.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl ShapeRamp {
+    /// The opacity at `u`, the place along the axis as a fraction of
+    /// the frame (0 at one edge, 1 at the other). Mirrored by
+    /// `shape_alpha` in klipp-effects' sprite shader.
+    pub fn alpha_at(&self, u: f32) -> f32 {
+        let mut a = 1.0;
+        if self.edge_fade > 0.0 {
+            a *= smoothstep(0.0, self.edge_fade, u) * smoothstep(0.0, self.edge_fade, 1.0 - u);
+        }
+        let d = (u - 0.5).abs() * 2.0;
+        a * (1.0 - smoothstep(self.band, 1.0, d) * (1.0 - self.edge_opacity))
+    }
+
+    /// Scale the alpha of a straight-alpha RGBA8 frame, `width` wide,
+    /// by the ramp: at each pixel's centre along the axis.
+    pub fn apply_rgba8(&self, rgba: &mut [u8], width: u32, height: u32) {
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 {
+            return;
+        }
+        match self.axis {
+            RampAxis::Vertical => {
+                for (y, row) in rgba.chunks_exact_mut(w * 4).take(h).enumerate() {
+                    let a = self.alpha_at((y as f32 + 0.5) / h as f32);
+                    if a >= 1.0 {
+                        continue;
+                    }
+                    for px in row.chunks_exact_mut(4) {
+                        px[3] = (px[3] as f32 * a).round() as u8;
+                    }
+                }
+            }
+            RampAxis::Horizontal => {
+                let col: Vec<f32> = (0..w).map(|x| self.alpha_at((x as f32 + 0.5) / w as f32)).collect();
+                for row in rgba.chunks_exact_mut(w * 4).take(h) {
+                    for (px, a) in row.chunks_exact_mut(4).zip(&col) {
+                        if *a < 1.0 {
+                            px[3] = (px[3] as f32 * a).round() as u8;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One continuous behaviour of a text layer. A layer holds a list of
 /// these and they all run at once, on top of its entrance and exit:
 /// a title can blink while it crawls, or pulse while it counts.
@@ -289,10 +414,23 @@ pub enum TitleLoop {
     ColorBlend { color_a: [u8; 4], color_b: [u8; 4], rate_hz: f32 },
     /// Credits roll: the layer travels through the frame. A speed of
     /// zero fits the whole travel to the clip.
-    Scroll { direction: ScrollDirection, speed_px_per_sec: f32 },
+    Scroll {
+        direction: ScrollDirection,
+        speed_px_per_sec: f32,
+        /// How it fades with where it is on screen.
+        #[serde(default)]
+        shape: RollShape,
+    },
     /// Ticker: the layer travels across the frame. `repeat` starts it
     /// again as soon as it has left.
-    Crawl { direction: CrawlDirection, speed_px_per_sec: f32, repeat: bool },
+    Crawl {
+        direction: CrawlDirection,
+        speed_px_per_sec: f32,
+        repeat: bool,
+        /// How it fades with where it is on screen.
+        #[serde(default)]
+        shape: RollShape,
+    },
     /// The text becomes a number counting from `from` to `to`.
     Counter { from: f64, to: f64, duration_secs: f32, decimals: u8 },
 }
@@ -301,8 +439,8 @@ impl TitleLoop {
     /// One of each, with sensible values, for pickers.
     pub fn catalogue() -> Vec<TitleLoop> {
         vec![
-            TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 },
-            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false },
+            TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() },
+            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false, shape: Default::default() },
             TitleLoop::Blink { rate_hz: 2.0, duty: 0.5 },
             TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
             TitleLoop::Shake { amplitude: 0.05, rate_hz: 12.0 },
@@ -347,11 +485,14 @@ pub struct LoopPose {
     pub color: Option<[u8; 4]>,
     /// Text replacing the layer's own.
     pub text: Option<String>,
+    /// How the placed layer fades with where it is on screen: a roll's
+    /// or a crawl's [`RollShape`].
+    pub shape: Option<ShapeRamp>,
 }
 
 impl Default for LoopPose {
     fn default() -> Self {
-        Self { opacity: 1.0, dx: 0.0, dy: 0.0, wave: None, color: None, text: None }
+        Self { opacity: 1.0, dx: 0.0, dy: 0.0, wave: None, color: None, text: None, shape: None }
     }
 }
 
@@ -486,12 +627,14 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
             // A speed is pixels per second of a 1080p frame, as the
             // field says: scaled to this frame, a roll takes as long on
             // 4K or a vertical frame as on 1080p.
-            TitleLoop::Scroll { direction, speed_px_per_sec } => {
+            TitleLoop::Scroll { direction, speed_px_per_sec, shape } => {
+                pose.shape = pose.shape.or(shape.ramp(RampAxis::Vertical));
                 let offset = travel_distance(geo.frame_h, geo.text_h) * 0.5;
                 let y = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, false);
                 pose.dy += match direction { ScrollDirection::Up => y, ScrollDirection::Down => -y };
             }
-            TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
+            TitleLoop::Crawl { direction, speed_px_per_sec, repeat, shape } => {
+                pose.shape = pose.shape.or(shape.ramp(RampAxis::Horizontal));
                 let offset = travel_distance(geo.frame_w, geo.text_w) * 0.5;
                 let x = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, *repeat);
                 pose.dx += match direction { CrawlDirection::Left => x, CrawlDirection::Right => -x };
@@ -520,11 +663,41 @@ mod loop_tests {
         LoopGeometry { frame_w: 1920.0, frame_h: 1080.0, text_w: 400.0, text_h: 80.0, font_px: 72.0 }
     }
 
+    /// #592: an edge fade ramps in over its zone at each end and is
+    /// whole between; a focus band is whole across the band and thins to
+    /// its edge opacity at the frame's edges.
+    #[test]
+    fn a_roll_shape_fades_at_the_ends_and_away_from_the_band() {
+        let fade = RollShape { edge_fade: 0.2, focus: None }.ramp(RampAxis::Vertical).unwrap();
+        assert_eq!(fade.alpha_at(0.0), 0.0);
+        assert_eq!(fade.alpha_at(1.0), 0.0);
+        assert!((fade.alpha_at(0.1) - 0.5).abs() < 1e-6, "half way up its zone: {}", fade.alpha_at(0.1));
+        for u in [0.2, 0.5, 0.8] {
+            assert_eq!(fade.alpha_at(u), 1.0, "whole between the zones at {u}");
+        }
+        let band = RollShape { edge_fade: 0.0, focus: Some(FocusBand { band: 0.5, edge_opacity: 0.2 }) }.ramp(RampAxis::Horizontal).unwrap();
+        for u in [0.26, 0.5, 0.74] {
+            assert_eq!(band.alpha_at(u), 1.0, "whole inside the band at {u}");
+        }
+        assert!((band.alpha_at(0.0) - 0.2).abs() < 1e-6 && (band.alpha_at(1.0) - 0.2).abs() < 1e-6);
+        assert!(band.alpha_at(0.1) < band.alpha_at(0.2) && band.alpha_at(0.2) < 1.0, "thinning towards the edge");
+        assert!(RollShape::default().ramp(RampAxis::Vertical).is_none(), "the default changes nothing");
+    }
+
+    /// A roll saved before its shape existed loads with none.
+    #[test]
+    fn a_roll_saved_without_a_shape_loads_unshaped() {
+        let old: TitleLoop = serde_json::from_str(r#"{"Scroll":{"direction":"Up","speed_px_per_sec":40.0}}"#).unwrap();
+        assert_eq!(old, TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 40.0, shape: RollShape::default() });
+        let p = eval_loops(std::slice::from_ref(&old), 1.0, Some(4.0), geo(), [255; 4]);
+        assert!(p.shape.is_none());
+    }
+
     /// #588: a speed is pixels per second of a 1080p frame, so a roll
     /// is as far along on 4K as on 1080p at any moment.
     #[test]
     fn a_speed_is_1080p_pixels_so_a_roll_keeps_its_pace_on_4k() {
-        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 200.0 }];
+        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 200.0, shape: Default::default() }];
         let along = |w: f32, h: f32, t: f32| {
             let s = frame_scale(w, h);
             let geo = LoopGeometry { frame_w: w, frame_h: h, text_w: 400.0 * s, text_h: 300.0 * s, font_px: 72.0 * s };
@@ -537,7 +710,7 @@ mod loop_tests {
 
     #[test]
     fn a_scroll_with_no_speed_fits_the_clip() {
-        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 }];
+        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() }];
         let start = eval_loops(&loops, 0.0, Some(4.0), geo(), [255; 4]);
         let end = eval_loops(&loops, 4.0, Some(4.0), geo(), [255; 4]);
         // At the start the text's top edge sits just below the frame;
@@ -559,7 +732,7 @@ mod loop_tests {
     fn loops_stack() {
         let loops = [
             TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.0 },
-            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 100.0, repeat: false },
+            TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec: 100.0, repeat: false, shape: Default::default() },
             TitleLoop::Counter { from: 0.0, to: 10.0, duration_secs: 2.0, decimals: 1 },
         ];
         let p = eval_loops(&loops, 1.0, Some(10.0), geo(), [255; 4]);
