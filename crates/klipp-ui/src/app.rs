@@ -29055,10 +29055,16 @@ impl eframe::App for KlippApp {
         klipp_engine::UI_WANTS_FRAMES
             .store(wants_continuous_frames, std::sync::atomic::Ordering::Relaxed);
 
+        // The meters' ballistics are tuned per frame at 60 fps, and taken
+        // per this frame's real length: the UI draws at whatever rate the
+        // display and the present mode give it, 120 fps and more, and a
+        // meter counted in frames fell twice as fast there.
+        let ballistics = MeterBallistics::for_frame(ctx.input(|i| i.unstable_dt));
+
         // Peak meter ballistics: exponential release (~1.7s to decay from 0dB to -60dB).
         // Factor 0.96/frame at 60fps → ~0.96^60 ≈ 0.085 after 1s → -21dB/s.
         // This gives smooth, professional-looking decay without flicker.
-        let peak_release = 0.96_f32;
+        let peak_release = ballistics.peak_release;
         for (l, r) in &mut self.state.track_peak_levels {
             *l *= peak_release;
             *r *= peak_release;
@@ -29069,12 +29075,11 @@ impl eframe::App for KlippApp {
         // LUFS display smoothing: EMA filter on momentary and short-term.
         // Integrated is already slow-moving (gated average), no smoothing needed.
         // Alpha ~0.12 → ~8 frames to settle → ~130ms at 60fps. Smooth but responsive.
-        let lufs_alpha = 0.12_f32;
-        fn ema_lufs(smooth: &mut f32, raw: f32, alpha: f32) {
+        fn ema_lufs(smooth: &mut f32, raw: f32, alpha: f32, drift: f32) {
             if !raw.is_finite() {
                 // Decay toward -inf when signal stops
                 if smooth.is_finite() {
-                    *smooth -= 1.5; // drift down ~90 LUFS/sec at 60fps
+                    *smooth -= drift; // drift down ~90 LUFS/sec
                     if *smooth < -70.0 { *smooth = f32::NEG_INFINITY; }
                 }
             } else if !smooth.is_finite() {
@@ -29083,8 +29088,8 @@ impl eframe::App for KlippApp {
                 *smooth = *smooth * (1.0 - alpha) + raw * alpha;
             }
         }
-        ema_lufs(&mut self.state.lufs_momentary_smooth, self.state.lufs_momentary, lufs_alpha);
-        ema_lufs(&mut self.state.lufs_short_term_smooth, self.state.lufs_short_term, lufs_alpha * 0.6);
+        ema_lufs(&mut self.state.lufs_momentary_smooth, self.state.lufs_momentary, ballistics.momentary_alpha, ballistics.drift);
+        ema_lufs(&mut self.state.lufs_short_term_smooth, self.state.lufs_short_term, ballistics.short_term_alpha, ballistics.drift);
 
         // Update performance stats
         if self.state.show_perf_overlay {
@@ -41505,6 +41510,44 @@ mod qualifier_pick_tests {
         assert!(key(orange) > 0.99, "picked colour keyed: {}", key(orange));
         assert!(key(blue) < 0.01, "other colour not: {}", key(blue));
         assert!(qualifier_from_pick(&[], 0, 0, 0.5, 0.5, base).is_none());
+    }
+}
+
+/// The audio meters' ballistics for one UI frame of `dt` seconds: tuned
+/// per frame at 60 fps (a 0.96 peak release, a 0.12 and 0.072 LUFS
+/// smoothing, a 1.5 LU drift with no signal), taken as that many 60 fps
+/// frames so the meters move in seconds, whatever the UI's frame rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MeterBallistics {
+    peak_release: f32,
+    momentary_alpha: f32,
+    short_term_alpha: f32,
+    drift: f32,
+}
+
+impl MeterBallistics {
+    fn for_frame(dt: f32) -> Self {
+        // A frame after a stall counts as at most a tenth of a second.
+        let n = (dt * 60.0).clamp(0.0, 6.0);
+        let ema = |alpha: f32| 1.0 - (1.0 - alpha).powf(n);
+        Self { peak_release: 0.96_f32.powf(n), momentary_alpha: ema(0.12), short_term_alpha: ema(0.12 * 0.6), drift: 1.5 * n }
+    }
+}
+
+#[cfg(test)]
+mod meter_ballistics_tests {
+    use super::MeterBallistics;
+
+    /// Two frames at 120 fps move a meter as far as one at 60 fps.
+    #[test]
+    fn meters_move_in_seconds_whatever_the_frame_rate() {
+        let at60 = MeterBallistics::for_frame(1.0 / 60.0);
+        let at120 = MeterBallistics::for_frame(1.0 / 120.0);
+        assert!((at60.peak_release - 0.96).abs() < 1e-6 && (at60.momentary_alpha - 0.12).abs() < 1e-6 && (at60.drift - 1.5).abs() < 1e-6);
+        assert!((at120.peak_release * at120.peak_release - at60.peak_release).abs() < 1e-6);
+        let settle = |b: MeterBallistics, frames: usize| (0..frames).fold(0.0f32, |v, _| v * (1.0 - b.momentary_alpha) + b.momentary_alpha);
+        assert!((settle(at120, 2) - settle(at60, 1)).abs() < 1e-6);
+        assert!((2.0 * at120.drift - at60.drift).abs() < 1e-6);
     }
 }
 
