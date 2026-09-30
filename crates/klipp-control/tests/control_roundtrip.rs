@@ -931,11 +931,16 @@ fn frame_stats_reads_the_scopes_of_a_frame() {
 fn color_faults_flag_what_a_colourist_would() {
     let clean = klipp_control::frame_stats(&std::iter::repeat_n([195u8, 193, 190, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 1.0);
     assert!(klipp_control::color_faults(&clean, 1.0).is_empty(), "{clean}");
-    // A blown, over-saturated frame: pure saturated red at full.
+    // An over-saturated frame: pure saturated red at full. Its red is on
+    // the rail but the picture is not white (luma 61 of 255): that is
+    // saturation, not clipped white (#459).
     let hot = klipp_control::frame_stats(&std::iter::repeat_n([255u8, 10, 10, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 2.0);
     let faults = klipp_control::color_faults(&hot, 2.0);
-    assert!(faults.iter().any(|f| f.1.contains("clipped white")), "{faults:?}");
     assert!(faults.iter().any(|f| f.1.contains("saturation is high")), "{faults:?}");
+    assert!(!faults.iter().any(|f| f.1.contains("clipped white")), "a pinned red is not white: {faults:?}");
+    // A blown frame: white.
+    let blown = klipp_control::frame_stats(&std::iter::repeat_n([255u8, 255, 255, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 2.5);
+    assert!(klipp_control::color_faults(&blown, 2.5).iter().any(|f| f.1.contains("clipped white")), "{blown}");
     // A dull frame: everything at 40/255 grey → white point ~16 IRE.
     let dull = klipp_control::frame_stats(&std::iter::repeat_n([40u8, 40, 40, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 3.0);
     assert!(klipp_control::color_faults(&dull, 3.0).iter().any(|f| f.1.contains("dull")), "{dull}");
