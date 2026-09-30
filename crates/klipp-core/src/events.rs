@@ -1133,6 +1133,10 @@ pub enum AppCommand {
 
     // Edit
     Undo,
+    /// Fold the top `count` undo steps into one under `label`, when each
+    /// is labelled `only` and the document is still at
+    /// `expected_revision`; otherwise nothing (#514).
+    SquashUndo { count: usize, label: String, only: String, expected_revision: u64 },
     Redo,
     /// Collect every history push until `EndHistoryBatch` into one undo
     /// entry: what an agent's action is, however many edits it makes.

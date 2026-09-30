@@ -160,7 +160,7 @@ impl ColourCheckPanel {
     /// Measure the displayed frame, at most a few times a second and
     /// only when it has actually changed, and keep the reading in the
     /// trend so watching the piece draws the strip.
-    fn refresh(&mut self, frame_buffer: &SharedFrameBuffer, faces: &[[f32; 4]], at_secs: f64, look: &LookTarget) {
+    fn refresh(&mut self, frame_buffer: &SharedFrameBuffer, faces: &[[f32; 4]], at_secs: f64, look: &LookTarget, prior: measure::LogPrior) {
         let due = self.at.is_none_or(|t| t.elapsed().as_millis() >= 400);
         if !due {
             return;
@@ -169,7 +169,8 @@ impl ColourCheckPanel {
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() || fb.generation == self.generation {
             return;
         }
-        let m = measure::measure_frame(&fb.data, fb.width, fb.height, faces);
+        let mut m = measure::measure_frame(&fb.data, fb.width, fb.height, faces);
+        m.log_prior = prior;
         self.trend.record(at_secs, &m, look);
         self.measured = Some(m);
         self.generation = fb.generation;
@@ -190,7 +191,7 @@ impl ColourCheckPanel {
         let faces = faces_at_playhead(state);
         let look = look_for(state);
         let at_secs = state.playhead.to_secs_f64();
-        self.refresh(frame_buffer, &faces, at_secs, &look);
+        self.refresh(frame_buffer, &faces, at_secs, &look, log_prior_at_playhead(state));
         egui::Window::new("Colour Check")
             .open(open)
             .default_size([420.0, 520.0])
@@ -484,6 +485,20 @@ pub(crate) fn faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
 /// too (review of #428).
 pub(crate) fn whole_faces_at_playhead(state: &AppState) -> Vec<[f32; 4]> {
     face_regions_at_playhead(state, true)
+}
+
+/// What the file of the picture clip under the playhead says about
+/// being camera log (#504).
+fn log_prior_at_playhead(state: &AppState) -> measure::LogPrior {
+    let seq = state.sequence();
+    let tc = seq.last_playhead.unwrap_or_else(|| klipp_core::Timecode::from_secs_f64(0.0, seq.fps.rate()));
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .find_map(|t| t.clip_at_timecode(tc))
+        .and_then(|(_, clip)| clip.media_id().and_then(|m| state.media_pool.get(&m)))
+        .map(|item| item.log_prior())
+        .unwrap_or_default()
 }
 
 fn face_regions_at_playhead(state: &AppState, whole: bool) -> Vec<[f32; 4]> {

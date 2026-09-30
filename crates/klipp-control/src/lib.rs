@@ -1241,10 +1241,14 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
         let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
         let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
         sat_sum += sat as f64;
-        if mx >= 254.0 {
+        // At white and black: the luma on the rail, as the measure reads
+        // it. A saturated sky's pinned blue said "10.4 % at white" of a
+        // frame whose white sat at 80 IRE (#459); a lone channel on the
+        // rail is the gamut reading's.
+        if luma >= 253.5 {
             clip_hi += 1;
         }
-        if mn <= 1.0 {
+        if luma <= 1.5 {
             clip_lo += 1;
         }
         // A pixel bright and warm enough to be skin, and whether its hue
@@ -1728,7 +1732,21 @@ fn median_measure(reads: &[(f64, klipp_color::measure::FrameMeasure)]) -> (f64, 
 fn measure_at(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
     let (data, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
     let faces = skin_regions(ctx, secs, &data, w, h);
-    Ok(klipp_color::measure::measure_frame(&data, w, h, &faces))
+    let mut m = klipp_color::measure::measure_frame(&data, w, h, &faces);
+    m.log_prior = log_prior_at(ctx, secs);
+    Ok(m)
+}
+
+/// What the file of the picture clip at `secs` says about being log.
+fn log_prior_at(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LogPrior {
+    let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return Default::default() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c).filter(|c| is_picture_clip(c)))
+        .and_then(|c| pool.get(&c.media_id()?).map(|item| item.log_prior()))
+        .unwrap_or_default()
 }
 
 /// Whether the colour tools grade this clip: an enabled clip of media.
@@ -1982,6 +2000,49 @@ fn apply_label(ops: &[klipp_document::ops::Op]) -> String {
 
 fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -> Result<serde_json::Value, String> {
     send_full_envelope(ctx, commands, Vec::new(), batch, None, None)
+}
+
+/// grade_to_target's undo label: its steps carry it, and are folded
+/// into one under it.
+const GRADE_TO_TARGET: &str = "Grade To Target";
+
+/// The undo steps of a tool that grades in rounds, measuring between
+/// them: sent one by one under `label`, since each has to be applied to
+/// be measured, and folded into one when the tool is done. A pass over
+/// 31 shots was a hundred ctrl+z (#514).
+struct UndoFold {
+    label: &'static str,
+    steps: usize,
+    last_revision: Option<u64>,
+}
+
+impl UndoFold {
+    fn new(label: &'static str) -> Self {
+        Self { label, steps: 0, last_revision: None }
+    }
+
+    /// Apply `edits`, resolved at `revision`, as one of the pass's steps.
+    fn send(&mut self, ctx: &ControlContext, edits: Vec<klipp_document::history::EditCommand>, revision: u64) -> Result<serde_json::Value, String> {
+        let sent = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(self.label.into()))?;
+        self.steps += 1;
+        self.last_revision = sent.get("revision").and_then(|r| r.as_u64());
+        Ok(sent)
+    }
+
+    /// Fold the pass's steps into one. The UI does it only if nothing
+    /// else moved the document meanwhile, and never over an edit of the
+    /// person's. The undo steps the pass is now.
+    fn finish(&self, ctx: &ControlContext) -> usize {
+        match (self.steps, self.last_revision) {
+            (n @ (0 | 1), _) => n,
+            (n, Some(rev)) => {
+                let squash = klipp_core::AppCommand::SquashUndo { count: n, label: self.label.into(), only: self.label.into(), expected_revision: rev };
+                let folded = send_full_envelope(ctx, vec![squash], Vec::new(), false, None, None).is_ok() && ctx.shared.revision() > rev;
+                if folded { 1 } else { n }
+            }
+            (n, None) => n,
+        }
+    }
 }
 
 fn send_full_envelope(
@@ -2491,10 +2552,10 @@ fn handle(
             let (target, source) = match (media_id.as_deref(), from_timeline) {
                 (Some(id), _) => {
                     let mid = klipp_core::MediaId(id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-                    let (path, filename, dur) = {
+                    let (path, filename, dur, prior) = {
                         let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                         let item = pool.get(&mid).ok_or_else(|| format!("no media item {}", mid.0))?;
-                        (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64())
+                        (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.log_prior())
                     };
                     let report = klipp_analysis::report::MediaAnalysis::load(&path);
                     // A spread across the file, not one frame: a
@@ -2510,7 +2571,9 @@ fn handle(
                                 .as_ref()
                                 .and_then(|f| f.people_at(t, 1.5).map(|s| face_or_head_regions(f, s)))
                                 .unwrap_or_default();
-                            measures.push(klipp_color::measure::measure_frame(&data, w, h, &faces));
+                            let mut m = klipp_color::measure::measure_frame(&data, w, h, &faces);
+                            m.log_prior = prior;
+                            measures.push(m);
                         }
                     }
                     // A log reference would teach the grade to be flat.
@@ -2703,6 +2766,7 @@ fn handle(
             let mut lines = Vec::new();
             let mut out_scenes = Vec::new();
             let n_rounds = if apply { rounds.unwrap_or(2).clamp(1, 4) } else { 0 };
+            let mut fold = UndoFold::new("Match Scene");
             for (s_i, members) in scenes.iter().enumerate() {
                 // The hero: the shot the others are matched to. It is
                 // the one already closest to the look, because matching
@@ -2764,7 +2828,7 @@ fn handle(
                             })).map_err(|e| e.to_string())?;
                             let (plan, revision) = resolve_plan(ctx, &[op])?;
                             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-                            send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Match Scene".into()))?;
+                            fold.send(ctx, edits, revision)?;
                             done += 1;
                             read[i].2 = measure_at(ctx, read[i].1, Some(6000))?;
                             if match_distance(&read[hero].2, &read[i].2) <= MATCH_GOOD {
@@ -2827,11 +2891,12 @@ fn handle(
                 "text": format!(
                     "{}\n\nMatched on what the eye notices across a cut, in its order: exposure first, then how differently each face sits against the skin band once the scene's own cast is taken off, then the cast on the neutrals, then contrast. The faces are compared as errors and not as colours, so two people with different complexions lit the same way still match. Under {MATCH_GOOD:.0} ΔE the cut is invisible; over {MATCH_WARN:.0} ΔE it reads as a change; over {SCENE_SPLIT:.0} ΔE the shots are not the same lighting setup and belong to different scenes.{}",
                     lines.join("\n"),
-                    if apply { "" } else { " Run it with apply true to grade each shot onto its scene's hero, one undo step a round." },
+                    if apply { "" } else { " Run it with apply true to grade each shot onto its scene's hero, as one undo step." },
                 ),
                 "scenes": out_scenes,
                 "joins": joins,
                 "applied": apply,
+                "undo_steps": fold.finish(ctx),
                 "revision": ctx.shared.revision(),
             }))
         }
@@ -3031,6 +3096,7 @@ fn handle(
             let windowed = window.len();
             let window = (!window.is_empty()).then(|| serde_json::to_value(&window).unwrap_or(serde_json::Value::Null));
             let n_rounds = if apply { 3 } else { 0 };
+            let mut fold = UndoFold::new("Skin Balance");
             for round in 0..n_rounds {
                 let Some(face) = m.faces.iter().find(|f| f.readable()) else { break };
                 let off = klipp_color::measure::hue_off_skin_band(face.hue);
@@ -3064,7 +3130,7 @@ fn handle(
                 })).map_err(|e| e.to_string())?;
                 let (plan, revision) = resolve_plan(ctx, &[op])?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-                send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Skin Balance".into()))?;
+                fold.send(ctx, edits, revision)?;
                 m = measure_at(ctx, mid, Some(6000))?;
                 let after = m.faces.iter().find(|f| f.patches >= 4).map(|f| json!({ "hue": f.hue, "chroma": f.chroma }));
                 rounds.push(json!({ "round": round + 1, "hue_shift": shift, "after": after }));
@@ -3074,7 +3140,8 @@ fn handle(
                 Some(f) => format!("{name} at {mid:.2} s: skin hue {:.0}° → {:.0}° (band {SKIN_HUE_LOW:.0}–{SKIN_HUE_HIGH:.0}°, aim {target:.0}°), chroma {:.0}, L* {:.0}, {} of {}×{} patches{}{}", face0.hue, f.hue, f.chroma, f.median.l, f.patches, f.grid, f.grid, if apply { format!("; {} round(s), skin secondary hue shift {shift:+.0}°{}", rounds.len(), match windowed { 0 => ", keyed on hue alone — no face track in this clip's analysis, so anything else in the skin band turns with the face".to_string(), 1 => ", held inside a window on the face".to_string(), n => format!(", held inside a window tracked on the face over {n} samples") }) } else { String::new() }, before.get("advice").and_then(|a| a.as_str()).map(|a| format!(". {a}")).unwrap_or_default()),
                 None => format!("{name}: the face could not be read after the change"),
             };
-            Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step per round." } }))
+            let undo_steps = fold.finish(ctx);
+            Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "undo_steps": undo_steps, "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step." } }))
         }
 
         ControlCommand::GradeToTarget { clip_id, apply, rounds, force } => {
@@ -3105,6 +3172,7 @@ fn handle(
                 });
             }
             let n_rounds = if apply { rounds.unwrap_or(3).clamp(1, 5) } else { 0 };
+            let mut fold = UndoFold::new(GRADE_TO_TARGET);
             let mut per_shot = Vec::new();
             let mut lines = Vec::new();
             for (id, mid, name) in &shots {
@@ -3148,8 +3216,9 @@ fn handle(
                     })).map_err(|e| e.to_string())?;
                     let (plan, revision) = resolve_plan(ctx, &[op])?;
                     let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-                    send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Grade To Target".into()))?;
+                    fold.send(ctx, edits, revision)?;
                     done_rounds += 1;
+                    let m_before_round = m.clone();
                     m = measure_at(ctx, *mid, Some(6000))?;
                     // A round that leaves the shot worse off is not a
                     // step toward anything. The commonest case is a
@@ -3167,8 +3236,12 @@ fn handle(
                         })).map_err(|e| e.to_string())?;
                         let (plan, revision) = resolve_plan(ctx, &[op])?;
                         let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
-                        send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some("Grade To Target".into()))?;
-                        m = measure_at(ctx, *mid, Some(6000))?;
+                        fold.send(ctx, edits, revision)?;
+                        // Put back exactly, so read as it was: a measure
+                        // taken now could still see the frame the undone
+                        // round drew, and said "4 before, 7 after" of a
+                        // clip left with its 4 (#516).
+                        m = m_before_round;
                         done_rounds -= 1;
                         stalled = Some(format!(
                             "stopped after {done_rounds} round(s): the next one made it worse ({} findings against {}), so it was put back. What is left is past what the primaries can reach — {}",
@@ -3209,7 +3282,11 @@ fn handle(
             if !briefed {
                 lines.push("These are held to a preset, because the brief names no look. adopt_look takes the numbers off a reference — a file you are matching, or this timeline's own best shot — and that is what a grade is normally briefed against.".to_string());
             }
-            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, one undo step a round." } }))
+            let undo_steps = fold.finish(ctx);
+            if undo_steps > 1 {
+                lines.push(format!("The pass is {undo_steps} undo steps, not one: the document changed while it ran."));
+            }
+            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "undo_steps": undo_steps, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, as one undo step." } }))
         }
 
         ControlCommand::Review { max_width, frames, cols, path } => {

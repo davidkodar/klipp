@@ -1141,7 +1141,7 @@ fn tool_definitions() -> Vec<Value> {
               from the black point, gain from the white, exposure from the median, temperature \
               and tint from the cast, saturation from the chroma — then read again, up to three \
               rounds. A dry run reports where every shot stands and its first step; apply true \
-              grades them, one undo step a round. A screen recording is held only to its cast \
+              grades them, the whole pass as one undo step. A screen recording is held only to its cast \
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
@@ -1172,7 +1172,7 @@ fn tool_definitions() -> Vec<Value> {
               and still cut badly, because the eye tracks a change across a cut far more readily \
               than an absolute error inside a shot. Matched on the face first, then exposure, \
               then the cast on the neutrals, then contrast. apply false reports; apply true \
-              grades, one undo step a round.",
+              grades, the whole pass as one undo step.",
              json!({ "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
         tool("klipp_grade_chain",
              "A clip's grade chain in the order the picture flows through it, each node named \
@@ -1359,7 +1359,10 @@ fn tool_definitions() -> Vec<Value> {
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
               and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
-              lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
+              lift/gamma/gain the shadows/mids/highlights; gain and highlights are strong for their range, \
+              so a first touch is ±0.02 to 0.05 (on a sunlit shot highlights -0.2 took the white point from 84 to 65 IRE, \
+              and gain +0.05 clipped a sixth of the frame): step small and read frame_stats between; \
+              vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
@@ -1521,7 +1524,10 @@ fn tool_definitions() -> Vec<Value> {
               gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
               what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
               and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
-              lift/gamma/gain the shadows/mids/highlights; vibrance is skin-safe saturation; \
+              lift/gamma/gain the shadows/mids/highlights; gain and highlights are strong for their range, \
+              so a first touch is ±0.02 to 0.05 (on a sunlit shot highlights -0.2 took the white point from 84 to 65 IRE, \
+              and gain +0.05 clipped a sixth of the frame): step small and read frame_stats between; \
+              vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
