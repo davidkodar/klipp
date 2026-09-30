@@ -4286,12 +4286,19 @@ fn show_title_layer_stack(
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
     keyframe_tolerance: f64,
+    frame: klipp_core::Resolution,
+    clip_secs: f64,
 ) {
     let Some(object) = td.object(oid) else { return };
     let fx = object.fx();
     let subject = title_tab::ChipSubject::Layer(object.content.clone());
+    // A shape or picture travels its box, a fraction of the frame, in
+    // 1080p pixels as the speed is.
+    let s = klipp_core::title_motion::frame_scale(frame.width as f32, frame.height as f32);
+    let layer = (object.transform.size.x * frame.width as f32 / s, object.transform.size.y * frame.height as f32 / s);
+    let travel = title_tab::Travel::new(frame, layer, clip_secs);
     ui.add_space(10.0);
-    title_tab::show_motion_card(ui, theme, clip_id, &subject, fx, chips, cmds);
+    title_tab::show_motion_card(ui, theme, clip_id, &subject, fx, travel, chips, cmds);
     ui.add_space(10.0);
     show_title_effects_group(ui, theme, clip_id, None, fx, cmds, Some(oid), clip_time_secs, keyframe_tolerance);
     ui.add_space(8.0);
@@ -4313,6 +4320,9 @@ fn show_title_editor(
         _ => return,
     };
     let clip_time_secs = keyframe_selection::clip_time(state, clip);
+    // A loop's window is the clip's span on the timeline, as the
+    // renderer gives it.
+    let clip_secs = (clip.timeline_out - clip.timeline_in).to_secs_f64();
 
     // ── Project Asset banner ──
     // Only when the clip is linked. Shows the asset name + how
@@ -4424,7 +4434,7 @@ fn show_title_editor(
             show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds, (state.playhead.to_secs_f64()-clip.timeline_in.to_secs_f64()).max(0.0), 0.5/state.sequence().fps.as_f64());
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
-            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance);
+            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance, state.sequence().resolution, clip_secs);
         }
         return;
     }
@@ -4433,7 +4443,7 @@ fn show_title_editor(
             show_title_image_editor(ui, theme, clip_id, oid, img, cmds);
             ui.add_space(8.0);
             show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
-            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance);
+            show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance, state.sequence().resolution, clip_secs);
         }
         return;
     }
@@ -4534,7 +4544,10 @@ fn show_title_editor(
 
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
-        title_tab::show_motion_card(ui, theme, clip_id, &title_tab::ChipSubject::Text(tb.clone()), fx, chips, cmds);
+        // The text travels its own size at 1080p, as the renderer
+        // measures it for a roll.
+        let travel = title_tab::Travel::new(state.sequence().resolution, tb.loop_extent(tb.font_size), clip_secs);
+        title_tab::show_motion_card(ui, theme, clip_id, &title_tab::ChipSubject::Text(tb.clone()), fx, travel, chips, cmds);
         ui.add_space(10.0);
         title_tab::show_style_card(ui, theme, clip_id, tb, fx, chips, cmds);
         ui.add_space(10.0);

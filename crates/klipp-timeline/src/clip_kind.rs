@@ -954,6 +954,17 @@ impl LayerFx {
 }
 
 impl TextBox {
+    /// About how large the text is at `font_px`, (width, height), as a
+    /// travelling loop measures it: the longest line at a bit over half
+    /// an em a character, the lines at their spacing. The renderer and
+    /// the inspector's roll speed both read it, so the time the Title
+    /// tab shows is the time the roll takes.
+    pub fn loop_extent(&self, font_px: f32) -> (f32, f32) {
+        let lines = self.text.lines().count().max(1) as f32;
+        let max_chars = self.text.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f32;
+        (max_chars * font_px * 0.55, lines * font_px * self.line_spacing.max(0.5) * 1.4)
+    }
+
     /// Mutable accessor for the keyframe vec of a param that is the
     /// text's own — `extrusion.*`, `char_anim.*`. The stack's params
     /// are the object's: [`TitleObject::effect_keyframes_mut_for`].

@@ -452,12 +452,14 @@ fn motion_row(
 }
 
 /// The motion card: In, Out and the loops of the text layer.
+#[allow(clippy::too_many_arguments)]
 pub fn show_motion_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
     subject: &ChipSubject,
     fx: &LayerFx,
+    travel: Travel,
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
 ) {
@@ -517,7 +519,7 @@ pub fn show_motion_card(
         cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
     }
     ui.add_space(8.0);
-    show_loops(ui, theme, clip_id, subject, fx, chips, cmds);
+    show_loops(ui, theme, clip_id, subject, fx, travel, chips, cmds);
 }
 
 fn loop_chip_title(subject: &ChipSubject, fx: &LayerFx, l: &TitleLoop) -> TitleData {
@@ -527,12 +529,14 @@ fn loop_chip_title(subject: &ChipSubject, fx: &LayerFx, l: &TitleLoop) -> TitleD
 
 /// The loops: a gallery to add from, then one row per loop with its
 /// own timing.
+#[allow(clippy::too_many_arguments)]
 fn show_loops(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
     subject: &ChipSubject,
     fx: &LayerFx,
+    travel: Travel,
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
 ) {
@@ -623,21 +627,19 @@ fn show_loops(
                     }
                     changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
                 }
-                TitleLoop::Scroll { direction, speed_px_per_sec } => {
+                TitleLoop::Scroll { direction, .. } => {
                     let up = *direction == ScrollDirection::Up;
                     if let Some(i) = crate::widgets::segmented::segmented(ui, &["Up", "Down"], if up { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
                         *direction = if i == 0 { ScrollDirection::Up } else { ScrollDirection::Down };
                         changed = true;
                     }
-                    changed |= speed_or_fit(ui, speed_px_per_sec);
                 }
-                TitleLoop::Crawl { direction, speed_px_per_sec, repeat } => {
+                TitleLoop::Crawl { direction, repeat, .. } => {
                     let left = *direction == CrawlDirection::Left;
                     if let Some(i) = crate::widgets::segmented::segmented(ui, &["\u{2190}", "\u{2192}"], if left { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
                         *direction = if i == 0 { CrawlDirection::Left } else { CrawlDirection::Right };
                         changed = true;
                     }
-                    changed |= speed_or_fit(ui, speed_px_per_sec);
                     changed |= ui.checkbox(repeat, "Repeat").changed();
                 }
                 TitleLoop::Counter { from, to, duration_secs, decimals } => {
@@ -655,6 +657,12 @@ fn show_loops(
                 remove = Some(i);
             }
         });
+        // The travelling loops' speed on a line of its own, always shown.
+        match l {
+            TitleLoop::Scroll { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true),
+            TitleLoop::Crawl { speed_px_per_sec, .. } => changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false),
+            _ => {}
+        }
     }
     if let Some(i) = remove {
         loops.remove(i);
@@ -665,17 +673,86 @@ fn show_loops(
     }
 }
 
-/// A travelling loop's speed: fitted to the clip, or a rate in px/s at
-/// 1080p. Returns true when it changed.
-fn speed_or_fit(ui: &mut egui::Ui, speed: &mut f32) -> bool {
-    let mut changed = false;
-    let mut fit = *speed <= 0.0;
-    if ui.checkbox(&mut fit, "Fit clip").on_hover_text("The whole travel over the clip's length").changed() {
-        *speed = if fit { 0.0 } else { 120.0 };
-        changed = true;
+/// What a travelling loop's speed is measured against: the frame and
+/// the layer in pixels of a 1080p frame, as the speed itself is, and the
+/// clip's length, which a fitted roll takes.
+#[derive(Debug, Clone, Copy)]
+pub struct Travel {
+    frame: (f32, f32),
+    layer: (f32, f32),
+    clip_secs: f32,
+}
+
+impl Travel {
+    /// `layer` is the layer's (width, height) at 1080p; `frame` the
+    /// sequence's, and `clip_secs` the clip's length on the timeline.
+    pub fn new(frame: klipp_core::Resolution, layer: (f32, f32), clip_secs: f64) -> Self {
+        let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+        let s = klipp_core::title_motion::frame_scale(w, h);
+        Self { frame: (w / s, h / s), layer, clip_secs: clip_secs.max(0.001) as f32 }
     }
-    if !fit {
-        changed |= ui.add(egui::DragValue::new(speed).range(1.0..=2000.0).speed(1.0).suffix(" px/s").fixed_decimals(0)).changed();
+
+    fn distance(&self, vertical: bool) -> f32 {
+        if vertical {
+            klipp_core::title_motion::travel_distance(self.frame.1, self.layer.1)
+        } else {
+            klipp_core::title_motion::travel_distance(self.frame.0, self.layer.0)
+        }
+    }
+}
+
+/// A travelling loop's speed, always in view: the rate in px/s at 1080p
+/// and the time the travel takes, either of them editable, and whether
+/// it is fitted to the clip. Fitted, the rate shown is the one the clip's
+/// length gives, and editing it sets that rate. It used to be hidden
+/// until "Fit clip" was unticked, and fitted there was no telling how
+/// fast a roll went (#588). Returns true when it changed.
+fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Travel, vertical: bool) -> bool {
+    let mut changed = false;
+    let distance = travel.distance(vertical);
+    let clip = travel.clip_secs;
+    let fitted = distance / clip;
+    let dim = |t: &str| egui::RichText::new(t).size(crate::theme::type_scale::CAPTION).color(theme.text_dim);
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(4.0);
+        ui.label(dim("Speed"));
+        let mut rate = if *speed > 0.0 { *speed } else { fitted };
+        let r = ui
+            .add(egui::DragValue::new(&mut rate).range(1.0..=5000.0).speed(1.0).suffix(" px/s").fixed_decimals(0))
+            .on_hover_text("Pixels per second of a 1080p frame: the same pace on any frame size");
+        if r.changed() {
+            *speed = rate.max(1.0);
+            changed = true;
+        }
+        let mut fit = *speed <= 0.0;
+        if ui.checkbox(&mut fit, "Fit clip").on_hover_text("Travel the whole way over the clip's length").changed() {
+            // Unfitted at the pace it had, so nothing jumps.
+            *speed = if fit { 0.0 } else { fitted.round().max(1.0) };
+            changed = true;
+        }
+        ui.label(dim("takes"));
+        let mut secs = klipp_core::title_motion::travel_secs(distance, *speed, clip);
+        if ui
+            .add(egui::DragValue::new(&mut secs).range(0.2..=3600.0).speed(0.05).suffix(" s").fixed_decimals(1))
+            .on_hover_text("How long it takes to travel through the frame")
+            .changed()
+        {
+            *speed = (distance / secs.max(0.2)).max(1.0);
+            changed = true;
+        }
+    });
+    if *speed > 0.0 {
+        let secs = distance / *speed;
+        let note = if secs > clip + 0.05 {
+            Some(format!("Longer than the clip ({clip:.1} s): the end is cut off"))
+        } else if secs < clip - 0.05 {
+            Some(format!("Centred in the clip: nothing on screen for {:.1} s at each end", (clip - secs) * 0.5))
+        } else {
+            None
+        };
+        if let Some(note) = note {
+            ui.label(dim(&note));
+        }
     }
     changed
 }
@@ -864,5 +941,37 @@ mod tests {
         assert_eq!(chip_fx.motion.enter, Some(rise), "with the motion the chip is about");
         assert!(chip_fx.loops.is_empty(), "and not the layer's own loops");
         assert_eq!(chip_text(&ChipSubject::Layer(shape)), "shape");
+    }
+}
+
+#[cfg(test)]
+mod roll_speed_tests {
+    use super::Travel;
+    use klipp_core::title_motion::{eval_loops, frame_scale, travel_secs, LoopGeometry};
+    use klipp_timeline::{ScrollDirection, TextBox, TitleLoop};
+
+    /// #588: the time the Title tab shows a roll taking is the time the
+    /// renderer takes: it starts just below the frame when the roll
+    /// begins and has just left it when that time is up, on landscape,
+    /// 4K and vertical frames alike.
+    #[test]
+    fn the_roll_time_shown_is_the_time_the_render_takes() {
+        let tb = TextBox { text: "Director\nA Name\n\nEditor\nA Name".into(), font_size: 60.0, ..Default::default() };
+        let (clip, speed) = (40.0f32, 150.0f32);
+        let loops = [TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: speed }];
+        for (w, h) in [(1920u32, 1080u32), (3840, 2160), (2160, 3840)] {
+            let travel = Travel::new(klipp_core::Resolution { width: w, height: h }, tb.loop_extent(tb.font_size), clip as f64);
+            let secs = travel_secs(travel.distance(true), speed, clip);
+            assert!(secs < clip, "{w}x{h}: the roll fits the clip in this test");
+            let s = frame_scale(w as f32, h as f32);
+            let (text_w, text_h) = tb.loop_extent(tb.font_size * s);
+            let geo = LoopGeometry { frame_w: w as f32, frame_h: h as f32, text_w, text_h, font_px: tb.font_size * s };
+            let offset = klipp_core::title_motion::travel_distance(h as f32, text_h) * 0.5;
+            let pad = (clip - secs) * 0.5;
+            let dy = |t: f32| eval_loops(&loops, t, Some(clip), geo, [255; 4]).dy;
+            assert!((dy(pad) - offset).abs() < 0.5, "{w}x{h}: starts below the frame: {} vs {offset}", dy(pad));
+            assert!((dy(pad + secs) + offset).abs() < 0.5, "{w}x{h}: has just left it {secs:.2} s later: {} vs {}", dy(pad + secs), -offset);
+            assert!(dy(pad + secs * 0.9) > -offset + 1.0, "{w}x{h}: and not before");
+        }
     }
 }
