@@ -2245,6 +2245,9 @@ impl KlippApp {
                 AppEvent::PlaybackPaused => {
                     self.state.playback = PlaybackState::Paused;
                 }
+                AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample } => {
+                    self.key_qualifier_on_sample(clip_id, node_id, nx, ny, sample);
+                }
                 AppEvent::PlaybackStopped => {
                     self.state.playback = PlaybackState::Stopped;
                 }
@@ -14463,6 +14466,50 @@ impl KlippApp {
         *needs_refresh = true;
     }
 
+    /// Key a Qualifier node on the eyedropper's sample: the colour it
+    /// receives there, or, for a clip moved in the frame, the colour on
+    /// screen, since the point clicked is not the same point of its
+    /// picture. The node's softness and matte finesse stay.
+    fn key_qualifier_on_sample(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        node_id: uuid::Uuid,
+        nx: f32,
+        ny: f32,
+        sample: Result<[f32; 3], klipp_core::NodeSampleRefusal>,
+    ) {
+        let base = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
+            .and_then(|n| n.params.qualifier.clone())
+            .unwrap_or_default();
+        let qualifier = match sample {
+            Ok(rgb) => qualifier_keyed_on(rgb, base),
+            Err(klipp_core::NodeSampleRefusal::Why(why)) => {
+                self.state.toast.show(format!("Qualifier picker: {why}"));
+                return;
+            }
+            Err(klipp_core::NodeSampleRefusal::Placed) => match self.shown_frame_for_balance(clip_id) {
+                Err(why) => {
+                    self.state.toast.show(format!("Qualifier picker: {why}"));
+                    return;
+                }
+                Ok((bytes, fw, fh)) => match qualifier_from_pick(&bytes, fw, fh, nx, ny, base) {
+                    None => {
+                        self.state.toast.show("Qualifier picker: nothing to read there");
+                        return;
+                    }
+                    Some(q) => {
+                        self.state.toast.show("Qualifier picker: the clip is moved in the frame, so this read the colour on screen");
+                        q
+                    }
+                },
+            },
+        };
+        self.send_commands(vec![AppCommand::SetNodeQualifier { clip_id, node_id, qualifier }]);
+    }
+
     fn handle_color_sampling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RequestWhiteBalanceSample { nx, ny } => {
@@ -14485,22 +14532,12 @@ impl KlippApp {
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
-                // Keyed on the colour under the click, as the qualifier
-                // reads it; the node's softness and matte finesse stay.
+                // Keyed on the picture the node receives, not the one on
+                // screen, which is the grade's result and, after a first
+                // pick, the key's own correction (#587). The engine reads
+                // it and answers with `NodeInputSampled`.
                 let Some((clip_id, node_id)) = self.state.qualifier_pick.take() else { return true };
-                let base = self.state.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == clip_id)
-                    .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
-                    .and_then(|n| n.params.qualifier.clone())
-                    .unwrap_or_default();
-                match self.shown_frame_for_balance(clip_id) {
-                    Err(why) => self.state.toast.show(format!("Qualifier picker: {why}")),
-                    Ok((bytes, fw, fh)) => match qualifier_from_pick(&bytes, fw, fh, *nx, *ny, base) {
-                        None => self.state.toast.show("Qualifier picker: nothing to read there"),
-                        Some(qualifier) => self.send_commands(vec![AppCommand::SetNodeQualifier { clip_id, node_id, qualifier }]),
-                    },
-                }
+                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, nx: *nx, ny: *ny });
                 true
             }
             _ => false,
@@ -41403,15 +41440,22 @@ fn qualifier_from_pick(
     let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&patch);
     let n = (linear.len() / 4) as f32;
     let mean = [0, 1, 2].map(|c| linear.chunks_exact(4).map(|p| p[c]).sum::<f32>() / n);
-    let hsl = klipp_effects::cpu_grade::picture_hsl(mean);
-    Some(klipp_core::QualifierSettings {
+    Some(qualifier_keyed_on(mean, base))
+}
+
+/// `base` keyed on a colour in linear light, read as the qualifier reads
+/// a pixel (`picture_hsl`): its hue centred there, its saturation range
+/// around it.
+fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSettings) -> klipp_core::QualifierSettings {
+    let hsl = klipp_effects::cpu_grade::picture_hsl(rgb);
+    klipp_core::QualifierSettings {
         enabled: true,
         hue_center: hsl.h * 360.0,
         hue_width: 30.0,
         sat_low: (hsl.s - 0.2).max(0.0),
         sat_high: (hsl.s + 0.2).min(1.0),
         ..base
-    })
+    }
 }
 
 #[cfg(test)]

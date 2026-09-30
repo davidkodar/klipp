@@ -319,7 +319,8 @@ impl PlaybackEngine {
         Inspect {
             clip,
             thumbs,
-            scope_tap: self.scope_tap_node,
+            // An eyedropper read borrows the tap for one render.
+            scope_tap: self.node_sample.map(|s| s.tap).or(self.scope_tap_node),
             matte_view,
             solo: self.solo_node,
             ungraded: self.bypass_color_grade,
@@ -368,6 +369,7 @@ impl PlaybackEngine {
             || self.compare_stabilization
             || self.compare_effect_active
             || self.scope_tap_node.is_some()
+            || self.node_sample.is_some()
             || (self.state != PlaybackState::Playing && !self.visible_node_thumbs.is_empty())
         {
             return None;
@@ -815,9 +817,22 @@ impl PlaybackEngine {
 
     /// Hand the grade tools what the render found.
     fn show_inspection(&mut self, found: &Inspection, w: u32, h: u32) {
-        if found.scope_tap.is_some() || !found.thumbs.is_empty() {
+        // An eyedropper read: answered here, from the tap it set.
+        let sampled = match (self.node_sample, &found.scope_tap) {
+            (Some(s), Some(tap)) if tap.len() == (w as usize) * (h as usize) * 4 => {
+                self.node_sample = None;
+                let rgb = patch_mean(tap, w, h, s.nx, s.ny);
+                let _ = self.event_tx.send(AppEvent::NodeInputSampled { clip_id: s.clip, node_id: s.node, nx: s.nx, ny: s.ny, sample: Ok(rgb) });
+                Some(s.tap)
+            }
+            _ => None,
+        };
+        // The scopes keep their own tap: a tap borrowed for the read is
+        // not theirs to show.
+        let scope_tap = found.scope_tap.as_ref().filter(|_| sampled.is_none() || sampled == self.scope_tap_node);
+        if scope_tap.is_some() || !found.thumbs.is_empty() {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(tap) = &found.scope_tap {
+            if let Some(tap) = scope_tap {
                 fb.scope_data = klipp_effects::linear_f32_rgba_to_srgb_u8(tap);
             }
             if !found.thumbs.is_empty() {
@@ -1124,6 +1139,25 @@ fn set_effect_enabled(c: &mut Clip, index: usize, on: bool) {
 }
 
 /// The inspector's matte preview: the mask as a small grey tile.
+/// The mean of the 5×5 patch of an RGBA frame around `(nx, ny)` (0..=1
+/// over it), clipped to the frame: one noisy pixel does not set a key.
+pub(super) fn patch_mean(rgba: &[f32], width: u32, height: u32, nx: f32, ny: f32) -> [f32; 3] {
+    let (w, h) = (width as i64, height as i64);
+    let cx = (nx.clamp(0.0, 1.0) * (w - 1) as f32).round() as i64;
+    let cy = (ny.clamp(0.0, 1.0) * (h - 1) as f32).round() as i64;
+    let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
+    for y in (cy - 2).max(0)..=(cy + 2).min(h - 1) {
+        for x in (cx - 2).max(0)..=(cx + 2).min(w - 1) {
+            let i = ((y * w + x) * 4) as usize;
+            for c in 0..3 {
+                sum[c] += rgba[i + c];
+            }
+            n += 1.0;
+        }
+    }
+    sum.map(|v| v / n.max(1.0))
+}
+
 fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) -> AppEvent {
     const PREVIEW_W: u32 = 96;
     const PREVIEW_H: u32 = 54;

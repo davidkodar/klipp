@@ -1739,3 +1739,40 @@ fn a_precomposition_does_not_resize_the_blur_above_it() {
         assert_eq!(over, alone, "the blur over the scene is as wide as alone (gpu {gpu})\nover  {row_over:?}\nalone {row_alone:?}");
     }
 }
+
+/// The qualifier eyedropper reads the picture the Qualifier node
+/// receives, through the scope tap on the node feeding it: that node's
+/// output, at the frame's size, whether it is a correction or the Source
+/// itself (#587).
+#[test]
+fn a_scope_tap_returns_the_input_a_qualifier_reads() {
+    let mut c = media(0.0, 2.0);
+    let mut g = exposure(1.0);
+    let qualifier = Node {
+        id: NodeId::new_v4(), kind: NodeKind::Qualifier, label: "Qualifier".into(), enabled: true,
+        params: NodeParams { qualifier: Some(Default::default()), ..Default::default() },
+        keyframes: Default::default(), output_link: None, input_links: vec![],
+    };
+    let (source, exposure_node, output) = (g.nodes[0].id, g.nodes[1].id, g.output_node_id);
+    g.edges.retain(|e| e.to_node != output);
+    g.edges.push(Edge { from_node: exposure_node, from_port: 0, to_node: qualifier.id, to_port: 0 });
+    g.edges.push(Edge { from_node: qualifier.id, from_port: 0, to_node: output, to_port: 0 });
+    g.node_positions.insert(qualifier.id, NodePos { x: 150.0, y: 0.0 });
+    let qualifier_id = qualifier.id;
+    g.nodes.push(qualifier);
+    c.node_graph = g;
+    assert_eq!(c.node_graph.input_of(qualifier_id, 0), Some(exposure_node));
+    let seq = sequence(vec![vec![c.clone()]]);
+    for gpu in [false, true] {
+        for (tap, want) in [(exposure_node, 0.4), (source, 0.2)] {
+            let mut src = Flat::default().grey(&c, 0.2);
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(gpu);
+            let inspect = Inspect { clip: Some(c.id), scope_tap: Some(tap), ..Default::default() };
+            let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), inspect);
+            let tapped = found.scope_tap.unwrap_or_else(|| panic!("gpu {gpu}: a tap on {tap:?}"));
+            assert_eq!(tapped.len(), (W * H * 4) as usize, "gpu {gpu}: at the frame's size");
+            assert_px(&format!("gpu {gpu}, tap {want}"), px(&tapped, 16, 9), [want; 3], 0.005);
+        }
+    }
+}
