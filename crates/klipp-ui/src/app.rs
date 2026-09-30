@@ -8042,10 +8042,15 @@ impl KlippApp {
                     // The clip and its linked partner onto the clipboard,
                     // then removed as Delete removes them: both, in sync,
                     // one undo step. Cut took the selected half alone and
-                    // left the sound it was linked to (#458).
+                    // left the sound it was linked to (#458). A remove that
+                    // is refused (a locked track, a partner that cannot go)
+                    // leaves the clipboard as it was: a Cut that cut nothing
+                    // was a silent Copy over what it held.
                     if let Some(cb) = self.clipboard_of(*clip_id) {
-                        self.state.clipboard = Some(cb);
                         self.remove_clip_impl(*clip_id);
+                        if self.state.sequence().find_clip(*clip_id).is_none() {
+                            self.state.clipboard = Some(cb);
+                        }
                     }
                     true
                 }
