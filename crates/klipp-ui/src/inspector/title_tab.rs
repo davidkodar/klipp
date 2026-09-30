@@ -21,8 +21,8 @@ const GALLERY_CHIP: egui::Vec2 = egui::vec2(104.0, 58.5);
 /// The chip in an In / Out row.
 const ROW_CHIP: egui::Vec2 = egui::vec2(72.0, 40.5);
 /// The picker's large preview, rendered at this size (#608).
-const BIG_W: u32 = 480;
-const BIG_H: u32 = 270;
+const BIG_W: u32 = 320;
+const BIG_H: u32 = 180;
 /// Playback: the frame step, and how long a loop plays before it starts
 /// over.
 const FRAME_STEP: f32 = 1.0 / 25.0;
@@ -303,9 +303,10 @@ fn chip(
     resp
 }
 
-/// The large preview's size: the picker's width, at 16:9.
+/// The large preview's size: a third of the picker's width, at 16:9. At
+/// the whole width it pushed the effects out of the inspector.
 fn big_size(ui: &egui::Ui) -> egui::Vec2 {
-    let w = ui.available_width();
+    let w = ui.available_width() / 3.0;
     egui::vec2(w, w * 9.0 / 16.0)
 }
 
@@ -483,20 +484,22 @@ fn inline_picker(
         .rounding(crate::theme::radius::PANEL)
         .inner_margin(egui::Margin::same(8.0))
         .show(ui, |ui| {
-            // The picture, then its name: the same height either way, so
-            // the chips below never move under the pointer.
-            let name = match hovered.or(current).filter(|&i| i < entries.len()) {
-                Some(i) => {
-                    draw(ui, i, true);
-                    egui::RichText::new(entries[i].label).color(theme.text_primary)
-                }
-                None => {
-                    let (rect, _) = ui.allocate_exact_size(big_size(ui), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
-                    egui::RichText::new("Point at an effect to see it play").color(theme.text_dim)
-                }
-            };
-            ui.label(name.size(crate::theme::type_scale::CONTROL));
+            // The picture with its name beside it: the same height either
+            // way, so the chips below never move under the pointer.
+            ui.horizontal(|ui| {
+                let name = match hovered.or(current).filter(|&i| i < entries.len()) {
+                    Some(i) => {
+                        draw(ui, i, true);
+                        egui::RichText::new(entries[i].label).color(theme.text_primary)
+                    }
+                    None => {
+                        let (rect, _) = ui.allocate_exact_size(big_size(ui), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, crate::theme::radius::PANEL, theme.bg_panel);
+                        egui::RichText::new("Point at an effect to see it play").color(theme.text_dim)
+                    }
+                };
+                ui.add(egui::Label::new(name.size(crate::theme::type_scale::CONTROL)).wrap());
+            });
             ui.add_space(4.0);
             picked = gallery_body(ui, theme, id.with("body"), recent_key, entries, &mut draw);
         });
