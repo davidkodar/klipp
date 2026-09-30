@@ -9,7 +9,9 @@ pub const ID: &str = "audio";
 // high-frequency levels) that tell wind, rumble, hum and hiss apart.
 // v3 measures the 50/60 Hz tones against their neighbours, so hum is a
 // peak and not just a lot of low end: wind was reported as mains hum.
-pub const VERSION: u32 = 3;
+// v4 measures the band under 60 Hz, below any voice, for the rumble rule
+// (#505).
+pub const VERSION: u32 = 4;
 
 /// Below this the signal is silence, and it has to stay there this long.
 const SILENCE_DB: f32 = -35.0;
@@ -41,6 +43,10 @@ pub struct AudioEnvelope {
     /// RMS below 120 Hz — the low end (wind, rumble, hum) live here.
     #[serde(default)]
     pub low_db: Option<f32>,
+    /// RMS below 60 Hz: under a voice's fundamental, so rumble and wind
+    /// and not speech (#505).
+    #[serde(default)]
+    pub sub_db: Option<f32>,
     /// RMS in a narrow band around 50/60 Hz — mains hum sits here.
     #[serde(default)]
     pub hum_db: Option<f32>,
@@ -85,7 +91,15 @@ impl AudioEnvelope {
         let (Some(full), Some(low), Some(high)) = (self.rms_db, self.low_db, self.high_db) else {
             return out;
         };
-        let lf_strong = low - full > -12.0;
+        // Rumble is energy under the voice. Below 120 Hz a male voice's
+        // own fundamental counts, and clean narration read as rumble;
+        // below 60 Hz, measured, clean speech sits 39 to 40 dB under the
+        // programme, a quiet room 30, and wind, traffic and a film score
+        // 6 to 14 (#505). An analysis from before the band falls back.
+        let lf_strong = match self.sub_db {
+            Some(sub) => sub - full > RUMBLE_DB,
+            None => low - full > -12.0,
+        };
         // A mains hum is a tone: 50 or 60 Hz standing above the bands
         // beside it, loud enough to be heard. Broadband wind and rumble
         // fill the neighbours as well. The wide hum band alone could not
@@ -229,16 +243,21 @@ fn parse_nth_level(stderr: &str, n: usize) -> Option<f32> {
 /// mains-hum (~50/60 Hz) and high (>7 kHz) bands and measures each. The
 /// `astats` instances come out numbered in this order, so sorting by the
 /// instance index recovers full, low, hum, high.
-const BAND_FILTER: &str = "asplit=4[a][b][c][d];\
+const BAND_FILTER: &str = "asplit=5[a][b][c][d][e];\
 [a]astats=metadata=0:measure_perchannel=none[o1];\
 [b]lowpass=f=120,astats=metadata=0:measure_perchannel=none[o2];\
 [c]bandpass=f=55:width_type=h:w=25,astats=metadata=0:measure_perchannel=none[o3];\
 [d]highpass=f=7000,astats=metadata=0:measure_perchannel=none[o4];\
-[o1][o2][o3][o4]amix=inputs=4";
+[e]lowpass=f=60,lowpass=f=60,astats=metadata=0:measure_perchannel=none[o5];\
+[o1][o2][o3][o4][o5]amix=inputs=5";
+
+/// How close under the programme the band below 60 Hz may sit before it
+/// is rumble, dB.
+const RUMBLE_DB: f32 = -20.0;
 
 /// Read the per-band RMS and the noise floor from an `astats` run of
-/// `BAND_FILTER`. Returns `(rms, noise_floor, low, hum, high)` in dB.
-pub fn parse_bands(stderr: &str) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
+/// `BAND_FILTER`. Returns `(rms, noise_floor, low, hum, high, sub)` in dB.
+pub fn parse_bands(stderr: &str) -> (Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>) {
     // instance index -> (rms level dB, noise floor dB)
     let mut by_index: std::collections::BTreeMap<u32, (Option<f32>, Option<f32>)> = std::collections::BTreeMap::new();
     for line in stderr.lines() {
@@ -260,7 +279,8 @@ pub fn parse_bands(stderr: &str) -> (Option<f32>, Option<f32>, Option<f32>, Opti
     let low = ordered.get(1).and_then(|x| x.0);
     let hum = ordered.get(2).and_then(|x| x.0);
     let high = ordered.get(3).and_then(|x| x.0);
-    (rms, noise, low, hum, high)
+    let sub = ordered.get(4).and_then(|x| x.0);
+    (rms, noise, low, hum, high, sub)
 }
 
 pub struct AudioAnalyser;
@@ -307,7 +327,8 @@ impl crate::Analyser for AudioAnalyser {
             "-".to_string(),
         ];
         if let Ok(bs) = crate::ffmpeg_stderr(&ctx.ffmpeg, &band_args) {
-            let (rms, noise, low, hum, high) = parse_bands(&bs);
+            let (rms, noise, low, hum, high, sub) = parse_bands(&bs);
+            env.sub_db = sub;
             env.rms_db = rms;
             env.noise_floor_db = noise;
             env.low_db = low;
@@ -352,14 +373,32 @@ mod tests {
         s
     }
 
+    /// #505: rumble is the band under 60 Hz, where a voice has nothing.
+    /// Clean narration fills the band under 120 Hz with its own
+    /// fundamental and read as rumble; wind and traffic fill both.
+    #[test]
+    fn narration_is_not_rumble_and_wind_still_is() {
+        let with = |full: f32, low: f32, sub: f32| AudioEnvelope { rms_db: Some(full), low_db: Some(low), high_db: Some(full - 30.0), sub_db: Some(sub), ..Default::default() };
+        // A deep narrating voice: its fundamental 11 dB under the whole,
+        // nothing below 60 Hz (a Piper voice measured -40 there).
+        let narration = with(-18.0, -29.0, -58.0);
+        assert!(!narration.faults().iter().any(|(w, _)| w.contains("rumble")), "{:?}", narration.faults());
+        // The wind clip, measured: 60 Hz band 14 dB under.
+        let wind = with(-19.6, -25.3, -33.8);
+        assert!(wind.faults().iter().any(|(w, _)| w.contains("rumble")), "{:?}", wind.faults());
+        // An analysis from before the band reads as it did.
+        let old = AudioEnvelope { sub_db: None, ..narration.clone() };
+        assert!(old.faults().iter().any(|(w, _)| w.contains("rumble")));
+    }
+
     #[test]
     fn bands_tell_hum_hiss_and_clean_apart() {
         // The three real measured signatures (from ffmpeg astats).
-        let clean = { let (r, n, l, h, hi) = parse_bands(&band_stderr(-34.3, -54.1, -59.8, -54.4)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
+        let clean = { let (r, n, l, h, hi, _) = parse_bands(&band_stderr(-34.3, -54.1, -59.8, -54.4)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
         assert!(clean.faults().is_empty(), "clean has no faults: {:?}", clean.faults());
         assert_eq!(clean.rms_db, Some(-34.3));
 
-        let mut hum = { let (r, n, l, h, hi) = parse_bands(&band_stderr(-28.4, -29.2, -29.15, -57.1)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
+        let mut hum = { let (r, n, l, h, hi, _) = parse_bands(&band_stderr(-28.4, -29.2, -29.15, -57.1)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
         // A 50 Hz tone standing 11 dB over its neighbours (measured).
         (hum.hum_tone_db, hum.hum_neighbour_db) = parse_tones(&tone_stderr(-46.9, -58.4, -58.2, -58.5));
         assert!(hum.faults().iter().any(|(w, _)| w.contains("hum")), "{:?}", hum.faults());
@@ -378,7 +417,7 @@ mod tests {
         (old.hum_tone_db, old.hum_neighbour_db) = (None, None);
         assert!(!old.faults().iter().any(|(w, _)| w.contains("hum")));
 
-        let hiss = { let (r, n, l, h, hi) = parse_bands(&band_stderr(-24.3, -46.4, -51.8, -26.3)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
+        let hiss = { let (r, n, l, h, hi, _) = parse_bands(&band_stderr(-24.3, -46.4, -51.8, -26.3)); let mut e = AudioEnvelope::default(); (e.rms_db, e.noise_floor_db, e.low_db, e.hum_db, e.high_db) = (r, n, l, h, hi); e };
         assert!(hiss.faults().iter().any(|(w, _)| w.contains("hiss")), "{:?}", hiss.faults());
         assert_eq!(hiss.suggested_cleanup(), (false, true, false));
 

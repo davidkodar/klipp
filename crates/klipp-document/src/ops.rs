@@ -1465,11 +1465,12 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
     let mut sim_pool = pool.clone();
     let mut sim_fps = seq.fps;
     let mut steps = Vec::with_capacity(ops.len());
+    let mut carry = PlaceCarry::default();
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
         // The rate as the plan stands at this step: a place that set an
         // empty sequence's format changed it for every step after.
-        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts)?;
+        let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry)?;
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
@@ -1490,9 +1491,10 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
     let mut sim_fps = seq.fps;
     let mut steps = Vec::with_capacity(ops.len());
     let mut refused = Vec::new();
+    let mut carry = PlaceCarry::default();
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
-        let (what, edit, touched) = match resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts) {
+        let (what, edit, touched) = match resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry) {
             Ok(resolved) => resolved,
             Err(r) => {
                 refused.push(r);
@@ -1508,7 +1510,15 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
     (Plan { steps, duration_secs: secs(sims[0].total_duration()), picture_end_secs }, refused)
 }
 
-fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// Where each track's last place of a plan really ended, before its end
+/// was rounded to a frame: (the rounded end's value, the exact end in
+/// seconds), by track. The next place at that track's end starts from the
+/// exact end, so a chain of places stays on the grid it was computed
+/// against rather than adding up each one's rounding (#506).
+#[derive(Default)]
+struct PlaceCarry(std::collections::HashMap<usize, (i64, f64)>);
+
+fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, transcripts: &dyn Transcripts, carry: &mut PlaceCarry) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     match op {
         Op::Captions { track, from, to, max_chars, max_lines, replace } => {
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
@@ -1785,14 +1795,39 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 return Err(refuse(i, "the source range exceeds the frame clock", "use a representable source range"));
             }
             let src_in = snap(s_in, fps);
-            let src_out = snap(s_out, fps);
-            if src_out <= src_in {
+            if snap(s_out, fps) <= src_in {
                 return Err(refuse(i, "the source range is shorter than a frame", "make it at least one frame"));
             }
             let tl_in = resolve_anchor(seq, fps, at, i)?;
-            let duration = (src_out - src_in).rescale_to(tl_in.rate);
-            let value = tl_in.value.checked_add(duration.value).ok_or_else(|| refuse(i, "the placement exceeds the frame clock", "use an earlier start or shorter duration"))?;
+            // The end on the timeline is rounded, not the length: each
+            // clip's length rounded on its own drifted a chain of 31 bars
+            // five frames off the beat (#506). Where the clip starts
+            // exactly: the seconds asked for, or where the last place on
+            // that track in this plan really ended.
+            let exact_start = match at {
+                Anchor::Secs(x) => *x,
+                Anchor::TrackEnd(tr) => resolve_track(seq, tr, i)
+                    .ok()
+                    .and_then(|ati| carry.0.get(&ati))
+                    .filter(|(end, _)| *end == tl_in.value)
+                    .map_or(secs(tl_in), |(_, exact)| *exact),
+                _ => secs(tl_in),
+            };
+            let exact_end = exact_start + (s_out - s_in);
+            let end = snap(exact_end, fps).rescale_to(tl_in.rate);
+            let one = snap(1.0 / fps.as_f64(), fps).rescale_to(tl_in.rate).value;
+            let mut frames = (end.value - tl_in.value).max(one);
+            // Never past the end of the file: rounding up there is a frame
+            // the file does not have.
+            if !item.is_still {
+                let room = (snap(media_dur, fps) - src_in).rescale_to(tl_in.rate).value;
+                frames = frames.min(room).max(one);
+            }
+            let value = tl_in.value.checked_add(frames).ok_or_else(|| refuse(i, "the placement exceeds the frame clock", "use an earlier start or shorter duration"))?;
             let tl_out = Timecode { value, rate: tl_in.rate };
+            // The source runs as long as the clip does on the timeline.
+            let src_out = src_in + (tl_out - tl_in).rescale_to(src_in.rate);
+            carry.0.insert(ti, (tl_out.value, if (secs(tl_out) - exact_end).abs() < 1.0 / fps.as_f64() { exact_end } else { secs(tl_out) }));
             let mut clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
@@ -5248,6 +5283,39 @@ mod tests {
             kind: klipp_core::MarkerKind::None,
         });
         (seq, pool, media_id, ia, ib)
+    }
+
+    /// #506: shots placed one after another at a bar's length each stay
+    /// on the bars: each cut within half a frame of its bar line, not
+    /// drifting by each clip's rounding.
+    #[test]
+    fn a_chain_of_places_stays_on_its_grid() {
+        let mut seq = Sequence::new_default();
+        seq.fps = Fps::new(30, 1);
+        seq.tracks = vec![Track::new("V1", TrackKind::Video)];
+        let mut pool = MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/bars.mov".into(), None);
+        item.duration = tc(200.0);
+        item.video_codec = "hevc".into();
+        item.fps = Fps::new(30, 1);
+        let media = pool.add(item);
+        // 99 BPM, a bar of four beats: 2.4242 s, 72.7 frames a bar.
+        let bar = 4.0 * 60.0 / 99.0;
+        let ops: Vec<Op> = (0..31)
+            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 3.1), source_out: Some(k as f64 * 3.1 + bar), insert: false, with_audio: false })
+            .collect();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let frame = 1.0 / 30.0;
+        for (k, step) in plan.steps.iter().enumerate() {
+            let a = &step.after[0];
+            assert!((a.timeline_out_secs - (k + 1) as f64 * bar).abs() <= frame * 0.5 + 1e-9, "bar {}: ends at {:.4} s, the bar line is {:.4} s", k + 1, a.timeline_out_secs, (k + 1) as f64 * bar);
+        }
+        // The source runs as long as the clip does.
+        let c = match &plan.steps[30].edit {
+            EditCommand::LinkedImport { video: Some((c, _)), .. } | EditCommand::LegacyAppendClip { clip: c, .. } => c,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((c.source_out - c.source_in).rescale_to(c.timeline_in.rate).value, (c.timeline_out - c.timeline_in).value);
     }
 
     /// The fixture's file says a sentence in each clip and one the
