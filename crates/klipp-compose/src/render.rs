@@ -1634,14 +1634,12 @@ impl Renderer {
         Ok(())
     }
 
-    /// The timeline grade to run over this composite, as a clip. Not
-    /// inside a precomposition's scene, which is one layer of the
-    /// sequence that holds it: the grade runs once, over the whole, as
-    /// the timeline's LUT does.
+    /// The sequence's timeline grade, over its composite. Inside a scene
+    /// too: a precomposition's scene, or a graded compound drawn as one,
+    /// keeps its own grade, applied before the sequence that holds it
+    /// grades the result (#370). Only the timeline LUT is left out there,
+    /// being the output's, not the scene's.
     fn timeline_grade(&self, seq: &Sequence) -> Option<Clip> {
-        if self.nesting > 0 {
-            return None;
-        }
         Clip::timeline_grade_of(seq)
     }
 

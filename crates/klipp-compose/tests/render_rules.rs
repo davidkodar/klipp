@@ -1118,6 +1118,38 @@ fn a_precomposition_is_composed_before_the_parent_fades_it() {
     }
 }
 
+/// #370: a nested sequence keeps its own timeline grade, applied to its
+/// picture before the parent's grades it. Laid in as a precomposition or
+/// as a compound, a scene graded down a stop renders at half its
+/// ungraded light; under a parent graded down another stop, a quarter.
+/// The grade used to be dropped in both, without a word.
+#[test]
+fn a_nested_sequence_keeps_its_timeline_grade() {
+    let grey = || sequence(vec![vec![solid([150, 150, 150], 0.0, 4.0)]]);
+    let bright = |seq: &Sequence, all: &[Sequence]| {
+        let flat = klipp_timeline::flatten::flatten_sequence(seq, all);
+        render(&flat, 1.0, &mut Flat::default()).map(|img| px(&img, 16, 9)[1])
+    };
+    let plain = grey();
+    let mut graded = grey();
+    graded.timeline_graph = Some(exposure(-1.0));
+    for (name, nest) in [
+        ("a precomposition", Clip::precomposition as fn(_, _, _) -> Clip),
+        ("a compound", Clip::sequence as fn(_, _, _) -> Clip),
+    ] {
+        let parent = |scene: &Sequence| sequence(vec![vec![nest(scene.id, tc(0.0), tc(4.0))]]);
+        let ungraded = bright(&parent(&plain), std::slice::from_ref(&plain));
+        let own = bright(&parent(&graded), &[graded.clone()]);
+        let mut outer = parent(&graded);
+        outer.timeline_graph = Some(exposure(-1.0));
+        let both = bright(&outer, &[graded.clone()]);
+        for run in 0..2 {
+            assert!((own[run] - ungraded[run] * 0.5).abs() < 0.01, "{name}, run {run}: the scene's grade holds: {} of {}", own[run], ungraded[run]);
+            assert!((both[run] - ungraded[run] * 0.25).abs() < 0.01, "{name}, run {run}: and the parent's goes over it: {} of {}", both[run], ungraded[run]);
+        }
+    }
+}
+
 /// The parent's transform moves the composed picture, once: scaled to
 /// half, the scene is a half-size picture of itself in the middle of
 /// the frame with nothing around it.
