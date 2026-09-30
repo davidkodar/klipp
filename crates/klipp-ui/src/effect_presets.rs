@@ -525,6 +525,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::NoiseGenerator { .. } => "noise_generator",
         klipp_effects::BuiltinEffect::FilmGrain { .. } => "film_grain",
         klipp_effects::BuiltinEffect::TiltShift { .. } => "tilt_shift",
+        klipp_effects::BuiltinEffect::FocusBlur { .. } => "focus_blur",
         klipp_effects::BuiltinEffect::OldFilm { .. } => "old_film",
         klipp_effects::BuiltinEffect::Vhs { .. } => "vhs",
         klipp_effects::BuiltinEffect::MedianFilter { .. } => "median_filter",

@@ -156,6 +156,8 @@ pub struct GpuEffectsPipeline {
     vignette_pipeline: wgpu::ComputePipeline,
     film_grain_pipeline: wgpu::ComputePipeline,
     tilt_shift_blend_pipeline: wgpu::ComputePipeline,
+    focus_blur_blend_pipeline: wgpu::ComputePipeline,
+    focus_blur_premultiply_pipeline: wgpu::ComputePipeline,
     old_film_pipeline: wgpu::ComputePipeline,
     vhs_pipeline: wgpu::ComputePipeline,
     lens_flare_pipeline: wgpu::ComputePipeline,
@@ -787,6 +789,8 @@ impl GpuEffectsPipeline {
         let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
         let film_grain_pipeline = create_pipeline(&device, &pipeline_layout, "film_grain", SHADER_FILM_GRAIN);
         let tilt_shift_blend_pipeline = create_pipeline(&device, &transition_pl, "tilt_shift_blend", SHADER_TILT_SHIFT_BLEND);
+        let focus_blur_blend_pipeline = create_pipeline(&device, &transition_pl, "focus_blur_blend", SHADER_FOCUS_BLUR_BLEND);
+        let focus_blur_premultiply_pipeline = create_pipeline(&device, &pipeline_layout, "focus_blur_premultiply", SHADER_FOCUS_BLUR_PREMULTIPLY);
         let old_film_pipeline = create_pipeline(&device, &pipeline_layout, "old_film", SHADER_OLD_FILM);
         let vhs_pipeline = create_pipeline(&device, &pipeline_layout, "vhs", SHADER_VHS);
         let lens_flare_pipeline = create_pipeline(&device, &pipeline_layout, "lens_flare", SHADER_LENS_FLARE);
@@ -1339,6 +1343,8 @@ impl GpuEffectsPipeline {
             vignette_pipeline,
             film_grain_pipeline,
             tilt_shift_blend_pipeline,
+            focus_blur_blend_pipeline,
+            focus_blur_premultiply_pipeline,
             old_film_pipeline,
             vhs_pipeline,
             lens_flare_pipeline,
@@ -6583,6 +6589,30 @@ impl GpuEffectsPipeline {
                     self.dispatch_pair(&self.tilt_shift_blend_pipeline, input, buf_c, output, workgroups);
                     current_in_a = !current_in_a;
                 }
+                BuiltinEffect::FocusBlur { radius, vertical, band } => {
+                    if *radius < 0.5 || *band >= 0.999 {
+                        continue;
+                    }
+                    // The layer premultiplied into buf_c and blurred there,
+                    // so nothing bleeds from colour under no alpha; then
+                    // the band's mix of it over the original, alpha too.
+                    let buf_c = self.buf_c.as_ref().unwrap();
+                    let boxes: Vec<usize> = crate::blur::boxes_for_gaussian(*radius).into_iter().filter(|r| *r != 0).collect();
+                    if boxes.is_empty() {
+                        continue;
+                    }
+                    self.write_params(&BlurParams { width, height, radius: 0, _pad: 0 });
+                    self.dispatch(&self.focus_blur_premultiply_pipeline, input, buf_c, workgroups);
+                    for &box_r in &boxes {
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_h_pipeline, buf_c, output, workgroups);
+                        self.write_params(&BlurParams { width, height, radius: box_r as i32, _pad: 0 });
+                        self.dispatch(&self.blur_v_pipeline, output, buf_c, workgroups);
+                    }
+                    self.write_params(&FocusBlurParams { width, height, vertical: u32::from(*vertical), band: *band });
+                    self.dispatch_pair(&self.focus_blur_blend_pipeline, input, buf_c, output, workgroups);
+                    current_in_a = !current_in_a;
+                }
                 BuiltinEffect::OldFilm { flicker, scratches, dust, weave, sepia, seed } => {
                     self.write_params(&OldFilmParams {
                         width, height,
@@ -7428,6 +7458,15 @@ struct FilmGrainParams {
     luma_yb: f32,
     _pad: u32,
     _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FocusBlurParams {
+    width: u32,
+    height: u32,
+    vertical: u32,
+    band: f32,
 }
 
 #[repr(C)]
@@ -14802,6 +14841,60 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Tilt-shift blend — the original inside the sharp band, the blurred
 // frame beyond it, over a smoothstep ramp of `softness`.
+// Focus blur blend (#592): the blurred layer mixed over the original
+// by how far the pixel is from the band around the frame's middle,
+// every channel, alpha too. `cpu::focus_blur_mix` is the CPU twin.
+const SHADER_FOCUS_BLUR_BLEND: &str = concat!(
+    "
+struct Params { width: u32, height: u32, vertical: u32, band: f32 }
+@group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    var u = (f32(idx % params.width) + 0.5) / f32(params.width);
+    if params.vertical != 0u { u = (f32(idx / params.width) + 0.5) / f32(params.height); }
+    let d = abs(u - 0.5) * 2.0;
+    var m = clamp((d - params.band) / max(1.0 - params.band, 0.001), 0.0, 1.0);
+    m = m * m * (3.0 - 2.0 * m);
+    // Mixed premultiplied, as the blurred copy is, then back to straight.
+    let o = unpack(original[idx]);
+    let op = vec4<f32>(o.xyz * o.w, o.w);
+    let mixed = op + (unpack(blurred[idx]) - op) * m;
+    var rgb = vec3<f32>(0.0);
+    if mixed.w > 1e-6 { rgb = mixed.xyz / mixed.w; }
+    output[idx] = pack(vec4<f32>(rgb, mixed.w));
+}
+"
+);
+
+// A focus blur's copy of the layer, premultiplied and keeping its alpha,
+// for the blur passes (the frame's own premultiply ends at alpha 1).
+const SHADER_FOCUS_BLUR_PREMULTIPLY: &str = concat!(
+    "
+struct Params { width: u32, height: u32, radius: i32, _pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    output[idx] = pack(vec4<f32>(p.xyz * p.w, p.w));
+}
+"
+);
+
 const SHADER_TILT_SHIFT_BLEND: &str = concat!(
     "
 struct Params {

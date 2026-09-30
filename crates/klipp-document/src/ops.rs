@@ -5060,7 +5060,7 @@ mod tests {
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
-        let focus = klipp_core::title_motion::FocusBand { band: 0.4, edge_opacity: 0.1 };
+        let focus = klipp_core::title_motion::FocusBand { band: 0.4, edge_opacity: 0.1, blur: 6.0 };
         assert!(matches!(&td.primary_fx().loops[..], [klipp_timeline::TitleLoop::Scroll { shape, .. }] if shape.focus == Some(focus)));
         assert_eq!(td.primary_fx().edge_fade, klipp_core::title_motion::EdgeFade { top: 0.2, bottom: 0.15, ..klipp_core::title_motion::EdgeFade::NONE });
     }

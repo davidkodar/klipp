@@ -403,6 +403,9 @@ pub struct TitleRenderer {
     /// The blur the last `Placed` frame asked for, so a caller that
     /// took bytes can apply it.
     last_blur: f32,
+    /// A placed frame's focus band gone soft: (blur radius in frame
+    /// pixels, axis, band), for the caller to blur the placed layer by.
+    last_focus_blur: Option<(f32, RampAxis, f32)>,
     /// The unit map the last `render_inner` made, for `cache_store`.
     last_units: Option<std::sync::Arc<UnitMap>>,
     /// The next `CachedRender::id`.
@@ -452,6 +455,7 @@ impl TitleRenderer {
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             last_rows: (0, 0),
             last_blur: 0.0,
+            last_focus_blur: None,
             last_units: None,
             next_cache_id: 1,
             motion_window: None,
@@ -1624,6 +1628,9 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> TitleFrame {
+        // A focus blur is the placed frame's alone: every other way out
+        // of here asks for none (#598 review).
+        self.last_focus_blur = None;
         // Time-varying inputs:
         //   - char_animation on any object (per-glyph entrance)
         //   - title-level ColorCycle (continuous hue rotation)
@@ -1870,6 +1877,20 @@ impl TitleRenderer {
             }
             let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
             let anchor = sprite.anchor();
+            // One layer: its fade goes on where it is placed; the resting
+            // render was made without it. More layers: each was faded in
+            // the resting render where it stands, since none moves here —
+            // both poses above come only for one visible layer.
+            let scale_px = crate::frame_scale(width, height);
+            debug_assert!(visible == 1 || (dx == 0 && dy == 0 && (scale - 1.0).abs() < 1e-6), "a title of several layers placed with a move would carry its baked fades with it");
+            let shape = if visible == 1 {
+                title.objects.iter().find(|o| o.visible).and_then(|o| ScreenFade::new(o.fx().edge_fade, translate_only.as_ref().and_then(|p| p.focus)))
+            } else {
+                None
+            };
+            // A focus band that goes soft: the caller blurs the placed
+            // layer by it (`last_focus_blur`), in frame pixels.
+            self.last_focus_blur = shape.and_then(|s| s.focus).filter(|(_, f)| f.blur > 0.0).map(|(axis, f)| (f.blur * scale_px, axis, f.band)).filter(|(r, _, _)| *r > 0.5);
             let rows = if under.is_some() {
                 (0, height)
             } else if opacity <= 0.001 || rows.1 <= rows.0 {
@@ -1879,25 +1900,18 @@ impl TitleRenderer {
                 rows
             } else {
                 let grown = |y: u32| anchor.1 + (y as f32 - anchor.1) * scale + dy as f32;
-                let reach = if blur > 0.5 { blur * 3.0 } else { 0.0 };
+                let reach = if blur > 0.5 { blur * 3.0 } else { 0.0 } + self.last_focus_blur.map_or(0.0, |(r, _, _)| r * 3.0);
                 let y0 = grown(rows.0).floor() - 1.0 - reach;
                 let y1 = grown(rows.1).ceil() + 1.0 + reach;
                 (y0.clamp(0.0, height as f32) as u32, y1.clamp(0.0, height as f32) as u32)
             };
             self.last_rows = rows;
             self.last_blur = if blur > 0.5 { blur } else { 0.0 };
-            // One layer: its fade goes on where it is placed; the resting
-            // render was made without it. More layers: each was faded in
-            // the resting render where it stands, since none moves here.
-            let shape = if visible == 1 {
-                title.objects.iter().find(|o| o.visible).and_then(|o| ScreenFade::new(o.fx().edge_fade, translate_only.as_ref().and_then(|p| p.focus)))
-            } else {
-                None
-            };
             return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur: self.last_blur, shape, rows };
             }
         }
         self.last_blur = 0.0;
+        self.last_focus_blur = None;
 
         // Build a one-frame derived TitleData that applies every
         // active render-time override. The clone is bounded to
@@ -2246,6 +2260,13 @@ impl TitleRenderer {
         self.cache_store(key.into_owned(), width, height, pixels, rows);
     }
 
+    /// The focus blur the last placed frame asked for: (radius in frame
+    /// pixels, axis, band). A caller working from the bytes applies it as
+    /// klipp-effects' `FocusBlur`, as the GPU stack does to the sprite.
+    pub fn last_focus_blur(&self) -> Option<(f32, RampAxis, f32)> {
+        self.last_focus_blur
+    }
+
     /// The blur the last placed frame asked for (sigma in pixels): a
     /// caller working from the bytes applies it as a Gaussian blur.
     pub fn last_blur(&self) -> f32 {
@@ -2258,8 +2279,38 @@ impl TitleRenderer {
         if self.defer_layer_fades {
             return;
         }
-        if let Some(fade) = ScreenFade::new(obj.fx().edge_fade, self.loop_focus.get(&obj.id.0).copied()) {
+        let focus = self.loop_focus.get(&obj.id.0).copied();
+        if let Some(fade) = ScreenFade::new(obj.fx().edge_fade, focus) {
             fade.apply_rgba8(layer, width, height);
+        }
+        // A focus band gone soft: the layer mixed with itself blurred,
+        // by how far each pixel is from the band, as the placed path's
+        // `FocusBlur` does.
+        if let Some((axis, f)) = focus.filter(|(_, f)| f.blur > 0.0) {
+            let radius = f.blur * crate::frame_scale(width, height);
+            if radius > 0.5 {
+                let mut soft = layer.to_vec();
+                blur_rgba(&mut soft, width, height, radius);
+                let (w, h) = (width as usize, height as usize);
+                for (i, (px, bl)) in layer.chunks_exact_mut(4).zip(soft.chunks_exact(4)).enumerate() {
+                    let u = match axis {
+                        RampAxis::Vertical => ((i / w) as f32 + 0.5) / h as f32,
+                        RampAxis::Horizontal => ((i % w) as f32 + 0.5) / w as f32,
+                    };
+                    let m = f.blur_mix(u);
+                    if m > 0.0 {
+                        // Mixed premultiplied, as `blur_rgba` blurs, then
+                        // back to straight.
+                        let (pa, ba) = (px[3] as f32 / 255.0, bl[3] as f32 / 255.0);
+                        let a = pa + (ba - pa) * m;
+                        for c in 0..3 {
+                            let v = px[c] as f32 * pa + (bl[c] as f32 * ba - px[c] as f32 * pa) * m;
+                            px[c] = if a > 1e-6 { (v / a).round().clamp(0.0, 255.0) as u8 } else { 0 };
+                        }
+                        px[3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
         }
     }
 

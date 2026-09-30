@@ -1497,6 +1497,10 @@ impl Renderer {
                             // on the layer with the clip's other effects.
                             fx.push(BuiltinEffect::GaussianBlur { radius: blur });
                         }
+                        if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
+                            // A roll's focus band going soft (#592).
+                            fx.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
+                        }
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                             // The layer's fade by where it is, the sprite
                             // shader's own (#592).
@@ -2021,6 +2025,13 @@ impl Renderer {
             // The blur entrance, as the GPU stack blurs the placed sprite.
             let luma = klipp_color::linear::luma_coefs(self.working);
             linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, t, luma);
+        }
+        if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
+            // A roll's focus band going soft, as the GPU stack softens the
+            // placed sprite (#592).
+            let luma = klipp_color::linear::luma_coefs(self.working);
+            let fx = [BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band }];
+            linear = klipp_effects::apply_effects_with_luma(&fx, linear, width, height, t, luma);
         }
         self.authored_to_working(&mut linear);
         linear

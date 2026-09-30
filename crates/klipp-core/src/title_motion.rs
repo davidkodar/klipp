@@ -312,11 +312,25 @@ pub struct FocusBand {
     pub band: f32,
     /// The layer's opacity at the frame's edges (0 to 1).
     pub edge_opacity: f32,
+    /// How soft it goes at the frame's edges: a blur, in pixels of a
+    /// 1080p frame, mixed in away from the band. 0 for none.
+    pub blur: f32,
 }
 
 impl Default for FocusBand {
     fn default() -> Self {
-        Self { band: 0.4, edge_opacity: 0.15 }
+        Self { band: 0.4, edge_opacity: 0.15, blur: 6.0 }
+    }
+}
+
+impl FocusBand {
+    /// How much of the blurred layer shows at `u` along the axis: none
+    /// inside the band, all of it at the frame's edges. The twin of
+    /// klipp-effects' `FocusBlur` mix.
+    pub fn blur_mix(&self, u: f32) -> f32 {
+        let d = (u - 0.5).abs() * 2.0;
+        let t = ((d - self.band) / (1.0 - self.band).max(0.001)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
 }
 
@@ -351,7 +365,7 @@ impl ScreenFade {
     pub fn new(edges: EdgeFade, focus: Option<(RampAxis, FocusBand)>) -> Option<Self> {
         let clamp = |z: f32| z.clamp(0.0, 0.5);
         let edges = EdgeFade { top: clamp(edges.top), bottom: clamp(edges.bottom), left: clamp(edges.left), right: clamp(edges.right) };
-        let focus = focus.map(|(axis, f)| (axis, FocusBand { band: f.band.clamp(0.0, 0.999), edge_opacity: f.edge_opacity.clamp(0.0, 1.0) }));
+        let focus = focus.map(|(axis, f)| (axis, FocusBand { band: f.band.clamp(0.0, 0.999), edge_opacity: f.edge_opacity.clamp(0.0, 1.0), blur: f.blur.max(0.0) }));
         (!edges.is_none() || focus.is_some()).then_some(Self { edges, focus })
     }
 
@@ -701,7 +715,7 @@ mod loop_tests {
         let left = ScreenFade::new(EdgeFade { left: 0.3, ..EdgeFade::NONE }, None).unwrap();
         assert_eq!(left.alpha_at(0.0, 0.5), 0.0);
         assert_eq!(left.alpha_at(1.0, 0.5), 1.0, "only the edge it names");
-        let band = ScreenFade::new(EdgeFade::NONE, Some((RampAxis::Horizontal, FocusBand { band: 0.5, edge_opacity: 0.2 }))).unwrap();
+        let band = ScreenFade::new(EdgeFade::NONE, Some((RampAxis::Horizontal, FocusBand { band: 0.5, edge_opacity: 0.2, blur: 0.0 }))).unwrap();
         for u in [0.26, 0.5, 0.74] {
             assert_eq!(band.alpha_at(u, 0.0), 1.0, "whole inside the band at {u}, whatever the row");
         }
