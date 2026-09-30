@@ -478,6 +478,7 @@ fn main() -> Result<()> {
         // share a single device between them — for now they stay
         // independent, but the backend is unified.
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration { present_mode: ui_present_mode(), ..Default::default() },
         ..Default::default()
     };
 
@@ -598,4 +599,29 @@ fn main() -> Result<()> {
     let _ = engine_handle.join();
 
     Ok(())
+}
+
+/// The UI surface's present mode: Mailbox where there is one (on
+/// Wayland the compositor never tears), not FIFO.
+///
+/// A FIFO present blocks in `get_current_texture` until the compositor
+/// hands a buffer back, and a window on a workspace nobody is looking at
+/// gets none for as long as it stays there. The engine shares the wgpu
+/// device, and its decoder's hand-off and grade waited with the UI:
+/// playing 4K on a hidden window, the NV12 transfer took 700–900 ms per
+/// 60 frames against 200 with Mailbox, and the UI's gaps reached 116 ms
+/// (#540). Visible, Mailbox cost nothing either: the transfer went from
+/// 300 to 200 ms per 60 frames, and the UI settled at about 120 fps.
+///
+/// `KLIPP_PRESENT_MODE` (fifo, mailbox, immediate, auto_vsync,
+/// auto_no_vsync) overrides it for measuring.
+fn ui_present_mode() -> eframe::egui_wgpu::wgpu::PresentMode {
+    use eframe::egui_wgpu::wgpu::PresentMode;
+    match std::env::var("KLIPP_PRESENT_MODE").as_deref() {
+        Ok("fifo") => PresentMode::Fifo,
+        Ok("mailbox") => PresentMode::Mailbox,
+        Ok("immediate") => PresentMode::Immediate,
+        Ok("auto_vsync") => PresentMode::AutoVsync,
+        _ => PresentMode::AutoNoVsync,
+    }
 }
