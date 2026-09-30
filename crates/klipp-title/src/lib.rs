@@ -38,7 +38,7 @@ use klipp_timeline::{
     TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
     TitleObjectContent,
 };
-use klipp_core::title_motion::{RampAxis, ShapeRamp};
+use klipp_core::title_motion::{FocusBand, RampAxis, ScreenFade};
 use std::collections::HashMap;
 
 pub mod bundled;
@@ -317,9 +317,9 @@ pub enum TitleFrame {
         /// A blur (sigma, pixels) over the placed sprite: the blur
         /// entrance coming into focus. 0 for none.
         blur: f32,
-        /// A roll's shape: the sprite's alpha by where it is on the
-        /// frame (#592).
-        shape: Option<ShapeRamp>,
+        /// The layer's fade by where it is on the frame: its edge fade
+        /// and a roll's focus band (#592).
+        shape: Option<ScreenFade>,
         rows: (u32, u32),
     },
     /// The resting render's glyphs each placed on its own: a motion
@@ -416,9 +416,12 @@ pub struct TitleRenderer {
     /// The waves of every layer of the title being rendered, by
     /// object id; filled by `render_with_time`.
     loop_waves: HashMap<u32, (f32, f32)>,
-    /// A roll's shape per layer for the frame being rastered, applied
-    /// where the layer has been placed (#592).
-    loop_shapes: HashMap<u32, ShapeRamp>,
+    /// A roll's focus band per layer for the frame being rastered,
+    /// applied with the layer's edge fade where it has been placed (#592).
+    loop_focus: HashMap<u32, (RampAxis, FocusBand)>,
+    /// The resting render of a one-layer title leaves its fade to the
+    /// placement, which knows where the layer has moved to.
+    defer_layer_fades: bool,
     /// Decoded image layers by path; `None` for a file that would
     /// not open, so it is not retried every frame.
     image_cache: HashMap<String, Option<std::sync::Arc<DecodedImage>>>,
@@ -454,7 +457,8 @@ impl TitleRenderer {
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
-            loop_shapes: HashMap::new(),
+            loop_focus: HashMap::new(),
+            defer_layer_fades: false,
             image_cache: HashMap::new(),
         }
     }
@@ -1433,7 +1437,6 @@ impl TitleRenderer {
         // The pose, on the numbers: entrance and exit combined, then
         // the loops on top. (alpha, dx, dy, scale, blur sigma, clip)
         let mut pose = (1.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, false);
-        let mut shape = None;
         if let Some(t) = time_secs {
             let unit_px = (y1 - y0) as f32;
             let motion = whole_layer_motion(&fx.motion);
@@ -1450,7 +1453,6 @@ impl TitleRenderer {
                 pose.0 *= lp.opacity;
                 pose.1 += lp.dx;
                 pose.2 += lp.dy;
-                shape = lp.shape;
             }
         }
 
@@ -1484,11 +1486,11 @@ impl TitleRenderer {
         if pose.4 > 0.5 {
             blur_rgba(&mut layer, width, height, pose.4);
         }
-        let at_rest = (pose.0 - 1.0).abs() < 1e-6 && pose.1.abs() < 0.5 && pose.2.abs() < 0.5 && (pose.3 - 1.0).abs() < 1e-6 && !pose.5 && shape.is_none();
+        let at_rest = (pose.0 - 1.0).abs() < 1e-6 && pose.1.abs() < 0.5 && pose.2.abs() < 0.5 && (pose.3 - 1.0).abs() < 1e-6 && !pose.5;
         if !at_rest {
             let anchor = ((x0 + x1) as f32 * 0.5, (y0 + y1) as f32 * 0.5);
             let rows = if pose.5 { (y0 as u32, y1 as u32) } else { (0, height) };
-            layer = pose_sprite(&layer, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, shape, rows);
+            layer = pose_sprite(&layer, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, None, rows);
         }
         layer
     }
@@ -1811,9 +1813,11 @@ impl TitleRenderer {
             || any_outline_keyframes;
 
         let any_render_time_override = any_render_time_override || any_opacity_keyframes;
-        // A staggered entrance on a shaped roll: the glyphs are posed one
-        // by one on the GPU, where the shape is not, so it is rastered.
-        let any_render_time_override = any_render_time_override || (staggered.is_some() && poses.iter().any(|(_, p)| p.shape.is_some()));
+        // A staggered entrance on a layer that fades by where it is: the
+        // glyphs are posed one by one on the GPU, where the fade is not,
+        // so it is rastered.
+        let any_render_time_override = any_render_time_override
+            || (staggered.is_some_and(|o| !o.fx().edge_fade.is_none()) || staggered.is_some() && poses.iter().any(|(_, p)| p.focus.is_some()));
 
         let mut gpu = gpu;
         if !any_render_time_override {
@@ -1882,7 +1886,14 @@ impl TitleRenderer {
             };
             self.last_rows = rows;
             self.last_blur = if blur > 0.5 { blur } else { 0.0 };
-            let shape = translate_only.as_ref().and_then(|p| p.shape);
+            // One layer: its fade goes on where it is placed; the resting
+            // render was made without it. More layers: each was faded in
+            // the resting render where it stands, since none moves here.
+            let shape = if visible == 1 {
+                title.objects.iter().find(|o| o.visible).and_then(|o| ScreenFade::new(o.fx().edge_fade, translate_only.as_ref().and_then(|p| p.focus)))
+            } else {
+                None
+            };
             return TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur: self.last_blur, shape, rows };
             }
         }
@@ -1895,7 +1906,7 @@ impl TitleRenderer {
         // the title: opacity, offset, colour and counter text on the
         // object, the wave kept aside for the glyph rasteriser.
         self.loop_waves.clear();
-        self.loop_shapes.clear();
+        self.loop_focus.clear();
         let derived: TitleData = {
             let mut td = title.clone();
             for (i, pose) in poses {
@@ -1917,8 +1928,8 @@ impl TitleRenderer {
                 if let Some(w) = pose.wave {
                     self.loop_waves.insert(obj.id.0, w);
                 }
-                if let Some(r) = pose.shape {
-                    self.loop_shapes.insert(obj.id.0, r);
+                if let Some(f) = pose.focus {
+                    self.loop_focus.insert(obj.id.0, f);
                 }
             }
             td
@@ -1935,7 +1946,7 @@ impl TitleRenderer {
         let time_arg = any_render_time_override.then_some(time_secs);
         let out = self.render_inner(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
-        self.loop_shapes.clear();
+        self.loop_focus.clear();
         self.last_rows = alpha_rows(&out, width, height);
         TitleFrame::Rendered { rows: self.last_rows, pixels: out }
     }
@@ -2046,10 +2057,7 @@ impl TitleRenderer {
                         );
                     }
                     self.loop_wave = None;
-                    // A roll's shape, where the layer now is (#592).
-                    if let Some(r) = self.loop_shapes.get(&obj.id.0) {
-                        r.apply_rgba8(&mut layer, width, height);
-                    }
+                    self.fade_layer(obj, &mut layer, width, height);
                     if first_layer && (opacity - 1.0).abs() < 0.001 {
                         buf = layer;
                     } else if (opacity - 1.0).abs() < 0.001 {
@@ -2075,6 +2083,7 @@ impl TitleRenderer {
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
                         paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), None);
                         let mut layer = self.dress_layer(layer, fx, width, height, time_secs, window, &mut None);
+                        self.fade_layer(obj, &mut layer, width, height);
                         if (opacity - 1.0).abs() >= 0.001 {
                             scale_layer_alpha(&mut layer, opacity);
                         }
@@ -2098,6 +2107,7 @@ impl TitleRenderer {
                         paint_image_layer(&mut layer, &decoded, img.fit, &effective_transform, width, height);
                         if !obj.fx().is_default() {
                             layer = self.dress_layer(layer, obj.fx(), width, height, time_secs, window, &mut None);
+                            self.fade_layer(obj, &mut layer, width, height);
                         }
                         if (opacity - 1.0).abs() >= 0.001 {
                             scale_layer_alpha(&mut layer, opacity);
@@ -2242,12 +2252,25 @@ impl TitleRenderer {
         self.last_blur
     }
 
+    /// Fade a rastered layer by where it is on the frame: its edge fade,
+    /// and its roll's focus band on the frame being rastered (#592).
+    fn fade_layer(&self, obj: &TitleObject, layer: &mut [u8], width: u32, height: u32) {
+        if self.defer_layer_fades {
+            return;
+        }
+        if let Some(fade) = ScreenFade::new(obj.fx().edge_fade, self.loop_focus.get(&obj.id.0).copied()) {
+            fade.apply_rgba8(layer, width, height);
+        }
+    }
+
     /// The resting render of `title`: from the cache, or made and kept.
     fn resting_sprite(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>) -> RestingSprite {
         match self.cache_lookup(title, width, height) {
             Some(hit) => hit,
             None => {
+                self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1;
                 let buf = self.render_inner(title, width, height, gpu, None);
+                self.defer_layer_fades = false;
                 let rows = alpha_rows(&buf, width, height);
                 self.cache_store(title.clone(), width, height, buf, rows)
             }
@@ -3417,7 +3440,7 @@ pub fn pose_sprite(
     scale: f32,
     anchor: (f32, f32),
     under: Option<[u8; 4]>,
-    shape: Option<ShapeRamp>,
+    shape: Option<ScreenFade>,
     rows: (u32, u32),
 ) -> Vec<u8> {
     use rayon::prelude::*;
@@ -3436,11 +3459,10 @@ pub fn pose_sprite(
     }
     let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
     let f = opacity.clamp(0.0, 1.0);
-    // A roll's shape: the opacity along the axis it travels, at each
-    // pixel's centre, as the GPU twin's `shape_alpha` has it.
-    let columns: Option<Vec<f32>> = shape
-        .filter(|r| r.axis == RampAxis::Horizontal)
-        .map(|r| (0..w).map(|x| r.alpha_at((x as f32 + 0.5) / w as f32)).collect());
+    // The layer's fade by where it is: across the frame per column, down
+    // it per row, at each pixel's centre, as the GPU twin's
+    // `shape_alpha` has it.
+    let columns: Option<Vec<f32>> = shape.map(|r| (0..w).map(|x| r.along_x((x as f32 + 0.5) / w as f32)).collect());
     let under_lin = under.map(|c| [srgb_u8_to_linear(c[0]), srgb_u8_to_linear(c[1]), srgb_u8_to_linear(c[2]), c[3] as f32 / 255.0]);
     // A tap: the sprite's pixel, premultiplied, in sRGB-encoded units.
     let tap = |x: i64, y: i64| -> [f32; 4] {
@@ -3456,8 +3478,8 @@ pub fn pose_sprite(
             return;
         }
         let row_k = match shape {
-            Some(r) if r.axis == RampAxis::Vertical => f * r.alpha_at((y as f32 + 0.5) / h as f32),
-            _ => f,
+            Some(r) => f * r.along_y((y as f32 + 0.5) / h as f32),
+            None => f,
         };
         for (x, px) in row.chunks_exact_mut(4).enumerate() {
             let f = columns.as_ref().map_or(row_k, |c| row_k * c[x]);

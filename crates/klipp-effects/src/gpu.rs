@@ -5451,16 +5451,20 @@ impl GpuEffectsPipeline {
             under_g: under[1],
             under_b: under[2],
             under_a: under[3],
-            shape_axis: match shape {
+            focus_axis: match shape.and_then(|s| s.focus_vertical) {
                 None => 0,
-                Some(s) if s.vertical => 1,
-                Some(_) => 2,
+                Some(true) => 1,
+                Some(false) => 2,
             },
-            edge_fade: shape.map_or(0.0, |s| s.edge_fade),
             band: shape.map_or(0.5, |s| s.band),
             edge_opacity: shape.map_or(1.0, |s| s.edge_opacity),
+            fade_top: shape.map_or(0.0, |s| s.top),
+            fade_bottom: shape.map_or(0.0, |s| s.bottom),
+            fade_left: shape.map_or(0.0, |s| s.left),
+            fade_right: shape.map_or(0.0, |s| s.right),
             _pad0: 0,
             _pad1: 0,
+            _pad2: 0,
         });
         let rows_px = (y1 - y0) * width;
         let sprite = &self.stack_sprites[pos].buffer;
@@ -7335,22 +7339,31 @@ struct SpritePlaceParams {
     under_g: f32,
     under_b: f32,
     under_a: f32,
-    /// [`SpriteShape`]: axis 0 none, 1 down, 2 across.
-    shape_axis: u32,
-    edge_fade: f32,
+    /// [`SpriteShape`]'s focus band: axis 0 none, 1 down, 2 across.
+    focus_axis: u32,
     band: f32,
     edge_opacity: f32,
+    /// [`SpriteShape`]'s edge fade zones, fractions of the frame.
+    fade_top: f32,
+    fade_bottom: f32,
+    fade_left: f32,
+    fade_right: f32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
-/// How a placed sprite fades with where it is on the frame: a credits
-/// roll's or a ticker's shape (#592), as the title crate's
-/// `ShapeRamp` gives it. `vertical` is the axis it varies along.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// How a placed sprite fades with where it is on the frame (#592), as
+/// the title crate's `ScreenFade` gives it: an edge fade zone at each
+/// edge, and a focus band down (`Some(true)`) or across (`Some(false)`)
+/// the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SpriteShape {
-    pub vertical: bool,
-    pub edge_fade: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+    pub focus_vertical: Option<bool>,
     pub band: f32,
     pub edge_opacity: f32,
 }
@@ -9869,8 +9882,9 @@ struct Params {
     width: u32, height: u32, y0: u32, y1: u32,
     dx: i32, dy: i32, opacity: f32, scale: f32,
     anchor_x: f32, anchor_y: f32, under_r: f32, under_g: f32,
-    under_b: f32, under_a: f32, shape_axis: u32, edge_fade: f32,
-    band: f32, edge_opacity: f32, _pad0: u32, _pad1: u32,
+    under_b: f32, under_a: f32, focus_axis: u32, band: f32,
+    edge_opacity: f32, fade_top: f32, fade_bottom: f32, fade_left: f32,
+    fade_right: f32, _pad0: u32, _pad1: u32, _pad2: u32,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -9881,19 +9895,26 @@ fn srgb_to_linear_c(c: f32) -> f32 {
     return pow((c + 0.055) / 1.055, 2.4);
 }
 
-// A roll's shape (#592): the opacity at this pixel's place along the
-// axis the layer travels, `klipp_core::title_motion::ShapeRamp::alpha_at`.
-// Axis 0 is none, 1 down the frame, 2 across it.
-fn shape_alpha(x: i32, y: i32) -> f32 {
-    if params.shape_axis == 0u { return 1.0; }
-    var u = (f32(y) + 0.5) / f32(params.height);
-    if params.shape_axis == 2u { u = (f32(x) + 0.5) / f32(params.width); }
-    var a = 1.0;
-    if params.edge_fade > 0.0 {
-        a = a * smoothstep(0.0, params.edge_fade, u) * smoothstep(0.0, params.edge_fade, 1.0 - u);
-    }
+// The layer's fade by where it is on the frame (#592):
+// `klipp_core::title_motion::ScreenFade`, its factor down the frame
+// (`along_y`) times its factor across it (`along_x`). A focus band runs
+// down the frame on axis 1, across it on axis 2; 0 is none.
+fn focus_factor(u: f32) -> f32 {
     let d = abs(u - 0.5) * 2.0;
-    return a * (1.0 - smoothstep(params.band, 1.0, d) * (1.0 - params.edge_opacity));
+    return 1.0 - smoothstep(params.band, 1.0, d) * (1.0 - params.edge_opacity);
+}
+fn shape_alpha(x: i32, y: i32) -> f32 {
+    let uy = (f32(y) + 0.5) / f32(params.height);
+    let ux = (f32(x) + 0.5) / f32(params.width);
+    var ay = 1.0;
+    if params.fade_top > 0.0 { ay = ay * smoothstep(0.0, params.fade_top, uy); }
+    if params.fade_bottom > 0.0 { ay = ay * smoothstep(0.0, params.fade_bottom, 1.0 - uy); }
+    if params.focus_axis == 1u { ay = ay * focus_factor(uy); }
+    var ax = 1.0;
+    if params.fade_left > 0.0 { ax = ax * smoothstep(0.0, params.fade_left, ux); }
+    if params.fade_right > 0.0 { ax = ax * smoothstep(0.0, params.fade_right, 1.0 - ux); }
+    if params.focus_axis == 2u { ax = ax * focus_factor(ux); }
+    return ay * ax;
 }
 
 // A tap of the sprite, premultiplied, in its sRGB-encoded 0..255 units

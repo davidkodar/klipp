@@ -520,6 +520,8 @@ pub fn show_motion_card(
     }
     ui.add_space(8.0);
     show_loops(ui, theme, clip_id, subject, fx, travel, chips, cmds);
+    ui.add_space(8.0);
+    show_edge_fade(ui, theme, clip_id, fx, cmds);
 }
 
 fn loop_chip_title(subject: &ChipSubject, fx: &LayerFx, l: &TitleLoop) -> TitleData {
@@ -662,11 +664,11 @@ fn show_loops(
         match l {
             TitleLoop::Scroll { speed_px_per_sec, shape, .. } => {
                 changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false);
-                changed |= roll_shape(ui, theme, shape, true);
+                changed |= roll_shape(ui, theme, shape);
             }
             TitleLoop::Crawl { speed_px_per_sec, repeat, shape, .. } => {
                 changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat);
-                changed |= roll_shape(ui, theme, shape, false);
+                changed |= roll_shape(ui, theme, shape);
             }
             _ => {}
         }
@@ -766,26 +768,14 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
     changed
 }
 
-/// How a roll or a crawl fades with where it is on screen (#592): an
-/// edge fade over a zone at each end of its travel, and a focus band
-/// around the frame's middle it thins away from. Returns true when it
-/// changed.
-fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::title_motion::RollShape, vertical: bool) -> bool {
+/// A roll's or a crawl's focus band (#592): full strength in a band
+/// around the frame's middle, thinning towards its edges. Returns true
+/// when it changed.
+fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::title_motion::RollShape) -> bool {
     let mut changed = false;
     let dim = |t: &str| egui::RichText::new(t).size(crate::theme::type_scale::CAPTION).color(theme.text_dim);
-    let ends = if vertical { "top and bottom" } else { "left and right" };
     ui.horizontal_wrapped(|ui| {
         ui.add_space(4.0);
-        ui.label(dim("Edge fade"));
-        let mut zone = shape.edge_fade * 100.0;
-        if ui
-            .add(egui::DragValue::new(&mut zone).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
-            .on_hover_text(format!("Fade in and out over this much of the frame at the {ends}; 0 for none"))
-            .changed()
-        {
-            shape.edge_fade = zone / 100.0;
-            changed = true;
-        }
         let mut on = shape.focus.is_some();
         if ui
             .checkbox(&mut on, "Focus band")
@@ -795,11 +785,7 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
             shape.focus = on.then(klipp_core::title_motion::FocusBand::default);
             changed = true;
         }
-    });
-    if let Some(focus) = &mut shape.focus {
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(4.0);
-            ui.label(dim("Band"));
+        if let Some(focus) = &mut shape.focus {
             let mut band = focus.band * 100.0;
             if ui
                 .add(egui::DragValue::new(&mut band).range(0.0..=99.0).speed(0.5).suffix(" %").fixed_decimals(0))
@@ -819,9 +805,39 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
                 focus.edge_opacity = edge / 100.0;
                 changed = true;
             }
-        });
-    }
+        }
+    });
     changed
+}
+
+/// The layer's edge fade (#592): how much of the frame at each edge it
+/// fades out over, by where it is on screen, standing still or moving.
+fn show_edge_fade(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, fx: &LayerFx, cmds: &mut Vec<AppCommand>) {
+    let mut fade = fx.edge_fade;
+    let mut changed = false;
+    caption(ui, theme, "EDGE FADE");
+    ui.horizontal_wrapped(|ui| {
+        for (label, zone, tip) in [
+            ("Top", &mut fade.top, "Fade out over this much of the frame at its top edge"),
+            ("Bottom", &mut fade.bottom, "Fade out over this much of the frame at its bottom edge"),
+            ("Left", &mut fade.left, "Fade out over this much of the frame at its left edge"),
+            ("Right", &mut fade.right, "Fade out over this much of the frame at its right edge"),
+        ] {
+            ui.label(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+            let mut pct = *zone * 100.0;
+            if ui
+                .add(egui::DragValue::new(&mut pct).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                .on_hover_text(format!("{tip}; 0 for none"))
+                .changed()
+            {
+                *zone = pct / 100.0;
+                changed = true;
+            }
+        }
+    });
+    if changed {
+        cmds.push(AppCommand::SetTitleEdgeFade { clip_id, edge_fade: fade });
+    }
 }
 
 // ─── Style card ──────────────────────────────────────────────────────

@@ -270,17 +270,34 @@ pub enum CrawlDirection {
     Right,
 }
 
+/// A layer fading out towards the frame's edges, whatever it is and
+/// wherever it moves: over a zone at each edge, as a fraction of the
+/// frame (0 to 0.5, 0 for none). A lower third softening into the left
+/// edge, credits fading in at the bottom and out at the top.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EdgeFade {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+impl EdgeFade {
+    pub const NONE: Self = Self { top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 };
+
+    /// Whether it fades nothing.
+    pub fn is_none(&self) -> bool {
+        self.top <= 0.0 && self.bottom <= 0.0 && self.left <= 0.0 && self.right <= 0.0
+    }
+}
+
 /// How a travelling layer (a credits roll, a ticker) changes with where
-/// it is on screen: it can fade in and out over a zone at each end of
-/// its travel, and thin out away from a band around the frame's middle.
-/// Stored on the Scroll or Crawl loop; the default changes nothing, so
-/// a roll saved before it plays as it did.
+/// it is along its travel. Stored on the Scroll or Crawl loop; the
+/// default changes nothing, so a roll saved before it plays as it did.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RollShape {
-    /// The zone at each end of the travel over which the layer fades
-    /// in and out, as a fraction of the frame (0 to 0.5). 0 for none.
-    pub edge_fade: f32,
     /// A band around the frame's middle where the layer is at full
     /// strength; away from it the layer thins towards the edges.
     pub focus: Option<FocusBand>,
@@ -303,44 +320,23 @@ impl Default for FocusBand {
     }
 }
 
-impl RollShape {
-    /// Whether the shape changes nothing.
-    pub fn is_none(&self) -> bool {
-        self.edge_fade <= 0.0 && self.focus.is_none()
-    }
-
-    /// The shape on the axis a loop travels along, packed as the
-    /// renderers take it; `None` when it changes nothing.
-    pub fn ramp(&self, axis: RampAxis) -> Option<ShapeRamp> {
-        if self.is_none() {
-            return None;
-        }
-        let (band, edge_opacity) = match self.focus {
-            Some(f) => (f.band.clamp(0.0, 0.999), f.edge_opacity.clamp(0.0, 1.0)),
-            None => (0.5, 1.0),
-        };
-        Some(ShapeRamp { axis, edge_fade: self.edge_fade.clamp(0.0, 0.5), band, edge_opacity })
-    }
-}
-
-/// The frame axis a [`ShapeRamp`] varies along: down it for a roll,
-/// across it for a crawl.
+/// The frame axis a focus band runs along: down it for a roll, across
+/// it for a crawl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RampAxis {
     Vertical,
     Horizontal,
 }
 
-/// A [`RollShape`] ready to apply: the opacity a placed layer takes at
-/// each place along `axis`. The CPU title renderer and the GPU sprite
-/// shader evaluate [`ShapeRamp::alpha_at`] alike, so the viewer and an
-/// export fade the same.
+/// A layer's fade by where it is on the frame, ready to apply: its
+/// [`EdgeFade`] and a travelling loop's [`FocusBand`] on its axis. The
+/// CPU title renderer and the GPU sprite shader evaluate
+/// [`ScreenFade::alpha_at`] alike, so the viewer and an export fade the
+/// same.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ShapeRamp {
-    pub axis: RampAxis,
-    pub edge_fade: f32,
-    pub band: f32,
-    pub edge_opacity: f32,
+pub struct ScreenFade {
+    pub edges: EdgeFade,
+    pub focus: Option<(RampAxis, FocusBand)>,
 }
 
 /// GLSL/WGSL `smoothstep`, for an `edge1` above `edge0`.
@@ -349,50 +345,78 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-impl ShapeRamp {
-    /// The opacity at `u`, the place along the axis as a fraction of
-    /// the frame (0 at one edge, 1 at the other). Mirrored by
-    /// `shape_alpha` in klipp-effects' sprite shader.
-    pub fn alpha_at(&self, u: f32) -> f32 {
-        let mut a = 1.0;
-        if self.edge_fade > 0.0 {
-            a *= smoothstep(0.0, self.edge_fade, u) * smoothstep(0.0, self.edge_fade, 1.0 - u);
-        }
-        let d = (u - 0.5).abs() * 2.0;
-        a * (1.0 - smoothstep(self.band, 1.0, d) * (1.0 - self.edge_opacity))
+impl ScreenFade {
+    /// The fade of a layer with `edges` and a loop's `focus`, or `None`
+    /// when it fades nothing.
+    pub fn new(edges: EdgeFade, focus: Option<(RampAxis, FocusBand)>) -> Option<Self> {
+        let clamp = |z: f32| z.clamp(0.0, 0.5);
+        let edges = EdgeFade { top: clamp(edges.top), bottom: clamp(edges.bottom), left: clamp(edges.left), right: clamp(edges.right) };
+        let focus = focus.map(|(axis, f)| (axis, FocusBand { band: f.band.clamp(0.0, 0.999), edge_opacity: f.edge_opacity.clamp(0.0, 1.0) }));
+        (!edges.is_none() || focus.is_some()).then_some(Self { edges, focus })
     }
 
-    /// Scale the alpha of a straight-alpha RGBA8 frame, `width` wide,
-    /// by the ramp: at each pixel's centre along the axis.
+    /// The factor down the frame at `uy` (0 top, 1 bottom): the top
+    /// and bottom zones, and a vertical focus band.
+    pub fn along_y(&self, uy: f32) -> f32 {
+        let mut a = 1.0;
+        if self.edges.top > 0.0 {
+            a *= smoothstep(0.0, self.edges.top, uy);
+        }
+        if self.edges.bottom > 0.0 {
+            a *= smoothstep(0.0, self.edges.bottom, 1.0 - uy);
+        }
+        if let Some((RampAxis::Vertical, f)) = self.focus {
+            a *= focus_factor(f, uy);
+        }
+        a
+    }
+
+    /// The factor across the frame at `ux` (0 left, 1 right).
+    pub fn along_x(&self, ux: f32) -> f32 {
+        let mut a = 1.0;
+        if self.edges.left > 0.0 {
+            a *= smoothstep(0.0, self.edges.left, ux);
+        }
+        if self.edges.right > 0.0 {
+            a *= smoothstep(0.0, self.edges.right, 1.0 - ux);
+        }
+        if let Some((RampAxis::Horizontal, f)) = self.focus {
+            a *= focus_factor(f, ux);
+        }
+        a
+    }
+
+    /// The opacity at `(ux, uy)`, fractions of the frame. Mirrored by
+    /// `shape_alpha` in klipp-effects' sprite shader.
+    pub fn alpha_at(&self, ux: f32, uy: f32) -> f32 {
+        self.along_y(uy) * self.along_x(ux)
+    }
+
+    /// Scale the alpha of a straight-alpha RGBA8 frame by the fade, at
+    /// each pixel's centre.
     pub fn apply_rgba8(&self, rgba: &mut [u8], width: u32, height: u32) {
         let (w, h) = (width as usize, height as usize);
         if w == 0 || h == 0 {
             return;
         }
-        match self.axis {
-            RampAxis::Vertical => {
-                for (y, row) in rgba.chunks_exact_mut(w * 4).take(h).enumerate() {
-                    let a = self.alpha_at((y as f32 + 0.5) / h as f32);
-                    if a >= 1.0 {
-                        continue;
-                    }
-                    for px in row.chunks_exact_mut(4) {
-                        px[3] = (px[3] as f32 * a).round() as u8;
-                    }
-                }
-            }
-            RampAxis::Horizontal => {
-                let col: Vec<f32> = (0..w).map(|x| self.alpha_at((x as f32 + 0.5) / w as f32)).collect();
-                for row in rgba.chunks_exact_mut(w * 4).take(h) {
-                    for (px, a) in row.chunks_exact_mut(4).zip(&col) {
-                        if *a < 1.0 {
-                            px[3] = (px[3] as f32 * a).round() as u8;
-                        }
-                    }
+        let cols: Vec<f32> = (0..w).map(|x| self.along_x((x as f32 + 0.5) / w as f32)).collect();
+        for (y, row) in rgba.chunks_exact_mut(w * 4).take(h).enumerate() {
+            let ry = self.along_y((y as f32 + 0.5) / h as f32);
+            for (px, cx) in row.chunks_exact_mut(4).zip(&cols) {
+                let a = ry * cx;
+                if a < 1.0 && px[3] > 0 {
+                    px[3] = (px[3] as f32 * a).round() as u8;
                 }
             }
         }
     }
+}
+
+/// A focus band at `u` along its axis: whole inside the band, thinning
+/// to its edge opacity at the frame's edges.
+fn focus_factor(f: FocusBand, u: f32) -> f32 {
+    let d = (u - 0.5).abs() * 2.0;
+    1.0 - smoothstep(f.band, 1.0, d) * (1.0 - f.edge_opacity)
 }
 
 /// One continuous behaviour of a text layer. A layer holds a list of
@@ -485,14 +509,13 @@ pub struct LoopPose {
     pub color: Option<[u8; 4]>,
     /// Text replacing the layer's own.
     pub text: Option<String>,
-    /// How the placed layer fades with where it is on screen: a roll's
-    /// or a crawl's [`RollShape`].
-    pub shape: Option<ShapeRamp>,
+    /// A roll's or a crawl's focus band, on the axis it travels.
+    pub focus: Option<(RampAxis, FocusBand)>,
 }
 
 impl Default for LoopPose {
     fn default() -> Self {
-        Self { opacity: 1.0, dx: 0.0, dy: 0.0, wave: None, color: None, text: None, shape: None }
+        Self { opacity: 1.0, dx: 0.0, dy: 0.0, wave: None, color: None, text: None, focus: None }
     }
 }
 
@@ -628,13 +651,13 @@ pub fn eval_loops(loops: &[TitleLoop], t: f32, window: Option<f32>, geo: LoopGeo
             // field says: scaled to this frame, a roll takes as long on
             // 4K or a vertical frame as on 1080p.
             TitleLoop::Scroll { direction, speed_px_per_sec, shape } => {
-                pose.shape = pose.shape.or(shape.ramp(RampAxis::Vertical));
+                pose.focus = pose.focus.or(shape.focus.map(|f| (RampAxis::Vertical, f)));
                 let offset = travel_distance(geo.frame_h, geo.text_h) * 0.5;
                 let y = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, false);
                 pose.dy += match direction { ScrollDirection::Up => y, ScrollDirection::Down => -y };
             }
             TitleLoop::Crawl { direction, speed_px_per_sec, repeat, shape } => {
-                pose.shape = pose.shape.or(shape.ramp(RampAxis::Horizontal));
+                pose.focus = pose.focus.or(shape.focus.map(|f| (RampAxis::Horizontal, f)));
                 let offset = travel_distance(geo.frame_w, geo.text_w) * 0.5;
                 let x = travel(offset, *speed_px_per_sec * frame_scale(geo.frame_w, geo.frame_h), t, window, *repeat);
                 pose.dx += match direction { CrawlDirection::Left => x, CrawlDirection::Right => -x };
@@ -663,25 +686,28 @@ mod loop_tests {
         LoopGeometry { frame_w: 1920.0, frame_h: 1080.0, text_w: 400.0, text_h: 80.0, font_px: 72.0 }
     }
 
-    /// #592: an edge fade ramps in over its zone at each end and is
+    /// #592: an edge fade ramps in over its zone at each edge and is
     /// whole between; a focus band is whole across the band and thins to
-    /// its edge opacity at the frame's edges.
+    /// its edge opacity at the frame's edges, on its axis only.
     #[test]
-    fn a_roll_shape_fades_at_the_ends_and_away_from_the_band() {
-        let fade = RollShape { edge_fade: 0.2, focus: None }.ramp(RampAxis::Vertical).unwrap();
-        assert_eq!(fade.alpha_at(0.0), 0.0);
-        assert_eq!(fade.alpha_at(1.0), 0.0);
-        assert!((fade.alpha_at(0.1) - 0.5).abs() < 1e-6, "half way up its zone: {}", fade.alpha_at(0.1));
+    fn a_screen_fade_fades_at_the_edges_and_away_from_the_band() {
+        let fade = ScreenFade::new(EdgeFade { top: 0.2, bottom: 0.2, ..EdgeFade::NONE }, None).unwrap();
+        assert_eq!(fade.alpha_at(0.5, 0.0), 0.0);
+        assert_eq!(fade.alpha_at(0.5, 1.0), 0.0);
+        assert!((fade.alpha_at(0.5, 0.1) - 0.5).abs() < 1e-6, "half way up its zone: {}", fade.alpha_at(0.5, 0.1));
         for u in [0.2, 0.5, 0.8] {
-            assert_eq!(fade.alpha_at(u), 1.0, "whole between the zones at {u}");
+            assert_eq!(fade.alpha_at(0.0, u), 1.0, "whole between the zones at {u}, and at the left edge with no left zone");
         }
-        let band = RollShape { edge_fade: 0.0, focus: Some(FocusBand { band: 0.5, edge_opacity: 0.2 }) }.ramp(RampAxis::Horizontal).unwrap();
+        let left = ScreenFade::new(EdgeFade { left: 0.3, ..EdgeFade::NONE }, None).unwrap();
+        assert_eq!(left.alpha_at(0.0, 0.5), 0.0);
+        assert_eq!(left.alpha_at(1.0, 0.5), 1.0, "only the edge it names");
+        let band = ScreenFade::new(EdgeFade::NONE, Some((RampAxis::Horizontal, FocusBand { band: 0.5, edge_opacity: 0.2 }))).unwrap();
         for u in [0.26, 0.5, 0.74] {
-            assert_eq!(band.alpha_at(u), 1.0, "whole inside the band at {u}");
+            assert_eq!(band.alpha_at(u, 0.0), 1.0, "whole inside the band at {u}, whatever the row");
         }
-        assert!((band.alpha_at(0.0) - 0.2).abs() < 1e-6 && (band.alpha_at(1.0) - 0.2).abs() < 1e-6);
-        assert!(band.alpha_at(0.1) < band.alpha_at(0.2) && band.alpha_at(0.2) < 1.0, "thinning towards the edge");
-        assert!(RollShape::default().ramp(RampAxis::Vertical).is_none(), "the default changes nothing");
+        assert!((band.alpha_at(0.0, 0.5) - 0.2).abs() < 1e-6 && (band.alpha_at(1.0, 0.5) - 0.2).abs() < 1e-6);
+        assert!(band.alpha_at(0.1, 0.5) < band.alpha_at(0.2, 0.5) && band.alpha_at(0.2, 0.5) < 1.0, "thinning towards the edge");
+        assert!(ScreenFade::new(EdgeFade::default(), None).is_none(), "nothing fades nothing");
     }
 
     /// A roll saved before its shape existed loads with none.
@@ -690,7 +716,7 @@ mod loop_tests {
         let old: TitleLoop = serde_json::from_str(r#"{"Scroll":{"direction":"Up","speed_px_per_sec":40.0}}"#).unwrap();
         assert_eq!(old, TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 40.0, shape: RollShape::default() });
         let p = eval_loops(std::slice::from_ref(&old), 1.0, Some(4.0), geo(), [255; 4]);
-        assert!(p.shape.is_none());
+        assert!(p.focus.is_none());
     }
 
     /// #588: a speed is pixels per second of a 1080p frame, so a roll

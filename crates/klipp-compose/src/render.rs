@@ -1498,12 +1498,16 @@ impl Renderer {
                             fx.push(BuiltinEffect::GaussianBlur { radius: blur });
                         }
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                            // A roll's shape, the sprite shader's own (#592).
+                            // The layer's fade by where it is, the sprite
+                            // shader's own (#592).
                             let shape = shape.map(|s| klipp_effects::gpu::SpriteShape {
-                                vertical: s.axis == klipp_core::title_motion::RampAxis::Vertical,
-                                edge_fade: s.edge_fade,
-                                band: s.band,
-                                edge_opacity: s.edge_opacity,
+                                top: s.edges.top,
+                                bottom: s.edges.bottom,
+                                left: s.edges.left,
+                                right: s.edges.right,
+                                focus_vertical: s.focus.map(|(axis, _)| axis == klipp_core::title_motion::RampAxis::Vertical),
+                                band: s.focus.map_or(0.5, |(_, f)| f.band),
+                                edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
                             });
                             p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
                         })

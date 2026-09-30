@@ -705,11 +705,15 @@ pub enum Op {
         glitch: Option<f32>,
         #[serde(default)]
         chromatic: Option<f32>,
-        /// With `loop` scroll or crawl: how it fades with where it is on
-        /// screen, `{"edge_fade": 0.2, "focus": {"band": 0.4,
-        /// "edge_opacity": 0.15}}` (#592).
+        /// With `loop` scroll or crawl: a focus band it thins away from,
+        /// `{"focus": {"band": 0.4, "edge_opacity": 0.15}}` (#592).
         #[serde(default)]
         roll_shape: Option<klipp_core::title_motion::RollShape>,
+        /// Fade out towards the frame's edges, by where it is on screen,
+        /// as fractions of the frame: `{"top": 0.2, "bottom": 0.2}` or
+        /// `{"left": 0.3}` (#592).
+        #[serde(default)]
+        edge_fade: Option<klipp_core::title_motion::EdgeFade>,
     },
     /// Compose a picture into the frame rather than letting it fill the
     /// frame: `x`,`y` is where its centre sits and `width`,`height` how
@@ -1690,7 +1694,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
-        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape } => {
+        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             // The look the style names fills what the op leaves out.
             let look = match style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1715,6 +1719,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 gradient: gradient.as_ref().or(look.gradient.as_ref()), motion,
                 loop_effect: loop_effect.as_deref().or(look.loop_effect.as_deref()), glitch: *glitch, chromatic: *chromatic,
                 roll_shape: *roll_shape,
+                edge_fade: *edge_fade,
             };
             title_op(seq, fps, i, at, args)
         }
@@ -4614,6 +4619,7 @@ struct TitleArgs<'a> {
     glitch: Option<f32>,
     chromatic: Option<f32>,
     roll_shape: Option<klipp_core::title_motion::RollShape>,
+    edge_fade: Option<klipp_core::title_motion::EdgeFade>,
     /// Faces under the title's span: the words keep clear of them.
     keep_out: Vec<[f32; 4]>,
 }
@@ -4711,6 +4717,9 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, scroll (a credits roll) or crawl (a ticker)")),
         };
         fx.loops = vec![l];
+    }
+    if let Some(e) = a.edge_fade {
+        fx.edge_fade = e;
     }
 
     let mut td = TitleData::single_text(tb);
@@ -5018,7 +5027,7 @@ mod tests {
             }
         }
         let (seq, pool, media, _, _) = fixture();
-        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None };
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
         let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -5038,7 +5047,7 @@ mod tests {
     fn a_title_rolls_as_credits_or_crawls_as_a_ticker() {
         let (seq, pool, _, _, _) = fixture();
         let looped = |name: &str| {
-            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None };
+            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
             let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -5046,13 +5055,14 @@ mod tests {
         };
         assert!(matches!(looped("credits")[..], [klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec, .. }] if speed_px_per_sec == 0.0));
         assert!(matches!(looped("ticker")[..], [klipp_timeline::TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, .. }]));
-        // #592: with a shape, the roll carries it.
-        let shape = klipp_core::title_motion::RollShape { edge_fade: 0.2, focus: Some(klipp_core::title_motion::FocusBand { band: 0.4, edge_opacity: 0.1 }) };
-        let op: Op = serde_json::from_value(serde_json::json!({"op": "title", "text": "Director\nA Name", "at": {"secs": 1.0}, "secs": 4.0, "loop": "credits", "roll_shape": {"edge_fade": 0.2, "focus": {"band": 0.4, "edge_opacity": 0.1}}})).unwrap();
+        // #592: a roll's focus band and the layer's edge fade.
+        let op: Op = serde_json::from_value(serde_json::json!({"op": "title", "text": "Director\nA Name", "at": {"secs": 1.0}, "secs": 4.0, "loop": "credits", "roll_shape": {"focus": {"band": 0.4, "edge_opacity": 0.1}}, "edge_fade": {"top": 0.2, "bottom": 0.15}})).unwrap();
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
-        assert!(matches!(&td.primary_fx().loops[..], [klipp_timeline::TitleLoop::Scroll { shape: s, .. }] if *s == shape));
+        let focus = klipp_core::title_motion::FocusBand { band: 0.4, edge_opacity: 0.1 };
+        assert!(matches!(&td.primary_fx().loops[..], [klipp_timeline::TitleLoop::Scroll { shape, .. }] if shape.focus == Some(focus)));
+        assert_eq!(td.primary_fx().edge_fade, klipp_core::title_motion::EdgeFade { top: 0.2, bottom: 0.15, ..klipp_core::title_motion::EdgeFade::NONE });
     }
 
     /// #460: a heading at the top of a vertical frame stays whole inside
@@ -5066,7 +5076,7 @@ mod tests {
 
         let (mut seq, pool, _, _, _) = fixture();
         seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
-        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None };
+        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -5170,7 +5180,7 @@ mod tests {
             type_styles: vec![TypeStyle { name: "kicker".into(), size: Some(28.0), y: Some(0.12), color: Some("#ff6600".into()), animate: Some("drop".into()), ..Default::default() }],
             ..Default::default()
         });
-        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None };
+        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), None)]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
@@ -6212,7 +6222,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
-        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, style: None }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None }]).is_err());
     }
 
     #[test]

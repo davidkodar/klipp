@@ -482,6 +482,10 @@ pub struct LayerFx {
     /// Motion blur (`None` = off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_blur: Option<MotionBlur>,
+    /// The layer fading out towards the frame's edges, by where it is on
+    /// screen, still or moving (#592).
+    #[serde(default, skip_serializing_if = "EdgeFade::is_none")]
+    pub edge_fade: EdgeFade,
 }
 
 fn motion_is_still(m: &TitleMotion) -> bool {
@@ -505,6 +509,7 @@ static STILL_FX: LayerFx = LayerFx {
     inner_shadows: Vec::new(),
     inner_shadow_stack_enabled: true,
     motion_blur: None,
+    edge_fade: EdgeFade::NONE,
 };
 
 /// A fresh layer's stack is the still one: nothing on it, every
@@ -636,6 +641,7 @@ impl LegacyTextFx {
             inner_shadows: self.inner_shadows,
             inner_shadow_stack_enabled: self.inner_shadow_stack_enabled,
             motion_blur: self.motion_blur,
+            edge_fade: EdgeFade::NONE,
         }
     }
 }
@@ -1963,7 +1969,7 @@ pub enum CharEntrance {
     BlurIn,
 }
 
-use klipp_core::title_motion::{CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
+use klipp_core::title_motion::{CrawlDirection, EdgeFade, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 
 fn default_one() -> f32 { 1.0 }
 

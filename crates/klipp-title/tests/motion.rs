@@ -158,19 +158,25 @@ fn a_motion_without_stagger_rests_as_soon_as_it_has_run() {
     assert!(placed(&staggered, 1.7));
 }
 
-/// #592: a roll's shape fades it by where it is on screen, on the path
-/// that places the resting render and on the one that rasters every
-/// layer (forced here by a constant opacity key): each pixel's alpha is
-/// the unshaped frame's times the ramp at its row.
+/// #592: a layer's edge fade and a roll's focus band fade it by where it
+/// is on screen, on the path that places the resting render and on the
+/// one that rasters every layer (forced here by a constant opacity key):
+/// each pixel's alpha is the unfaded frame's times the fade there.
 #[test]
-fn a_shaped_roll_fades_by_where_it_is_on_both_paths() {
-    use klipp_core::title_motion::{FocusBand, RampAxis, RollShape};
+fn a_faded_roll_fades_by_where_it_is_on_both_paths() {
+    use klipp_core::title_motion::{EdgeFade, FocusBand, RampAxis, RollShape, ScreenFade};
     use klipp_timeline::{ScrollDirection, TitleLoop};
-    let shape = RollShape { edge_fade: 0.25, focus: Some(FocusBand { band: 0.3, edge_opacity: 0.3 }) };
-    let roll = |shape: RollShape, raster: bool| {
+    let edges = EdgeFade { top: 0.25, bottom: 0.25, ..EdgeFade::NONE };
+    let focus = FocusBand { band: 0.3, edge_opacity: 0.3 };
+    let roll = |faded: bool, raster: bool| {
+        let shape = RollShape { focus: faded.then_some(focus) };
         let mut td = TitleData::single_text_fx(
             TextBox { text: "Rolling\ncredits\nhere\nand\nmore".into(), font_size: 40.0, ..Default::default() },
-            klipp_timeline::LayerFx { loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape }], ..Default::default() },
+            klipp_timeline::LayerFx {
+                loops: vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape }],
+                edge_fade: if faded { edges } else { EdgeFade::NONE },
+                ..Default::default()
+            },
         );
         if raster {
             td.objects[0].opacity_keyframes = vec![klipp_core::Keyframe {
@@ -183,26 +189,76 @@ fn a_shaped_roll_fades_by_where_it_is_on_both_paths() {
         }
         td
     };
-    let ramp = shape.ramp(RampAxis::Vertical).unwrap();
+    let fade = ScreenFade::new(edges, Some((RampAxis::Vertical, focus))).unwrap();
     let (w, h) = (320usize, 180usize);
     let mut r = TitleRenderer::new();
     for raster in [false, true] {
         for t in [0.8f32, 2.0, 3.2] {
-            let shaped_td = roll(shape, raster);
+            let faded_td = roll(true, raster);
             if !raster {
-                let frame = r.frame_with_window(&shaped_td, w as u32, h as u32, None, t, Some(4.0));
-                assert!(matches!(frame, klipp_title::TitleFrame::Placed { shape: Some(_), .. }), "a shaped roll is still the resting render placed");
+                let frame = r.frame_with_window(&faded_td, w as u32, h as u32, None, t, Some(4.0));
+                assert!(matches!(frame, klipp_title::TitleFrame::Placed { shape: Some(_), .. }), "a faded roll is still the resting render placed");
             }
-            let plain = r.render_with_window(&roll(RollShape::default(), raster), w as u32, h as u32, None, t, Some(4.0));
-            let shaped = r.render_with_window(&shaped_td, w as u32, h as u32, None, t, Some(4.0));
+            let plain = r.render_with_window(&roll(false, raster), w as u32, h as u32, None, t, Some(4.0));
+            let faded = r.render_with_window(&faded_td, w as u32, h as u32, None, t, Some(4.0));
             let mut lit = 0;
-            for (i, (p, s)) in plain.chunks_exact(4).zip(shaped.chunks_exact(4)).enumerate() {
-                let y = i / w;
-                let want = p[3] as f32 * ramp.alpha_at((y as f32 + 0.5) / h as f32);
-                assert!((s[3] as f32 - want).abs() <= 1.0, "raster {raster}, t {t}: row {y} alpha {} where {want:.1}", s[3]);
+            for (i, (p, s)) in plain.chunks_exact(4).zip(faded.chunks_exact(4)).enumerate() {
+                let (x, y) = (i % w, i / w);
+                let want = p[3] as f32 * fade.alpha_at((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                assert!((s[3] as f32 - want).abs() <= 1.0, "raster {raster}, t {t}: ({x}, {y}) alpha {} where {want:.1}", s[3]);
                 lit += (p[3] > 0) as usize;
             }
             assert!(lit > 100, "raster {raster}, t {t}: the credits are on screen");
         }
     }
+}
+
+/// #592: an edge fade is the layer's, wherever it is and however many
+/// layers the title has. A still title of two layers, one fading into
+/// the left edge: that layer fades there, the other is untouched.
+#[test]
+fn a_still_layer_fades_into_its_edge_and_its_neighbour_does_not() {
+    use klipp_core::title_motion::{EdgeFade, ScreenFade};
+    let text = |s: &str, x: f32, left: f32| {
+        let mut td = TitleData::single_text_fx(
+            TextBox { text: s.into(), font_size: 40.0, ..Default::default() },
+            klipp_timeline::LayerFx { edge_fade: EdgeFade { left, ..EdgeFade::NONE }, ..Default::default() },
+        );
+        td.objects[0].transform.center.x = x;
+        td
+    };
+    let (w, h) = (320usize, 180usize);
+    let mut r = TitleRenderer::new();
+    // One layer: faded where it is placed.
+    let plain = r.render_with_window(&text("Lower third", 0.35, 0.0), w as u32, h as u32, None, 1.0, Some(4.0));
+    let faded = r.render_with_window(&text("Lower third", 0.35, 0.4), w as u32, h as u32, None, 1.0, Some(4.0));
+    let fade = ScreenFade::new(EdgeFade { left: 0.4, ..EdgeFade::NONE }, None).unwrap();
+    for (i, (p, s)) in plain.chunks_exact(4).zip(faded.chunks_exact(4)).enumerate() {
+        let want = p[3] as f32 * fade.alpha_at(((i % w) as f32 + 0.5) / w as f32, 0.5);
+        assert!((s[3] as f32 - want).abs() <= 1.0, "one layer at ({}, {}): {} where {want:.1}", i % w, i / w, s[3]);
+    }
+    // Two layers: the faded one fades, the other keeps every pixel.
+    let two = |left: f32| {
+        let mut td = text("Lower third", 0.35, left);
+        let mut other = text("Name", 0.75, 0.0).objects.remove(0);
+        other.id = klipp_timeline::TitleObjectId(td.objects.iter().map(|o| o.id.0).max().unwrap() + 1);
+        other.transform.center.y = 0.8;
+        td.objects.push(other);
+        td
+    };
+    let plain = r.render_with_window(&two(0.0), w as u32, h as u32, None, 1.0, Some(4.0));
+    let faded = r.render_with_window(&two(0.4), w as u32, h as u32, None, 1.0, Some(4.0));
+    let mut faded_px = 0;
+    for (i, (p, s)) in plain.chunks_exact(4).zip(faded.chunks_exact(4)).enumerate() {
+        let (x, y) = (i % w, i / w);
+        if y < h * 13 / 20 {
+            // The faded layer's rows: its alpha times the fade there.
+            let want = p[3] as f32 * fade.alpha_at((x as f32 + 0.5) / w as f32, 0.5);
+            assert!((s[3] as f32 - want).abs() <= 1.0, "two layers, the faded one at ({x}, {y}): {} where {want:.1}", s[3]);
+            faded_px += (s[3] < p[3]) as usize;
+        } else if y > h * 7 / 10 {
+            assert_eq!(p, s, "two layers, the other one at ({x}, {y}) is untouched");
+        }
+    }
+    assert!(faded_px > 0, "the faded layer does fade");
 }
