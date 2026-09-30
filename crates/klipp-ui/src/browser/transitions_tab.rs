@@ -6,15 +6,7 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
-/// Source filter for the Transitions tab — built-in vs OpenFX.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
-pub enum TransitionsSourceFilter {
-    #[default]
-    All,
-    Builtin,
-    Ofx,
-}
+use crate::browser::library_card::LibraryList;
 
 
 /// Public alias of the category enum so the BrowserPanel can hold the
@@ -1527,8 +1519,8 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &mut String,
     active_category: &mut Option<TransitionCategory>,
-    source_filter: &mut TransitionsSourceFilter,
-    gpu_only: &mut bool,
+    list: &mut Option<LibraryList>,
+    favourites: &mut Vec<String>,
     view_mode: &mut EffectViewMode,
     sort_mode: &mut EffectSort,
     selected: &mut Option<String>,
@@ -1536,6 +1528,8 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
+    // By `string_key`; a snapshot, since the cards take `state`.
+    let recent = state.library_recent.transitions.clone();
 
     // ── Split: sidebar | content ──
     let sidebar_w = TRANSITIONS_SIDEBAR_W.min(avail.width() * 0.40);
@@ -1562,9 +1556,15 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_space(6.0);
                 let total = TRANSITIONS.len();
-                tx_general_row(ui, theme, Icon::Star, "Favorites", 0, "tx_fav");
-                tx_general_row(ui, theme, Icon::ArrowCounterClockwise, "Recent", 0, "tx_recent");
-                tx_general_row(ui, theme, Icon::UploadSimple, "Installed", total, "tx_inst");
+                for (target, icon, label, count) in [
+                    (LibraryList::Favourites, Icon::Star, "Favorites", favourites.len()),
+                    (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", recent.len()),
+                ] {
+                    if tx_general_row(ui, theme, icon, label, count, *list == Some(target), &format!("tx_{label}")) {
+                        *list = Some(target);
+                        *active_category = None;
+                    }
+                }
                 ui.add_space(8.0);
                 tx_section_separator(ui, theme);
                 tx_section_header(ui, theme, "Transitions");
@@ -1575,9 +1575,12 @@ pub fn show(
                     Some(Icon::List),
                     "All",
                     total,
-                    active_category.is_none(),
+                    active_category.is_none() && list.is_none(),
                     "tx_cat_all",
-                    &mut |c| *active_category = c,
+                    &mut |c| {
+                        *active_category = c;
+                        *list = None;
+                    },
                     None,
                 );
                 for cat in [
@@ -1589,7 +1592,7 @@ pub fn show(
                     TransitionCategory::Cinematic,
                 ] {
                     let count = TRANSITIONS.iter().filter(|t| t.category == cat).count();
-                    let is_active = *active_category == Some(cat);
+                    let is_active = *active_category == Some(cat) && list.is_none();
                     tx_sidebar_row(
                         ui,
                         theme,
@@ -1598,7 +1601,10 @@ pub fn show(
                         count,
                         is_active,
                         &format!("tx_cat_{:?}", cat),
-                        &mut |c| *active_category = c,
+                        &mut |c| {
+                            *active_category = c;
+                            *list = None;
+                        },
                         Some(cat),
                     );
                 }
@@ -1619,31 +1625,13 @@ pub fn show(
             });
         ui.add_space(6.0);
 
-        // Filter row
-        let scoped_total = TRANSITIONS
-            .iter()
-            .filter(|t| match active_category {
-                Some(cat) => t.category == *cat,
-                None => true,
-            })
-            .count();
-        let builtin_count = scoped_total; // all entries are built-in today
-        let ofx_count: usize = 0;
-
+        // View row. Every transition is built in and runs on the GPU
+        // (with a CPU twin for parity), so there is no source or
+        // capability to filter by.
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    tx_segmented_filter(
-                        ui,
-                        theme,
-                        source_filter,
-                        scoped_total,
-                        builtin_count,
-                        ofx_count,
-                    );
-                    ui.add_space(6.0);
-                    gpu_only_pill(ui, theme, gpu_only);
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
@@ -1664,9 +1652,13 @@ pub fn show(
                 Some(cat) => t.category == *cat,
                 None => true,
             })
-            .filter(|_t| match *source_filter {
-                TransitionsSourceFilter::All | TransitionsSourceFilter::Builtin => true,
-                TransitionsSourceFilter::Ofx => false, // no OFX transitions yet
+            .filter(|t| {
+                let key = klipp_core::spec_for_kind(t.kind).string_key;
+                match list {
+                    Some(LibraryList::Favourites) => favourites.iter().any(|k| k == key),
+                    Some(LibraryList::Recent) => recent.iter().any(|k| k == key),
+                    None => true,
+                }
             })
             .filter(|t| {
                 if search_lower.is_empty() {
@@ -1696,6 +1688,13 @@ pub fn show(
             }
             _ => {}
         }
+        // Recent reads newest first, whatever the sort.
+        if *list == Some(LibraryList::Recent) {
+            filtered.sort_by_key(|t| {
+                let key = klipp_core::spec_for_kind(t.kind).string_key;
+                recent.iter().position(|k| k == key)
+            });
+        }
 
         // Result strip
         tx_result_strip(ui, theme, filtered.len(), sort_mode);
@@ -1711,7 +1710,11 @@ pub fn show(
                         let msg = if !search_query.is_empty() {
                             format!("No transitions match \"{}\"", search_query)
                         } else {
-                            "No transitions in this category".to_string()
+                            match list {
+                                Some(LibraryList::Favourites) => "No favourites yet. Star a transition to keep it here".to_string(),
+                                Some(LibraryList::Recent) => "Transitions you add to the timeline show here".to_string(),
+                                None => "No transitions in this category".to_string(),
+                            }
                         };
                         ui.label(
                             egui::RichText::new(msg)
@@ -1746,6 +1749,12 @@ pub fn show(
                                 if active {
                                     ui.ctx().request_repaint();
                                 }
+                                let is_fav = favourites.iter().any(|k| k == spec.string_key);
+                                let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, spec.string_key);
+                                resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                                if toggle {
+                                    crate::browser::library_card::toggle_favourite(favourites, spec.string_key);
+                                }
                                 handle_transition_interaction(
                                     state, &mut cmds, tr, spec, &resp, selected,
                                 );
@@ -1767,6 +1776,12 @@ pub fn show(
                         tx_update_anim_state(ui, spec.display_name, active);
                         if active {
                             ui.ctx().request_repaint();
+                        }
+                        let is_fav = favourites.iter().any(|k| k == spec.string_key);
+                        let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, spec.string_key);
+                                resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                                if toggle {
+                            crate::browser::library_card::toggle_favourite(favourites, spec.string_key);
                         }
                         handle_transition_interaction(
                             state, &mut cmds, tr, spec, &resp, selected,
@@ -2987,15 +3002,18 @@ fn tx_general_row(
     icon: Icon,
     label: &str,
     count: usize,
+    is_active: bool,
     id_salt: &str,
-) {
+) -> bool {
     let row_h = 26.0;
     let (rect, _resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row_h),
         egui::Sense::click(),
     );
     let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
-    if click_resp.hovered() {
+    if is_active {
+        ui.painter().rect_filled(rect, 0.0, theme.accent_subtle);
+    } else if click_resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
     }
     let indent = 14.0;
@@ -3036,6 +3054,7 @@ fn tx_general_row(
         count_galley,
         theme.text_dim,
     );
+    click_resp.clicked()
 }
 
 fn tx_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
@@ -3066,143 +3085,6 @@ fn tx_section_header(ui: &mut egui::Ui, theme: &KlippTheme, label: &str) {
 }
 
 // ─────────────── Filter row widgets ───────────────
-
-fn tx_segmented_filter(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    filter: &mut TransitionsSourceFilter,
-    all_count: usize,
-    builtin_count: usize,
-    ofx_count: usize,
-) {
-    let outer_h = 26.0;
-    let pad = 2.0;
-    let segments = [
-        (TransitionsSourceFilter::All, "All", all_count),
-        (TransitionsSourceFilter::Builtin, "Built-in", builtin_count),
-        (TransitionsSourceFilter::Ofx, "OFX", ofx_count),
-    ];
-    let mut seg_widths = [0.0f32; 3];
-    let mut total_w = pad * 2.0;
-    for (i, (_, label, count)) in segments.iter().enumerate() {
-        let lg = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let cg = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            theme.text_dim,
-        );
-        let w = lg.size().x + 6.0 + cg.size().x + 22.0;
-        seg_widths[i] = w;
-        total_w += w + 1.0;
-    }
-    total_w -= 1.0;
-    let (outer_rect, _) = ui.allocate_exact_size(
-        egui::vec2(total_w, outer_h),
-        egui::Sense::hover(),
-    );
-    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(
-        outer_rect,
-        5.0,
-        egui::Stroke::new(1.0_f32, theme.border),
-    );
-    let mut x = outer_rect.min.x + pad;
-    for (i, (variant, label, count)) in segments.iter().enumerate() {
-        let seg_rect = egui::Rect::from_min_size(
-            egui::pos2(x, outer_rect.min.y + pad),
-            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
-        );
-        let resp = ui.interact(
-            seg_rect,
-            ui.id().with(("tx_source_seg", i)),
-            egui::Sense::click(),
-        );
-        let is_active = *filter == *variant;
-        let hovered = resp.hovered();
-        if is_active {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
-        } else if hovered {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
-        }
-        let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
-        let count_color = if is_active { theme.accent } else { theme.text_dim };
-        let lg = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            label_color,
-        );
-        let cg = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            count_color,
-        );
-        let inner_w = lg.size().x + 6.0 + cg.size().x;
-        let lx = seg_rect.center().x - inner_w * 0.5;
-        ui.painter().galley(
-            egui::pos2(lx, seg_rect.center().y - lg.size().y * 0.5),
-            lg.clone(),
-            label_color,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                lx + lg.size().x + 6.0,
-                seg_rect.center().y - cg.size().y * 0.5,
-            ),
-            cg,
-            count_color,
-        );
-        if resp.clicked() {
-            *filter = *variant;
-        }
-        x += seg_widths[i] + 1.0;
-    }
-}
-
-fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
-    let lg = ui.painter().layout_no_wrap(
-        "GPU only".to_string(),
-        egui::FontId::proportional(11.0),
-        theme.text_secondary,
-    );
-    let icon_size = 11.0;
-    let pad_x = 10.0;
-    let gap = 5.0;
-    let w = pad_x * 2.0 + icon_size + gap + lg.size().x;
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(w, 26.0),
-        egui::Sense::click(),
-    );
-    let hovered = resp.hovered();
-    let (bg, border, fg) = if *active {
-        (theme.accent_subtle, theme.accent, theme.accent)
-    } else if hovered {
-        (theme.bg_raised, theme.border, theme.text_primary)
-    } else {
-        (theme.bg_panel, theme.border, theme.text_secondary)
-    };
-    ui.painter().rect_filled(rect, 4.0, bg);
-    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
-    let icon_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
-        egui::vec2(icon_size, icon_size),
-    );
-    let img = Icon::Lightning.image(icon_size).tint(fg);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
-    ui.painter().text(
-        egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "GPU only",
-        egui::FontId::proportional(11.0),
-        fg,
-    );
-    if resp.clicked() {
-        *active = !*active;
-    }
-}
 
 fn view_mode_button(
     ui: &mut egui::Ui,
@@ -3281,4 +3163,100 @@ fn tx_result_strip(
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Tab {
+        category: Option<TransitionCategory>,
+        list: Option<LibraryList>,
+        favourites: Vec<String>,
+        view: EffectViewMode,
+        sort: EffectSort,
+        previews: TransitionPreviews,
+    }
+
+    /// One frame of the tab; the text it drew, with where.
+    fn frame(ctx: &egui::Context, state: &mut AppState, tab: &mut Tab, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 4000.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (mut search, mut selected) = (String::new(), None);
+                    show(
+                        ui, state, &KlippTheme::default(), &mut search, &mut tab.category, &mut tab.list,
+                        &mut tab.favourites, &mut tab.view, &mut tab.sort, &mut selected, &mut tab.previews,
+                    );
+                });
+            },
+        );
+        output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn click(ctx: &egui::Context, state: &mut AppState, tab: &mut Tab, texts: &[(String, egui::Pos2)], label: &str) {
+        let at = texts.iter().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label} is drawn"));
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(ctx, state, tab, vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(ctx, state, tab, vec![button(false)]);
+    }
+
+    fn y_of(texts: &[(String, egui::Pos2)], name: &str) -> Option<f32> {
+        texts.iter().find(|(t, _)| t == name).map(|(_, p)| p.y)
+    }
+
+    #[test]
+    fn favourites_and_recent_show_what_they_count() {
+        let mut state = AppState::default();
+        // Added to the timeline: a wipe, then a dissolve.
+        state.library_recent.transitions = vec!["CrossDissolve".into(), "WipeLeft".into()];
+        let mut tab = Tab {
+            category: Some(TransitionCategory::Wipe),
+            list: None,
+            favourites: vec!["DipToBlack".into()],
+            view: EffectViewMode::List,
+            sort: EffectSort::NameAsc,
+            previews: TransitionPreviews::default(),
+        };
+        let [dissolve, wipe, dip] = ["CrossDissolve", "WipeLeft", "DipToBlack"].map(|k| spec_for_string_key(k).display_name);
+        let ctx = egui::Context::default();
+
+        let texts = frame(&ctx, &mut state, &mut tab, Vec::new());
+        click(&ctx, &mut state, &mut tab, &texts, "Favorites");
+        assert_eq!((tab.list, tab.category), (Some(LibraryList::Favourites), None), "the row selects the list, not a category");
+        let texts = frame(&ctx, &mut state, &mut tab, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "1 Transitions"), "one favourite");
+        assert!(y_of(&texts, dip).is_some() && y_of(&texts, wipe).is_none());
+
+        click(&ctx, &mut state, &mut tab, &texts, "Recent");
+        let texts = frame(&ctx, &mut state, &mut tab, Vec::new());
+        assert!(texts.iter().any(|(t, _)| t == "2 Transitions"));
+        let (d, w) = (y_of(&texts, dissolve).unwrap(), y_of(&texts, wipe).unwrap());
+        assert!(d < w, "newest first, not by name: {d} vs {w}");
+        assert!(y_of(&texts, dip).is_none());
+
+        click(&ctx, &mut state, &mut tab, &texts, "All");
+        assert_eq!(tab.list, None);
+        let texts = frame(&ctx, &mut state, &mut tab, Vec::new());
+        assert!(texts.iter().any(|(t, _)| *t == format!("{} Transitions", TRANSITIONS.len())));
+        for gone in ["GPU only", "OFX", "Installed"] {
+            assert!(!texts.iter().any(|(t, _)| t == gone), "{gone} is not offered");
+        }
+    }
+
+    fn spec_for_string_key(key: &str) -> &'static klipp_core::TransitionSpec {
+        klipp_core::spec_for_string_key(key).unwrap()
+    }
 }

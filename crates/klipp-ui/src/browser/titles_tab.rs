@@ -1,5 +1,6 @@
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
+use crate::browser::library_card::LibraryList;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -548,6 +549,8 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &mut String,
     active_category: &mut Option<&'static str>,
+    list: &mut Option<LibraryList>,
+    favourites: &mut Vec<String>,
     preview_bg: &mut TitlesPreviewBg,
     preview_text: &mut String,
     source_filter: &mut TitlesSourceFilter,
@@ -559,6 +562,8 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
+    // By template name; a snapshot, since the cards take `state`.
+    let recent = state.library_recent.titles.clone();
     // A snapshot, since the cards below take `state` mutably.
     let user_templates: Vec<UserTitleTemplate> = state.title_templates.templates().cloned().collect();
     let entries: Vec<Entry> = TITLES
@@ -601,38 +606,16 @@ pub fn show(
                 // Counts (registry-wide, ignore the active filter so
                 // sidebar numbers don't dance as the user types).
                 let installed_total = entries.len();
-                // No favorites/recent persistence yet — show 0/0 stubs
-                // matching the audio FX sidebar shape.
-                titles_general_row(
-                    ui,
-                    theme,
-                    Icon::Star,
-                    "Favorites",
-                    0,
-                    false,
-                    "titles_general_favourites",
-                    &mut |_| {},
-                );
-                titles_general_row(
-                    ui,
-                    theme,
-                    Icon::ArrowCounterClockwise,
-                    "Recent",
-                    0,
-                    false,
-                    "titles_general_recent",
-                    &mut |_| {},
-                );
-                titles_general_row(
-                    ui,
-                    theme,
-                    Icon::UploadSimple,
-                    "Installed",
-                    installed_total,
-                    false,
-                    "titles_general_installed",
-                    &mut |_| {},
-                );
+                let in_list = |keys: &[String]| entries.iter().filter(|t| keys.iter().any(|k| k == t.name())).count();
+                for (target, icon, label, count) in [
+                    (LibraryList::Favourites, Icon::Star, "Favorites", in_list(favourites)),
+                    (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", in_list(&recent)),
+                ] {
+                    titles_general_row(ui, theme, icon, label, count, *list == Some(target), &format!("titles_general_{label}"), &mut |()| {
+                        *list = Some(target);
+                        *active_category = None;
+                    });
+                }
 
                 ui.add_space(8.0);
                 titles_section_separator(ui, theme);
@@ -646,14 +629,17 @@ pub fn show(
                     Some(Icon::List),
                     "All",
                     installed_total,
-                    active_category.is_none(),
+                    active_category.is_none() && list.is_none(),
                     "titles_cat_all",
-                    &mut |opt| *active_category = opt,
+                    &mut |opt| {
+                        *active_category = opt;
+                        *list = None;
+                    },
                     None,
                 );
                 for cat in CATEGORIES {
                     let count = entries.iter().filter(|t| t.category() == *cat).count();
-                    let is_active = *active_category == Some(*cat);
+                    let is_active = *active_category == Some(*cat) && list.is_none();
                     titles_sidebar_row(
                         ui,
                         theme,
@@ -662,7 +648,10 @@ pub fn show(
                         count,
                         is_active,
                         &format!("titles_cat_{cat}"),
-                        &mut |opt| *active_category = opt,
+                        &mut |opt| {
+                            *active_category = opt;
+                            *list = None;
+                        },
                         Some(*cat),
                     );
                 }
@@ -724,6 +713,11 @@ pub fn show(
             .iter()
             .filter(|t| match active_category {
                 Some(cat) => t.category() == *cat,
+                None => true,
+            })
+            .filter(|t| match list {
+                Some(LibraryList::Favourites) => favourites.iter().any(|k| k == t.name()),
+                Some(LibraryList::Recent) => recent.iter().any(|k| k == t.name()),
                 None => true,
             })
             .collect();
@@ -808,6 +802,10 @@ pub fn show(
                 filtered.sort_by_key(|a| (matches!(a, Entry::User(_)), a.name().to_lowercase()));
             }
         }
+        // Recent reads newest first, whatever the sort.
+        if *list == Some(LibraryList::Recent) {
+            filtered.sort_by_key(|t| recent.iter().position(|k| k == t.name()));
+        }
 
         // ── Result strip: count + sort dropdown ──
         titles_result_strip(ui, theme, filtered.len(), sort_mode);
@@ -822,6 +820,10 @@ pub fn show(
                     ui.vertical_centered(|ui| {
                         let msg = if !search_query.is_empty() {
                             format!("No titles match \"{}\"", search_query)
+                        } else if *list == Some(LibraryList::Favourites) {
+                            "No favourites yet. Star a title to keep it here".to_string()
+                        } else if *list == Some(LibraryList::Recent) {
+                            "Titles you add to the timeline show here".to_string()
                         } else if *source_filter == TitlesSourceFilter::User {
                             "No saved templates yet. Right-click a title clip and choose Save as Title Template.".to_string()
                         } else {
@@ -880,9 +882,11 @@ pub fn show(
                                 if active {
                                     ui.ctx().request_repaint();
                                 }
-                                handle_title_interaction(
-                                    state, &mut cmds, title, &resp, selected,
-                                );
+                                let is_fav = favourites.iter().any(|k| k == title.name());
+                                let star = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, title.key());
+                                if handle_title_interaction(state, &mut cmds, title, &resp, selected, is_fav) || star {
+                                    crate::browser::library_card::toggle_favourite(favourites, title.name());
+                                }
                                 if i % 2 == 1 {
                                     ui.end_row();
                                 }
@@ -917,9 +921,11 @@ pub fn show(
                         if active {
                             ui.ctx().request_repaint();
                         }
-                        handle_title_interaction(
-                            state, &mut cmds, title, &resp, selected,
-                        );
+                        let is_fav = favourites.iter().any(|k| k == title.name());
+                        let star = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, title.key());
+                        if handle_title_interaction(state, &mut cmds, title, &resp, selected, is_fav) || star {
+                            crate::browser::library_card::toggle_favourite(favourites, title.name());
+                        }
                     }
                 }
             });
@@ -952,12 +958,15 @@ fn handle_title_interaction(
     title: &Entry,
     resp: &egui::Response,
     selected: &mut Option<String>,
-) {
+    is_fav: bool,
+) -> bool {
     if resp.clicked() {
         *selected = Some(title.key());
     }
-    if let Entry::User(t) = title {
-        resp.context_menu(|ui| {
+    let mut toggle_favourite = false;
+    resp.context_menu(|ui| {
+        toggle_favourite = crate::browser::library_card::favourite_menu_item(ui, is_fav);
+        if let Entry::User(t) = title {
             if ui.button("Rename\u{2026}").clicked() {
                 state.title_template_dialog = Some(TemplateDialog::Rename { from: t.name.clone(), name: t.name.clone() });
                 ui.close_menu();
@@ -966,9 +975,10 @@ fn handle_title_interaction(
                 state.title_template_dialog = Some(TemplateDialog::Delete { name: t.name.clone() });
                 ui.close_menu();
             }
-        });
-    }
+        }
+    });
     if resp.double_clicked() {
+        crate::browser::library_card::push_recent(&mut state.library_recent.titles, title.name());
         let title_data = title.data();
         state.pending_title_data = Some(title_data);
         let ph = state.playhead;
@@ -1018,6 +1028,7 @@ fn handle_title_interaction(
             title_data: data,
         });
     }
+    toggle_favourite
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1425,7 +1436,7 @@ fn titles_general_row(
     count: usize,
     is_active: bool,
     id_salt: &str,
-    _on_click: &mut dyn FnMut(()),
+    on_click: &mut dyn FnMut(()),
 ) {
     let row_h = 26.0;
     let avail_w = ui.available_width();
@@ -1478,6 +1489,9 @@ fn titles_general_row(
         count_galley,
         theme.text_dim,
     );
+    if resp.clicked() || click_resp.clicked() {
+        on_click(());
+    }
 }
 
 fn titles_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {

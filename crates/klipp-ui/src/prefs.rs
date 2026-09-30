@@ -599,6 +599,15 @@ pub struct EffectsBrowserPrefs {
     /// remain stable as long as the plugin identifier doesn't change).
     #[serde(default)]
     pub favorite_effects: Vec<String>,
+    /// Transitions the user has starred, by the registry's `string_key`.
+    #[serde(default)]
+    pub favorite_transitions: Vec<String>,
+    /// Title templates the user has starred, by template name.
+    #[serde(default)]
+    pub favorite_titles: Vec<String>,
+    /// Generators the user has starred, by name.
+    #[serde(default)]
+    pub favorite_generators: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

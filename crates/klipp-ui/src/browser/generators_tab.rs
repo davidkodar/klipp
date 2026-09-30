@@ -1,22 +1,11 @@
 use crate::browser::generator_previews::GeneratorPreviews;
 use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
+use crate::browser::library_card::LibraryList;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, FourPointGradient, GeneratorData};
-
-/// Built-in vs user-imported source filter for the Generators tab.
-/// Mirrors `TitlesSourceFilter` / `TransitionsSourceFilter` so the
-/// segmented control reads the same across the Library tabs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
-pub enum GeneratorsSourceFilter {
-    #[default]
-    All,
-    Builtin,
-    User,
-}
 
 
 struct GeneratorTemplate {
@@ -134,7 +123,8 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &mut String,
     active_category: &mut Option<&'static str>,
-    source_filter: &mut GeneratorsSourceFilter,
+    list: &mut Option<LibraryList>,
+    favourites: &mut Vec<String>,
     animated_only: &mut bool,
     view_mode: &mut EffectViewMode,
     sort_mode: &mut EffectSort,
@@ -143,6 +133,8 @@ pub fn show(
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
+    // By name; a snapshot, since the cards take `state`.
+    let recent = state.library_recent.generators.clone();
 
     // ── Sidebar (left) | content (right) ──
     let sidebar_w = GENERATORS_SIDEBAR_W.min(avail.width() * 0.40);
@@ -170,13 +162,17 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_space(6.0);
 
-                // Counts (registry-wide). Favorites/Recent are stubs
-                // mirroring the Audio FX / Titles sidebars until a
-                // persistence layer lands.
                 let installed_total = GENERATORS.len();
-                gen_general_row(ui, theme, Icon::Star, "Favorites", 0, false, "generators_general_favourites");
-                gen_general_row(ui, theme, Icon::ArrowCounterClockwise, "Recent", 0, false, "generators_general_recent");
-                gen_general_row(ui, theme, Icon::UploadSimple, "Installed", installed_total, false, "generators_general_installed");
+                let in_list = |keys: &[String]| GENERATORS.iter().filter(|t| keys.iter().any(|k| k == t.name)).count();
+                for (target, icon, label, count) in [
+                    (LibraryList::Favourites, Icon::Star, "Favorites", in_list(favourites)),
+                    (LibraryList::Recent, Icon::ArrowCounterClockwise, "Recent", in_list(&recent)),
+                ] {
+                    if gen_general_row(ui, theme, icon, label, count, *list == Some(target), &format!("generators_general_{label}")) {
+                        *list = Some(target);
+                        *active_category = None;
+                    }
+                }
 
                 ui.add_space(8.0);
                 gen_section_separator(ui, theme);
@@ -184,19 +180,25 @@ pub fn show(
 
                 gen_sidebar_row(
                     ui, theme, Some(Icon::List), "All",
-                    installed_total, active_category.is_none(),
+                    installed_total, active_category.is_none() && list.is_none(),
                     "generators_cat_all",
-                    &mut |opt| *active_category = opt,
+                    &mut |opt| {
+                        *active_category = opt;
+                        *list = None;
+                    },
                     None,
                 );
                 for cat in CATEGORIES {
                     let count = GENERATORS.iter().filter(|t| t.category == *cat).count();
-                    let is_active = *active_category == Some(*cat);
+                    let is_active = *active_category == Some(*cat) && list.is_none();
                     gen_sidebar_row(
                         ui, theme, Some(category_icon(cat)), cat,
                         count, is_active,
                         &format!("generators_cat_{cat}"),
-                        &mut |opt| *active_category = opt,
+                        &mut |opt| {
+                            *active_category = opt;
+                            *list = None;
+                        },
                         Some(*cat),
                     );
                 }
@@ -218,28 +220,12 @@ pub fn show(
             });
         ui.add_space(6.0);
 
-        // Filter row: All / Built-in / User + Animated only + view toggle
-        let scoped_total = GENERATORS
-            .iter()
-            .filter(|t| match active_category {
-                Some(cat) => t.category == *cat,
-                None => true,
-            })
-            .count();
-        // Every entry is Built-in today (no user-importable generators
-        // yet); User stays at zero so the chip honestly reports.
-        let builtin_count = scoped_total;
-        let user_count: usize = 0;
-
+        // Filter row: Animated only + view toggle. Every generator is
+        // built in, so there is no source to filter by.
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(8.0, 0.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    gen_segmented_filter(
-                        ui, theme, source_filter,
-                        scoped_total, builtin_count, user_count,
-                    );
-                    ui.add_space(6.0);
                     animated_only_pill(ui, theme, animated_only);
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
@@ -261,9 +247,10 @@ pub fn show(
                 Some(cat) => t.category == *cat,
                 None => true,
             })
-            .filter(|_| match *source_filter {
-                GeneratorsSourceFilter::All | GeneratorsSourceFilter::Builtin => true,
-                GeneratorsSourceFilter::User => false,
+            .filter(|t| match list {
+                Some(LibraryList::Favourites) => favourites.iter().any(|k| k == t.name),
+                Some(LibraryList::Recent) => recent.iter().any(|k| k == t.name),
+                None => true,
             })
             .filter(|t| !*animated_only || t.animated)
             .filter(|t| {
@@ -283,6 +270,10 @@ pub fn show(
             }),
             EffectSort::Source => filtered.sort_by_key(|a| a.name.to_lowercase()),
         }
+        // Recent reads newest first, whatever the sort.
+        if *list == Some(LibraryList::Recent) {
+            filtered.sort_by_key(|t| recent.iter().position(|k| k == t.name));
+        }
 
         // Result strip: count + sort dropdown
         gen_result_strip(ui, theme, filtered.len(), sort_mode);
@@ -297,6 +288,10 @@ pub fn show(
                     ui.vertical_centered(|ui| {
                         let msg = if !search_query.is_empty() {
                             format!("No generators match \"{}\"", search_query)
+                        } else if *list == Some(LibraryList::Favourites) {
+                            "No favourites yet. Star a generator to keep it here".to_string()
+                        } else if *list == Some(LibraryList::Recent) {
+                            "Generators you add to the timeline show here".to_string()
                         } else {
                             "No generators in this category".to_string()
                         };
@@ -326,6 +321,12 @@ pub fn show(
                                 if active && tmpl.animated {
                                     ui.ctx().request_repaint();
                                 }
+                                let is_fav = favourites.iter().any(|k| k == tmpl.name);
+                                let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, true, is_fav, tmpl.name);
+                                resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                                if toggle {
+                                    crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
+                                }
                                 handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                                 if i % 2 == 1 {
                                     ui.end_row();
@@ -344,6 +345,12 @@ pub fn show(
                         gen_update_anim_state(ui, tmpl.name, active && tmpl.animated);
                         if active && tmpl.animated {
                             ui.ctx().request_repaint();
+                        }
+                        let is_fav = favourites.iter().any(|k| k == tmpl.name);
+                        let mut toggle = crate::browser::library_card::favourite_star(ui, theme, &resp, false, is_fav, tmpl.name);
+                        resp.context_menu(|ui| toggle |= crate::browser::library_card::favourite_menu_item(ui, is_fav));
+                        if toggle {
+                            crate::browser::library_card::toggle_favourite(favourites, tmpl.name);
                         }
                         handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
                         ui.add_space(2.0);
@@ -366,6 +373,7 @@ fn handle_card_interaction(
         *selected = Some(tmpl.name.to_string());
     }
     if resp.double_clicked() {
+        crate::browser::library_card::push_recent(&mut state.library_recent.generators, tmpl.name);
         cmds.push(AppCommand::CreateGeneratorClip {
             track_index: None,
             data: (tmpl.create_data)(),
@@ -609,7 +617,7 @@ fn gen_general_row(
     count: usize,
     is_active: bool,
     id_salt: &str,
-) {
+) -> bool {
     let row_h = 26.0;
     let avail_w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(
@@ -653,6 +661,7 @@ fn gen_general_row(
         count_galley,
         theme.text_dim,
     );
+    resp.clicked() || click_resp.clicked()
 }
 
 fn gen_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
@@ -710,87 +719,6 @@ fn category_icon(cat: &str) -> Icon {
         "Timing" => Icon::ArrowCounterClockwise,
         "Slate" => Icon::FilmSlate,
         _ => Icon::Star,
-    }
-}
-
-fn gen_segmented_filter(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    filter: &mut GeneratorsSourceFilter,
-    all_count: usize,
-    builtin_count: usize,
-    user_count: usize,
-) {
-    let outer_h = 26.0;
-    let pad = 2.0;
-    let segments = [
-        (GeneratorsSourceFilter::All, "All", all_count),
-        (GeneratorsSourceFilter::Builtin, "Built-in", builtin_count),
-        (GeneratorsSourceFilter::User, "User", user_count),
-    ];
-    let mut seg_widths = [0.0f32; 3];
-    let mut total_w = pad * 2.0;
-    for (i, (_, label, count)) in segments.iter().enumerate() {
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            theme.text_dim,
-        );
-        let w = label_galley.size().x + 6.0 + count_galley.size().x + 22.0;
-        seg_widths[i] = w;
-        total_w += w + 1.0;
-    }
-    total_w -= 1.0;
-    let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
-    ui.painter().rect_filled(outer_rect, 4.0, theme.bg_panel);
-    ui.painter().rect_stroke(outer_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
-    let mut x = outer_rect.min.x + pad;
-    for (i, (variant, label, count)) in segments.iter().enumerate() {
-        let seg_rect = egui::Rect::from_min_size(
-            egui::pos2(x, outer_rect.min.y + pad),
-            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
-        );
-        let resp = ui.interact(seg_rect, ui.id().with(("generators_source_seg", i)), egui::Sense::click());
-        let is_active = *filter == *variant;
-        let hovered = resp.hovered();
-        if is_active {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.bg_raised);
-        } else if hovered {
-            ui.painter().rect_filled(seg_rect, 2.0, theme.accent_subtle);
-        }
-        let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
-        let count_color = if is_active { theme.accent } else { theme.text_dim };
-        let label_galley = ui.painter().layout_no_wrap(
-            (*label).to_string(),
-            egui::FontId::proportional(11.0),
-            label_color,
-        );
-        let count_galley = ui.painter().layout_no_wrap(
-            format!("{}", count),
-            egui::FontId::monospace(10.0),
-            count_color,
-        );
-        let inner_w = label_galley.size().x + 6.0 + count_galley.size().x;
-        let lx = seg_rect.center().x - inner_w * 0.5;
-        ui.painter().galley(
-            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
-            label_galley.clone(),
-            label_color,
-        );
-        ui.painter().galley(
-            egui::pos2(lx + label_galley.size().x + 6.0, seg_rect.center().y - count_galley.size().y * 0.5),
-            count_galley,
-            count_color,
-        );
-        if resp.clicked() {
-            *filter = *variant;
-        }
-        x += seg_widths[i] + 1.0;
     }
 }
 
