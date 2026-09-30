@@ -16,7 +16,9 @@ pub const ID: &str = "framing";
 // Invalidate results derived from the previous shot-boundary selection.
 // v8 records whether the face detector ran, so a person with no face in
 // view (walking away) is not read for skin by the back of their head.
-pub const VERSION: u32 = 8;
+// v9 counts only what the detectors are sure of: a cat was a person, its
+// head a face graded to skin, and a street held a toilet (#462, #501).
+pub const VERSION: u32 = 9;
 
 /// The face detector, when downloaded: a face box with landmarks per
 /// face on every sampled frame.
@@ -31,8 +33,22 @@ pub const MODEL_ID: &str = "rf_detr_seg_medium_v1";
 /// beyond that, shots are sampled evenly.
 const SAMPLES_PER_SHOT: usize = 3;
 const MAX_SHOTS: usize = 40;
-/// The detector's confidence below which a detection is not counted.
+/// The detector's confidence below which it reports nothing.
 const MIN_SCORE: f32 = 0.5;
+/// A person counts from here. People the detector is sure of score 0.96
+/// and up; below 0.7 were a cat on a sofa, a cushion's edge.
+const PERSON_MIN: f32 = 0.7;
+/// An object is named for a shot when seen in two of its frames from
+/// here, or once from `OBJECT_SURE`. What was wrong on real footage — a
+/// dog on a cat, a refrigerator, a surfboard on a street, a bird —
+/// scored low or turned up once; what was right, a plant, a chair, the
+/// cat, came back frame after frame.
+const OBJECT_MIN: f32 = 0.7;
+const OBJECT_SURE: f32 = 0.9;
+/// A face counts from here, and only inside a person. Faces inside a
+/// person scored 0.9 and up 97 times in 100; the ones outside
+/// every person, a cat's head among them, scored 0.6 to 0.8.
+const FACE_MIN: f32 = 0.8;
 /// Frames are decoded to fit this square, letterboxed so nothing is
 /// squashed; the detector resizes again to its own input. Boxes come
 /// back against the padded square and are mapped to the picture.
@@ -207,17 +223,40 @@ pub fn shot_framing(start_secs: f64, end_secs: f64, frames: &[FrameFacts]) -> Sh
         commonest(frames.iter().filter(|f| !f.people.is_empty()).map(|f| framing_for(&f.people)))
     };
     let position = if people == 0 { String::new() } else { commonest(frames.iter().map(|f| position_for(&f.people)).filter(|p| !p.is_empty())) };
-    let mut objects: Vec<(String, f32)> = Vec::new();
+    // (label, best confidence, frames seen in)
+    let mut objects: Vec<(String, f32, usize)> = Vec::new();
     for f in frames {
-        for (label, c) in &f.objects {
-            match objects.iter_mut().find(|(l, _)| l == label) {
-                Some(o) => o.1 = o.1.max(*c),
-                None => objects.push((label.clone(), *c)),
+        let mut seen_here: Vec<&str> = Vec::new();
+        for (label, c) in f.objects.iter().filter(|(_, c)| *c >= OBJECT_MIN) {
+            let once = !seen_here.contains(&label.as_str());
+            seen_here.push(label);
+            match objects.iter_mut().find(|(l, _, _)| l == label) {
+                Some(o) => {
+                    o.1 = o.1.max(*c);
+                    o.2 += usize::from(once);
+                }
+                None => objects.push((label.clone(), *c, 1)),
             }
         }
     }
+    objects.retain(|(_, best, frames)| *frames >= 2 || *best >= OBJECT_SURE);
     objects.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    ShotFraming { start_secs, end_secs, framing, people, position, objects: objects.into_iter().take(5).map(|(l, _)| l).collect() }
+    ShotFraming { start_secs, end_secs, framing, people, position, objects: objects.into_iter().take(5).map(|(l, _, _)| l).collect() }
+}
+
+/// The faces that are people's: sure enough, and centred inside a
+/// person the detector counted. The face detector fires on a cat's head
+/// too, and a cat's head graded to skin took a warm evening shot up 1.5
+/// stops (#501).
+pub fn human_faces(faces: Vec<FaceBox>, people: &[(f32, f32, f32, f32)]) -> Vec<FaceBox> {
+    faces
+        .into_iter()
+        .filter(|f| f.score >= FACE_MIN)
+        .filter(|f| {
+            let (cx, cy) = (f.x + f.w / 2.0, f.y + f.h / 2.0);
+            people.iter().any(|p| cx >= p.0 && cx <= p.0 + p.2 && cy >= p.1 && cy <= p.1 + p.3)
+        })
+        .collect()
 }
 
 /// The best detector in the app's model cache, with its id.
@@ -403,12 +442,10 @@ impl crate::Analyser for FramingAnalyser {
                 if debug {
                     eprintln!("detection {:?} {:.2} {:?}", c.label, c.confidence, c.bbox.map(|b| to_content(b, rect)));
                 }
-                if c.confidence < MIN_SCORE {
-                    continue;
-                }
                 match (c.label.as_deref(), c.bbox) {
-                    (Some("person"), Some(b)) => f.people.push(to_content(b, rect)),
-                    (Some(label), _) => f.objects.push((label.to_string(), c.confidence)),
+                    (Some("person"), Some(b)) if c.confidence >= PERSON_MIN => f.people.push(to_content(b, rect)),
+                    (Some("person"), _) => {}
+                    (Some(label), _) if c.confidence >= OBJECT_MIN => f.objects.push((label.to_string(), c.confidence)),
                     _ => {}
                 }
             }
@@ -421,6 +458,7 @@ impl crate::Analyser for FramingAnalyser {
                 }).collect(),
                 None => Vec::new(),
             };
+            let faces = human_faces(faces, &f.people);
             samples.push(FrameSample { secs: *t, people: f.people.clone(), faces });
             facts[*si].push(f);
         }
@@ -461,14 +499,27 @@ mod tests {
     #[test]
     fn a_shot_takes_the_commonest_framing_the_most_people_and_the_objects() {
         let frames = vec![
-            FrameFacts { people: vec![(0.3, 0.2, 0.2, 0.5)], objects: vec![("cat".into(), 0.7)] },
+            FrameFacts { people: vec![(0.3, 0.2, 0.2, 0.5)], objects: vec![("cat".into(), 0.7), ("chair".into(), 0.95)] },
             FrameFacts { people: vec![(0.3, 0.2, 0.2, 0.5), (0.6, 0.3, 0.1, 0.3)], objects: vec![("cat".into(), 0.9), ("couch".into(), 0.6)] },
-            FrameFacts { people: vec![(0.3, 0.1, 0.3, 0.8)], objects: vec![] },
+            FrameFacts { people: vec![(0.3, 0.1, 0.3, 0.8)], objects: vec![("surfboard".into(), 0.85)] },
         ];
         let s = shot_framing(1.0, 4.0, &frames);
         assert_eq!(s.framing, "medium");
         assert_eq!(s.people, 2);
         assert_eq!(s.position, "centre");
-        assert_eq!(s.objects, vec!["cat".to_string(), "couch".to_string()]);
+        // The cat twice, the chair once but sure; the couch too unsure,
+        // the surfboard seen once.
+        assert_eq!(s.objects, vec!["chair".to_string(), "cat".to_string()]);
+    }
+
+    #[test]
+    fn a_face_counts_when_sure_and_inside_a_person() {
+        let face = |x: f32, score: f32| FaceBox { x, y: 0.1, w: 0.1, h: 0.15, score, landmarks: vec![] };
+        let person = [(0.4, 0.0, 0.3, 1.0)];
+        let kept = human_faces(vec![face(0.5, 0.92), face(0.5, 0.7), face(0.1, 0.95)], &person);
+        assert_eq!(kept.len(), 1, "the sure face in the person; not the unsure one, not the one outside");
+        assert_eq!(kept[0].score, 0.92);
+        // The cat on the sofa: faces at 0.64 to 0.72, no person counted.
+        assert!(human_faces(vec![face(0.2, 0.72)], &[]).is_empty());
     }
 }

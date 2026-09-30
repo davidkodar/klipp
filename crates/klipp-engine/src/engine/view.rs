@@ -818,18 +818,18 @@ impl PlaybackEngine {
     /// Hand the grade tools what the render found.
     fn show_inspection(&mut self, found: &Inspection, w: u32, h: u32) {
         // An eyedropper read: answered here, from the tap it set.
-        let sampled = match (self.node_sample, &found.scope_tap) {
+        let borrowed = self.node_sample.map(|s| s.tap);
+        match (self.node_sample, &found.scope_tap) {
             (Some(s), Some(tap)) if tap.len() == (w as usize) * (h as usize) * 4 => {
                 self.node_sample = None;
                 let rgb = patch_mean(tap, w, h, s.nx, s.ny);
                 let _ = self.event_tx.send(AppEvent::NodeInputSampled { clip_id: s.clip, node_id: s.node, nx: s.nx, ny: s.ny, sample: Ok(rgb) });
-                Some(s.tap)
             }
-            _ => None,
-        };
+            _ => {}
+        }
         // The scopes keep their own tap: a tap borrowed for the read is
-        // not theirs to show.
-        let scope_tap = found.scope_tap.as_ref().filter(|_| sampled.is_none() || sampled == self.scope_tap_node);
+        // not theirs to show, answered or not.
+        let scope_tap = found.scope_tap.as_ref().filter(|_| borrowed.is_none() || borrowed == self.scope_tap_node);
         if scope_tap.is_some() || !found.thumbs.is_empty() {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tap) = scope_tap {
