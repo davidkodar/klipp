@@ -3239,8 +3239,8 @@ impl TimelinePanel {
                             egui::Stroke::new(2.0_f32, theme().accent_alt),
                         );
                         if !any_down {
-                            if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name }) = state.drag_drop.end() {
-                                crate::browser::library_card::push_recent(&mut state.library_recent.titles, &template_name);
+                            if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, list_key }) = state.drag_drop.end() {
+                                crate::browser::library_card::push_recent(&mut state.library_recent.titles, &list_key);
                                 let rel_x = pos.x - content_rect.left();
                                 let time_secs = (rel_x + state.timeline_scroll_x) / state.timeline_zoom;
                                 let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
@@ -3551,8 +3551,8 @@ impl TimelinePanel {
                 // Check if cursor is outside all track rects
                 let on_any_track = self.frame_cache.track_rects.iter().any(|(_, _, r)| r.contains(cursor_pos));
                 if !on_any_track && content_rect.contains(cursor_pos) {
-                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name }) = state.drag_drop.end() {
-                                crate::browser::library_card::push_recent(&mut state.library_recent.titles, &template_name);
+                    if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, list_key }) = state.drag_drop.end() {
+                                crate::browser::library_card::push_recent(&mut state.library_recent.titles, &list_key);
                         // Create a new text track and place the title there
                         let track_num = state.sequence().tracks.iter()
                             .filter(|t| t.kind == TrackKind::Text).count() + 1;

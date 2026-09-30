@@ -723,6 +723,7 @@ impl ViewerPanel {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 state.eyedropper_mode = crate::state::EyedropperMode::None;
                 state.wb_pick_clip = None;
+                state.qualifier_pick = None;
             }
         }
     }

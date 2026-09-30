@@ -4037,52 +4037,6 @@ impl KlippApp {
             self.state.curve_histograms = Some(hist);
         }
 
-        // Process qualifier eyedropper sample
-        if let Some((nx, ny)) = self.state.qualifier_sample_request.take() {
-            let px = (nx * (fb_width - 1) as f32) as usize;
-            let py = (ny * (fb_height - 1) as f32) as usize;
-            let idx = (py * fb_width as usize + px) * 4;
-            if idx + 2 < rgba_bytes.len() {
-                let r = rgba_bytes[idx] as f32 / 255.0;
-                let g = rgba_bytes[idx + 1] as f32 / 255.0;
-                let b = rgba_bytes[idx + 2] as f32 / 255.0;
-                let max_c = r.max(g).max(b);
-                let min_c = r.min(g).min(b);
-                let delta = max_c - min_c;
-                let l = (max_c + min_c) * 0.5;
-                let s = if delta < 0.0001 {
-                    0.0
-                } else {
-                    (delta / (1.0 - (2.0 * l - 1.0).abs())).clamp(0.0, 1.0)
-                };
-                let h_val = if delta < 0.0001 {
-                    0.0
-                } else if max_c == r {
-                    ((g - b) / delta).rem_euclid(6.0) / 6.0
-                } else if max_c == g {
-                    ((b - r) / delta + 2.0) / 6.0
-                } else {
-                    ((r - g) / delta + 4.0) / 6.0
-                };
-                let hue_degrees = h_val * 360.0;
-
-                if let Some(clip_id) = self.state.selected_clip {
-                    let node_id = Self::find_or_create_node(&mut self.state, clip_id, klipp_nodes::NodeKind::Qualifier);
-                    let qual = klipp_core::QualifierSettings {
-                        enabled: true,
-                        hue_center: hue_degrees,
-                        hue_width: 30.0,
-                        sat_low: (s - 0.2).max(0.0),
-                        sat_high: (s + 0.2).min(1.0),
-                        ..Default::default()
-                    };
-                    self.cmd_tx.send(AppCommand::SetNodeQualifier {
-                        clip_id, node_id, qualifier: qual,
-                    }).ok();
-                }
-            }
-        }
-
         // Before/After split compositing: left = original, right = graded
         if self.state.before_after_active && !original_bytes.is_empty()
             && original_bytes.len() == rgba_bytes.len()
@@ -4281,64 +4235,6 @@ impl KlippApp {
                 fb.compare_effect_data = compare_effect_bytes;
             }
         }
-    }
-
-    /// Find an existing node of the given kind in the selected clip's node graph,
-    /// or create one if it doesn't exist. Returns the node's UUID.
-    fn find_or_create_node(
-        state: &mut crate::state::AppState,
-        clip_id: klipp_core::ClipId,
-        kind: klipp_nodes::NodeKind,
-    ) -> uuid::Uuid {
-        let seq = &mut state.sequences[state.active_sequence_idx];
-        for track in &mut seq.tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                // Look for an existing node of this kind
-                if let Some(node) = clip.node_graph.nodes.iter().find(|n| n.kind == kind) {
-                    return node.id;
-                }
-                // None found — create a new node and wire it before the Output node
-                let new_id = uuid::Uuid::new_v4();
-                let label = kind.display_name().to_string();
-                let new_node = klipp_nodes::Node {
-                    id: new_id,
-                    kind,
-                    label,
-                    enabled: true,
-                    params: klipp_nodes::NodeParams::default(),
-                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-                    output_link: None,
-                    input_links: Vec::new(),
-                };
-                clip.node_graph.nodes.push(new_node);
-                // Insert the new node just before the output node:
-                // find the edge going into the output node's port 0, reroute it
-                // through the new node.
-                let output_id = clip.node_graph.output_node_id;
-                if let Some(edge_idx) = clip.node_graph.edges.iter().position(
-                    |e| e.to_node == output_id && e.to_port == 0,
-                ) {
-                    let prev_node = clip.node_graph.edges[edge_idx].from_node;
-                    let prev_port = clip.node_graph.edges[edge_idx].from_port;
-                    // prev_node -> new_node -> output
-                    clip.node_graph.edges[edge_idx] = klipp_nodes::Edge {
-                        from_node: new_id,
-                        from_port: 0,
-                        to_node: output_id,
-                        to_port: 0,
-                    };
-                    clip.node_graph.edges.push(klipp_nodes::Edge {
-                        from_node: prev_node,
-                        from_port: prev_port,
-                        to_node: new_id,
-                        to_port: 0,
-                    });
-                }
-                return new_id;
-            }
-        }
-        // Fallback: clip not found — return nil (command handler will no-op)
-        uuid::Uuid::nil()
     }
 
     /// Render a title clip to the viewer's overlay texture for instant UI preview.
@@ -6935,10 +6831,14 @@ impl KlippApp {
         // bound; LoadSourceMedia is idempotent w.r.t. seeking — it
         // resets source_playhead to zero — so we always follow it
         // with an explicit SeekSource.
+        // Both through the app's own handlers: the engine handles
+        // neither the load nor the playhead the seek sets (#437).
+        let mut cmds = Vec::new();
         if self.state.source_media_id != Some(media_id) {
-            let _ = self.cmd_tx.send(AppCommand::LoadSourceMedia { media_id });
+            cmds.push(AppCommand::LoadSourceMedia { media_id });
         }
-        let _ = self.cmd_tx.send(AppCommand::SeekSource(source_time));
+        cmds.push(AppCommand::SeekSource(source_time));
+        self.send_commands(cmds);
     }
 
     /// Match Frame: source → program. Walk every clip in the active
@@ -14585,7 +14485,22 @@ impl KlippApp {
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
-                self.state.qualifier_sample_request = Some((*nx, *ny));
+                // Keyed on the colour under the click, as the qualifier
+                // reads it; the node's softness and matte finesse stay.
+                let Some((clip_id, node_id)) = self.state.qualifier_pick.take() else { return true };
+                let base = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
+                    .and_then(|n| n.params.qualifier.clone())
+                    .unwrap_or_default();
+                match self.shown_frame_for_balance(clip_id) {
+                    Err(why) => self.state.toast.show(format!("Qualifier picker: {why}")),
+                    Ok((bytes, fw, fh)) => match qualifier_from_pick(&bytes, fw, fh, *nx, *ny, base) {
+                        None => self.state.toast.show("Qualifier picker: nothing to read there"),
+                        Some(qualifier) => self.send_commands(vec![AppCommand::SetNodeQualifier { clip_id, node_id, qualifier }]),
+                    },
+                }
                 true
             }
             _ => false,
@@ -15795,6 +15710,12 @@ impl KlippApp {
                         }
                     }
                 }
+                true
+            }
+            AppCommand::PickQualifierColour { clip_id, node_id } => {
+                self.state.eyedropper_mode = crate::state::EyedropperMode::Qualifier;
+                self.state.qualifier_pick = Some((*clip_id, *node_id));
+                self.state.toast.show("Click the colour to key in the viewer (Esc cancels)");
                 true
             }
             AppCommand::PickWhiteBalance { clip_id } => {
@@ -41452,6 +41373,77 @@ mod add_on_rail_tests {
         assert_eq!(add_on_rail(10.0, -12.0), (-2.0, false));
         assert_eq!(add_on_rail(40.0, 20.0), (50.0, true));
         assert_eq!(add_on_rail(-45.0, -30.0), (-50.0, true));
+    }
+}
+
+/// A qualifier keyed on the colour picked at `(nx, ny)` (0..=1 over the
+/// frame) of an sRGB frame: `base` with its hue centred on the colour and
+/// its saturation range around it. Read as the qualifier reads a pixel
+/// (`picture_hsl`), from the mean of a 5×5 patch, so one noisy pixel does
+/// not set the key. `None` when the frame is empty.
+fn qualifier_from_pick(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    nx: f32,
+    ny: f32,
+    base: klipp_core::QualifierSettings,
+) -> Option<klipp_core::QualifierSettings> {
+    if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+        return None;
+    }
+    let (cx, cy) = ((nx.clamp(0.0, 1.0) * (width - 1) as f32).round() as i64, (ny.clamp(0.0, 1.0) * (height - 1) as f32).round() as i64);
+    let mut patch = Vec::with_capacity(25 * 4);
+    for y in (cy - 2).max(0)..=(cy + 2).min(height as i64 - 1) {
+        for x in (cx - 2).max(0)..=(cx + 2).min(width as i64 - 1) {
+            let i = (y as usize * width as usize + x as usize) * 4;
+            patch.extend_from_slice(&rgba[i..i + 4]);
+        }
+    }
+    let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&patch);
+    let n = (linear.len() / 4) as f32;
+    let mean = [0, 1, 2].map(|c| linear.chunks_exact(4).map(|p| p[c]).sum::<f32>() / n);
+    let hsl = klipp_effects::cpu_grade::picture_hsl(mean);
+    Some(klipp_core::QualifierSettings {
+        enabled: true,
+        hue_center: hsl.h * 360.0,
+        hue_width: 30.0,
+        sat_low: (hsl.s - 0.2).max(0.0),
+        sat_high: (hsl.s + 0.2).min(1.0),
+        ..base
+    })
+}
+
+#[cfg(test)]
+mod qualifier_pick_tests {
+    use super::qualifier_from_pick;
+
+    /// A frame of `left` on its left half and `right` on its right.
+    fn halves(left: [u8; 3], right: [u8; 3]) -> Vec<u8> {
+        (0..16 * 8).flat_map(|i| { let c = if i % 16 < 8 { left } else { right }; [c[0], c[1], c[2], 255] }).collect()
+    }
+
+    #[test]
+    fn the_pick_keys_the_colour_under_it_and_the_qualifier_passes_it() {
+        let (orange, blue) = ([230, 120, 30], [40, 80, 200]);
+        let frame = halves(orange, blue);
+        let base = klipp_core::QualifierSettings { hue_soft: 7.0, ..Default::default() };
+        let q = qualifier_from_pick(&frame, 16, 8, 0.1, 0.5, base.clone()).unwrap();
+        assert!(q.enabled);
+        assert!((q.hue_center - 28.0).abs() < 2.0, "orange: {}", q.hue_center);
+        assert_eq!(q.hue_soft, 7.0, "the node's softness is kept");
+        // The qualifier's own matte: the picked colour in, the other out.
+        let key = |c: [u8; 3]| {
+            let mut px = klipp_effects::srgb_u8_to_linear_f32_rgba(&[c[0], c[1], c[2], 255]);
+            klipp_effects::cpu_grade::qualifier_matte(
+                &mut px, q.hue_center / 360.0, q.hue_width / 360.0, q.hue_soft / 360.0,
+                q.sat_low, q.sat_high, q.sat_soft, q.lum_low, q.lum_high, q.lum_soft, q.invert,
+            );
+            px[0]
+        };
+        assert!(key(orange) > 0.99, "picked colour keyed: {}", key(orange));
+        assert!(key(blue) < 0.01, "other colour not: {}", key(blue));
+        assert!(qualifier_from_pick(&[], 0, 0, 0.5, 0.5, base).is_none());
     }
 }
 
