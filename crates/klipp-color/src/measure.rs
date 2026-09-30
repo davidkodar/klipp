@@ -379,6 +379,39 @@ fn skin_candidate(c: Lab) -> bool {
 /// laid out as an 8×8 grid of patches and the patches that hold skin
 /// decide. The whole frame is read sub-sampled to about a quarter of a
 /// million pixels, so a 4K frame costs a few milliseconds.
+/// Which rail a pixel's picture sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rail {
+    White,
+    Black,
+}
+
+fn luma8(rgba: &[u8], i: usize) -> f32 {
+    0.2126 * rgba[i * 4] as f32 + 0.7152 * rgba[i * 4 + 1] as f32 + 0.0722 * rgba[i * 4 + 2] as f32
+}
+
+/// Whether the picture at `(x, y)` of an sRGB RGBA frame is at white or
+/// at black: its luma on the rail (#459), and the median of the 3×3
+/// around it there too. Clipping is an area where detail is gone; grain
+/// throws single pixels to the rail among neighbours that are not, and
+/// a touch of grain to break up banding read as 6.8 % crushed black
+/// (#518). A crushed area with grain on it still has its median there.
+pub fn at_rail(rgba: &[u8], w: usize, h: usize, x: usize, y: usize) -> Option<Rail> {
+    let rail = |v: f32| if v >= 253.5 { Some(Rail::White) } else if v <= 1.5 { Some(Rail::Black) } else { None };
+    let own = rail(luma8(rgba, y * w + x))?;
+    let mut around = [0f32; 9];
+    let mut n = 0;
+    for yy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+        for xx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+            around[n] = luma8(rgba, yy * w + xx);
+            n += 1;
+        }
+    }
+    let around = &mut around[..n];
+    around.sort_by(|a, b| a.total_cmp(b));
+    (rail(around[n / 2]) == Some(own)).then_some(own)
+}
+
 pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> FrameMeasure {
     let (w, h) = (width as usize, height as usize);
     let total = w * h;
@@ -402,12 +435,10 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         // as a colourist reads them. One channel pinned in a saturated sky
         // counted as white clipping, 10.4 % of a frame whose white point
         // sat at 80 IRE (#459); that is gamut clipping, read below.
-        let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-        if luma >= 253.5 {
-            clip_hi += 1;
-        }
-        if luma <= 1.5 {
-            clip_lo += 1;
+        match at_rail(rgba, w, h, i % w, i / w) {
+            Some(Rail::White) => clip_hi += 1,
+            Some(Rail::Black) => clip_lo += 1,
+            None => {}
         }
         if c.l >= 15.0 && c.l <= 85.0 {
             chromas.push(c.chroma());
@@ -1638,6 +1669,19 @@ mod tests {
 
     /// #501: exposing for a dark face stops short of blowing the window
     /// behind it, and says so; with headroom the face gets its step.
+    #[test]
+    fn grain_is_not_crushed_black_but_a_crushed_area_is() {
+        // #518: a dark frame with grain thrown to 0 on one pixel in five.
+        let (w, h) = (64usize, 64usize);
+        let grained: Vec<u8> = (0..w * h).flat_map(|i| { let v = if i % 5 == 0 { 0u8 } else { 14 }; [v, v, v, 255] }).collect();
+        let m = measure_frame(&grained, w as u32, h as u32, &[]);
+        assert!(m.clip_lo_pct < 0.5, "isolated grain is not crushed black: {}", m.clip_lo_pct);
+        // Crushed to black, with grain lifting some pixels off it.
+        let crushed: Vec<u8> = (0..w * h).flat_map(|i| { let v = if i % 3 == 0 { 6u8 } else { 0 }; [v, v, v, 255] }).collect();
+        let m = measure_frame(&crushed, w as u32, h as u32, &[]);
+        assert!(m.clip_lo_pct > 50.0, "a crushed area still is: {}", m.clip_lo_pct);
+    }
+
     #[test]
     fn at_white_is_the_picture_not_one_channel() {
         // A saturated blue sky, its blue pinned: gamut clipping, not white.

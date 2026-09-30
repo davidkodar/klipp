@@ -1242,14 +1242,11 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
         let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
         sat_sum += sat as f64;
         // At white and black: the luma on the rail, as the measure reads
-        // it. A saturated sky's pinned blue said "10.4 % at white" of a
-        // frame whose white sat at 80 IRE (#459); a lone channel on the
-        // rail is the gamut reading's.
-        if luma >= 253.5 {
-            clip_hi += 1;
-        }
-        if luma <= 1.5 {
-            clip_lo += 1;
+        // it, an area and not a grain's lone pixel (#459, #518).
+        match klipp_color::measure::at_rail(data, w, h, i % w, i / w) {
+            Some(klipp_color::measure::Rail::White) => clip_hi += 1,
+            Some(klipp_color::measure::Rail::Black) => clip_lo += 1,
+            None => {}
         }
         // A pixel bright and warm enough to be skin, and whether its hue
         // sits on the I-line (the vectorscope's skin-tone axis, ~123°):
@@ -2000,6 +1997,55 @@ fn apply_label(ops: &[klipp_document::ops::Op]) -> String {
 
 fn send_envelope(ctx: &ControlContext, commands: Vec<AppCommand>, batch: bool) -> Result<serde_json::Value, String> {
     send_full_envelope(ctx, commands, Vec::new(), batch, None, None)
+}
+
+/// The sound fixes a clip carries, as clean_audio puts them on: the
+/// analysis reads the file, so what is already fixed must be known
+/// separately (#505).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AudioFixes {
+    wind: bool,
+    hiss: bool,
+    hum: bool,
+}
+
+impl AudioFixes {
+    /// A clip that does not play the sound: it asks nothing of it.
+    const ALL: Self = Self { wind: true, hiss: true, hum: true };
+
+    fn on(effects: &[klipp_core::AudioEffectInstance]) -> Self {
+        let param = |e: &klipp_core::AudioEffectInstance, k: &str| e.params.iter().find(|(n, _)| n == k).map(|(_, v)| *v);
+        let mut f = Self { wind: false, hiss: false, hum: false };
+        for e in effects.iter().filter(|e| e.enabled && e.wet_dry > 0.0) {
+            match e.effect_type.as_str() {
+                // Voice isolation keeps the voice and nothing under it.
+                "voice_isolation" => (f.wind, f.hiss) = (true, true),
+                "denoiser" => {
+                    if param(e, "wind").is_some_and(|w| w > 0.0) {
+                        f.wind = true;
+                    }
+                    f.hiss = true;
+                }
+                "high_pass" => f.wind = true,
+                "hum_removal" => f.hum = true,
+                _ => {}
+            }
+        }
+        f
+    }
+
+    /// Fixed wherever the sound is heard: in this and in `other`.
+    fn and(self, other: Self) -> Self {
+        Self { wind: self.wind && other.wind, hiss: self.hiss && other.hiss, hum: self.hum && other.hum }
+    }
+
+    /// Whether the fault `what` (as `AudioEnvelope::faults` words it) is
+    /// one these fixes answer.
+    fn covers(&self, what: &str) -> bool {
+        (what.contains("hum") && self.hum)
+            || ((what.contains("rumble") || what.contains("wind")) && self.wind)
+            || ((what.contains("hiss") || what.contains("noise floor")) && self.hiss)
+    }
 }
 
 /// grade_to_target's undo label: its steps carry it, and are folded
@@ -5051,16 +5097,23 @@ reference:   {}",
                 // Each distinct piece of media that carries sound, with a
                 // time it plays at — for reading its spectral faults off
                 // the analysis (no rendering, so this is always on).
-                let mut seen = std::collections::HashSet::new();
-                let mut audio_media: Vec<(std::path::PathBuf, String, f64)> = Vec::new();
+                // With it, the fixes every clip that plays the file's
+                // sound already carries (#505).
+                let mut audio_media: Vec<(std::path::PathBuf, String, f64, AudioFixes)> = Vec::new();
                 for t in &seq.tracks {
                     for c in t.clips.iter().filter(|c| c.enabled) {
-                        if let Some(mid) = c.media_id() {
-                            if let Some(item) = pool.get(&mid) {
-                                if item.has_audio && seen.insert(mid) {
-                                    audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0));
-                                }
-                            }
+                        let Some(item) = c.media_id().and_then(|mid| pool.get(&mid)) else { continue };
+                        if !item.has_audio {
+                            continue;
+                        }
+                        // Heard: a clip on an audio track, or a picture clip
+                        // playing its own sound. A picture whose sound is its
+                        // linked audio clip is not where the sound is fixed.
+                        let heard = t.kind == klipp_timeline::TrackKind::Audio || (c.linked_clip_id.is_none() && c.volume > 0.0);
+                        let fixes = if heard { AudioFixes::on(&c.audio_effects) } else { AudioFixes::ALL };
+                        match audio_media.iter_mut().find(|m| m.0 == item.path) {
+                            Some(m) => m.3 = m.3.and(fixes),
+                            None => audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, fixes)),
                         }
                     }
                 }
@@ -5096,14 +5149,16 @@ reference:   {}",
             }
             // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
             let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
-            for (path, name, at) in &audio_media {
+            for (path, name, at, fixes) in &audio_media {
                 // A library track or effect is what it is: its low end is
                 // not a hum to clean.
                 if klipp_analysis::is_licensed_audio(path) {
                     continue;
                 }
                 if let Some(au) = klipp_analysis::report::MediaAnalysis::load(path).audio {
-                    for (what, fix) in au.faults() {
+                    // The analysis reads the file; a fault the clips already
+                    // carry the fix for is not asked for again (#505).
+                    for (what, fix) in au.faults().into_iter().filter(|(what, _)| !fixes.covers(what)) {
                         audio_findings.push((*at, name.clone(), what, fix));
                     }
                 }
@@ -5681,5 +5736,30 @@ mod png_size_tests {
         assert_eq!(super::png_size_if_whole(&whole), Some((640, 360)));
         assert_eq!(super::png_size_if_whole(&png), None, "no IEND yet");
         assert_eq!(super::png_size_if_whole(b"not a png at all, no, not one bit of it"), None);
+    }
+}
+
+#[cfg(test)]
+mod audio_fixes_tests {
+    use super::AudioFixes;
+
+    fn fx(t: &str, params: &[(&str, f32)]) -> klipp_core::AudioEffectInstance {
+        klipp_core::AudioEffectInstance { effect_type: t.into(), enabled: true, wet_dry: 1.0, params: params.iter().map(|(k, v)| (k.to_string(), *v)).collect() }
+    }
+
+    /// #505: after clean_audio wind the rumble is not asked for again,
+    /// a hum still is; a sound also heard where nothing cleaned it still
+    /// asks for the fix.
+    #[test]
+    fn a_fix_on_every_clip_that_plays_the_sound_answers_its_fault() {
+        let wind = AudioFixes::on(&[fx("denoiser", &[("strength", 0.6), ("wind", 0.8)])]);
+        assert!(wind.covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
+        assert!(!wind.covers("a mains hum near 50/60 Hz runs under the sound"));
+        assert!(AudioFixes::on(&[fx("hum_removal", &[])]).covers("a mains hum near 50/60 Hz runs under the sound"));
+        let bare = AudioFixes::on(&[]);
+        assert!(!wind.and(bare).covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
+        assert!(wind.and(AudioFixes::ALL).covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
+        let off = klipp_core::AudioEffectInstance { enabled: false, ..fx("voice_isolation", &[]) };
+        assert!(!AudioFixes::on(&[off]).covers("high-frequency hiss or air is loud against the sound"));
     }
 }
