@@ -5280,8 +5280,16 @@ impl PlaybackEngine {
         let media_id = match next_clip.media_id() {
             Some(mid) => mid,
             None => {
-                warn!("Playable clip at idx {} needs decoder but has no media_id", actual_idx);
-                self.stop_at_end();
+                // A scene with no file of its own (a precomposition, a
+                // graded compound drawn whole): nothing for the primary
+                // decoder. Play on the clock, as a seek there does; the
+                // scene's own media opens with the other layers (#370).
+                self.retire_v1_decoder(old_clip);
+                self.playhead = timeline_in;
+                self.enter_clock_only(timeline_in);
+                self.master_clock.resume();
+                let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+                self.sync_streams();
                 return;
             }
         };

@@ -1634,10 +1634,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// The timeline grade to run over this composite, as a clip. Not
-    /// inside a precomposition's scene, which is one layer of the
-    /// sequence that holds it: the grade runs once, over the whole, as
-    /// the timeline's LUT does.
     /// The sequence's timeline grade, over its composite. Inside a scene
     /// too: a precomposition's scene, or a graded compound drawn as one,
     /// keeps its own grade, applied before the sequence that holds it
