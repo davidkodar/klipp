@@ -435,8 +435,14 @@ impl MediaItem {
     /// colour tools' flat-picture test (#504).
     pub fn log_prior(&self) -> klipp_color::measure::LogPrior {
         use klipp_color::measure::LogPrior;
-        let eight_bit = self.bit_depth.unwrap_or(8) <= 8
-            && !self.pixel_format.as_deref().is_some_and(|pf| pf.contains("10") || pf.contains("12") || pf.contains("16"));
+        // Known to be 8-bit, from the probe's depth or a plain 8-bit pixel
+        // format: a clip not probed yet is not ruled out (#607 review).
+        let eight_bit = match self.bit_depth {
+            Some(d) => d <= 8,
+            None => self.pixel_format.as_deref().is_some_and(|pf| {
+                matches!(pf, "yuv420p" | "yuvj420p" | "yuv422p" | "yuvj422p" | "yuv444p" | "yuvj444p" | "nv12" | "nv21" | "rgb24" | "bgr24" | "rgba" | "bgra")
+            }),
+        };
         let make = self.camera_make.as_deref().unwrap_or("").to_lowercase();
         let model = self.camera_model.as_deref().unwrap_or("").to_lowercase();
         if eight_bit && (make.contains("apple") || model.contains("iphone")) {
@@ -1041,6 +1047,27 @@ mod reprobe_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #504: an 8-bit iPhone clip can never be log; one not probed yet,
+    /// or a 10-bit one (Apple Log), is not ruled out (#607 review); a
+    /// display transfer tag is said.
+    #[test]
+    fn a_file_says_what_it_can_be() {
+        use klipp_color::measure::LogPrior;
+        let iphone = |depth: Option<u8>, pf: Option<&str>, trc: Option<&str>| {
+            let mut item = MediaItem::synthetic_for_test(PathBuf::from("/tmp/IMG_0001.MOV"), None);
+            (item.camera_make, item.camera_model) = (Some("Apple".into()), Some("iPhone 15 Pro".into()));
+            item.bit_depth = depth;
+            item.pixel_format = pf.map(str::to_string);
+            item.color_transfer = trc.map(str::to_string);
+            item.log_prior()
+        };
+        assert_eq!(iphone(Some(8), None, Some("bt709")), LogPrior::NeverLog);
+        assert_eq!(iphone(None, Some("yuv420p"), None), LogPrior::NeverLog);
+        assert_eq!(iphone(None, None, None), LogPrior::Unknown, "not probed yet");
+        assert_eq!(iphone(Some(10), Some("yuv420p10le"), None), LogPrior::Unknown, "Apple Log is 10-bit");
+        assert_eq!(iphone(Some(10), Some("yuv420p10le"), Some("bt709")), LogPrior::DisplayTagged);
+    }
 
     fn ten_bit_hevc(make: &str, model: &str, encoder: &str, trc: Option<&str>) -> MediaItem {
         let mut item = MediaItem::synthetic_for_test(std::path::PathBuf::from("/tmp/c.mp4"), None);

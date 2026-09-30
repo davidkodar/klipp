@@ -1567,7 +1567,10 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     // Never brighten a picture that is already losing its highlights:
     // chasing a mid-grey target by exposure alone blows the window and
     // the sky, and no colourist trades detail for a number.
-    let clipping = m.clip_hi_pct > 1.0;
+    // Nor one with a colour already pinned at the rail: at white counts
+    // the picture's luma since #459, and a saturated sky's pinned blue
+    // is gamut, not white, but brightening pushes it further all the same.
+    let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > GAMUT_WARN;
     if !t.screencast {
         if let Some(b) = t.black_l {
             // L* at the bottom: about 0.012 lift per L*.
@@ -1663,6 +1666,15 @@ mod tests {
         assert!(!with(&beach, LogPrior::DisplayTagged) && !with(&beach, LogPrior::NeverLog));
         assert!(with(&log, LogPrior::Unknown) && with(&log, LogPrior::DisplayTagged), "log tagged BT.709 is still caught");
         assert!(!with(&log, LogPrior::NeverLog));
+    }
+
+    #[test]
+    fn a_pinned_sky_is_not_brightened_further() {
+        // #607 review: a sky whose blue is on the rail is not at white,
+        // and still must not be pushed.
+        let dark = FrameMeasure { l_p50: 30.0, l_p95: 60.0, l_p99: 70.0, gamut_clip_pct: 10.0, ..FrameMeasure::default() };
+        let s = primaries_toward(&dark, &LookTarget { mid_l: Some(50.0), ..LookTarget::default() });
+        assert!(s.exposure <= 0.0 && s.gain <= 0.0, "{s:?}");
     }
 
     #[test]
