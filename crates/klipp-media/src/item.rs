@@ -431,6 +431,24 @@ impl MediaItem {
         }
     }
 
+    /// What this file's metadata says about being camera log, for the
+    /// colour tools' flat-picture test (#504).
+    pub fn log_prior(&self) -> klipp_color::measure::LogPrior {
+        use klipp_color::measure::LogPrior;
+        let eight_bit = self.bit_depth.unwrap_or(8) <= 8
+            && !self.pixel_format.as_deref().is_some_and(|pf| pf.contains("10") || pf.contains("12") || pf.contains("16"));
+        let make = self.camera_make.as_deref().unwrap_or("").to_lowercase();
+        let model = self.camera_model.as_deref().unwrap_or("").to_lowercase();
+        if eight_bit && (make.contains("apple") || model.contains("iphone")) {
+            // Apple Log is 10-bit ProRes or HEVC only.
+            return LogPrior::NeverLog;
+        }
+        if self.color_transfer.as_deref().is_some_and(|t| is_sdr_transfer(&t.to_lowercase())) {
+            return LogPrior::DisplayTagged;
+        }
+        LogPrior::Unknown
+    }
+
     pub fn detect_log_format(&self) -> klipp_core::LogFormat {
         use klipp_core::LogFormat;
 

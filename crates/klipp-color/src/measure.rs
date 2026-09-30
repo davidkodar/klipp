@@ -259,7 +259,8 @@ pub struct FrameMeasure {
     pub l_p99: f32,
     /// The 5–95 lightness range: the picture's contrast.
     pub contrast_range: f32,
-    /// Pixels at or past white and black, as percentages.
+    /// Pixels whose luma is at white or at black, as percentages. A
+    /// channel pinned alone is `gamut_clip_pct`.
     pub clip_hi_pct: f32,
     pub clip_lo_pct: f32,
     /// Mean and 95th-percentile chroma over the mid-lightness pixels.
@@ -297,6 +298,24 @@ pub struct FrameMeasure {
     pub skin_all: Option<SkinRead>,
     /// Pixels read (the frame is sub-sampled).
     pub sampled: u32,
+    /// What the file says about being camera log, set by whoever knows
+    /// the file; see [`looks_like_log`].
+    #[serde(default)]
+    pub log_prior: LogPrior,
+}
+
+/// What a file's own metadata says about being camera log, which a flat
+/// frame cannot tell apart from a pale one (#504).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LogPrior {
+    /// Nothing either way: the picture decides.
+    #[default]
+    Unknown,
+    /// Tagged with a display transfer (BT.709, sRGB). Some cameras tag
+    /// their log that way, so only a picture that is plainly log counts.
+    DisplayTagged,
+    /// Cannot be log: an 8-bit iPhone clip (Apple Log is 10-bit only).
+    NeverLog,
 }
 
 /// Skin-coloured pixels read as one: their median hue, chroma and
@@ -379,10 +398,15 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         let (r, g, b) = (rgba[p], rgba[p + 1], rgba[p + 2]);
         let c = srgb8_to_lab(r, g, b);
         ls.push(c.l);
-        if r.max(g).max(b) >= 254 {
+        // At white and at black are the picture's, its luma on the rail,
+        // as a colourist reads them. One channel pinned in a saturated sky
+        // counted as white clipping, 10.4 % of a frame whose white point
+        // sat at 80 IRE (#459); that is gamut clipping, read below.
+        let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+        if luma >= 253.5 {
             clip_hi += 1;
         }
-        if r.min(g).min(b) <= 1 {
+        if luma <= 1.5 {
             clip_lo += 1;
         }
         if c.l >= 15.0 && c.l <= 85.0 {
@@ -474,6 +498,7 @@ pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -
         faces,
         skin_all,
         sampled: n as u32,
+        log_prior: LogPrior::Unknown,
     }
 }
 
@@ -785,16 +810,24 @@ pub fn crop(rgba: &[u8], w: usize, h: usize, region: [f32; 4]) -> (Vec<u8>, u32,
 /// white. Grading that as a finished picture is the classic mistake —
 /// contrast and saturation instead of the transform the footage asks
 /// for, which throws away the latitude the format exists to keep.
+///
+/// Weighed with the file's own word ([`FrameMeasure::log_prior`]): a
+/// pale, hazy frame — a sunny beach off an iPhone read contrast 55 and
+/// chroma 10 — passes the picture test, and was left ungraded as log
+/// (#504).
 pub fn looks_like_log(m: &FrameMeasure) -> bool {
     // Measured: a graded studio portrait reads contrast 78 chroma 12; the
     // same picture flattened the way a camera log curve flattens it reads
     // contrast 49 chroma 2 with its black sitting at L* 20 and nothing
     // near white.
-    m.contrast_range < 55.0
-        && m.chroma_mean < 13.0
-        && m.l_p1 > 12.0
-        && m.l_p99 < 88.0
-        && m.clip_hi_pct < 0.05
+    let flat = m.contrast_range < 55.0 && m.chroma_mean < 13.0 && m.l_p1 > 12.0 && m.l_p99 < 88.0 && m.clip_hi_pct < 0.05;
+    match m.log_prior {
+        LogPrior::Unknown => flat,
+        // Tagged for a display: only a picture as flat and colourless as
+        // log itself, black raised well off zero.
+        LogPrior::DisplayTagged => flat && m.contrast_range < 52.0 && m.chroma_mean < 6.0 && m.l_p1 > 15.0,
+        LogPrior::NeverLog => false,
+    }
 }
 
 /// Where the craft rules sit, measured on real pictures rather than
@@ -1602,6 +1635,36 @@ mod tests {
 
     /// #501: exposing for a dark face stops short of blowing the window
     /// behind it, and says so; with headroom the face gets its step.
+    #[test]
+    fn at_white_is_the_picture_not_one_channel() {
+        // A saturated blue sky, its blue pinned: gamut clipping, not white.
+        let sky: Vec<u8> = [40u8, 90, 255, 255].repeat(64 * 64);
+        let m = measure_frame(&sky, 64, 64, &[]);
+        assert!(m.clip_hi_pct < 0.01, "a pinned blue is not white: {}", m.clip_hi_pct);
+        assert!(m.gamut_clip_pct > 99.0, "it is a channel on the rail: {}", m.gamut_clip_pct);
+        // A saturated red with no blue is not black either.
+        let red: Vec<u8> = [220u8, 30, 0, 255].repeat(64 * 64);
+        assert!(measure_frame(&red, 64, 64, &[]).clip_lo_pct < 0.01);
+        // Real white and real black are.
+        let white: Vec<u8> = [255u8, 255, 255, 255].repeat(64 * 64);
+        assert!(measure_frame(&white, 64, 64, &[]).clip_hi_pct > 99.0);
+        let black: Vec<u8> = [0u8, 0, 0, 255].repeat(64 * 64);
+        assert!(measure_frame(&black, 64, 64, &[]).clip_lo_pct > 99.0);
+    }
+
+    #[test]
+    fn a_pale_frame_is_log_only_if_the_file_can_be() {
+        // The beach off an iPhone: flat and pale, not log.
+        let beach = FrameMeasure { contrast_range: 54.0, chroma_mean: 10.0, l_p1: 30.0, l_p50: 70.0, l_p99: 87.0, ..FrameMeasure::default() };
+        // Log as measured: flatter still, almost colourless, black raised.
+        let log = FrameMeasure { contrast_range: 49.0, chroma_mean: 2.0, l_p1: 20.0, l_p50: 45.0, l_p99: 75.0, ..FrameMeasure::default() };
+        let with = |m: &FrameMeasure, p: LogPrior| looks_like_log(&FrameMeasure { log_prior: p, ..m.clone() });
+        assert!(with(&beach, LogPrior::Unknown), "the picture alone cannot tell");
+        assert!(!with(&beach, LogPrior::DisplayTagged) && !with(&beach, LogPrior::NeverLog));
+        assert!(with(&log, LogPrior::Unknown) && with(&log, LogPrior::DisplayTagged), "log tagged BT.709 is still caught");
+        assert!(!with(&log, LogPrior::NeverLog));
+    }
+
     #[test]
     fn exposing_for_a_face_stops_before_the_highlights_go() {
         let face = FaceMeasure {

@@ -22364,6 +22364,14 @@ impl KlippApp {
                 self.apply_redo();
                 true
             }
+            AppCommand::SquashUndo { count, label, only, expected_revision } => {
+                // Only the steps it names, and only if nothing has moved
+                // the document since: never an edit of the person's.
+                if self.state.control_shared.revision() == *expected_revision {
+                    self.state.active_history_mut().squash_last(*count, label, only);
+                }
+                true
+            }
             AppCommand::BeginHistoryBatch => {
                 self.state.active_history_mut().begin_batch();
                 true

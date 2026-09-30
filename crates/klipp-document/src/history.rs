@@ -875,6 +875,25 @@ impl CommandHistory {
         }
     }
 
+    /// Fold the top `n` undo entries into one under `label`, when every
+    /// one of them is labelled `only`: a pass that had to apply and
+    /// measure step by step (grade_to_target's rounds) becomes one undo
+    /// step afterwards (#514). Anything else on top, an edit of the
+    /// person's in between, and nothing is folded. Returns whether it was.
+    pub fn squash_last(&mut self, n: usize, label: &str, only: &str) -> bool {
+        if self.batch.is_some() || n < 2 || self.undo_stack.len() < n {
+            return false;
+        }
+        if !self.undo_stack.iter().rev().take(n).all(|e| e.label() == only) {
+            return false;
+        }
+        let from = self.undo_stack.len() - n;
+        let commands: Vec<EditCommand> = self.undo_stack.drain(from..).map(|e| e.command).collect();
+        self.undo_stack.push_back(HistoryEntry { command: EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(commands)) } });
+        self.bump_revision();
+        true
+    }
+
     /// Set the maximum undo stack size. 0 = unlimited.
     pub fn set_max_size(&mut self, max: usize) {
         self.max_size = max;
@@ -2907,5 +2926,38 @@ mod camera_drag_tests {
             other => panic!("not a camera entry: {other:?}"),
         }
         assert!(!h.is_dragging("camera:0"));
+    }
+}
+
+#[cfg(test)]
+mod squash_tests {
+    use super::*;
+
+    fn named(label: &str) -> HistoryEntry {
+        HistoryEntry { command: EditCommand::Named { label: label.into(), edit: Box::new(EditCommand::Batch(vec![])) } }
+    }
+
+    /// #514: a pass's steps fold into one under its label; an edit of
+    /// the person's among them and nothing folds.
+    #[test]
+    fn a_pass_folds_into_one_undo_step_and_nothing_else_does() {
+        let mut h = CommandHistory::new();
+        h.push(named("Trim"));
+        for _ in 0..4 {
+            h.push(named("Grade To Target"));
+        }
+        assert!(h.squash_last(4, "Grade To Target", "Grade To Target"));
+        assert_eq!(h.undo_count(), 2, "the trim and the one pass");
+        assert_eq!(h.undo_label(), Some("Grade To Target"));
+        let Some(HistoryEntry { command: EditCommand::Named { edit, .. } }) = h.undo_entries().back() else { panic!() };
+        assert!(matches!(edit.as_ref(), EditCommand::Batch(c) if c.len() == 4));
+
+        let mut h = CommandHistory::new();
+        h.push(named("Grade To Target"));
+        h.push(named("Trim"));
+        h.push(named("Grade To Target"));
+        assert!(!h.squash_last(3, "Grade To Target", "Grade To Target"), "the trim is not the pass's");
+        assert_eq!(h.undo_count(), 3);
+        assert!(!h.squash_last(1, "Grade To Target", "Grade To Target"), "one step is one already");
     }
 }
