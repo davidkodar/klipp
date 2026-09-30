@@ -808,6 +808,21 @@ fn sits_unmoved(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, at:
         && (seq.camera.is_still() || clip.depth <= 0.0)
 }
 
+
+/// A gap between shots up to this many frames long is cut across rather
+/// than played: a frame's slip in an edit, not a pause (#546).
+const GAP_AS_CUT_FRAMES: f64 = 1.5;
+
+/// How the shot after a gap was taken over: from its preroll, as a cut
+/// is, or by a seek. For tests and the perf log.
+static GAP_HAND_OVERS_WARM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GAP_HAND_OVERS_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (warm, cold) hand-overs at the end of a gap since the process began.
+pub fn gap_hand_overs() -> (u64, u64) {
+    (GAP_HAND_OVERS_WARM.load(std::sync::atomic::Ordering::Relaxed), GAP_HAND_OVERS_COLD.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[cfg(test)]
 mod frame_cache_tests {
     use super::{FrameCache, Pregrade, PregradePixels};
@@ -1194,6 +1209,11 @@ pub struct PlaybackEngine {
     /// seek or by the last shot ending; cleared by every seek and every
     /// clip change, so no other path sees it (#542).
     clock_only: bool,
+    /// Clock-only through a gap between two shots of the picture track:
+    /// (the shot before, the shot after), by index. The shot after is
+    /// prerolled during the gap and taken over as a cut is, not with a
+    /// seek (#546). Cleared with `clock_only`'s other ways out.
+    gap_hand_over: Option<(usize, usize)>,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -2040,6 +2060,7 @@ impl PlaybackEngine {
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
             clock_only: false,
+            gap_hand_over: None,
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
             dbg_update_playback_count: 0,
@@ -5267,11 +5288,20 @@ impl PlaybackEngine {
         // start, and whatever other tracks hold there (a title over
         // black) never showed. Play it on the clock; the next shot takes
         // over when the playhead reaches it (#542).
-        if next_clip.timeline_in.to_secs_f64() - self.playhead.to_secs_f64() > self.fps.frame_duration_secs() * 0.5 {
+        // A gap of a frame or so is a slip of the edit, not a pause: it
+        // is cut across (#546).
+        if next_clip.timeline_in.to_secs_f64() - self.playhead.to_secs_f64() > self.fps.frame_duration_secs() * GAP_AS_CUT_FRAMES {
+            let from = self.current_clip_index;
             self.retire_v1_decoder(old_clip);
             let at = self.playhead;
             self.enter_clock_only(at);
             self.master_clock.resume();
+            // The shot after the gap, opened and seeked while the gap
+            // plays, so its first frame is there when the gap ends.
+            if let Some(media_id) = next_clip.media_id() {
+                self.start_preroll_for(actual_idx, media_id, next_clip.source_in.to_secs_f64(), next_clip.source_rotation, next_clip.timeline_in);
+                self.gap_hand_over = Some((from, actual_idx));
+            }
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
             self.sync_streams();
             return;
@@ -5678,6 +5708,15 @@ impl PlaybackEngine {
         drop(seq);
 
         if let Some((idx, media_id, source_in_secs, preroll_rotation, cut_at)) = next_info {
+            self.start_preroll_for(idx, media_id, source_in_secs, preroll_rotation, cut_at);
+        }
+    }
+
+    /// Open and seek the decoder for clip `idx` of the picture track on a
+    /// worker, for a cut to it at `cut_at`: at the end of the shot before
+    /// it, or of the gap before it.
+    fn start_preroll_for(&mut self, idx: usize, media_id: MediaId, source_in_secs: f64, preroll_rotation: i32, cut_at: Timecode) {
+        {
             if self.preroll_clip_index == Some(idx) || self.preroll_failed == Some(idx) {
                 return; // Already pre-rolling this clip, or it will not open
             }
@@ -5722,6 +5761,7 @@ impl PlaybackEngine {
     /// the next-clip search finds nothing). See `clock_only`.
     fn enter_clock_only(&mut self, at: Timecode) {
         self.clock_only = true;
+        self.gap_hand_over = None;
         self.v1_decoder = None;
         self.current_file = None;
         self.current_clip_index = {
@@ -5761,6 +5801,24 @@ impl PlaybackEngine {
         };
         if picture_here {
             let tc = self.playhead;
+            // The shot after a gap, and only it on screen: taken over as a
+            // cut, from its preroll. Anything else there — a picture on
+            // another track in the gap — is found by a seek, as before.
+            if let Some((from, next)) = self.gap_hand_over.take() {
+                let only_it = {
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                    let on_track = seq.tracks.get(self.current_track_index).and_then(|t| t.clip_at_timecode(tc)).map(|(i, _)| i);
+                    let layers = klipp_compose::active_layers(&seq, tc);
+                    on_track == Some(next) && layers.len() == 1
+                };
+                if only_it && self.preroll_clip_index == Some(next) {
+                    GAP_HAND_OVERS_WARM.fetch_add(1, Ordering::Relaxed);
+                    self.current_clip_index = from;
+                    self.advance_to_next_clip();
+                    return;
+                }
+            }
+            GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
             self.seek_in_sequence(tc);
             // A title or generator takes over on the synthetic path, which
             // reads the clock as the clip's own seconds.
@@ -6234,6 +6292,7 @@ impl PlaybackEngine {
         // A preroll made for where the playhead was, or remembered as
         // failing there, is not for where it lands.
         self.clear_preroll();
+        self.gap_hand_over = None;
         let t_seek = std::time::Instant::now();
         self.clock_only = false;
         self.sync_fps_to_sequence();
