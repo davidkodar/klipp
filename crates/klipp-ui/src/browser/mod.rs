@@ -783,6 +783,8 @@ pub struct BrowserPanel {
     /// Starred generators by name, persisted as the transitions are.
     pub favorite_generators: Vec<String>,
     pub transitions_view_mode: effects_tab::EffectViewMode,
+    /// How large the transition cards are, so how many fit across (#548).
+    pub transitions_card_size: transitions_tab::CardSize,
     pub transitions_sort: effects_tab::EffectSort,
     pub transitions_selected: Option<String>,
     // ── Generators tab state ──
@@ -1019,6 +1021,7 @@ impl Default for BrowserPanel {
             generator_previews: generator_previews::GeneratorPreviews::default(),
             transitions_category: None,
             transitions_list: None,
+            transitions_card_size: Default::default(),
             favorite_transitions: Vec::new(),
             titles_list: None,
             favorite_titles: Vec::new(),
@@ -4857,8 +4860,11 @@ impl BrowserPanel {
                 {
                     let mut displaced = Vec::new();
                     self.transition_previews.poll(ui.ctx(), &mut displaced);
-                    if let Some(frames) = transitions_tab::project_frames(state) {
-                        self.transition_previews.set_frames(frames, &mut displaced);
+                    // The same two sample pictures in every project, made
+                    // once (#547): converting the project's thumbnails
+                    // again every frame found nothing new most frames (#549).
+                    if !self.transition_previews.has_frames() {
+                        self.transition_previews.set_frames(transition_previews::sample_frames(), &mut displaced);
                     }
                     self.defer_drop_textures(displaced);
                 }
@@ -4872,6 +4878,7 @@ impl BrowserPanel {
                     &mut self.favorite_transitions,
                     &mut self.transitions_view_mode,
                     &mut self.transitions_sort,
+                    &mut self.transitions_card_size,
                     &mut self.transitions_selected,
                     &mut self.transition_previews,
                 )
