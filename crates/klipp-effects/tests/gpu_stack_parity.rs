@@ -318,6 +318,11 @@ fn a_focus_blur_on_a_layer_is_the_cpu_one() {
         };
         let worst = worst_level(&cpu_stack, &got);
         assert!(worst <= 1.0, "focus blur (vertical {vertical}, band {band}) differs by {worst:.3} levels");
+        // Premultiplied: white words soften white, not grey, though the
+        // colour under their transparency is black (#598 review).
+        for px in want.chunks_exact(4).filter(|p| p[3] > 0.05 && p[3] < 0.95) {
+            assert!((px[0] - 0.9).abs() < 0.02 && (px[1] - 0.8).abs() < 0.02, "vertical {vertical}: a soft edge keeps its colour: {px:?}");
+        }
         // Soft at the edge of the axis, sharp in the middle: alpha between
         // the bars is lifted there and not here.
         let a = |x: u32, y: u32| want[((y * W + x) * 4 + 3) as usize];

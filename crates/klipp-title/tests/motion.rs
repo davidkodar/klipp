@@ -293,6 +293,13 @@ fn a_soft_focus_band_blurs_the_roll_away_from_the_band() {
     let mut r = TitleRenderer::new();
     let _ = r.frame_with_window(&roll(6.0, false), w as u32, h as u32, None, 2.0, Some(4.0));
     let (radius, _, band) = r.last_focus_blur().expect("the placed frame asks for the focus blur");
+    // The next title, staggered, is posed glyph by glyph and asks for no
+    // focus blur of its own (#598 review).
+    let staggered = title(TitleMotion::enter(Motion::new(MotionKind::Fade).duration(1.0).stagger(StaggerUnit::Char, 0.05)));
+    let frame = r.frame_with_window(&staggered, w as u32, h as u32, None, 0.3, Some(4.0));
+    assert!(matches!(frame, klipp_title::TitleFrame::Glyphs { .. }), "a staggered fade is posed glyph by glyph");
+    assert!(r.last_focus_blur().is_none(), "and inherits no focus blur from the roll before it");
+    let _ = r.frame_with_window(&roll(6.0, false), w as u32, h as u32, None, 2.0, Some(4.0));
     assert!((radius - 6.0 / 6.0).abs() < 1e-3 && (band - 0.3).abs() < 1e-6, "radius at this frame's scale (180 of 1080) and the band: {radius} {band}");
     let sharp = r.render_with_window(&roll(0.0, true), w as u32, h as u32, None, 2.0, Some(4.0));
     let soft = r.render_with_window(&roll(12.0, true), w as u32, h as u32, None, 2.0, Some(4.0));

@@ -813,18 +813,22 @@ pub(crate) fn apply(
                 return p;
             }
             // Every channel, alpha too: a title's words live in alpha,
-            // and a blur that kept it sharp would not soften them.
-            let blurred = gaussian(&p, w, h, radius, true);
+            // and a blur that kept it sharp would not soften them. Blurred
+            // and mixed premultiplied, so nothing bleeds from the colour
+            // under no alpha; the GPU's `SHADER_FOCUS_BLUR_BLEND` twin.
+            let premultiplied: Vec<f32> = p.chunks_exact(4).flat_map(|q| [q[0] * q[3], q[1] * q[3], q[2] * q[3], q[3]]).collect();
+            let blurred = gaussian(&premultiplied, w, h, radius, true);
             each_pixel(&p, w, h, |x, y, f| {
                 let m = focus_blur_mix(if vertical { (y as f32 + 0.5) / hf } else { (x as f32 + 0.5) / wf }, band);
                 let o = f.at(x, y);
                 let i = (y * w as usize + x) * 4;
-                [
-                    o[0] + (blurred[i] - o[0]) * m,
-                    o[1] + (blurred[i + 1] - o[1]) * m,
-                    o[2] + (blurred[i + 2] - o[2]) * m,
-                    o[3] + (blurred[i + 3] - o[3]) * m,
-                ]
+                let op = [o[0] * o[3], o[1] * o[3], o[2] * o[3], o[3]];
+                let mixed: [f32; 4] = std::array::from_fn(|c| op[c] + (blurred[i + c] - op[c]) * m);
+                if mixed[3] > 1e-6 {
+                    [mixed[0] / mixed[3], mixed[1] / mixed[3], mixed[2] / mixed[3], mixed[3]]
+                } else {
+                    [0.0, 0.0, 0.0, mixed[3]]
+                }
             })
         }
         OldFilm { flicker, scratches, dust, weave, sepia, seed } => {

@@ -1628,6 +1628,9 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> TitleFrame {
+        // A focus blur is the placed frame's alone: every other way out
+        // of here asks for none (#598 review).
+        self.last_focus_blur = None;
         // Time-varying inputs:
         //   - char_animation on any object (per-glyph entrance)
         //   - title-level ColorCycle (continuous hue rotation)
@@ -2296,9 +2299,15 @@ impl TitleRenderer {
                     };
                     let m = f.blur_mix(u);
                     if m > 0.0 {
-                        for c in 0..4 {
-                            px[c] = (px[c] as f32 + (bl[c] as f32 - px[c] as f32) * m).round() as u8;
+                        // Mixed premultiplied, as `blur_rgba` blurs, then
+                        // back to straight.
+                        let (pa, ba) = (px[3] as f32 / 255.0, bl[3] as f32 / 255.0);
+                        let a = pa + (ba - pa) * m;
+                        for c in 0..3 {
+                            let v = px[c] as f32 * pa + (bl[c] as f32 * ba - px[c] as f32 * pa) * m;
+                            px[c] = if a > 1e-6 { (v / a).round().clamp(0.0, 255.0) as u8 } else { 0 };
                         }
+                        px[3] = (a * 255.0).round().clamp(0.0, 255.0) as u8;
                     }
                 }
             }
