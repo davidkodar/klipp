@@ -1267,3 +1267,42 @@ fn a_frame_read_does_not_measure_an_empty_buffer() {
     assert_eq!(reply["ok"], json!(false), "an empty buffer was measured: {reply}");
     assert!(reply["error"].as_str().unwrap().contains("empty"), "{}", reply["error"]);
 }
+
+/// #458: one look on many clips is one batch — one envelope, one undo
+/// step — and a batch that mixes looks with other writes is refused
+/// rather than applied as two steps.
+#[test]
+fn looks_batch_into_one_step() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/look-batch.mov".into(), None));
+    {
+        let mut seq = h.sequence.write().unwrap();
+        for c in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+        }
+    }
+    let cube = std::env::temp_dir().join(format!("klipp-look-batch-{}.cube", std::process::id()));
+    std::fs::write(&cube, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+    let path = cube.to_string_lossy().to_string();
+    let (a, b) = (h.ids.clip_a.clone(), h.ids.clip_b.clone());
+
+    let sent = h.envelopes.lock().unwrap().len();
+    let r = h.ok(json!({ "method": "batch", "commands": [
+        { "method": "look", "clip_id": a, "name": path },
+        { "method": "look", "clip_id": b, "name": path },
+    ]}));
+    assert_eq!(r["applied"], json!(true), "{r}");
+    let envs = h.envelopes.lock().unwrap().clone();
+    assert_eq!(envs.len(), sent + 1, "one envelope");
+    assert_eq!(envs.last(), Some(&(true, 2)), "both looks in it");
+
+    let sent = envs.len();
+    let reply = h.call(json!({ "method": "batch", "commands": [
+        { "method": "look", "clip_id": a, "name": path },
+        { "method": "play" },
+    ]}));
+    assert_eq!(reply["ok"], json!(false));
+    assert!(reply["error"].as_str().unwrap().contains("only looks"), "{}", reply["error"]);
+    assert_eq!(h.envelopes.lock().unwrap().len(), sent, "a refused batch sends nothing");
+    let _ = std::fs::remove_file(&cube);
+}

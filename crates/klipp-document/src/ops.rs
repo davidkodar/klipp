@@ -2419,13 +2419,29 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
     }
     let media_dur = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| !m.is_still).map(|m| m.duration);
+    // A second of timeline is `speed` seconds of the file: trimming a clip
+    // played at double speed by a second moves its source edge by two.
+    // Taken one to one, the edge landed on the wrong picture (#458). A
+    // speed ramp has no one factor, so its source edges are not trimmed
+    // here.
+    if media_dur.is_some() && !clip.speed_keyframes.is_empty() {
+        return Err(refuse(i, format!("{} has a speed ramp, so its trim has no one source edge", clip_name(seq, pool, clip)), "take the ramp off to trim it, or trim it by hand in the timeline"));
+    }
+    let in_source = |delta: Timecode| -> Timecode {
+        let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
+        if (speed - 1.0).abs() < 1e-9 {
+            delta.rescale_to(clip.source_in.rate)
+        } else {
+            Timecode::from_secs_f64(secs(delta) * speed, clip.source_in.rate)
+        }
+    };
     let (new_tl_in, new_tl_out, new_src_in, new_src_out) = match edge {
         Edge::In => {
             if target >= clip.timeline_out - one_frame(fps) {
                 return Err(refuse(i, "the in point would pass the out point", "trim to a time before the clip's end"));
             }
             let delta = target - clip.timeline_in;
-            let src_in = clip.source_in + delta;
+            let src_in = clip.source_in + in_source(delta);
             if media_dur.is_none() {
                 // A title, generator or still has no source head
                 // to run out of: it starts when it is
@@ -2448,7 +2464,7 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
                 return Err(refuse(i, "the out point would pass the in point", "trim to a time after the clip's start"));
             }
             let delta = target - clip.timeline_out;
-            let src_out = clip.source_out + delta;
+            let src_out = clip.source_out + in_source(delta);
             if let Some(d) = media_dur {
                 if src_out > d {
                     return Err(refuse(i, format!("only {:.2} s of the file lies after this clip's out point", secs(d - clip.source_out)), "trim less, or place more of the file"));
@@ -5261,6 +5277,24 @@ mod tests {
             };
             Some([say(0.5, "Nobody is afraid of the machine."), say(4.4, "What changed it for me was agents, and that is the long and the short of it."), say(9.0, "Never used.")].concat())
         }
+    }
+
+    #[test]
+    fn a_trim_moves_the_source_by_the_clips_speed() {
+        let (mut seq, pool, _, a, _) = fixture();
+        // Clip a at double speed: 0-4 s on the timeline plays 0-8 s of the file.
+        let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
+        (clip.speed, clip.source_out) = (2.0, tc(8.0));
+        clip.linked_clip_id = None;
+        let trim = |edge, to: f64| resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge, to: Anchor::Secs(to), ripple: false, linked: false }]).unwrap();
+        let head = &trim(Edge::In, 1.0).steps[0].after[0];
+        assert_eq!((head.timeline_in_secs, head.source_in_secs), (1.0, 2.0), "a second of timeline is two of the file");
+        let tail = &trim(Edge::Out, 3.0).steps[0].after[0];
+        assert_eq!((tail.timeline_out_secs, tail.source_out_secs), (3.0, 6.0));
+        // A ramp has no one factor: refused, not guessed.
+        seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap().speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        let refused = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::In, to: Anchor::Secs(1.0), ripple: false, linked: false }]).unwrap_err();
+        assert!(refused.why.contains("speed ramp"), "{}", refused.why);
     }
 
     #[test]
