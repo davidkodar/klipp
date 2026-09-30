@@ -196,6 +196,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         edit_plan: seq.edit_plan.clone(),
         camera: seq.camera.clone(),
         timeline_graph: seq.timeline_graph.clone(),
+        grade_groups: seq.grade_groups.clone(),
         drop_frame: Some(seq.drop_frame),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
@@ -269,6 +270,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
                         linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
                         group_id: c.group_id.map(|id| id.to_string()),
+                        grade_group: c.grade_group.map(|id| id.to_string()),
                         gain: if (c.gain - 1.0).abs() > f32::EPSILON { Some(c.gain) } else { None },
                         volume: if (c.volume - 1.0).abs() > f32::EPSILON { Some(c.volume) } else { None },
                         pan: if c.pan.abs() > f32::EPSILON { Some(c.pan) } else { None },

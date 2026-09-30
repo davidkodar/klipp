@@ -159,6 +159,8 @@ fn show_bin_media_video(
         linked_clip_id: None,
         linked_title_asset_id: None,
         group_id: None,
+        grade_group: None,
+        own_node_graph: None,
         magnetic_anchor: None,
         gain: 1.0,
         volume: 1.0,

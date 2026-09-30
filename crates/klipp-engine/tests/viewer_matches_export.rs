@@ -707,6 +707,45 @@ fn a_timeline_grade_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels: the timeline grade is not in the export");
 }
 
+/// The main timeline with two of its clips in a grade group (#237),
+/// darkened by the group's post-clip grade on top of clip a's own. Both
+/// run the flattened sequence with the group baked in, as the UI hands
+/// the engine and as the export's snapshot flattens it (the snapshot's
+/// own test checks that it does). They agree, and the group's grade is
+/// in the picture.
+#[test]
+fn a_grade_group_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = timeline();
+    let mut group = klipp_timeline::GradeGroup::new("Scene");
+    group.post = Some(exposure(-0.8));
+    let gid = group.id;
+    t.seq.grade_groups = vec![group];
+    // The two full-frame clips: a (with its own grade) and b.
+    for c in t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.builtin_effects.is_empty() && c.transform_scale_keyframes.is_empty()) {
+        c.grade_group = Some(gid);
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("group-graded frame {n:3}"), &v, &e));
+    }
+    eprintln!("grade group, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 60), exported_frame(plain, 60));
+    let d = g.iter().zip(&p).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels: the group's grade is not in the export");
+}
+
 /// One clip, coded `coded` and turned by `rotation`, over this landscape
 /// sequence's first two seconds. The source is red on its coded left half
 /// and blue on its right.

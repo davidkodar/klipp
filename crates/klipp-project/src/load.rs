@@ -415,6 +415,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
     }
     let mut sequence = Sequence {
         timeline_graph: seq_json.timeline_graph.clone(),
+        grade_groups: seq_json.grade_groups.clone(),
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
         fps: sanitize_fps(seq_json.fps.num, seq_json.fps.den),
@@ -516,6 +517,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     group_id: c.group_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(GroupId)
                     }),
+                    grade_group: c.grade_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GradeGroupId)),
+                    own_node_graph: None,
                     magnetic_anchor: c.magnetic_anchor.clone(),
                     gain: c.gain.unwrap_or(1.0),
                     volume: c.volume.unwrap_or(1.0),

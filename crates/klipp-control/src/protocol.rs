@@ -624,7 +624,13 @@ pub enum ControlCommand {
     /// picture clip, as one node after its grade. opacity fades it in;
     /// remove clears it. Names resolve against the bundled LUT library.
     Look {
-        clip_id: String,
+        /// The clip; not needed with `on`.
+        #[serde(default)]
+        clip_id: Option<String>,
+        /// The timeline, or a grade group's grade, instead of a clip
+        /// (#237): "timeline", or {"group": name, "stage": "pre"|"post"}.
+        #[serde(default)]
+        on: Option<klipp_document::ops::GradeOn>,
         #[serde(default)]
         name: Option<String>,
         #[serde(default)]

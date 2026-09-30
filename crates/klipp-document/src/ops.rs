@@ -78,6 +78,21 @@ pub enum ClipRef {
     At { track: usize, secs: f64 },
 }
 
+/// Where a `look` or a `grade` goes, when not on one clip (#237): the
+/// timeline grade, over every clip after its own ("timeline"), or a grade
+/// group's post-clip grade, after each member's own, or its pre-clip
+/// grade, before it (`{"group": name, "stage": "pre"}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GradeOn {
+    Group {
+        group: String,
+        #[serde(default)]
+        stage: Option<klipp_timeline::GradeStage>,
+    },
+    Named(String),
+}
+
 /// Which track a clip goes on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -295,7 +310,12 @@ pub enum Op {
     /// `gain` move the shadows, mids and highlights (their master);
     /// `saturation` at zero is grey, at one is as shot, above one is more.
     Grade {
-        clip_id: ClipRef,
+        /// The clip; not needed with `on`.
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        /// The timeline or a grade group's grade instead of a clip's.
+        #[serde(default)]
+        on: Option<GradeOn>,
         #[serde(default)]
         exposure: Option<f32>,
         #[serde(default)]
@@ -473,12 +493,32 @@ pub enum Op {
         #[serde(default)]
         secs: Option<f64>,
     },
+    /// Put `clips` in the grade group `group`, made if there is none by
+    /// that name, taking each out of any group it was in (#237); with
+    /// `leave`, take them out of it instead. The members share the
+    /// group's pre-clip and post-clip grades, set with `look` or `grade`
+    /// `on` the group.
+    GradeGroup {
+        group: String,
+        #[serde(default)]
+        clips: Vec<ClipRef>,
+        #[serde(default)]
+        leave: bool,
+    },
+    /// Remove the grade group `group` and its grades; its clips keep
+    /// their own.
+    RemoveGradeGroup { group: String },
     /// Apply a creative look — a 3D LUT — to a picture clip, as one node
     /// after the grade so the look sits on the corrected image. `lut_path`
     /// is the resolved file; `name` is what to call it in the reply;
     /// `opacity` (default 1) fades the look in; `remove` clears it.
     Look {
-        clip_id: ClipRef,
+        /// The clip; not needed with `on`.
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        /// The timeline or a grade group's grade instead of a clip's.
+        #[serde(default)]
+        on: Option<GradeOn>,
         #[serde(default)]
         lut_path: String,
         #[serde(default)]
@@ -1636,9 +1676,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             ramp(seq, pool, fps, i, ti, ci, clip, *from, *to, *over)
         }
-        Op::Look { clip_id, lut_path, name, opacity, remove } => {
-            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            apply_look(seq, pool, i, ti, clip, lut_path, name.as_deref(), *opacity, *remove)
+        Op::Look { clip_id, on, lut_path, name, opacity, remove } => {
+            let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "put a look on")?;
+            apply_look(i, target, lut_path, name.as_deref(), *opacity, *remove)
+        }
+        Op::GradeGroup { group, clips, leave } => grade_group(seq, pool, fps, i, group, clips, *leave),
+        Op::RemoveGradeGroup { group } => {
+            let g = find_grade_group(seq, i, group)?;
+            let changes: Vec<_> = seq.all_clips().filter(|c| c.grade_group == Some(g.id)).map(|c| (c.id, Some(g.id), None)).collect();
+            let touched = changes.iter().map(|c| c.0).collect();
+            let groups = seq.grade_groups.iter().filter(|x| x.id != g.id).cloned().collect();
+            let edit = EditCommand::Batch(vec![
+                EditCommand::SetClipGradeGroups { changes },
+                EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups },
+            ]);
+            Ok((format!("remove grade group \"{}\"; its clips keep their own grades", g.name), edit, touched))
         }
         Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -1653,8 +1705,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
         }
-        Op::Grade { clip_id, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset } => {
-            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+        Op::Grade { clip_id, on, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset } => {
+            let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
             let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
                 ("exposure", "exposure", *exposure, -6.0, 6.0),
                 // The grade's contrast is 0 at neutral (+1 doubles the distance
@@ -1675,7 +1727,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 ("shadows", "shadows", *shadows, -1.0, 1.0),
                 ("vibrance", "vibrance", *vibrance, -1.0, 1.0),
             ];
-            grade(seq, pool, i, ti, clip, &knobs, *reset)
+            grade(i, target, &knobs, *reset)
         }
         Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame } => {
             let look = Look {
@@ -3725,20 +3777,125 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (fro
     Ok((what, edit, vec![clip.id]))
 }
 
-fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, lut_path: &str, name: Option<&str>, opacity: Option<f32>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    require_picture(seq, pool, i, ti, clip, "put a look on")?;
+/// What a look or a grade lands on: a picture clip's grade, the
+/// timeline grade, or a grade group's stage (#237), with the id its
+/// graph is edited under, the graph as it is, its name for the reply and
+/// the clips it changes.
+struct GradeTarget {
+    id: ClipId,
+    graph: klipp_nodes::NodeGraph,
+    name: String,
+    touched: Vec<ClipId>,
+}
+
+fn find_grade_group<'a>(seq: &'a Sequence, i: usize, name: &str) -> Result<&'a klipp_timeline::GradeGroup, Refusal> {
+    seq.grade_groups.iter().find(|g| g.name.eq_ignore_ascii_case(name.trim())).ok_or_else(|| {
+        let names: Vec<String> = seq.grade_groups.iter().map(|g| format!("\"{}\"", g.name)).collect();
+        refuse(
+            i,
+            format!("no grade group \"{name}\""),
+            if names.is_empty() { "make one with grade_group first".to_string() } else { format!("the groups are {}", names.join(", ")) },
+        )
+    })
+}
+
+/// The target `clip_id` or `on` names: `on` wins; a clip must be a
+/// picture on an unlocked track.
+fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Option<&ClipRef>, on: Option<&GradeOn>, verb: &str) -> Result<GradeTarget, Refusal> {
+    let stored = |g: Option<&klipp_nodes::NodeGraph>| g.cloned().unwrap_or_default();
+    match on {
+        Some(GradeOn::Named(n)) if n.eq_ignore_ascii_case("timeline") => Ok(GradeTarget {
+            id: seq.timeline_grade_clip_id(),
+            graph: stored(seq.timeline_graph.as_ref()),
+            name: "the timeline".into(),
+            touched: Vec::new(),
+        }),
+        Some(GradeOn::Named(n)) if n.eq_ignore_ascii_case("clip") => grade_target(seq, pool, fps, i, clip_id, None, verb),
+        Some(GradeOn::Named(n)) => Err(refuse(i, format!("\"{n}\" is not somewhere to {verb}"), "give on: \"timeline\", or {\"group\": name, \"stage\": \"pre\" or \"post\"}, or a clip_id alone")),
+        Some(GradeOn::Group { group, stage }) => {
+            let g = find_grade_group(seq, i, group)?;
+            let stage = stage.unwrap_or(klipp_timeline::GradeStage::Post);
+            let which = if stage == klipp_timeline::GradeStage::Pre { "pre-clip" } else { "post-clip" };
+            Ok(GradeTarget {
+                id: g.stage_clip_id(stage),
+                graph: stored(g.stage(stage)),
+                name: format!("the {which} grade of group \"{}\"", g.name),
+                touched: seq.all_clips().filter(|c| c.grade_group == Some(g.id)).map(|c| c.id).collect(),
+            })
+        }
+        None => {
+            let clip_id = clip_id.ok_or_else(|| refuse(i, "no clip given", "give clip_id, or on: \"timeline\" or a grade group"))?;
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            require_picture(seq, pool, i, ti, clip, verb)?;
+            Ok(GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: clip_name(seq, pool, clip), touched: vec![clip.id] })
+        }
+    }
+}
+
+/// `grade_group`: put clips in a group (made when there is none by that
+/// name) or, with `leave`, take them out of it.
+fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str, clips: &[ClipRef], leave: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(refuse(i, "a grade group needs a name", "give group, such as \"Day exterior\" or \"Camera B\""));
+    }
+    if clips.is_empty() {
+        return Err(refuse(i, "no clips given", "give the clips to put in the group, or to take out of it with leave"));
+    }
+    let mut members = Vec::new();
+    for r in clips {
+        let (ti, _, clip) = resolve_clip(seq, fps, r, i)?;
+        require_picture(seq, pool, i, ti, clip, "put in a grade group")?;
+        if seq.tracks[ti].kind != TrackKind::Video {
+            return Err(refuse(i, format!("{} is sound, and a grade group grades pictures", clip_name(seq, pool, clip)), "name the picture clips"));
+        }
+        if !members.iter().any(|c: &&Clip| c.id == clip.id) {
+            members.push(clip);
+        }
+    }
+    let names = members.iter().map(|c| clip_name(seq, pool, c)).collect::<Vec<_>>().join(", ");
+    let touched: Vec<ClipId> = members.iter().map(|c| c.id).collect();
+    if leave {
+        let g = find_grade_group(seq, i, name)?;
+        let changes: Vec<_> = members.iter().filter(|c| c.grade_group == Some(g.id)).map(|c| (c.id, Some(g.id), None)).collect();
+        if changes.is_empty() {
+            return Err(refuse(i, format!("none of {names} is in \"{}\"", g.name), "name clips that are in the group"));
+        }
+        return Ok((format!("{names} out of grade group \"{}\"", g.name), EditCommand::SetClipGradeGroups { changes }, touched));
+    }
+    let existing = seq.grade_groups.iter().find(|g| g.name.eq_ignore_ascii_case(name));
+    let (group_id, made) = match existing {
+        Some(g) => (g.id, None),
+        None => {
+            let g = klipp_timeline::GradeGroup::new(name);
+            let mut groups = seq.grade_groups.clone();
+            groups.push(g.clone());
+            (g.id, Some(EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups }))
+        }
+    };
+    let changes: Vec<_> = members.iter().filter(|c| c.grade_group != Some(group_id)).map(|c| (c.id, c.grade_group, Some(group_id))).collect();
+    if changes.is_empty() && made.is_none() {
+        return Err(refuse(i, format!("{names} already in \"{name}\""), "nothing to change"));
+    }
+    let what = format!("{names} in grade group \"{}\"{}", existing.map_or(name, |g| g.name.as_str()), if made.is_some() { " (new)" } else { "" });
+    let edit = EditCommand::Batch(made.into_iter().chain([EditCommand::SetClipGradeGroups { changes }]).collect());
+    Ok((what, edit, touched))
+}
+
+fn apply_look(i: usize, target: GradeTarget, lut_path: &str, name: Option<&str>, opacity: Option<f32>, remove: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let GradeTarget { id, graph: current, name: target_name, touched } = target;
     let label = || name.map(|n| n.to_string()).unwrap_or_else(|| std::path::Path::new(lut_path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "a look".into()));
     if remove {
-        if !clip.node_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some()) {
-            return Err(refuse(i, "no look to remove", "this clip has no look on it"));
+        if !current.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D && n.params.lut_path.is_some()) {
+            return Err(refuse(i, "no look to remove", format!("{target_name} has no look on it")));
         }
-        let mut graph = clip.node_graph.clone();
+        let mut graph = current.clone();
         for node in graph.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D) {
             node.params.lut_path = None;
             node.params.lut_opacity = None;
         }
-        let what = format!("clear the look on {}", clip_name(seq, pool, clip));
-        return Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]));
+        let what = format!("clear the look on {target_name}");
+        return Ok((what, EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph }, touched));
     }
     if lut_path.is_empty() {
         return Err(refuse(i, "no LUT given", "give a look to apply"));
@@ -3747,7 +3904,7 @@ fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
     if !op.is_finite() || !(0.0..=1.0).contains(&op) {
         return Err(refuse(i, format!("opacity {op} is out of range"), "give opacity between 0 and 1"));
     }
-    let mut graph = clip.node_graph.clone();
+    let mut graph = current.clone();
     if graph.is_identity() {
         graph = klipp_nodes::defaults::default_graph();
     }
@@ -3756,11 +3913,11 @@ fn apply_look(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
     node.params.lut_path = Some(std::path::PathBuf::from(lut_path));
     node.params.lut_opacity = Some(op);
     let what = if (op - 1.0).abs() < 1e-4 {
-        format!("look on {}: {}", clip_name(seq, pool, clip), label())
+        format!("look on {target_name}: {}", label())
     } else {
-        format!("look on {}: {} at {:.0}%", clip_name(seq, pool, clip), label(), op * 100.0)
+        format!("look on {target_name}: {} at {:.0}%", label(), op * 100.0)
     };
-    Ok((what, EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph }, vec![clip.id]))
+    Ok((what, EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph }, touched))
 }
 
 /// One sample of a tracked window: where the thing is, and when.
@@ -4343,15 +4500,8 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
 /// A clip's primary grade set from named knobs: what is given lands on
 /// the clip's Corrector node, the rest of the grade stays, recorded as
 /// one whole-graph edit so a single undo takes it back.
-fn grade(
-    seq: &Sequence,
-    pool: &MediaPool,
-    i: usize,
-    ti: usize,
-    clip: &Clip,
-    knobs: &[(&str, &str, Option<f32>, f32, f32)],
-    reset: bool,
-) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn grade(i: usize, target: GradeTarget, knobs: &[(&str, &str, Option<f32>, f32, f32)], reset: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let GradeTarget { id, graph: current, name: target_name, touched } = target;
     // What the op was given, in its own units: the contrast knob is stored
     // as an offset from neutral (0) but spoken as the multiplier (1), so
     // the reply and a refusal add the 1 back. Rounded, so float noise
@@ -4360,12 +4510,6 @@ fn grade(
         let v = if name == "contrast" { v + 1.0 } else { v };
         format!("{}", (v as f64 * 1000.0).round() / 1000.0)
     };
-    if seq.tracks[ti].locked {
-        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
-    }
-    if !matches!(clip.kind, ClipKind::Media { .. }) {
-        return Err(refuse(i, format!("{} is not a picture clip", clip_name(seq, pool, clip)), "grade a media clip; a title or a generator has no grade"));
-    }
     if !reset && knobs.iter().all(|(_, _, v, _, _)| v.is_none()) {
         return Err(refuse(i, "nothing to grade", "give exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights or shadows"));
     }
@@ -4376,7 +4520,7 @@ fn grade(
             }
         }
     }
-    let mut graph = if reset { klipp_nodes::defaults::default_graph() } else { clip.node_graph.clone() };
+    let mut graph = if reset { klipp_nodes::defaults::default_graph() } else { current.clone() };
     // A clip that has never been graded has an empty graph: it needs the
     // primary chain before there is a grade to set.
     if graph.is_identity() || !graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
@@ -4394,12 +4538,11 @@ fn grade(
         }
     }
     let what = format!(
-        "grade {}: {}",
-        clip_name(seq, pool, clip),
+        "grade {target_name}: {}",
         if said.is_empty() { "back to neutral".to_string() } else { format!("{}{}", if reset { "neutral, then " } else { "" }, said.join(", ")) },
     );
-    let edit = EditCommand::SetNodeGraph { clip_id: clip.id, old_graph: clip.node_graph.clone(), new_graph: graph };
-    Ok((what, edit, vec![clip.id]))
+    let edit = EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph };
+    Ok((what, edit, touched))
 }
 
 /// `#rrggbb` or `#rrggbbaa`.
@@ -6331,12 +6474,66 @@ mod tests {
         assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None }]).is_err());
     }
 
+    /// #237: clips put in a grade group; a look on its post-clip grade
+    /// and a grade on its pre-clip grade land on the group, not on the
+    /// clips; a look on the timeline lands on the timeline grade; the
+    /// group removed takes its grades and leaves the clips theirs.
+    #[test]
+    fn looks_and_grades_go_on_a_grade_group_or_the_timeline() {
+        let (seq, pool, _media, a, b) = fixture();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            { "op": "grade_group", "group": "Day exterior", "clips": [a, b] },
+            { "op": "look", "on": { "group": "day exterior" }, "lut_path": "/luts/kodak.cube", "opacity": 0.4 },
+            { "op": "grade", "on": { "group": "Day exterior", "stage": "pre" }, "temperature": 10.0 },
+            { "op": "look", "on": "timeline", "lut_path": "/luts/show.cube" },
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("(new)"), "{}", plan.steps[0].what);
+        assert!(plan.steps[1].what.contains("post-clip grade of group \"Day exterior\"") && plan.steps[1].what.contains("40%"), "{}", plan.steps[1].what);
+        assert!(plan.steps[2].what.contains("pre-clip"), "{}", plan.steps[2].what);
+        assert!(plan.steps[3].what.contains("the timeline"), "{}", plan.steps[3].what);
+
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for s in &plan.steps {
+            view.apply_forward(&s.edit);
+        }
+        let after = view.sequences[0].clone();
+        let g = &after.grade_groups[0];
+        let lut = |graph: Option<&klipp_nodes::NodeGraph>| graph.and_then(|g| g.nodes.iter().find_map(|n| n.params.lut_path.clone()));
+        assert_eq!(lut(g.post.as_ref()).unwrap().to_str(), Some("/luts/kodak.cube"));
+        assert!(g.pre.as_ref().unwrap().nodes.iter().any(|n| n.params.temperature == Some(10.0)));
+        assert_eq!(lut(after.timeline_graph.as_ref()).unwrap().to_str(), Some("/luts/show.cube"));
+        for id in [a, b] {
+            let c = after.all_clips().find(|c| c.id == id).unwrap();
+            assert_eq!(c.grade_group, Some(g.id));
+            assert!(c.node_graph.is_identity(), "the clip's own grade is untouched");
+        }
+
+        // Refusals: sound, an unknown group, a look with nowhere to go.
+        let audio = seq.tracks[1].clips[0].id;
+        let bad = |v: serde_json::Value| resolve(&seq, &pool, &[serde_json::from_value(v).unwrap()]).unwrap_err().why;
+        assert!(bad(serde_json::json!({ "op": "grade_group", "group": "X", "clips": [audio] })).contains("sound"));
+        assert!(bad(serde_json::json!({ "op": "look", "on": { "group": "Night" }, "lut_path": "/x.cube" })).contains("no grade group"));
+        assert!(bad(serde_json::json!({ "op": "look", "lut_path": "/x.cube" })).contains("no clip given"));
+
+        // Removing the group: its clips are out of it, their grades theirs.
+        let plan = resolve(&after, &pool, &[serde_json::from_value(serde_json::json!({ "op": "remove_grade_group", "group": "Day exterior" })).unwrap()]).unwrap();
+        let mut seqs = vec![after.clone()];
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].grade_groups.is_empty());
+        assert!(view.sequences[0].all_clips().all(|c| c.grade_group.is_none()));
+    }
+
     #[test]
     fn a_look_adds_one_lut_node_after_the_grade_and_clears() {
         let (seq, pool, _media, a, _) = fixture();
 
         // A look adds a single Lut3D node with the path and opacity.
-        let plan = resolve(&seq, &pool, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: "/luts/kodak.cube".into(), name: Some("Kodak 2383".into()), opacity: Some(0.8), remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: "/luts/kodak.cube".into(), name: Some("Kodak 2383".into()), opacity: Some(0.8), remove: false }]).unwrap();
         assert!(plan.steps[0].what.contains("Kodak 2383") && plan.steps[0].what.contains("80%"), "{}", plan.steps[0].what);
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
         let luts: Vec<_> = new_graph.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).collect();
@@ -6352,21 +6549,21 @@ mod tests {
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
             view.apply_forward(&plan.steps[0].edit);
         }
-        let plan2 = resolve(&seqs[0], &p, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: "/luts/fuji.cube".into(), name: None, opacity: None, remove: false }]).unwrap();
+        let plan2 = resolve(&seqs[0], &p, &[Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: "/luts/fuji.cube".into(), name: None, opacity: None, remove: false }]).unwrap();
         let EditCommand::SetNodeGraph { new_graph: g2, .. } = &plan2.steps[0].edit else { panic!("node-graph edit") };
         assert_eq!(g2.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).count(), 1, "still one LUT");
         assert_eq!(g2.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).unwrap().params.lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/fuji.cube");
 
         // Removing clears the LUT path.
-        let plan3 = resolve(&seqs[0], &p, &[Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: true }]).unwrap();
+        let plan3 = resolve(&seqs[0], &p, &[Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: String::new(), name: None, opacity: None, remove: true }]).unwrap();
         let EditCommand::SetNodeGraph { new_graph: g3, .. } = &plan3.steps[0].edit else { panic!("node-graph edit") };
         assert!(g3.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Lut3D).all(|n| n.params.lut_path.is_none()), "look cleared");
 
         // Refusals: a look with no LUT, a remove with nothing on, out of range.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: false }).why.contains("no LUT"));
-        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: String::new(), name: None, opacity: None, remove: true }).why.contains("no look to remove"));
-        assert!(bad(Op::Look { clip_id: ClipRef::Id(a), lut_path: "/x.cube".into(), name: None, opacity: Some(9.0), remove: false }).why.contains("out of range"));
+        assert!(bad(Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: String::new(), name: None, opacity: None, remove: false }).why.contains("no LUT"));
+        assert!(bad(Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: String::new(), name: None, opacity: None, remove: true }).why.contains("no look to remove"));
+        assert!(bad(Op::Look { clip_id: Some(ClipRef::Id(a)), on: None, lut_path: "/x.cube".into(), name: None, opacity: Some(9.0), remove: false }).why.contains("out of range"));
     }
 
     #[test]
@@ -6467,7 +6664,7 @@ mod tests {
     #[test]
     fn a_grade_sets_the_primary_knobs_and_undo_takes_it_back() {
         let (seq, pool, media, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false }]).unwrap();
         assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
         // Contrast is said as the multiplier it was given, not the offset
         // the node stores, and without float noise.
@@ -6491,8 +6688,8 @@ mod tests {
 
         // Out of range, nothing to change, a title: refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("out of range"));
-        assert!(bad(Op::Grade { clip_id: ClipRef::Id(a), exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("nothing to grade"));
+        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("out of range"));
+        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("nothing to grade"));
 
         // As the tools send it.
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"grade","clip_id":{"track":0,"secs":1.0},"exposure":0.3,"saturation":1.1,"reset":true}]"#).unwrap();

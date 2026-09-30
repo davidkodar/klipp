@@ -361,6 +361,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         name: seq.name.clone(),
         camera: seq.camera.clone(),
         timeline_graph: seq.timeline_graph.clone(),
+        grade_groups: seq.grade_groups.clone(),
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,

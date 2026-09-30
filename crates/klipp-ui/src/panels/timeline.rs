@@ -17256,6 +17256,7 @@ mod compound_filmstrip_tests {
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
+            grade_groups: Vec::new(),
             id: SequenceId::new(),
             name: name.to_string(),
             fps: Fps::new(24, 1),

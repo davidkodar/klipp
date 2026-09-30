@@ -569,6 +569,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 // No interchange format carries a camera.
                 camera: klipp_timeline::Camera::default(),
                 timeline_graph: None,
+                grade_groups: Vec::new(),
                 // An imported timeline takes its rate's convention.
                 drop_frame: Sequence::default_drop_frame(seq_fps),
                 id: SequenceId::new(),
@@ -644,6 +645,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         // No interchange format carries a camera.
         camera: klipp_timeline::Camera::default(),
         timeline_graph: None,
+        grade_groups: Vec::new(),
         // An imported timeline takes its rate's convention.
         drop_frame: Sequence::default_drop_frame(seq_fps),
         id: SequenceId::new(),
