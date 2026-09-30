@@ -108,6 +108,16 @@ impl MotionKind {
         MotionKind::Typewriter,
     ];
 
+    /// The picker's group for this motion: what it does to the text.
+    pub fn category(self) -> &'static str {
+        match self {
+            MotionKind::Fade | MotionKind::Blur => "Fade",
+            MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight => "Move",
+            MotionKind::ScaleUp | MotionKind::ScaleDown => "Scale",
+            MotionKind::MaskRise | MotionKind::MaskDrop | MotionKind::Typewriter => "Reveal",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             MotionKind::Fade => "Fade",
@@ -487,6 +497,17 @@ impl TitleLoop {
             TitleLoop::ColorBlend { color_a: [255, 255, 255, 255], color_b: [255, 200, 0, 255], rate_hz: 0.5 },
             TitleLoop::Counter { from: 0.0, to: 100.0, duration_secs: 3.0, decimals: 0 },
         ]
+    }
+
+    /// The picker's group for this loop: what it keeps doing.
+    pub fn category(&self) -> &'static str {
+        match self {
+            TitleLoop::Scroll { .. } | TitleLoop::Crawl { .. } => "Travel",
+            TitleLoop::Blink { .. } | TitleLoop::Pulse { .. } => "Opacity",
+            TitleLoop::Shake { .. } | TitleLoop::Wave { .. } => "Motion",
+            TitleLoop::ColorCycle { .. } | TitleLoop::ColorBlend { .. } => "Colour",
+            TitleLoop::Counter { .. } => "Text",
+        }
     }
 
     pub fn label(&self) -> &'static str {
