@@ -598,8 +598,8 @@ pub struct KlippApp {
     node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
     /// The default graph the timeline grade's stand-in shows while the
     /// sequence has no grade of its own; see
-    /// [`stand_in_timeline_grade_on`] and [`stand_down_timeline_grade_on`].
-    timeline_grade_fresh: Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
+    /// [`stand_in_grade_on`] and [`stand_down_timeline_grade_on`].
+    timeline_grade_fresh: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
     /// Last wall time `sync_and_refresh_frame` ran while a
     /// node-param-edit gesture was in flight. Used to throttle the
     /// heavy sequence resync to ~30 Hz during drags so the engine
@@ -701,15 +701,72 @@ fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fresh: Option
     let Some(pos) = seq.tracks.iter().position(|t| t.id == track_id) else { return false };
     let track = seq.tracks.remove(pos);
     let Some(proxy) = track.clips.into_iter().next() else { return false };
-    let unchanged = match fresh.or(seq.timeline_graph.as_ref()) {
+    let Some(target) = GradeStandIn::of(seq, proxy.id) else { return false };
+    let unchanged = match fresh.or(target.stored(seq)) {
         Some(given) => *given == proxy.node_graph,
         None => proxy.node_graph.is_identity(),
     };
     if unchanged {
         return false;
     }
-    seq.timeline_graph = Some(proxy.node_graph);
+    target.store(seq, proxy.node_graph);
     true
+}
+
+/// What the Colour workspace grades through a stand-in clip rather than
+/// a clip of the timeline: the timeline grade, or a grade group's
+/// pre-clip or post-clip grade (#237). Either stands in on the same
+/// hidden track, under the id its edits are routed by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GradeStandIn {
+    Timeline,
+    Group(klipp_core::GradeGroupId, klipp_timeline::GradeStage),
+}
+
+impl GradeStandIn {
+    /// Which one `clip_id` stands for, if it is a stand-in's id.
+    fn of(seq: &klipp_timeline::Sequence, clip_id: klipp_core::ClipId) -> Option<Self> {
+        if clip_id == seq.timeline_grade_clip_id() {
+            return Some(Self::Timeline);
+        }
+        seq.grade_group_stage_of(clip_id).map(|(g, s)| Self::Group(g, s))
+    }
+
+    fn id(self, seq: &klipp_timeline::Sequence) -> Option<klipp_core::ClipId> {
+        match self {
+            Self::Timeline => Some(seq.timeline_grade_clip_id()),
+            Self::Group(g, s) => seq.grade_group(g).map(|g| g.stage_clip_id(s)),
+        }
+    }
+
+    fn stored(self, seq: &klipp_timeline::Sequence) -> Option<&klipp_nodes::NodeGraph> {
+        match self {
+            Self::Timeline => seq.timeline_graph.as_ref(),
+            Self::Group(g, s) => seq.grade_group(g).and_then(|g| g.stage(s)),
+        }
+    }
+
+    fn store(self, seq: &mut klipp_timeline::Sequence, graph: klipp_nodes::NodeGraph) {
+        match self {
+            Self::Timeline => seq.timeline_graph = Some(graph),
+            Self::Group(g, s) => {
+                if let Some(g) = seq.grade_groups.iter_mut().find(|x| x.id == g) {
+                    *g.stage_mut(s) = Some(graph);
+                }
+            }
+        }
+    }
+
+    /// What the panels call it.
+    fn title(self, seq: &klipp_timeline::Sequence) -> String {
+        match self {
+            Self::Timeline => "Timeline Grade".into(),
+            Self::Group(g, s) => {
+                let name = seq.grade_group(g).map_or("Group", |g| g.name.as_str());
+                format!("{name} \u{00b7} {}", if s == klipp_timeline::GradeStage::Pre { "Pre-clip" } else { "Post-clip" })
+            }
+        }
+    }
 }
 
 /// Put the timeline grade's stand-in on `seq`, on its hidden track, and
@@ -717,21 +774,30 @@ fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fresh: Option
 /// sequence has no grade the stand-in shows `fresh`, made the first
 /// time and kept for this sequence, so it has the same node ids each
 /// time it stands in: the inspector dispatches on the ids it drew.
-fn stand_in_timeline_grade_on(
+///
+/// The same for a grade group's stage (#237). `fresh` is kept by the
+/// stand-in's id.
+fn stand_in_grade_on(
     seq: &mut klipp_timeline::Sequence,
-    fresh: &mut Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
+    which: GradeStandIn,
+    fresh: &mut Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
 ) -> Option<klipp_core::ClipId> {
     let track_id = timeline_grade_proxy_track_id(seq);
     if seq.tracks.iter().any(|t| t.id == track_id) {
         return None;
     }
+    let stand_in_id = which.id(seq)?;
     let mut proxy = klipp_timeline::Clip::timeline_grade_proxy(seq);
-    if seq.timeline_graph.is_none() {
-        let given = match fresh {
-            Some((id, g)) if *id == seq.id => g,
-            _ => &fresh.insert((seq.id, klipp_nodes::NodeGraph::default())).1,
-        };
-        proxy.node_graph = given.clone();
+    proxy.id = stand_in_id;
+    match which.stored(seq) {
+        Some(g) => proxy.node_graph = g.clone(),
+        None => {
+            let given = match fresh {
+                Some((id, g)) if *id == stand_in_id => g,
+                _ => &fresh.insert((stand_in_id, klipp_nodes::NodeGraph::default())).1,
+            };
+            proxy.node_graph = given.clone();
+        }
     }
     let id = proxy.id;
     let mut track = klipp_timeline::Track::new("Timeline Grade", klipp_timeline::TrackKind::Video);
@@ -753,10 +819,14 @@ fn stand_in_timeline_grade_on(
 /// would be an edit again (#368).
 fn stand_down_timeline_grade_on(
     seq: &mut klipp_timeline::Sequence,
-    fresh: &mut Option<(klipp_core::SequenceId, klipp_nodes::NodeGraph)>,
+    fresh: &mut Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
 ) -> TimelineGradeSettled {
-    let had_grade = seq.timeline_graph.is_some();
-    let given = fresh.as_ref().filter(|(id, _)| *id == seq.id && !had_grade).map(|(_, g)| g);
+    let track_id = timeline_grade_proxy_track_id(seq);
+    let Some(stand_in_id) = seq.tracks.iter().find(|t| t.id == track_id).and_then(|t| t.clips.first()).map(|c| c.id) else {
+        return TimelineGradeSettled::Unchanged;
+    };
+    let had_grade = GradeStandIn::of(seq, stand_in_id).is_some_and(|w| w.stored(seq).is_some());
+    let given = fresh.as_ref().filter(|(id, _)| *id == stand_in_id && !had_grade).map(|(_, g)| g);
     match (settle_timeline_grade_proxy(seq, given), had_grade) {
         (false, _) => TimelineGradeSettled::Unchanged,
         (true, true) => TimelineGradeSettled::Changed,
@@ -8085,8 +8155,13 @@ impl KlippApp {
                             self.state.active_history_mut().begin_batch();
                         }
                         let mut selected = None;
-                        for (new_clip, track_index) in pasted_clips(&cb, self.state.playhead) {
+                        for (mut new_clip, track_index) in pasted_clips(&cb, self.state.playhead) {
                             let seq_idx = self.state.active_sequence_idx;
+                            // A grade group is the sequence's: in another
+                            // sequence the clip is in none (#237).
+                            if new_clip.grade_group.is_some_and(|g| self.state.sequences[seq_idx].grade_group(g).is_none()) {
+                                new_clip.grade_group = None;
+                            }
                             if let Some(track) = self.state.sequences[seq_idx].tracks.get_mut(track_index) {
                                 Self::overwrite_insert_clip_on_track(track, new_clip.clone());
                                 selected.get_or_insert(new_clip.id);
@@ -13447,6 +13522,18 @@ impl KlippApp {
     }
 
     fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        // Grade groups themselves are edits to the sequence, not to a
+        // graph: never through a stand-in.
+        if self.handle_grade_group_commands(cmd, needs_refresh) {
+            return true;
+        }
+        // Whether the graded group's grades reach its members yet: the
+        // engine's copy has a group's grades baked in only while it grades
+        // anything, so a step that starts it grading needs a full sync.
+        let group_grades = |app: &Self| {
+            app.state.grade_group_stage.and_then(|(g, _)| app.state.sequences[app.state.active_sequence_idx].grade_group(g)).is_some_and(|g| g.grades())
+        };
+        let group_graded_before = group_grades(self);
         let stood_in = self.stand_in_timeline_grade();
         let handled = self.handle_color_commands_inner(cmd, needs_refresh);
         // A slider step reaches the engine through the param queue, which
@@ -13460,7 +13547,178 @@ impl KlippApp {
             TimelineGradeSettled::Changed if matches!(cmd, AppCommand::SetNodeParam { .. }) => {}
             TimelineGradeSettled::Changed | TimelineGradeSettled::Begun => *needs_refresh = true,
         }
+        if group_grades(self) != group_graded_before {
+            *needs_refresh = true;
+        }
         handled
+    }
+
+    /// The Colour toolbar's grade-group controls (#237): the selected
+    /// clip's group, its pre-clip and post-clip grades to grade, and a
+    /// menu to make, fill, rename and remove groups.
+    fn grade_group_controls(&mut self, ui: &mut egui::Ui, all_cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+        use klipp_timeline::GradeStage;
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let selection: Vec<klipp_core::ClipId> = if self.state.selected_clips.is_empty() {
+            self.state.selected_clip.into_iter().collect()
+        } else {
+            self.state.selected_clips.clone()
+        };
+        let clip_group = self.state.selected_clip.and_then(|id| seq.all_clips().find(|c| c.id == id)).and_then(|c| c.grade_group);
+        // Grading a group's stage and selecting a clip of another group
+        // grades that group's same stage, as the selection says.
+        if let (Some((g, stage)), Some(cg)) = (self.state.grade_group_stage, clip_group) {
+            if g != cg {
+                self.state.grade_group_stage = Some((cg, stage));
+            }
+        }
+        // A group deleted, by undo too, is not graded.
+        if self.state.grade_group_stage.is_some_and(|(g, _)| seq.grade_group(g).is_none()) {
+            self.state.grade_group_stage = None;
+        }
+        // The group shown: the one being graded, else the selected clip's.
+        let shown = self.state.grade_group_stage.map(|(g, _)| g).or(clip_group).and_then(|g| seq.grade_group(g)).cloned();
+        let mut cmds: Vec<AppCommand> = Vec::new();
+        let mut stage_pick: Option<Option<(klipp_core::GradeGroupId, GradeStage)>> = None;
+        let stage_name = |s: GradeStage| if s == GradeStage::Pre { "Pre-clip" } else { "Post-clip" };
+        // One menu for the group, however it is used, so the row stays
+        // Clip, group, Timeline: what is graded is in its label.
+        let graded = shown.as_ref().is_some_and(|g| g.grades());
+        let menu_label = match (&shown, self.state.grade_group_stage) {
+            (Some(g), Some((_, stage))) => egui::RichText::new(format!("{} \u{00b7} {} \u{25BE}", g.name, stage_name(stage))).color(theme.text_primary).background_color(theme.bg_raised),
+            (Some(g), None) if graded => egui::RichText::new(format!("{} \u{25CF} \u{25BE}", g.name)).color(theme.accent),
+            (Some(g), None) => egui::RichText::new(format!("{} \u{25BE}", g.name)),
+            (None, _) => egui::RichText::new("Group \u{25BE}"),
+        };
+        ui.menu_button(menu_label, |ui| {
+            if let Some(g) = &shown {
+                for (stage, tip) in [
+                    (GradeStage::Pre, "Before each member's own grade, on the footage as decoded: a camera's or a scene's shared balance."),
+                    (GradeStage::Post, "After each member's own grade: the scene's look. Every member follows a change."),
+                ] {
+                    let on = self.state.grade_group_stage.is_some_and(|(_, s)| s == stage);
+                    let has = g.stage(stage).is_some_and(|x| !x.is_identity());
+                    let text = format!("Grade {}{}", stage_name(stage).to_lowercase(), if has { " \u{25CF}" } else { "" });
+                    if ui.selectable_label(on, text).on_hover_text(tip).clicked() {
+                        stage_pick = Some(Some((g.id, stage)));
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+            }
+            let n = selection.len();
+            let what = if n == 1 { "the selected clip".to_string() } else { format!("the {n} selected clips") };
+            if ui.add_enabled(n > 0, egui::Button::new(format!("New group from {what}"))).clicked() {
+                let name = format!("Group {}", seq.grade_groups.len() + 1);
+                cmds.push(AppCommand::CreateGradeGroup { name, clip_ids: selection.clone() });
+                ui.close_menu();
+            }
+            if !seq.grade_groups.is_empty() {
+                ui.separator();
+                for g in &seq.grade_groups {
+                    let members = seq.all_clips().filter(|c| c.grade_group == Some(g.id)).count();
+                    if ui.add_enabled(n > 0, egui::Button::new(format!("Add {what} to \u{201c}{}\u{201d} ({members})", g.name))).clicked() {
+                        cmds.push(AppCommand::SetClipsGradeGroup { clip_ids: selection.clone(), group: Some(g.id) });
+                        ui.close_menu();
+                    }
+                }
+            }
+            if let Some(g) = &shown {
+                ui.separator();
+                if clip_group == Some(g.id) && ui.button(format!("Take {what} out of \u{201c}{}\u{201d}", g.name)).clicked() {
+                    cmds.push(AppCommand::SetClipsGradeGroup { clip_ids: selection.clone(), group: None });
+                    ui.close_menu();
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    let id = ui.id().with(("grade_group_name", g.id));
+                    let mut name: String = ui.memory(|m| m.data.get_temp(id)).unwrap_or_else(|| g.name.clone());
+                    let resp = ui.add(egui::TextEdit::singleline(&mut name).desired_width(140.0));
+                    if resp.lost_focus() {
+                        if name.trim() != g.name {
+                            cmds.push(AppCommand::RenameGradeGroup { group: g.id, name: name.clone() });
+                        }
+                        ui.memory_mut(|m| m.data.remove::<String>(id));
+                    } else {
+                        ui.memory_mut(|m| m.data.insert_temp(id, name));
+                    }
+                });
+                if ui.button(format!("Delete \u{201c}{}\u{201d}", g.name)).on_hover_text("Its grades go; its clips keep their own.").clicked() {
+                    cmds.push(AppCommand::DeleteGradeGroup { group: g.id });
+                    ui.close_menu();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Grade groups: clips that share a pre-clip and a post-clip grade");
+        if let Some(pick) = stage_pick {
+            self.state.grade_group_stage = pick;
+            self.state.grade_timeline = false;
+            self.state.graph_descent_path.clear();
+            self.state.selected_node_id = None;
+            self.state.selected_node_ids.clear();
+        }
+        all_cmds.extend(cmds);
+    }
+
+    /// Make, fill, rename and remove grade groups (#237), each one undo
+    /// step. Only picture clips of the active sequence join a group.
+    fn handle_grade_group_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        use klipp_timeline::GradeGroup;
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let pictures = |ids: &[klipp_core::ClipId]| -> Vec<klipp_core::ClipId> {
+            seq.tracks
+                .iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .flat_map(|t| t.clips.iter())
+                .filter(|c| ids.contains(&c.id) && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
+                .map(|c| c.id)
+                .collect()
+        };
+        let membership = |ids: &[klipp_core::ClipId], group: Option<klipp_core::GradeGroupId>| -> Option<EditCommand> {
+            let changes: Vec<_> = seq
+                .all_clips()
+                .filter(|c| ids.contains(&c.id) && c.grade_group != group)
+                .map(|c| (c.id, c.grade_group, group))
+                .collect();
+            (!changes.is_empty()).then_some(EditCommand::SetClipGradeGroups { changes })
+        };
+        let (edits, label): (Vec<EditCommand>, &str) = match cmd {
+            AppCommand::CreateGradeGroup { name, clip_ids } => {
+                let group = GradeGroup::new(name.trim());
+                let mut groups = seq.grade_groups.clone();
+                groups.push(group.clone());
+                let mut edits = vec![EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups }];
+                edits.extend(membership(&pictures(clip_ids), Some(group.id)));
+                (edits, "New Grade Group")
+            }
+            AppCommand::SetClipsGradeGroup { clip_ids, group } => {
+                let ids = if group.is_some() { pictures(clip_ids) } else { clip_ids.clone() };
+                (membership(&ids, *group).into_iter().collect(), if group.is_some() { "Add to Grade Group" } else { "Remove from Grade Group" })
+            }
+            AppCommand::RenameGradeGroup { group, name } => {
+                let mut groups = seq.grade_groups.clone();
+                match groups.iter_mut().find(|g| g.id == *group) {
+                    Some(g) if g.name != name.trim() && !name.trim().is_empty() => g.name = name.trim().to_string(),
+                    _ => return true,
+                }
+                (vec![EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups }], "Rename Grade Group")
+            }
+            AppCommand::DeleteGradeGroup { group } => {
+                let members: Vec<_> = seq.all_clips().filter(|c| c.grade_group == Some(*group)).map(|c| c.id).collect();
+                let groups = seq.grade_groups.iter().filter(|g| g.id != *group).cloned().collect();
+                let mut edits: Vec<EditCommand> = membership(&members, None).into_iter().collect();
+                edits.push(EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups });
+                if self.state.grade_group_stage.is_some_and(|(g, _)| g == *group) {
+                    self.state.grade_group_stage = None;
+                }
+                (edits, "Delete Grade Group")
+            }
+            _ => return false,
+        };
+        self.apply_edits_as_one(&edits, label);
+        *needs_refresh = true;
+        true
     }
 
     /// While the Colour workspace grades the timeline grade, put it on
@@ -13472,11 +13730,18 @@ impl KlippApp {
     /// Colour code runs in between — the stand-in is never saved, and
     /// [`Self::sync_sequence_to_engine`] never sends it.
     fn stand_in_timeline_grade(&mut self) -> Option<Option<klipp_core::ClipId>> {
-        if !self.state.grade_timeline || self.state.active_workspace != crate::state::Workspace::Color {
+        if self.state.active_workspace != crate::state::Workspace::Color {
             return None;
         }
+        // The timeline grade, or a grade group's stage (#237).
+        let which = if self.state.grade_timeline {
+            GradeStandIn::Timeline
+        } else {
+            let (g, s) = self.state.grade_group_stage?;
+            GradeStandIn::Group(g, s)
+        };
         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-        let id = stand_in_timeline_grade_on(seq, &mut self.timeline_grade_fresh)?;
+        let id = stand_in_grade_on(seq, which, &mut self.timeline_grade_fresh)?;
         Some(self.state.selected_clip.replace(id))
     }
 
@@ -34713,13 +34978,16 @@ impl KlippApp {
                 let mask_tolerance = crate::inspector::keyframe_selection::frame_tolerance(&self.state.sequences[seq_idx]);
                 self.node_inspector_panel.input_colour_space =
                     crate::inspector::color_and_luts::clip_input_colour_space(&self.state, clip_id);
-                let timeline_grade_id = self.state.sequences[seq_idx].timeline_grade_clip_id();
+                // A stand-in: the timeline grade or a grade group's stage.
+                let stand_in = GradeStandIn::of(&self.state.sequences[seq_idx], clip_id);
+                let stand_in_title = stand_in.map(|w| w.title(&self.state.sequences[seq_idx]));
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let theme = self.theme.clone();
-                    let title = if clip.id == timeline_grade_id {
-                        "Timeline Grade".to_string()
+                    let stand_in_name = stand_in_title.clone();
+                    let title = if let Some(t) = stand_in_title {
+                        t
                     } else {
                         clip
                             .media_id()
@@ -34755,7 +35023,7 @@ impl KlippApp {
                     // graph is the one thing written back, so versions
                     // saved on it would be lost; stills and Looks land on
                     // the timeline grade, and say so.
-                    let grading_timeline = clip.id == timeline_grade_id;
+                    let grading_timeline = stand_in.is_some();
                     crate::widgets::inspector_group::section_card(ui, "GRADE", version_badge, &theme, |ui| {
                         caption_row(ui, "Versions", &mut |ui| {
                             let row = ui.add_enabled_ui(!grading_timeline, |ui| {
@@ -34800,7 +35068,7 @@ impl KlippApp {
                         // selection, or the one selected clip, as Looks do;
                         // to the timeline grade when that is what is graded.
                         let grade_targets: Vec<klipp_core::ClipId> = if grading_timeline {
-                            vec![timeline_grade_id]
+                            vec![clip_id]
                         } else if !self.state.selected_clips.is_empty() {
                             self.state.selected_clips.clone()
                         } else {
@@ -34898,10 +35166,9 @@ impl KlippApp {
                             // grab a finished shot, then grade the next ones
                             // from the same setup from it.
                             let active_grade = self.state.active_grade_still.filter(|&i| self.state.grade_stills.get(i).is_some_and(|s| s.grade.is_some()));
-                            let (apply_label, apply_hover) = if grading_timeline {
-                                ("Apply to Timeline Grade", "Put the active still's grade on the timeline grade, in place of it")
-                            } else {
-                                ("Apply", "Put the active still's grade on the selected clips")
+                            let (apply_label, apply_hover) = match stand_in_name.as_deref() {
+                                Some(name) => (format!("Apply to {name}"), format!("Put the active still's grade on {name}, in place of it")),
+                                None => ("Apply".to_string(), "Put the active still's grade on the selected clips".to_string()),
                             };
                             if ui
                                 .add_enabled(active_grade.is_some() && !grade_targets.is_empty(), egui::Button::new(apply_label).small())
@@ -34949,7 +35216,7 @@ impl KlippApp {
                             &self.state.looks,
                             self.state.selected_clip,
                             if grading_timeline { &[] } else { &self.state.selected_clips },
-                            grading_timeline,
+                            stand_in_name.as_deref(),
                             &theme,
                         );
                         all_cmds.extend(looks_cmds);
@@ -35510,7 +35777,7 @@ impl KlippApp {
 
         // Toggle bar: [Scopes] [Nodes] toggle buttons
         if toggle_bar_h > 0.0 {
-            self.render_color_ws_toggle_bar(ui, toggle_bar_rect, &theme);
+            self.render_color_ws_toggle_bar(ui, all_cmds, toggle_bar_rect, &theme);
         }
 
         // Bottom panel: color tools (when docked at bottom) OR scopes (default)
@@ -35540,6 +35807,7 @@ impl KlippApp {
     fn render_color_ws_toggle_bar(
         &mut self,
         ui: &mut egui::Ui,
+        all_cmds: &mut Vec<AppCommand>,
         toggle_bar_rect: egui::Rect,
         theme: &KlippTheme,
     ) {
@@ -35591,11 +35859,13 @@ impl KlippApp {
                 // What the nodes and wheels grade: the selected clip, or
                 // the timeline grade over every clip after its own.
                 ui.label(egui::RichText::new("Grade").color(theme.text_dim));
-                if ui.selectable_label(!self.state.grade_timeline, "Clip")
+                let grading_clip = !self.state.grade_timeline && self.state.grade_group_stage.is_none();
+                if ui.selectable_label(grading_clip, "Clip")
                     .on_hover_text("Grade the selected clip")
                     .clicked()
                 {
                     self.state.grade_timeline = false;
+                    self.state.grade_group_stage = None;
                     self.state.graph_descent_path.clear();
                     self.state.selected_node_id = None;
                     self.state.selected_node_ids.clear();
@@ -35610,6 +35880,7 @@ impl KlippApp {
                 } else {
                     egui::RichText::new("Timeline")
                 };
+                self.grade_group_controls(ui, all_cmds, theme);
                 if ui.selectable_label(self.state.grade_timeline, timeline_label)
                     .on_hover_text(
                         "Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT.\n\
@@ -35619,6 +35890,7 @@ impl KlippApp {
                     .clicked()
                 {
                     self.state.grade_timeline = true;
+                    self.state.grade_group_stage = None;
                     self.state.graph_descent_path.clear();
                     self.state.selected_node_id = None;
                     self.state.selected_node_ids.clear();
@@ -36110,7 +36382,7 @@ impl KlippApp {
                 let seq_idx = self.state.active_sequence_idx;
                 // The timeline grade's stand-in keeps no versions: only
                 // its graph is written back.
-                let keeps_versions = cid != self.state.sequences[seq_idx].timeline_grade_clip_id();
+                let keeps_versions = GradeStandIn::of(&self.state.sequences[seq_idx], cid).is_none();
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
@@ -42554,6 +42826,34 @@ mod timeline_grade_stand_in_tests {
         assert_eq!(seq.timeline_graph, Some(grade));
     }
 
+    /// #237: a grade group's stage stands in the same way: graded through
+    /// its stand-in, its graph lands on the group's stage; a visit that
+    /// changes nothing leaves the stage without a graph.
+    #[test]
+    fn a_grade_group_stage_stands_in_and_settles_on_the_group() {
+        use klipp_timeline::{GradeGroup, GradeStage};
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let group = GradeGroup::new("Night");
+        let gid = group.id;
+        seq.grade_groups.push(group);
+        let which = GradeStandIn::Group(gid, GradeStage::Post);
+        let mut fresh = None;
+
+        let id = stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
+        assert_eq!(GradeStandIn::of(&seq, id), Some(which));
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged, "a look is not an edit");
+        assert!(seq.grade_groups[0].post.is_none());
+
+        stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
+        let track_id = timeline_grade_proxy_track_id(&seq);
+        let proxy = seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips.first_mut().unwrap();
+        let lut = proxy.node_graph.ensure_lut3d();
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
+        assert!(seq.grade_groups[0].post.as_ref().is_some_and(|g| g.nodes.iter().any(|n| n.id == lut)), "the edit landed on the group's post-clip grade");
+        assert!(seq.grade_groups[0].pre.is_none() && seq.timeline_graph.is_none(), "and nowhere else");
+        assert!(!seq.tracks.iter().any(|t| t.id == track_id), "the stand-in is gone");
+    }
+
     /// The whole round, as [`KlippApp::stand_in_timeline_grade`] and
     /// [`KlippApp::stand_down_timeline_grade`] make it: a first visit
     /// that edits begins the grade, and the next visit that only looks
@@ -42564,8 +42864,8 @@ mod timeline_grade_stand_in_tests {
     fn a_visit_after_the_grade_began_is_not_an_edit() {
         let mut seq = klipp_timeline::Sequence::new_default();
         let mut fresh = None;
-        let id = stand_in_timeline_grade_on(&mut seq, &mut fresh).expect("stood in");
-        assert!(fresh.as_ref().is_some_and(|(seq_id, _)| *seq_id == seq.id));
+        let id = stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh).expect("stood in");
+        assert!(fresh.as_ref().is_some_and(|(seq_id, _)| *seq_id == seq.timeline_grade_clip_id()));
         let track_id = timeline_grade_proxy_track_id(&seq);
         let graph = &mut seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips[0].node_graph;
         let corrector = graph.ensure_corrector();
@@ -42574,7 +42874,7 @@ mod timeline_grade_stand_in_tests {
         let grade = seq.timeline_graph.clone().expect("the grade began");
         assert!(fresh.is_none(), "the fresh graph is let go once the grade begins");
 
-        assert_eq!(stand_in_timeline_grade_on(&mut seq, &mut fresh), Some(id));
+        assert_eq!(stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh), Some(id));
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
         assert_eq!(seq.timeline_graph, Some(grade), "the grade is as it was");
         assert!(!seq.tracks.iter().any(|t| t.id == track_id));
@@ -42590,8 +42890,8 @@ mod timeline_grade_stand_in_tests {
         let corrector = grade.ensure_corrector();
         grade.nodes.iter_mut().find(|n| n.id == corrector).unwrap().params.exposure = Some(0.5);
         seq.timeline_graph = Some(grade.clone());
-        let mut fresh = Some((seq.id, klipp_nodes::NodeGraph::default()));
-        stand_in_timeline_grade_on(&mut seq, &mut fresh).expect("stood in");
+        let mut fresh = Some((seq.timeline_grade_clip_id(), klipp_nodes::NodeGraph::default()));
+        stand_in_grade_on(&mut seq, GradeStandIn::Timeline, &mut fresh).expect("stood in");
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged);
         assert_eq!(seq.timeline_graph, Some(grade));
     }

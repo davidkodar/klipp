@@ -1784,6 +1784,10 @@ pub struct AppState {
     /// The Colour workspace grades the timeline grade — the look over
     /// the whole sequence — rather than the selected clip.
     pub grade_timeline: bool,
+    /// The Colour workspace grades this grade group's pre-clip or
+    /// post-clip grade rather than the selected clip (#237). Never with
+    /// `grade_timeline`.
+    pub grade_group_stage: Option<(klipp_core::GradeGroupId, klipp_timeline::GradeStage)>,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -3862,6 +3866,7 @@ impl Default for AppState {
             bake_lut_size: 33,
             show_color_panel: false,
             grade_timeline: false,
+            grade_group_stage: None,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),

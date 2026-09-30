@@ -35,16 +35,16 @@ pub struct LooksPanelState {
 }
 
 
-/// `timeline_grade`: the selected clip is the timeline grade's stand-in,
-/// so a Look applied or added goes to the timeline grade, and the
-/// buttons say so.
+/// `stand_in`: the selected clip is a stand-in, for the timeline grade
+/// or a grade group's stage (#237), named so: a Look applied or added
+/// goes there, and the buttons say so.
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut LooksPanelState,
     looks: &[Look],
     selected_clip: Option<ClipId>,
     selected_clips: &[ClipId],
-    timeline_grade: bool,
+    stand_in: Option<&str>,
     theme: &KlippTheme,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
@@ -62,11 +62,11 @@ pub fn show(
         // rows above. This one pushed its action to the far edge, so
         // three rows that are one group read as three different things.
         let label = if state.save_field_open { "Cancel" } else { "Save current" };
-        let resp = ui.small_button(label).on_hover_text(if timeline_grade {
-            "Snapshot the timeline grade as a reusable Look."
-        } else {
-            "Snapshot this clip's whole grade as a reusable Look.\n\
+        let resp = ui.small_button(label).on_hover_text(match stand_in {
+            Some(name) => format!("Snapshot {name} as a reusable Look."),
+            None => "Snapshot this clip's whole grade as a reusable Look.\n\
              Tool presets, under the tab strip, save one tool instead."
+                .to_string(),
         });
         if resp.clicked() {
             state.save_field_open = !state.save_field_open;
@@ -202,15 +202,18 @@ pub fn show(
                             state.renaming = Some((look.id, look.name.clone()));
                         }
                         ui.add_space(2.0);
-                        let apply_label = if timeline_grade { "Apply to Timeline Grade" } else { "Apply" };
+                        let apply_label = match stand_in {
+                            Some(name) => format!("Apply to {name}"),
+                            None => "Apply".to_string(),
+                        };
                         let apply_resp = ui.add_enabled(
                             can_apply,
                             egui::Button::new(
                                 egui::RichText::new(apply_label).size(10.0).color(theme.text_accent)
                             ).frame(false),
                         );
-                        let apply_resp = if timeline_grade {
-                            apply_resp.on_hover_text("In place of the timeline grade")
+                        let apply_resp = if let Some(name) = stand_in {
+                            apply_resp.on_hover_text(format!("In place of {name}"))
                         } else if can_apply {
                             apply_resp.on_hover_text(format!(
                                 "Apply to {} selected clip{}",
@@ -230,10 +233,9 @@ pub fn show(
                         // After each clip's own grade instead of in place
                         // of it: one look over shots that each keep their
                         // balance.
-                        let (add_label, add_hover) = if timeline_grade {
-                            ("Add to Timeline Grade", "Run this Look after the timeline grade, keeping it")
-                        } else {
-                            ("Add", "Run this Look after each selected clip's own grade, keeping its balance")
+                        let (add_label, add_hover) = match stand_in {
+                            Some(name) => (format!("Add to {name}"), format!("Run this Look after {name}, keeping it")),
+                            None => ("Add".to_string(), "Run this Look after each selected clip's own grade, keeping its balance".to_string()),
                         };
                         let add_resp = ui.add_enabled(
                             can_apply,

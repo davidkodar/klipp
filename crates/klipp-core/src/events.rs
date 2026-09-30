@@ -2697,6 +2697,14 @@ pub enum AppCommand {
     /// How far back a clip sits for the sequence camera (`Clip::depth`).
     /// Undoable; a drag of the value is one undo step.
     SetClipDepth { clip_id: ClipId, depth: f32 },
+    /// A new grade group named `name`, with `clip_ids` in it (#237). One
+    /// undo step.
+    CreateGradeGroup { name: String, clip_ids: Vec<ClipId> },
+    /// `clip_ids` into grade group `group`, or out of any with `None`.
+    SetClipsGradeGroup { clip_ids: Vec<ClipId>, group: Option<crate::GradeGroupId> },
+    RenameGradeGroup { group: crate::GradeGroupId, name: String },
+    /// Remove a grade group and its grades; its clips keep their own.
+    DeleteGradeGroup { group: crate::GradeGroupId },
     /// The sequence camera's shutter: motion blur on everything that moves.
     /// `shutter_deg` 0 is off. Undoable.
     SetSequenceShutter { sequence_idx: usize, shutter_deg: f32, samples: u8 },
