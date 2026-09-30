@@ -55,7 +55,7 @@ mod marker;
 pub mod multicam;
 mod sequence;
 
-pub use klipp_core::title_motion::{CrawlDirection, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
+pub use klipp_core::title_motion::{CrawlDirection, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, default_text_transform,
     CharAnimation, CharEntrance, ClipKind, FontStyle, InnerShadow, MotionBlur, ObjectTransform,

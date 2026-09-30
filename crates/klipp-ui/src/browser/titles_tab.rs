@@ -429,7 +429,7 @@ fn cr_roll() -> TitleData {
         0.5, 0.5, 0.5,
     )]);
     if let Some(o) = td.primary_object_mut() {
-        o.fx_mut().loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0 });
+        o.fx_mut().loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() });
     }
     td
 }

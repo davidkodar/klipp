@@ -1490,7 +1490,7 @@ impl Renderer {
                 // keeps that render on the GPU: no raster, no upload, one
                 // pass. Anything else is rendered here and goes up as rows.
                 match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
-                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, rows: r } => {
+                    klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
                         rows = r;
                         if blur > 0.5 {
                             // The blur entrance: the placed sprite, blurred
@@ -1498,7 +1498,18 @@ impl Renderer {
                             fx.push(BuiltinEffect::GaussianBlur { radius: blur });
                         }
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, r.0, r.1)
+                            // The layer's fade by where it is, the sprite
+                            // shader's own (#592).
+                            let shape = shape.map(|s| klipp_effects::gpu::SpriteShape {
+                                top: s.edges.top,
+                                bottom: s.edges.bottom,
+                                left: s.edges.left,
+                                right: s.edges.right,
+                                focus_vertical: s.focus.map(|(axis, _)| axis == klipp_core::title_motion::RampAxis::Vertical),
+                                band: s.focus.map_or(0.5, |(_, f)| f.band),
+                                edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
+                            });
+                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
                         })
                     }
                     klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {

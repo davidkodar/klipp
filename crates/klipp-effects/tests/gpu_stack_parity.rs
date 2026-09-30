@@ -186,7 +186,7 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         (0, 6, 1.0, 1.0, None, (8, 16)),
     ];
     for (dx, dy, opacity, scale, under, rows) in cases {
-        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, rows);
+        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, None, rows);
         assert!(gpu.stack_begin(W, H, 1));
         assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
         assert!(gpu.stack_blend(0, 1.0, 0));
@@ -194,7 +194,7 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         let want = gpu.stack_download_linear();
 
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, rows.0, rows.1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
@@ -216,6 +216,71 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
             &got[px * 4..px * 4 + 4],
             &want_u8[px * 4..px * 4 + 4],
         );
+    }
+}
+
+/// A layer's fade by where it is (#592) — edge fade zones at any of
+/// the four edges, a roll's focus band down or across the frame, on a
+/// sprite moved, scaled and laid over a colour — is
+/// `klipp_title::pose_sprite` with the same `ScreenFade`, to a level:
+/// the viewer fades as an export does.
+#[test]
+fn a_faded_sprite_is_the_cpu_fade_uploaded() {
+    use klipp_core::title_motion::{EdgeFade, FocusBand, RampAxis, ScreenFade};
+    let Some(mut gpu) = pipeline() else { return };
+    // Solid across the frame, so the fade is all there is to see.
+    let mut rgba = vec![0u8; (W * H * 4) as usize];
+    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+        px.copy_from_slice(&[(i * 7 % 256) as u8, 180, 60, 255]);
+    }
+    let roll = EdgeFade { top: 0.3, bottom: 0.3, ..EdgeFade::NONE };
+    let lower_third = EdgeFade { left: 0.25, ..EdgeFade::NONE };
+    let all = EdgeFade { top: 0.1, bottom: 0.2, left: 0.15, right: 0.05 };
+    let band = |axis, band, edge_opacity| Some((axis, FocusBand { band, edge_opacity }));
+    let cases = [
+        (roll, None, 0, 3, 1.0, 1.0, None),
+        (EdgeFade::NONE, band(RampAxis::Vertical, 0.3, 0.1), 0, -2, 0.8, 1.0, None),
+        (lower_third, band(RampAxis::Horizontal, 0.5, 0.4), 4, 0, 1.0, 1.0, None),
+        (all, None, 0, 0, 0.6, 1.2, None),
+        (roll, band(RampAxis::Vertical, 0.5, 0.4), 1, 2, 1.0, 1.0, Some([20, 24, 40, 255])),
+    ];
+    for (edges, focus, dx, dy, opacity, scale, under) in cases {
+        let fade = ScreenFade::new(edges, focus).unwrap();
+        let rows = (0, H);
+        let anchor = (W as f32 / 2.0, H as f32 / 2.0);
+        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, Some(fade), rows);
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let want = gpu.stack_download_linear();
+
+        let sprite_shape = klipp_effects::gpu::SpriteShape {
+            top: edges.top,
+            bottom: edges.bottom,
+            left: edges.left,
+            right: edges.right,
+            focus_vertical: focus.map(|(axis, _)| axis == RampAxis::Vertical),
+            band: focus.map_or(0.5, |(_, f)| f.band),
+            edge_opacity: focus.map_or(1.0, |(_, f)| f.edge_opacity),
+        };
+        assert!(gpu.stack_begin(W, H, 1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 93, &rgba, dx, dy, opacity, scale, anchor, under, Some(sprite_shape), rows.0, rows.1));
+        assert!(gpu.stack_blend(0, 1.0, 0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got = gpu.stack_download_linear();
+        // One smoothstep on both sides; where alpha lands on a half code
+        // the GPU's float can round the other way.
+        let worst = worst_level(&want, &got);
+        assert!(worst <= 2.3, "faded sprite ({edges:?}, {focus:?}, {dx}, {dy}, {opacity}, ×{scale}, {under:?}) differs by {worst:.3} levels");
+        if under.is_none() {
+            // And it shows: an edge that fades is fainter than the middle.
+            let alpha = |x: u32, y: u32| got[((y * W + x) * 4 + 3) as usize];
+            let middle = alpha(W / 2, H / 2);
+            let across = edges.left > 0.0 || matches!(focus, Some((RampAxis::Horizontal, _)));
+            let edge = if across { alpha(0, H / 2) } else { alpha(W / 2, 0) };
+            assert!(edge < middle, "{edges:?} {focus:?}: edge {edge} is fainter than the middle {middle}");
+        }
     }
 }
 

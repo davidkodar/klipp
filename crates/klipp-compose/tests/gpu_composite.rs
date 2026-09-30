@@ -323,7 +323,7 @@ fn a_rolling_title_placed_on_the_gpu_matches() {
     let (mut seq, mut src) = stack();
     let td = klipp_timeline::TitleData::single_text_fx(
         klipp_timeline::TextBox { text: "Rolling\ncredits\nover the\npicture".into(), font_size: 48.0, ..Default::default() },
-        klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() },
+        klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() }], ..Default::default() },
     );
     seq.tracks[0].clips = vec![clip(ClipKind::Title(td), 0.0, 5.0)];
     for t in [1.0, 2.5, 4.0] {

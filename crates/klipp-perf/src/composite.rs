@@ -76,7 +76,7 @@ fn credits() -> ClipKind {
         font_size: 36.0,
         ..Default::default()
     };
-    let fx = klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0 }], ..Default::default() };
+    let fx = klipp_timeline::LayerFx { loops: vec![klipp_timeline::TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0, shape: Default::default() }], ..Default::default() };
     ClipKind::Title(klipp_timeline::TitleData::single_text_fx(tb, fx))
 }
 

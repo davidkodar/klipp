@@ -2300,6 +2300,9 @@ pub enum AppCommand {
     /// doing while on screen (blink, pulse, shake, wave, colour
     /// cycle, scroll, crawl, counter).
     SetTitleLoops { clip_id: ClipId, loops: Vec<crate::title_motion::TitleLoop> },
+    /// Set the targeted title layer's edge fade: how it fades out
+    /// towards the frame's edges, by where it is on screen (#592).
+    SetTitleEdgeFade { clip_id: ClipId, edge_fade: crate::title_motion::EdgeFade },
 
     // Linked clips
     ImportMediaLinked {

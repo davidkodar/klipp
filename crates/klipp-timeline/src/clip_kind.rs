@@ -482,6 +482,10 @@ pub struct LayerFx {
     /// Motion blur (`None` = off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion_blur: Option<MotionBlur>,
+    /// The layer fading out towards the frame's edges, by where it is on
+    /// screen, still or moving (#592).
+    #[serde(default, skip_serializing_if = "EdgeFade::is_none")]
+    pub edge_fade: EdgeFade,
 }
 
 fn motion_is_still(m: &TitleMotion) -> bool {
@@ -505,6 +509,7 @@ static STILL_FX: LayerFx = LayerFx {
     inner_shadows: Vec::new(),
     inner_shadow_stack_enabled: true,
     motion_blur: None,
+    edge_fade: EdgeFade::NONE,
 };
 
 /// A fresh layer's stack is the still one: nothing on it, every
@@ -636,6 +641,7 @@ impl LegacyTextFx {
             inner_shadows: self.inner_shadows,
             inner_shadow_stack_enabled: self.inner_shadow_stack_enabled,
             motion_blur: self.motion_blur,
+            edge_fade: EdgeFade::NONE,
         }
     }
 }
@@ -1209,11 +1215,11 @@ impl TitleData {
                 let typing = |cps: f32| Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, 1.0 / cps.max(0.5));
                 match legacy {
                     T::Static => {}
-                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec }),
-                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec }),
-                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false }),
-                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false }),
-                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true }),
+                    T::ScrollUp { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec, shape: Default::default() }),
+                    T::ScrollDown { speed_px_per_sec } => tb.loops.push(TitleLoop::Scroll { direction: ScrollDirection::Down, speed_px_per_sec, shape: Default::default() }),
+                    T::CrawlLeft { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: false, shape: Default::default() }),
+                    T::CrawlRight { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Right, speed_px_per_sec, repeat: false, shape: Default::default() }),
+                    T::Marquee { speed_px_per_sec } => tb.loops.push(TitleLoop::Crawl { direction: CrawlDirection::Left, speed_px_per_sec, repeat: true, shape: Default::default() }),
                     T::Typewriter { chars_per_sec } => tb.motion.enter = Some(typing(chars_per_sec)),
                     T::TypewriterOut { chars_per_sec } => tb.motion.exit = Some(typing(chars_per_sec)),
                     T::OutlineDrawOn { duration_secs } => {
@@ -1963,7 +1969,7 @@ pub enum CharEntrance {
     BlurIn,
 }
 
-use klipp_core::title_motion::{CrawlDirection, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
+use klipp_core::title_motion::{CrawlDirection, EdgeFade, Easing, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 
 fn default_one() -> f32 { 1.0 }
 
@@ -3948,7 +3954,7 @@ mod legacy_animation_migration_tests {
         assert!(matches!(td.animation_type, TitleAnimationType::Static));
         assert_eq!(
             td.primary_fx().loops,
-            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0 }]
+            vec![TitleLoop::Scroll { direction: ScrollDirection::Up, speed_px_per_sec: 60.0, shape: Default::default() }]
         );
     }
 
