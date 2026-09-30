@@ -254,10 +254,11 @@ exist until the plan runs.
   (`#top,#bottom`). `animate` is the entrance (fade, rise, drop,
   slide_left, slide_right, scale_up, scale_down, blur, mask_rise,
   mask_drop, typewriter) and `loop` a continuous effect (pulse, flash,
-  neon, wave, shake, color_cycle). The built-in styles are laid out for
-  a wide frame: in a vertical sequence give `size`, `x` and `y` of your
-  own, or restyle it with `style` once it is placed, and look at the
-  frame.
+  neon, wave, shake, color_cycle). `size` is pixels at 1080 on the
+  frame's short side, so a size and the built-in styles read the same
+  on a vertical frame as on a wide one, and the whole title is kept
+  inside title-safe; a word too wide for the frame shrinks the line
+  rather than breaking. Look at the frame all the same.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made

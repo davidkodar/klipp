@@ -53,6 +53,16 @@ pub trait AlphaMaskProcessor {
     fn dilate(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8>;
 }
 
+/// How much bigger than on a 1080p frame everything a title measures in
+/// pixels is drawn: sizes, strokes, shadows, padding. By the frame's short
+/// side, so a size reads the same on a 9:16 frame as on a 16:9 one. By the
+/// height, a 2160x3840 vertical frame drew its text 3.56 times as large on
+/// a frame 2160 wide, where 2 was meant: a `size: 120` headline filled the
+/// width and broke inside its words (#460, #508).
+pub fn frame_scale(width: u32, height: u32) -> f32 {
+    width.min(height).max(1) as f32 / 1080.0
+}
+
 /// Result of the layout phase — alpha mask + bounding box info.
 pub struct TitleLayout {
     /// Single-channel alpha mask of rasterized text.
@@ -75,7 +85,7 @@ pub struct TitleLayout {
     pub text_right: f32,
     /// Number of glyphs rendered.
     pub glyph_count: usize,
-    /// Scale factor (height / 1080.0).
+    /// Scale factor, [`frame_scale`].
     pub scale: f32,
     /// Per-glyph color data for rich text (style runs). Empty = uniform fill.
     /// Each entry: (mask_local_x, mask_local_y, glyph_w, glyph_h, color_rgba).
@@ -552,11 +562,11 @@ impl TitleRenderer {
             .get(&cache_key)
             .unwrap_or(&self.fallback_font);
 
-        // Scale font size relative to frame height (72pt at 1080p).
+        // Scale font size to the frame's short side (72pt at 1080p).
         // SmallCaps renders at 80 % of the configured size so the
         // upper-cased glyphs read like smallcaps even on fonts
         // without dedicated smallcaps glyph variants.
-        let scale = height as f32 / 1080.0;
+        let scale = crate::frame_scale(width, height);
         let case_scale = match tb.case_transform {
             klipp_timeline::TextCase::SmallCaps => 0.80,
             _ => 1.0,
@@ -598,6 +608,7 @@ impl TitleRenderer {
         if tb.text_direction == TextDirection::Rtl {
             resolved_text = resolved_text.chars().rev().collect();
         }
+        let font_px = fit_widest_word(font, &resolved_text, font_px, text_box_extent(title, width, height).0);
 
         // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
         // character. The straightforward "drop initial" path appends
@@ -841,7 +852,7 @@ impl TitleRenderer {
 
         // Apply line spacing multiplier (shift lines after the first)
         if tb.line_spacing != 1.0 {
-            let line_height_scale = height as f32 / 1080.0;
+            let line_height_scale = crate::frame_scale(width, height);
             let mut line_starts: Vec<(usize, f32)> = Vec::new();
             let mut last_y: Option<f32> = None;
             for (i, g) in glyphs_owned.iter().enumerate() {
@@ -1408,7 +1419,7 @@ impl TitleRenderer {
         use klipp_core::title_motion::{eval_loops, LoopGeometry};
         let (w, h) = (width as usize, height as usize);
         let Some((x0, y0, x1, y1)) = layer_bounds(&layer, width, height) else { return layer };
-        let scale = height as f32 / 1080.0;
+        let scale = crate::frame_scale(width, height);
 
         // The pose, on the numbers: entrance and exit combined, then
         // the loops on top. (alpha, dx, dy, scale, blur sigma, clip)
@@ -1643,7 +1654,7 @@ impl TitleRenderer {
         };
         // The loops, evaluated up front: a loop that only moves or
         // fades the layer can be applied to the cached resting render.
-        let scale = height as f32 / 1080.0;
+        let scale = crate::frame_scale(width, height);
         let poses: Vec<(usize, klipp_timeline::LoopPose)> = title
             .objects
             .iter()
@@ -2105,8 +2116,8 @@ impl TitleRenderer {
         }
         let layout = self.render_layout_at_time(&single, width, height, time_secs);
         if layout.glyph_count == 0 { return None; }
-        let px = fit.padding.x.max(0.0) * height as f32 / 1080.0;
-        let py = fit.padding.y.max(0.0) * height as f32 / 1080.0;
+        let px = fit.padding.x.max(0.0) * crate::frame_scale(width, height);
+        let py = fit.padding.y.max(0.0) * crate::frame_scale(width, height);
         let mut transform = klipp_timeline::default_text_transform();
         transform.center.x = (layout.text_left + layout.text_right) * 0.5 / width as f32;
         transform.center.y = (layout.text_top + layout.text_bottom) * 0.5 / height as f32;
@@ -2159,7 +2170,7 @@ impl TitleRenderer {
         // configured. Cheap; only run when the corresponding field
         // is non-zero.
         if let Some(tb) = title.primary_text() {
-            let scale = height as f32 / 1080.0;
+            let scale = crate::frame_scale(width, height);
             if tb.chromatic_aberration_px > 0.0 {
                 apply_chromatic_aberration(
                     &mut buf, width, height,
@@ -2296,12 +2307,13 @@ impl TitleRenderer {
         let cache_key = self.ensure_font_loaded(&tb.font_name, tb.font_style);
         let font = self.font_cache.get(&cache_key).unwrap_or(&self.fallback_font);
 
-        let scale = height as f32 / 1080.0;
+        let scale = crate::frame_scale(width, height);
         let case_scale = match tb.case_transform {
             klipp_timeline::TextCase::SmallCaps => 0.80,
             _ => 1.0,
         };
         let font_px = tb.font_size * scale * case_scale;
+        let font_px = fit_widest_word(font, &resolved_text, font_px, text_box_extent(title, width, height).0);
 
         let h_align = match tb.alignment {
             TextAlignment::Left => HorizontalAlign::Left,
@@ -3655,6 +3667,24 @@ fn paint_image_layer(
 
 /// Full-frame text keeps the historical five-percent margin. Explicit
 /// boxes use their authored dimensions for wrapping and cursor layout.
+/// `font_px`, or smaller so the widest word fits `max_width`. The layout
+/// wraps between words, and a single word wider than the box it can only
+/// break between letters: "Wherever" came out as "Whereve / r" (#508).
+/// Shrunk instead, the word stays whole; text that fits is untouched.
+fn fit_widest_word(font: &fontdue::Font, text: &str, font_px: f32, max_width: f32) -> f32 {
+    let widest = text
+        .split_whitespace()
+        .map(|word| word.chars().map(|c| font.metrics(c, font_px).advance_width).sum::<f32>())
+        .fold(0.0f32, f32::max);
+    if widest > max_width && widest > 0.0 && max_width > 0.0 {
+        // A little under the box, so rounding in the layout cannot put
+        // the last letter over the edge.
+        font_px * max_width / widest * 0.98
+    } else {
+        font_px
+    }
+}
+
 fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
     let size = title.objects.iter().find_map(|o| {
         matches!(o.content, TitleObjectContent::TextBox(_)).then_some(o.transform.size)
@@ -3700,13 +3730,13 @@ fn paint_shape_layer(
             // Render-scale the corner radius the same way the
             // text renderer scales font_size, so a value tuned at
             // 1080p reads the same at 720p / 4K.
-            let scaled_r = (r * (height as f32 / 1080.0)).max(0.0);
+            let scaled_r = (r * (crate::frame_scale(width, height))).max(0.0);
             let r2 = scaled_r * scaled_r;
 
             let fill = shape.fill;
             let stroke = shape.stroke;
             let stroke_w = stroke.map(|s| s.width).unwrap_or(0.0).max(0.0);
-            let scaled_sw = stroke_w * (height as f32 / 1080.0);
+            let scaled_sw = stroke_w * (crate::frame_scale(width, height));
             for y in y0..y1 {
                 for x in x0..x1 {
                     // Distance from the rectangle's edge — used both
@@ -5453,6 +5483,47 @@ mod tests {
             assert!(positions[i].x >= positions[i-1].x,
                 "x not increasing: pos[{}].x={} < pos[{}].x={}", i, positions[i].x, i-1, positions[i-1].x);
         }
+    }
+
+    fn text_title(text: &str, size: f32) -> klipp_timeline::TitleData {
+        let tb = klipp_timeline::TextBox { text: text.to_string(), font_size: size, ..Default::default() };
+        klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default())
+    }
+
+    /// #460: a size is pixels of the frame's short side at 1080, so a
+    /// title reads the same on a vertical frame as on a landscape one of
+    /// the same resolution. By the height, 9:16 drew it 3.56x as large on
+    /// a 2160-wide frame.
+    #[test]
+    fn a_size_reads_the_same_on_a_vertical_frame() {
+        let mut renderer = TitleRenderer::new();
+        let td = text_title("La Mata", 72.0);
+        let line = |r: &mut TitleRenderer, w, h| r.compute_char_positions(&td, w, h)[0].height;
+        for (w, h) in [(1920, 1080), (3840, 2160)] {
+            let (landscape, portrait) = (line(&mut renderer, w, h), line(&mut renderer, h, w));
+            assert!((landscape - portrait).abs() < 0.5, "{w}x{h}: {landscape} px landscape, {portrait} px portrait");
+        }
+        assert_eq!(frame_scale(2160, 3840), 2.0);
+        assert_eq!(frame_scale(1920, 1080), 1.0);
+    }
+
+    /// #508: a word wider than its box shrinks the text rather than
+    /// breaking between its letters ("Whereve / r"); text that fits keeps
+    /// its size.
+    #[test]
+    fn a_word_wider_than_the_box_stays_whole() {
+        let mut renderer = TitleRenderer::new();
+        let (w, h) = (1920, 1080);
+        let big = renderer.compute_char_positions(&text_title("Wherever We Walk", 420.0), w, h);
+        // On one line x only grows; a break goes back to the line's start.
+        assert!(big[..8].windows(2).all(|p| p[1].x > p[0].x), "\"Wherever\" broke across lines: {:?}", big[..8].iter().map(|c| c.x).collect::<Vec<_>>());
+        let box_w = 0.9 * w as f32;
+        let right = big[..8].iter().map(|c| c.x + c.advance).fold(0.0f32, f32::max) - big[0].x;
+        assert!(right <= box_w + 1.0, "the word is {right} px, wider than the {box_w} px box");
+
+        let fits = renderer.compute_char_positions(&text_title("Wherever We Walk", 72.0), w, h);
+        let unfitted = TitleRenderer::new().compute_char_positions(&text_title("Hi", 72.0), w, h);
+        assert!((fits[0].height - unfitted[0].height).abs() < 0.5, "text that fits keeps its size");
     }
 
     #[test]
