@@ -1937,6 +1937,9 @@ pub struct AppState {
 
     // Eyedropper mode (shared between WB and qualifier)
     pub eyedropper_mode: EyedropperMode,
+    /// What was added to the timeline from the Library tabs this
+    /// session, for their Recent lists.
+    pub library_recent: crate::browser::library_card::LibraryRecent,
     /// Pixel coordinates to sample for white balance (set by viewer on click, consumed by app)
     /// The clip the white balance eyedropper was armed for.
     pub wb_pick_clip: Option<ClipId>,
@@ -3922,6 +3925,7 @@ impl Default for AppState {
             hdr_reference_output: false,
             hdr_nits_under_pointer: None,
             eyedropper_mode: EyedropperMode::None,
+            library_recent: Default::default(),
             wb_pick_clip: None,
             qualifier_sample_request: None,
             matte_preview_active: false,

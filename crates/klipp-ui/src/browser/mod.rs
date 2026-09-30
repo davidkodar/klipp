@@ -768,14 +768,25 @@ pub struct BrowserPanel {
     generator_previews: generator_previews::GeneratorPreviews,
     // ── Transitions tab state ──
     pub transitions_category: Option<transitions_tab::TransitionsCategory>,
-    pub transitions_source_filter: transitions_tab::TransitionsSourceFilter,
-    pub transitions_gpu_only: bool,
+    /// Favourites or Recent, shown in place of a category.
+    pub transitions_list: Option<library_card::LibraryList>,
+    /// Starred transitions by `string_key`. Persisted via
+    /// `prefs.effects_browser.favorite_transitions`, mirrored as
+    /// `favorite_effects` is.
+    pub favorite_transitions: Vec<String>,
+    /// Favourites or Recent in the Titles tab, in place of a category.
+    pub titles_list: Option<library_card::LibraryList>,
+    /// Starred title templates by name, persisted as the transitions are.
+    pub favorite_titles: Vec<String>,
+    /// Favourites or Recent in the Generators tab.
+    pub generators_list: Option<library_card::LibraryList>,
+    /// Starred generators by name, persisted as the transitions are.
+    pub favorite_generators: Vec<String>,
     pub transitions_view_mode: effects_tab::EffectViewMode,
     pub transitions_sort: effects_tab::EffectSort,
     pub transitions_selected: Option<String>,
     // ── Generators tab state ──
     pub generators_category: Option<&'static str>,
-    pub generators_source_filter: generators_tab::GeneratorsSourceFilter,
     pub generators_animated_only: bool,
     pub generators_view_mode: effects_tab::EffectViewMode,
     pub generators_sort: effects_tab::EffectSort,
@@ -1007,13 +1018,16 @@ impl Default for BrowserPanel {
             transition_previews: transition_previews::TransitionPreviews::default(),
             generator_previews: generator_previews::GeneratorPreviews::default(),
             transitions_category: None,
-            transitions_source_filter: transitions_tab::TransitionsSourceFilter::All,
-            transitions_gpu_only: false,
+            transitions_list: None,
+            favorite_transitions: Vec::new(),
+            titles_list: None,
+            favorite_titles: Vec::new(),
+            generators_list: None,
+            favorite_generators: Vec::new(),
             transitions_view_mode: effects_tab::EffectViewMode::Grid,
             transitions_sort: effects_tab::EffectSort::NameAsc,
             transitions_selected: None,
             generators_category: None,
-            generators_source_filter: generators_tab::GeneratorsSourceFilter::All,
             generators_animated_only: false,
             generators_view_mode: effects_tab::EffectViewMode::Grid,
             generators_sort: effects_tab::EffectSort::NameAsc,
@@ -4827,6 +4841,8 @@ impl BrowserPanel {
                     theme,
                     &mut self.search_query,
                     &mut self.titles_category,
+                    &mut self.titles_list,
+                    &mut self.favorite_titles,
                     &mut self.titles_preview_bg,
                     &mut self.titles_preview_text,
                     &mut self.titles_source_filter,
@@ -4852,8 +4868,8 @@ impl BrowserPanel {
                     theme,
                     &mut self.search_query,
                     &mut self.transitions_category,
-                    &mut self.transitions_source_filter,
-                    &mut self.transitions_gpu_only,
+                    &mut self.transitions_list,
+                    &mut self.favorite_transitions,
                     &mut self.transitions_view_mode,
                     &mut self.transitions_sort,
                     &mut self.transitions_selected,
@@ -4872,7 +4888,8 @@ impl BrowserPanel {
                     theme,
                     &mut self.search_query,
                     &mut self.generators_category,
-                    &mut self.generators_source_filter,
+                    &mut self.generators_list,
+                    &mut self.favorite_generators,
                     &mut self.generators_animated_only,
                     &mut self.generators_view_mode,
                     &mut self.generators_sort,

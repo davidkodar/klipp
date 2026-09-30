@@ -1357,6 +1357,9 @@ impl KlippApp {
         app.browser.files_type_filter = app.prefs.file_browser.file_type_filter;
         app.browser.pinned_folders = app.prefs.file_browser.pinned_folders.clone();
         app.browser.favorite_effects = app.prefs.effects_browser.favorite_effects.clone();
+        app.browser.favorite_transitions = app.prefs.effects_browser.favorite_transitions.clone();
+        app.browser.favorite_titles = app.prefs.effects_browser.favorite_titles.clone();
+        app.browser.favorite_generators = app.prefs.effects_browser.favorite_generators.clone();
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -23479,6 +23482,7 @@ impl KlippApp {
                     Ok(plan) => {
                         let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                         self.apply_edits_as_one(&edits, "Add Transition");
+                        crate::browser::library_card::push_recent(&mut self.state.library_recent.transitions, spec.string_key);
                     }
                     Err(r) => self.state.toast.show(format!("No transition: {}. {}", r.why, capitalise(&r.hint))),
                 }
@@ -35162,6 +35166,15 @@ impl KlippApp {
         if self.browser.favorite_effects != self.prefs.effects_browser.favorite_effects {
             self.browser.favorite_effects = self.prefs.effects_browser.favorite_effects.clone();
         }
+        if self.browser.favorite_transitions != self.prefs.effects_browser.favorite_transitions {
+            self.browser.favorite_transitions = self.prefs.effects_browser.favorite_transitions.clone();
+        }
+        if self.browser.favorite_titles != self.prefs.effects_browser.favorite_titles {
+            self.browser.favorite_titles = self.prefs.effects_browser.favorite_titles.clone();
+        }
+        if self.browser.favorite_generators != self.prefs.effects_browser.favorite_generators {
+            self.browser.favorite_generators = self.prefs.effects_browser.favorite_generators.clone();
+        }
 
         // Mark the browser as the active panel when the user presses
         // anywhere inside it this frame. Single PanelKind for the
@@ -35232,6 +35245,18 @@ impl KlippApp {
             }
             if self.browser.favorite_effects != self.prefs.effects_browser.favorite_effects {
                 self.prefs.effects_browser.favorite_effects = self.browser.favorite_effects.clone();
+                let _ = self.prefs.save();
+            }
+            if self.browser.favorite_transitions != self.prefs.effects_browser.favorite_transitions {
+                self.prefs.effects_browser.favorite_transitions = self.browser.favorite_transitions.clone();
+                let _ = self.prefs.save();
+            }
+            if self.browser.favorite_titles != self.prefs.effects_browser.favorite_titles {
+                self.prefs.effects_browser.favorite_titles = self.browser.favorite_titles.clone();
+                let _ = self.prefs.save();
+            }
+            if self.browser.favorite_generators != self.prefs.effects_browser.favorite_generators {
+                self.prefs.effects_browser.favorite_generators = self.browser.favorite_generators.clone();
                 let _ = self.prefs.save();
             }
             // Save file-ratings cache to disk if changed.
