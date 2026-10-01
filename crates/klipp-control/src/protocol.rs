@@ -543,6 +543,16 @@ pub enum ControlCommand {
     /// changed since it was resolved, in which case nothing is applied.
     Apply {
         ops: Vec<klipp_document::ops::Op>,
+        /// The revision returned by plan or another timeline read. Refuses
+        /// an edit prepared for an older document before resolving it.
+        #[serde(default)]
+        expected_revision: Option<u64>,
+        /// The project_identity returned with plan, when the caller has it.
+        /// This counter moves when projects change within one app launch;
+        /// it starts again after Klipp restarts. Check it alongside a
+        /// revision for stronger protection against a different project.
+        #[serde(default)]
+        expected_project_identity: Option<u64>,
         #[serde(default)]
         label: Option<String>,
         /// As for `plan`.

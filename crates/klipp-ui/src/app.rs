@@ -1920,18 +1920,26 @@ impl KlippApp {
             // longer exists and nothing of it is applied.
             if !env.edits.is_empty() {
                 let now = self.state.control_shared.revision();
-                match env.expected_revision {
-                    Some(r) if r != now => {
-                        refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
+                let project_identity = self.state.control_shared.project.lock().ok().map(|p| p.identity);
+                if let Some(want) = env.expected_project_identity {
+                    if project_identity != Some(want) {
+                        refused = Some(format!("the project changed since this plan was made (expected identity {want}, current identity {}); plan again", project_identity.map_or_else(|| "unavailable".into(), |id| id.to_string())));
                     }
-                    _ => {
-                        self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
-                        // A plan proposed for the person's approval opens
-                        // where they can read it.
-                        if env.edits.iter().any(|e| matches!(e, EditCommand::SetEditPlan { new: Some(p), .. } if !p.approved)) {
-                            self.state.show_edit_plan = true;
-                            self.state.edit_plan_note = None;
+                }
+                if refused.is_none() {
+                    if let Some(r) = env.expected_revision {
+                        if r != now {
+                            refused = Some(format!("the document is at revision {now}, the plan was made at {r}; plan again"));
                         }
+                    }
+                }
+                if refused.is_none() {
+                    self.apply_edits_as_one(&env.edits, env.label.as_deref().unwrap_or("Socket Edits"));
+                    // A plan proposed for the person's approval opens
+                    // where they can read it.
+                    if env.edits.iter().any(|e| matches!(e, EditCommand::SetEditPlan { new: Some(p), .. } if !p.approved)) {
+                        self.state.show_edit_plan = true;
+                        self.state.edit_plan_note = None;
                     }
                 }
             }

@@ -55,9 +55,10 @@ frames.
    each step would do and each touched clip's range afterwards.
    Nothing changes. If a step cannot be done the reply says which,
    why, and what would help; fix the ops and plan again.
-4. **Apply.** `klipp_apply` with the same ops: resolved again, applied
-   as one undo step, refused whole if the timeline changed since you
-   planned. `klipp_undo` takes the whole action back.
+4. **Apply.** `klipp_apply` with the same ops and the plan's
+   `expected_revision` (and `expected_project_identity` when available): resolved again,
+   applied as one undo step, refused whole if the timeline or project
+   changed since you planned. `klipp_undo` takes the whole action back.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
    `klipp_contact_sheet` over the range you cut. `klipp_frame_stats`
@@ -99,8 +100,9 @@ frames.
   sequence's rate. Never ticks.
 - Every clip, track and media item has an id; the views show them.
   A split makes two new clips with new ids, reported in the reply.
-- Every write returns the document revision after it. If you hold a
-  plan and the revision moved, plan again.
+- Every write returns the document revision after it. Pass the revision
+  from a plan to apply, with its project identity when available; if
+  either moved, plan again.
 
 ## Anchors
 

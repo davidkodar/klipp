@@ -563,6 +563,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 "ops": args.get("ops").cloned().ok_or("missing required argument: ops")?,
                 "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
             });
+            for key in ["expected_revision", "expected_project_identity"] {
+                if let Some(value) = args.get(key) {
+                    let number = value.as_u64().ok_or_else(|| format!("{key} must be a non-negative integer"))?;
+                    v[key] = json!(number);
+                }
+            }
             if let Some(l) = args.get("label").and_then(|v| v.as_str()) {
                 v["label"] = json!(l);
             }
@@ -948,6 +954,18 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             }
             let out = format!("{text}\n\nDetails:\n{}", serde_json::to_string_pretty(&rest).unwrap_or_default());
             return Ok(vec![json!({ "type": "text", "text": out })]);
+        }
+    }
+    if name == "klipp_plan" {
+        if let Some(summary) = result.get("text").and_then(|v| v.as_str()) {
+            let mut out = summary.to_string();
+            if let (Some(revision), Some(project)) = (
+                result.get("revision").and_then(Value::as_u64),
+                result.get("project_identity").and_then(Value::as_u64),
+            ) {
+                out.push_str(&format!("\n\nTo apply this plan, pass expected_revision: {revision} and expected_project_identity: {project} with the same ops."));
+            }
+            return Ok(with_next(out));
         }
     }
     if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
@@ -1597,8 +1615,9 @@ fn tool_definitions() -> Vec<Value> {
              vec!["ops"]),
         tool("klipp_apply",
              concat!("Apply a list of editorial operations as ONE undo step, after resolving them the \
-              way klipp_plan does; refused whole if any op cannot be done or if the timeline \
-              changed since the plan was resolved. Replies with the steps and the revision. ",
+              way klipp_plan does; pass its expected_revision and optionally expected_project_identity \
+              to refuse the whole edit if the timeline or project changed since planning. \
+              Replies with the steps and the revision. ",
               "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
               each is an object with \"op\" and its fields:\n\
               place {media_id, track, at, source_in?, source_out?, insert?, with_audio?} — a \
@@ -1767,6 +1786,8 @@ fn tool_definitions() -> Vec<Value> {
               reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
               past the media are refused with why and what would help, and nothing is applied."),
              json!({ "ops": { "type": "array", "items": { "type": "object" } },
+                     "expected_revision": { "type": "integer", "minimum": 0, "description": "Revision from klipp_plan or a timeline read; refuse if it changed" },
+                     "expected_project_identity": { "type": "integer", "minimum": 0, "description": "Optional project identity from klipp_plan; refuse if the open project changed" },
                      "label": { "type": "string", "description": "A name for the history entry" },
                      "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when the reply is the plan as text with long runs of one kind of step folded" } }),
              vec!["ops"]),
@@ -2207,6 +2228,23 @@ mod friendly_answer_tests {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn apply_carries_plan_preconditions_and_plan_exposes_them() {
+        let ops = json!([{ "op": "cut", "from": { "frame": 2 }, "to": { "frame": 3 } }]);
+        let command = tool_to_command("klipp_apply", &json!({
+            "ops": ops, "expected_revision": 8, "expected_project_identity": 3,
+        })).unwrap();
+        assert_eq!(command["expected_revision"], 8);
+        assert_eq!(command["expected_project_identity"], 3);
+        assert!(tool_to_command("klipp_apply", &json!({ "ops": ops, "expected_revision": "8" })).is_err());
+
+        let plan = content_for("klipp_plan", &json!({ "text": "one cut", "revision": 8, "project_identity": 3 })).unwrap();
+        let text = plan[0]["text"].as_str().unwrap();
+        assert!(text.contains("expected_revision: 8") && text.contains("expected_project_identity: 3"));
+        let incomplete = content_for("klipp_plan", &json!({ "text": "one cut", "revision": 8 })).unwrap();
+        assert_eq!(incomplete[0]["text"], "one cut");
+    }
 
     #[test]
     fn every_advertised_tool_has_a_dispatch_path() {
