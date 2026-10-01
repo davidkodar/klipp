@@ -958,15 +958,33 @@ impl Response {
 /// cleared on logout. Falls back to the temp dir with the uid in the
 /// name so two users on one machine cannot collide.
 pub fn socket_path() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("KLIPP_CONTROL_SOCKET") {
-        return std::path::PathBuf::from(dir);
+    socket_path_from(
+        std::env::var("KLIPP_CONTROL_SOCKET").ok().as_deref(),
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        unsafe { libc_getuid() },
+        &|p| p.is_dir(),
+    )
+}
+
+/// [`socket_path`] from its inputs: the override, the session's runtime
+/// directory, the user, and whether a directory exists.
+///
+/// Without `XDG_RUNTIME_DIR` the socket is still in the user's runtime
+/// directory when there is one, `/run/user/<uid>`, where the app put it:
+/// an assistant may start the MCP server with that variable left out —
+/// Codex does — and the server then looked in `/tmp` for a socket that
+/// was never there, so Klipp read as not running (#625).
+fn socket_path_from(over: Option<&str>, runtime: Option<&str>, uid: u32, is_dir: &dyn Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    if let Some(path) = over.filter(|p| !p.is_empty()) {
+        return std::path::PathBuf::from(path);
     }
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir).join("klipp-control.sock");
-        }
+    if let Some(dir) = runtime.filter(|d| !d.is_empty()) {
+        return std::path::PathBuf::from(dir).join("klipp-control.sock");
     }
-    let uid = unsafe { libc_getuid() };
+    let run = std::path::PathBuf::from(format!("/run/user/{uid}"));
+    if is_dir(&run) {
+        return run.join("klipp-control.sock");
+    }
     std::env::temp_dir().join(format!("klipp-control-{uid}.sock"))
 }
 
@@ -979,6 +997,27 @@ unsafe fn libc_getuid() -> u32 {
 }
 
 fn default_analyze() -> bool { true }
+
+#[cfg(test)]
+mod socket_path_tests {
+    use super::socket_path_from;
+    use std::path::{Path, PathBuf};
+
+    /// #625: the app and the MCP server find the same socket whether or
+    /// not the server was started with `XDG_RUNTIME_DIR`: Codex leaves it
+    /// out, and the server looked in /tmp.
+    #[test]
+    fn the_socket_is_the_same_with_or_without_the_runtime_variable() {
+        let has_run = |p: &Path| p == Path::new("/run/user/1000");
+        let with = socket_path_from(None, Some("/run/user/1000"), 1000, &has_run);
+        let without = socket_path_from(None, None, 1000, &has_run);
+        assert_eq!(with, PathBuf::from("/run/user/1000/klipp-control.sock"));
+        assert_eq!(without, with, "found without the variable");
+        assert_eq!(socket_path_from(Some("/x/test.sock"), None, 1000, &has_run), PathBuf::from("/x/test.sock"), "the override wins");
+        let none = socket_path_from(None, None, 1000, &|_| false);
+        assert_eq!(none, std::env::temp_dir().join("klipp-control-1000.sock"), "no runtime directory at all: /tmp, as before");
+    }
+}
 
 #[cfg(test)]
 mod tests {
