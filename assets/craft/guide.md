@@ -187,7 +187,12 @@ exist until the plan runs.
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
   clip. `kind` is vignette, grain, glow, blur or sharpen; `amount` 0 to
-  1. A second of the same kind replaces the first.
+  1. A second of the same kind replaces the first. `fill_bars` fills
+  the black bars round a picture that does not fill the frame (an
+  upright phone shot in a wide sequence, a wide one in a vertical
+  sequence) with the picture itself, enlarged and blurred, so the frame
+  is full and the whole picture still shows; more `amount` is softer
+  and darker. Put it on every such clip when asked to fill the bars.
 - `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
   edges a little to hide the movement.
 - `retime {clip_id, speed, ripple?}`: change a clip's speed, its linked

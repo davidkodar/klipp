@@ -221,3 +221,42 @@ fn layer_1080p_timing() {
     assert!(error < 2e-4, "1080p error {error}");
     eprintln!("1080p single-card corners+shadow+glow: CPU {cpu:?}; GPU incl upload/download {gpu_time:?}; max error {error}");
 }
+
+/// An upright picture in a wide frame, the shape Fill Bars is for:
+/// colour that changes across it and down it, so a fill sampled in the
+/// wrong place shows.
+fn upright(w: u32, h: u32) -> Vec<f32> {
+    let mut p = vec![0.0; (w * h * 4) as usize];
+    let (x0, x1) = (w * 2 / 5, w * 3 / 5);
+    for y in 0..h {
+        for x in x0..x1 {
+            let i = ((y * w + x) * 4) as usize;
+            let (u, v) = ((x - x0) as f32 / (x1 - x0) as f32, y as f32 / h as f32);
+            p[i..i + 4].copy_from_slice(&[0.2 + u, 0.9 - v * 0.7, 0.3 + u * v, 1.0]);
+        }
+    }
+    p
+}
+
+/// #680: the bars filled on the GPU as on the CPU, at a size built
+/// whole and at one built an eighth the size; with a picture that fills
+/// the frame, and with a cropped, rounded card.
+#[test]
+fn fill_bars_matches_cpu_on_gpu() {
+    let Some(mut gpu) = pipeline() else { return };
+    let fill = |blur: f32, zoom: f32, darken: f32| E::FillBars { blur, zoom, darken };
+    for (w, h) in [(65u32, 49u32), (160, 90), (203, 115)] {
+        let p = upright(w, h);
+        for effects in [
+            vec![fill(0.0, 1.0, 0.0)],
+            vec![fill(0.04, 1.0, 0.3)],
+            vec![fill(0.1, 1.6, 0.6)],
+            vec![E::RoundedCorners { radius: 0.2, feather: 0.0 }, fill(0.03, 1.2, 0.25)],
+        ] {
+            compare(&mut gpu, &p, w, h, &effects);
+        }
+        compare(&mut gpu, &card(w, h), w, h, &[fill(0.05, 1.0, 0.25)]);
+        let full: Vec<f32> = (0..w * h).flat_map(|_| [0.4, 0.5, 0.6, 1.0]).collect();
+        compare(&mut gpu, &full, w, h, &[fill(0.05, 1.0, 0.25)]);
+    }
+}

@@ -5855,7 +5855,7 @@ impl GpuEffectsPipeline {
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
-        if effects.iter().any(|e| matches!(e, BuiltinEffect::RoundedCorners { .. } | BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. })) {
+        if effects.iter().any(|e| matches!(e, BuiltinEffect::RoundedCorners { .. } | BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } | BuiltinEffect::FillBars { .. })) {
             self.layer_gpu.ensure_buffers(&self.device, byte_size);
         }
         let buf_a = self.buf_a.as_ref().unwrap();
@@ -6769,6 +6769,10 @@ impl GpuEffectsPipeline {
                 }
                 BuiltinEffect::RoundedCorners { radius, feather } => {
                     self.layer_corners(input, output, width, height, *radius, *feather);
+                    current_in_a = !current_in_a;
+                }
+                BuiltinEffect::FillBars { blur, zoom, darken } => {
+                    self.layer_fill(input, output, width, height, *blur, *zoom, *darken);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } => {
@@ -16528,6 +16532,8 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("LAYER_CAST", layer::CAST),
         ("LAYER_CORNERS", layer::CORNERS),
         ("LAYER_OVER", layer::OVER),
+        ("LAYER_FILL_SMALL", layer::FILL_SMALL),
+        ("LAYER_FILL_OVER", layer::FILL_OVER),
         ("SHADER_OPACITY", SHADER_OPACITY),
         ("SHADER_COLOR_FADE", SHADER_COLOR_FADE),
         ("SHADER_BLUR_H", SHADER_BLUR_H),

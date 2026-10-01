@@ -8,6 +8,8 @@ pub(super) struct LayerGpu {
     corners: wgpu::ComputePipeline,
     cast: wgpu::ComputePipeline,
     over: wgpu::ComputePipeline,
+    fill_small: wgpu::ComputePipeline,
+    fill_over: wgpu::ComputePipeline,
     scratch: Vec<wgpu::Buffer>,
     size: u64,
 }
@@ -38,6 +40,8 @@ impl LayerGpu {
             cast: build(single, CAST, "make_cast"),
             corners: build(pair, CORNERS, "corners"),
             over: build(pair, OVER, "over"),
+            fill_small: build(pair, FILL_SMALL, "fill_small"),
+            fill_over: build(pair, FILL_OVER, "fill_over"),
             scratch: Vec::new(),
             size: 0,
         }
@@ -91,7 +95,59 @@ impl Params {
     }
 }
 
+/// [`crate::layer::fill_bars`]'s parameters, as its two shaders read them.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FillParams {
+    width: u32,
+    height: u32,
+    small_w: u32,
+    small_h: u32,
+    zoom: f32,
+    darken: f32,
+    pad: [u32; 2],
+}
+
 impl GpuEffectsPipeline {
+    /// [`crate::layer::fill_bars`] on resident buffers: the picture's box
+    /// found as the corners find it, the fill built an eighth the size,
+    /// blurred there, and laid under the picture at full size (#680).
+    /// Always writes `output`; with no bars it is the input.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn layer_fill(
+        &self,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        blur: f32,
+        zoom: f32,
+        darken: f32,
+    ) {
+        let (sw, sh) = crate::layer::fill_size(width, height);
+        let bounds = self.buf_c.as_ref().unwrap();
+        let (small, spare) = (&self.layer_gpu.scratch[0], &self.layer_gpu.scratch[1]);
+        self.write_params(&Params::new(width, height));
+        self.dispatch(&self.layer_gpu.rows, input, &self.layer_gpu.scratch[1], height.div_ceil(WORKGROUP_SIZE));
+        self.dispatch(&self.layer_gpu.bounds, &self.layer_gpu.scratch[1], bounds, 1);
+        let fill = FillParams { width, height, small_w: sw, small_h: sh, zoom, darken: darken.clamp(0.0, 1.0), pad: [0; 2] };
+        self.write_params(&fill);
+        self.dispatch_pair(&self.layer_gpu.fill_small, input, bounds, small, (sw * sh).div_ceil(WORKGROUP_SIZE));
+        let sigma = blur.max(0.0) * sw as f32;
+        if sigma >= 0.5 {
+            for radius in crate::blur::boxes_for_gaussian(sigma) {
+                if radius == 0 {
+                    continue;
+                }
+                self.write_params(&BlurParams { width: sw, height: sh, radius: radius as i32, _pad: 0 });
+                self.dispatch(&self.blur_h_pipeline, small, spare, (sw * sh).div_ceil(WORKGROUP_SIZE));
+                self.dispatch(&self.blur_v_pipeline, spare, small, (sw * sh).div_ceil(WORKGROUP_SIZE));
+            }
+        }
+        self.write_params(&fill);
+        self.dispatch_pair(&self.layer_gpu.fill_over, input, small, output, (width * height).div_ceil(WORKGROUP_SIZE));
+    }
+
     pub(super) fn layer_corners(
         &self,
         input: &wgpu::Buffer,
@@ -330,6 +386,103 @@ fn over(@builtin(global_invocation_id) gid: vec3<u32>) {
         pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
     }
     output[idx] = pack(pixel);
+}
+"#
+);
+
+/// Linear between the four pixels round `(x, y)`, clamped to `lo..=hi`:
+/// `crate::layer::bilinear`, for a buffer bound as `buf`.
+macro_rules! fill_bilinear_wgsl {
+    ($buf:literal) => {
+        concat!(
+            "fn bilinear_", $buf, "(x_in: f32, y_in: f32, w: u32, lo: vec2<f32>, hi: vec2<f32>) -> vec4<f32> {\n",
+            "    let x = clamp(x_in, lo.x, hi.x);\n",
+            "    let y = clamp(y_in, lo.y, hi.y);\n",
+            "    let ix = floor(x);\n",
+            "    let iy = floor(y);\n",
+            "    let tx = x - ix;\n",
+            "    let ty = y - iy;\n",
+            "    let x0 = u32(ix); let y0 = u32(iy);\n",
+            "    let x1 = u32(min(ix + 1.0, hi.x)); let y1 = u32(min(iy + 1.0, hi.y));\n",
+            "    let a = unpack(", $buf, "[y0 * w + x0]); let b = unpack(", $buf, "[y0 * w + x1]);\n",
+            "    let c = unpack(", $buf, "[y1 * w + x0]); let d = unpack(", $buf, "[y1 * w + x1]);\n",
+            "    let top = a + (b - a) * tx;\n",
+            "    let bottom = c + (d - c) * tx;\n",
+            "    return top + (bottom - top) * ty;\n",
+            "}\n",
+        )
+    };
+}
+
+pub(super) const FILL_SMALL: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    r#"
+struct FillParams {
+    width: u32, height: u32, small_w: u32, small_h: u32,
+    zoom: f32, darken: f32, pad0: u32, pad1: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>; // not-pixels: reduced opaque bounds
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: FillParams;
+"#,
+    fill_bilinear_wgsl!("input"),
+    r#"
+@compute @workgroup_size(256)
+fn fill_small(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.small_w * params.small_h { return; }
+    let box = second[0];
+    let wf = f32(params.width);
+    let hf = f32(params.height);
+    // Nothing opaque, or a picture that fills the frame: no bars, and an
+    // empty fill says so to fill_over.
+    if !(box.z > box.x) || (box.x <= 0.0 && box.y <= 0.0 && box.z >= wf && box.w >= hf) {
+        output[idx] = pack(vec4<f32>(0.0));
+        return;
+    }
+    let scale = max(wf / (box.z - box.x), hf / (box.w - box.y)) * max(params.zoom, 1.0);
+    let cx = (box.x + box.z) * 0.5;
+    let cy = (box.y + box.w) * 0.5;
+    let fx = (f32(idx % params.small_w) + 0.5) * wf / f32(params.small_w);
+    let fy = (f32(idx / params.small_w) + 0.5) * hf / f32(params.small_h);
+    let c = bilinear_input(cx + (fx - wf * 0.5) / scale - 0.5, cy + (fy - hf * 0.5) / scale - 0.5, params.width, box.xy, box.zw - vec2<f32>(1.0));
+    output[idx] = pack(vec4<f32>(c.rgb, 1.0));
+}
+"#
+);
+
+pub(super) const FILL_OVER: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    r#"
+struct FillParams {
+    width: u32, height: u32, small_w: u32, small_h: u32,
+    zoom: f32, darken: f32, pad0: u32, pad1: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: FillParams;
+"#,
+    fill_bilinear_wgsl!("second"),
+    r#"
+@compute @workgroup_size(256)
+fn fill_over(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let rx = f32(params.small_w) / f32(params.width);
+    let ry = f32(params.small_h) / f32(params.height);
+    let x = f32(idx % params.width);
+    let y = f32(idx / params.width);
+    let hi = vec2<f32>(f32(params.small_w - 1u), f32(params.small_h - 1u));
+    let bg = bilinear_second((x + 0.5) * rx - 0.5, (y + 0.5) * ry - 0.5, params.small_w, vec2<f32>(0.0), hi);
+    if bg.a < 0.5 {
+        output[idx] = input[idx];
+        return;
+    }
+    let px = unpack(input[idx]);
+    let keep = 1.0 - params.darken;
+    output[idx] = pack(vec4<f32>(px.rgb * px.a + bg.rgb * keep * (1.0 - px.a), 1.0));
 }
 "#
 );

@@ -233,6 +233,7 @@ pub(crate) fn apply(
             crate::layer::drop_shadow(p, w, h, offset_x, offset_y, blur, color, opacity)
         }
         OuterGlow { radius, intensity, color } => crate::layer::outer_glow(p, w, h, radius, intensity, color),
+        FillBars { blur, zoom, darken } => crate::layer::fill_bars(p, w, h, blur, zoom, darken),
         Sharpen { amount } => {
             if amount.abs() < f32::EPSILON {
                 return p;

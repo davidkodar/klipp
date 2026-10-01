@@ -157,6 +157,81 @@ fn cast(p: &[f32], w: u32, h: u32, s: &Spill) -> Option<Vec<f32>> {
     Some(if sigma >= 0.5 { gaussian(&out, w, h, sigma, true) } else { out })
 }
 
+/// How much smaller than the frame [`fill_bars`] builds its fill. It is
+/// blurred, so it keeps no detail a full-size buffer would, and a blur
+/// an eighth the size reaches as far for a sixty-fourth of the pixels
+/// and an eighth of the taps.
+pub const FILL_SHRINK: u32 = 8;
+
+/// The size of [`fill_bars`]'s fill for a `w`×`h` frame.
+pub fn fill_size(w: u32, h: u32) -> (u32, u32) {
+    if w < 8 * FILL_SHRINK || h < 8 * FILL_SHRINK {
+        (w, h)
+    } else {
+        (w.div_ceil(FILL_SHRINK), h.div_ceil(FILL_SHRINK))
+    }
+}
+
+/// `buf` (`w`×`h`) at `(x, y)` in pixel centres, linear between the four
+/// round it, clamped to the pixels `lo..=hi`.
+fn bilinear(buf: &[f32], w: u32, x: f32, y: f32, lo: (f32, f32), hi: (f32, f32)) -> [f32; 4] {
+    let x = x.clamp(lo.0, hi.0);
+    let y = y.clamp(lo.1, hi.1);
+    let (ix, iy) = (x.floor(), y.floor());
+    let (tx, ty) = (x - ix, y - iy);
+    let (x0, y0) = (ix as usize, iy as usize);
+    let (x1, y1) = ((ix + 1.0).min(hi.0) as usize, (iy + 1.0).min(hi.1) as usize);
+    let at = |x: usize, y: usize, c: usize| buf[(y * w as usize + x) * 4 + c];
+    std::array::from_fn(|c| {
+        let top = at(x0, y0, c) + (at(x1, y0, c) - at(x0, y0, c)) * tx;
+        let bottom = at(x0, y1, c) + (at(x1, y1, c) - at(x0, y1, c)) * tx;
+        top + (bottom - top) * ty
+    })
+}
+
+/// Fill the bars round the picture — a phone's upright shot in a wide
+/// frame, a wide one in a tall frame — with the picture itself: scaled
+/// until it covers the frame (and `zoom` times more), blurred by `blur`
+/// (a fraction of the frame width), darkened by `darken` (0 to 1), and
+/// laid under it (#680). What Resolve calls Blanking Fill, and what is
+/// otherwise built by hand from a second, enlarged copy of the clip on
+/// the track below. A picture that already fills the frame is left as it
+/// is, and the frame comes out opaque.
+pub fn fill_bars(p: Vec<f32>, w: u32, h: u32, blur: f32, zoom: f32, darken: f32) -> Vec<f32> {
+    let Some((x0, y0, x1, y1)) = opaque_box(&p, w as usize, h as usize) else { return p };
+    if x0 <= 0.0 && y0 <= 0.0 && x1 >= w as f32 && y1 >= h as f32 {
+        return p;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    let (sw, sh) = fill_size(w, h);
+    // Scaled about the picture's middle to cover the frame, centred.
+    let scale = (wf / (x1 - x0)).max(hf / (y1 - y0)) * zoom.max(1.0);
+    let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    let mut small = vec![0.0f32; (sw * sh * 4) as usize];
+    for (k, px) in small.chunks_exact_mut(4).enumerate() {
+        let (i, j) = ((k as u32 % sw) as f32, (k as u32 / sw) as f32);
+        let fx = (i + 0.5) * wf / sw as f32;
+        let fy = (j + 0.5) * hf / sh as f32;
+        let c = bilinear(&p, w, cx + (fx - wf * 0.5) / scale - 0.5, cy + (fy - hf * 0.5) / scale - 0.5, (x0, y0), (x1 - 1.0, y1 - 1.0));
+        px.copy_from_slice(&[c[0], c[1], c[2], 1.0]);
+    }
+    let sigma = blur.max(0.0) * sw as f32;
+    let small = if sigma >= 0.5 { gaussian(&small, sw, sh, sigma, true) } else { small };
+    let keep = 1.0 - darken.clamp(0.0, 1.0);
+    let (rx, ry) = (sw as f32 / wf, sh as f32 / hf);
+    let mut out = p;
+    for (k, px) in out.chunks_exact_mut(4).enumerate() {
+        let (x, y) = ((k as u32 % w) as f32, (k as u32 / w) as f32);
+        let bg = bilinear(&small, sw, (x + 0.5) * rx - 0.5, (y + 0.5) * ry - 0.5, (0.0, 0.0), ((sw - 1) as f32, (sh - 1) as f32));
+        let a = px[3];
+        for c in 0..3 {
+            px[c] = px[c] * a + bg[c] * keep * (1.0 - a);
+        }
+        px[3] = 1.0;
+    }
+    out
+}
+
 /// `top` over `bottom`, straight-alpha src-over, into `bottom`.
 fn over(top: &[f32], mut bottom: Vec<f32>) -> Vec<f32> {
     for (dst, src) in bottom.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
@@ -276,6 +351,44 @@ mod tests {
         // A radius of nothing changes nothing.
         let flat = vec![1.0f32; (w * h * 4) as usize];
         assert_eq!(rounded_corners(flat.clone(), w, h, 0.0, 0.0), flat);
+    }
+
+    /// #680: an upright picture in a wide frame has its bars filled with
+    /// itself, blurred and darkened, the picture untouched and the frame
+    /// opaque; a picture that fills the frame, or nothing at all, is
+    /// left as it is.
+    #[test]
+    fn the_bars_are_filled_with_the_picture_itself() {
+        let (w, h) = (160u32, 90u32);
+        // An upright picture in the middle third: red on its left half,
+        // blue on its right.
+        let mut upright = vec![0.0f32; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 55..105u32 {
+                let i = ((y * w + x) * 4) as usize;
+                let c = if x < 80 { [0.8, 0.1, 0.1, 1.0] } else { [0.1, 0.1, 0.8, 1.0] };
+                upright[i..i + 4].copy_from_slice(&c);
+            }
+        }
+        let filled = fill_bars(upright.clone(), w, h, 0.02, 1.0, 0.25);
+        let at = |p: &[f32], x: u32, y: u32| -> [f32; 4] { let i = ((y * w + x) * 4) as usize; [p[i], p[i + 1], p[i + 2], p[i + 3]] };
+        // The picture itself is as it was.
+        assert_eq!(at(&filled, 60, 45), at(&upright, 60, 45));
+        // The left bar is the picture's left side enlarged: red, a
+        // quarter darker; the right bar its right side, blue.
+        let left = at(&filled, 10, 45);
+        assert!(left[3] == 1.0 && left[0] > 0.45 && left[0] < 0.62 && left[2] < 0.15, "{left:?}");
+        let right = at(&filled, 150, 45);
+        assert!(right[2] > 0.45 && right[0] < 0.15, "{right:?}");
+        assert!(filled.chunks_exact(4).all(|p| p[3] == 1.0), "the frame is opaque");
+        // More darken, darker.
+        let darker = fill_bars(upright.clone(), w, h, 0.02, 1.0, 0.75);
+        assert!(at(&darker, 10, 45)[0] < left[0] * 0.5);
+        // Nothing to fill: a full frame, and an empty one.
+        let full = vec![0.5f32; (w * h * 4) as usize].chunks_exact(4).flat_map(|_| [0.5, 0.5, 0.5, 1.0]).collect::<Vec<f32>>();
+        assert_eq!(fill_bars(full.clone(), w, h, 0.02, 1.0, 0.25), full);
+        let empty = vec![0.0f32; (w * h * 4) as usize];
+        assert_eq!(fill_bars(empty.clone(), w, h, 0.02, 1.0, 0.25), empty);
     }
 
     #[test]

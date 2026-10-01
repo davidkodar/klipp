@@ -118,6 +118,14 @@ impl EffectRegistry {
                 grouping: "Blur".into(),
             },
             EffectEntry {
+                name: "Fill Bars".into(),
+                category: EffectCategory::Blur,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 }),
+                source_label: "Built-in",
+                description: "Fills letterbox and pillarbox bars, as round an upright phone shot, with the picture itself, enlarged and blurred. Also known as blanking fill, blur fill, blurred background.".into(),
+                grouping: "Blur".into(),
+            },
+            EffectEntry {
                 name: "Sharpen".into(),
                 category: EffectCategory::Blur,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 }),

@@ -1122,6 +1122,7 @@ fn builtin_effect_name(effect: &klipp_effects::BuiltinEffect) -> std::borrow::Co
         klipp_effects::BuiltinEffect::RoundedCorners { .. } => Cow::Borrowed("Rounded Corners"),
         klipp_effects::BuiltinEffect::DropShadow { .. } => Cow::Borrowed("Drop Shadow"),
         klipp_effects::BuiltinEffect::OuterGlow { .. } => Cow::Borrowed("Outer Glow"),
+        klipp_effects::BuiltinEffect::FillBars { .. } => Cow::Borrowed("Fill Bars"),
         klipp_effects::BuiltinEffect::Sharpen { .. } => Cow::Borrowed("Sharpen"),
         klipp_effects::BuiltinEffect::Crop { .. } => Cow::Borrowed("Crop"),
         klipp_effects::BuiltinEffect::Transform { .. } => Cow::Borrowed("Transform"),
@@ -1194,6 +1195,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             offset_x: 0.0, offset_y: 0.0, blur: 0.0, color: [0, 0, 0], opacity: 0.0,
         },
         BuiltinEffect::OuterGlow { .. } => BuiltinEffect::OuterGlow { radius: 0.0, intensity: 0.0, color: [255, 255, 255] },
+        // No setting of it fills nothing; this is where it starts.
+        BuiltinEffect::FillBars { .. } => BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 },
         BuiltinEffect::Sharpen { .. } => BuiltinEffect::Sharpen { amount: 0.0 },
         BuiltinEffect::Crop { .. } => BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
         BuiltinEffect::Transform { .. } => BuiltinEffect::Transform {
@@ -1656,6 +1659,20 @@ fn show_builtin_effect_params(
             track_scrubby!("radius", r, *radius);
             let r = scrubby_param_row(ui, "Intensity", intensity, 0.0..=1.0, 0.0, 0.005, 3, "", ks_i);
             track_scrubby!("intensity", r, *intensity);
+        }
+        klipp_effects::BuiltinEffect::FillBars { blur, zoom, darken } => {
+            *blur = eval_effect_kf(clip, effect_index, "blur", clip_time_secs, *blur, keyframe_tolerance);
+            *zoom = eval_effect_kf(clip, effect_index, "zoom", clip_time_secs, *zoom, keyframe_tolerance);
+            *darken = eval_effect_kf(clip, effect_index, "darken", clip_time_secs, *darken, keyframe_tolerance);
+            let ks_b = Some(effect_keyframe_state(clip, effect_index, "blur", clip_time_secs, keyframe_tolerance));
+            let ks_z = Some(effect_keyframe_state(clip, effect_index, "zoom", clip_time_secs, keyframe_tolerance));
+            let ks_d = Some(effect_keyframe_state(clip, effect_index, "darken", clip_time_secs, keyframe_tolerance));
+            let r = scrubby_param_row(ui, "Blur", blur, 0.0..=0.2, 0.05, 0.001, 3, "", ks_b);
+            track_scrubby!("blur", r, *blur);
+            let r = scrubby_param_row(ui, "Zoom", zoom, 1.0..=3.0, 1.0, 0.005, 2, "", ks_z);
+            track_scrubby!("zoom", r, *zoom);
+            let r = scrubby_param_row(ui, "Darken", darken, 0.0..=1.0, 0.25, 0.005, 2, "", ks_d);
+            track_scrubby!("darken", r, *darken);
         }
         klipp_effects::BuiltinEffect::Sharpen { amount } => {
             *amount = eval_effect_kf(clip, effect_index, "amount", clip_time_secs, *amount, keyframe_tolerance);

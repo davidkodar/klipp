@@ -1510,7 +1510,9 @@ fn tool_definitions() -> Vec<Value> {
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
-              shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
+              shadow (drop shadow), outer_glow (glow outside the layer silhouette), fill_bars (the black \
+              bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
+              blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
               use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
@@ -1689,7 +1691,9 @@ fn tool_definitions() -> Vec<Value> {
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
-              shadow (drop shadow), outer_glow (glow outside the layer silhouette); amount 0-1. These are \
+              shadow (drop shadow), outer_glow (glow outside the layer silhouette), fill_bars (the black \
+              bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
+              blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
               use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
