@@ -535,6 +535,10 @@ fn flatten_clip_inner(
     out
 }
 
+/// The integration step a ramped inner clip's source window is found
+/// with when sliced.
+const SLICE_STEP_FPS: f64 = 60.0;
+
 /// Slice one inner clip to a compound clip's source window and remap its
 /// time coordinates onto the parent timeline.
 ///
@@ -547,10 +551,6 @@ fn flatten_clip_inner(
 ///
 /// All `*_secs` parameters are seconds; `rate` is the `RationalTime` rate
 /// the output time fields will be expressed in.
-/// The integration step a ramped inner clip's source window is found
-/// with when sliced.
-const SLICE_STEP_FPS: f64 = 60.0;
-
 pub fn slice_inner_clip_to_compound(
     inner: &Clip,
     compound_timeline_in_secs: f64,

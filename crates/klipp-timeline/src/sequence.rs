@@ -2530,14 +2530,14 @@ impl Clip {
 // Time Remap — free helpers
 // ═══════════════════════════════════════════════════════════════════
 
-/// Speed clamp used by the time-remap integrator. Matches the UI graph range
-/// (0.1× – 16×) and the `SetClipSpeed` handler clamp. Prevents zero/negative
-/// step sizes from stalling integration or producing NaN source times.
 /// The integration step [`Track::split_at`] finds a ramped clip's cut in
 /// its source with: it has no sequence rate to hand, and a sixtieth of a
 /// second puts the cut within a frame of where playback has it.
 const SPLIT_STEP_FPS: f64 = 60.0;
 
+/// Speed clamp used by the time-remap integrator. Matches the UI graph range
+/// (0.1× – 16×) and the `SetClipSpeed` handler clamp. Prevents zero/negative
+/// step sizes from stalling integration or producing NaN source times.
 pub const SPEED_MIN: f64 = 0.1;
 pub const SPEED_MAX: f64 = 16.0;
 

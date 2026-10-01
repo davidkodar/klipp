@@ -752,22 +752,26 @@ fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, f32); 4] {
 /// A window track's keyframes (#238): for each file frame tracked, its
 /// time on the clip's own clock — the grade's — and the window's move,
 /// size and turn from the reference frame, as (time, dx, dy, scale,
-/// degrees). Frames outside the clip are left out.
-fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool) -> Vec<(f64, f32, f32, f32, f32)> {
+/// degrees). Frames outside the clip are left out. Through the clip's
+/// speed and in its direction (#617), at the sequence's `seq_fps`; a
+/// reversed clip's keys come in its own order, earliest first.
+fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Vec<(f64, f32, f32, f32, f32)> {
     let Some(fps) = clip.media_id().and_then(|m| pool.get(&m)).map(|it| it.fps.as_f64()).filter(|f| *f > 0.0) else { return Vec::new() };
-    let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
     let reference = tp.reference_frame.unwrap_or(tp.start_frame);
     let Some(&pivot) = tp.positions.get(reference.saturating_sub(tp.start_frame)) else { return Vec::new() };
-    let length = clip.duration().to_secs_f64();
-    tp.positions
+    let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+    let mut keys: Vec<_> = tp.positions
         .iter()
         .zip(&tp.motion)
         .enumerate()
         .filter_map(|(i, (&(x, y), &(scale, rot)))| {
-            let t = ((tp.start_frame + i) as f64 / fps - clip.source_in.to_secs_f64()) / speed;
-            (t >= -0.5 / fps && t <= length + 0.5 / fps).then_some((t.max(0.0), (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
+            let at = (tp.start_frame + i) as f64 / fps;
+            (at >= s_in - 0.5 / fps && at <= s_out + 0.5 / fps)
+                .then(|| (clip.elapsed_for_source_secs(at, seq_fps), (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
         })
-        .collect()
+        .collect();
+    keys.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keys
 }
 
 fn timeline_grade_proxy_track_id(seq: &klipp_timeline::Sequence) -> klipp_core::TrackId {
@@ -20852,8 +20856,8 @@ impl KlippApp {
                 // The grade's clock is the clip's own, from its first frame
                 // on the timeline; the tracker's is the file's frames.
                 let clip_time = (playhead_secs - clip.timeline_in.to_secs_f64()).max(0.0);
-                let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
-                let source_secs = clip.source_in.to_secs_f64() + clip_time * speed;
+                // Through its speed and in its direction (#617).
+                let source_secs = clip.source_secs_at(clip_time, seq.fps.as_f64());
                 let reference = (source_secs * media_fps).round() as usize;
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
@@ -21088,7 +21092,7 @@ impl KlippApp {
                                 // A window track (#238): the window's move,
                                 // size and turn, as keyframes on its own
                                 // clock, one undo step.
-                                let keys = window_track_keys(clip, tp, &self.state.media_pool);
+                                let keys = window_track_keys(clip, tp, &self.state.media_pool, fps);
                                 let old_graph = clip.node_graph.clone();
                                 if let Some(mask) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id)
                                     .and_then(|n| n.params.masks.as_mut())
@@ -43200,12 +43204,21 @@ mod window_track_tests {
             reference_frame: Some(60),
             ..Default::default()
         };
-        let keys = window_track_keys(&clip, &tp, &pool);
+        let keys = window_track_keys(&clip, &tp, &pool, 30.0);
         let first = keys.first().unwrap();
         assert!(first.0.abs() < 1e-9 && first.1.abs() < 1e-6 && (first.3 - 1.0).abs() < 1e-6, "{first:?}");
         let quarter = keys.iter().find(|k| (k.0 - 0.25).abs() < 1e-6).expect("a key a quarter second in");
         assert!((quarter.1 - 0.15).abs() < 1e-5 && (quarter.4 - 7.5).abs() < 1e-4, "{quarter:?}");
         assert!(keys.iter().all(|k| k.0 >= 0.0 && k.0 <= 1.0 + 1e-6), "only what the clip plays");
+
+        // Reversed (#617): the same frames run the other way on the clip's
+        // clock — the reference frame, its range's start, comes last.
+        clip.speed = -2.0;
+        let back = window_track_keys(&clip, &tp, &pool, 30.0);
+        assert!(back.windows(2).all(|w| w[0].0 <= w[1].0), "earliest first");
+        let last = back.last().unwrap();
+        assert!((last.0 - (1.0 - 1.0 / 30.0)).abs() < 1e-6 && last.1.abs() < 1e-6, "the reference frame shows a frame before the clip's end: {last:?}");
+        assert!(back.first().unwrap().1 > 0.0, "the later frames show first: {:?}", back.first());
     }
 
     /// The region followed is the one the window covers, as the matte

@@ -474,8 +474,12 @@ impl WindowDecoder {
         let _ = self.format_ctx.seek(ts, ..ts);
         self.decoder.flush();
         let mut frames: Vec<(f64, ffmpeg_next::frame::Video)> = Vec::new();
+        // The latest frame passed over before the window: a time past the
+        // file's end, whose window would hold nothing, shows the file's
+        // last frame.
+        let mut before: Option<(f64, ffmpeg_next::frame::Video)> = None;
         // Keep a frame; `true` once past the time asked for.
-        let keep = |pts: f64, frame: ffmpeg_next::frame::Video, frames: &mut Vec<(f64, ffmpeg_next::frame::Video)>| -> bool {
+        let mut keep = |pts: f64, frame: ffmpeg_next::frame::Video, frames: &mut Vec<(f64, ffmpeg_next::frame::Video)>| -> bool {
             if pts > secs + slack {
                 // Past the time asked for: the window ends before it,
                 // unless it would be empty — a time before the file's
@@ -490,6 +494,8 @@ impl WindowDecoder {
                 if frames.len() > BACKWARD_WINDOW_FRAMES {
                     frames.remove(0);
                 }
+            } else if before.as_ref().is_none_or(|(p, _)| pts > *p) {
+                before = Some((pts, frame));
             }
             false
         };
@@ -528,6 +534,9 @@ impl WindowDecoder {
                 }
             }
             at_end = !done;
+        }
+        if frames.is_empty() {
+            frames.extend(before);
         }
         // Frames come out in presentation order; a stream that does not
         // keep it is put in it.
@@ -680,7 +689,10 @@ impl<T: Clone> BackwardFrameReader<T> {
     }
 
     /// The window that answers `secs`: the one decoded ahead when it
-    /// does, the one decoding when it will, else one decoded now.
+    /// does, the one decoding when it will, else one decoded now. A
+    /// window asked for this very time is the answer even when it does
+    /// not cover it — the nearest the file has — or asking again would
+    /// decode it again for ever.
     fn window_for(&mut self, secs: f64) -> Option<Window> {
         let span = self.frame_duration * (BACKWARD_WINDOW_FRAMES as f64 - 1.0);
         let would_cover = |end: f64| secs <= end + self.frame_duration * 0.5 && secs >= end - span;
@@ -705,6 +717,9 @@ impl<T: Clone> BackwardFrameReader<T> {
             self.fills += 1;
             if self.pending == Some(end) {
                 self.pending = None;
+            }
+            if end == secs {
+                return Some(w);
             }
             self.ahead = Some((end, w));
         }
@@ -883,9 +898,19 @@ mod backward_tests {
             assert_eq!((w, h), (32, 24));
             seen.push((pts / fd).round() as i64);
         }
-        std::fs::remove_file(&path).ok();
         assert_eq!(seen, (0..75).rev().collect::<Vec<i64>>(), "every frame, last to first");
         assert!(r.fills() <= 4, "{} seeks for 75 frames", r.fills());
+
+        // Past the file's end — a transition into a reversed clip's head
+        // reaches there — is the last frame, at once, not a decode asked
+        // for again and again.
+        let mut past = BackwardFrameReader::open_linear(&path, None, klipp_core::WorkingColorspace::Rec709Linear).expect("opens");
+        let t0 = std::time::Instant::now();
+        let (_, _, _, pts) = past.decode_at(10.0, Some((32, 24))).expect("the last frame");
+        assert_eq!((pts / fd).round() as i64, 74, "the file's last frame");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t0.elapsed());
+        assert!(past.decode_at(10.0, Some((32, 24))).is_some() && past.fills() == 1, "and once: {} windows", past.fills());
+        std::fs::remove_file(&path).ok();
     }
 }
 
