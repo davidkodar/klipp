@@ -21,7 +21,10 @@ use std::os::unix::net::UnixStream;
 
 use serde_json::{json, Value};
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+mod edit_schema;
+
+const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
+const STRUCTURED_PROTOCOL_VERSION: &str = "2025-06-18";
 /// Inline a screenshot in the reply only when it is small enough to be
 /// worth a client's context window. Bigger ones come back as a path.
 const INLINE_IMAGE_MAX_BYTES: usize = 1_000_000;
@@ -90,6 +93,7 @@ fn main() {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let reader = BufReader::new(stdin.lock());
+    let mut structured = false;
 
     for line in reader.lines() {
         let Ok(line) = line else { break };
@@ -124,32 +128,37 @@ fn main() {
         let id = id.unwrap();
 
         let response = match method {
-            "initialize" => json!({
+            "initialize" => {
+                let version = negotiated_version(req.get("params").and_then(|p| p.get("protocolVersion")).and_then(Value::as_str));
+                structured = version == STRUCTURED_PROTOCOL_VERSION;
+                json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": PROTOCOL_VERSION,
+                    "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "klipp", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": INSTRUCTIONS,
                 }
-            }),
+            })},
             "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
             "tools/list" => json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": { "tools": tool_definitions() },
+                "result": { "tools": tool_definitions_for(structured) },
             }),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 match call_tool(name, &args) {
-                    Ok(content) => json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": { "content": content, "isError": false },
-                    }),
+                    Ok((content, raw)) => {
+                        let mut result = json!({ "content": content, "isError": false });
+                        if structured && has_structured_output(name) {
+                            if let Some(raw) = raw { result["structuredContent"] = raw; }
+                        }
+                        json!({ "jsonrpc": "2.0", "id": id, "result": result })
+                    }
                     // A failed tool call is a *result* with isError, not a
                     // JSON-RPC error: the model should see the message and
                     // be able to act on it.
@@ -172,6 +181,14 @@ fn main() {
 
         let _ = writeln!(stdout, "{response}");
         let _ = stdout.flush();
+    }
+}
+
+fn negotiated_version(client: Option<&str>) -> &'static str {
+    if matches!(client, Some("2025-06-18" | "2025-11-25")) {
+        STRUCTURED_PROTOCOL_VERSION
+    } else {
+        LEGACY_PROTOCOL_VERSION
     }
 }
 
@@ -269,6 +286,9 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
 /// The socket command a tool call is. Shared by a single call and by the
 /// calls inside a batch.
 fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
+    if matches!(name, "klipp_plan" | "klipp_apply") {
+        edit_schema::validate_ops(args)?;
+    }
     let mut command = match name {
         "klipp_status" => json!({ "method": "status" }),
         "klipp_operation_status" => json!({ "method": "operation_status", "operation_id": arg_str(args, "operation_id")? }),
@@ -870,7 +890,7 @@ When the person asks what they can do with Klipp, what you can do in it, or how 
 
 Before editing, read klipp_guide (topic guide) for how to work here.";
 
-fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
+fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), String> {
     if name == "klipp_guide" {
         let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("guide");
         let text = match topic {
@@ -881,7 +901,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}"),
             other => return Err(format!("unknown topic {other}; use guide, craft, recipes, abilities or all")),
         };
-        return Ok(vec![json!({ "type": "text", "text": text })]);
+        return Ok((vec![json!({ "type": "text", "text": text })], None));
     }
     let cmd = tool_to_command(name, args)?;
     let result = control_call(cmd)?;
@@ -903,7 +923,24 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     if let Some(n) = notice {
         content.insert(0, json!({ "type": "text", "text": n }));
     }
-    Ok(content)
+    Ok((content, Some(result)))
+}
+
+fn has_structured_output(name: &str) -> bool {
+    matches!(name, "klipp_status" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut")
+}
+
+fn output_schema(name: &str) -> Value {
+    let mut properties = json!({
+        "text": {"type":"string"},
+        "revision": {"type":"integer","minimum":0},
+        "project_identity": {"type":"integer","minimum":0},
+        "applied": {"type":"boolean"},
+        "changes": {"type":"array"},
+        "candidates": {"type":"array"}
+    });
+    if name == "klipp_status" { properties["version"] = json!({"type":"string"}); }
+    json!({"type":"object","properties":properties,"additionalProperties":true})
 }
 
 /// A reply's content: the frame-wait bookkeeping for writes, text for
@@ -1089,6 +1126,23 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
             "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp will not run it twice"
         });
     }
+    // The full operation reference is available through klipp_guide. The
+    // catalog only needs enough text to choose the right tool.
+    let description = match name {
+        "klipp_guide" => "Read the editable workflow, full operation reference and recipes. Read before editing.",
+        "klipp_plan" => "Preview frame-exact editorial ops without changing the timeline. Returns a revision for a guarded klipp_apply. Read klipp_guide for the full operation reference.",
+        "klipp_apply" => "Apply frame-exact editorial ops as one undo step. Pass expected_revision from a recent plan or timeline read. Read klipp_guide for the full operation reference.",
+        _ => description,
+    };
+    let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let description = if description.len() > 320 {
+        let prefix: String = description.chars().take(300).collect();
+        let boundary = prefix.rfind(' ').unwrap_or(prefix.len());
+        format!("{}…", &prefix[..boundary])
+    } else { description };
+    if matches!(name, "klipp_plan" | "klipp_apply") {
+        properties["ops"] = edit_schema::ops_schema();
+    }
     json!({
         "name": name,
         "description": description,
@@ -1100,8 +1154,11 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
     })
 }
 
-fn tool_definitions() -> Vec<Value> {
-    vec![
+#[cfg(test)]
+fn tool_definitions() -> Vec<Value> { tool_definitions_for(false) }
+
+fn tool_definitions_for(structured: bool) -> Vec<Value> {
+    let mut tools = vec![
         tool("klipp_guide",
              "Read this first. How to work in Klipp as an agent (the loop: read, learn the \
               footage, plan, apply, look, deliver; units, ids, anchors, ops, manners), the \
@@ -2302,7 +2359,42 @@ fn tool_definitions() -> Vec<Value> {
                  "timeout_ms": { "type": "integer" },
              }),
              vec![]),
-    ]
+    ];
+    if structured {
+        for tool in &mut tools {
+            if let Some(name) = tool.get("name").and_then(Value::as_str) {
+                if has_structured_output(name) { tool["outputSchema"] = output_schema(name); }
+            }
+        }
+    }
+    tools
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::*;
+
+    #[test]
+    fn negotiated_catalog_is_compact_and_old_clients_keep_text() {
+        assert_eq!(negotiated_version(Some("2024-11-05")), LEGACY_PROTOCOL_VERSION);
+        assert_eq!(negotiated_version(Some("2025-06-18")), STRUCTURED_PROTOCOL_VERSION);
+        assert_eq!(negotiated_version(Some("unknown")), LEGACY_PROTOCOL_VERSION);
+        let legacy = tool_definitions_for(false);
+        let modern = tool_definitions_for(true);
+        assert_eq!(legacy.len(), modern.len());
+        assert!(serde_json::to_vec(&legacy).unwrap().len() < 70_000);
+        let plan = modern.iter().find(|tool| tool["name"] == "klipp_plan").unwrap();
+        assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["op"]["const"], "cut");
+        assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["from"]["$ref"], "#/properties/ops/$defs/anchor");
+        assert_eq!(plan["outputSchema"]["type"], "object");
+        assert!(legacy.iter().all(|tool| tool.get("outputSchema").is_none()));
+    }
+
+    #[test]
+    fn malformed_edit_is_refused_before_any_socket_call() {
+        let error = tool_to_command("klipp_apply", &json!({"ops":[{"op":"cut","from":{"frame":1},"to":{"fram":2}}]})).unwrap_err();
+        assert!(error.contains("anchor form"), "{error}");
+    }
 }
 
 #[cfg(test)]
@@ -2321,7 +2413,7 @@ mod friendly_answer_tests {
         assert!(text.contains("Details:") && text.contains("\"revision\": 3") && !text.contains("\"text\""), "{text}");
 
         let abilities = call_tool("klipp_guide", &json!({ "topic": "abilities" })).unwrap();
-        let abilities = abilities[0]["text"].as_str().unwrap();
+        let abilities = abilities.0[0]["text"].as_str().unwrap();
         assert!(abilities.starts_with("# What you can do in Klipp"), "{abilities}");
         assert!(!abilities.contains("klipp_apply"), "no tool names a person would have to read");
 
@@ -2338,7 +2430,7 @@ mod wait_tests {
     #[test]
     fn queued_apply_tells_the_agent_to_check_the_actual_outcome() {
         let command = tool_to_command("klipp_apply", &json!({
-            "ops": [], "idempotency_key": "edit-42",
+            "ops": [{"op":"cut","from":{"frame":1},"to":{"frame":2}}], "idempotency_key": "edit-42",
         })).unwrap();
         assert_eq!(command["idempotency_key"], "edit-42");
         assert_eq!(tool_to_command("klipp_operation_status", &json!({ "operation_id": "write-42" })).unwrap()["operation_id"], "write-42");

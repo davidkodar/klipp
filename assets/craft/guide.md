@@ -116,6 +116,12 @@ frames.
 - Every write returns the document revision after it. Pass the revision
   from a plan to apply, with its project identity when available; if
   either moved, plan again.
+- On MCP 2025-06-18, status, timeline, plan and apply also return their
+  exact fields in `structuredContent`; use those fields for revisions,
+  frames, clip ids and write status. Older clients receive readable text.
+  The tool catalog gives short descriptions; this guide is the full op
+  reference. Common edit ops reject misspelled fields and malformed
+  anchors before sending anything to Klipp.
 
 ## Anchors
 
