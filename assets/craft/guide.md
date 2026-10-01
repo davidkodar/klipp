@@ -161,6 +161,18 @@ exist until the plan runs.
   Mark a camera's own sound `ambience` (or the shot `broll`) when it
   runs under music, so a `duck` does not take it for speech; narration
   is marked dialogue when `narrate` places it.
+- `matte {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?}`:
+  the clip seen only through another, a track matte. Without
+  `source`, the clip above it at its time, on a picture or text track.
+  `channel` is `auto` (a title's shape, anything else its brightness),
+  `alpha` or `luma`; `invert` shows it everywhere but there; the
+  source is hidden unless `show_source`; `clear` takes it off. The
+  common one, footage inside a word, is two ops in one apply: a
+  `title` over the clip, big and heavy (`size` up to 1000, a word
+  that fills the frame wants 700 to 1000 at 1080p, `font` "Bebas Neue"
+  or `bold`) with `over_faces: true`, since a window may cover a face
+  where a caption must not, then `matte` on the clip by its id. Anything below the
+  clip shows around the letters; nothing there is black.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
   levels in decibels from the clip's own level (0 as set, -9 a duck,
   -60 near silence) at timeline
@@ -254,7 +266,7 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its

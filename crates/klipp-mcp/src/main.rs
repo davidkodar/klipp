@@ -1494,7 +1494,11 @@ fn tool_definitions() -> Vec<Value> {
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
               secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
-              voiceover, broll, graphics; a bed marked music is never taken for speech. format \
+              voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
+              {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
+              the clip seen only through another (track matte); without source, the clip above it: \
+              title {text, size 700-1000, font \"Bebas Neue\", over_faces: true} over a clip, then matte on the clip, \
+              puts the footage inside the word. format \
               {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
               the picture fitted, never stretched.\n\
               redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
@@ -1669,7 +1673,11 @@ fn tool_definitions() -> Vec<Value> {
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
               secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
-              voiceover, broll, graphics; a bed marked music is never taken for speech. format \
+              voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
+              {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
+              the clip seen only through another (track matte); without source, the clip above it: \
+              title {text, size 700-1000, font \"Bebas Neue\", over_faces: true} over a clip, then matte on the clip, \
+              puts the footage inside the word. format \
               {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
               the picture fitted, never stretched.\n\
               redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
