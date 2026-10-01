@@ -113,10 +113,18 @@ fn harness() -> Harness {
             for env in env_rx {
                 envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
                 // A plan made for another revision is refused, as the UI does.
-                let refused = match env.expected_revision {
+                let refused = if let Some(want) = env.expected_project_identity {
+                    if shared.project.lock().unwrap().identity != want {
+                        Some(format!("project identity moved from {want}"))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }.or_else(|| match env.expected_revision {
                     Some(r) if r != shared.revision() => Some(format!("revision moved from {r}")),
                     _ => None,
-                };
+                });
                 if refused.is_none() {
                     for c in env.commands {
                         if let klipp_core::AppCommand::ImportMediaWithAnalysis { path, analyze: false } = &c {
@@ -792,13 +800,55 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     assert!(reply["error"].as_str().unwrap().contains("not inside"), "{}", reply["error"]);
 
     let before = h.shared.revision();
-    let v = h.ok(json!({ "method": "apply", "label": "split for the test", "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
+    let v = h.ok(json!({ "method": "apply", "label": "split for the test", "expected_revision": before, "ops": [ { "op": "split", "clip_id": clip, "at": { "secs": 1.0 } } ] }));
     assert!(v["next"].as_str().unwrap().contains("check"), "apply points at the next step: {v}");
     assert_eq!(v["applied"], json!(true));
     assert_eq!(v["revision"], json!(before + 1));
     assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
     let edits = h.edits_seen.lock().unwrap();
     assert!(matches!(edits.as_slice(), [klipp_document::history::EditCommand::LegacyBladeClip { .. }]));
+}
+
+#[test]
+fn apply_refuses_a_plan_for_a_changed_revision_or_project() {
+    let mut h = harness();
+    // The position names the first clip at 1 s. A person replaces that
+    // clip while the agent holds its plan; the same position now names a
+    // different clip, so re-resolving the stale op would cut the wrong one.
+    let op = json!({ "op": "split", "clip_id": { "track": 0, "secs": 1.0 }, "at": { "secs": 1.0 } });
+    let plan = h.ok(json!({ "method": "plan", "ops": [op.clone()] }));
+    let revision = plan["revision"].as_u64().unwrap();
+    let identity = plan["project_identity"].as_u64().unwrap();
+    let old_clip = h.sequence.read().unwrap().tracks[0].clips[0].id;
+    {
+        let mut sequence = h.sequence.write().unwrap();
+        let old = &sequence.tracks[0].clips[0];
+        let replacement = klipp_timeline::Clip::gap(old.timeline_in, old.timeline_out);
+        sequence.tracks[0].clips[0] = replacement;
+    }
+    h.shared.bump_revision();
+    let replacement_id = h.sequence.read().unwrap().tracks[0].clips[0].id;
+    assert_ne!(old_clip, replacement_id);
+    let resolved = {
+        let sequence = h.sequence.read().unwrap();
+        let pool = h.media_pool.read().unwrap();
+        let operation = serde_json::from_value(op.clone()).unwrap();
+        klipp_document::ops::resolve(&sequence, &pool, &[operation]).unwrap()
+    };
+    assert!(matches!(&resolved.steps[0].edit, klipp_document::history::EditCommand::LegacyBladeClip { original_clip, .. } if original_clip.id == replacement_id));
+
+    let stale = h.call(json!({ "method": "apply", "ops": [op.clone()], "expected_revision": revision }));
+    assert_eq!(stale["ok"], false);
+    assert!(stale["error"].as_str().unwrap().contains("plan again"));
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+
+    let current_revision = h.shared.revision();
+    h.shared.project.lock().unwrap().identity += 1;
+    let other_project = h.call(json!({ "method": "apply", "ops": [op], "expected_revision": current_revision, "expected_project_identity": identity }));
+    assert_eq!(other_project["ok"], false);
+    assert!(other_project["error"].as_str().unwrap().contains("project changed"));
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    assert!(h.envelopes.lock().unwrap().is_empty());
 }
 
 /// A project is saved and opened over the socket with nobody to answer

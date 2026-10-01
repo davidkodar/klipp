@@ -2436,6 +2436,18 @@ fn send_full_envelope(
     expected_revision: Option<u64>,
     label: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    send_full_envelope_for_project(ctx, commands, edits, batch, expected_revision, None, label)
+}
+
+fn send_full_envelope_for_project(
+    ctx: &ControlContext,
+    commands: Vec<AppCommand>,
+    edits: Vec<klipp_document::history::EditCommand>,
+    batch: bool,
+    expected_revision: Option<u64>,
+    expected_project_identity: Option<u64>,
+    label: Option<String>,
+) -> Result<serde_json::Value, String> {
     // Read the generation *before* queueing, so any frame rendered in
     // response to this command is guaranteed to be newer than it.
     let generation = ctx
@@ -2446,7 +2458,7 @@ fn send_full_envelope(
     let count = commands.len() + edits.len();
     let (tx, rx) = std::sync::mpsc::channel::<ControlAck>();
     ctx.commands
-        .send(ControlEnvelope { commands, edits, batch, expected_revision, label, ack: Some(tx) })
+        .send(ControlEnvelope { commands, edits, batch, expected_revision, expected_project_identity, label, ack: Some(tx) })
         .map_err(|e| format!("app command channel closed: {e}"))?;
     (ctx.wake_ui)();
     match rx.recv_timeout(ACK_TIMEOUT) {
@@ -4619,14 +4631,31 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::Apply { ops, label, detail } => {
+        ControlCommand::Apply { ops, expected_revision, expected_project_identity, label, detail } => {
             if in_batch {
                 return Err("apply is its own batch; send it on its own".into());
             }
+            if let Some(want) = expected_project_identity {
+                let now = project_status(ctx)?.identity;
+                if now != want {
+                    return Err(format!("the project changed since this plan was made (expected identity {want}, current identity {now}); plan again"));
+                }
+            }
+            if let Some(want) = expected_revision {
+                let now = ctx.shared.revision();
+                if now != want {
+                    return Err(format!("the document is at revision {now}, the plan was made at {want}; plan again"));
+                }
+            }
             let (plan, revision) = resolve_plan(ctx, &ops)?;
+            if let Some(want) = expected_revision {
+                if revision != want {
+                    return Err(format!("the document is at revision {revision}, the plan was made at {want}; plan again"));
+                }
+            }
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
             let label = label.unwrap_or_else(|| apply_label(&ops));
-            let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(label))?;
+            let mut v = send_full_envelope_for_project(ctx, Vec::new(), edits, true, Some(revision), expected_project_identity, Some(label))?;
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
             if detail {
                 v["steps"] = json!(plan.report());

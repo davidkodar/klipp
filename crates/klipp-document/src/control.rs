@@ -17,6 +17,9 @@ pub struct ControlEnvelope {
     /// document has moved since, they are refused unapplied: the plan
     /// was made for a document that no longer exists.
     pub expected_revision: Option<u64>,
+    /// The project identity the edits were planned against. Checked by
+    /// the UI together with the revision before applying any of them.
+    pub expected_project_identity: Option<u64>,
     /// A name for the history entry, when a plan is applied.
     pub label: Option<String>,
     pub ack: Option<std::sync::mpsc::Sender<ControlAck>>,
