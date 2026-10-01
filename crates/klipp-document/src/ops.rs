@@ -2548,7 +2548,18 @@ fn matte(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: 
         return Err(refuse(i, format!("{} is sound", clip_name(seq, pool, clip)), "a matte is on a picture clip"));
     }
     let source: &Clip = match ask.source {
-        Some(r) => resolve_clip(seq, fps, r, i)?.2,
+        Some(r) => {
+            // Named, it is held to what the lookup above asks: a picture
+            // over the same time.
+            let (sti, _, src) = resolve_clip(seq, fps, r, i)?;
+            if seq.tracks[sti].kind == TrackKind::Audio {
+                return Err(refuse(i, format!("{} is sound", clip_name(seq, pool, src)), "the source is a picture: a title, a shape or a picture clip"));
+            }
+            if !(src.timeline_in < clip.timeline_out && src.timeline_out > clip.timeline_in) {
+                return Err(refuse(i, format!("{} is not on screen while {} is", named(src), clip_name(seq, pool, clip)), "the source has to cover the same time; move it there first"));
+            }
+            src
+        }
         // Above on screen is a lower track index; the nearest that
         // overlaps the clip in time, passing over empty tracks.
         None => (0..ti)
@@ -2598,6 +2609,19 @@ fn matte(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: 
         hidden.consumed_as_matte = !ask.show_source;
         edits.push(EditCommand::ReplaceClip { description: "Matte", old: Box::new(source.clone()), new: Box::new(hidden) });
     }
+    // Bound to another source before: that one back in the picture,
+    // unless another clip still shows through it, or it would stay
+    // hidden with nothing using it.
+    let mut touched = vec![clip.id, source.id];
+    if let Some(old) = clip.matte_source.as_ref().map(|b| b.source_clip_id).filter(|id| *id != source.id) {
+        let shared = seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.id != clip.id && c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == old));
+        if let Some(prev) = find(old).filter(|p| p.consumed_as_matte && !shared) {
+            let mut shown = prev.clone();
+            shown.consumed_as_matte = false;
+            edits.push(EditCommand::ReplaceClip { description: "Matte", old: Box::new(prev.clone()), new: Box::new(shown) });
+            touched.push(prev.id);
+        }
+    }
     let channel_word = if channel == klipp_nodes::params::MatteChannel::Alpha { "its shape" } else { "its brightness" };
     let what = format!(
         "{} shown {} {} ({channel_word}{}){}",
@@ -2607,7 +2631,7 @@ fn matte(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: 
         if ask.feather_px > 0.0 { format!(", edge softened {:.0} px", ask.feather_px) } else { String::new() },
         if ask.show_source { ", which still shows itself" } else { ", which is hidden from the picture" },
     );
-    Ok((what, EditCommand::Named { label: "Matte".into(), edit: Box::new(EditCommand::Batch(edits)) }, vec![clip.id, source.id]))
+    Ok((what, EditCommand::Named { label: "Matte".into(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
 }
 
 /// [`Op::Volume`]: the clip's volume keyframes, from levels at timeline
@@ -6140,6 +6164,25 @@ mod tests {
         assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "channel": "red" })).unwrap_err().why.contains("not a matte channel"));
         assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": title.id.0.to_string(), "source": a.0.to_string() })).unwrap_err().hint.contains("loop"));
         let sound = done.tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clips[0].id;
+        // A named source is a picture over the same time.
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "source": sound.0.to_string() })).unwrap_err().why.contains("is sound"));
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": b.0.to_string(), "source": title.id.0.to_string() })).unwrap_err().why.contains("not on screen"));
+        // Bound again to another source: the first comes back into the
+        // picture, the second is hidden.
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            { "op": "title", "text": "TOWN", "at": { "secs": 0.0 }, "secs": 4.0, "size": 300 },
+            { "op": "matte", "clip_id": a.0.to_string(), "source": { "track": 0, "secs": 1.0 } }
+        ])).unwrap();
+        let again = resolve(&done, &pool, &ops).unwrap();
+        let mut seqs2 = vec![done.clone()];
+        let (mut p2, mut fps2) = (pool.clone(), done.fps);
+        let mut v2 = crate::apply::DocumentView { sequences: &mut seqs2, active: 0, media_pool: &mut p2, fps: &mut fps2 };
+        for st in &again.steps {
+            v2.apply_forward(&st.edit);
+        }
+        let titles: Vec<&Clip> = v2.sequences[0].tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| matches!(c.kind, ClipKind::Title(_))).collect();
+        let by = |w: &str| titles.iter().find(|c| matches!(&c.kind, ClipKind::Title(td) if td.text() == w)).unwrap();
+        assert!(!by("CITY").consumed_as_matte && by("TOWN").consumed_as_matte, "the old source shown, the new hidden");
         assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": sound.0.to_string() })).unwrap_err().why.contains("is sound"));
         assert!(one(&seq, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "clear": true })).unwrap_err().why.contains("has no matte"));
     }
