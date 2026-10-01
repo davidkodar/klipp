@@ -161,6 +161,15 @@ pub enum Op {
         #[serde(default)]
         name: Option<String>,
     },
+    /// A track taken out (#497): refused while it holds clips unless
+    /// `with_clips`, which takes them too, unlinking any clip on another
+    /// track from them (their linked sound or picture, or a clip seen
+    /// through one as its matte). One undo step puts it all back.
+    RemoveTrack {
+        track: TrackRef,
+        #[serde(default)]
+        with_clips: bool,
+    },
     /// One edge of a clip to an anchor. The clip's other edge stays;
     /// the source moves with the edge, so the picture at the other edge
     /// does not change. Refused past the media's start or end, or into
@@ -2086,6 +2095,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             join(seq, pool, i, ti, clip, *side)
         }
+        Op::RemoveTrack { track, with_clips } => remove_track(seq, i, track, *with_clips),
         Op::Split { clip_id: clip_ref, at } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
@@ -2746,6 +2756,50 @@ fn join(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
         if touched.len() > 1 { ", its sound with it" } else { "" },
     );
     Ok((what, EditCommand::Named { label: "Join Through Edit".into(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
+}
+
+/// [`Op::RemoveTrack`].
+fn remove_track(seq: &Sequence, i: usize, track: &TrackRef, with_clips: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let ti = resolve_track(seq, track, i)?;
+    let t = &seq.tracks[ti];
+    if t.locked {
+        return Err(refuse(i, format!("track {ti} \"{}\" is locked", t.name), "unlock it first"));
+    }
+    let n = t.clips.len();
+    if n > 0 && !with_clips {
+        return Err(refuse(i, format!("track {ti} \"{}\" holds {n} clip{}", t.name, if n == 1 { "" } else { "s" }), "move them off it first, or pass with_clips: true to take them with the track"));
+    }
+    let gone: std::collections::HashSet<ClipId> = t.clips.iter().map(|c| c.id).collect();
+    // Nothing elsewhere left pointing at a clip that is gone.
+    let mut edits = Vec::new();
+    for (k, other) in seq.tracks.iter().enumerate().filter(|(k, _)| *k != ti) {
+        for c in &other.clips {
+            let linked = c.linked_clip_id.is_some_and(|id| gone.contains(&id));
+            let matted = c.matte_source.as_ref().is_some_and(|m| gone.contains(&m.source_clip_id));
+            if linked || matted {
+                if other.locked {
+                    return Err(refuse(i, format!("a clip on locked track {k} is linked to one on this track"), "unlock it first"));
+                }
+                let mut freed = c.clone();
+                if linked {
+                    freed.linked_clip_id = None;
+                }
+                if matted {
+                    freed.matte_source = None;
+                }
+                edits.push(EditCommand::ReplaceClip { description: "Remove Track", old: Box::new(c.clone()), new: Box::new(freed) });
+            }
+        }
+    }
+    let freed = edits.len();
+    edits.push(EditCommand::RemoveTrack { index: ti, track: t.clone() });
+    let what = format!(
+        "track {ti} \"{}\" removed{}{}; every track below moves up by one",
+        t.name,
+        if n > 0 { format!(" with its {n} clip{}", if n == 1 { "" } else { "s" }) } else { String::new() },
+        if freed > 0 { format!(", {freed} clip{} elsewhere unlinked from them", if freed == 1 { "" } else { "s" }) } else { String::new() },
+    );
+    Ok((what, EditCommand::Named { label: "Remove Track".into(), edit: Box::new(EditCommand::Batch(edits)) }, Vec::new()))
 }
 
 /// [`Op::Volume`]: the clip's volume keyframes, from levels at timeline
@@ -6539,6 +6593,42 @@ mod tests {
         faded.tracks[1].transitions.push(klipp_timeline::Transition { clip_a_id: sa, clip_b_id: sb, ..tr });
         let err = resolve(&faded, &pool, &[serde_json::from_value(serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" })).unwrap()]).unwrap_err();
         assert!(err.why.contains("crossfade"), "{}", err.why);
+    }
+
+    /// #497: a track removed in one undo step. An empty one at once; one
+    /// with clips only when asked, its clips' partners elsewhere unlinked;
+    /// undo puts the track, its clips and the links back.
+    #[test]
+    fn a_track_is_removed() {
+        let (seq, pool, _, _, _) = fixture();
+        let one = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]);
+        // An empty text track, added and taken out again.
+        let added = one(&seq, serde_json::json!({ "op": "add_track", "kind": "text" })).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&added.steps[0].edit);
+        let with_text = view.sequences[0].clone();
+        let plan = one(&with_text, serde_json::json!({ "op": "remove_track", "track": 0 })).unwrap();
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks.len(), seq.tracks.len());
+        // The audio track holds the sound: refused without with_clips.
+        let held = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio" })).unwrap_err();
+        assert!(held.why.contains("holds 2 clips") && held.hint.contains("with_clips"), "{held:?}");
+        // With them: gone, and the pictures no longer linked to them.
+        let plan = one(&seq, serde_json::json!({ "op": "remove_track", "track": "audio", "with_clips": true })).unwrap();
+        assert!(plan.steps[0].what.contains("2 clips elsewhere unlinked"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks.len(), 1);
+        assert!(view.sequences[0].tracks[0].clips.iter().all(|c| c.linked_clip_id.is_none()));
+        // Undone, every clip and link as it was (the tracks' default names
+        // are renumbered, as adding a track renumbers them).
+        view.apply_inverse(&plan.steps[0].edit);
+        let clips = |s: &Sequence| serde_json::to_value(s.tracks.iter().map(|t| (t.id, &t.clips)).collect::<Vec<_>>()).unwrap();
+        assert_eq!(clips(&view.sequences[0]), clips(&seq));
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the

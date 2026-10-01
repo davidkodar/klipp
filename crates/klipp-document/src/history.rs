@@ -160,6 +160,9 @@ pub enum EditCommand {
     /// A track added at `index` (the plan's add_track). Undo removes it,
     /// which is safe because a batch undoes its clips first.
     AddTrack { index: usize, track: klipp_timeline::Track },
+    /// The track at `index` taken out, clips and all (#497); undo puts it
+    /// back where it was. The reverse of `AddTrack`.
+    RemoveTrack { index: usize, track: klipp_timeline::Track },
     /// The sequence's brief, replaced whole.
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
@@ -727,6 +730,7 @@ impl EditCommand {
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::RetargetTransition { .. } => "Retarget Transition",
             EditCommand::AddTrack { .. } => "Add Track",
+            EditCommand::RemoveTrack { .. } => "Remove Track",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
             EditCommand::SetClipRole { .. } => "Set Clip Role",

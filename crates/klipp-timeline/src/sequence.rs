@@ -453,6 +453,8 @@ impl Sequence {
     /// Text/Subtitle tracks are numbered top-down.
     /// Only renames tracks that have default-pattern names ("Video N", "Audio N", etc.).
     /// User-customized names (e.g., "B-Roll", "Interview") are left unchanged.
+    /// Number the tracks' default names in order again ("Video 1",
+    /// "Audio 2"), leaving every name the user gave as it is.
     pub fn renumber_tracks(&mut self) {
         // Video: bottom-up (reverse order among video tracks)
         let video_indices: Vec<usize> = self.tracks.iter().enumerate()
@@ -463,7 +465,7 @@ impl Sequence {
             let new_name = format!("Video {}", num_from_bottom + 1);
             let track = &mut self.tracks[idx];
             // Only rename if it has a default-pattern name
-            if track.name.starts_with("Video ") || track.name.starts_with("V") {
+            if is_default_track_name(&track.name, "Video", 'V') {
                 track.name = new_name;
             }
         }
@@ -471,7 +473,7 @@ impl Sequence {
         let mut audio_num = 1u32;
         for track in &mut self.tracks {
             if track.kind == TrackKind::Audio {
-                if track.name.starts_with("Audio ") || track.name.starts_with("A") {
+                if is_default_track_name(&track.name, "Audio", 'A') {
                     track.name = format!("Audio {}", audio_num);
                 }
                 audio_num += 1;
@@ -481,7 +483,7 @@ impl Sequence {
         let mut text_num = 1u32;
         for track in &mut self.tracks {
             if track.kind == TrackKind::Text {
-                if track.name.starts_with("Text ") {
+                if is_default_track_name(&track.name, "Text", 'T') {
                     track.name = format!("Text {}", text_num);
                 }
                 text_num += 1;
@@ -3987,5 +3989,30 @@ mod tests {
         let b_after = seq.tracks[0].clips.iter().find(|c| c.id == b_id).unwrap();
         assert_eq!(frames_of(a_after), (0, 24));
         assert_eq!(frames_of(b_after), (24, 96));
+    }
+}
+
+/// Whether `name` is a numbered default a renumbering may replace:
+/// `"<word> <n>"` or `"<letter><n>"`. A name the user gave, even one that
+/// begins with the same letter ("Ambience", "Voice-over"), is not: by
+/// first letter alone, every add or remove of a track renamed them (#497).
+fn is_default_track_name(name: &str, word: &str, letter: char) -> bool {
+    let digits = |rest: &str| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit());
+    name.strip_prefix(word).and_then(|r| r.strip_prefix(' ')).is_some_and(digits) || name.strip_prefix(letter).is_some_and(digits)
+}
+
+#[cfg(test)]
+mod track_name_tests {
+    use super::*;
+
+    /// #497: renumbering renames only the numbered defaults.
+    #[test]
+    fn a_track_the_user_named_keeps_its_name() {
+        let mut seq = Sequence::new_default();
+        let names = [("V2", TrackKind::Video), ("Vlog", TrackKind::Video), ("Ambience", TrackKind::Audio), ("A1", TrackKind::Audio), ("Audio 7", TrackKind::Audio), ("Text 9", TrackKind::Text), ("Titles", TrackKind::Text)];
+        seq.tracks = names.iter().map(|(n, k)| Track::new(n, *k)).collect();
+        seq.renumber_tracks();
+        let got: Vec<&str> = seq.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(got, ["Video 2", "Vlog", "Ambience", "Audio 2", "Audio 3", "Text 1", "Titles"]);
     }
 }
