@@ -79,7 +79,7 @@ pub use config::{
     ScopeQuality, VectorscopeSettings, WaveformParadeSettings,
 };
 pub use gpu_vendor::GpuVendor;
-pub use working_colorspace::WorkingColorspace;
+pub use working_colorspace::{grade_encoding, set_grade_encoding, GradeEncoding, WorkingColorspace};
 pub use shot::ShotMetadata;
 pub use logging::ClipLog;
 pub use field::Field;

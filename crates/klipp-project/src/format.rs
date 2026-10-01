@@ -42,6 +42,11 @@ pub struct ProjectJson {
     /// before the upgrade so existing projects open unchanged.
     #[serde(default)]
     pub working_colorspace: klipp_core::WorkingColorspace,
+    /// What the grade's controls act in (#467): BT.1886, or ACEScct or
+    /// ACEScc under ACEScg. Absent in every file written before it, and
+    /// then BT.1886, as every grade was.
+    #[serde(default)]
+    pub grade_encoding: klipp_core::GradeEncoding,
     /// Project-scoped synthetic title assets. Each entry is keyed by
     /// the `MediaId` of its synthetic `MediaItem` (the entry that
     /// shows up in the Media tab) and carries the canonical
@@ -884,6 +889,7 @@ mod tests {
             timeline_scroll_x: None,
             timeline_track_scale: Some(0.5),
             working_colorspace: klipp_core::WorkingColorspace::AcesCG,
+            grade_encoding: klipp_core::GradeEncoding::AcesCct,
             title_assets: Vec::new(),
         };
         let serialised = serde_json::to_string(&project).expect("serialise");

@@ -2259,6 +2259,9 @@ pub struct AppState {
     /// of pre-Phase-E project files behave exactly like they did
     /// before.
     pub project_working_colorspace: klipp_core::WorkingColorspace,
+    /// What the grade's controls act in (#467): BT.1886, or ACEScct or
+    /// ACEScc under ACEScg. Mirrored into `klipp_core::set_grade_encoding`.
+    pub project_grade_encoding: klipp_core::GradeEncoding,
 
     // Media panel
     pub show_media_panel: bool,
@@ -4061,6 +4064,7 @@ impl Default for AppState {
             project_auto_filmstrips: None,
             project_auto_skim: None,
             project_working_colorspace: klipp_core::WorkingColorspace::default(),
+            project_grade_encoding: klipp_core::GradeEncoding::default(),
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,

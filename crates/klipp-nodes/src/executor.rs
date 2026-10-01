@@ -163,6 +163,9 @@ pub struct GraphExecutor {
     /// engine sets the value behave exactly like the pre-Phase-E
     /// pipeline.
     working_colorspace: klipp_core::WorkingColorspace,
+    /// The encoding the grade's controls act in (#467), from the
+    /// project's choice and the working space: set with it.
+    grade_encoding: klipp_color::grade_model::Encoding,
     /// Tetrahedral 3D-LUT interpolation, or trilinear when the user
     /// picked speed over accuracy in the viewer.
     lut_tetrahedral: bool,
@@ -283,13 +286,14 @@ fn default_pivot_encoded() -> f32 {
 
 
 /// The unified grade doing nothing, in the working space `ws`.
-fn identity_grade(ws: klipp_core::WorkingColorspace) -> klipp_effects::cpu_grade::ColorGrade {
+fn identity_grade(ws: klipp_core::WorkingColorspace, enc: klipp_color::grade_model::Encoding) -> klipp_effects::cpu_grade::ColorGrade {
     let zero = (0.0, 0.0, 0.0);
     klipp_effects::cpu_grade::ColorGrade {
         exposure: 0.0, contrast: 0.0,
-        contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot(
-            klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT,
+        contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot_in(
+            klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT, enc,
         ),
+        encoding: enc,
         saturation: 1.0, white_balance: NO_WHITE_BALANCE,
         highlights: 0.0, shadows: 0.0, whites: 0.0, blacks: 0.0,
         lift: zero, gamma: zero, gain: zero, offset: zero, log_wheels: None,
@@ -551,6 +555,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
@@ -574,6 +579,7 @@ impl GraphExecutor {
             // case the pipeline's default `luma_coefs` would be Rec.709
             // even though the project is on AcesCG.
             gpu.set_luma_coefs(klipp_color::linear::luma_coefs(self.working_colorspace));
+            gpu.set_grade_encoding(self.grade_encoding.as_u8());
         } else {
             tracing::info!(
                 "GraphExecutor: GPU unavailable, using CPU fallback for all nodes"
@@ -605,6 +611,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
@@ -655,8 +662,13 @@ impl GraphExecutor {
 
     pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
         self.working_colorspace = ws;
+        // The grade encoding goes with it: the project's choice, which
+        // only ACEScg takes (#467).
+        let tag = klipp_core::grade_encoding().effective(ws).as_u8();
+        self.grade_encoding = klipp_color::grade_model::Encoding::from_u8(tag);
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.set_luma_coefs(klipp_color::linear::luma_coefs(ws));
+            gpu.set_grade_encoding(tag);
         }
     }
 
@@ -3140,9 +3152,11 @@ impl GraphExecutor {
         let grade = klipp_effects::cpu_grade::ColorGrade {
             exposure: params.exposure.unwrap_or(0.0),
             contrast: params.contrast.unwrap_or(0.0),
-            contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot(
+            contrast_pivot_encoded: klipp_color::grade_model::encode_contrast_pivot_in(
                 params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                self.grade_encoding,
             ),
+            encoding: self.grade_encoding,
             saturation: params.saturation.unwrap_or(1.0),
             white_balance: white_balance(params.temperature.unwrap_or(0.0), params.tint.unwrap_or(0.0), ws),
             highlights: params.highlights.unwrap_or(0.0),
@@ -3152,7 +3166,7 @@ impl GraphExecutor {
             lift, gamma, gain, offset,
             log_wheels: log,
             hue: params.hue.unwrap_or(0.0),
-            ..identity_grade(ws)
+            ..identity_grade(ws, self.grade_encoding)
         };
         let grade_active = grade.exposure != 0.0
             || grade.contrast != 0.0
@@ -3236,7 +3250,7 @@ impl GraphExecutor {
         } else {
             linear_wheels(params)
         };
-        klipp_effects::cpu_grade::ColorGrade { lift, gamma, gain, offset, log_wheels: log, ..identity_grade(self.working_colorspace) }
+        klipp_effects::cpu_grade::ColorGrade { lift, gamma, gain, offset, log_wheels: log, ..identity_grade(self.working_colorspace, self.grade_encoding) }
     }
 
     /// Dispatch the Corrector's stages ([`Self::corrector_stages`]) onto
@@ -3377,7 +3391,7 @@ impl GraphExecutor {
                             0.0, 1.0,
                         )
                     } else {
-                        let g = klipp_effects::cpu_grade::ColorGrade { exposure: exp, ..identity_grade(self.working_colorspace) };
+                        let g = klipp_effects::cpu_grade::ColorGrade { exposure: exp, ..identity_grade(self.working_colorspace, self.grade_encoding) };
                         run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                     }
                 } else {
@@ -3407,7 +3421,7 @@ impl GraphExecutor {
                                 0.0, 1.0,
                             )
                         } else {
-                            let g = klipp_effects::cpu_grade::ColorGrade { contrast: con, contrast_pivot_encoded: pivot, ..identity_grade(self.working_colorspace) };
+                            let g = klipp_effects::cpu_grade::ColorGrade { contrast: con, contrast_pivot_encoded: pivot, ..identity_grade(self.working_colorspace, self.grade_encoding) };
                             run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                         }
                     } else {
@@ -3441,7 +3455,7 @@ impl GraphExecutor {
                                 0.0, 1.0,
                             )
                         } else {
-                            let g = klipp_effects::cpu_grade::ColorGrade { saturation: sat, ..identity_grade(self.working_colorspace) };
+                            let g = klipp_effects::cpu_grade::ColorGrade { saturation: sat, ..identity_grade(self.working_colorspace, self.grade_encoding) };
                             run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                         }
                     } else {
@@ -3476,7 +3490,7 @@ impl GraphExecutor {
                             0.0, 1.0,
                         )
                     } else {
-                        let g = klipp_effects::cpu_grade::ColorGrade { highlights: hi, shadows: sh, whites: wh, blacks: bl, ..identity_grade(self.working_colorspace) };
+                        let g = klipp_effects::cpu_grade::ColorGrade { highlights: hi, shadows: sh, whites: wh, blacks: bl, ..identity_grade(self.working_colorspace, self.grade_encoding) };
                         run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                     }
                 } else {
@@ -4277,7 +4291,7 @@ impl GraphExecutor {
                         exposure: s.exposure,
                         saturation: s.saturation,
                         white_balance: white_balance(s.temperature, s.tint, self.working_colorspace),
-                        ..identity_grade(self.working_colorspace)
+                        ..identity_grade(self.working_colorspace, self.grade_encoding)
                     };
                     run_stages_cpu(&[GradeStage::Grade(g)], primary_input, width, height)
                 }

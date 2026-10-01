@@ -25042,6 +25042,7 @@ impl KlippApp {
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
+            grade_encoding: self.state.project_grade_encoding,
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,
@@ -25379,6 +25380,7 @@ impl KlippApp {
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
+            grade_encoding: self.state.project_grade_encoding,
         };
         // Stills made while there was no folder of our own to write to —
         // a project never saved, or one open read-only — come along, or
@@ -25661,6 +25663,10 @@ impl KlippApp {
                 klipp_engine::video_decoder::set_working_colorspace(
                     color_settings.working_colorspace,
                 );
+                // And what the grade acts in (#467): BT.1886 for every
+                // file written before it.
+                self.state.project_grade_encoding = color_settings.grade_encoding;
+                klipp_core::set_grade_encoding(color_settings.grade_encoding);
 
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -29459,6 +29465,7 @@ impl eframe::App for KlippApp {
                     auto_generate_filmstrips: self.state.project_auto_filmstrips,
                     auto_generate_skim: self.state.project_auto_skim,
                     working_colorspace: self.state.project_working_colorspace,
+                    grade_encoding: self.state.project_grade_encoding,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
 

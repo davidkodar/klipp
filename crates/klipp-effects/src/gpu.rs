@@ -514,6 +514,10 @@ pub struct GpuEffectsPipeline {
     /// [`Self::set_luma_coefs`] when the project's working colorspace
     /// changes.
     luma_coefs: [f32; 3],
+    /// The grade encoding the colour grade's controls act in
+    /// (`klipp_grade_model::Encoding::as_u8`, #467): 0, BT.1886, unless
+    /// the project grades in ACEScct or ACEScc under ACEScg.
+    grade_encoding: u32,
 }
 
 /// Maximum params size (padded to 256 bytes for alignment)
@@ -1508,6 +1512,7 @@ impl GpuEffectsPipeline {
             stack_params_slot: std::cell::Cell::new(0),
             scopes: None,
             luma_coefs: [0.2126, 0.7152, 0.0722],
+            grade_encoding: 0,
         })
     }
 
@@ -1522,6 +1527,12 @@ impl GpuEffectsPipeline {
     #[inline]
     pub fn set_luma_coefs(&mut self, coefs: [f32; 3]) {
         self.luma_coefs = coefs;
+    }
+
+    /// The encoding the colour grade's controls act in (#467), as
+    /// `klipp_grade_model::Encoding::as_u8` gives it.
+    pub fn set_grade_encoding(&mut self, tag: u8) {
+        self.grade_encoding = u32::from(tag);
     }
 
     /// Read the active luma coefficients. Mostly useful for tests.
@@ -1809,7 +1820,7 @@ impl GpuEffectsPipeline {
             luma_yr: self.luma_coefs[0],
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
-            _pad1: 0,
+            encoding: self.grade_encoding,
             log_mode: log_wheels.is_some() as u32,
             log_wheels: flat_wheels(log_wheels),
         });
@@ -4126,7 +4137,7 @@ impl GpuEffectsPipeline {
             luma_yr: self.luma_coefs[0],
             luma_yg: self.luma_coefs[1],
             luma_yb: self.luma_coefs[2],
-            _pad1: 0,
+            encoding: self.grade_encoding,
             log_mode: log_wheels.is_some() as u32,
             log_wheels: flat_wheels(log_wheels),
         });
@@ -8042,7 +8053,8 @@ struct GpuColorGradeParams {
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
-    _pad1: u32,
+    /// The grade encoding, `klipp_grade_model::Encoding::as_u8` (#467).
+    encoding: u32,
     /// Non-zero: log-mode wheels (`log_wheels` = low, mid, high RGB)
     /// replace lift/gamma/gain/offset.
     log_mode: u32,
@@ -12897,7 +12909,7 @@ struct Params {
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
-    _pad1: u32,
+    encoding: u32,
     log_mode: u32,
     log_low_r: f32, log_low_g: f32, log_low_b: f32,
     log_mid_r: f32, log_mid_g: f32, log_mid_b: f32,
@@ -12921,6 +12933,38 @@ fn grade_encode(x: f32) -> f32 {
 fn grade_decode(e: f32) -> f32 {
     let x = pow(abs(e), GRADE_GAMMA);
     return select(x, -x, e < 0.0);
+}
+// The grade encoding chosen (#467): 0 BT.1886, 1 ACEScct, 2 ACEScc.
+// klipp_grade_model::{encode, decode, band_luma}, transcribed.
+fn grade_encode_in(x: f32) -> f32 {
+    if params.encoding == 1u {
+        if x <= 0.0078125 { return 10.5402377 * x + 0.072905534; }
+        return (log2(min(x, 65504.0)) + 9.72) / 17.52;
+    }
+    if params.encoding == 2u {
+        if x <= 0.0 { return (-16.0 + 9.72) / 17.52; }
+        if x < exp2(-15.0) { return (log2(exp2(-16.0) + x * 0.5) + 9.72) / 17.52; }
+        return (log2(min(x, 65504.0)) + 9.72) / 17.52;
+    }
+    return grade_encode(x);
+}
+fn grade_decode_in(e: f32) -> f32 {
+    let top = (log2(65504.0) + 9.72) / 17.52;
+    if params.encoding == 1u {
+        if e <= 0.15525114 { return (e - 0.072905534) / 10.5402377; }
+        if e < top { return exp2(e * 17.52 - 9.72); }
+        return 65504.0;
+    }
+    if params.encoding == 2u {
+        if e < (9.72 - 15.0) / 17.52 { return (exp2(e * 17.52 - 9.72) - exp2(-16.0)) * 2.0; }
+        if e < top { return exp2(e * 17.52 - 9.72); }
+        return 65504.0;
+    }
+    return grade_decode(e);
+}
+fn band_luma(l: f32) -> f32 {
+    if params.encoding == 0u { return l; }
+    return grade_encode(grade_decode_in(l));
 }
 fn cdl_channel(e: f32, lift: f32, gamma: f32, gain: f32, offset: f32) -> f32 {
     let slope = (1.0 + gain) * (1.0 - lift);
@@ -12976,14 +13020,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 2. In the grade encoding (klipp_color::grade_model, the CPU twin):
     //    the tone bands, the wheels as the ASC CDL, contrast about mid grey.
     let luma1 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
-    let l_enc = grade_encode(luma1);
-    let tw = tone_weights(l_enc);
+    let l_band = band_luma(grade_encode_in(luma1));
+    let tw = tone_weights(l_band);
     let tone_adj = params.highlights * tw.x + params.shadows * tw.y + params.whites * tw.z + params.blacks * tw.w;
-    var er = grade_encode(r) + tone_adj;
-    var eg = grade_encode(g) + tone_adj;
-    var eb = grade_encode(b) + tone_adj;
+    var er = grade_encode_in(r) + tone_adj;
+    var eg = grade_encode_in(g) + tone_adj;
+    var eb = grade_encode_in(b) + tone_adj;
     if params.log_mode != 0u {
-        let lw = log_wheel_weights(l_enc);
+        let lw = log_wheel_weights(l_band);
         er = er + params.log_low_r * lw.x + params.log_mid_r * lw.y + params.log_high_r * lw.z;
         eg = eg + params.log_low_g * lw.x + params.log_mid_g * lw.y + params.log_high_g * lw.z;
         eb = eb + params.log_low_b * lw.x + params.log_mid_b * lw.y + params.log_high_b * lw.z;
@@ -12995,9 +13039,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     er = contrast_channel_at(er, params.contrast, params.contrast_pivot_encoded);
     eg = contrast_channel_at(eg, params.contrast, params.contrast_pivot_encoded);
     eb = contrast_channel_at(eb, params.contrast, params.contrast_pivot_encoded);
-    r = grade_decode(er);
-    g = grade_decode(eg);
-    b = grade_decode(eb);
+    r = grade_decode_in(er);
+    g = grade_decode_in(eg);
+    b = grade_decode_in(eb);
     // 3. Back in linear light: saturation about the working space's luma.
     let luma3 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
     r = luma3 + (r - luma3) * params.saturation;

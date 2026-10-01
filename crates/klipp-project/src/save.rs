@@ -20,6 +20,8 @@ pub struct ColorSettings {
     /// `Rec709Linear` for back-compat (every existing project file
     /// has no `working_colorspace` field; serde fills the default).
     pub working_colorspace: klipp_core::WorkingColorspace,
+    /// The grade encoding chosen (#467); BT.1886 by default.
+    pub grade_encoding: klipp_core::GradeEncoding,
 }
 
 impl Default for ColorSettings {
@@ -32,6 +34,7 @@ impl Default for ColorSettings {
             auto_generate_filmstrips: None,
             auto_generate_skim: None,
             working_colorspace: klipp_core::WorkingColorspace::default(),
+            grade_encoding: klipp_core::GradeEncoding::default(),
         }
     }
 }
@@ -133,6 +136,7 @@ pub fn save_project_full(
         timeline_scroll_x,
         timeline_track_scale,
         working_colorspace: color.working_colorspace,
+        grade_encoding: color.grade_encoding,
         title_assets: title_assets_json,
     };
 

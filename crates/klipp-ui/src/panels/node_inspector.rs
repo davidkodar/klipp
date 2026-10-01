@@ -1283,17 +1283,17 @@ impl NodeInspectorPanel {
                     // encoding it lands near the middle and equal travel
                     // is an equal change, which is why Resolve's pivot
                     // reads about 0.43 rather than 0.18.
-                    let mut shown = klipp_color::grade_model::grade_encode(
+                    let mut shown = pivot_shown(
                         node.params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                     );
                     if inspector_row(
                         ui, "Pivot", &mut shown,
-                        klipp_color::grade_model::grade_encode(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
-                            ..=klipp_color::grade_model::grade_encode(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
-                        klipp_color::grade_model::grade_encode(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
+                        pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
+                            ..=pivot_shown(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                        pivot_shown(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                         "", theme, cmds, clip_id,
                     ) {
-                        let linear = klipp_color::grade_model::grade_decode(shown).clamp(
+                        let linear = pivot_linear(shown).clamp(
                             klipp_color::grade_model::MIN_CONTRAST_PIVOT,
                             klipp_color::grade_model::MAX_CONTRAST_PIVOT,
                         );
@@ -1722,16 +1722,16 @@ impl NodeInspectorPanel {
                 // codebase names it that.
                 // Same control as the Colour panel's: stored linear,
                 // scrubbed in the grade encoding. See the note there.
-                let mut shown = klipp_color::grade_model::grade_encode(
+                let mut shown = pivot_shown(
                     params.contrast_pivot.unwrap_or(klipp_color::grade_model::DEFAULT_CONTRAST_PIVOT),
                 );
                 if grade_slider(
                     ui, "Pivot", &mut shown,
-                    klipp_color::grade_model::grade_encode(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
-                        ..=klipp_color::grade_model::grade_encode(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
+                    pivot_shown(klipp_color::grade_model::MIN_CONTRAST_PIVOT)
+                        ..=pivot_shown(klipp_color::grade_model::MAX_CONTRAST_PIVOT),
                     "", cmds, clip_id, theme,
                 ) {
-                    let linear = klipp_color::grade_model::grade_decode(shown).clamp(
+                    let linear = pivot_linear(shown).clamp(
                         klipp_color::grade_model::MIN_CONTRAST_PIVOT,
                         klipp_color::grade_model::MAX_CONTRAST_PIVOT,
                     );
@@ -4631,4 +4631,21 @@ mod slider_behaviour {
         rig.drag(egui::pos2(x + w + 5.0, cy), 10.0, egui::Modifiers::NONE);
         assert!(rig.value > 0.0 && rig.value < 0.05, "the number's small step, got {}", rig.value);
     }
+}
+
+/// The encoding the grade acts in now (#467): the project's choice under
+/// the working space, as the executors take it.
+fn grade_encoding_now() -> klipp_color::grade_model::Encoding {
+    let tag = klipp_core::grade_encoding().effective(klipp_engine::video_decoder::working_colorspace()).as_u8();
+    klipp_color::grade_model::Encoding::from_u8(tag)
+}
+
+/// A linear contrast pivot as the slider shows it: in the grade encoding.
+fn pivot_shown(linear: f32) -> f32 {
+    klipp_color::grade_model::encode(linear, grade_encoding_now())
+}
+
+/// The slider's value back to a linear pivot.
+fn pivot_linear(shown: f32) -> f32 {
+    klipp_color::grade_model::decode(shown, grade_encoding_now())
 }

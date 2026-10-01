@@ -9,7 +9,7 @@
 //! Each function takes what its GPU entry point takes and works on
 //! linear RGBA f32 in place.
 
-use klipp_grade_model::{cdl_channel, contrast_channel_at, grade_decode, grade_encode, log_wheel_weights, tone_weights};
+use klipp_grade_model::{band_luma, cdl_channel, contrast_channel_at, decode, encode, log_wheel_weights, tone_weights, Encoding};
 use rayon::prelude::*;
 // The WGSL twins spell this `3.14159265`, and that literal rounds to
 // exactly this f32 — 0x40490fdb, the same bits — so the twins agree
@@ -47,6 +47,9 @@ pub struct ColorGrade {
     pub global_mix: f32,
     /// The working space's luma coefficients.
     pub luma: [f32; 3],
+    /// The encoding the controls act in (#467): BT.1886, or ACEScct or
+    /// ACEScc under ACEScg. `contrast_pivot_encoded` is in it too.
+    pub encoding: Encoding,
 }
 
 /// `SHADER_COLOR_GRADE`.
@@ -73,13 +76,14 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
         // 2. In the grade encoding (klipp_color::grade_model): the tone
         //    bands, the wheels as the ASC CDL, and contrast about mid grey.
         let luma1 = l[0] * r + l[1] * gr + l[2] * b;
-        let l_enc = grade_encode(luma1);
-        let [hi_w, lo_w, white_w, black_w] = tone_weights(l_enc);
+        let enc = g.encoding;
+        let l_band = band_luma(encode(luma1, enc), enc);
+        let [hi_w, lo_w, white_w, black_w] = tone_weights(l_band);
         let tone_adj = g.highlights * hi_w + g.shadows * lo_w + g.whites * white_w + g.blacks * black_w;
-        let mut e = [grade_encode(r) + tone_adj, grade_encode(gr) + tone_adj, grade_encode(b) + tone_adj];
+        let mut e = [encode(r, enc) + tone_adj, encode(gr, enc) + tone_adj, encode(b, enc) + tone_adj];
         match g.log_wheels {
             Some([low, mid, high]) => {
-                let [low_w, mid_w, high_w] = log_wheel_weights(l_enc);
+                let [low_w, mid_w, high_w] = log_wheel_weights(l_band);
                 let lo = [low.0, low.1, low.2];
                 let mi = [mid.0, mid.1, mid.2];
                 let hi = [high.0, high.1, high.2];
@@ -100,7 +104,7 @@ pub fn color_grade(px: &mut [f32], g: &ColorGrade) {
         for v in &mut e {
             *v = contrast_channel_at(*v, g.contrast, g.contrast_pivot_encoded);
         }
-        (r, gr, b) = (grade_decode(e[0]), grade_decode(e[1]), grade_decode(e[2]));
+        (r, gr, b) = (decode(e[0], enc), decode(e[1], enc), decode(e[2], enc));
         // 3. Back in linear light: saturation about the working space's
         //    luma, then the hue rotation.
         let luma3 = l[0] * r + l[1] * gr + l[2] * b;

@@ -71,9 +71,77 @@ impl WorkingColorspace {
     }
 }
 
+/// What the grade's controls act in, chosen per project (#467): the
+/// BT.1886 power curve every project has graded in, or under an ACEScg
+/// working space ACEScct or ACEScc, the ACES log encodings colourists
+/// grade in, where offset is an exposure and the wheels move evenly
+/// across the stops. Only ACEScg takes the ACES ones; in another working
+/// space the grade is BT.1886 whatever is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradeEncoding {
+    #[default]
+    Bt1886,
+    AcesCct,
+    AcesCc,
+}
+
+impl GradeEncoding {
+    /// The wire tag, as `klipp_grade_model::Encoding::from_u8` reads it.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            GradeEncoding::Bt1886 => 0,
+            GradeEncoding::AcesCct => 1,
+            GradeEncoding::AcesCc => 2,
+        }
+    }
+
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            1 => GradeEncoding::AcesCct,
+            2 => GradeEncoding::AcesCc,
+            _ => GradeEncoding::Bt1886,
+        }
+    }
+
+    /// What the grade acts in, in the working space `ws`: this only
+    /// under ACEScg, BT.1886 otherwise.
+    pub const fn effective(self, ws: WorkingColorspace) -> GradeEncoding {
+        match ws {
+            WorkingColorspace::AcesCG => self,
+            _ => GradeEncoding::Bt1886,
+        }
+    }
+}
+
+static GRADE_ENCODING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The project's chosen grade encoding, set when a project loads or the
+/// choice changes; the grade executors read it with the working space.
+pub fn set_grade_encoding(enc: GradeEncoding) {
+    GRADE_ENCODING.store(enc.as_u8(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The project's chosen grade encoding (see [`GradeEncoding::effective`]
+/// for what applies).
+pub fn grade_encoding() -> GradeEncoding {
+    GradeEncoding::from_u8(GRADE_ENCODING.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #467: the ACES encodings only under ACEScg.
+    #[test]
+    fn the_aces_grade_encodings_need_acescg() {
+        assert_eq!(GradeEncoding::AcesCct.effective(WorkingColorspace::AcesCG), GradeEncoding::AcesCct);
+        assert_eq!(GradeEncoding::AcesCct.effective(WorkingColorspace::Rec709Linear), GradeEncoding::Bt1886);
+        assert_eq!(GradeEncoding::AcesCc.effective(WorkingColorspace::Bt2020Linear), GradeEncoding::Bt1886);
+        for e in [GradeEncoding::Bt1886, GradeEncoding::AcesCct, GradeEncoding::AcesCc] {
+            assert_eq!(GradeEncoding::from_u8(e.as_u8()), e);
+        }
+    }
 
     #[test]
     fn default_is_rec709_linear() {

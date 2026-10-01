@@ -29,6 +29,7 @@ fn acescg_setting_round_trips_through_save_load() {
 
     let color = ColorSettings {
         working_colorspace: WorkingColorspace::AcesCG,
+        grade_encoding: klipp_core::GradeEncoding::AcesCct,
         ..Default::default()
     };
 
@@ -41,6 +42,7 @@ fn acescg_setting_round_trips_through_save_load() {
         WorkingColorspace::AcesCG,
         "AcesCG should round-trip through ColorSettings → ProjectJson → load",
     );
+    assert_eq!(loaded_color.grade_encoding, klipp_core::GradeEncoding::AcesCct, "the grade encoding with it (#467)");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -56,6 +58,7 @@ fn default_setting_round_trips_as_rec709_linear() {
     // every existing project takes today.
     let color = ColorSettings::default();
     save_project_with_color(&dir, &[seq], &pool, &color, None, None, "").unwrap();
+    // An old project grades as it always has (#467).
 
     let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll, _track_scale, _assets) =
         load_project(&dir).unwrap();
