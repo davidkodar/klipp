@@ -222,6 +222,14 @@ impl PresetManager {
         self.bi("outer_glow", "Halo", "A wide glow onto the background",
             klipp_effects::BuiltinEffect::OuterGlow { radius: 0.06, intensity: 0.8, color: [120, 150, 255] });
 
+        // ── Fill Bars (#680) ───────────────────────────────────
+        // The bars round an upright phone shot in a wide frame, or a
+        // wide one in a tall frame, filled with the picture itself.
+        self.bi("fill_bars", "Blurred Background", "The bars filled with the picture, enlarged and blurred (Blanking Fill)",
+            klipp_effects::BuiltinEffect::FillBars { blur: 0.05, zoom: 1.0, darken: 0.25 });
+        self.bi("fill_bars", "Soft Ambient", "A wide, dark blur in the bars, the picture standing out",
+            klipp_effects::BuiltinEffect::FillBars { blur: 0.1, zoom: 1.2, darken: 0.5 });
+
         // ── Sharpen ────────────────────────────────────────────
         self.bi("sharpen", "Subtle", "Light sharpening for web",
             klipp_effects::BuiltinEffect::Sharpen { amount: 0.3 });
@@ -494,6 +502,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::RoundedCorners { .. } => "rounded_corners",
         klipp_effects::BuiltinEffect::DropShadow { .. } => "drop_shadow",
         klipp_effects::BuiltinEffect::OuterGlow { .. } => "outer_glow",
+        klipp_effects::BuiltinEffect::FillBars { .. } => "fill_bars",
         klipp_effects::BuiltinEffect::Sharpen { .. } => "sharpen",
         klipp_effects::BuiltinEffect::Crop { .. } => "crop",
         klipp_effects::BuiltinEffect::Transform { .. } => "transform",

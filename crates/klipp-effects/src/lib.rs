@@ -428,6 +428,20 @@ pub enum BuiltinEffect {
         /// How dark it is, 0.0-1.0.
         opacity: f32,
     },
+    /// The bars round a picture that does not fill the frame — an upright
+    /// phone shot in a wide frame — filled with the picture itself,
+    /// enlarged to cover the frame, blurred and darkened, under it
+    /// (#680). Resolve's Blanking Fill; also found as blur fill and
+    /// blurred background.
+    FillBars {
+        /// Blur, as a fraction of the frame width.
+        blur: f32,
+        /// How much further than covering the frame the fill is
+        /// enlarged (1.0 just covers it).
+        zoom: f32,
+        /// How much darker the fill is than the picture, 0.0-1.0.
+        darken: f32,
+    },
     /// Light spilling out of the layer's edge onto what is behind it:
     /// a drop shadow with no offset and a bright colour.
     OuterGlow {
@@ -982,7 +996,7 @@ impl BuiltinEffect {
 /// transform leaves around a placed layer. Those run after the
 /// transform that made the margin; see [`crate::layer`].
 pub fn draws_outside_the_picture(effect: &BuiltinEffect) -> bool {
-    matches!(effect, BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. })
+    matches!(effect, BuiltinEffect::DropShadow { .. } | BuiltinEffect::OuterGlow { .. } | BuiltinEffect::FillBars { .. })
 }
 
 /// Returns true when the effect is at its default / identity values

@@ -3494,6 +3494,10 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         // A cool light rather than white: white over a dark ground reads
         // as grey haze, not as glow.
         "outer_glow" => E::OuterGlow { radius: a * 0.06, intensity: a, color: [140, 150, 255] },
+        // The bars round an upright phone shot in a wide frame filled with
+        // the picture, enlarged and blurred (#680); more is softer and
+        // darker, so the picture stands out.
+        "fill_bars" | "blanking_fill" | "blur_fill" | "blurred_background" => E::FillBars { blur: 0.02 + a * 0.1, zoom: 1.0, darken: a * 0.5 },
         "bloom" => E::Bloom { threshold: 0.7, radius: a * 40.0 + 10.0, intensity: a },
         "diffusion" | "pro_mist" => E::Diffusion { amount: a, radius: 20.0, threshold: 0.6, desaturation: 0.1 },
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
@@ -3518,7 +3522,7 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
-        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, corners, shadow, outer_glow, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
+        other => return Err(refuse(i, format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film")),
     };
     // The same kind of effect replaces the one that is there.
     let same_kind = |e: &E| std::mem::discriminant(e) == std::mem::discriminant(&fx);
@@ -6185,6 +6189,18 @@ mod tests {
         assert!(!by("CITY").consumed_as_matte && by("TOWN").consumed_as_matte, "the old source shown, the new hidden");
         assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": sound.0.to_string() })).unwrap_err().why.contains("is sound"));
         assert!(one(&seq, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "clear": true })).unwrap_err().why.contains("has no matte"));
+    }
+
+    /// #680: fill_bars, under any of the names an editor knows it by,
+    /// puts the Fill Bars effect on the clip; again replaces it.
+    #[test]
+    fn the_bars_are_filled_by_name() {
+        let (seq, pool, _, a, _) = fixture();
+        for kind in ["fill_bars", "blanking_fill", "blurred_background"] {
+            let plan = resolve(&seq, &pool, &[serde_json::from_value(serde_json::json!({ "op": "effect", "clip_id": a.0.to_string(), "kind": kind, "amount": 0.5 })).unwrap()]).unwrap();
+            let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+            assert!(matches!(new_effects.last(), Some(klipp_effects::BuiltinEffect::FillBars { darken, .. }) if (*darken - 0.25).abs() < 1e-6), "{kind}: {new_effects:?}");
+        }
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the

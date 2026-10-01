@@ -453,6 +453,8 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::Sharpen { .. } => {
             klipp_effects::BuiltinEffect::Sharpen { amount: 1.5 }
         }
+        // A full thumbnail has no bars to fill; it shows as it is.
+        klipp_effects::BuiltinEffect::FillBars { .. } => effect.clone(),
         klipp_effects::BuiltinEffect::Crop { .. } => {
             klipp_effects::BuiltinEffect::Crop {
                 left: 0.15, right: 0.15, top: 0.15, bottom: 0.15, feather: 0.05,
