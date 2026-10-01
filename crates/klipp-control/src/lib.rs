@@ -2040,7 +2040,6 @@ fn fps_from_f64(f: f64) -> klipp_core::Fps {
     klipp_core::Fps::new((f * 1000.0).round().max(1.0) as u32, 1000)
 }
 
-/// A clip's kind as a client reads it.
 /// What `list_clips` is asked for: every field or the short form, and
 /// which clips.
 struct ClipFilter {
@@ -2171,6 +2170,7 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
     Ok(reply)
 }
 
+/// A clip's kind as a client reads it.
 fn clip_kind_name(c: &klipp_timeline::Clip) -> &'static str {
     match &c.kind {
         klipp_timeline::ClipKind::Media { .. } => "media",

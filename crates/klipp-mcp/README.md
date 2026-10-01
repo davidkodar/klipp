@@ -74,7 +74,7 @@ assistant started in the checkout. Rebuild that binary after changing
 | `klipp_status` | Transport state, timeline summary, viewer resolution, latest perf sample |
 | `klipp_play` / `klipp_pause` / `klipp_stop` | Transport |
 | `klipp_seek` | Absolute seek in seconds |
-| `klipp_list_clips` | Tracks and clips: ids, timings, media, whether the grade is an identity |
+| `klipp_list_clips` | Tracks and clips, a clip to a line: id, kind, range, name, media, and speed, off, graded or effects where set; narrowed by track, time or media; `full` for every field |
 | `klipp_list_media` | The media pool |
 | `klipp_import_media` | Import a file (asynchronous — poll `klipp_list_media`) |
 | `klipp_append_clip` / `klipp_remove_clip` / `klipp_select_clip` | Timeline editing |
