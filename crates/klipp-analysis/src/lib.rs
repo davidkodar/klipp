@@ -134,8 +134,6 @@ pub fn screen_text_enabled() -> bool {
     SCREEN_TEXT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Every analyser this build ships, in the order they pay off. Each AI
-/// analyser is left out when its feature is switched off in preferences.
 /// Whether `item` looks like a recording of a screen, the footage the
 /// beat sheet and the on-screen text reader are for (#500). Run on every
 /// phone clip they read sea foam and house numbers as screen text and
@@ -170,6 +168,8 @@ pub fn looks_like_screen(item: &klipp_media::MediaItem) -> bool {
     !camera
 }
 
+/// Every analyser this build ships, in the order they pay off. Each AI
+/// analyser is left out when its feature is switched off in preferences.
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
     // The beat sheet is last of the always-on set: it synthesises the
     // shots and motion that run before it into an idle/action map.
