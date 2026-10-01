@@ -50,6 +50,21 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_open_project",
 ];
 
+/// Calls with side effects may be replayed after a lost socket reply. The
+/// control server owns deduplication, including tools that queue background
+/// analysis or export work rather than changing the viewer immediately.
+const RETRYABLE_TOOLS: &[&str] = &[
+    "klipp_analyze", "klipp_analysis_queue", "klipp_import_media", "klipp_grade_to_target",
+    "klipp_adopt_look", "klipp_match_scenes", "klipp_grade_chain", "klipp_review",
+    "klipp_narrate", "klipp_record", "klipp_auto_sfx", "klipp_auto_redact",
+    "klipp_add_music", "klipp_match_grade", "klipp_align_audio", "klipp_look",
+    "klipp_orient", "klipp_set_brief", "klipp_set_edit_plan", "klipp_approve_edit_plan",
+    "klipp_build_edit_plan", "klipp_rename_sequence", "klipp_create_multicam",
+    "klipp_switch_angle", "klipp_set_multicam_sound", "klipp_add_marker",
+    "klipp_update_marker", "klipp_remove_marker", "klipp_new_project", "klipp_new_sequence",
+    "klipp_save_project", "klipp_relink_media", "klipp_tag_media",
+];
+
 fn main() {
     // `klipp-mcp --check`: is Klipp there for an assistant? The same
     // read-only status an assistant asks for first, from the same binary
@@ -254,8 +269,9 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
 /// The socket command a tool call is. Shared by a single call and by the
 /// calls inside a batch.
 fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
-    Ok(match name {
+    let mut command = match name {
         "klipp_status" => json!({ "method": "status" }),
+        "klipp_operation_status" => json!({ "method": "operation_status", "operation_id": arg_str(args, "operation_id")? }),
         "klipp_play" => json!({ "method": "play" }),
         "klipp_pause" => json!({ "method": "pause" }),
         "klipp_stop" => json!({ "method": "stop" }),
@@ -585,6 +601,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                     return Err(format!("calls[{i}]: a batch cannot contain a batch"));
                 }
                 let inner = call.get("args").cloned().unwrap_or_else(|| json!({}));
+                if inner.get("idempotency_key").is_some() {
+                    return Err(format!("calls[{i}] ({tool}): put idempotency_key on the batch, not an inner call"));
+                }
                 commands.push(tool_to_command(tool, &inner).map_err(|e| format!("calls[{i}] ({tool}): {e}"))?);
             }
             json!({ "method": "batch", "commands": commands })
@@ -814,7 +833,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         other => return Err(format!("unknown tool: {other}")),
-    })
+    };
+    if let Some(key) = args.get("idempotency_key") {
+        let key = key.as_str().filter(|key| !key.is_empty() && key.len() <= 256)
+            .ok_or("idempotency_key must be a nonempty string of at most 256 bytes")?;
+        command["idempotency_key"] = json!(key);
+    }
+    Ok(command)
 }
 
 /// How to work here, the craft, and the recipes: files shipped with
@@ -978,8 +1003,19 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     // fifteen thousand tokens. `detail` asks for them.
     if name == "klipp_apply" && result.get("steps").is_none() {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-            let done = format!("{text}Applied as one undo step; revision {}.", result.get("revision").and_then(|r| r.as_u64()).unwrap_or(0));
-            return Ok(with_next(done));
+            let outcome = if result.get("applied").and_then(Value::as_bool) == Some(true) {
+                format!("Applied as one undo step; revision {}. Operation {}.",
+                    result.get("revision").and_then(Value::as_u64).unwrap_or(0),
+                    result.get("operation_id").and_then(Value::as_str).unwrap_or("unknown"))
+            } else {
+                format!("Queued for Klipp's UI; final outcome is not known yet. Operation {}. Call klipp_operation_status with that ID before retrying or continuing.",
+                    result.get("operation_id").and_then(Value::as_str).unwrap_or("unknown"))
+            };
+            let message = format!("{text}{outcome}");
+            if result.get("applied").and_then(Value::as_bool) == Some(false) {
+                return Ok(vec![json!({ "type": "text", "text": message })]);
+            }
+            return Ok(with_next(message));
         }
     }
     if name == "klipp_list_clips" {
@@ -1029,7 +1065,13 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn tool(name: &str, description: &str, properties: Value, required: Vec<&str>) -> Value {
+fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str>) -> Value {
+    if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
+        properties["idempotency_key"] = json!({
+            "type": "string",
+            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp will not run it twice"
+        });
+    }
     json!({
         "name": name,
         "description": description,
@@ -1059,6 +1101,9 @@ fn tool_definitions() -> Vec<Value> {
               build is on disk so a restart is due), transport state, timeline summary, \
               viewer resolution and the latest performance sample. Start here.",
              json!({}), vec![]),
+        tool("klipp_operation_status",
+             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
+             json!({ "operation_id": { "type": "string" } }), vec!["operation_id"]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),
         tool("klipp_stop", "Stop playback and return to the start.", json!({}), vec![]),
@@ -2228,6 +2273,40 @@ mod friendly_answer_tests {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn queued_apply_tells_the_agent_to_check_the_actual_outcome() {
+        let command = tool_to_command("klipp_apply", &json!({
+            "ops": [], "idempotency_key": "edit-42",
+        })).unwrap();
+        assert_eq!(command["idempotency_key"], "edit-42");
+        assert_eq!(tool_to_command("klipp_operation_status", &json!({ "operation_id": "write-42" })).unwrap()["operation_id"], "write-42");
+        let pending = content_for("klipp_apply", &json!({
+            "text": "one split\n", "applied": false, "operation_id": "write-42", "next": "look at the cut",
+        })).unwrap();
+        let text = pending[0]["text"].as_str().unwrap();
+        assert!(text.contains("klipp_operation_status") && text.contains("write-42"), "{text}");
+        assert!(!text.contains("Applied as one undo step"), "{text}");
+        assert!(!text.contains("look at the cut"), "a queued write must not advance the agent: {text}");
+    }
+
+    #[test]
+    fn retry_keys_are_advertised_for_background_writes_and_belong_on_the_outer_batch() {
+        let tools = tool_definitions();
+        for name in ["klipp_apply", "klipp_import_media", "klipp_analyze", "klipp_add_marker", "klipp_new_project", "klipp_batch"] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            assert!(tool["inputSchema"]["properties"]["idempotency_key"].is_object(), "{name}");
+        }
+        let inner_key = tool_to_command("klipp_batch", &json!({ "calls": [
+            { "tool": "klipp_seek", "args": { "secs": 2.0, "idempotency_key": "inside" } }
+        ] })).unwrap_err();
+        assert!(inner_key.contains("put idempotency_key on the batch"), "{inner_key}");
+        let batch = tool_to_command("klipp_batch", &json!({ "idempotency_key": "outside", "calls": [
+            { "tool": "klipp_seek", "args": { "secs": 2.0 } }
+        ] })).unwrap();
+        assert_eq!(batch["idempotency_key"], "outside");
+        assert!(batch["commands"][0].get("idempotency_key").is_none());
+    }
 
     #[test]
     fn apply_carries_plan_preconditions_and_plan_exposes_them() {

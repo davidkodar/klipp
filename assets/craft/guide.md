@@ -58,7 +58,14 @@ frames.
 4. **Apply.** `klipp_apply` with the same ops and the plan's
    `expected_revision` (and `expected_project_identity` when available): resolved again,
    applied as one undo step, refused whole if the timeline or project
-   changed since you planned. `klipp_undo` takes the whole action back.
+   changed since you planned. Give the call an `idempotency_key` you can
+   reuse for the exact same request. If Klipp reports `applied: false`
+   after the UI wait times out, the cut is still queued: use its
+   `operation_id` with `klipp_operation_status` until it says `applied`
+   or `refused`. Never send the same cut with a new key while it is
+   queued. Klipp also caches an error reply for that key for up to one
+   hour; after an error, inspect the project and use a new key only for
+   a deliberate new attempt. `klipp_undo` takes the whole action back.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
    `klipp_contact_sheet` over the range you cut. `klipp_frame_stats`

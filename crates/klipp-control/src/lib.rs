@@ -23,6 +23,7 @@
 //! reachable by the user running Klipp and nobody else.
 
 pub mod protocol;
+mod operations;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -195,9 +196,20 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
         let response = match serde_json::from_str::<Request>(&line) {
             Ok(req) => {
                 let id = req.id;
-                match handle(&ctx, req.command, &mut None) {
+                let key = req.idempotency_key;
+                let fingerprint = serde_json::to_value(&req.command).unwrap_or_default();
+                let run = || match handle(&ctx, req.command, &mut None) {
                     Ok(v) => Response::ok(id, with_project_generation(&ctx, v)),
                     Err(e) => Response::err(id, e),
+                };
+                if let Some(key) = key {
+                    if key.is_empty() || key.len() > 256 {
+                        Response::err(id, "idempotency_key must be 1 to 256 bytes")
+                    } else {
+                        operations::with_idempotency_key(&key, fingerprint, id, run)
+                    }
+                } else {
+                    run()
                 }
             }
             // Parse failures answer on id 0 rather than dropping the
@@ -2457,16 +2469,29 @@ fn send_full_envelope_for_project(
         .unwrap_or(0);
     let count = commands.len() + edits.len();
     let (tx, rx) = std::sync::mpsc::channel::<ControlAck>();
+    let background_job = if commands.iter().any(|c| matches!(c, AppCommand::ImportMedia { .. } | AppCommand::ImportMediaWithAnalysis { .. })) {
+        Some("import_probe")
+    } else if commands.iter().any(|c| matches!(c, AppCommand::ExportSequence { .. })) {
+        Some("export")
+    } else {
+        None
+    };
+    let operation_id = operations::queued(background_job);
     ctx.commands
         .send(ControlEnvelope { commands, edits, batch, expected_revision, expected_project_identity, label, ack: Some(tx) })
-        .map_err(|e| format!("app command channel closed: {e}"))?;
+        .map_err(|e| {
+            operations::finished(&operation_id, ctx.shared.revision(), Some("app command channel closed".into()));
+            format!("app command channel closed: {e}")
+        })?;
     (ctx.wake_ui)();
     match rx.recv_timeout(ACK_TIMEOUT) {
         Ok(ack) => {
+            operations::finished(&operation_id, ack.revision, ack.refused.clone());
             if let Some(why) = ack.refused {
-                return Err(format!("not applied: {why}"));
+                return Err(format!("not applied (operation {operation_id}): {why}"));
             }
             Ok(json!({
+                "operation_id": operation_id,
                 "applied": true,
                 "accepted": true,
                 "commands": count,
@@ -2474,14 +2499,27 @@ fn send_full_envelope_for_project(
                 "generation": generation,
             }))
         }
-        Err(_) => Ok(json!({
-            "applied": false,
-            "accepted": true,
-            "commands": count,
-            "revision": ctx.shared.revision(),
-            "generation": generation,
-            "note": "queued for the UI's next frame; it did not answer within the timeout",
-        })),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let pending_id = operation_id.clone();
+            let shared = Arc::clone(&ctx.shared);
+            std::thread::spawn(move || match rx.recv() {
+                Ok(ack) => operations::finished(&pending_id, ack.revision, ack.refused),
+                Err(_) => operations::finished(&pending_id, shared.revision(), Some("UI acknowledgement channel closed".into())),
+            });
+            Ok(json!({
+                "operation_id": operation_id,
+                "applied": false,
+                "accepted": true,
+                "commands": count,
+                "revision": ctx.shared.revision(),
+                "generation": generation,
+                "note": "queued for the UI's next frame; query operation_status for the final outcome",
+            }))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            operations::finished(&operation_id, ctx.shared.revision(), Some("UI acknowledgement channel closed".into()));
+            Err(format!("not applied (operation {operation_id}): UI acknowledgement channel closed"))
+        }
     }
 }
 
@@ -2521,6 +2559,11 @@ fn handle(
             "pid": std::process::id(),
             "build": build_json(),
         })),
+
+        ControlCommand::OperationStatus { operation_id } => {
+            if in_batch { return read_in_batch("operation_status"); }
+            operations::status(&operation_id)
+        }
 
         ControlCommand::Status => {
             if in_batch {
