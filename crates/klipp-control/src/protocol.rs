@@ -90,8 +90,22 @@ pub enum ControlCommand {
     Seek { secs: f64 },
 
     // ── Timeline ───────────────────────────────────────────────────
-    /// Every track with its clips: ids, kinds, timings, media.
-    ListClips,
+    /// Every track with its clips: ids, kinds, timings, media. Compact,
+    /// one short object a clip, unless `full`; narrowed to a `track`
+    /// (index or name), the clips over `from_secs`..`to_secs`, or those
+    /// of one `media_id` (#507).
+    ListClips {
+        #[serde(default)]
+        full: bool,
+        #[serde(default)]
+        track: Option<serde_json::Value>,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        media_id: Option<String>,
+    },
     /// The media pool.
     ListMedia,
     /// Point a media item at `path` (an offline one found, or a better

@@ -212,6 +212,31 @@ fn control_call(command: Value) -> Result<Value, String> {
     }
 }
 
+/// `list_clips` as JSON with a clip to a line (#507): pretty-printed, a
+/// clip's every field took a line of its own, and 70 clips came to 63k
+/// characters.
+fn clips_text(v: &Value) -> String {
+    let mut head = v.clone();
+    let tracks = head.as_object_mut().and_then(|o| o.remove("tracks")).unwrap_or(json!([]));
+    let mut out = head.to_string();
+    out.pop();
+    if out.len() > 1 {
+        out.push_str(", ");
+    }
+    out.push_str("\"tracks\": [");
+    let tracks = tracks.as_array().cloned().unwrap_or_default();
+    for (i, t) in tracks.iter().enumerate() {
+        let mut t = t.clone();
+        let clips = t.as_object_mut().and_then(|o| o.remove("clips")).unwrap_or(json!([]));
+        let mut line = t.to_string();
+        line.pop();
+        let clips: Vec<String> = clips.as_array().map(|c| c.iter().map(|c| format!("\n    {c}")).collect()).unwrap_or_default();
+        out.push_str(&format!("\n  {line}, \"clips\": [{}]}}{}", clips.join(","), if i + 1 < tracks.len() { "," } else { "" }));
+    }
+    out.push_str("\n]}");
+    out
+}
+
 fn text_content(v: &Value) -> Vec<Value> {
     vec![json!({
         "type": "text",
@@ -243,7 +268,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "method": if args.get("apply").and_then(Value::as_bool).unwrap_or(false) { "apply" } else { "plan" },
             "ops": [{ "op": "generator", "data": args.get("data").ok_or("missing required argument: data")?, "at": { "secs": args.get("at_secs").and_then(Value::as_f64).ok_or("missing required argument: at_secs")? }, "secs": args.get("secs").and_then(Value::as_f64).ok_or("missing required argument: secs")?, "track": args.get("track") }],
         }),
-        "klipp_list_clips" => json!({ "method": "list_clips" }),
+        "klipp_list_clips" => json!({
+            "method": "list_clips",
+            "full": args.get("full").and_then(Value::as_bool).unwrap_or(false),
+            "track": args.get("track"),
+            "from_secs": args.get("from_secs").and_then(Value::as_f64),
+            "to_secs": args.get("to_secs").and_then(Value::as_f64),
+            "media_id": args.get("media_id").and_then(Value::as_str),
+        }),
         "klipp_list_media" => json!({ "method": "list_media" }),
         "klipp_import_media" => json!({
             "method": "import_media", "path": arg_str(args, "path")?, "analyze": args.get("analyze").and_then(Value::as_bool).unwrap_or(true),
@@ -932,6 +964,9 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(done));
         }
     }
+    if name == "klipp_list_clips" {
+        return Ok(vec![json!({ "type": "text", "text": clips_text(&result) })]);
+    }
     // Pictures and sound come back as a path; inline them too when
     // small enough to be worth a context window.
     let inline = match name {
@@ -1015,10 +1050,19 @@ fn tool_definitions() -> Vec<Value> {
              json!({ "secs": { "type": "number", "description": "Seconds from timeline start" } }),
              vec!["secs"]),
         tool("klipp_list_clips",
-             "Every track and clip: clip ids, timings, speed, blend mode, the media \
-              behind each clip, and whether its grade is still an identity. Clip ids \
-              from here are what the grade tools take.",
-             json!({}), vec![]),
+             "Every track and its clips, one line a clip: clip id, kind, range in \
+              seconds, name (file, title text or generator) and media id, with speed, \
+              off, graded and effects only where set. Narrow it to a track, a stretch \
+              of time or one media item; full adds source ranges, frames, blend, grade \
+              group and paths. Clip ids from here are what the grade tools take.",
+             json!({
+                 "track": { "type": ["integer", "string"], "description": "A track's index or name" },
+                 "from_secs": { "type": "number", "description": "Only clips that end after this" },
+                 "to_secs": { "type": "number", "description": "Only clips that start before this" },
+                 "media_id": { "type": "string", "description": "Only clips of this media item" },
+                 "full": { "type": "boolean", "description": "Every field (default false)" },
+             }),
+             vec![]),
         tool("klipp_list_media",
              "The media pool: media ids, paths, duration, fps, resolution, codec.",
              json!({}), vec![]),
@@ -2243,5 +2287,28 @@ mod generator_tests {
         assert!(tool_to_command("klipp_generator", &json!({})).is_err());
         let text = content_for("klipp_generator", &json!({"text": "place generator", "next": "check"})).unwrap();
         assert!(text[0]["text"].as_str().unwrap().contains("place generator"));
+    }
+}
+
+#[cfg(test)]
+mod clips_text_tests {
+    use super::*;
+
+    /// #507: list_clips reads as JSON with a clip to a line, and is still
+    /// the same JSON.
+    #[test]
+    fn a_clip_is_a_line_and_the_whole_is_json() {
+        let v = json!({ "fps": 25.0, "revision": 3, "tracks": [
+            { "index": 0, "kind": "Video", "name": "V1", "clips": [
+                { "clip_id": "a", "kind": "media", "in_secs": 0.0, "out_secs": 2.0 },
+                { "clip_id": "b", "kind": "title", "in_secs": 2.0, "out_secs": 3.0, "name": "Hello" },
+            ]},
+            { "index": 1, "kind": "Audio", "name": "A1", "clips": [] },
+        ]});
+        let text = clips_text(&v);
+        let back: Value = serde_json::from_str(&text).expect(&text);
+        assert_eq!(back, v);
+        assert_eq!(text.lines().filter(|l| l.contains("clip_id")).count(), 2, "{text}");
+        assert!(text.lines().any(|l| l.trim_start().starts_with("{\"clip_id\":\"b\"")), "{text}");
     }
 }

@@ -2041,6 +2041,136 @@ fn fps_from_f64(f: f64) -> klipp_core::Fps {
 }
 
 /// A clip's kind as a client reads it.
+/// What `list_clips` is asked for: every field or the short form, and
+/// which clips.
+struct ClipFilter {
+    full: bool,
+    track: Option<serde_json::Value>,
+    from_secs: Option<f64>,
+    to_secs: Option<f64>,
+    media_id: Option<String>,
+}
+
+/// The tracks and their clips as `list_clips` answers (#507). By default
+/// a clip is its id, kind, range, what it is by name and its media id,
+/// with speed, off, graded and effects only where they are so: on 70
+/// clips the full form was 63k characters, past what a model is given
+/// to read. `full` adds source ranges, frames, blend, grade group and
+/// the file's path and log format.
+fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, revision: u64, f: &ClipFilter) -> Result<serde_json::Value, String> {
+    let fps = seq.fps.as_f64();
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let want_track = |i: usize, t: &klipp_timeline::Track| match &f.track {
+        None => true,
+        Some(serde_json::Value::Number(n)) => n.as_u64() == Some(i as u64),
+        Some(serde_json::Value::String(s)) => s.parse::<usize>().ok() == Some(i) || t.name.eq_ignore_ascii_case(s.trim()),
+        Some(_) => false,
+    };
+    if f.track.is_some() && !seq.tracks.iter().enumerate().any(|(i, t)| want_track(i, t)) {
+        let names: Vec<String> = seq.tracks.iter().enumerate().map(|(i, t)| format!("{i} \"{}\"", t.name)).collect();
+        return Err(format!("no track {}; the tracks are {}", f.track.as_ref().map(|v| v.to_string()).unwrap_or_default(), names.join(", ")));
+    }
+    let want_clip = |c: &klipp_timeline::Clip| {
+        let (a, b) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
+        f.from_secs.is_none_or(|from| b > from)
+            && f.to_secs.is_none_or(|to| a < to)
+            && f.media_id.as_ref().is_none_or(|m| c.media_id().is_some_and(|id| id.0.to_string() == m.trim()))
+    };
+    let narrowed = f.from_secs.is_some() || f.to_secs.is_some() || f.media_id.is_some();
+    let name = |c: &klipp_timeline::Clip| -> Option<String> {
+        match &c.kind {
+            klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()),
+            klipp_timeline::ClipKind::Title(td) => {
+                let one_line = td.text().lines().collect::<Vec<_>>().join(" / ");
+                let shown: String = one_line.chars().take(40).collect();
+                Some(if one_line.chars().count() > 40 { format!("{shown}…") } else { shown })
+            }
+            klipp_timeline::ClipKind::Generator(g) => format!("{g:?}").split(['{', '(', ' ']).next().map(str::to_string),
+            _ => None,
+        }
+    };
+    let clip_json = |c: &klipp_timeline::Clip| -> serde_json::Value {
+        if f.full {
+            return json!({
+                "clip_id": c.id.0.to_string(),
+                "kind": clip_kind_name(c),
+                "enabled": c.enabled,
+                "timeline_in_secs": c.timeline_in.to_secs_f64(),
+                "timeline_out_secs": c.timeline_out.to_secs_f64(),
+                "timeline_in_frame": (c.timeline_in.to_secs_f64() * fps).round() as i64,
+                "timeline_out_frame": (c.timeline_out.to_secs_f64() * fps).round() as i64,
+                "source_in_secs": c.source_in.to_secs_f64(),
+                "source_out_secs": c.source_out.to_secs_f64(),
+                "speed": c.speed,
+                "blend_mode": format!("{:?}", c.blend_mode),
+                "grade_is_identity": c.own_grade().is_identity(),
+                "grade_nodes": c.own_grade().nodes.len(),
+                "grade_group": c.grade_group.and_then(|g| seq.grade_group(g)).map(|g| g.name.clone()),
+                "media": c.media_id()
+                    .and_then(|id| pool.get(&id))
+                    .map(|m| json!({
+                        "media_id": m.id.0.to_string(),
+                        "filename": m.filename,
+                        "path": m.path.to_string_lossy(),
+                        "log_format": log_format_json(m),
+                    })),
+            });
+        }
+        let mut v = json!({
+            "clip_id": c.id.0.to_string(),
+            "kind": clip_kind_name(c),
+            "in_secs": r3(c.timeline_in.to_secs_f64()),
+            "out_secs": r3(c.timeline_out.to_secs_f64()),
+        });
+        if let Some(n) = name(c) {
+            v["name"] = json!(n);
+        }
+        if let Some(id) = c.media_id() {
+            v["media_id"] = json!(id.0.to_string());
+        }
+        if (c.speed - 1.0).abs() > 1e-6 {
+            v["speed"] = json!(c.speed);
+        }
+        if !c.enabled {
+            v["enabled"] = json!(false);
+        }
+        if !c.own_grade().is_identity() || c.grade_group.is_some() {
+            v["graded"] = json!(true);
+        }
+        let fx = c.builtin_effects.len() + c.effects.len();
+        if fx > 0 {
+            v["effects"] = json!(fx);
+        }
+        v
+    };
+    let tracks: Vec<serde_json::Value> = seq
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| want_track(*i, t))
+        .filter_map(|(i, t)| {
+            let clips: Vec<serde_json::Value> = t.clips.iter().filter(|c| want_clip(c)).map(clip_json).collect();
+            if narrowed && clips.is_empty() && f.track.is_none() {
+                return None;
+            }
+            let mut v = json!({ "index": i, "kind": format!("{:?}", t.kind), "name": t.name });
+            if f.full {
+                v["opacity"] = json!(t.opacity);
+                v["locked"] = json!(t.locked);
+            } else if t.locked {
+                v["locked"] = json!(true);
+            }
+            v["clips"] = json!(clips);
+            Some(v)
+        })
+        .collect();
+    let mut reply = json!({ "fps": fps, "revision": revision, "tracks": tracks });
+    if !f.full {
+        reply["note"] = json!("short form: pass full true for source ranges, frames, blend, grade group and file paths; get_grade for a clip's grade");
+    }
+    Ok(reply)
+}
+
 fn clip_kind_name(c: &klipp_timeline::Clip) -> &'static str {
     match &c.kind {
         klipp_timeline::ClipKind::Media { .. } => "media",
@@ -2474,52 +2604,13 @@ fn handle(
             send(AppCommand::SeekTo(tc))
         }
 
-        ControlCommand::ListClips => {
+        ControlCommand::ListClips { full, track, from_secs, to_secs, media_id } => {
             if in_batch {
                 return read_in_batch("list_clips");
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-            let fps = seq.fps.as_f64();
-            let tracks: Vec<serde_json::Value> = seq
-                .tracks
-                .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    json!({
-                        "index": i,
-                        "opacity": t.opacity,
-                        "kind": format!("{:?}", t.kind),
-                        "name": t.name,
-                        "locked": t.locked,
-                        "clips": t.clips.iter().map(|c| json!({
-                            "clip_id": c.id.0.to_string(),
-                            "kind": clip_kind_name(c),
-                            "enabled": c.enabled,
-                            "timeline_in_secs": c.timeline_in.to_secs_f64(),
-                            "timeline_out_secs": c.timeline_out.to_secs_f64(),
-                            "timeline_in_frame": (c.timeline_in.to_secs_f64() * fps).round() as i64,
-                            "timeline_out_frame": (c.timeline_out.to_secs_f64() * fps).round() as i64,
-                            "source_in_secs": c.source_in.to_secs_f64(),
-                            "source_out_secs": c.source_out.to_secs_f64(),
-                            "speed": c.speed,
-                            "blend_mode": format!("{:?}", c.blend_mode),
-                            "grade_is_identity": c.own_grade().is_identity(),
-                            "grade_nodes": c.own_grade().nodes.len(),
-                            "grade_group": c.grade_group.and_then(|g| seq.grade_group(g)).map(|g| g.name.clone()),
-                            "media": c.media_id()
-                                .and_then(|id| pool.get(&id))
-                                .map(|m| json!({
-                                    "media_id": m.id.0.to_string(),
-                                    "filename": m.filename,
-                                    "path": m.path.to_string_lossy(),
-                                    "log_format": log_format_json(m),
-                                })),
-                        })).collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-            Ok(json!({ "fps": fps, "revision": ctx.shared.revision(), "tracks": tracks }))
+            list_clips(&seq, &pool, ctx.shared.revision(), &ClipFilter { full, track, from_secs, to_secs, media_id })
         }
 
         ControlCommand::Analyze { media_id, download_models, wait, timeout_ms } => {
