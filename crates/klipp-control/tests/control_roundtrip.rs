@@ -812,6 +812,10 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     let status = h.ok(json!({ "method": "operation_status", "operation_id": v["operation_id"] }));
     assert_eq!(status["state"], "applied");
     assert_eq!(status["revision"], json!(before + 1));
+    let changes = v["changes"].as_array().expect("cut apply reports exact clip changes");
+    assert!(changes.iter().any(|change| change["removed"] == true && change["before"]["clip_id"] == clip));
+    assert_eq!(changes.iter().filter(|change| change["created"] == true).count(), 2);
+    assert!(changes.iter().filter(|change| change["created"] == true).all(|change| change["after"]["timeline_in_frame"].as_i64().is_some() && change["after"]["timeline_out_frame"].as_i64().is_some()));
     assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
     let edits = h.edits_seen.lock().unwrap();
     assert!(matches!(edits.as_slice(), [klipp_document::history::EditCommand::LegacyBladeClip { .. }]));
@@ -877,6 +881,59 @@ fn delayed_ui_refusal_is_reported_without_applying_an_edit() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(h.edits_seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn cut_preparation_is_revision_bound_and_does_not_invent_a_candidate() {
+    let mut h = harness();
+    let prepared = h.ok(json!({ "method": "prepare_cut", "from_secs": 0.0, "to_secs": 2.0,
+        "intent": "remove the pause after this sentence", "max_candidates": 4 }));
+    assert_eq!(prepared["revision"], h.shared.revision());
+    assert!(prepared["project_identity"].as_u64().is_some());
+    assert_eq!(prepared["range"]["fps_num"], 24);
+    assert!(prepared["clips"].as_array().is_some_and(|clips| !clips.is_empty()));
+    assert_eq!(prepared["candidates"], json!([]));
+    assert_eq!(prepared["ambiguous"], true);
+    assert!(prepared["next"].as_str().unwrap().contains("do not guess"));
+    h.shared.bump_revision();
+    let stale = h.call(json!({ "method": "apply", "expected_revision": prepared["revision"],
+        "ops": [{ "op": "split", "clip_id": h.ids.clip_a.clone(), "at": { "secs": 1.0 } }] }));
+    assert_eq!(stale["ok"], false);
+    assert!(stale["error"].as_str().unwrap().contains("plan again"));
+    assert!(h.edits_seen.lock().unwrap().is_empty());
+    let wide = h.call(json!({ "method": "prepare_cut", "from_secs": 0.0, "to_secs": 301.0 }));
+    assert_eq!(wide["ok"], false);
+}
+
+#[test]
+fn a_ripple_cut_reports_linked_picture_and_sound_at_matching_frames() {
+    let mut h = harness();
+    {
+        let mut sequence = h.sequence.write().unwrap();
+        let mut picture = sequence.tracks[0].clips.remove(0);
+        let mut sound = sequence.tracks[0].clips.remove(0);
+        picture.linked_clip_id = Some(sound.id);
+        sound.linked_clip_id = Some(picture.id);
+        sequence.tracks[0].clips.push(picture);
+        let mut audio = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        audio.clips.push(sound);
+        sequence.tracks.push(audio);
+    }
+    h.shared.bump_revision();
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+        "ops": [{ "op": "cut", "from": { "secs": 1.0 }, "to": { "secs": 2.0 } }] }));
+    assert_eq!(result["applied"], true);
+    let changes = result["changes"].as_array().unwrap();
+    let after: Vec<_> = changes.iter().filter_map(|change| change.get("after")).filter(|after| !after.is_null()).collect();
+    assert!(after.iter().any(|clip| clip["track"] == 0));
+    assert!(after.iter().any(|clip| clip["track"] == 1));
+    for picture in after.iter().filter(|clip| clip["track"] == 0) {
+        let partner = after.iter().find(|sound| sound["clip_id"] == picture["linked_clip_id"])
+            .expect("every picture half keeps a linked sound half");
+        assert_eq!(partner["track"], 1);
+        assert_eq!(partner["timeline_in_frame"], picture["timeline_in_frame"]);
+        assert_eq!(partner["timeline_out_frame"], picture["timeline_out_frame"]);
+    }
 }
 
 #[test]

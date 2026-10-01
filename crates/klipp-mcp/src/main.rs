@@ -644,6 +644,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_prepare_cut" => json!({
+            "method": "prepare_cut",
+            "from_secs": args.get("from_secs").and_then(Value::as_f64).ok_or("missing required argument: from_secs")?,
+            "to_secs": args.get("to_secs").and_then(Value::as_f64).ok_or("missing required argument: to_secs")?,
+            "near_secs": args.get("near_secs"),
+            "intent": args.get("intent"),
+            "max_candidates": args.get("max_candidates"),
+        }),
         "klipp_selects" => {
             let mut v = json!({ "method": "selects", "media_id": arg_str(args, "media_id")? });
             if let Some(x) = args.get("min_gap_secs").and_then(|v| v.as_f64()) { v["min_gap_secs"] = json!(x); }
@@ -1011,9 +1019,13 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
                 format!("Queued for Klipp's UI; final outcome is not known yet. Operation {}. Call klipp_operation_status with that ID before retrying or continuing.",
                     result.get("operation_id").and_then(Value::as_str).unwrap_or("unknown"))
             };
-            let message = format!("{text}{outcome}");
+            let mut message = format!("{text}{outcome}");
             if result.get("applied").and_then(Value::as_bool) == Some(false) {
                 return Ok(vec![json!({ "type": "text", "text": message })]);
+            }
+            if let Some(changes) = result.get("changes") {
+                message.push_str("\nExact cut changes (before and after, sequence frames):\n");
+                message.push_str(&serde_json::to_string(changes).unwrap_or_default());
             }
             return Ok(with_next(message));
         }
@@ -1903,6 +1915,12 @@ fn tool_definitions() -> Vec<Value> {
               the middle of a sentence. from_secs and to_secs narrow the range.",
              json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
+        tool("klipp_prepare_cut",
+             "Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.",
+             json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
+                     "near_secs": { "type": "number" }, "intent": { "type": "string" },
+                     "max_candidates": { "type": "integer", "minimum": 1, "maximum": 32 } }),
+             vec!["from_secs", "to_secs"]),
         tool("klipp_selects",
              "Cut a long take down to its selects: the runs of speech between the real pauses, \
               each with the time it runs from and to and what is said, marked keep or drop (a \
@@ -2318,6 +2336,18 @@ mod wait_tests {
         ] })).unwrap();
         assert_eq!(batch["idempotency_key"], "outside");
         assert!(batch["commands"][0].get("idempotency_key").is_none());
+    }
+
+    #[test]
+    fn cut_preparation_keeps_timeline_range_and_candidate_limit() {
+        let command = tool_to_command("klipp_prepare_cut", &json!({
+            "from_secs": 10.0, "to_secs": 15.0, "near_secs": 12.0,
+            "intent": "remove the pause after the sentence", "max_candidates": 8,
+        })).unwrap();
+        assert_eq!(command["method"], "prepare_cut");
+        assert_eq!(command["from_secs"], 10.0);
+        assert_eq!(command["near_secs"], 12.0);
+        assert_eq!(command["max_candidates"], 8);
     }
 
     #[test]
