@@ -794,7 +794,7 @@ const INSTRUCTIONS: &str = "Klipp is a video editor running on this computer; th
 
 When the person asks whether Klipp is connected, open or working: call klipp_status (it reads and changes nothing) and answer from its text, in plain words: yes or no first, then the version, the open project and whether it is saved, the timeline, and the playhead, then say that nothing was changed. No socket paths, ids or JSON. If the call fails, say Klipp does not seem to be running and to start it and ask again.
 
-When the person asks what they can do with Klipp, what you can do in it, or how to start: read klipp_guide with topic abilities and answer from it, short and in their words: a sentence on what working together looks like, the groups that fit with an example request each, then one first step that fits what is open (read with klipp_status). No tool names.
+When the person asks what they can do with Klipp, what you can do in it, or how to start: read klipp_guide with topic abilities and answer from it, short and in their words: a sentence on what working together looks like, the groups that fit with an example request each, then one first step that fits what is open (read with klipp_status), and last, that there is more, naming two or three other areas they can ask about. No tool names.
 
 Before editing, read klipp_guide (topic guide) for how to work here.";
 

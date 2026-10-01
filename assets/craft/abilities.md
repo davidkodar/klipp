@@ -16,6 +16,11 @@ answer from here, in their words, and short:
   wants a first cut; a cut wants a review pass, a grade or an export.
 - Say what needs a download the first time (some AI models), and ask
   before starting one.
+- End by saying there is more, naming two or three areas you left out
+  that might suit them (framing and motion, effects and layouts,
+  graphics for screen recordings, syncing sound, planning an edit
+  together), and that they can ask about any of them. The short answer
+  is a start, not the whole list.
 
 ## Cutting and assembling
 
@@ -40,7 +45,27 @@ answer from here, in their words, and short:
   *"Find the close-ups of the guitar."*
 - Contact sheets and frames from any moment, so we can look together.
 - For screen recordings: read the text on screen, find where each step
-  happens, and hide anything sensitive such as emails or keys.
+  happens, and hide anything sensitive such as emails or keys; zoom to
+  where the action is, and circle, box or spotlight what to look at.
+  *"Zoom in on each click and box the Save button."*
+
+## Framing and motion
+
+- Reframe for vertical or square, keeping the subject in frame.
+  *"Make a vertical version that keeps her face in shot."*
+- Slow push-ins, pull-outs and pans across a still shot, or a frame
+  that follows a subject or the action on screen.
+  *"Add a slow zoom on the interview so it doesn't sit still."*
+- Speed ramps, slow motion and reverse.
+- Steady a shaky handheld shot.
+
+## Effects and layouts
+
+- Picture beside picture, a picture shrunk into a corner, split
+  screens, and moves between layouts.
+  *"Put the webcam in the corner over the screen recording."*
+- Blur, glow, grain, sharpen and vignette.
+- Backgrounds, colour cards, bars and countdowns made in the app.
 
 ## Colour
 
@@ -59,6 +84,8 @@ answer from here, in their words, and short:
 - Clean up dialogue: wind, hum, hiss, room noise, harsh S's, and AI
   voice isolation. *"The interview has traffic noise — clean it up."*
 - Levels and fades, and music that dips under speech.
+- Sync a separate recorder's sound to the camera's.
+  *"Sync the lav mic to the camera clips."*
 - Find royalty-free music and sound effects, with their licence shown.
   *"Find calm piano music we can use commercially."*
 - Narration from a script, in a choice of voices, made on this
@@ -87,4 +114,7 @@ answer from here, in their words, and short:
   anything done.
 - A brief for the piece — its length, platform and the people in it —
   which every check and export then follows.
+- An edit plan to read and approve before anything changes, for a
+  bigger job. *"Plan a 90-second cut and show me before you do it."*
+- Markers, tags and picked selects to organise the footage.
 - Screen recordings made from here, for tutorials and demos.
