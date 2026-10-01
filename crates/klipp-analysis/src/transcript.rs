@@ -1082,16 +1082,19 @@ mod tests {
 mod worker_tests {
     use super::*;
 
-    /// A stand-in worker: it reads the sound, then aborts as whisper.cpp's
+    /// A stand-in worker: it reads the sound, then fails as whisper.cpp's
     /// DTW assertion does when asked for aligned word times, and answers
-    /// with a transcript when not (#640).
+    /// with a transcript when not (#640). It exits with abort's status
+    /// rather than raising the signal: a real abort leaves a core dump in
+    /// the system's crash log for every run of the tests, and the worker's
+    /// parent treats any failed exit alike.
     fn fake_worker(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let reply = serde_json::to_string(&WorkerReply::Done(Box::new(Transcript { duration_secs: 2.0, model: "fake".into(), ..Default::default() }))).unwrap();
         let script = dir.join("worker.sh");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\ncat > /dev/null\ncase \"$2\" in *'\"aligned\":true'*) echo 'GGML_ASSERT(filter_width < a->ne[2]) failed' >&2; kill -ABRT $$;; esac\nprintf '%s' '{reply}'\n"),
+            format!("#!/bin/sh\ncat > /dev/null\ncase \"$2\" in *'\"aligned\":true'*) echo 'GGML_ASSERT(filter_width < a->ne[2]) failed' >&2; exit 134;; esac\nprintf '%s' '{reply}'\n"),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1111,7 +1114,7 @@ mod worker_tests {
         assert_eq!(t.model, "fake");
 
         let dead = dir.join("dead.sh");
-        std::fs::write(&dead, "#!/bin/sh\ncat > /dev/null\nkill -ABRT $$\n").unwrap();
+        std::fs::write(&dead, "#!/bin/sh\ncat > /dev/null\nexit 134\n").unwrap();
         std::fs::set_permissions(&dead, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let err = transcribe_in(&dead, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[]).expect_err("dead twice");
         assert!(err.contains("twice"), "{err}");
