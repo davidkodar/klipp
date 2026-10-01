@@ -281,10 +281,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// The storage hook is here because the `linear` output is a frame buffer
 /// in the chain's own format — it gets copied into `buf_a` — so its store
 /// has to go through `pack` like every other pixel write in the codebase.
-/// `pixel_access_goes_through_pack` cannot lint this one: it walks the
-/// `&'static str` shaders in `gpu.rs`, and this source is assembled at
-/// runtime from three pieces. `nv12_gpu_frame_identity` covers it by
-/// running it instead.
+/// It is assembled at runtime from three pieces; [`nv12_shader`] builds
+/// it once, and `gpu::shader_sources` lists that, so the WGSL validation
+/// and `pixel_access_goes_through_pack` check it like the rest.
 fn nv12_shader_source() -> String {
     let mut s = String::with_capacity(
         crate::color_wgsl::WGSL_PRELUDE.len()
@@ -297,6 +296,12 @@ fn nv12_shader_source() -> String {
     s.push_str(crate::gpu::shader_pixel_storage_source());
     s.push_str(SHADER_NV12_BODY);
     s
+}
+
+/// [`nv12_shader_source`], built once.
+pub(crate) fn nv12_shader() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(nv12_shader_source)
 }
 
 impl GpuNv12Converter {
@@ -405,7 +410,7 @@ impl GpuNv12Converter {
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12_to_rgba"),
-            source: wgpu::ShaderSource::Wgsl(nv12_shader_source().into()),
+            source: wgpu::ShaderSource::Wgsl(nv12_shader().into()),
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {

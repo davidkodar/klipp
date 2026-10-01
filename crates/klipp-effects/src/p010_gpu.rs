@@ -314,7 +314,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Full precision for a caller that is grading or rendering; the
     // sRGB-u8 hand-off below only for one that is showing eight bits.
     if params.write_linear != 0u {
-        linear[dy * params.dst_width + dx] = vec4<f32>(rgb_working_linear, 1.0);
+        linear[dy * params.dst_width + dx] = pack(vec4<f32>(rgb_working_linear, 1.0));
         return;
     }
 
@@ -330,12 +330,23 @@ fn p010_shader_source() -> String {
     let mut s = String::with_capacity(
         crate::color_wgsl::WGSL_PRELUDE.len()
             + crate::color_wgsl::WGSL_HELPERS.len()
-            + SHADER_P010_BODY.len(),
+            + SHADER_P010_BODY.len()
+            + 256,
     );
     s.push_str(crate::color_wgsl::WGSL_PRELUDE);
     s.push_str(crate::color_wgsl::WGSL_HELPERS);
+    // The `linear` output is a frame in the chain's own format, so its
+    // store goes through `pack`, as the NV12 decoder's does.
+    s.push_str(crate::gpu::shader_pixel_storage_source());
     s.push_str(SHADER_P010_BODY);
     s
+}
+
+/// [`p010_shader_source`], built once, so the pipeline and
+/// `gpu::shader_sources`' checks read the same text.
+pub(crate) fn p010_shader() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(p010_shader_source)
 }
 
 impl GpuP010Converter {
@@ -408,7 +419,7 @@ impl GpuP010Converter {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("p010_to_rgba"),
-            source: wgpu::ShaderSource::Wgsl(p010_shader_source().into()),
+            source: wgpu::ShaderSource::Wgsl(p010_shader().into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("p010_to_rgba"),

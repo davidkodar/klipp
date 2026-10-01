@@ -1,0 +1,348 @@
+//! Every built-in effect and every registered shader has a CPU/GPU
+//! parity check, or a stated reason it has none (#692).
+//!
+//! The CPU twins and the WGSL shaders are written by hand, side by side,
+//! and drift between them is caught only where a test renders both and
+//! compares. Nothing used to say where that was, so an effect or a shader
+//! added without one could drift unseen: the viewer (GPU) and a CPU
+//! render would then disagree, which has been the real bug more than
+//! once. This file is that map, and it is checked:
+//!
+//! * every `BuiltinEffect` variant, read from the enum's source, has an
+//!   entry in [`EFFECTS`], and every shader in `gpu::shader_sources()` an
+//!   entry in [`SHADERS`]: a new one without an entry fails here;
+//! * every `SHADER_*` constant in the crate is registered (directly, or
+//!   assembled with the shared prelude), so none escapes the WGSL
+//!   validation and pack lints either;
+//! * every case and test named exists, so the map cannot rot when a test
+//!   is renamed or removed;
+//! * every exemption says why, in a sentence.
+//!
+//! The map does not prove a test exercises what it is listed for; it
+//! makes that claim visible and reviewable next to the code, and stops
+//! the silent case where nobody claimed anything at all.
+
+use std::collections::BTreeSet;
+
+/// What checks one effect or shader against its CPU twin.
+#[derive(Debug, Clone, Copy)]
+enum Cover {
+    /// A labelled case in `cpu_gpu_effect_parity.rs`'s `cases()`, rendered
+    /// both ways by `every_effect_matches_between_cpu_and_gpu`.
+    Case(&'static str),
+    /// A test function, by its file under `crates/` and its name.
+    Test(&'static str, &'static str),
+    /// No CPU/GPU comparison, and why.
+    Exempt(&'static str),
+}
+use Cover::*;
+
+const EFFECT_PARITY: &str = "klipp-effects/tests/cpu_gpu_effect_parity.rs";
+const EVERY_EFFECT: Cover = Test(EFFECT_PARITY, "every_effect_matches_between_cpu_and_gpu");
+const LAYER: &str = "klipp-effects/tests/layer_gpu_parity.rs";
+const STACK: &str = "klipp-effects/tests/gpu_stack_parity.rs";
+const COMPOSITE: &str = "klipp-compose/tests/gpu_composite.rs";
+const GRADE: Cover = Test("klipp-compose/tests/grade_cpu_gpu_parity.rs", "every_grade_control_matches_between_cpu_and_gpu");
+const SECONDARY: &str = "klipp-nodes/tests/secondary_gpu_parity.rs";
+const GLOW: Cover = Test("klipp-compose/tests/vector_glow_parity.rs", "revealed_stroke_halo_matches_cpu_and_gpu");
+
+/// The motion-compensation effects: the compositor uploads their motion
+/// data to the GPU pipeline and the CPU arm passes the frame through, so
+/// there is no CPU twin to compare. A GPU is required (see CONTRIBUTING).
+const GPU_ONLY_MOTION: &str = "GPU-only: the compositor uploads its motion data to the GPU pipeline and the CPU arm passes the frame through; there is no CPU twin";
+
+const EFFECTS: &[(&str, Cover)] = &[
+    ("Crop", Case("Crop")),
+    ("Transform", Case("Transform")),
+    ("Opacity", Case("Opacity")),
+    ("ColorFade", Case("ColorFade")),
+    ("GaussianBlur", Case("GaussianBlur")),
+    ("FocusBlur", Case("FocusBlur down")),
+    ("Sharpen", Case("Sharpen")),
+    ("ChromaKey", Case("ChromaKey")),
+    ("Bloom", Case("Bloom")),
+    ("Glow", Case("Glow")),
+    ("LightRays", Case("LightRays")),
+    ("Vignette", Case("Vignette")),
+    ("Diffusion", Case("Diffusion")),
+    ("LensFlare", Case("LensFlare")),
+    ("RoundedCorners", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("DropShadow", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("FillBars", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
+    ("OuterGlow", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LightWrap", Case("LightWrap")),
+    ("AnamorphicStreak", Case("AnamorphicStreak")),
+    ("FilmHalation", Case("FilmHalation")),
+    ("Invert", Case("Invert")),
+    ("Posterize", Case("Posterize")),
+    ("Mosaic", Case("Mosaic")),
+    ("EdgeDetect", Case("EdgeDetect")),
+    ("ChannelMixer", Case("ChannelMixer")),
+    ("DirectionalBlur", Case("DirectionalBlur")),
+    ("Emboss", Case("Emboss")),
+    ("Mirror", Case("Mirror")),
+    ("LensDistortion", Case("LensDistortion")),
+    ("Dilate", Case("Dilate")),
+    ("Erode", Case("Erode")),
+    ("Denoise", Case("Denoise")),
+    ("Gamma", Case("Gamma")),
+    ("HSVAdjust", Case("HSVAdjust")),
+    ("Vibrance", Case("Vibrance")),
+    ("NoiseGenerator", Case("NoiseGenerator")),
+    ("MedianFilter", Case("MedianFilter")),
+    ("RadialBlur", Case("RadialBlur zoom")),
+    ("Levels", Case("Levels")),
+    ("Equalize", Case("Equalize")),
+    ("Letterbox", Case("Letterbox")),
+    ("ChromaticAberration", Case("ChromaticAberration")),
+    ("FilmGrain", Case("FilmGrain mono")),
+    ("TiltShift", Case("TiltShift")),
+    ("OldFilm", Case("OldFilm")),
+    ("Vhs", Case("Vhs")),
+    ("RollingShutterCorrection", Exempt(GPU_ONLY_MOTION)),
+    ("TemporalDenoise", Exempt("CPU-only by design: the compositor lifts it out of the chain and averages the source with its neighbours at the head of the clip's pipeline; both chain arms pass through")),
+    ("Deflicker", Case("Deflicker")),
+    ("VideoStabilization", Exempt(GPU_ONLY_MOTION)),
+    ("SpeedRamp", Exempt("not a picture pass: the engine blends frames for it in the frame queue, and both chain arms pass through")),
+    ("Frei0r", Exempt("CPU-only plugins: frei0r 1.x has no GPU surface, and chain_supports_gpu sends any chain holding one to the CPU")),
+    ("CornerPin", Case("CornerPin")),
+];
+
+const SHADERS: &[(&str, Cover)] = &[
+    ("LAYER_ROWS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LAYER_BOUNDS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LAYER_CAST", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LAYER_CORNERS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LAYER_OVER", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
+    ("LAYER_FILL_SMALL", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
+    ("LAYER_FILL_OVER", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
+    ("SHADER_OPACITY", EVERY_EFFECT),
+    ("SHADER_COLOR_FADE", EVERY_EFFECT),
+    ("SHADER_BLUR_H", EVERY_EFFECT),
+    ("SHADER_BLUR_V", EVERY_EFFECT),
+    ("SHADER_SHARPEN", EVERY_EFFECT),
+    ("SHADER_CROP", EVERY_EFFECT),
+    ("SHADER_TRANSFORM", EVERY_EFFECT),
+    ("SHADER_CORNER_PIN", EVERY_EFFECT),
+    ("SHADER_CHROMA_KEY", EVERY_EFFECT),
+    ("SHADER_LINEAR_TO_DISPLAY_U8", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_preview_encode_matches_the_cpu")),
+    ("SHADER_HDR_NIT_MAP", Test("klipp-engine/tests/hdr_monitor_gpu_matches_cpu.rs", "the_nit_map_matches_the_cpu")),
+    ("SHADER_LINEAR_TO_U8", Test("klipp-engine/tests/grade_to_texture_identity.rs", "encode_grade_to_texture_matches_cpu")),
+    ("SHADER_U8_TO_LINEAR", Test("klipp-engine/tests/gpu_u8_to_linear_bridge.rs", "u8_to_linear_gpu_matches_cpu_within_epsilon")),
+    ("SHADER_RGBA64_TO_LINEAR", Test("klipp-engine/tests/gpu_rgba64_to_linear_bridge.rs", "rgba64_to_linear_gpu_matches_cpu")),
+    ("SHADER_LINEAR_TO_YUV420", Test("klipp-engine/tests/gpu_yuv420_matches_cpu.rs", "gpu_yuv_matches_cpu_with_no_tone_map")),
+    ("SHADER_ACES_REC709_U8", Test("klipp-engine/tests/aces_gpu_matches_cpu.rs", "aces_rec709_matches_the_cpu_on_noise")),
+    ("SHADER_BT2020_DISPLAY_U8", Test("klipp-engine/tests/bt2020_gamut_gpu_matches_cpu.rs", "bt2020_display_matches_the_cpu_on_saturated_colour")),
+    ("SHADER_TRANSITION", Test("klipp-effects/tests/cpu_gpu_transition_parity.rs", "every_transition_matches_between_cpu_and_gpu")),
+    ("SHADER_COLOR_GRADE", GRADE),
+    ("SHADER_HUESAT", Test("klipp-effects/tests/equalize_and_huesat_share_nothing.rs", "a_huesat_grade_followed_by_equalize_matches_the_cpu")),
+    ("SHADER_QUALIFIER", Test(SECONDARY, "a_secondary_matches_the_cpu_and_stays_on_the_gpu")),
+    ("SHADER_LUMA_KEY", Test("klipp-effects/tests/luma_key_gpu_parity.rs", "gpu_matches_cpu_oracle_across_fixtures")),
+    ("SHADER_SOFT_CLIP", Test("klipp-effects/tests/soft_clip_gpu_parity.rs", "gpu_matches_cpu_oracle_across_fixtures")),
+    ("SHADER_GRAIN", Test("klipp-nodes/tests/grain_denoise_parity.rs", "colour_grain_matches_the_shader")),
+    ("SHADER_ALPHA_BLUR_H", GLOW),
+    ("SHADER_ALPHA_BLUR_V", GLOW),
+    ("SHADER_ALPHA_DILATE", GLOW),
+    ("SHADER_BLOOM_THRESHOLD", EVERY_EFFECT),
+    ("SHADER_BLOOM_BLEND", EVERY_EFFECT),
+    ("SHADER_GLOW_BLEND", EVERY_EFFECT),
+    ("SHADER_LIGHT_RAYS", EVERY_EFFECT),
+    ("SHADER_VIGNETTE", EVERY_EFFECT),
+    ("SHADER_LENS_FLARE", EVERY_EFFECT),
+    ("SHADER_ANAMORPHIC_STREAK", EVERY_EFFECT),
+    ("SHADER_FILM_HALATION", EVERY_EFFECT),
+    ("SHADER_LUT3D", Test(EFFECT_PARITY, "the_lut_matches_between_cpu_and_gpu")),
+    ("SHADER_INVERT", EVERY_EFFECT),
+    ("SHADER_POSTERIZE", EVERY_EFFECT),
+    ("SHADER_MOSAIC", EVERY_EFFECT),
+    ("SHADER_EDGE_DETECT", EVERY_EFFECT),
+    ("SHADER_CHANNEL_MIXER", EVERY_EFFECT),
+    ("SHADER_DIRECTIONAL_BLUR", EVERY_EFFECT),
+    ("SHADER_EMBOSS", EVERY_EFFECT),
+    ("SHADER_MIRROR", EVERY_EFFECT),
+    ("SHADER_LENS_DISTORTION", EVERY_EFFECT),
+    ("SHADER_DILATE", EVERY_EFFECT),
+    ("SHADER_ERODE", EVERY_EFFECT),
+    ("SHADER_DENOISE", EVERY_EFFECT),
+    ("SHADER_GAMMA", EVERY_EFFECT),
+    ("SHADER_HSV_ADJUST", EVERY_EFFECT),
+    ("SHADER_NOISE_GENERATOR", EVERY_EFFECT),
+    ("SHADER_MEDIAN_FILTER", EVERY_EFFECT),
+    ("SHADER_RADIAL_BLUR", EVERY_EFFECT),
+    ("SHADER_LEVELS", EVERY_EFFECT),
+    ("SHADER_EQUALIZE", EVERY_EFFECT),
+    ("SHADER_LETTERBOX", EVERY_EFFECT),
+    ("SHADER_CHROMATIC_ABERRATION", EVERY_EFFECT),
+    ("SHADER_ROLLING_SHUTTER", Exempt(GPU_ONLY_MOTION)),
+    ("SHADER_STABILIZATION", Exempt(GPU_ONLY_MOTION)),
+    ("SHADER_COLOR_BALANCE", GRADE),
+    ("SHADER_WHEEL_SAT_BRI", GRADE),
+    ("SHADER_RGB_CURVES", GRADE),
+    ("SHADER_MASK_V2", Test("klipp-effects/tests/mask_gpu_parity.rs", "gpu_matches_cpu_oracle_across_fixtures")),
+    ("SHADER_VIBRANCE", EVERY_EFFECT),
+    ("SHADER_COLOR_WARPER", GRADE),
+    ("SHADER_CLARITY_BLUR_H", GRADE),
+    ("SHADER_CLARITY_BLUR_V", GRADE),
+    ("SHADER_MASK_CUTOUT", Test("klipp-nodes/tests/mask_cutout_gpu_parity.rs", "a_mask_cutout_matches_the_cpu")),
+    ("SHADER_GRADE_MIX", Test(SECONDARY, "the_secondarys_mix_agrees_on_both_paths")),
+    ("SHADER_APPLY_MATTE_CHAIN", Test(SECONDARY, "a_secondary_matches_the_cpu_and_stays_on_the_gpu")),
+    ("SHADER_CLARITY_APPLY", GRADE),
+    ("SHADER_BLEND_LAYER", Test(STACK, "every_blend_mode_matches_the_cpu_stack")),
+    ("SHADER_PREMULTIPLY", Test(STACK, "the_finish_premultiplies_like_the_cpu_stack")),
+    ("SHADER_SPRITE_ROWS", Test(STACK, "a_sprite_decodes_as_the_cpu_bridge_does")),
+    ("SHADER_MATTE_EXTRACT", Test(COMPOSITE, "a_luma_matte_with_feather_and_choke_matches")),
+    ("SHADER_MASK_MIN_H", Test(COMPOSITE, "a_luma_matte_with_feather_and_choke_matches")),
+    ("SHADER_MASK_MIN_V", Test(COMPOSITE, "a_luma_matte_with_feather_and_choke_matches")),
+    ("SHADER_MATTE_APPLY", Test(COMPOSITE, "a_luma_matte_with_feather_and_choke_matches")),
+    ("SHADER_SCALE_ALPHA", Test(COMPOSITE, "a_title_with_an_effect_and_a_faded_layer_match")),
+    // A byte copy into the viewer's texture, no arithmetic: what it is
+    // held to is the readback of the same encode, not a CPU twin.
+    ("SHADER_U8_TO_TEXTURE", Test("klipp-effects/tests/display_to_texture.rs", "the_texture_holds_the_bytes_the_readback_returns")),
+    ("SHADER_SPRITE_PLACE", Test(STACK, "a_posed_sprite_is_the_cpu_pose_uploaded")),
+    ("SHADER_SPRITE_GLYPHS", Test(STACK, "posed_glyphs_are_the_cpu_glyph_pose_uploaded")),
+    ("SHADER_U8_FIT_TO_LINEAR", Test(COMPOSITE, "a_layer_of_another_size_is_fitted_on_the_gpu")),
+    ("SHADER_HDR10_TO_LINEAR", Test("klipp-engine/tests/hdr_gpu_graded_path.rs", "a_chain_seeded_from_hdr_codes_on_the_gpu_grades_like_the_cpu_path")),
+    ("SHADER_SPRITE_ROWS_F16", Test(COMPOSITE, "the_gpu_stack_is_the_renderers_frame")),
+    ("SHADER_DIFFERENCE_KEY", Test(SECONDARY, "the_other_matte_sources_ride_the_chain_too")),
+    ("SHADER_FILM_GRAIN", EVERY_EFFECT),
+    ("SHADER_FOCUS_BLUR_BLEND", EVERY_EFFECT),
+    ("SHADER_FOCUS_BLUR_PREMULTIPLY", EVERY_EFFECT),
+    ("SHADER_TILT_SHIFT_BLEND", EVERY_EFFECT),
+    ("SHADER_OLD_FILM", EVERY_EFFECT),
+    ("SHADER_VHS", EVERY_EFFECT),
+    ("SHADER_DEFLICKER", EVERY_EFFECT),
+    ("SHADER_BLEND_MIX", Test("klipp-nodes/tests/composite_gpu_parity.rs", "a_blend_over_the_source_matches_the_cpu")),
+    ("SHADER_LAYER_OVER", Test("klipp-nodes/tests/composite_gpu_parity.rs", "a_layer_over_the_source_matches_the_cpu")),
+    ("SHADER_CHAIN_THUMB", Test("klipp-nodes/tests/chain_thumbnails.rs", "gpu_chain_thumbnails_are_the_cpu_thumbnails")),
+    ("SHADER_NV12", Test("klipp-engine/tests/display_yuv_cpu_matches_gpu.rs", "the_display_converter_matches_the_nv12_shader")),
+    ("SHADER_P010", Test("klipp-engine/tests/yuv420p10_cpu_matches_gpu.rs", "the_planar_10bit_converter_matches_the_p010_shader")),
+];
+
+/// Shader constants that are not registered under their own name
+/// because they are a body, compiled only after the shared prelude, and
+/// the assembled source is registered instead.
+const ASSEMBLED: &[(&str, &str)] = &[
+    ("SHADER_HDR10_TO_LINEAR_BODY", "SHADER_HDR10_TO_LINEAR"),
+    ("SHADER_NV12_BODY", "SHADER_NV12"),
+    ("SHADER_P010_BODY", "SHADER_P010"),
+];
+
+fn crates_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+fn source(rel: &str) -> String {
+    std::fs::read_to_string(crates_dir().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+/// The names of `enum`'s variants in `src`: the identifiers that open a
+/// line at one level of indent inside its braces.
+fn variants(src: &str, header: &str) -> Vec<String> {
+    let start = src.find(header).unwrap_or_else(|| panic!("no `{header}`"));
+    let body = &src[start..];
+    let open = body.find('{').unwrap();
+    let mut depth = 0;
+    let mut end = open;
+    for (i, c) in body[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    body[open + 1..end]
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("    ")?;
+            let first = rest.chars().next()?;
+            if !first.is_ascii_uppercase() {
+                return None;
+            }
+            Some(rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect())
+        })
+        .collect()
+}
+
+fn check_cover(what: &str, cover: Cover, failures: &mut Vec<String>) {
+    match cover {
+        Case(label) => {
+            if !source(EFFECT_PARITY).contains(&format!("(\"{label}\",")) {
+                failures.push(format!("{what}: no case \"{label}\" in {EFFECT_PARITY}"));
+            }
+        }
+        Test(file, name) => {
+            let src = source(file);
+            if !src.contains(&format!("fn {name}(")) {
+                failures.push(format!("{what}: no fn {name} in {file}"));
+            } else if !src.contains(&format!("#[test]\nfn {name}(")) && !src.contains(&format!("#[test]\r\nfn {name}(")) {
+                failures.push(format!("{what}: {file}::{name} is not a #[test]"));
+            }
+        }
+        Exempt(why) => {
+            if why.split_whitespace().count() < 8 {
+                failures.push(format!("{what}: an exemption has to say why, in a sentence"));
+            }
+        }
+    }
+}
+
+/// Every effect variant has an entry, and no entry names a variant that
+/// is gone.
+#[test]
+fn every_effect_has_a_parity_check_or_a_reason() {
+    let declared: BTreeSet<String> = variants(&source("klipp-effects/src/lib.rs"), "pub enum BuiltinEffect").into_iter().collect();
+    assert!(declared.len() > 40, "the variant scan found only {declared:?}");
+    let mapped: BTreeSet<String> = EFFECTS.iter().map(|(n, _)| n.to_string()).collect();
+    let missing: Vec<_> = declared.difference(&mapped).collect();
+    let stale: Vec<_> = mapped.difference(&declared).collect();
+    assert!(missing.is_empty(), "effects with no parity entry in parity_coverage.rs (add a case to cpu_gpu_effect_parity.rs, or an exemption): {missing:?}");
+    assert!(stale.is_empty(), "entries for effects that no longer exist: {stale:?}");
+    let mut failures = Vec::new();
+    for (name, cover) in EFFECTS {
+        check_cover(name, *cover, &mut failures);
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Every registered shader has an entry, and no entry names one that is
+/// gone.
+#[test]
+fn every_shader_has_a_parity_check_or_a_reason() {
+    let registered: BTreeSet<String> = klipp_effects::gpu::shader_sources().into_iter().map(|(n, _)| n.to_string()).collect();
+    let mapped: BTreeSet<String> = SHADERS.iter().map(|(n, _)| n.to_string()).collect();
+    let missing: Vec<_> = registered.difference(&mapped).collect();
+    let stale: Vec<_> = mapped.difference(&registered).collect();
+    assert!(missing.is_empty(), "shaders with no parity entry in parity_coverage.rs: {missing:?}");
+    assert!(stale.is_empty(), "entries for shaders that are not registered: {stale:?}");
+    let mut failures = Vec::new();
+    for (name, cover) in SHADERS {
+        check_cover(name, *cover, &mut failures);
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Every shader constant in the crate is registered, under its own name
+/// or assembled, so the WGSL validation and the pack lint see it too.
+/// Eleven were not, until this test.
+#[test]
+fn every_shader_constant_is_registered() {
+    let registered: BTreeSet<String> = klipp_effects::gpu::shader_sources().into_iter().map(|(n, _)| n.to_string()).collect();
+    let mut unregistered = Vec::new();
+    for file in ["klipp-effects/src/gpu.rs", "klipp-effects/src/gpu/thumbs.rs", "klipp-effects/src/nv12_gpu.rs", "klipp-effects/src/p010_gpu.rs"] {
+        for line in source(file).lines() {
+            let Some(rest) = line.strip_prefix("const SHADER_") else { continue };
+            let name = format!("SHADER_{}", rest.split(':').next().unwrap().trim());
+            let listed = registered.contains(&name) || ASSEMBLED.iter().any(|(body, whole)| *body == name && registered.contains(*whole));
+            if !listed {
+                unregistered.push(format!("{file}: {name}"));
+            }
+        }
+    }
+    assert!(unregistered.is_empty(), "shader constants missing from gpu::shader_sources(): {unregistered:#?}");
+}
