@@ -2039,11 +2039,11 @@ impl KlippApp {
     /// fall inside, it is left as it is and that is said too.
     fn split_at_scene_cuts(&mut self, clip_id: klipp_core::ClipId, cut_times: &[f64]) {
         let seq = self.state.sequence();
-        let Some(name) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)).map(|m| m.filename.clone()) else {
+        let Some((name, media_fps)) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)).map(|m| (m.filename.clone(), m.fps.as_f64())) else {
             self.state.toast.show("Scene cuts found, but the clip is gone".to_string());
             return;
         };
-        let ops = klipp_document::ops::scene_cut_ops(seq, clip_id, cut_times);
+        let ops = klipp_document::ops::scene_cut_ops(seq, clip_id, cut_times, media_fps);
         if ops.is_empty() {
             self.state.toast.show(format!("No scene cuts found in {name}; it is unchanged"));
             return;

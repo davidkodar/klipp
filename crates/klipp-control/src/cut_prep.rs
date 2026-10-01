@@ -20,6 +20,8 @@ struct ClipContext {
     path: Option<PathBuf>,
     media_id: Option<String>,
     media_duration_secs: Option<f64>,
+    /// The file's frame rate, for placing a change in its picture (#691).
+    media_fps: Option<f64>,
 }
 
 /// Match the editorial resolver's audibility rule: a linked video's sound
@@ -116,6 +118,7 @@ pub(crate) fn prepare(
                 path: item.map(|item| item.path.clone()),
                 media_id: media_id.map(|id| id.0.to_string()),
                 media_duration_secs: item.map(|item| item.duration.to_secs_f64()),
+                media_fps: item.map(|item| item.fps.as_f64()).filter(|f| *f > 0.0),
             });
         }
     }
@@ -438,11 +441,21 @@ fn add_candidate(
     words: &[(f64, f64, String)],
 ) {
     let clip = &item.clip;
-    let source = Timecode::from_secs_f64(source_secs, clip.source_in.rate);
-    let Some(timeline) = clip.sequence_time_for_source_time(source, fps) else {
-        return;
+    // A change in the picture goes on the first frame that shows it, as
+    // the decoders pick frames; rounding the mapped time put it a frame
+    // early whenever the file's rate is not the sequence's (#691). A word
+    // or a pause has no frame of its own and goes on the nearest.
+    let picture = matches!(kind, "shot_change" | "screen_change" | "settled_reveal");
+    let frame = if picture {
+        let Some(f) = clip.first_frame_showing(source_secs, item.media_fps.unwrap_or(fps), fps) else { return };
+        f
+    } else {
+        let source = Timecode::from_secs_f64(source_secs, clip.source_in.rate);
+        let Some(timeline) = clip.sequence_time_for_source_time(source, fps) else {
+            return;
+        };
+        (timeline.to_secs_f64() * fps).round() as i64
     };
-    let frame = (timeline.to_secs_f64() * fps).round() as i64;
     let clip_first = (clip.timeline_in.to_secs_f64() * fps).round() as i64;
     let clip_end = (clip.timeline_out.to_secs_f64() * fps).round() as i64;
     if frame <= clip_first || frame >= clip_end || frame < from_frame || frame > to_frame {
@@ -514,6 +527,7 @@ mod tests {
             path: None,
             media_id: None,
             media_duration_secs: Some(8.0),
+            media_fps: Some(24.0),
         };
         let words = vec![(3.8, 4.2, "hello".into())];
         let mut candidates = Vec::new();
