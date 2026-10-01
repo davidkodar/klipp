@@ -27,16 +27,32 @@ fn any_font() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-/// `frames` frames of `media` between `from_secs` and `to_secs`,
-/// evenly spaced, `cols` to a row, each `tile_width` wide, as a JPEG
-/// at `out`.
-#[allow(clippy::too_many_arguments)]
+/// How long a sheet's hardware decode may take before it is given up
+/// for the CPU: ffmpeg's VAAPI decode can deadlock on a seek into some
+/// files and wait forever, which held a review past any deadline (#519).
+const GPU_SHEET_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Run a sheet's ffmpeg: within [`GPU_SHEET_LIMIT`] when it decodes on
+/// the GPU, to the end on the CPU.
+fn run_sheet(ffmpeg: &Path, cmd: &mut std::process::Command, gpu: bool, out: &Path) -> Result<(), String> {
+    let limit = gpu.then_some(GPU_SHEET_LIMIT);
+    let done = crate::hold::output_within(cmd.stderr(std::process::Stdio::piped()), limit).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+    let Some(done) = done else {
+        return Err(format!("the GPU decode did not finish within {} s", GPU_SHEET_LIMIT.as_secs()));
+    };
+    if !done.status.success() || !out.is_file() {
+        return Err(format!("ffmpeg could not make the sheet: {}", String::from_utf8_lossy(&done.stderr).trim()));
+    }
+    Ok(())
+}
+
 /// A sheet whose tiles are far apart: the file opened once per tile and
 /// sought to its time, one frame taken from each, laid out together.
-fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, rows: u32, tile_width: u32, out: &Path) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, rows: u32, tile_width: u32, out: &Path, gpu: bool) -> Result<(), String> {
     let mut cmd = std::process::Command::new(ffmpeg);
     cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"]);
-    let hw = crate::hwaccel_args(ffmpeg, "");
+    let hw = if gpu { crate::hwaccel_args(ffmpeg, "") } else { Vec::new() };
     for t in tiles_secs {
         cmd.args(&hw).arg("-ss").arg(format!("{t:.3}")).arg("-i").arg(media);
     }
@@ -59,47 +75,14 @@ fn sheet_by_seeking(ffmpeg: &Path, media: &Path, tiles_secs: &[f64], cols: u32, 
         graph.push_str(&format!("[t{k}]"));
     }
     graph.push_str(&format!("concat=n={}:v=1:a=0,tile={cols}x{rows}", tiles_secs.len()));
-    let status = cmd
-        .args(["-an", "-sn", "-filter_complex", &graph, "-frames:v", "1", "-q:v", "4"])
-        .arg(out)
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
-    if !status.status.success() || !out.is_file() {
-        return Err(format!("ffmpeg could not make the sheet: {}", String::from_utf8_lossy(&status.stderr).trim()));
-    }
-    Ok(())
+    cmd.args(["-an", "-sn", "-filter_complex", &graph, "-frames:v", "1", "-q:v", "4"]).arg(out);
+    run_sheet(ffmpeg, &mut cmd, gpu, out)
 }
 
-pub fn contact_sheet(
-    ffmpeg: &Path,
-    media: &Path,
-    from_secs: f64,
-    to_secs: f64,
-    frames: u32,
-    cols: u32,
-    tile_width: u32,
-    out: &Path,
-) -> Result<ContactSheet, String> {
-    let frames = frames.clamp(1, 64);
-    let cols = cols.clamp(1, frames);
-    let rows = frames.div_ceil(cols);
-    let span = (to_secs - from_secs).max(0.1);
-    // One frame every span/frames seconds, the first at the start.
-    let step = span / frames as f64;
-    // Rounded up, a tile is the frame at its time. The filter's default
-    // rounds to the nearest tick, and each tile then shows the picture
-    // half a step after the time burnt into it: half a minute on a
-    // sheet of a half-hour file.
-    // Tiles more than a couple of seconds apart are fetched one seek
-    // each: the filter below decodes every frame of the span to keep one
-    // in hundreds, which on a half-hour 1440p file was over two minutes.
-    if step >= 2.0 {
-        let tiles_secs: Vec<f64> = (0..frames).map(|i| from_secs + i as f64 * step).collect();
-        sheet_by_seeking(ffmpeg, media, &tiles_secs, cols, rows, tile_width, out)?;
-        let (width, height) = image_size(out).unwrap_or((0, 0));
-        return Ok(ContactSheet { path: out.to_path_buf(), width, height, cols, rows, tile_width, tiles_secs, from_secs, to_secs });
-    }
+/// A sheet whose tiles are close together: one pass over the span,
+/// keeping a frame every `span / frames` seconds.
+#[allow(clippy::too_many_arguments)]
+fn sheet_by_filter(ffmpeg: &Path, media: &Path, from_secs: f64, span: f64, frames: u32, cols: u32, rows: u32, tile_width: u32, out: &Path, gpu: bool) -> Result<(), String> {
     let mut vf = format!("fps={}/{:.4}:round=up,scale={}:-2", frames, span, tile_width.clamp(64, 1024));
     if let Some(font) = any_font() {
         vf.push_str(&format!(
@@ -110,35 +93,71 @@ pub fn contact_sheet(
         ));
     }
     vf.push_str(&format!(",tile={cols}x{rows}"));
-    let status = std::process::Command::new(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"])
-        .args(crate::hwaccel_args(ffmpeg, ""))
-        .arg("-ss")
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-nostats", "-loglevel", "error", "-y"]);
+    if gpu {
+        cmd.args(crate::hwaccel_args(ffmpeg, ""));
+    }
+    cmd.arg("-ss")
         .arg(format!("{from_secs:.3}"))
         .arg("-t")
         .arg(format!("{span:.3}"))
         .arg("-i")
         .arg(media)
         .args(["-an", "-sn", "-vf", &vf, "-frames:v", "1", "-q:v", "4"])
-        .arg(out)
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
-    if !status.status.success() || !out.is_file() {
-        return Err(format!("ffmpeg could not make the sheet: {}", String::from_utf8_lossy(&status.stderr).trim()));
+        .arg(out);
+    run_sheet(ffmpeg, &mut cmd, gpu, out)
+}
+
+/// `frames` frames of `media` between `from_secs` and `to_secs`,
+/// evenly spaced, `cols` to a row, each `tile_width` wide, as a JPEG
+/// at `out`. Decoded on the GPU where it can be, on the CPU when that
+/// fails or does not finish.
+#[allow(clippy::too_many_arguments)]
+pub fn contact_sheet(ffmpeg: &Path, media: &Path, from_secs: f64, to_secs: f64, frames: u32, cols: u32, tile_width: u32, out: &Path) -> Result<ContactSheet, String> {
+    sheet(ffmpeg, media, from_secs, to_secs, frames, cols, tile_width, out, true)
+}
+
+/// [`contact_sheet`] decoded on the CPU only: for a small file, such as
+/// a review's draft, where the GPU saves nothing and its decoder can
+/// hang on a seek (#519).
+#[allow(clippy::too_many_arguments)]
+pub fn contact_sheet_on_cpu(ffmpeg: &Path, media: &Path, from_secs: f64, to_secs: f64, frames: u32, cols: u32, tile_width: u32, out: &Path) -> Result<ContactSheet, String> {
+    sheet(ffmpeg, media, from_secs, to_secs, frames, cols, tile_width, out, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sheet(ffmpeg: &Path, media: &Path, from_secs: f64, to_secs: f64, frames: u32, cols: u32, tile_width: u32, out: &Path, gpu: bool) -> Result<ContactSheet, String> {
+    let frames = frames.clamp(1, 64);
+    let cols = cols.clamp(1, frames);
+    let rows = frames.div_ceil(cols);
+    let span = (to_secs - from_secs).max(0.1);
+    // One frame every span/frames seconds, the first at the start.
+    let step = span / frames as f64;
+    let tiles_secs: Vec<f64> = (0..frames).map(|i| from_secs + i as f64 * step).collect();
+    // Rounded up, a tile is the frame at its time. The filter's default
+    // rounds to the nearest tick, and each tile then shows the picture
+    // half a step after the time burnt into it: half a minute on a
+    // sheet of a half-hour file.
+    // Tiles more than a couple of seconds apart are fetched one seek
+    // each: the filter decodes every frame of the span to keep one in
+    // hundreds, which on a half-hour 1440p file was over two minutes.
+    let make = |gpu: bool| {
+        if step >= 2.0 {
+            sheet_by_seeking(ffmpeg, media, &tiles_secs, cols, rows, tile_width, out, gpu)
+        } else {
+            sheet_by_filter(ffmpeg, media, from_secs, span, frames, cols, rows, tile_width, out, gpu)
+        }
+    };
+    if let Err(e) = make(gpu) {
+        if !gpu {
+            return Err(e);
+        }
+        tracing::warn!("contact sheet of {}: {e}; decoding on the CPU", media.display());
+        make(false)?;
     }
     let (width, height) = image_size(out).unwrap_or((0, 0));
-    Ok(ContactSheet {
-        path: out.to_path_buf(),
-        width,
-        height,
-        cols,
-        rows,
-        tile_width,
-        tiles_secs: (0..frames).map(|i| from_secs + i as f64 * step).collect(),
-        from_secs,
-        to_secs,
-    })
+    Ok(ContactSheet { path: out.to_path_buf(), width, height, cols, rows, tile_width, tiles_secs, from_secs, to_secs })
 }
 
 /// The sound of `media` between `from_secs` and `to_secs` as 16 kHz

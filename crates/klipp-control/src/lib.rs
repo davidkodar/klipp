@@ -3673,32 +3673,48 @@ fn handle(
             }
             let _ = std::fs::remove_file(&draft);
             handle(ctx, ControlCommand::Export { path: draft.to_string_lossy().to_string(), width: Some(w), height: Some(h), fps: None, crf: Some(30), bit_depth: None, target_lufs: None, true_peak_dbtp: None, burn_captions: None }, &mut None)?;
-            // The draft, waited for: a review is the picture as rendered.
             let started = std::time::Instant::now();
-            let job = loop {
-                let jobs = ctx.shared.exports.lock().map_err(|_| "export status lock poisoned")?;
-                let job = jobs.iter().find(|j| j.path == draft).cloned();
-                drop(jobs);
-                match job {
-                    Some(j) if j.status == "complete" => break j,
-                    Some(j) if j.status == "failed" || j.status == "cancelled" => return Err(format!("the draft render {}: {}", j.status, j.error.unwrap_or_default())),
-                    _ => {}
+            // The draft, waited for: a review is the picture as rendered.
+            let rendered = || -> Result<klipp_core::ExportStatus, String> {
+                loop {
+                    let jobs = ctx.shared.exports.lock().map_err(|_| "export status lock poisoned")?;
+                    let job = jobs.iter().find(|j| j.path == draft).cloned();
+                    drop(jobs);
+                    match job {
+                        Some(j) if j.status == "complete" => return Ok(j),
+                        Some(j) if j.status == "failed" || j.status == "cancelled" => return Err(format!("the draft render {}: {}", j.status, j.error.unwrap_or_default())),
+                        _ => {}
+                    }
+                    if started.elapsed() > std::time::Duration::from_secs(600) {
+                        return Err("the draft render did not finish within ten minutes; export_status says where it is".into());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                 }
-                if started.elapsed() > std::time::Duration::from_secs(600) {
-                    return Err("the draft render did not finish within ten minutes; export_status says where it is".into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
             };
+            // The colour check reads the viewer while the draft renders on
+            // decoders of its own. One after the other, its forty seconds
+            // came after the render and a review of a two-and-a-half
+            // minute piece outran the tool's two minutes (#519).
+            let (job, check) = std::thread::scope(|s| {
+                let check = s.spawn(|| handle(ctx, ControlCommand::Check { color: true }, &mut None));
+                let job = rendered();
+                (job, check.join().unwrap_or_else(|_| Err("the check stopped unexpectedly".into())))
+            });
+            let job = job?;
+            let render_secs = started.elapsed().as_secs_f64();
+            let check = check?;
             let frames = frames.unwrap_or(((duration / 2.0).ceil() as u32).clamp(8, 48));
-            let sheet = klipp_analysis::sheet::contact_sheet(std::path::Path::new("ffmpeg"), &draft, 0.0, duration, frames, cols.unwrap_or(6), 320, &sheet_out)?;
-            let check = handle(ctx, ControlCommand::Check { color: true }, &mut None)?;
+            // The draft is small: its sheet is read on the CPU, as quick
+            // as the GPU here and never hung on a seek as that did (#519).
+            let sheet = klipp_analysis::sheet::contact_sheet_on_cpu(std::path::Path::new("ffmpeg"), &draft, 0.0, duration, frames, cols.unwrap_or(6), 320, &sheet_out)?;
             Ok(json!({
                 "draft": draft,
                 "sheet": sheet,
-                "render_secs": started.elapsed().as_secs_f64(),
+                "render_secs": render_secs,
+                "review_secs": started.elapsed().as_secs_f64(),
                 "loudness": job.loudness,
                 "check": check,
-                "text": format!("Draft rendered in {:.1} s at {w}x{h}; {frames} frames on the sheet at {}. {}", started.elapsed().as_secs_f64(), sheet_out.display(), check["text"].as_str().unwrap_or("")),
+                "text": format!("Draft rendered in {render_secs:.1} s at {w}x{h}, reviewed in {:.1} s; {frames} frames on the sheet at {}. {}", started.elapsed().as_secs_f64(), sheet_out.display(), check["text"].as_str().unwrap_or("")),
                 "next": "Read the sheet for the shape of the cut, and the check for what to fix; frame_at for any frame that needs a closer look.",
             }))
         }

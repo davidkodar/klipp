@@ -48,6 +48,13 @@ pub fn wait() {
 /// busy and continued when it is idle again. The child dies with the
 /// thread that started it, so a stopped one is never left behind.
 pub fn output(cmd: &mut Command) -> std::io::Result<Output> {
+    output_within(cmd, None)?.ok_or_else(|| std::io::Error::other("cut short with no deadline"))
+}
+
+/// [`output`], killed when it has run `limit` (not counting the time it
+/// was stopped for the editor): `None` then. Hardware decode in ffmpeg
+/// can deadlock on a seek into some files and wait forever (#519).
+pub fn output_within(cmd: &mut Command, limit: Option<Duration>) -> std::io::Result<Option<Output>> {
     wait();
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(target_os = "linux")]
@@ -71,6 +78,13 @@ pub fn output(cmd: &mut Command) -> std::io::Result<Output> {
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
+        }
+        let ran = started.elapsed().saturating_sub(stopped_for + if stopped { stopped_at.elapsed() } else { Duration::ZERO });
+        if limit.is_some_and(|l| ran > l) {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!("{:?} killed after {:.1} s", cmd.get_program(), ran.as_secs_f64());
+            return Ok(None);
         }
         let busy = held();
         if busy != stopped {
@@ -97,7 +111,7 @@ pub fn output(cmd: &mut Command) -> std::io::Result<Output> {
     }
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
-    Ok(Output { status, stdout, stderr })
+    Ok(Some(Output { status, stdout, stderr }))
 }
 
 fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
