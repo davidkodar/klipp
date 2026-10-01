@@ -24,6 +24,7 @@
 
 pub mod protocol;
 mod operations;
+mod cut_prep;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -1476,6 +1477,64 @@ fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Result
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
+}
+
+/// Exact clip changes predicted by resolved cut edits. The UI applies the
+/// same EditCommands; callers receive this only after its acknowledgement.
+fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document::history::EditCommand]) -> Result<serde_json::Value, String> {
+    let before = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.with_own_grades().into_owned();
+    let mut sequences = vec![before.clone()];
+    let mut pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?.clone();
+    let mut fps = before.fps;
+    {
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for edit in edits { view.apply_forward(edit); }
+    }
+    let clips = |sequence: &klipp_timeline::Sequence| {
+        let fps = sequence.fps.as_f64();
+        sequence.tracks.iter().enumerate().flat_map(|(track, lane)| lane.clips.iter().map(move |clip| {
+            let id = clip.id.0.to_string();
+            let value = json!({
+                "clip_id": id, "track": track,
+                "timeline_in_frame": (clip.timeline_in.to_secs_f64() * fps).round() as i64,
+                "timeline_out_frame": (clip.timeline_out.to_secs_f64() * fps).round() as i64,
+                "source_in_secs": clip.source_in.to_secs_f64(), "source_out_secs": clip.source_out.to_secs_f64(),
+                "linked_clip_id": clip.linked_clip_id.map(|id| id.0.to_string()),
+            });
+            (id, value)
+        })).collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let old = clips(&before);
+    let new = clips(&sequences[0]);
+    let ids = old.keys().chain(new.keys()).cloned().collect::<std::collections::BTreeSet<_>>();
+    let mut changes = Vec::new();
+    let mut shifted = std::collections::BTreeMap::<(u64, i64), usize>::new();
+    for id in ids {
+        let prior = old.get(&id);
+        let after = new.get(&id);
+        if prior == after { continue; }
+        if let (Some(prior), Some(after)) = (prior, after) {
+            let delta = after["timeline_in_frame"].as_i64().unwrap_or(0)
+                - prior["timeline_in_frame"].as_i64().unwrap_or(0);
+            if delta != 0
+                && prior["track"] == after["track"]
+                && after["timeline_out_frame"].as_i64().unwrap_or(0)
+                    - prior["timeline_out_frame"].as_i64().unwrap_or(0) == delta
+                && prior["source_in_secs"] == after["source_in_secs"]
+                && prior["source_out_secs"] == after["source_out_secs"]
+                && prior["linked_clip_id"] == after["linked_clip_id"]
+            {
+                *shifted.entry((prior["track"].as_u64().unwrap_or(0), delta)).or_default() += 1;
+                continue;
+            }
+        }
+        changes.push(json!({ "clip_id": id, "before": prior, "after": after,
+            "created": prior.is_none(), "removed": after.is_none() }));
+    }
+    let shifted: Vec<_> = shifted.into_iter().map(|((track, by_frames), clips)| {
+        json!({ "track": track, "clips": clips, "by_frames": by_frames })
+    }).collect();
+    Ok(json!({ "changes": changes, "shifted": shifted }))
 }
 
 /// Every reply carries which project it is about: the generation moves
@@ -4723,8 +4782,17 @@ fn handle(
                 }
             }
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+            let cut_changes = if ops.iter().any(|op| matches!(op, klipp_document::ops::Op::Cut { .. } | klipp_document::ops::Op::Split { .. })) {
+                Some(planned_cut_changes(ctx, &edits)?)
+            } else { None };
             let label = label.unwrap_or_else(|| apply_label(&ops));
             let mut v = send_full_envelope_for_project(ctx, Vec::new(), edits, true, Some(revision), expected_project_identity, Some(label))?;
+            if v["applied"] == true {
+                if let Some(changes) = cut_changes {
+                    v["changes"] = changes["changes"].clone();
+                    v["shifted"] = changes["shifted"].clone();
+                }
+            }
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
             if detail {
                 v["steps"] = json!(plan.report());
@@ -5219,6 +5287,11 @@ reference:   {}",
             v["filename"] = json!(item.filename);
             v["next"] = json!("Cut on a strength-3 pause where you can; a strength-2 full stop or shot change is clean too. Trim or place to the point's secs. Then check.");
             Ok(v)
+        }
+
+        ControlCommand::PrepareCut { from_secs, to_secs, near_secs, intent, max_candidates } => {
+            if in_batch { return read_in_batch("prepare_cut"); }
+            cut_prep::prepare(ctx, from_secs, to_secs, near_secs, intent, max_candidates)
         }
 
         ControlCommand::Orient => {

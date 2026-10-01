@@ -782,6 +782,19 @@ pub enum ControlCommand {
         #[serde(default)]
         to_secs: Option<f64>,
     },
+    /// Revision-bound, frame-exact cut evidence in a bounded timeline
+    /// range. All times are in sequence space; source evidence is mapped
+    /// through each clip's trim, speed and direction.
+    PrepareCut {
+        from_secs: f64,
+        to_secs: f64,
+        #[serde(default)]
+        near_secs: Option<f64>,
+        #[serde(default)]
+        intent: Option<String>,
+        #[serde(default)]
+        max_candidates: Option<usize>,
+    },
     /// Name the active sequence: what the timeline is called in the app
     /// and in the project. A new project's sequence keeps a default name
     /// until someone names it.

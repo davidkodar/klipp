@@ -55,6 +55,12 @@ frames.
    each step would do and each touched clip's range afterwards.
    Nothing changes. If a step cannot be done the reply says which,
    why, and what would help; fix the ops and plan again.
+   For a requested cut, use `klipp_prepare_cut` on a short timeline
+   range first. It maps measured pauses, words, picture changes and
+   settled screen frames through trims and speed changes to exact
+   sequence frames. Choose from its evidence; if it says ambiguous,
+   inspect the suggested contact sheet or audio excerpt. Carry its
+   revision and project identity into plan and apply.
 4. **Apply.** `klipp_apply` with the same ops and the plan's
    `expected_revision` (and `expected_project_identity` when available): resolved again,
    applied as one undo step, refused whole if the timeline or project
