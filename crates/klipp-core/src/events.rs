@@ -447,8 +447,13 @@ impl ExportSettings {
     /// not, so an odd size asked for took the app down (hunt #2).
     pub fn output_size(&self, seq_w: u32, seq_h: u32) -> (u32, u32) {
         let (w, h) = self.resolution.map_or((seq_w, seq_h), |r| (r.width, r.height));
-        ((w & !1).max(2), (h & !1).max(2))
+        let side = |v: u32| (v.min(Self::MAX_SIDE) & !1).max(2);
+        (side(w), side(h))
     }
+
+    /// The largest side an export is encoded at (#658): 16K, past every
+    /// delivery format, where 99999×99999 asked for some 40 GB a frame.
+    pub const MAX_SIDE: u32 = 16384;
 
     /// Whether the picture is rendered for HDR — scene-referred clips keep
     /// their highlights and the encoder writes display light as PQ or HLG
@@ -4260,5 +4265,6 @@ mod output_size_tests {
         assert_eq!(at(None, (1919, 1079)), (1918, 1078));
         assert_eq!(at(None, (1920, 1080)), (1920, 1080));
         assert_eq!(at(Some((1, 1)), (1920, 1080)), (2, 2), "never nothing");
+        assert_eq!(at(Some((99999, 99999)), (1920, 1080)), (16384, 16384), "never past 16K (#658)");
     }
 }
