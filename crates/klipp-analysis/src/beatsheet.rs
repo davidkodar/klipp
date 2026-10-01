@@ -21,8 +21,9 @@ use serde::{Deserialize, Serialize};
 use crate::shots::Shots;
 
 pub const ID: &str = "beatsheet";
-// Invalidate results derived from the previous shot-boundary selection.
-pub const VERSION: u32 = 9;
+// 10: made for screen recordings only (#500); a camera clip's beat sheet
+// from before is dropped.
+pub const VERSION: u32 = 10;
 
 /// Frames sampled a second for freeze detection: enough to place a settle
 /// to a sixth of a second, cheap to decode.
@@ -435,7 +436,7 @@ impl crate::Analyser for BeatSheetAnalyser {
         VERSION
     }
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
-        !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0
+        !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0 && crate::looks_like_screen(item)
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
         let duration = item.duration.to_secs_f64();

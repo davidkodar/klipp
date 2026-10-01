@@ -9,8 +9,9 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "screentext";
-// Invalidate results derived from the previous shot-boundary selection.
-pub const VERSION: u32 = 9;
+// 10: read on screen recordings only (#500); a camera clip's text from
+// before is dropped.
+pub const VERSION: u32 = 10;
 pub const DET_MODEL_ID: &str = "ppocr_en_det_v3";
 pub const REC_MODEL_ID: &str = "ppocr_en_rec_v4";
 pub const MODEL_IDS: [&str; 2] = [DET_MODEL_ID, REC_MODEL_ID];
@@ -441,7 +442,7 @@ impl crate::Analyser for ScreenTextAnalyser {
         VERSION
     }
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
-        !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0 && installed() && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
+        !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0 && crate::looks_like_screen(item) && installed() && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
     }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
         let (det, rec) = model_paths().ok_or_else(|| format!("the screen-text models are not downloaded; ask with download_models ({})", MODEL_IDS.join(" + ")))?;

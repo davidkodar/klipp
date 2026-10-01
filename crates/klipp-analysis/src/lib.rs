@@ -136,6 +136,40 @@ pub fn screen_text_enabled() -> bool {
 
 /// Every analyser this build ships, in the order they pay off. Each AI
 /// analyser is left out when its feature is switched off in preferences.
+/// Whether `item` looks like a recording of a screen, the footage the
+/// beat sheet and the on-screen text reader are for (#500). Run on every
+/// phone clip they read sea foam and house numbers as screen text and
+/// reported a beach walk that "never settled".
+///
+/// A recorder that names itself says yes. Anything a camera leaves says
+/// no: a make or model, a rotation, a log or HDR curve, a timecode or
+/// reel, lens settings. Without any of that it is taken for a screen.
+/// Tagging a file `screen` (or `screen recording`) asks for the screen
+/// analysers whatever the file says.
+pub fn looks_like_screen(item: &klipp_media::MediaItem) -> bool {
+    let tagged = item.tags.iter().any(|t| matches!(t.trim().to_lowercase().as_str(), "screen" | "screen recording" | "screencast"));
+    if tagged {
+        return true;
+    }
+    const RECORDERS: [&str; 9] = ["obs", "screen", "wf-recorder", "kooha", "gnome-shell", "gpu-screen-recorder", "peek", "loom", "kazam"];
+    let encoder = item.encoder.as_deref().unwrap_or("").to_lowercase();
+    if RECORDERS.iter().any(|r| encoder.contains(r)) {
+        return true;
+    }
+    let shot = &item.shot;
+    let hdr = item.color_transfer.as_deref().is_some_and(|t| t.contains("2084") || t.contains("arib") || t.contains("hlg"));
+    let camera = item.camera_make.is_some()
+        || item.camera_model.is_some()
+        || item.source_rotation != 0
+        || !matches!(item.detected_log_format, klipp_core::LogFormat::Srgb | klipp_core::LogFormat::Linear)
+        || hdr
+        || shot.start_timecode.is_some()
+        || shot.reel_name.is_some()
+        || shot.lens.is_some()
+        || shot.iso.is_some();
+    !camera
+}
+
 pub fn analysers() -> Vec<Box<dyn Analyser>> {
     // The beat sheet is last of the always-on set: it synthesises the
     // shots and motion that run before it into an idle/action map.
@@ -380,5 +414,42 @@ mod hwaccel_tests {
         assert_eq!(pick_hwaccel(listed, Some("0")), None);
         assert_eq!(pick_hwaccel(listed, Some("none")), None);
         assert_eq!(pick_hwaccel(listed, Some("vulkan")).as_deref(), Some("vulkan"));
+    }
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::looks_like_screen;
+
+    /// #500: a phone clip, a camera's log file or one with a timecode is
+    /// camera footage, kept from the screen analysers; a file with no
+    /// camera in it, one a recorder names itself in, or one tagged
+    /// `screen` is a screen.
+    #[test]
+    fn only_a_screen_recording_gets_the_screen_analysers() {
+        let item = || klipp_media::MediaItem::synthetic_for_test("/tmp/clip.mov".into(), None);
+        assert!(looks_like_screen(&item()), "nothing of a camera in it");
+        let mut phone = item();
+        phone.camera_make = Some("Apple".into());
+        phone.camera_model = Some("iPhone 15 Pro".into());
+        assert!(!looks_like_screen(&phone));
+        let mut turned = item();
+        turned.source_rotation = 90;
+        assert!(!looks_like_screen(&turned));
+        let mut log = item();
+        log.detected_log_format = klipp_core::LogFormat::SLog3;
+        assert!(!looks_like_screen(&log));
+        let mut hdr = item();
+        hdr.color_transfer = Some("smpte2084".into());
+        assert!(!looks_like_screen(&hdr));
+        let mut slate = item();
+        slate.shot.start_timecode = Some("01:00:00:00".into());
+        assert!(!looks_like_screen(&slate));
+        let mut obs = item();
+        obs.encoder = Some("OBS Studio".into());
+        obs.source_rotation = 90;
+        assert!(looks_like_screen(&obs), "a recorder that names itself");
+        phone.tags.push("Screen recording".into());
+        assert!(looks_like_screen(&phone), "asked for");
     }
 }
