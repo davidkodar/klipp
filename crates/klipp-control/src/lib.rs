@@ -1227,6 +1227,24 @@ pub fn cut_points(
 
 /// Public for tests and tools that measure a frame without the socket.
 pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_json::Value {
+    // The picture, not its letterbox or pillarbox bars (#647): counted,
+    // a portrait clip in a wide sequence read "mid 0, 76.9% clipped at
+    // black", and match_grade lifted it to match those numbers.
+    let area = klipp_color::measure::picture_area(data, width, height);
+    if area != (0, 0, width, height) {
+        let mut v = frame_stats(&klipp_color::measure::crop_rgba(data, width, area), area.2, area.3, secs);
+        let note = format!(
+            "\nmeasured inside the {} bars: the picture is {}x{} of the {width}x{height} frame",
+            if area.2 < width { "pillarbox" } else { "letterbox" },
+            area.2,
+            area.3
+        );
+        if let Some(t) = v["text"].as_str().map(|t| format!("{t}{note}")) {
+            v["text"] = json!(t);
+        }
+        v["picture"] = json!({ "x": area.0, "y": area.1, "width": area.2, "height": area.3 });
+        return v;
+    }
     let (w, h) = (width as usize, height as usize);
     let step = ((w * h) / 200_000).max(1);
     let mut lumas: Vec<f32> = Vec::new();
