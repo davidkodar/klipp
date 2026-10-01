@@ -166,9 +166,11 @@ struct Proj {
 }
 
 impl Proj {
+    /// Inverted before it is scaled down: a unit-size map of a large
+    /// frame has a determinant small enough for the inverse to refuse.
     fn new(h: Homography) -> Option<Proj> {
-        let h = normalised(h)?;
         let inv = normalised(h.inverse()?)?;
+        let h = normalised(h)?;
         Some(Proj { h, inv })
     }
 }

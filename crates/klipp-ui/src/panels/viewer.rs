@@ -3266,31 +3266,25 @@ impl ViewerPanel {
                 let (x, y) = ahead.and_then(|f| f.apply((nx, ny))).unwrap_or((nx, ny));
                 to_screen(x, y)
             };
-            // The outline through the map, where straight lines stay
-            // straight and a circle does not stay round.
-            let warped_outline = |pts: &[(f32, f32)]| {
-                if ahead.is_some() {
-                    let screen: Vec<egui::Pos2> = pts.iter().map(|&(x, y)| to_screen(x, y)).collect();
-                    ui.painter().add(egui::Shape::closed_line(screen, egui::Stroke::new(1.5_f32, outline_color)));
-                }
+            // The outline as the matte draws it (klipp_color::masks): a
+            // shape's sizes are in frame widths, so a height of `v` reaches
+            // `v × aspect` of the frame's height down. Through the map, too,
+            // where straight lines stay straight.
+            let aspect = ih / iw.max(1.0);
+            let outline = |pts: &[(f32, f32)]| {
+                let screen: Vec<egui::Pos2> = pts.iter().map(|&(x, y)| to_screen(x, y)).collect();
+                ui.painter().add(egui::Shape::closed_line(screen, egui::Stroke::new(1.5_f32, outline_color)));
             };
 
             match &mask.shape {
                 klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
                     let center = to_screen(*center_x, *center_y);
-                    let r_px = radius * iw;
 
-                    // Draw outline ellipse (approximate with circle)
-                    if ahead.is_some() {
-                        let down = radius * iw / ih.max(1.0);
-                        let ring: Vec<(f32, f32)> = (0..64).map(|i| {
-                            let (sin, cos) = (i as f32 * std::f32::consts::TAU / 64.0).sin_cos();
-                            (center_x + radius * cos, center_y + down * sin)
-                        }).collect();
-                        warped_outline(&ring);
-                    } else {
-                        ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5_f32, outline_color));
-                    }
+                    let ring: Vec<(f32, f32)> = (0..64).map(|i| {
+                        let (sin, cos) = (i as f32 * std::f32::consts::TAU / 64.0).sin_cos();
+                        (center_x + radius * cos, center_y + radius * aspect * sin)
+                    }).collect();
+                    outline(&ring);
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
@@ -3302,7 +3296,7 @@ impl ViewerPanel {
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (radius control)
-                    let bottom = to_screen(*center_x, center_y + radius * iw / ih.max(1.0));
+                    let bottom = to_screen(*center_x, center_y + radius * aspect);
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3364,33 +3358,24 @@ impl ViewerPanel {
                 }
                 klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
                     let center = to_screen(*center_x, *center_y);
-                    let hw = width * iw * 0.5;
-                    let hh = height * ih * 0.5;
 
-                    // Draw outline rectangle (ignoring rotation for simplicity in handles)
-                    if ahead.is_some() {
-                        // Turned as the rasteriser turns it, in width units.
-                        let aspect = ih / iw.max(1.0);
-                        let (sin, cos) = rotation.to_radians().sin_cos();
-                        let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * aspect);
-                        let (a, b) = (width * 0.5, height * 0.5);
-                        warped_outline(&[corner(-a, -b), corner(a, -b), corner(a, b), corner(-a, b)]);
-                    } else {
-                        let rect = egui::Rect::from_center_size(center, egui::vec2(hw * 2.0, hh * 2.0));
-                        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5_f32, outline_color));
-                    }
+                    // Turned as the matte turns it (the handles are not).
+                    let (sin, cos) = rotation.to_radians().sin_cos();
+                    let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * aspect);
+                    let (a, b) = (width * 0.5, height * 0.5);
+                    outline(&[corner(-a, -b), corner(a, -b), corner(a, b), corner(-a, b)]);
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(center, handle_radius, handle_color);
 
                     // Right edge handle (width control)
-                    let right = to_screen(center_x + hw / iw.max(1.0), *center_y);
+                    let right = to_screen(center_x + width * 0.5, *center_y);
                     let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (height control)
-                    let bottom = to_screen(*center_x, center_y + hh / ih.max(1.0));
+                    let bottom = to_screen(*center_x, center_y + height * 0.5 * aspect);
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3677,7 +3662,8 @@ impl ViewerPanel {
                         klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
                     }
                     (klipp_core::MaskShape::Circle { center_x, center_y, radius: _ }, MaskHandle::EdgeBottom) => {
-                        let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw).abs().max(0.01);
+                        // Down, a size reaches `size × aspect` of the height.
+                        let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih / (ih / iw.max(1.0))).abs().max(0.01);
                         klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
                     }
                     (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation }, MaskHandle::Center) => {
@@ -3694,7 +3680,7 @@ impl ViewerPanel {
                         klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: new_w, height: *height, rotation: *rotation }
                     }
                     (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height: _, rotation }, MaskHandle::EdgeBottom) => {
-                        let new_h = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih * 2.0).abs().max(0.01);
+                        let new_h = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih / (ih / iw.max(1.0)) * 2.0).abs().max(0.01);
                         klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: *width, height: new_h, rotation: *rotation }
                     }
                     (klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y }, MaskHandle::Center) => {
