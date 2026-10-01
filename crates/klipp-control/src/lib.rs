@@ -5459,7 +5459,12 @@ reference:   {}",
                 "captions_and_titles_burnt_in": settings.burn_in_subtitles,
                 "target_lufs": settings.target_lufs,
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
-                "size": settings.resolution.map(|r| format!("{}x{}", r.width, r.height)),
+                // The size it is encoded at: an odd side is rounded down,
+                // as 4:2:0 video needs (hunt #2), and said so.
+                "size": settings.resolution.map(|r| {
+                    let (w, h) = settings.output_size(r.width, r.height);
+                    if (w, h) == (r.width, r.height) { format!("{w}x{h}") } else { format!("{w}x{h} (rounded down to even from {}x{})", r.width, r.height) }
+                }),
                 // Chosen by the container (VP9 and Opus for .webm, a slower
                 // software encode that is always 8-bit), so said.
                 "video_codec": settings.video_codec.label(),

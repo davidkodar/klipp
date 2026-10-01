@@ -240,10 +240,7 @@ impl ExportJob {
         // Output size, and where the sequence's picture sits in it: an
         // export resolution with another aspect is letterboxed or
         // pillarboxed, not stretched.
-        let (out_w, out_h) = match &self.settings.resolution {
-            Some(r) => (r.width & !1, r.height & !1),
-            None => (self.snapshot.width, self.snapshot.height),
-        };
+        let (out_w, out_h) = self.settings.output_size(self.snapshot.width, self.snapshot.height);
         let (fit_w, fit_h, fit_x, fit_y) = if (out_w, out_h) == (self.snapshot.width, self.snapshot.height) {
             (out_w, out_h, 0, 0)
         } else {

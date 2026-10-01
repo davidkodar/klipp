@@ -390,10 +390,12 @@ impl Encoder {
         // proxy job or another export can hold the last one. A refusal
         // moves on to the next encoder rather than failing the render
         // (#381, #555).
+        // The encoders are picked for the size they will be given.
+        let (enc_w, enc_h) = settings.output_size(snapshot.width, snapshot.height);
         let attempts = video_encoder_attempts(
             &settings.video_codec,
-            snapshot.width,
-            snapshot.height,
+            enc_w,
+            enc_h,
             settings.bit_depth == 10,
             &crate::vaapi::encode_nodes(),
         );
@@ -444,11 +446,8 @@ impl Encoder {
                         .video()
                         .map_err(|e| RenderError::Encode(format!("video encoder context: {e}")))?;
 
-                    // Resolution: use export override if set, else sequence resolution
-                    let (out_w, out_h) = match &settings.resolution {
-                        Some(res) => (res.width, res.height),
-                        None => (snapshot.width, snapshot.height),
-                    };
+                    // The size the export job renders at, even on both sides.
+                    let (out_w, out_h) = settings.output_size(snapshot.width, snapshot.height);
                     video_ctx.set_width(out_w);
                     video_ctx.set_height(out_h);
                     // Frame rate: use export override if set, else sequence fps
