@@ -113,9 +113,52 @@ pub struct PcmAudioFeeder {
     pub fade_out_curve: Arc<AtomicU32>,
     pub fade_gain: Arc<AtomicU32>,     // pre-fader gain (f32 bits)
     pub anti_click: Arc<AtomicBool>,   // apply 2ms anti-click fade at boundaries
+    /// The clip's speed and source range, for reading its sound at that
+    /// speed (#642); see [`Varispeed`].
+    pub varispeed: Arc<Varispeed>,
     /// New effect settings for the running chain; see
     /// [`crate::audio_source::AudioSource::update_effect_settings`].
     pub effect_settings: crate::audio_source::EffectSettingsSlot,
+}
+
+/// A retimed clip's sound, read at its speed (#642): `speed` source
+/// frames a frame, backward when negative, so its pitch moves with it as
+/// tape's does and it stays on its picture. 1.0 reads straight through.
+/// `source_in` and `source_out` are the clip's own, in seconds: where
+/// fades and effects take its time from, as at 1x they take it from the
+/// source position.
+pub struct Varispeed {
+    speed: AtomicU64,
+    source_in: AtomicU64,
+    source_out: AtomicU64,
+}
+
+impl Default for Varispeed {
+    fn default() -> Self {
+        Self { speed: AtomicU64::new(1.0f64.to_bits()), source_in: AtomicU64::new(0.0f64.to_bits()), source_out: AtomicU64::new(0.0f64.to_bits()) }
+    }
+}
+
+impl Varispeed {
+    pub fn set(&self, speed: f64, source_in: f64, source_out: f64) {
+        self.source_in.store(source_in.to_bits(), Ordering::Relaxed);
+        self.source_out.store(source_out.to_bits(), Ordering::Relaxed);
+        self.speed.store(speed.to_bits(), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> (f64, f64, f64) {
+        let f = |a: &AtomicU64| f64::from_bits(a.load(Ordering::Relaxed));
+        (f(&self.speed), f(&self.source_in), f(&self.source_out))
+    }
+}
+
+/// Where a varispeed read at frame `pos` is in the clip, as the source
+/// second 1x playback would be at: `source_in` plus the clip's own time
+/// there. Fades and effects are timed by it, as they are at 1x.
+pub(crate) fn varispeed_clip_secs(pos: f64, speed: f64, source_in: f64, source_out: f64) -> f64 {
+    let at = pos / SAMPLE_RATE as f64;
+    let elapsed = if speed < 0.0 { (source_out - at) / -speed } else { (at - source_in) / speed };
+    source_in + elapsed.max(0.0)
 }
 
 /// PCM caches kept in memory once read, shared by every feeder that plays
@@ -274,6 +317,7 @@ impl PcmAudioFeeder {
         let fade_out_curve = Arc::new(AtomicU32::new(0));
         let fade_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let anti_click = Arc::new(AtomicBool::new(true));
+        let varispeed = Arc::new(Varispeed::default());
 
         let vol = volume.clone();
         let mute = muted.clone();
@@ -287,6 +331,7 @@ impl PcmAudioFeeder {
         let foc = fade_out_curve.clone();
         let fg = fade_gain.clone();
         let ac = anti_click.clone();
+        let vs = varispeed.clone();
         let effect_settings: crate::audio_source::EffectSettingsSlot = Default::default();
         let settings_rx = effect_settings.clone();
 
@@ -314,6 +359,7 @@ impl PcmAudioFeeder {
                         foc,
                         fg,
                         ac,
+                        vs,
                         audio_effects,
                         audio_effect_keyframes,
                         settings_rx,
@@ -338,6 +384,7 @@ impl PcmAudioFeeder {
                 fade_out_curve,
                 fade_gain,
                 anti_click,
+                varispeed,
                 effect_settings,
             },
             consumer,
@@ -362,6 +409,12 @@ impl PcmAudioFeeder {
 
     pub fn set_anti_click(&self, enabled: bool) {
         self.anti_click.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Read the clip's sound at `speed`, from its `source_in`..`source_out`
+    /// (#642).
+    pub fn set_varispeed(&self, speed: f64, source_in: f64, source_out: f64) {
+        self.varispeed.set(speed, source_in, source_out);
     }
 
     pub fn seek(&self, secs: f64) {
@@ -432,6 +485,7 @@ fn pcm_feed_thread(
     fade_out_curve: Arc<AtomicU32>,
     _fade_gain: Arc<AtomicU32>,
     anti_click: Arc<AtomicBool>,
+    varispeed: Arc<Varispeed>,
     audio_effects: Vec<AudioEffectInstance>,
     audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     effect_settings: crate::audio_source::EffectSettingsSlot,
@@ -475,6 +529,10 @@ fn pcm_feed_thread(
     let mut eof = false;
     // Current read position in the samples array (in floats, i.e., sample_index * CHANNELS)
     let mut read_pos: usize = 0;
+    // A varispeed read's position, in frames, fractional; `read_pos` is
+    // taken up from it when the speed comes back to 1 (#642).
+    let mut vpos: f64 = 0.0;
+    let mut vari = false;
 
     // Source frames per device frame, when the device is not at 48 kHz
     // (the slow path below resamples with a windowed sinc).
@@ -505,6 +563,7 @@ fn pcm_feed_thread(
                 PcmCommand::SeekTo(secs) => {
                     let sample_index = (secs * SAMPLE_RATE as f64) as usize;
                     read_pos = (sample_index * CHANNELS).min(total_floats);
+                    vpos = secs.max(0.0) * SAMPLE_RATE as f64;
                     eof = false;
 
                     // Report seek position
@@ -606,6 +665,57 @@ fn pcm_feed_thread(
         let fo_curve = fade_out_curve.load(Ordering::Relaxed) as u8;
         let ac = anti_click.load(Ordering::Relaxed);
         let has_fade = fi_secs > 0.001 || fo_secs > 0.001 || ac;
+
+        // A retimed clip (#642): its sound read at its speed, backward when
+        // reversed, then faded, effected and sent on as at 1x, its time
+        // being the clip's own.
+        let (speed, vs_in, vs_out) = varispeed.get();
+        if (speed - 1.0).abs() > 1e-6 && speed.is_finite() && speed != 0.0 {
+            if !vari {
+                vpos = (read_pos / CHANNELS) as f64;
+                vari = true;
+            }
+            let room = if needs_resample { ((vacant / CHANNELS).saturating_sub(2) as f64 * rate_ratio) as usize } else { vacant / CHANNELS };
+            let n = chunk_frames.min(room);
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            let mut buf = klipp_audio::dsp::varispeed::read(samples, CHANNELS, vpos, speed, n);
+            let got = buf.len() / CHANNELS;
+            if got == 0 {
+                eof = true;
+                continue;
+            }
+            for (i, pair) in buf.chunks_mut(CHANNELS).enumerate() {
+                let at = varispeed_clip_secs(vpos + i as f64 * speed, speed, vs_in, vs_out);
+                let fade = fade_envelope(at, src_in, clip_dur, fi_secs, fo_secs, fi_curve, fo_curve, ac);
+                let mult = if is_muted { 0.0 } else { vol * fade };
+                pair.iter_mut().for_each(|s| *s *= mult);
+            }
+            if let Some(ref mut chain) = effect_chain {
+                let fx_ctx = AudioProcessContext {
+                    sample_rate: SAMPLE_RATE,
+                    channels: CHANNELS as u32,
+                    clip_time_secs: (varispeed_clip_secs(vpos, speed, vs_in, vs_out) - src_in).max(0.0),
+                };
+                chain.process_aligned(&mut buf, &fx_ctx);
+            }
+            if needs_resample {
+                let out = resampler.get_or_insert_with(|| PlaybackResampler::new(output_rate)).process(&buf);
+                producer.push_slice(&out);
+            } else {
+                producer.push_slice(&buf);
+            }
+            vpos += got as f64 * speed;
+            if got < n {
+                eof = true;
+            }
+            continue;
+        } else if vari {
+            read_pos = ((vpos.max(0.0) as usize) * CHANNELS).min(total_floats);
+            vari = false;
+        }
 
         if read_pos >= total_floats {
             eof = true;
@@ -780,6 +890,54 @@ mod tests {
         assert_eq!(&third[..], &[0.5; 12]);
         assert!(!Arc::ptr_eq(&third, &load_pcm(&path).unwrap()), "read again after the release");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #642: a retimed clip's feeder reads its sound at its speed: from
+    /// a seek to 1 s, at 2x each output frame is two source frames on, and
+    /// reversed each is one back. The PCM is a ramp, each frame its own
+    /// index, so the output says which source frame it is.
+    #[test]
+    fn a_feeder_reads_at_its_clips_speed_both_ways() {
+        use ringbuf::traits::Consumer;
+        let path = std::env::temp_dir().join(format!("klipp-pcm-varispeed-{}.pcm", std::process::id()));
+        let frames = SAMPLE_RATE as usize * 4;
+        let ramp: Vec<f32> = (0..frames).flat_map(|i| [i as f32 / frames as f32; CHANNELS]).collect();
+        write_pcm(&path, &ramp);
+        let first_frames = |speed: f64| -> Vec<f64> {
+            let (feeder, mut consumer) = PcmAudioFeeder::open(&path, SAMPLE_RATE, vec![], Default::default()).unwrap();
+            feeder.set_fade(0.0, f64::MAX, 0.0, 0.0, 0, 0, 1.0);
+            feeder.anti_click.store(false, Ordering::Relaxed);
+            feeder.set_varispeed(speed, 0.5, 3.5);
+            feeder.seek(1.0);
+            feeder.resume();
+            let mut got = Vec::new();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut buf = vec![0.0f32; 4096];
+            while got.len() < 64 && std::time::Instant::now() < deadline {
+                let n = consumer.pop_slice(&mut buf);
+                got.extend(buf[..n].chunks(CHANNELS).map(|f| f[0] as f64 * frames as f64));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            got.truncate(64);
+            got
+        };
+        let fast = first_frames(2.0);
+        assert!((fast[0] - SAMPLE_RATE as f64).abs() < 1.0, "starts at the seek: frame {}", fast[0]);
+        assert!(fast.windows(2).all(|w| (w[1] - w[0] - 2.0).abs() < 0.01), "2x steps two frames: {:?}", &fast[..4]);
+        let back = first_frames(-1.0);
+        assert!(back.windows(2).all(|w| (w[1] - w[0] + 1.0).abs() < 0.01), "reversed steps one back: {:?}", &back[..4]);
+        assert_eq!(first_frames(1.0).windows(2).filter(|w| (w[1] - w[0] - 1.0).abs() > 0.01).count(), 0, "1x as ever");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where a varispeed read is in its clip: forward, the source run at
+    /// the speed from its in point; reversed, back from its out point.
+    #[test]
+    fn a_varispeed_position_is_the_clips_own_time() {
+        let at = |secs: f64| secs * SAMPLE_RATE as f64;
+        assert!((varispeed_clip_secs(at(3.0), 2.0, 1.0, 5.0) - 2.0).abs() < 1e-9, "2x: source 3 is a second in");
+        assert!((varispeed_clip_secs(at(4.0), -1.0, 1.0, 5.0) - 2.0).abs() < 1e-9, "reversed: source 4 is a second in");
+        assert!((varispeed_clip_secs(at(0.5), 2.0, 1.0, 5.0) - 1.0).abs() < 1e-9, "before the clip: its start");
     }
 
     /// #421: the slow path converts to the device rate with a windowed

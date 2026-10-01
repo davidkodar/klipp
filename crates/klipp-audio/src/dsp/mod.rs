@@ -20,6 +20,7 @@ pub mod noise_reduction;
 pub mod normalize;
 pub mod pitch_shift;
 pub mod reverb;
+pub mod varispeed;
 
 pub use klipp_core::AudioEffectInstance;
 

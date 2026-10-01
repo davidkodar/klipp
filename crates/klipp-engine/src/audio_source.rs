@@ -116,6 +116,14 @@ impl AudioSource {
         }
     }
 
+    /// Read the clip's sound at `speed` (#642); the live decoder reads at
+    /// 1x only, and the engine gives a retimed clip a PCM source.
+    pub fn set_varispeed(&self, speed: f64, source_in: f64, source_out: f64) {
+        if let Self::PcmFeeder(f) = self {
+            f.set_varispeed(speed, source_in, source_out);
+        }
+    }
+
     /// Enable/disable anti-click fade at clip boundaries.
     pub fn set_anti_click(&self, enabled: bool) {
         if let Self::PcmFeeder(f) = self {

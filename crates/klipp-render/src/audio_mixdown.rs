@@ -243,6 +243,16 @@ fn get_track_samples(
         let clip = &state.clips[clip_idx];
         let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
             Ok(mut buf) => {
+                // A retimed clip (#642): its sound read at its speed, from
+                // where each moment of it on the timeline is in the source,
+                // as playback's feeder reads it; then the buffer is the
+                // clip's own time from its first sample, as at 1x.
+                if let Some(v) = clip.varispeed {
+                    let frames = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame);
+                    let want = (frames as f64 / fps * sample_rate as f64).ceil() as usize + 1;
+                    let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
+                    buf = klipp_audio::dsp::varispeed::read(&buf, 2, from, v.speed, want);
+                }
                 // Apply per-clip audio effects (EQ, compressor, reverb, etc.).
                 // `decode_clip_audio` is called with `source_start_secs`, so the
                 // returned buffer's first sample IS clip-relative t=0. The chain
@@ -864,6 +874,7 @@ mod tests {
             audio_effects: vec![],
             audio_effect_keyframes: std::collections::HashMap::new(),
             shape: AudioClipShape::default(),
+            varispeed: None,
         });
 
         let mut mixdown = AudioMixdown::new(&snapshot).unwrap();

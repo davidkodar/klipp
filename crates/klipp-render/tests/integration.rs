@@ -314,6 +314,7 @@ fn export_real_media_h264() {
                 audio_effects: vec![],
                 audio_effect_keyframes: std::collections::HashMap::new(),
                 shape: Default::default(),
+                varispeed: None,
             }],
         }],
         global_lut_path: None,

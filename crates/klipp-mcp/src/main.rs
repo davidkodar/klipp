@@ -1449,7 +1449,7 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; at any speed but 1 the clip and its linked sound are silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
+              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
               shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \
@@ -1622,7 +1622,7 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; at any speed but 1 the clip and its linked sound are silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
+              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
               shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \

@@ -175,8 +175,9 @@ exist until the plan runs.
   edges a little to hide the movement.
 - `retime {clip_id, speed, ripple?}`: change a clip's speed, its linked
   sound with it. Above 1 is faster and shorter, below 1 slower and
-  longer, negative plays it reversed. At any speed but 1 the clip's own
-  sound is silent (it is not stretched); music and other tracks play on.
+  longer, negative plays it reversed. Its sound plays at the speed, its
+  pitch moving with it as tape's does, backward when reversed; music and
+  other tracks are untouched. (A speed ramp's own sound is silent.)
   With `ripple` the clips after it on its tracks move by the change in
   length; without it a gap is left where it shrinks, and a clip that
   would grow into the next one is refused.

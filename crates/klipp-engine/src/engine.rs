@@ -1617,14 +1617,20 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
             let clip = sounding.clip;
             // A multicam angle is heard where the group's sound rule
             // says, the rule the render gates the same clip by.
-            // A retimed or reversed clip is silent (#617, #638): its sound is
-            // not stretched, and export leaves it out alike.
+            // A ramped clip is silent (#638): its sound has no one speed to
+            // be read at. Export leaves it out alike.
             if !clip.enabled || !clip.plays_its_sound() || !seq.multicam_sounds_at(clip, tc) {
                 continue;
             }
             let Some(media_id) = clip.media_id() else { continue };
             let Some(item) = pool.get(&media_id) else { continue };
             if !item.has_audio {
+                continue;
+            }
+            // A retimed clip's sound is read at its speed from the PCM
+            // cache (#642); the live decoder reads at 1x only, and would
+            // play it out of step. Until the cache is made, it is silent.
+            if clip.is_varispeed() && !item.audio_cache.as_ref().is_some_and(|c| c.pcm_path.exists()) {
                 continue;
             }
             // Skip audio for video-track clips that have a linked audio-track partner
@@ -3935,6 +3941,8 @@ impl PlaybackEngine {
                     let mut ch_config = audio_clip.channel_config;
                     let source_in_secs = audio_clip.source_in.to_secs_f64();
                     let clip_dur_secs = audio_clip.duration().to_secs_f64();
+                    // Read at the clip's speed, backward when reversed (#642).
+                    active.source.set_varispeed(audio_clip.speed, source_in_secs, audio_clip.source_out.to_secs_f64());
 
                     // If linked to a video clip, use the video clip's audio params
                     if let Some(linked_id) = audio_clip.linked_clip_id {
@@ -4582,6 +4590,7 @@ impl PlaybackEngine {
                         fade_curve_to_u32(new_clip.fade_out_curve),
                         new_clip.gain,
                     );
+                    active_src.source.set_varispeed(new_clip.speed, new_source_in, new_clip.source_out.to_secs_f64());
                 }
             }
             set_crossfade_envelope(&seq, &self.fadeable_media, active_src, tc);
@@ -12468,24 +12477,31 @@ mod audio_crossfade_schedule_tests {
         assert!((a.3 - 99.0 / 24.0).abs() < 1e-9, "A from {}", a.3);
     }
 
-    /// #638: a retimed clip's own sound is left out of the mix, and only
-    /// it: a clip on another track plays on. Playback muted every source
-    /// while the primary clip was retimed, music included.
+    /// #642: a retimed clip's sound is in the mix, read at its speed by
+    /// its PCM source — not the live decoder, which reads at 1x, so it is
+    /// silent until its cache is made. A ramped one is silent; the clip on
+    /// the other track plays on throughout.
     #[test]
-    fn a_retimed_clips_sound_is_out_of_the_mix_and_only_it() {
-        let (mut s, pool, am, bm) = timeline();
+    fn a_retimed_clips_sound_is_heard_from_its_cache_and_a_ramp_is_not() {
+        let (mut s, mut pool, am, bm) = timeline();
         // B onto a track of its own, under A, both sounding at 1 s.
         let b = s.tracks[0].clips.remove(1);
         s.tracks[0].transitions.clear();
         let mut t2 = Track::new("A2", TrackKind::Audio);
         t2.clips.push(Clip { timeline_in: tc(0), timeline_out: tc(72), ..b });
         s.tracks.push(t2);
-        let heard = |s: &Sequence| audio_rows(s, &pool, &fadeable_media(&pool), tc(24), false, false).iter().map(|r| r.1).collect::<Vec<_>>();
-        assert_eq!(heard(&s), vec![am, bm]);
+        let heard = |s: &Sequence, pool: &klipp_media::MediaPool| audio_rows(s, pool, &fadeable_media(pool), tc(24), false, false).iter().map(|r| r.1).collect::<Vec<_>>();
+        assert_eq!(heard(&s, &pool), vec![am, bm]);
         s.tracks[0].clips[0].speed = 2.0;
-        assert_eq!(heard(&s), vec![bm], "the 2x clip silent, the other heard");
+        assert_eq!(heard(&s, &pool), vec![am, bm], "the 2x clip heard, from its cache");
         s.tracks[0].clips[0].speed = -1.0;
-        assert_eq!(heard(&s), vec![bm], "a reversed one too");
+        assert_eq!(heard(&s, &pool), vec![am, bm], "a reversed one too");
+        let cache = pool.get_mut(&am).unwrap().audio_cache.take();
+        assert_eq!(heard(&s, &pool), vec![bm], "no cache, no varispeed: silent rather than at 1x");
+        pool.get_mut(&am).unwrap().audio_cache = cache;
+        s.tracks[0].clips[0].speed = 1.0;
+        s.tracks[0].clips[0].speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        assert_eq!(heard(&s, &pool), vec![bm], "a ramp has no one speed: silent");
     }
 
     #[test]

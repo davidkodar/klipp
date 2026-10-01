@@ -86,6 +86,7 @@ fn clip(path: PathBuf, start_frame: u64, end_frame: u64, source_start_secs: f64)
         audio_effects: vec![],
         audio_effect_keyframes: Default::default(),
         shape: Default::default(),
+        varispeed: None,
     }
 }
 
@@ -187,4 +188,36 @@ fn a_wav_is_heard_and_lands_at_its_in_point() {
     assert!((start_of(&f0) - 1.0).abs() < TOL_SECS, "frame 0 starts at source {:.4}s, not 1.0s", start_of(&f0));
     let f48 = mix.get_frame_audio(48);
     assert!((secs_of(f48[0]) - 3.0).abs() < TOL_SECS, "frame 48 starts at source {:.4}s, not 3.0s", secs_of(f48[0]));
+}
+
+/// #642: a retimed clip's sound is read at its speed, so every frame's
+/// sound is the source moment its picture shows. At 2x a second of
+/// timeline is two of source; reversed, the clip walks back from its out
+/// point. The ramp says, sample by sample, which source moment it is.
+#[test]
+fn a_retimed_clip_is_heard_at_its_speed_both_ways() {
+    let Some(path) = ramp() else { return };
+    let read = |speed: f64, (source_in, source_out): (f64, f64)| {
+        let v = klipp_render::snapshot::VarispeedRead { speed, source_in, source_out, head_secs: 0.0 };
+        let frames = ((source_out - source_in) / speed.abs() * 24.0).round() as u64;
+        let mut c = clip(path.clone(), 0, frames, v.decode_from());
+        c.varispeed = Some(v);
+        AudioMixdown::new(&snapshot(24, 1, c)).unwrap()
+    };
+    // 2x over source 1..5: two seconds of timeline.
+    let mut fast = read(2.0, (1.0, 5.0));
+    let f24 = fast.get_frame_audio(24);
+    assert!((secs_of(f24[0]) - 3.0).abs() < TOL_SECS, "2x: frame 24 starts at source {:.4}s, not 3.0s", secs_of(f24[0]));
+    // Within the frame the source runs at twice the rate.
+    let step = secs_of(f24[200]) - secs_of(f24[0]);
+    assert!((step - 2.0 * 100.0 / RATE as f64).abs() < TOL_SECS, "2x: 100 samples moved {step:.5}s of source");
+    // Reversed over 1..5: frame 24 is a second back from 5.
+    let mut back = read(-1.0, (1.0, 5.0));
+    let b24 = back.get_frame_audio(24);
+    assert!((secs_of(b24[0]) - 4.0).abs() < TOL_SECS, "reversed: frame 24 starts at source {:.4}s, not 4.0s", secs_of(b24[0]));
+    assert!(secs_of(b24[200]) < secs_of(b24[0]), "reversed: the source runs backward within the frame");
+    // Half speed: frame 48 (2 s) is one second into the source.
+    let mut slow = read(0.5, (1.0, 3.0));
+    let s48 = slow.get_frame_audio(48);
+    assert!((secs_of(s48[0]) - 2.0).abs() < TOL_SECS, "0.5x: frame 48 starts at source {:.4}s, not 2.0s", secs_of(s48[0]));
 }
