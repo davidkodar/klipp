@@ -370,15 +370,6 @@ fn skin_candidate(c: Lab) -> bool {
         && !(h < 30.0 && ch > 35.0)
 }
 
-/// Measure an sRGB8 RGBA frame. `faces` are regions (x, y, w, h as
-/// fractions of the frame) known to be skin — the cheek band of a
-/// detected face, or where a skin search found one. They are read as
-/// they are, not filtered by hue: a face with the wrong colour is the
-/// thing we are looking for, and a hue gate would throw it away and
-/// report no face. Each is
-/// laid out as an 8×8 grid of patches and the patches that hold skin
-/// decide. The whole frame is read sub-sampled to about a quarter of a
-/// million pixels, so a 4K frame costs a few milliseconds.
 /// Which rail a pixel's picture sits on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rail {
@@ -412,7 +403,99 @@ pub fn at_rail(rgba: &[u8], w: usize, h: usize, x: usize, y: usize) -> Option<Ra
     (rail(around[n / 2]) == Some(own)).then_some(own)
 }
 
+/// The picture inside a frame's letterbox or pillarbox bars, as (x, y,
+/// width, height) in pixels: the whole frame when it has none (#647).
+///
+/// A portrait clip in a wide sequence comes with black bars either side,
+/// and measured with them it read "mid 0, 76.9% clipped at black", from
+/// which a match pushed exposure and lift up. A bar is an edge band,
+/// every line of it near black (no channel over 4 of 255) and at least
+/// 2% of the frame: a thinner dark edge is the picture's own, and a
+/// frame that is dark all over has no bars to find.
+pub fn picture_area(rgba: &[u8], width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    let whole = (0, 0, width, height);
+    if w < 16 || h < 16 || rgba.len() < w * h * 4 {
+        return whole;
+    }
+    let dark = |x: usize, y: usize| {
+        let p = (y * w + x) * 4;
+        rgba[p].max(rgba[p + 1]).max(rgba[p + 2]) <= 4
+    };
+    let col = |x: usize| (0..h).step_by((h / 256).max(1)).all(|y| dark(x, y));
+    let row = |y: usize| (0..w).step_by((w / 256).max(1)).all(|x| dark(x, y));
+    let (mut x0, mut x1, mut y0, mut y1) = (0, w, 0, h);
+    while x0 < w / 2 && col(x0) {
+        x0 += 1;
+    }
+    while x1 > x0 + 1 && col(x1 - 1) {
+        x1 -= 1;
+    }
+    while y0 < h / 2 && row(y0) {
+        y0 += 1;
+    }
+    while y1 > y0 + 1 && row(y1 - 1) {
+        y1 -= 1;
+    }
+    // Thinner than 2% of the frame: the picture's own dark edge.
+    if x0 < w / 50 {
+        x0 = 0;
+    }
+    if w - x1 < w / 50 {
+        x1 = w;
+    }
+    if y0 < h / 50 {
+        y0 = 0;
+    }
+    if h - y1 < h / 50 {
+        y1 = h;
+    }
+    // Next to nothing left: a dark frame, measured whole.
+    if (x1 - x0) < w / 5 || (y1 - y0) < h / 5 {
+        return whole;
+    }
+    (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32)
+}
+
+/// `rgba` cut to `area` (see [`picture_area`]).
+pub fn crop_rgba(rgba: &[u8], width: u32, area: (u32, u32, u32, u32)) -> Vec<u8> {
+    let (x, y, cw, ch) = (area.0 as usize, area.1 as usize, area.2 as usize, area.3 as usize);
+    let w = width as usize;
+    let mut out = Vec::with_capacity(cw * ch * 4);
+    for row in y..y + ch {
+        out.extend_from_slice(&rgba[(row * w + x) * 4..(row * w + x + cw) * 4]);
+    }
+    out
+}
+
+/// Measure an sRGB8 RGBA frame. `faces` are regions (x, y, w, h as
+/// fractions of the frame) known to be skin — the cheek band of a
+/// detected face, or where a skin search found one. They are read as
+/// they are, not filtered by hue: a face with the wrong colour is the
+/// thing we are looking for, and a hue gate would throw it away and
+/// report no face. Each is
+/// laid out as an 8×8 grid of patches and the patches that hold skin
+/// decide. The whole frame is read sub-sampled to about a quarter of a
+/// million pixels, so a 4K frame costs a few milliseconds.
+///
+/// Only the picture is measured: letterbox and pillarbox bars are left
+/// out (see [`picture_area`]), and `faces`, given on the whole frame,
+/// are moved into it.
 pub fn measure_frame(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> FrameMeasure {
+    let area = picture_area(rgba, width, height);
+    if area == (0, 0, width, height) {
+        return measure_picture(rgba, width, height, faces);
+    }
+    let (fw, fh) = (width as f32, height as f32);
+    let (ax, ay, aw, ah) = (area.0 as f32, area.1 as f32, area.2 as f32, area.3 as f32);
+    let moved: Vec<[f32; 4]> = faces
+        .iter()
+        .map(|f| [(f[0] * fw - ax) / aw, (f[1] * fh - ay) / ah, f[2] * fw / aw, f[3] * fh / ah])
+        .collect();
+    measure_picture(&crop_rgba(rgba, width, area), area.2, area.3, &moved)
+}
+
+fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> FrameMeasure {
     let (w, h) = (width as usize, height as usize);
     let total = w * h;
     let step = (total / 250_000).max(1);
@@ -1680,6 +1763,34 @@ mod tests {
         let crushed: Vec<u8> = (0..w * h).flat_map(|i| { let v = if i % 3 == 0 { 6u8 } else { 0 }; [v, v, v, 255] }).collect();
         let m = measure_frame(&crushed, w as u32, h as u32, &[]);
         assert!(m.clip_lo_pct > 50.0, "a crushed area still is: {}", m.clip_lo_pct);
+    }
+
+    /// #647: a frame with pillarbox or letterbox bars is measured as the
+    /// picture inside them; a dark picture, or a thin dark edge of its
+    /// own, is measured whole.
+    #[test]
+    fn bars_are_not_the_picture() {
+        let (w, h) = (160usize, 90usize);
+        // A mid-grey picture 60 wide, black bars either side.
+        let framed = |x0: usize, x1: usize, y0: usize, y1: usize, grey: u8| -> Vec<u8> {
+            (0..w * h).flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                let v = if x >= x0 && x < x1 && y >= y0 && y < y1 { grey } else { 0 };
+                [v, v, v, 255]
+            }).collect()
+        };
+        let pillar = framed(50, 110, 0, h, 120);
+        assert_eq!(picture_area(&pillar, w as u32, h as u32), (50, 0, 60, 90));
+        let boxed = measure_frame(&pillar, w as u32, h as u32, &[]);
+        let alone = measure_frame(&framed(0, w, 0, h, 120), w as u32, h as u32, &[]);
+        assert!((boxed.l_p50 - alone.l_p50).abs() < 0.5, "mid {} vs {}", boxed.l_p50, alone.l_p50);
+        assert!(boxed.clip_lo_pct < 0.5, "the bars are not crushed black: {}", boxed.clip_lo_pct);
+        let letter = framed(0, w, 12, 78, 120);
+        assert_eq!(picture_area(&letter, w as u32, h as u32), (0, 12, 160, 66));
+        // A one-pixel dark edge is the picture's own; an all-black frame
+        // has no bars.
+        assert_eq!(picture_area(&framed(1, w, 0, h, 120), w as u32, h as u32), (0, 0, 160, 90));
+        assert_eq!(picture_area(&framed(0, 0, 0, 0, 0), w as u32, h as u32), (0, 0, 160, 90));
     }
 
     #[test]
