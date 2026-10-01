@@ -1653,6 +1653,9 @@ fn tool_definitions() -> Vec<Value> {
               picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two, the linked sound with it.\n\
+              join {clip_id, side?} — close a through edit: the clip and the piece of the same shot on its \
+              side (next, default, or previous) made one again, its sound with it; name the false cut's \
+              own neighbours, as every edit of one film runs on in its file.\n\
               remove {clip_id, ripple?, linked?} — off the track, its linked sound or picture with it unless linked is false; with ripple the later clips close the gap; a linked ripple refuses different timeline ranges or a locked partner. Use ripple:false to leave later clips in place.\n\
               cut {from, to} — that stretch out of every unlocked track, linked halves split with it, everything after moved up: a text-based delete. Refused through a retimed clip.\n\
               move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
@@ -1834,6 +1837,9 @@ fn tool_definitions() -> Vec<Value> {
               picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
               track close up by the change (a head trim then keeps the clip's start).\n\
               split {clip_id, at} — into two, the linked sound with it.\n\
+              join {clip_id, side?} — close a through edit: the clip and the piece of the same shot on its \
+              side (next, default, or previous) made one again, its sound with it; name the false cut's \
+              own neighbours, as every edit of one film runs on in its file.\n\
               remove {clip_id, ripple?, linked?} — off the track, its linked sound or picture with it unless linked is false; with ripple the later clips close the gap; a linked ripple refuses different timeline ranges or a locked partner. Use ripple:false to leave later clips in place.\n\
               cut {from, to} — that stretch out of every unlocked track, linked halves split with it, everything after moved up: a text-based delete. Refused through a retimed clip.\n\
               move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \

@@ -8662,6 +8662,15 @@ impl TimelinePanel {
                     }
                 }
 
+                // Join Through Edit (#683): close a cut that is not one,
+                // such as a split, or a scene cut found on a flash.
+                for (next, label) in [(false, "Join with Previous"), (true, "Join with Next")] {
+                    if state.can_join_through_edit(clip_id, next) && ui.button(label).on_hover_text("Make this clip and that piece of the same shot one clip again, its sound with it").clicked() {
+                        cmds.push(AppCommand::JoinThroughEdit { clip_id, next });
+                        ui.close_menu();
+                    }
+                }
+
                 // Link/Unlink + Reveal Linked partner. The Reveal
                 // entry intentionally appears in BOTH the audio-side
                 // and video-side menus so a linked pair stays

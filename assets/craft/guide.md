@@ -305,6 +305,13 @@ exist until the plan runs.
   the later clips on the track close up by the change; a head trim
   then keeps the clip's start and shortens it from the front.
 - `split {clip_id, at}`: into two, the linked sound with it.
+- `join {clip_id, side?}`: a split undone later, or a scene cut found
+  where the shot did not change: the clip and the piece of the same shot
+  on its `side` ("next", the default, or "previous") made one again, its
+  sound with it, when that piece is the same file at the same speed and
+  the source runs on. Name the edit: after a scene split every edit of a
+  film runs on in its file, so join the clip either side of the false
+  cut, not any clip. The first piece's grade and effects carry the whole.
 - `remove {clip_id, ripple?, linked?}`: off the track, and its linked
   sound (or picture) with it unless `linked` is false; with ripple,
   later clips close the gap on each track. A ripple is refused when

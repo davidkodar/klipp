@@ -1458,3 +1458,15 @@ fn looks_batch_into_one_step() {
     assert_eq!(h.envelopes.lock().unwrap().len(), sent, "a refused batch sends nothing");
     let _ = std::fs::remove_file(&cube);
 }
+
+/// #685 review: detect_scene_cuts refuses, with the reason, what the app
+/// would refuse, rather than answering that it has started.
+#[test]
+fn detect_scene_cuts_refuses_what_the_app_would() {
+    let mut h = harness();
+    let clips = h.ok(json!({ "method": "list_clips" }));
+    let gap = clips["tracks"][0]["clips"][0]["clip_id"].as_str().unwrap().to_string();
+    let r = h.call(json!({ "method": "detect_scene_cuts", "clip_id": gap }));
+    assert_eq!(r["ok"], json!(false), "{r}");
+    assert!(r["error"].as_str().is_some_and(|e| e.contains("only a video clip")), "{r}");
+}
