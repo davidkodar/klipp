@@ -72,8 +72,12 @@ pub enum Registration {
     /// The assistant's program is not on this computer.
     NotInstalled,
     NotConnected,
-    /// Registered, running this command.
+    /// Registered for every project, running this command.
     Connected(String),
+    /// Registered only for these projects (Claude Code's local or project
+    /// scope, a checkout's `.mcp.json`): an assistant started elsewhere
+    /// does not have it.
+    ProjectsOnly(Vec<PathBuf>),
     /// Its settings could not be read.
     Unknown(String),
 }
@@ -118,7 +122,7 @@ pub fn registration(client: Client) -> Registration {
         Client::ClaudeCode => {
             let Some(home) = dirs::home_dir() else { return Registration::Unknown("no home directory".into()) };
             match std::fs::read_to_string(home.join(".claude.json")) {
-                Ok(text) => claude_registration(&text),
+                Ok(text) => claude_registration(&text, &|project| std::fs::read_to_string(project.join(".mcp.json")).ok()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registration::NotConnected,
                 Err(e) => Registration::Unknown(e.to_string()),
             }
@@ -131,14 +135,38 @@ pub fn registration(client: Client) -> Registration {
 }
 
 /// Klipp in Claude Code's settings (`~/.claude.json`): the user scope's
-/// servers, where Connect puts it.
-pub fn claude_registration(settings: &str) -> Registration {
+/// servers, where Connect puts it, first. Failing that, the projects
+/// Claude Code knows that have it for themselves: in their own entry (the
+/// local scope), or in the project's `.mcp.json` unless turned off there,
+/// read by `mcp_json`.
+pub fn claude_registration(settings: &str, mcp_json: &dyn Fn(&Path) -> Option<String>) -> Registration {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(settings) else {
         return Registration::Unknown("Claude Code's settings could not be read".into());
     };
-    match v.get("mcpServers").and_then(|s| s.get(SERVER_NAME)) {
-        Some(server) => Registration::Connected(server.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string()),
-        None => Registration::NotConnected,
+    if let Some(server) = v.get("mcpServers").and_then(|s| s.get(SERVER_NAME)) {
+        return Registration::Connected(server.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string());
+    }
+    let mut projects: Vec<PathBuf> = v
+        .get("projects")
+        .and_then(|p| p.as_object())
+        .into_iter()
+        .flatten()
+        .filter(|(path, entry)| {
+            let local = entry.get("mcpServers").and_then(|s| s.get(SERVER_NAME)).is_some();
+            let disabled = entry.get("disabledMcpjsonServers").and_then(|d| d.as_array()).is_some_and(|d| d.iter().any(|n| n.as_str() == Some(SERVER_NAME)));
+            let shared = !disabled
+                && mcp_json(Path::new(path))
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .is_some_and(|j| j.get("mcpServers").and_then(|s| s.get(SERVER_NAME)).is_some());
+            local || shared
+        })
+        .map(|(path, _)| PathBuf::from(path))
+        .collect();
+    projects.sort();
+    if projects.is_empty() {
+        Registration::NotConnected
+    } else {
+        Registration::ProjectsOnly(projects)
     }
 }
 
@@ -257,11 +285,28 @@ mod tests {
     /// Claude Code's user-scope servers, Codex's own listing.
     #[test]
     fn a_registration_is_read_from_the_assistants_settings() {
+        let none = |_: &Path| None;
         let claude = r#"{"numStartups": 3, "mcpServers": {"other": {"command": "x"}, "klipp": {"type": "stdio", "command": "/usr/bin/klipp-mcp", "args": []}}}"#;
-        assert_eq!(claude_registration(claude), Registration::Connected("/usr/bin/klipp-mcp".into()));
-        assert_eq!(claude_registration(r#"{"mcpServers": {"other": {}}}"#), Registration::NotConnected);
-        assert_eq!(claude_registration("{}"), Registration::NotConnected);
-        assert!(matches!(claude_registration("not json"), Registration::Unknown(_)));
+        assert_eq!(claude_registration(claude, &none), Registration::Connected("/usr/bin/klipp-mcp".into()));
+        assert_eq!(claude_registration(r#"{"mcpServers": {"other": {}}}"#, &none), Registration::NotConnected);
+        assert_eq!(claude_registration("{}", &none), Registration::NotConnected);
+        assert!(matches!(claude_registration("not json", &none), Registration::Unknown(_)));
+
+        // Only for some projects: one in its own entry (the local scope),
+        // one by its checkout's .mcp.json; not one that turned that off,
+        // nor one whose .mcp.json has other servers only.
+        let projects = r#"{"mcpServers": {}, "projects": {
+            "/home/u/klipp-cold": {"mcpServers": {"klipp": {"command": "/x/klipp-mcp"}}},
+            "/home/u/Klipp": {"mcpServers": {}, "disabledMcpjsonServers": []},
+            "/home/u/Off": {"mcpServers": {}, "disabledMcpjsonServers": ["klipp"]},
+            "/home/u/Other": {"mcpServers": {}}
+        }}"#;
+        let mcp_json = |p: &Path| match p.to_str() {
+            Some("/home/u/Klipp") | Some("/home/u/Off") => Some(r#"{"mcpServers": {"klipp": {"command": "./target/release/klipp-mcp"}}}"#.to_string()),
+            Some("/home/u/Other") => Some(r#"{"mcpServers": {"tona": {}}}"#.to_string()),
+            _ => None,
+        };
+        assert_eq!(claude_registration(projects, &mcp_json), Registration::ProjectsOnly(vec!["/home/u/Klipp".into(), "/home/u/klipp-cold".into()]));
 
         let codex = r#"[{"name": "agent_bridge", "transport": {"type": "stdio", "command": "python3"}}, {"name": "klipp", "transport": {"type": "stdio", "command": "/usr/lib/klipp/klipp-mcp"}}]"#;
         assert_eq!(codex_registration(codex), Registration::Connected("/usr/lib/klipp/klipp-mcp".into()));

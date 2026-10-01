@@ -46,6 +46,15 @@ pub struct PreferencesPanel {
     assistant: std::sync::Arc<std::sync::Mutex<AssistantConnect>>,
 }
 
+/// `path` with the home directory written `~`, as a person reads it.
+fn tilde(path: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(std::path::Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 /// What the Connect an assistant section shows (#625).
 #[derive(Default)]
 struct AssistantConnect {
@@ -2387,6 +2396,16 @@ impl PreferencesPanel {
                 Registration::Connected(cmd) if klipp_mcp.as_ref().is_some_and(|p| p.to_string_lossy() == cmd.as_str()) => ("Connected".to_string(), false, true),
                 Registration::Connected(cmd) => (format!("Connected to another klipp-mcp ({cmd})"), true, true),
                 Registration::Unknown(why) => (format!("Could not read its settings: {why}"), true, false),
+                // Only where a project registers it (#625): say which, and
+                // that Connect makes it every project's.
+                Registration::ProjectsOnly(projects) => {
+                    let named: Vec<String> = projects.iter().map(|p| tilde(p)).collect();
+                    let which = match named.as_slice() {
+                        [one] => format!("Connected in this project only: {one}"),
+                        many => format!("Connected in {} projects only: {}", many.len(), many.join(", ")),
+                    };
+                    (format!("{which}. Connect adds it for every project."), true, false)
+                }
             };
             let client = *client;
             Self::setting_row_with_subtitle(ui, client.name(), &state, theme, |ui| {
