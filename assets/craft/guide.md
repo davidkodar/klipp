@@ -315,6 +315,17 @@ exist until the plan runs.
   the later clips on the track close up by the change; a head trim
   then keeps the clip's start and shortens it from the front.
 - `split {clip_id, at}`: into two, the linked sound with it.
+- `slip {clip_id, secs}`: what a clip shows moved, not the clip: its
+  source in and out both by `secs`, later in the file for positive, the
+  timeline untouched, its grade and id kept. Its linked sound slips by as
+  much through its own range, so a J or L cut stays one. Refused past
+  either end of the file, the sound's included.
+- `slide {clip_id, secs}`: the clip moved along the timeline between its
+  neighbours, its picture and length unchanged: the clip before it gets
+  `secs` longer (later for positive) and the clip after it that much
+  shorter, so nothing else moves. Its sound and theirs go with it; one
+  undo step. Refused where a neighbour would run out of its file or of
+  its length; a clip touching nothing either side is moved, not slid.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its
