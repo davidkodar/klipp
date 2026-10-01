@@ -3680,7 +3680,9 @@ pub enum AppEvent {
 
     // Point tracking
     TrackingProgress { clip_id: ClipId, progress: f32 },
-    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize },
+    /// `motion`: a window track's (scale, degrees) on each frame of
+    /// `positions` (#238); empty for a point track.
+    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)> },
     TrackingFailed { clip_id: ClipId, error: String },
 
     // Audio sync (#61)

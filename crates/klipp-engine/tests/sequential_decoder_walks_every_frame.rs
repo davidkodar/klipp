@@ -168,3 +168,29 @@ fn a_file_with_fewer_frames_than_it_declares_is_an_error() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// #238: a walk can start part way into a file. After `seek_to` the first
+/// frame handed back is the one shown then — not the keyframe the seek
+/// landed on, nor the one after — and the walk goes on to the end, which
+/// is not an error for being short of the file's count.
+#[test]
+fn a_walk_started_part_way_begins_at_the_frame_asked_for() {
+    for (label, src) in [("hevc", hevc_ramp()), ("ffv1", ramp("ffv1", &["-c:v", "ffv1"], "mkv"))] {
+        let Some(src) = src else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let (all, _) = walk(&src);
+        // The ramp is 25 frames a second; frame 23 is long after the
+        // first keyframe and before the next one in the HEVC file.
+        for at in [0usize, 7, 23, N - 1] {
+            let mut dec = SequentialFrameDecoder::open(&src, W).expect("open");
+            dec.seek_to(at as f64 / 25.0).expect("seek");
+            let mut greys = Vec::new();
+            while let Some((rgba, w, h)) = dec.next_frame().unwrap_or_else(|e| panic!("{label} from {at}: {e}")) {
+                greys.push(rgba[((h / 2 * w + w / 2) * 4) as usize]);
+            }
+            assert_eq!(greys, all[at..], "{label}: a walk from frame {at} is the rest of the file, from that frame");
+        }
+    }
+}

@@ -317,6 +317,83 @@ pub enum MaskShape {
     },
 }
 
+/// A window's tracked motion at one moment (#238): its pivot moved by
+/// `dx`, `dy` (frame fractions), and the window scaled by `scale` and
+/// turned `rotation` degrees clockwise about it, on the picture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowMotion {
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+    pub rotation: f32,
+}
+
+impl WindowMotion {
+    /// Where the point `p` (frame fractions) on the moved window was on
+    /// the window before the motion, about `pivot`, on a frame `aspect`
+    /// tall: the inverse of what [`MaskShape::moved`] does to a point.
+    pub fn undo(self, p: (f32, f32), pivot: (f32, f32), aspect: f32) -> (f32, f32) {
+        let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 9.0 / 16.0 };
+        let scale = if self.scale.abs() > 1e-6 { self.scale } else { 1.0 };
+        let (sin, cos) = self.rotation.to_radians().sin_cos();
+        let (ux, uy) = (p.0 - pivot.0 - self.dx, (p.1 - pivot.1 - self.dy) * aspect);
+        let (rx, ry) = ((ux * cos + uy * sin) / scale, (-ux * sin + uy * cos) / scale);
+        (pivot.0 + rx, pivot.1 + ry / aspect)
+    }
+}
+
+impl MaskShape {
+    /// The point the window tracker moves the shape by and turns and
+    /// scales it about: a circle's or rectangle's centre, a gradient's
+    /// midpoint, a free shape's centroid.
+    pub fn pivot(&self) -> (f32, f32) {
+        match self {
+            MaskShape::Circle { center_x, center_y, .. } | MaskShape::Rectangle { center_x, center_y, .. } => (*center_x, *center_y),
+            MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5),
+            MaskShape::Bezier { points } if !points.is_empty() => {
+                let n = points.len() as f32;
+                (points.iter().map(|p| p.0).sum::<f32>() / n, points.iter().map(|p| p.1).sum::<f32>() / n)
+            }
+            MaskShape::Bezier { .. } => (0.5, 0.5),
+        }
+    }
+
+    /// This shape moved by `m` on a frame `aspect` (height over width)
+    /// tall. Points — a gradient's ends, a free shape's corners — move as
+    /// the picture does, the turn taken in pixels, so a turn does not
+    /// shear them on a wide frame. A circle's radius and a rectangle's
+    /// size scale; a rectangle's own angle takes the turn.
+    pub fn moved(&self, m: WindowMotion, aspect: f32) -> MaskShape {
+        let (px, py) = self.pivot();
+        let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 9.0 / 16.0 };
+        let (sin, cos) = m.rotation.to_radians().sin_cos();
+        // In frame-width units both ways, where a turn is a turn.
+        let point = |x: f32, y: f32| -> (f32, f32) {
+            let (ux, uy) = (x - px, (y - py) * aspect);
+            let (rx, ry) = (m.scale * (ux * cos - uy * sin), m.scale * (ux * sin + uy * cos));
+            (px + m.dx + rx, py + m.dy + ry / aspect)
+        };
+        match self {
+            MaskShape::Circle { center_x, center_y, radius } => {
+                MaskShape::Circle { center_x: center_x + m.dx, center_y: center_y + m.dy, radius: radius * m.scale }
+            }
+            MaskShape::Rectangle { center_x, center_y, width, height, rotation } => MaskShape::Rectangle {
+                center_x: center_x + m.dx,
+                center_y: center_y + m.dy,
+                width: width * m.scale,
+                height: height * m.scale,
+                rotation: rotation + m.rotation,
+            },
+            MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                let (sx, sy) = point(*start_x, *start_y);
+                let (ex, ey) = point(*end_x, *end_y);
+                MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey }
+            }
+            MaskShape::Bezier { points } => MaskShape::Bezier { points: points.iter().map(|&(x, y)| point(x, y)).collect() },
+        }
+    }
+}
+
 /// Keyframe tracks for animating mask parameters over time.
 /// Each `Vec<Keyframe>` is empty by default (static mask). When non-empty,
 /// the keyframes override the corresponding static parameter at render time.
@@ -350,6 +427,21 @@ pub struct MaskKeyframes {
     /// LinearGradient end_y
     #[serde(default)]
     pub end_y: Vec<Keyframe>,
+    /// The window's tracked motion (#238), written by the window tracker:
+    /// how far its pivot (see [`MaskShape::pivot`]) has moved, in frame
+    /// fractions, and how much it has grown and turned, about that pivot,
+    /// on the picture itself. Applied to any shape after its own
+    /// keyframes, so a window can be tracked and still be reshaped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_x: Vec<Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_y: Vec<Keyframe>,
+    /// A factor: 1 is the size the window was drawn at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_scale: Vec<Keyframe>,
+    /// Degrees, clockwise on the picture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_rotation: Vec<Keyframe>,
 }
 
 impl MaskKeyframes {
@@ -367,6 +459,20 @@ impl MaskKeyframes {
             && self.start_y.is_empty()
             && self.end_x.is_empty()
             && self.end_y.is_empty()
+            && !self.is_tracked()
+    }
+
+    /// Whether the window tracker drives this window (#238).
+    pub fn is_tracked(&self) -> bool {
+        !(self.track_x.is_empty() && self.track_y.is_empty() && self.track_scale.is_empty() && self.track_rotation.is_empty())
+    }
+
+    /// Take the tracked motion off.
+    pub fn clear_track(&mut self) {
+        self.track_x.clear();
+        self.track_y.clear();
+        self.track_scale.clear();
+        self.track_rotation.clear();
     }
 
     /// Get a mutable reference to the keyframe track for a given parameter name.
@@ -384,6 +490,10 @@ impl MaskKeyframes {
             "start_y" => Some(&mut self.start_y),
             "end_x" => Some(&mut self.end_x),
             "end_y" => Some(&mut self.end_y),
+            "track_x" => Some(&mut self.track_x),
+            "track_y" => Some(&mut self.track_y),
+            "track_scale" => Some(&mut self.track_scale),
+            "track_rotation" => Some(&mut self.track_rotation),
             _ => None,
         }
     }
@@ -403,6 +513,10 @@ impl MaskKeyframes {
             "start_y" => Some(&self.start_y),
             "end_x" => Some(&self.end_x),
             "end_y" => Some(&self.end_y),
+            "track_x" => Some(&self.track_x),
+            "track_y" => Some(&self.track_y),
+            "track_scale" => Some(&self.track_scale),
+            "track_rotation" => Some(&self.track_rotation),
             _ => None,
         }
     }
@@ -516,6 +630,27 @@ impl Mask {
         result
     }
 
+    /// [`Self::evaluated_at`], then the window's tracked motion (#238)
+    /// applied, on a frame `aspect` (height over width) tall: what is
+    /// drawn at `time_secs`.
+    pub fn evaluated_in(&self, time_secs: f64, aspect: f32) -> Mask {
+        let mut m = self.evaluated_at(time_secs);
+        if let Some(motion) = self.track_at(time_secs) {
+            m.shape = m.shape.moved(motion, aspect);
+        }
+        m
+    }
+
+    /// The tracked motion at `time_secs`, if the window is tracked.
+    pub fn track_at(&self, time_secs: f64) -> Option<WindowMotion> {
+        let k = &self.keyframes;
+        if !k.is_tracked() {
+            return None;
+        }
+        let at = |track: &Vec<Keyframe>, rest: f32| if track.is_empty() { rest } else { keyframe::evaluate(track, time_secs, rest) };
+        Some(WindowMotion { dx: at(&k.track_x, 0.0), dy: at(&k.track_y, 0.0), scale: at(&k.track_scale, 1.0), rotation: at(&k.track_rotation, 0.0) })
+    }
+
     /// Get the current static value of a named parameter.
     pub fn param_value(&self, param: &str) -> Option<f32> {
         match param {
@@ -563,6 +698,15 @@ impl MaskStack {
     /// Returns true if any mask in the stack has keyframes.
     pub fn has_keyframes(&self) -> bool {
         self.masks.iter().any(|m| !m.keyframes.is_empty())
+    }
+
+    /// [`Mask::evaluated_in`] for every mask: what is drawn at
+    /// `time_secs` on a frame `aspect` (height over width) tall.
+    pub fn evaluated_in(&self, time_secs: f64, aspect: f32) -> MaskStack {
+        if !self.has_keyframes() {
+            return self.clone();
+        }
+        MaskStack { masks: self.masks.iter().map(|m| m.evaluated_in(time_secs, aspect)).collect() }
     }
 
     /// Evaluate all mask keyframes at the given time and return a new stack
@@ -704,5 +848,63 @@ impl Default for LayerMixerInput {
             opacity: 1.0,
             blend_mode: crate::types::BlendMode::Normal,
         }
+    }
+}
+
+#[cfg(test)]
+mod window_motion_tests {
+    use super::*;
+
+    fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4
+    }
+
+    /// #238: a tracked window moves, grows and turns about its pivot,
+    /// and a turn is a turn on the picture, not in frame fractions.
+    #[test]
+    fn a_tracked_window_moves_scales_and_turns_on_the_picture() {
+        let aspect = 9.0 / 16.0;
+        let m = WindowMotion { dx: 0.1, dy: -0.05, scale: 2.0, rotation: 90.0 };
+        let MaskShape::Circle { center_x, center_y, radius } = (MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.1 }).moved(m, aspect) else { panic!() };
+        assert!(close((center_x, center_y), (0.6, 0.45)) && (radius - 0.2).abs() < 1e-6);
+        let MaskShape::Rectangle { width, height, rotation, .. } =
+            (MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.1, rotation: 10.0 }).moved(m, aspect)
+        else {
+            panic!()
+        };
+        assert!((width - 0.4).abs() < 1e-6 && (height - 0.2).abs() < 1e-6 && (rotation - 100.0).abs() < 1e-4);
+        // A gradient across the frame, turned a quarter clockwise about its
+        // middle and doubled: on a 16:9 picture its end 0.1 of the width
+        // right of the middle lands 0.2 of the width (0.356 of the height)
+        // below it.
+        let g = MaskShape::LinearGradient { start_x: 0.4, start_y: 0.5, end_x: 0.6, end_y: 0.5 };
+        let MaskShape::LinearGradient { start_x, start_y, end_x, end_y } = g.moved(WindowMotion { dx: 0.0, dy: 0.0, scale: 2.0, rotation: 90.0 }, aspect) else { panic!() };
+        assert!(close((end_x, end_y), (0.5, 0.5 + 0.2 / aspect)), "{end_x} {end_y}");
+        assert!(close((start_x, start_y), (0.5, 0.5 - 0.2 / aspect)));
+        // A free shape moves with its centroid.
+        let b = MaskShape::Bezier { points: vec![(0.4, 0.4), (0.6, 0.4), (0.5, 0.6)] };
+        let MaskShape::Bezier { points } = b.moved(WindowMotion { dx: 0.1, dy: 0.2, scale: 1.0, rotation: 0.0 }, aspect) else { panic!() };
+        assert!(close(points[0], (0.5, 0.6)) && close(points[2], (0.6, 0.8)));
+        // And a point on the moved window goes back where it was.
+        let m = WindowMotion { dx: 0.05, dy: -0.02, scale: 1.4, rotation: 33.0 };
+        let MaskShape::Bezier { points: moved } = (MaskShape::Bezier { points: vec![(0.3, 0.2), (0.7, 0.3), (0.5, 0.8)] }).moved(m, aspect) else { panic!() };
+        let pivot = (0.5, 0.4333333);
+        assert!(close(m.undo(moved[1], pivot, aspect), (0.7, 0.3)), "{:?}", m.undo(moved[1], pivot, aspect));
+    }
+
+    /// The motion is keyframed, evaluated with the rest, and the window
+    /// untracked draws as it did.
+    #[test]
+    fn a_window_draws_where_its_track_says_at_each_moment() {
+        let mut m = Mask { shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.1 }, ..Mask::default() };
+        assert_eq!(m.evaluated_in(1.0, 0.5625), m);
+        let key = |t: f64, v: f32| crate::keyframe::Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        m.keyframes.track_x = vec![key(0.0, 0.0), key(1.0, 0.2)];
+        m.keyframes.track_scale = vec![key(0.0, 1.0), key(1.0, 1.5)];
+        assert!(m.keyframes.is_tracked() && !m.keyframes.is_empty());
+        let MaskShape::Circle { center_x, radius, .. } = m.evaluated_in(1.0, 0.5625).shape else { panic!() };
+        assert!((center_x - 0.7).abs() < 1e-5 && (radius - 0.15).abs() < 1e-5);
+        m.keyframes.clear_track();
+        assert!(!m.keyframes.is_tracked());
     }
 }

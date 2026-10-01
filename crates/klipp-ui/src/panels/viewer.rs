@@ -3252,7 +3252,11 @@ impl ViewerPanel {
             // arms below capture this evaluated shape as
             // initial_shape so drag math operates on the same
             // coordinate frame the user is looking at.
-            let mask_owned = raw_mask.evaluated_at(clip_time_secs);
+            // A tracked window is drawn where its track has it (#238);
+            // a drag edits it as drawn on its reference frame, so the
+            // handles' start shape is the untracked one.
+            let untracked_shape = raw_mask.evaluated_at(clip_time_secs).shape;
+            let mask_owned = raw_mask.evaluated_in(clip_time_secs, ih / iw.max(1.0));
             let mask = &mask_owned;
 
             match &mask.shape {
@@ -3317,7 +3321,7 @@ impl ViewerPanel {
                                         node_id,
                                         mask_index: mask_idx,
                                         handle: handle_kind,
-                                        initial_shape: mask.shape.clone(),
+                                        initial_shape: untracked_shape.clone(),
                                         drag_start_pos: pos,
                                     });
                                 }
@@ -3395,7 +3399,7 @@ impl ViewerPanel {
                                         node_id,
                                         mask_index: mask_idx,
                                         handle: handle_kind,
-                                        initial_shape: mask.shape.clone(),
+                                        initial_shape: untracked_shape.clone(),
                                         drag_start_pos: pos,
                                     });
                                 }
@@ -3459,7 +3463,7 @@ impl ViewerPanel {
                                         node_id,
                                         mask_index: mask_idx,
                                         handle: handle_kind,
-                                        initial_shape: mask.shape.clone(),
+                                        initial_shape: untracked_shape.clone(),
                                         drag_start_pos: pos,
                                     });
                                 }
@@ -3522,7 +3526,7 @@ impl ViewerPanel {
                                             node_id,
                                             mask_index: mask_idx,
                                             handle: MaskHandle::BezierPoint(pi),
-                                            initial_shape: mask.shape.clone(),
+                                            initial_shape: untracked_shape.clone(),
                                             drag_start_pos: pos,
                                         });
                                     }
@@ -3602,6 +3606,22 @@ impl ViewerPanel {
             // Check if pointer is still down
             let pointer_down = ui.input(|i| i.pointer.any_down());
             let current_pos = ui.input(|i| i.pointer.interact_pos()).unwrap_or(drag_start);
+            // On a tracked window (#238), the pointer is where the window
+            // is now; the edit is to the window as drawn on its reference
+            // frame, so both ends of the drag are taken back through the
+            // track.
+            let (drag_start, current_pos) = match masks.masks.get(drag_mask_idx).and_then(|m| m.track_at(clip_time_secs)) {
+                Some(motion) => {
+                    let pivot = initial_shape.pivot();
+                    let back = |p: egui::Pos2| {
+                        let n = ((p.x - image_rect.min.x) / iw, (p.y - image_rect.min.y) / ih);
+                        let (x, y) = motion.undo(n, pivot, ih / iw.max(1.0));
+                        egui::pos2(image_rect.min.x + x * iw, image_rect.min.y + y * ih)
+                    };
+                    (back(drag_start), back(current_pos))
+                }
+                None => (drag_start, current_pos),
+            };
 
             if pointer_down {
                 let dx_norm = (current_pos.x - drag_start.x) / iw;
