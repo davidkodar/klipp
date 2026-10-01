@@ -28450,6 +28450,18 @@ fn upload_texture_deferred(
     image: egui::ColorImage,
     options: egui::TextureOptions,
 ) {
+    // Nothing to show — the engine reset with no project, a frame of no
+    // size: the old picture goes, and no texture is made. A zero-size
+    // one fails in wgpu, and every redraw that binds it after is another
+    // validation error, until GPU effects are switched off for the
+    // session (#645).
+    if image.size[0] == 0 || image.size[1] == 0 {
+        if let Some(old) = slot.take() {
+            tracing::debug!("TEX_DEFER_DROP id={:?} name={} reason=empty", old.id(), name);
+            deferred_drops.push(old);
+        }
+        return;
+    }
     let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
     match slot {
         Some(tex) if tex.size_vec2() == new_size => {
@@ -43251,5 +43263,31 @@ mod engine_send_tests {
         }
         assert!(sent > 100, "the scan found only {sent} sends: has the field been renamed?");
         assert!(astray.is_empty(), "sent to the engine, which does nothing with them — send them through send_commands:\n{}", astray.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod empty_texture_tests {
+    use super::upload_texture_deferred;
+
+    /// #645: an empty frame — the engine reset with no project — takes the
+    /// old picture away and makes no texture. A zero-size one failed in
+    /// wgpu and every redraw after was a validation error, until GPU
+    /// effects were switched off for the session.
+    #[test]
+    fn an_empty_frame_clears_the_picture_and_makes_no_texture() {
+        let ctx = egui::Context::default();
+        let mut slot = None;
+        let mut drops = Vec::new();
+        let image = |w: usize, h: usize| egui::ColorImage { size: [w, h], pixels: vec![egui::Color32::BLACK; w * h] };
+        upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(4, 2), egui::TextureOptions::LINEAR);
+        assert!(slot.is_some());
+        let before = ctx.tex_manager().read().allocated().count();
+        upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(0, 0), egui::TextureOptions::LINEAR);
+        assert!(slot.is_none(), "the old picture is gone");
+        assert_eq!(drops.len(), 1, "dropped after the frame that may still bind it");
+        assert_eq!(ctx.tex_manager().read().allocated().count(), before, "no texture made for nothing");
+        upload_texture_deferred(&ctx, &mut slot, &mut drops, "t", image(4, 2), egui::TextureOptions::LINEAR);
+        assert!(slot.is_some(), "the next real frame shows");
     }
 }
