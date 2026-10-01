@@ -65,6 +65,26 @@ Options:
 static STARTUP_PATHS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
 
 /// The paths to open at startup, given before the app is made.
+/// When this process was started as a transcription worker (#640), run
+/// the job and give the exit code; `None` for a normal start. Checked
+/// first, before anything of the app's is set up.
+pub fn transcription_worker() -> Option<i32> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(klipp_analysis::transcript::WORKER_FLAG)) {
+        return None;
+    }
+    let spec = args.next().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+    Some(klipp_analysis::transcript::worker_main(&spec))
+}
+
+/// Run transcriptions in a worker of this executable, so a crash in
+/// whisper.cpp ends the worker and not the editor (#640).
+pub fn use_transcription_worker() {
+    if let Ok(exe) = std::env::current_exe() {
+        klipp_analysis::transcript::run_in_worker(exe);
+    }
+}
+
 pub fn set_startup_paths(paths: Vec<PathBuf>) {
     let _ = STARTUP_PATHS.set(paths);
 }

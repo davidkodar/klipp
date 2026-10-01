@@ -418,7 +418,7 @@ impl crate::Analyser for TranscriptAnalyser {
             let t = Transcript { duration_secs: item.duration.to_secs_f64(), model: model_id.into(), vocabulary: words, vad: vad_model_path().is_some(), ..Default::default() };
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
-        let mut transcript = transcribe(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
+        let mut transcript = transcribe_safely(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
         // The sound analyser has already found where the file is silent;
         // words whisper places there are its invention, whatever it
         // thinks of them.
@@ -451,7 +451,7 @@ impl crate::Analyser for TranscriptAnalyser {
 /// called through a half-written vtable. Whoever gets here second now
 /// either waits for the first load and then finds it, or finds it
 /// already there.
-type Cached = (String, bool, std::sync::Arc<whisper_rs::WhisperContext>);
+type Cached = (String, bool, bool, std::sync::Arc<whisper_rs::WhisperContext>);
 static CONTEXTS: std::sync::Mutex<Vec<Cached>> = std::sync::Mutex::new(Vec::new());
 
 /// Let the weights go. Called when the analysis queue drains: holding
@@ -466,7 +466,191 @@ pub fn release_models() {
     }
 }
 
-fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+/// The program transcriptions run in, apart from the app (#640): set by
+/// the app to its own executable, which answers [`WORKER_FLAG`].
+static WORKER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The argument that makes the app's executable a transcription worker.
+pub const WORKER_FLAG: &str = "--transcribe-worker";
+
+/// Run transcriptions in `exe`, started with [`WORKER_FLAG`], rather than
+/// in this process (#640).
+///
+/// whisper.cpp stops the whole process on an assertion of its own, which
+/// nothing in Rust can catch: its word alignment (DTW) aborts on a decode
+/// pass of 150 ms or less, which quiet sound makes, and took the editor
+/// down with it — on every open of a project holding such a clip, since
+/// analysis runs again then. In a worker only the worker goes.
+pub fn run_in_worker(exe: std::path::PathBuf) {
+    let _ = WORKER.set(exe);
+}
+
+/// What a worker is asked to do; the sound comes on its standard input,
+/// 16 kHz mono f32, little-endian.
+#[derive(Serialize, Deserialize)]
+struct WorkerJob {
+    model_id: String,
+    model: std::path::PathBuf,
+    duration_secs: f64,
+    words: Vec<String>,
+    /// Word times by alignment (DTW), or the segments' own.
+    aligned: bool,
+    on_cpu: bool,
+}
+
+/// A worker's answer, on its standard output.
+#[derive(Serialize, Deserialize)]
+enum WorkerReply {
+    Done(Box<Transcript>),
+    Failed(String),
+}
+
+/// One worker at a time: each loads the model itself, half a gigabyte
+/// of it onto the GPU, where the app's own cache shared one.
+static ONE_WORKER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`transcribe`] where a crash in whisper.cpp cannot take the app with
+/// it (#640): in the worker when there is one, and again without word
+/// alignment when the worker dies, its segments' times standing in for
+/// the words'. In this process when no worker is set — a test, a tool.
+fn transcribe_safely(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+    match WORKER.get() {
+        Some(exe) => transcribe_in(exe, model_id, model, audio, duration_secs, words),
+        None => transcribe(model_id, model, audio, duration_secs, words, true),
+    }
+}
+
+/// [`transcribe_safely`] in the worker `exe`.
+fn transcribe_in(exe: &std::path::Path, model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String]) -> Result<Transcript, String> {
+    let _one = ONE_WORKER.lock().unwrap_or_else(|e| e.into_inner());
+    let job = |aligned: bool| WorkerJob { model_id: model_id.into(), model: model.into(), duration_secs, words: words.to_vec(), aligned, on_cpu: transcribe_on_cpu() };
+    match run_worker(exe, &job(true), audio) {
+        Ok(reply) => reply,
+        Err(died) => {
+            tracing::warn!("transcription stopped in its worker ({died}); running it again without word alignment");
+            match run_worker(exe, &job(false), audio) {
+                Ok(reply) => reply,
+                Err(died) => Err(format!("transcription stopped in its worker twice ({died})")),
+            }
+        }
+    }
+}
+
+/// The executable to start: `exe`, or, when the app was upgraded while
+/// running and its own file was replaced, the new one at the same path
+/// (Linux names the old one "<path> (deleted)").
+fn worker_exe(exe: &std::path::Path) -> std::path::PathBuf {
+    if exe.exists() {
+        return exe.to_path_buf();
+    }
+    let s = exe.to_string_lossy();
+    match s.strip_suffix(" (deleted)") {
+        Some(live) => std::path::PathBuf::from(live),
+        None => exe.to_path_buf(),
+    }
+}
+
+/// How long a worker may take on `audio_secs` of sound before it is
+/// taken for hung and stopped: the CPU transcribes in about a third of
+/// the sound's length, so this is generous.
+fn worker_deadline(audio_secs: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64((audio_secs * 2.0).max(0.0) + 120.0)
+}
+
+/// Run one job in a worker: its reply — a reported failure among them,
+/// a worker that hung and an answer that could not be read — or why the
+/// worker died.
+fn run_worker(exe: &std::path::Path, job: &WorkerJob, audio: &[f32]) -> Result<Result<Transcript, String>, String> {
+    use std::io::{Read, Write};
+    let spec = serde_json::to_string(job).map_err(|e| e.to_string())?;
+    let exe = worker_exe(exe);
+    let mut child = std::process::Command::new(&exe)
+        .arg(WORKER_FLAG)
+        .arg(spec)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+    // The sound written, and the answers read, each on a thread of its
+    // own: a worker that fills one pipe while we wait on another would
+    // otherwise wait on us as we wait on it.
+    let bytes: Vec<u8> = audio.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut input = child.stdin.take().ok_or("no input to the worker")?;
+    let writer = std::thread::spawn(move || {
+        let _ = input.write_all(&bytes);
+    });
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + worker_deadline(audio.len() as f64 / 16000.0);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                return Ok(Err(format!("transcription did not finish in {} s and was stopped", worker_deadline(audio.len() as f64 / 16000.0).as_secs())));
+            }
+            Err(e) => return Err(format!("the worker: {e}")),
+        }
+    };
+    let _ = writer.join();
+    let (out, err) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    if !status.success() {
+        let said = String::from_utf8_lossy(&err);
+        let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        return Err(format!("{status}{}", if last.is_empty() { String::new() } else { format!(": {last}") }));
+    }
+    match serde_json::from_slice::<WorkerReply>(&out) {
+        Ok(WorkerReply::Done(t)) => Ok(Ok(*t)),
+        Ok(WorkerReply::Failed(why)) => Ok(Err(why)),
+        // A worker of another version — the app upgraded while it ran —
+        // may answer in a shape this one does not read; running it again
+        // would not change that.
+        Err(e) => Ok(Err(format!("the transcription worker's answer could not be read ({e}); if Klipp was just updated, restart it"))),
+    }
+}
+
+/// A transcription worker's whole life (#640): the job named in `spec`,
+/// on the sound on standard input, its reply on standard output. Returns
+/// the exit code; a crash in whisper.cpp ends it before that.
+pub fn worker_main(spec: &str) -> i32 {
+    use std::io::{Read, Write};
+    let reply = (|| -> Result<Transcript, String> {
+        let job: WorkerJob = serde_json::from_str(spec).map_err(|e| format!("the job: {e}"))?;
+        let mut bytes = Vec::new();
+        std::io::stdin().read_to_end(&mut bytes).map_err(|e| format!("the sound: {e}"))?;
+        let audio: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        set_transcribe_on_cpu(job.on_cpu);
+        transcribe(&job.model_id, &job.model, &audio, job.duration_secs, &job.words, job.aligned)
+    })();
+    let reply = match reply {
+        Ok(t) => WorkerReply::Done(Box::new(t)),
+        Err(e) => WorkerReply::Failed(e),
+    };
+    let text = serde_json::to_vec(&reply).unwrap_or_default();
+    let mut out = std::io::stdout().lock();
+    if out.write_all(&text).and_then(|_| out.flush()).is_err() {
+        return 1;
+    }
+    0
+}
+
+/// Transcribe `audio`. `aligned`: word times from the model's alignment
+/// heads (DTW); without, the timestamp tokens' — rougher, and what a
+/// worker falls back to when alignment brought whisper.cpp down (#640).
+fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_secs: f64, words: &[String], aligned: bool) -> Result<Transcript, String> {
     use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
     whisper_rs::install_logging_hooks();
     let mut cparams = WhisperContextParameters::default();
@@ -483,11 +667,13 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
         "whisper_large_v3_turbo_q5" => DtwModelPreset::LargeV3Turbo,
         _ => DtwModelPreset::Base,
     };
-    cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+    if aligned {
+        cparams.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+    }
     let ctx = {
         let mut cache = CONTEXTS.lock().unwrap_or_else(|e| e.into_inner());
-        match cache.iter().find(|(id, gpu, _)| id == model_id && *gpu == on_gpu) {
-            Some((_, _, ctx)) => ctx.clone(),
+        match cache.iter().find(|(id, gpu, dtw, _)| id == model_id && *gpu == on_gpu && *dtw == aligned) {
+            Some((_, _, _, ctx)) => ctx.clone(),
             None => {
                 let t = std::time::Instant::now();
                 let built = match WhisperContext::new_with_params(model, cparams) {
@@ -500,14 +686,16 @@ fn transcribe(model_id: &str, model: &std::path::Path, audio: &[f32], duration_s
                         tracing::warn!("whisper could not start on the GPU ({e}); running on the CPU");
                         let mut cpu = WhisperContextParameters::default();
                         cpu.use_gpu(false);
-                        cpu.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+                        if aligned {
+                            cpu.dtw_parameters(DtwParameters { mode: DtwMode::ModelPreset { model_preset: preset() }, ..Default::default() });
+                        }
                         WhisperContext::new_with_params(model, cpu).map_err(|e| format!("whisper model: {e}"))?
                     }
                     Err(e) => return Err(format!("whisper model: {e}")),
                 };
                 tracing::info!("loaded whisper model {model_id} in {:.1} s", t.elapsed().as_secs_f64());
                 let ctx = std::sync::Arc::new(built);
-                cache.push((model_id.to_string(), on_gpu, ctx.clone()));
+                cache.push((model_id.to_string(), on_gpu, aligned, ctx.clone()));
                 ctx
             }
         }
@@ -887,5 +1075,52 @@ mod tests {
         assert!(hallucinated_spans(&talk).is_empty());
         let stuck = vec![seg(0.0, "One"), seg(2.0, "Two"), seg(4.0, "Two"), seg(6.0, "Two"), seg(8.0, "Three"), seg(10.0, "Four"), seg(12.0, "Five"), seg(14.0, "Six")];
         assert_eq!(hallucinated_spans(&stuck).len(), 3);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod worker_tests {
+    use super::*;
+
+    /// A stand-in worker: it reads the sound, then aborts as whisper.cpp's
+    /// DTW assertion does when asked for aligned word times, and answers
+    /// with a transcript when not (#640).
+    fn fake_worker(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let reply = serde_json::to_string(&WorkerReply::Done(Box::new(Transcript { duration_secs: 2.0, model: "fake".into(), ..Default::default() }))).unwrap();
+        let script = dir.join("worker.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncat > /dev/null\ncase \"$2\" in *'\"aligned\":true'*) echo 'GGML_ASSERT(filter_width < a->ne[2]) failed' >&2; kill -ABRT $$;; esac\nprintf '%s' '{reply}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    /// #640: a worker that dies on the aligned pass is run again without
+    /// word alignment, and the editor gets its transcript; one that dies
+    /// both times is an error, not a crash.
+    #[test]
+    fn a_worker_that_aborts_is_run_again_without_alignment() {
+        let dir = std::env::temp_dir().join(format!("klipp-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let worker = fake_worker(&dir);
+        let audio = vec![0.0f32; 32000];
+        let t = transcribe_in(&worker, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[]).expect("a transcript after the second run");
+        assert_eq!(t.model, "fake");
+
+        let dead = dir.join("dead.sh");
+        std::fs::write(&dead, "#!/bin/sh\ncat > /dev/null\nkill -ABRT $$\n").unwrap();
+        std::fs::set_permissions(&dead, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let err = transcribe_in(&dead, "fake", std::path::Path::new("/nowhere"), &audio, 2.0, &[]).expect_err("dead twice");
+        assert!(err.contains("twice"), "{err}");
+
+        // An app upgraded while it ran starts the new file at its path.
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", worker.display()));
+        assert_eq!(worker_exe(&deleted), worker);
+        assert_eq!(worker_exe(&worker), worker);
+        assert!(worker_deadline(60.0) >= std::time::Duration::from_secs(240));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
