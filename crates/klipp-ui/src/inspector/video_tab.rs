@@ -3482,7 +3482,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
                 if r_rate.changed {
                     let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0) * sign;
-                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
+                    cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed, ripple: true });
                 }
 
                 ui.add_space(4.0);
@@ -3507,7 +3507,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         {
                             let abs = clip.speed.abs().max(0.1);
                             let new_speed = if is_reversed { abs } else { -abs };
-                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
+                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed, ripple: true });
                         }
                     });
                 }); }
@@ -3535,7 +3535,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                             .fill(fill).stroke(stroke)
                             .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).clicked() {
-                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val * sign });
+                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val * sign, ripple: true });
                         }
                     }
                 });

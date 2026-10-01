@@ -2073,6 +2073,15 @@ impl Clip {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }
 
+    /// Whether the clip's own sound is heard: only at its own speed. Klipp
+    /// does not stretch or pitch sound, and a retimed clip's sound read at
+    /// 1x ran out of step with its picture in the export (#638), while
+    /// playback muted everything. A retimed, ramped or reversed clip is
+    /// silent in both.
+    pub fn plays_its_sound(&self) -> bool {
+        (self.speed - 1.0).abs() < 1e-6 && self.speed_keyframes.is_empty()
+    }
+
     /// Whether the clip plays its source backward: a negative speed (#617).
     /// Its first frame on the timeline is the last of its range, and it
     /// walks back to `source_in` at its end.

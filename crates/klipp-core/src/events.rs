@@ -2742,7 +2742,10 @@ pub enum AppCommand {
     EndSequenceCameraDrag { sequence_idx: usize },
 
     // Clip speed
-    SetClipSpeed { clip_id: ClipId, speed: f64 },
+    /// A clip's speed, negative for reverse, its linked sound with it.
+    /// With `ripple` the clips after it on their tracks move by the change
+    /// in length; without it, one it would grow into refuses it (#639).
+    SetClipSpeed { clip_id: ClipId, speed: f64, ripple: bool },
 
     // Speed keyframes (variable speed ramp)
     /// Add a speed keyframe to a clip at the given time.

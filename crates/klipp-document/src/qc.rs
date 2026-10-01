@@ -195,6 +195,28 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         }
     }
 
+    // Clips laid over each other on one track: only one of them shows
+    // there, in the viewer and the export alike, and the other is hidden
+    // with its grade (#639). Nothing makes this on purpose; a retime that
+    // grew a clip into the next one did.
+    for (ti, t) in seq.tracks.iter().enumerate() {
+        let mut clips: Vec<&Clip> = t.clips.iter().filter(|c| c.enabled && !matches!(c.kind, ClipKind::Gap)).collect();
+        clips.sort_by_key(|c| c.timeline_in);
+        for pair in clips.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (from, to) = (secs(b.timeline_in), secs(a.timeline_out.min(b.timeline_out)));
+            if to - from > frame * 0.5 {
+                add(
+                    Severity::Error,
+                    "overlap",
+                    Some(from),
+                    format!("{} and {} overlap on track {ti} from {from:.2} to {to:.2} s: one hides the other there", clip_label(pool, a), clip_label(pool, b)),
+                    "Trim or move one of them, or ripple the clips after the first",
+                );
+            }
+        }
+    }
+
     // Black: time with no picture under it.
     if !on_screen.is_empty() {
         let picture_end = on_screen.iter().map(|(_, b)| *b).fold(0.0, f64::max);
@@ -744,6 +766,21 @@ mod tests {
         assert_eq!(rules(&r), vec!["no_brief"], "{}", r.text());
         assert_eq!((r.errors, r.warnings), (0, 0));
         assert!(r.text().starts_with("Checked 8.00 s: 0 errors, 0 warnings, 1 note."), "{}", r.text());
+    }
+
+    /// #639: two clips laid over each other on one track are an error,
+    /// on whichever track; clips that only meet are not.
+    #[test]
+    fn clips_laid_over_each_other_on_a_track_are_an_error() {
+        let (mut seq, pool, talk, _) = piece();
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"overlap"), "{}", r.text());
+        // The first picture grown two seconds into the second.
+        seq.tracks[0].clips[0].timeline_out = tc(6.0);
+        let r = check(&seq, &pool, &Spoken(talk));
+        let f = r.findings.iter().find(|f| f.rule == "overlap").unwrap_or_else(|| panic!("{}", r.text()));
+        assert_eq!((f.severity, f.at_secs), (Severity::Error, Some(4.0)));
+        assert!(f.what.contains("from 4.00 to 6.00 s"), "{}", f.what);
     }
 
     /// #517: a full-frame title is picture. The film ended on a 7.6 s end

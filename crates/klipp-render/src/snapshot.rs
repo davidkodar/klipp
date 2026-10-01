@@ -591,8 +591,9 @@ fn snapshot_audio_track(
 ) -> Result<AudioTrackSnapshot, RenderError> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        // A reversed clip is silent, as it plays (#617).
-        if !clip.enabled || clip.is_reversed() { continue; }
+        // A retimed or reversed clip is silent, as it plays (#617, #638):
+        // read at 1x its sound ran out of step with its picture.
+        if !clip.enabled || !clip.plays_its_sound() { continue; }
         // A precomposition's sound is not taken here: flattening puts
         // it on runtime tracks of its own, with the scene's controls,
         // and the snapshot takes those below — once.
@@ -657,7 +658,7 @@ fn snapshot_audio_track(
 fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled || clip.is_reversed() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
+        if !clip.enabled || !clip.plays_its_sound() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
             continue;
         }
         let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };
@@ -708,7 +709,7 @@ fn flatten_compound_audio_clips(
         depth,
     );
     for clip in flat_clips {
-        if clip.is_reversed() {
+        if !clip.plays_its_sound() {
             continue;
         }
         let Some(media_id) = clip.media_id() else { continue };
@@ -1091,6 +1092,32 @@ mod tests {
         assert_eq!(at.pan, -0.5);
         assert_eq!(at.clips.len(), 1);
         assert_eq!(at.clips[0].source_start_secs, 1.0);
+    }
+
+    /// #638: a retimed clip's sound is left out of the export, as playback
+    /// leaves it out: read at 1x it ran out of step with its picture. The
+    /// clip on the next track, at its own speed, is still heard.
+    #[test]
+    fn a_retimed_clips_sound_is_left_out_and_the_rest_heard() {
+        let (talk, music) = (MediaId::new(), MediaId::new());
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(talk, "/media/talk.mp4"));
+        pool.add(make_media_item(music, "/media/music.wav"));
+        let clip = |media_id, speed: f64| Clip {
+            kind: ClipKind::Media { media_id },
+            source_in: make_rational(0, 24),
+            source_out: make_rational(96, 24),
+            speed,
+            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
+        };
+        let mut seq = make_sequence();
+        seq.tracks[1].clips.push(clip(talk, 2.0));
+        let mut bed = Track::new("A2", TrackKind::Audio);
+        bed.clips.push(clip(music, 1.0));
+        seq.tracks.push(bed);
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let heard: Vec<_> = snap.audio_tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.path.to_string_lossy().to_string()).collect();
+        assert_eq!(heard, vec!["/media/music.wav"], "the 2x clip silent, the bed at 1x heard");
     }
 
     #[test]

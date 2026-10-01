@@ -1419,6 +1419,8 @@ pub struct AppState {
     pub speed_dialog_value: f64,
     /// Whether speed dialog reverse is checked.
     pub speed_dialog_reverse: bool,
+    /// The Speed dialog's "move the clips after it" (#639).
+    pub speed_dialog_ripple: bool,
 
     // Source viewer
     pub source_media_id: Option<MediaId>,
@@ -3750,6 +3752,7 @@ impl Default for AppState {
             show_speed_dialog: false,
             speed_dialog_value: 100.0,
             speed_dialog_reverse: false,
+            speed_dialog_ripple: true,
             source_media_id: None,
             source_playhead: Timecode::zero(),
             source_seek_dispatch_at: None,

@@ -1449,8 +1449,8 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer; negative plays it reversed and silent); the \
-              clips after keep their place, close the gap or overlap yourself. \
+              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; at any speed but 1 the clip and its linked sound are silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
+              shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \
               existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\
@@ -1622,8 +1622,8 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer; negative plays it reversed and silent); the \
-              clips after keep their place, close the gap or overlap yourself. \
+              retime {clip_id, speed, ripple?} — change speed, its linked sound with it (>1 faster/shorter, <1 slower/longer, negative reversed; at any speed but 1 the clip and its linked sound are silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
+              shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \
               existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\

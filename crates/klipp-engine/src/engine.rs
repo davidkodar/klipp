@@ -1617,9 +1617,9 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
             let clip = sounding.clip;
             // A multicam angle is heard where the group's sound rule
             // says, the rule the render gates the same clip by.
-            // A reversed clip is silent (#617): its sound would have to be
-            // read backward too, and export leaves it out alike.
-            if !clip.enabled || clip.is_reversed() || !seq.multicam_sounds_at(clip, tc) {
+            // A retimed or reversed clip is silent (#617, #638): its sound is
+            // not stretched, and export leaves it out alike.
+            if !clip.enabled || !clip.plays_its_sound() || !seq.multicam_sounds_at(clip, tc) {
                 continue;
             }
             let Some(media_id) = clip.media_id() else { continue };
@@ -3383,10 +3383,8 @@ impl PlaybackEngine {
                                 self.master_clock.set_speed(new_speed);
                             }
                             speed_state_changed = true;
-                            // Mute audio at non-normal speeds
-                            for active in &self.audio_sources {
-                                active.source.muted().store((new_speed - 1.0).abs() > 0.01, Ordering::Release);
-                            }
+                            // A retimed clip's own sound is out of the
+                            // mix (see `audio_rows`); the rest plays on (#638).
                         }
                     }
                     // The clip the primary decoder plays was reversed: it
@@ -3667,10 +3665,8 @@ impl PlaybackEngine {
                 self.master_clock.set_speed(clip_speed);
                 self.master_clock.resume();
 
-                // Mute audio when clip speed is not normal (audio pitch would be wrong)
-                for active in &self.audio_sources {
-                    active.source.muted().store((clip_speed - 1.0).abs() > 0.01, Ordering::Release);
-                }
+                // A retimed clip's own sound is left out of the mix by
+                // `audio_rows`; music and other tracks play on (#638).
 
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
@@ -4849,20 +4845,15 @@ impl PlaybackEngine {
                 self.master_clock.set_speed(instant_speed);
                 self.ramp_last_clock_speed = instant_speed;
             }
-            // Mute audio whenever the time remap is active — pitch is wrong at
-            // any non-1.0 speed and the UI warns about this.
-            for active in &self.audio_sources {
-                active.source.muted().store(true, Ordering::Release);
-            }
-        } else {
-            // Constant-speed path: mute when clip_speed != 1.0, or when the
-            // user is scrubbing with audio-scrubbing disabled. Reasserted each
-            // tick so mid-scrub pref changes and EndScrub both self-correct.
-            let should_mute = (self.clip_speed - 1.0).abs() > 0.01
-                || (self.is_scrubbing && !self.scrub_audio_enabled);
-            for active in &self.audio_sources {
-                active.source.muted().store(should_mute, Ordering::Release);
-            }
+        }
+        // A retimed clip's own sound is out of the mix (see `audio_rows`):
+        // its speed no longer mutes the music and the other tracks with it
+        // (#638). What mutes here is a scrub with audio scrubbing off,
+        // reasserted each tick so mid-scrub pref changes and EndScrub both
+        // self-correct.
+        let should_mute = self.is_scrubbing && !self.scrub_audio_enabled;
+        for active in &self.audio_sources {
+            active.source.muted().store(should_mute, Ordering::Release);
         }
 
         // Master clock is the single source of truth. Video frame
@@ -12475,6 +12466,26 @@ mod audio_crossfade_schedule_tests {
         let a = after_cut.iter().find(|r| r.1 == am).unwrap();
         // A three frames past its out point: its tail, source 99.
         assert!((a.3 - 99.0 / 24.0).abs() < 1e-9, "A from {}", a.3);
+    }
+
+    /// #638: a retimed clip's own sound is left out of the mix, and only
+    /// it: a clip on another track plays on. Playback muted every source
+    /// while the primary clip was retimed, music included.
+    #[test]
+    fn a_retimed_clips_sound_is_out_of_the_mix_and_only_it() {
+        let (mut s, pool, am, bm) = timeline();
+        // B onto a track of its own, under A, both sounding at 1 s.
+        let b = s.tracks[0].clips.remove(1);
+        s.tracks[0].transitions.clear();
+        let mut t2 = Track::new("A2", TrackKind::Audio);
+        t2.clips.push(Clip { timeline_in: tc(0), timeline_out: tc(72), ..b });
+        s.tracks.push(t2);
+        let heard = |s: &Sequence| audio_rows(s, &pool, &fadeable_media(&pool), tc(24), false, false).iter().map(|r| r.1).collect::<Vec<_>>();
+        assert_eq!(heard(&s), vec![am, bm]);
+        s.tracks[0].clips[0].speed = 2.0;
+        assert_eq!(heard(&s), vec![bm], "the 2x clip silent, the other heard");
+        s.tracks[0].clips[0].speed = -1.0;
+        assert_eq!(heard(&s), vec![bm], "a reversed one too");
     }
 
     #[test]

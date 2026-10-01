@@ -587,6 +587,11 @@ pub enum Op {
     Retime {
         clip_id: ClipRef,
         speed: f64,
+        /// Move the clips after it on its track, and on its linked sound's,
+        /// by the change in length. Without it a clip made longer than the
+        /// room before the next one is refused rather than laid over it.
+        #[serde(default)]
+        ripple: bool,
     },
     /// Clean a clip's sound. Each flag adds the tool for it: `voice`
     /// Voice Isolation, the AI model that separates speech from wind,
@@ -1700,23 +1705,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather };
             qualify(seq, pool, i, ti, clip, q)
         }
-        Op::Retime { clip_id, speed } => {
-            let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let (what, edit, mut ids) = retime(seq, pool, fps, i, ti, ci, clip, *speed)?;
-            // The linked sound takes the same speed, so the pair stays the
-            // same length and in step, as the speed dialog keeps it (#617).
-            let partner = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. }));
-            match partner {
-                Some((pti, pci, p)) => {
-                    let (p_what, p_edit, p_ids) = retime(seq, pool, fps, i, pti, pci, p, *speed).map_err(|mut r| {
-                        r.why = format!("its linked {} cannot follow: {}", if seq.tracks[pti].kind == TrackKind::Audio { "sound" } else { "picture" }, r.why);
-                        r
-                    })?;
-                    ids.extend(p_ids);
-                    Ok((format!("{what}; with it, {p_what}"), EditCommand::Batch(vec![edit, p_edit]), ids))
-                }
-                None => Ok((what, edit, ids)),
-            }
+        Op::Retime { clip_id, speed, ripple } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            retime(seq, pool, fps, i, clip.id, *speed, *ripple)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4211,42 +4202,104 @@ fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip,
     Ok((what, set_builtin_effects(clip, effects), vec![clip.id]))
 }
 
-fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, speed: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    if seq.tracks[ti].locked {
-        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
-    }
+/// A clip's speed set to `speed` — negative plays it reversed — for the
+/// retime op and the Speed dialog alike: what [`Op::Retime`] resolves to.
+/// No sequence is changed until the returned command is applied.
+pub fn retime_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, speed: f64, ripple: bool) -> Result<(String, EditCommand), Refusal> {
+    retime(seq, pool, seq.fps, 0, clip_id, speed, ripple).map(|(what, edit, _)| (what, edit))
+}
+
+/// The clip and its linked sound (or picture) take `speed` together, so
+/// the pair stays the same length and in step. Each grows or shrinks
+/// from its start. What follows on their tracks moves by the change with
+/// `ripple`; without it, a clip grown into the next one is refused: laid
+/// over it, it hid that clip and its grade in the viewer and the export
+/// (#639).
+fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId, speed: f64, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let Some((ti, _, clip)) = find_clip(seq, clip_id) else {
+        return Err(refuse(i, "no such clip", "name a clip on the timeline"));
+    };
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
     }
-    if !speed.is_finite() || !(0.1..=8.0).contains(&speed.abs()) {
-        return Err(refuse(i, format!("a speed of {speed}"), "give speed between 0.1 and 8, negative to play the clip reversed"));
+    let (lo, hi) = (klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
+    if !speed.is_finite() || !(lo..=hi).contains(&speed.abs()) {
+        return Err(refuse(i, format!("a speed of {speed}"), format!("give speed between {lo} and {hi}, negative to play the clip reversed")));
     }
-    let source_len = clip.source_out - clip.source_in;
-    let new_len_secs = crate::ops::secs(source_len) / speed.abs();
-    let new_out = clip.timeline_in + snap(new_len_secs, fps);
-    if new_out <= clip.timeline_in + one_frame(fps) {
-        return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
+    // The clip, and the clip it is linked to.
+    let mut members: Vec<(usize, &Clip)> = vec![(ti, clip)];
+    if let Some((pti, _, p)) = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. })) {
+        members.push((pti, p));
     }
-    // Overlap with the next clip is the caller's to close: said, not fixed.
-    let runs_into = seq.tracks[ti].clips.get(ci + 1).filter(|n| new_out > n.timeline_in).map(|n| clip_name(seq, pool, n));
-    let old_out = clip.timeline_out;
+    // The speed changes, then the clips after them moved.
+    let mut speeds = Vec::new();
+    let mut moves = Vec::new();
+    let mut ids = Vec::new();
+    let mut moved_later = 0;
+    let mut deltas: Vec<Timecode> = Vec::new();
+    let mut new_out_of_clip = clip.timeline_out;
+    for &(mti, m) in &members {
+        if seq.tracks[mti].locked {
+            return Err(refuse(i, format!("track {mti} is locked"), "unlock it first"));
+        }
+        let new_len_secs = secs(m.source_out - m.source_in) / speed.abs();
+        let new_out = m.timeline_in + snap(new_len_secs, fps);
+        if new_out <= m.timeline_in + one_frame(fps) {
+            return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
+        }
+        if m.id == clip.id {
+            new_out_of_clip = new_out;
+        }
+        let delta = new_out - m.timeline_out;
+        deltas.push(delta);
+        let later: Vec<&Clip> = seq.tracks[mti].clips.iter().filter(|c| c.id != m.id && !members.iter().any(|(_, x)| x.id == c.id) && c.timeline_in >= m.timeline_out).collect();
+        if ripple {
+            for c in &later {
+                moves.push(EditCommand::LegacyMoveClip {
+                    clip_id: c.id,
+                    old_timeline_in: c.timeline_in,
+                    old_timeline_out: c.timeline_out,
+                    new_timeline_in: c.timeline_in + delta,
+                    new_timeline_out: c.timeline_out + delta,
+                    linked_partner: None,
+                });
+                ids.push(c.id);
+            }
+            moved_later += later.len();
+        } else if let Some(n) = later.iter().find(|c| c.timeline_in < new_out) {
+            return Err(refuse(
+                i,
+                format!("{} would run over {} at {:.2} s on track {mti}", clip_name(seq, pool, m), clip_name(seq, pool, n), secs(n.timeline_in)),
+                "retime with ripple to move the clips after it, or make room first",
+            ));
+        }
+        speeds.push(EditCommand::SetClipSpeed {
+            clip_id: m.id,
+            old_speed: m.speed,
+            new_speed: speed,
+            old_timeline_out: m.timeline_out,
+            new_timeline_out: new_out,
+        });
+        ids.push(m.id);
+    }
+    // A picture and sound of different lengths (a J or L cut) change by
+    // different amounts: rippled, their tracks would move apart.
+    if ripple && moved_later > 0 && deltas.windows(2).any(|d| (secs(d[0]) - secs(d[1])).abs() > secs(one_frame(fps)) * 0.5) {
+        return Err(refuse(i, "the clip and its linked sound are different lengths (a J or L cut), so a ripple would move their tracks apart", "retime without ripple, after making room, or line the two up first"));
+    }
     let what = format!(
-        "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}",
+        "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}{}",
         clip_name(seq, pool, clip),
         speed.abs(),
-        if speed < 0.0 { " reversed, silent" } else { "" },
-        crate::ops::secs(clip.timeline_in),
-        crate::ops::secs(new_out),
-        runs_into.map(|n| format!("; it now overlaps {n} — move or ripple to close it")).unwrap_or_default(),
+        if speed < 0.0 { " reversed, its sound silent" } else if (speed - 1.0).abs() > 1e-6 { ", its sound silent" } else { "" },
+        secs(clip.timeline_in),
+        secs(new_out_of_clip),
+        if members.len() > 1 { ", its linked sound with it" } else { "" },
+        if moved_later > 0 { format!("; {moved_later} later clip(s) moved {:+.2} s", secs(deltas[0])) } else { String::new() },
     );
-    let edit = EditCommand::SetClipSpeed {
-        clip_id: clip.id,
-        old_speed: clip.speed,
-        new_speed: speed,
-        old_timeline_out: old_out,
-        new_timeline_out: new_out,
-    };
-    Ok((what, edit, vec![clip.id]))
+    let mut edits: Vec<EditCommand> = speeds.into_iter().chain(moves).collect();
+    let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
+    Ok((what, edit, ids))
 }
 
 /// What `clean_audio` was asked to fix.
@@ -6415,13 +6468,26 @@ mod tests {
         view.apply_inverse(&plan.steps[0].edit);
         assert!(view.sequences[0].tracks[0].clips[0].builtin_effects.is_empty());
 
-        // Retime to 2x halves the clip and says nothing runs into the next
-        // (clip a is 0-4, clip b starts at 4; 2x makes a 0-2, a gap opens).
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0 }]).unwrap();
-        assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s"), "{}", plan.steps[0].what);
-        // Half speed makes a run into b.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5 }]).unwrap();
-        assert!(plan.steps[0].what.contains("overlaps"), "{}", plan.steps[0].what);
+        // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
+        // 2x makes a 0-2, a gap opens), its linked sound with it.
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, ripple: false }]).unwrap();
+        assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s") && plan.steps[0].what.contains("its sound silent"), "{}", plan.steps[0].what);
+        // Half speed would run over b: refused, not laid over it (#639).
+        let refused = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, ripple: false }]).unwrap_err();
+        assert!(refused.why.contains("would run over") && refused.hint.contains("ripple"), "{}", refused.why);
+        // With ripple, b and everything after it on both tracks move on by
+        // the four seconds a grew, and undo puts them back.
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, ripple: true }]).unwrap();
+        assert!(plan.steps[0].what.contains("later clip(s) moved +4.00 s"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        for t in &view.sequences[0].tracks {
+            assert_eq!((t.clips[0].timeline_out, t.clips[1].timeline_in), (tc(8.0), tc(8.0)), "track {}: a ends where b now starts", t.name);
+        }
+        view.apply_inverse(&plan.steps[0].edit);
+        assert_eq!(serde_json::to_value(&view.sequences[0]).unwrap(), serde_json::to_value(&seq).unwrap(), "undo restores it");
 
         // Clean audio adds the DSP for each flag, on the clip's own sound.
         let clean = |voice: bool, reduction_db: Option<f32>, wind: bool, hum: bool, deess: bool| {
