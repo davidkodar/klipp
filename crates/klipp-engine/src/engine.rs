@@ -11229,6 +11229,9 @@ pub struct SequentialFrameDecoder {
     /// How many frames the container says the stream has, or 0 when it
     /// does not say (Matroska usually does not; MP4 does).
     declared_frames: i64,
+    /// After [`Self::seek_to`]: frames before this time, in the stream's
+    /// time base, are decoded and dropped.
+    skip_before: Option<i64>,
 }
 
 /// An error in words. ffmpeg-next's `Display` is blank for the codes that
@@ -11296,7 +11299,35 @@ impl SequentialFrameDecoder {
             eof_reached: false,
             drained: false,
             frames_out: 0,
+            skip_before: None,
         })
+    }
+
+    /// Start the walk at the frame shown `secs` into the file rather than
+    /// at its first: a seek to the keyframe before it, then decoding
+    /// forward and handing back nothing earlier. A window track reads only
+    /// the clip's part of what may be a long file (#238).
+    pub fn seek_to(&mut self, secs: f64) -> Result<(), String> {
+        let stream = self.format_ctx.stream(self.stream_index).ok_or("the video stream is gone")?;
+        let tb = stream.time_base();
+        let ticks_per_sec = tb.denominator() as f64 / tb.numerator().max(1) as f64;
+        let rate = stream.avg_frame_rate();
+        let fps = if rate.numerator() > 0 && rate.denominator() > 0 { rate.numerator() as f64 / rate.denominator() as f64 } else { 30.0 };
+        let start = stream.start_time();
+        let start = if start == ffmpeg_next::ffi::AV_NOPTS_VALUE { 0 } else { start };
+        // Half a frame early, so the frame shown at `secs` is not dropped
+        // for a rounding.
+        let target = start + ((secs.max(0.0) - 0.5 / fps) * ticks_per_sec).round() as i64;
+        let ts = (secs.max(0.0) * ffmpeg_next::ffi::AV_TIME_BASE as f64) as i64;
+        self.format_ctx.seek(ts, ..ts).map_err(|e| format!("seek to {secs:.3} s: {}", describe(&e)))?;
+        self.decoder.flush();
+        self.eof_reached = false;
+        self.drained = false;
+        self.skip_before = Some(target);
+        // A walk that starts part way cannot be held to the file's frame
+        // count at its end.
+        self.declared_frames = 0;
+        Ok(())
     }
 
     /// The walk reached the end of the file. If the container declared
@@ -11411,6 +11442,34 @@ impl SequentialFrameDecoder {
     /// used to look like "needs more input", and the broken frame was
     /// skipped without a word.
     fn receive(&mut self, decoded: &mut ffmpeg_next::frame::Video) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
+        // Frames before a seek's target are decoded, then dropped.
+        if let Some(limit) = self.skip_before {
+            loop {
+                match self.decoder.receive_frame(decoded) {
+                    Ok(()) => {
+                        if decoded.timestamp().or(decoded.pts()).is_some_and(|p| p < limit) {
+                            continue;
+                        }
+                        self.skip_before = None;
+                        let frame = match self.convert(decoded) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                self.drained = true;
+                                return Err(format!("frame {}: could not be converted to RGBA: {e}", self.frames_out));
+                            }
+                        };
+                        self.frames_out += 1;
+                        return Ok(Some(frame));
+                    }
+                    Err(ffmpeg_next::Error::Other { errno }) if errno == ffmpeg_next::util::error::EAGAIN => return Ok(None),
+                    Err(ffmpeg_next::Error::Eof) => return Ok(None),
+                    Err(e) => {
+                        self.drained = true;
+                        return Err(format!("frame {}: decode error: {}", self.frames_out, describe(&e)));
+                    }
+                }
+            }
+        }
         match self.decoder.receive_frame(decoded) {
             Ok(()) => {
                 let frame = match self.convert(decoded) {

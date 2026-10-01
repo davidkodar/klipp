@@ -2022,8 +2022,9 @@ impl GraphExecutor {
                             || (n.kind == NodeKind::ApplyMatte
                                 && secondaries.iter().any(|sec| sec.apply == n.id))
                     });
+                // As drawn now: keyframes, then the window's tracked motion (#238).
                 let masks_opt = node.params.masks.as_ref()
-                    .map(|ms| ms.evaluated_at(clip_time_secs));
+                    .map(|ms| ms.evaluated_in(clip_time_secs, height as f32 / width.max(1) as f32));
                 let gpu_ready_masks: Vec<klipp_effects::gpu::GpuMaskDef> = masks_opt.as_ref()
                     .map(|ms| ms.masks.iter()
                         .filter(|m| m.enabled)
@@ -3780,7 +3781,8 @@ impl GraphExecutor {
                         }
                     }
 
-                    let mut evaluated = masks.evaluated_at(clip_time_secs);
+                    // Keyframes, then the window's tracked motion (#238).
+                    let mut evaluated = masks.evaluated_in(clip_time_secs, height as f32 / width.max(1) as f32);
 
                     // Tracker-driven mask centres: when a TrackPoint
                     // declares `linked_mask = (this_node, mask_index)`
@@ -4657,8 +4659,10 @@ fn apply_tracker_overrides_to_masks(
     let playhead_frame = (clip_time_secs * FALLBACK_FPS).max(0.0) as i64;
 
     for (mask_idx, mask) in evaluated.masks.iter_mut().enumerate() {
-        // Skip disabled / non-tracker-bindable shapes early.
-        if !mask.enabled {
+        // Skip disabled / non-tracker-bindable shapes early, and a window
+        // the window tracker drives through its own keyframes (#238): its
+        // point track is the record of that, not a second driver.
+        if !mask.enabled || mask.keyframes.is_tracked() {
             continue;
         }
         let Some(tp) = track_points.iter().find(|tp| {
@@ -6113,6 +6117,21 @@ mod tests {
             enabled: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tracker_override_leaves_a_window_tracked_window_alone() {
+        // #238: a window the window tracker drives moves by its own
+        // keyframes; its linked point track is the record, not a second
+        // driver.
+        let node_id = uuid::Uuid::new_v4();
+        let mut mask = make_circle_mask(0.5, 0.5);
+        mask.keyframes.track_x = vec![klipp_core::Keyframe { time_secs: 0.0, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }];
+        let mut stack = klipp_core::MaskStack { masks: vec![mask] };
+        let track_points = vec![make_track_point_at(Some((node_id, 0)), vec![(0.10, 0.20)])];
+        apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
+        let klipp_core::MaskShape::Circle { center_x, .. } = stack.masks[0].shape else { panic!("expected Circle") };
+        assert!((center_x - 0.5).abs() < 1e-6, "the override left it where its track has it");
     }
 
     #[test]

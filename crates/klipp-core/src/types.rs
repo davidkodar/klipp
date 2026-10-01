@@ -327,6 +327,15 @@ pub struct TrackPoint {
     /// trackers.
     #[serde(default)]
     pub linked_mask: Option<(uuid::Uuid, usize)>,
+    /// A window track's size and turn on each frame of `positions`, as
+    /// (scale, degrees clockwise) from the reference frame (#238). Empty
+    /// for a point track, which has a place only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub motion: Vec<(f64, f64)>,
+    /// The frame the window was drawn on, which the track is measured
+    /// from (#238).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_frame: Option<usize>,
 }
 
 impl Default for TrackPoint {
@@ -340,6 +349,8 @@ impl Default for TrackPoint {
             enabled: true,
             search_radius: 32,
             linked_mask: None,
+            motion: Vec::new(),
+            reference_frame: None,
         }
     }
 }
