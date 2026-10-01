@@ -13609,7 +13609,10 @@ impl KlippApp {
             let n = selection.len();
             let what = if n == 1 { "the selected clip".to_string() } else { format!("the {n} selected clips") };
             if ui.add_enabled(n > 0, egui::Button::new(format!("New group from {what}"))).clicked() {
-                let name = format!("Group {}", seq.grade_groups.len() + 1);
+                // The first "Group N" no group has: ops name groups by
+                // name, so two of one name would be one of them to an op.
+                let taken = |n: &str| seq.grade_groups.iter().any(|g| g.name.eq_ignore_ascii_case(n));
+                let name = (1..).map(|k| format!("Group {k}")).find(|n| !taken(n)).expect("some number is free");
                 cmds.push(AppCommand::CreateGradeGroup { name, clip_ids: selection.clone() });
                 ui.close_menu();
             }
@@ -13698,8 +13701,15 @@ impl KlippApp {
             }
             AppCommand::RenameGradeGroup { group, name } => {
                 let mut groups = seq.grade_groups.clone();
+                let name = name.trim();
+                // Ops find a group by name: a second of one name would
+                // be unreachable.
+                if groups.iter().any(|g| g.id != *group && g.name.eq_ignore_ascii_case(name)) {
+                    self.state.toast.show(format!("There is already a grade group called \u{201c}{name}\u{201d}"));
+                    return true;
+                }
                 match groups.iter_mut().find(|g| g.id == *group) {
-                    Some(g) if g.name != name.trim() && !name.trim().is_empty() => g.name = name.trim().to_string(),
+                    Some(g) if g.name != name && !name.is_empty() => g.name = name.to_string(),
                     _ => return true,
                 }
                 (vec![EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups }], "Rename Grade Group")
