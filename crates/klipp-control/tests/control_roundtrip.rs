@@ -32,6 +32,7 @@ struct Harness {
     log: std::path::PathBuf,
     socket: std::path::PathBuf,
     next_id: u64,
+    ack_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Two clips, each with its own Corrector, and a node nested inside
     /// a Compound on the first — what the id checks are checked against.
     ids: Ids,
@@ -104,13 +105,17 @@ fn harness() -> Harness {
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<klipp_core::AppCommand>();
     let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
+    let ack_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let shared = Arc::new(klipp_core::ControlShared::default());
     let media_pool = Arc::new(RwLock::new(klipp_media::MediaPool::new()));
     {
         let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
         let media_pool = media_pool.clone();
+        let delay = Arc::clone(&ack_delay_ms);
         std::thread::spawn(move || {
             for env in env_rx {
+                let ms = delay.load(std::sync::atomic::Ordering::Relaxed);
+                if ms > 0 { std::thread::sleep(std::time::Duration::from_millis(ms)); }
                 envelopes.lock().unwrap().push((env.batch, env.commands.len() + env.edits.len()));
                 // A plan made for another revision is refused, as the UI does.
                 let refused = if let Some(want) = env.expected_project_identity {
@@ -204,7 +209,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -804,9 +809,74 @@ fn plans_are_dry_runs_and_applies_are_one_envelope_of_edits() {
     assert!(v["next"].as_str().unwrap().contains("check"), "apply points at the next step: {v}");
     assert_eq!(v["applied"], json!(true));
     assert_eq!(v["revision"], json!(before + 1));
+    let status = h.ok(json!({ "method": "operation_status", "operation_id": v["operation_id"] }));
+    assert_eq!(status["state"], "applied");
+    assert_eq!(status["revision"], json!(before + 1));
     assert_eq!(h.envelopes.lock().unwrap().last(), Some(&(true, 1)));
     let edits = h.edits_seen.lock().unwrap();
     assert!(matches!(edits.as_slice(), [klipp_document::history::EditCommand::LegacyBladeClip { .. }]));
+}
+
+#[test]
+fn delayed_apply_has_a_definitive_outcome_and_retry_does_not_cut_twice() {
+    let mut h = harness();
+    h.ack_delay_ms.store(3000, std::sync::atomic::Ordering::Relaxed);
+    let request = json!({
+        "method": "apply", "idempotency_key": "cut-once-test",
+        "expected_revision": h.shared.revision(),
+        "ops": [{ "op": "split", "clip_id": h.ids.clip_a.clone(), "at": { "secs": 1.0 } }],
+    });
+    let first = h.ok(request.clone());
+    assert_eq!(first["accepted"], true);
+    assert_eq!(first["applied"], false, "the UI reply was deliberately delayed: {first}");
+    let id = first["operation_id"].as_str().unwrap().to_owned();
+    let queued = h.ok(json!({ "method": "operation_status", "operation_id": id }));
+    assert_eq!(queued["state"], "queued");
+    assert_eq!(queued["progress"], Value::Null, "there is no invented percent for a UI wait");
+
+    let retry = h.ok(request);
+    assert_eq!(retry["operation_id"], id);
+    let started = std::time::Instant::now();
+    let final_status = loop {
+        let status = h.ok(json!({ "method": "operation_status", "operation_id": id }));
+        if status["state"] != "queued" { break status; }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "ack did not arrive");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(final_status["state"], "applied");
+    assert_eq!(final_status["revision"], 1);
+    assert_eq!(h.envelopes.lock().unwrap().len(), 1);
+    assert_eq!(h.edits_seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn delayed_ui_refusal_is_reported_without_applying_an_edit() {
+    let mut h = harness();
+    h.ack_delay_ms.store(3000, std::sync::atomic::Ordering::Relaxed);
+    let revision = h.shared.revision();
+    let shared = Arc::clone(&h.shared);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        shared.bump_revision();
+    });
+    let first = h.ok(json!({
+        "method": "apply", "expected_revision": revision,
+        "ops": [{ "op": "split", "clip_id": h.ids.clip_a.clone(), "at": { "secs": 1.0 } }],
+    }));
+    assert_eq!(first["applied"], false);
+    let id = first["operation_id"].as_str().unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        let status = h.ok(json!({ "method": "operation_status", "operation_id": id }));
+        if status["state"] == "refused" {
+            assert!(status["reason"].as_str().unwrap().contains("revision moved"));
+            assert_eq!(status["revision"], 1);
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "refusal did not arrive");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(h.edits_seen.lock().unwrap().is_empty());
 }
 
 #[test]

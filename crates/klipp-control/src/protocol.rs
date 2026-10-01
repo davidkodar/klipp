@@ -62,6 +62,12 @@ fn strict_edit_plan<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_time
 pub struct Request {
     #[serde(default)]
     pub id: u64,
+    /// Reuse this key when retrying the exact same write after a lost reply.
+    /// The first reply, including an error, is replayed for up to one hour
+    /// in this app process. After an error, inspect Klipp before deciding
+    /// whether to send a new request with a new key.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     #[serde(flatten)]
     pub command: ControlCommand,
 }
@@ -79,6 +85,9 @@ pub enum ControlCommand {
     /// Liveness plus version, so a client can tell a stale socket from a
     /// running app.
     Ping,
+    /// Latest known UI outcome for a queued write. Completed outcomes are
+    /// retained for a bounded period in this app process only.
+    OperationStatus { operation_id: String },
     /// Transport state, playhead, resolution, fps, current clip.
     Status,
 
