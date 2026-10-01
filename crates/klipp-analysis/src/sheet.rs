@@ -33,7 +33,8 @@ fn any_font() -> Option<PathBuf> {
 const GPU_SHEET_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Run a sheet's ffmpeg: within [`GPU_SHEET_LIMIT`] when it decodes on
-/// the GPU, to the end on the CPU.
+/// the GPU, to the end on the CPU. Through [`crate::hold`], so a sheet
+/// waits while the editor plays, as every other analysis decode does.
 fn run_sheet(ffmpeg: &Path, cmd: &mut std::process::Command, gpu: bool, out: &Path) -> Result<(), String> {
     let limit = gpu.then_some(GPU_SHEET_LIMIT);
     let done = crate::hold::output_within(cmd.stderr(std::process::Stdio::piped()), limit).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;

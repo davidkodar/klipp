@@ -310,6 +310,11 @@ pub(crate) fn hwaccel_args(ffmpeg: &Path, codec: &str) -> Vec<String> {
 /// its time and a decode from there, never a pass over the file.
 const GRAB_BATCH: usize = 8;
 
+/// How long a batch of grabs may take on the GPU before it is given up
+/// for the next plan: ffmpeg's VAAPI decode can deadlock on a seek and
+/// wait forever (#519), where eight seeks take a few seconds.
+const GPU_GRAB_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// The frames of `media` at `times`, each scaled to `width`×`height`
 /// (`-2` keeps the aspect) and put through `after` (a filter chain, or
 /// empty), as RGBA8 bytes of `frame_bytes` each. On the GPU where it
@@ -351,7 +356,12 @@ fn grab_batch(ffmpeg: &Path, item: &klipp_media::MediaItem, times: &[f64], width
         // Every frame through as it comes: the raw muxer would otherwise
         // drop the ones whose timestamps step back after the concat.
         cmd.args(["-an", "-sn", "-filter_complex", &graph, "-map", "[out]", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
-        let out = crate::hold::output(&mut cmd).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))?;
+        let limit = (!matches!(plan, Decode::Cpu)).then_some(GPU_GRAB_LIMIT);
+        let Some(out) = crate::hold::output_within(&mut cmd, limit).map_err(|e| format!("could not run {}: {e}", ffmpeg.display()))? else {
+            last = format!("the {plan:?} decode did not finish within {} s", GPU_GRAB_LIMIT.as_secs());
+            tracing::warn!("frames at {times:?}: {last}; trying the next");
+            continue;
+        };
         if out.status.success() && out.stdout.len() >= frame_bytes * times.len() {
             return Ok(out.stdout.chunks_exact(frame_bytes).take(times.len()).map(|c| c.to_vec()).collect());
         }
