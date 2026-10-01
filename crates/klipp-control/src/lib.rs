@@ -1959,8 +1959,6 @@ fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
     })
 }
 
-/// Which build is running, and whether a rebuild has replaced its
-/// executable since it started, so a restart is due.
 /// What [`status_text`] says Klipp is.
 struct StatusFacts<'a> {
     build: &'a klipp_core::build_info::BuildInfo,
@@ -2030,6 +2028,8 @@ fn status_text(f: &StatusFacts) -> String {
     out
 }
 
+/// Which build is running, and whether a rebuild has replaced its
+/// executable since it started, so a restart is due.
 fn build_json() -> serde_json::Value {
     let build = klipp_core::build_info::get();
     json!({
