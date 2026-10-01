@@ -295,6 +295,10 @@ Plans are batches of their own.
 
 ## Manners
 
+- Talk to the person in their words, not the tools'. Asked whether
+  Klipp is connected, answer from `klipp_status`'s summary; asked what
+  they can do here, answer from `klipp_guide` topic `abilities`.
+
 - Analysis on a long file takes a while; ask, do something else, then
   read it.
 - Prefer the plan's refusal to guessing a time.

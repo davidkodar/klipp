@@ -1632,6 +1632,32 @@ fn shot_spans(from: f64, to: f64, source_in: f64, speed: f64, boundaries: &[f64]
 }
 
 #[cfg(test)]
+mod status_text_tests {
+    use super::*;
+
+    /// #626: what a person is told when they ask whether Klipp is there —
+    /// the version, the project by name and whether it is saved, the
+    /// timeline, the playhead and the media, in words.
+    #[test]
+    fn status_reads_as_a_person_would_say_it() {
+        let build = klipp_core::build_info::BuildInfo { version: "0.1.0", commit: "f5e7b0ee", dirty: false, profile: "release", exe: None, built_at: None };
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.name = "Main Sequence".into();
+        let facts = |seq: &klipp_timeline::Sequence, project: Option<&std::path::Path>, unsaved: bool, media: usize| status_text(&StatusFacts { build: &build, project, unsaved, sequence: seq, media, playhead_secs: 65.2, playing: false });
+        let empty = facts(&seq, Some(std::path::Path::new("/home/u/Videos/test it again.klipp")), false, 0);
+        assert!(empty.starts_with("Klipp 0.1.0 is running (build f5e7b0ee)."), "{empty}");
+        assert!(empty.contains("Project: \u{201c}test it again\u{201d}, all changes saved."), "{empty}");
+        assert!(empty.contains("no clips yet") && empty.contains("1920\u{00d7}1080 at 24 fps"), "{empty}");
+        assert!(empty.contains("Playhead: paused at 1:05.") && empty.contains("Media: none imported yet."), "{empty}");
+        assert!(!empty.contains('/'), "no paths: {empty}");
+
+        seq.tracks[0].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::Timecode::zero(), klipp_core::Timecode { value: 24 * 90, rate: 24 }, klipp_core::Timecode::zero(), klipp_core::Timecode { value: 24 * 90, rate: 24 }));
+        let cut = facts(&seq, None, true, 3);
+        assert!(cut.contains("1 clip, 1:30 long") && cut.contains("a new project with changes, not saved yet") && cut.contains("Media: 3 files imported."), "{cut}");
+    }
+}
+
+#[cfg(test)]
 mod shot_span_tests {
     use super::shot_spans;
 
@@ -1935,6 +1961,75 @@ fn log_format_json(m: &klipp_media::MediaItem) -> serde_json::Value {
 
 /// Which build is running, and whether a rebuild has replaced its
 /// executable since it started, so a restart is due.
+/// What [`status_text`] says Klipp is.
+struct StatusFacts<'a> {
+    build: &'a klipp_core::build_info::BuildInfo,
+    project: Option<&'a std::path::Path>,
+    unsaved: bool,
+    sequence: &'a klipp_timeline::Sequence,
+    media: usize,
+    playhead_secs: f64,
+    playing: bool,
+}
+
+/// Minutes and seconds, as a person reads a time: `1:05`, `0:00`; hours
+/// when there are any.
+fn clock(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// The running Klipp in plain words, for the person who asked whether it
+/// is there (#626): the version, the open project and whether it is
+/// saved, the timeline, the playhead, the media. No paths, sockets or
+/// commit details beyond the build, which is what a bug report wants.
+fn status_text(f: &StatusFacts) -> String {
+    let b = f.build;
+    let mut out = format!("Klipp {} is running (build {}", b.version, b.commit);
+    if b.newer_build_on_disk() {
+        out.push_str("; a newer build is installed, so restart Klipp to use it");
+    }
+    out.push_str(").\n");
+    let name = f.project.and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string());
+    out.push_str(&match (name, f.unsaved) {
+        (Some(n), false) => format!("Project: \u{201c}{n}\u{201d}, all changes saved.\n"),
+        (Some(n), true) => format!("Project: \u{201c}{n}\u{201d}, with unsaved changes.\n"),
+        (None, false) => "Project: a new project, not saved yet.\n".to_string(),
+        (None, true) => "Project: a new project with changes, not saved yet.\n".to_string(),
+    });
+    let seq = f.sequence;
+    let fps = seq.fps.as_f64();
+    let fps = if (fps - fps.round()).abs() < 1e-3 { format!("{}", fps.round()) } else { format!("{fps:.2}") };
+    let clips = seq.tracks.iter().map(|t| t.clips.iter().filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap)).count()).sum::<usize>();
+    let (pictures, sounds) = seq.tracks.iter().fold((0, 0), |(v, a), t| match t.kind {
+        klipp_timeline::TrackKind::Audio => (v, a + 1),
+        _ => (v + 1, a),
+    });
+    let contents = if clips == 0 {
+        "no clips yet".to_string()
+    } else {
+        format!("{clips} clip{}, {} long", if clips == 1 { "" } else { "s" }, clock(seq.total_duration().to_secs_f64()))
+    };
+    out.push_str(&format!(
+        "Timeline: \u{201c}{}\u{201d}, {}\u{00d7}{} at {fps} fps, {pictures} picture and {sounds} sound track{}, {contents}.\n",
+        seq.name,
+        seq.resolution.width,
+        seq.resolution.height,
+        if sounds == 1 { "" } else { "s" },
+    ));
+    out.push_str(&format!("Playhead: {} at {}.\n", if f.playing { "playing" } else { "paused" }, clock(f.playhead_secs)));
+    out.push_str(&match f.media {
+        0 => "Media: none imported yet.".to_string(),
+        1 => "Media: 1 file imported.".to_string(),
+        n => format!("Media: {n} files imported."),
+    });
+    out
+}
+
 fn build_json() -> serde_json::Value {
     let build = klipp_core::build_info::get();
     json!({
@@ -2191,7 +2286,21 @@ fn handle(
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
             let fps = seq.fps.as_f64();
             let presented = fb.shown_presented().map(|t| t.to_secs_f64());
+            let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
+            let media = ctx.media_pool.read().map(|p| p.all().count()).unwrap_or(0);
+            let text = status_text(&StatusFacts {
+                build: klipp_core::build_info::get(),
+                project: project.path.as_deref(),
+                unsaved: project.dirty,
+                sequence: &seq,
+                media,
+                playhead_secs: presented.unwrap_or(0.0),
+                playing,
+            });
             Ok(json!({
+                // What a person is told when they ask whether Klipp is
+                // there: in their words, read live (#626).
+                "text": text,
                 "build": build_json(),
                 // Which Klipp answered: with two running, each on its own
                 // socket, a client can tell them apart.
