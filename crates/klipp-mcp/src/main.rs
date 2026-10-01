@@ -1126,8 +1126,27 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
             "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp will not run it twice"
         });
     }
-    // The full operation reference is available through klipp_guide. The
-    // catalog only needs enough text to choose the right tool.
+    // Keep every tool's guidance discoverable. For the few large argument
+    // references, put the complete reference on the relevant input field.
+    let description = match name {
+        "klipp_generator" => {
+            properties["data"]["description"] = json!(description);
+            "Preview a native generator clip; apply true places it as one undo step. Give at_secs and secs; data describes the native generator. Overlaps and locked tracks are refused."
+        }
+        "klipp_set_brief" => {
+            properties["brief"]["description"] = json!(description);
+            "Replace the project brief as one undo step. With merge true, change only supplied fields; null clears a field. Read the brief field for the full format."
+        }
+        "klipp_set_edit_plan" => {
+            properties["plan"]["description"] = json!(description);
+            "Propose a paper edit for user approval as one undo step. Read the plan field for segment, music, montage and title formats. Show the resulting plan to the user and ask."
+        }
+        "klipp_narrate" => {
+            properties["voice"]["description"] = json!(description);
+            "Create local narration and import the take; apply true places it on a Voice track. Nothing downloads unless download_models is true. Read the voice field for voices, licences and prerequisites."
+        }
+        _ => description,
+    };
     let description = match name {
         "klipp_guide" => "Read the editable workflow, full operation reference and recipes. Read before editing.",
         "klipp_plan" => "Preview frame-exact editorial ops without changing the timeline. Returns a revision for a guarded klipp_apply. Read klipp_guide for the full operation reference.",
@@ -1135,11 +1154,6 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
         _ => description,
     };
     let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let description = if description.len() > 320 {
-        let prefix: String = description.chars().take(300).collect();
-        let boundary = prefix.rfind(' ').unwrap_or(prefix.len());
-        format!("{}…", &prefix[..boundary])
-    } else { description };
     if matches!(name, "klipp_plan" | "klipp_apply") {
         properties["ops"] = edit_schema::ops_schema();
     }
@@ -2382,7 +2396,9 @@ mod interface_tests {
         let legacy = tool_definitions_for(false);
         let modern = tool_definitions_for(true);
         assert_eq!(legacy.len(), modern.len());
-        assert!(serde_json::to_vec(&legacy).unwrap().len() < 70_000);
+        let catalog_bytes = serde_json::to_vec(&legacy).unwrap().len();
+        eprintln!("legacy tool catalog: {catalog_bytes} bytes");
+        assert!(catalog_bytes < 90_000, "catalog is {catalog_bytes} bytes");
         let plan = modern.iter().find(|tool| tool["name"] == "klipp_plan").unwrap();
         assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["op"]["const"], "cut");
         assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["from"]["$ref"], "#/properties/ops/$defs/anchor");
@@ -2394,6 +2410,14 @@ mod interface_tests {
     fn malformed_edit_is_refused_before_any_socket_call() {
         let error = tool_to_command("klipp_apply", &json!({"ops":[{"op":"cut","from":{"frame":1},"to":{"fram":2}}]})).unwrap_err();
         assert!(error.contains("anchor form"), "{error}");
+    }
+
+    #[test]
+    fn track_aliases_match_the_document_resolver() {
+        for kind in ["Title", "text", "CAPTIONS", "subtitles", "Video", "AUDIO"] {
+            assert!(edit_schema::validate_ops(&json!({"ops":[{"op":"add_track","kind":kind}]})).is_ok(), "{kind}");
+            assert!(edit_schema::validate_ops(&json!({"ops":[{"op":"place","media_id":"m","track":kind,"at":{"frame":0}}]})).is_ok(), "{kind}");
+        }
     }
 }
 

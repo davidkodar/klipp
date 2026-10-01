@@ -27,7 +27,7 @@ pub(super) fn ops_schema() -> Value {
         {"type":"string","minLength":1},
         {"type":"object","properties":{"track":{"type":"integer","minimum":0},"secs":{"type":"number","minimum":0}},"required":["track","secs"],"additionalProperties":false}
     ]});
-    let track_ref = json!({"oneOf":[{"type":"integer","minimum":0},{"type":"string","enum":["video","audio","text","subtitle"]}]});
+    let track_ref = json!({"oneOf":[{"type":"integer","minimum":0},{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"}]});
     let common = [
         variant(
             "cut",
@@ -62,49 +62,10 @@ pub(super) fn ops_schema() -> Value {
         variant(
             "add_track",
             &["kind"],
-            json!({"kind":{"type":"string","enum":["video","audio","text","subtitle"]},"name":{"type":"string"}}),
+            json!({"kind":{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"},"name":{"type":"string"}}),
         ),
     ];
-    let mut other_ops = vec![
-        "vector_path",
-        "j_cut",
-        "l_cut",
-        "captions",
-        "audio",
-        "volume",
-        "duck",
-        "lower_third",
-        "set_text",
-        "grade",
-        "effect",
-        "redact",
-        "slip",
-        "role",
-        "matte",
-        "format",
-        "stabilize",
-        "reframe",
-        "zoom",
-        "pan",
-        "follow",
-        "highlight",
-        "ramp",
-        "grade_group",
-        "remove_grade_group",
-        "look",
-        "qualify",
-        "retime",
-        "clean_audio",
-        "transition",
-        "style",
-        "title",
-        "compose",
-        "camera",
-        "crop",
-        "generator",
-        "depth",
-        "motion_blur",
-    ];
+    let mut other_ops = klipp_document::ops::OP_NAMES.to_vec();
     other_ops.retain(|op| !COMMON.contains(op));
     let mut alternatives = common.to_vec();
     alternatives.push(json!({"type":"object","properties":{"op":{"type":"string","enum":other_ops}},"required":["op"],"description":"Less common operation; read klipp_guide before using it."}));
@@ -188,10 +149,7 @@ pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
             return Err(format!("ops[{index}].edge must be in or out"));
         }
         if let Some(value) = op.get("kind") {
-            if !matches!(
-                value.as_str(),
-                Some("video" | "audio" | "text" | "subtitle")
-            ) {
+            if !valid_track_kind(value) {
                 return Err(format!("ops[{index}].kind must name a track kind"));
             }
         }
@@ -224,17 +182,17 @@ fn nonnegative_integer(value: &Value) -> bool {
     value.as_u64().is_some()
 }
 
+fn valid_track_kind(value: &Value) -> bool {
+    value.as_str().is_some_and(|kind| matches!(kind.to_lowercase().as_str(),
+        "video" | "audio" | "text" | "title" | "subtitle" | "subtitles" | "captions"))
+}
+
 fn validate_track_ref(value: &Value, path: &str) -> Result<(), String> {
-    if nonnegative_integer(value)
-        || matches!(
-            value.as_str(),
-            Some("video" | "audio" | "text" | "subtitle")
-        )
-    {
+    if nonnegative_integer(value) || valid_track_kind(value) {
         Ok(())
     } else {
         Err(format!(
-            "{path} must be a track index or video/audio/text/subtitle"
+            "{path} must be a track index or video/audio/text/title/subtitle/subtitles/captions"
         ))
     }
 }

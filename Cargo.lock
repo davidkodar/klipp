@@ -3076,6 +3076,7 @@ name = "klipp-mcp"
 version = "0.1.0"
 dependencies = [
  "klipp-control",
+ "klipp-document",
  "serde",
  "serde_json",
 ]

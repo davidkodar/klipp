@@ -899,6 +899,16 @@ pub enum Op {
     },
 }
 
+/// Serialized operation tags accepted by `Op`. Keep this in sync with the
+/// variants; the test below catches additions and renames.
+pub const OP_NAMES: &[&str] = &[
+    "vector_path", "place", "add_track", "trim", "j_cut", "l_cut", "split", "remove", "move", "cut",
+    "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
+    "slip", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
+    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "clean_audio",
+    "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
+];
+
 /// What a `style` op changes, gathered.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Look {
@@ -5788,6 +5798,34 @@ fn split_edit(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Cli
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exported_op_names_cover_every_serialized_variant() {
+        let source = include_str!("ops.rs");
+        let variants = source.split("pub enum Op {").nth(1).unwrap().split("\n}\n").next().unwrap();
+        let mut expected = Vec::new();
+        for line in variants.lines().filter(|line| line.starts_with("    ") && !line.starts_with("     ")) {
+            let name = line.trim().split([' ', '{']).next().unwrap();
+            if !name.chars().next().is_some_and(char::is_uppercase) { continue; }
+            let mut tag = String::new();
+            for ch in name.chars() {
+                if ch.is_uppercase() && !tag.is_empty() { tag.push('_'); }
+                tag.extend(ch.to_lowercase());
+            }
+            expected.push(tag);
+        }
+        expected.sort();
+        let mut exported = OP_NAMES.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        exported.sort();
+        assert_eq!(exported, expected, "update OP_NAMES when adding or renaming Op variants");
+        exported.dedup();
+        assert_eq!(exported.len(), OP_NAMES.len(), "duplicate operation tag");
+        for name in OP_NAMES {
+            if let Err(err) = serde_json::from_value::<Op>(serde_json::json!({"op": name})) {
+                assert!(!err.to_string().contains("unknown variant"), "{name}: {err}");
+            }
+        }
+    }
+
     /// A secondary is a keyer gating a correction, never a keyer alone
     /// in the picture chain: that would put its matte on screen. The
     /// hue turn lands on the colour balance the qualifier gates.
