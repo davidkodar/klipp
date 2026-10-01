@@ -54,7 +54,7 @@ fn export(clip: klipp_timeline::Clip, media: (MediaId, MediaFile), frames: u64, 
         duration_frames: frames, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
         pan_law: Default::default(),
-        working_colorspace: WorkingColorspace::Rec709Linear,
+        working_colorspace: WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
     let settings = ExportSettings {
         pan_law: Default::default(),

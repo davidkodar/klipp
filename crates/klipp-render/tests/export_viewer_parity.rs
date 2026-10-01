@@ -88,7 +88,7 @@ fn export_video(video: VideoTimeline, out: &Path, tweak: impl FnOnce(&mut Export
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
         pan_law: Default::default(),
-        working_colorspace: WorkingColorspace::Rec709Linear,
+        working_colorspace: WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
     let mut settings = ExportSettings {
         pan_law: Default::default(),

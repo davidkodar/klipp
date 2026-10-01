@@ -34248,6 +34248,7 @@ impl KlippApp {
                 });
 
             let mut still_open = true;
+            let colour_before = (self.state.project_working_colorspace, self.state.project_grade_encoding);
             crate::panels::project_info::show_project_info(
                 ctx,
                 &mut self.state,
@@ -34256,6 +34257,11 @@ impl KlippApp {
             );
             if !still_open {
                 self.state.show_project_info = false;
+            }
+            // A new working space or grade encoding changes the picture,
+            // and a paused viewer redraws nothing on its own.
+            if (self.state.project_working_colorspace, self.state.project_grade_encoding) != colour_before {
+                self.sync_and_refresh_frame();
             }
         }
 

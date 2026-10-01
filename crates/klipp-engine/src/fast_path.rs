@@ -112,6 +112,7 @@ pub fn grade_to_display_on_gpu(
         }
     };
     exec.prepare_clip(at.graph);
+    exec.set_grade_encoding(klipp_core::grade_encoding());
     exec.set_working_colorspace(at.working);
     exec.set_lut_tetrahedral(at.lut_tetrahedral);
     exec.set_current_clip_track_points(at.track_points);

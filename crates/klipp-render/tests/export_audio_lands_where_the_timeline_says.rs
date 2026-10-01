@@ -73,7 +73,7 @@ fn snapshot(fps_num: u32, fps_den: u32, clip: AudioClipSnapshot) -> SequenceSnap
         global_lut_path: None,
         subtitle_tracks: vec![],
         chapters: vec![],
-        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     }
 }
 

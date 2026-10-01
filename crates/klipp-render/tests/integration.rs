@@ -82,7 +82,7 @@ fn export_job_empty_sequence() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -134,7 +134,7 @@ fn export_job_cancellation_immediate() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(true)); // Cancel before start
@@ -177,7 +177,7 @@ fn export_job_cancellation_midway() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -248,7 +248,7 @@ fn export_job_progress_advances() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -318,7 +318,7 @@ fn export_real_media_h264() {
             }],
         }],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -390,7 +390,7 @@ fn export_real_media_with_color_grade() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -441,7 +441,7 @@ fn export_with_title_and_gap() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -515,7 +515,7 @@ fn export_with_keyframed_opacity() {
         audio_tracks: vec![],
         pan_law: Default::default(),
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -584,7 +584,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
             ],
         }],
         chapters: Vec::new(),
-        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -653,7 +653,7 @@ fn export_without_embed_has_no_subtitle_stream() {
             }],
         }],
         chapters: Vec::new(),
-        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));

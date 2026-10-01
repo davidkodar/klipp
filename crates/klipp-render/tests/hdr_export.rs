@@ -58,7 +58,7 @@ fn export_ws(
         duration_frames: FRAMES, export_range: None, video,
         audio_tracks: vec![], global_lut_path: None, subtitle_tracks: vec![], chapters: vec![],
         pan_law: Default::default(),
-        working_colorspace: ws,
+        working_colorspace: ws, grade_encoding: klipp_core::GradeEncoding::Bt1886,
     };
     let mut settings = ExportSettings {
         pan_law: Default::default(),
