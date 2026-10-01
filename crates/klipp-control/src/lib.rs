@@ -4450,6 +4450,16 @@ fn handle(
         ControlCommand::SetAppendAudio { enabled } => {
             send(AppCommand::SetAppendBringsAudio(enabled))
         }
+        ControlCommand::DetectSceneCuts { clip_id } => {
+            if in_batch {
+                return Err("detect_scene_cuts runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            let mut v = send(AppCommand::DetectSceneCuts { clip_id: id })?;
+            v["text"] = json!("Finding the scene cuts in the background; the clip is split at them, its sound with it, as one undo step when it is done. Read the timeline in a while to see the shots, or undo to put it back.");
+            Ok(v)
+        }
+
         ControlCommand::SelectClip { clip_id: c } => {
             let id = match c {
                 Some(s) => Some(existing_clip_id(ctx, &s)?),

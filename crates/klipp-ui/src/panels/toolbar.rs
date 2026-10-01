@@ -647,6 +647,40 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            // Detect Scene Cuts (#616): the selected clip split at its
+            // picture changes in one step; its progress and Cancel here
+            // while it runs.
+            let selected = state.selected_clip;
+            match selected {
+                Some(clip_id) if state.scene_detect_in_progress.contains(&clip_id) => {
+                    let pct = (state.scene_detect_progress.get(&clip_id).copied().unwrap_or(0.0) * 100.0) as u32;
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Finding scene cuts\u{2026} {pct}%"));
+                        if ui.small_button("Cancel").clicked() {
+                            cmds.push(AppCommand::CancelSceneDetect { clip_id });
+                            ui.close_menu();
+                        }
+                    });
+                }
+                _ => {
+                    let refusal = match selected {
+                        Some(id) => state.scene_cut_refusal(id),
+                        None => Some("select a video clip first"),
+                    };
+                    let item = ui.add_enabled(refusal.is_none(), egui::Button::new("Detect Scene Cuts"));
+                    let item = match refusal {
+                        Some(why) => item.on_disabled_hover_text(format!("Splits the selected clip where its picture cuts: {why}")),
+                        None => item.on_hover_text("Find where the picture cuts in the selected clip and split it there, its sound with it, in one undoable step"),
+                    };
+                    if item.clicked() {
+                        if let Some(clip_id) = selected {
+                            cmds.push(AppCommand::DetectSceneCuts { clip_id });
+                        }
+                        ui.close_menu();
+                    }
+                }
+            }
+            ui.separator();
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.menu_button("Add Generator", |ui| {
                 if ui.button("Solid Colour").clicked() {

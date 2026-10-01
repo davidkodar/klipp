@@ -36,6 +36,9 @@ answer from here, in their words, and short:
 - J and L cuts, speed changes (reverse too), transitions where the
   piece wants them, and multicam: sync two or more angles and switch
   between them.
+- Split an edited film, a montage or a flattened export back into its
+  shots, at every hard cut in the picture.
+  *"Split this exported film back into its shots."*
 
 ## Understanding the footage
 

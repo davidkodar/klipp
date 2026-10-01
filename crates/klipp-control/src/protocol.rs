@@ -175,6 +175,11 @@ pub enum ControlCommand {
     /// session-scoped setting, so it shows there when set from here.
     SetAppendAudio { enabled: bool },
     SelectClip { clip_id: Option<String> },
+    /// Timeline → Detect Scene Cuts for a clip (#616): its picture changes
+    /// found in the background and the clip split there with its linked
+    /// sound, one undoable edit. Returns at once; the split shows on the
+    /// timeline when the detection is done.
+    DetectSceneCuts { clip_id: String },
 
     // ── Colour / grade ─────────────────────────────────────────────
     /// The clip's node graph, as the serialised `NodeGraph`.

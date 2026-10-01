@@ -315,6 +315,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "method": "set_append_audio",
             "enabled": args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         }),
+        "klipp_detect_scene_cuts" => json!({ "method": "detect_scene_cuts", "clip_id": arg_str(args, "clip_id")? }),
         "klipp_select_clip" => json!({
             "method": "select_clip",
             "clip_id": args.get("clip_id").and_then(|v| v.as_str()),
@@ -1160,6 +1161,14 @@ fn tool_definitions() -> Vec<Value> {
              vec!["clip_id"]),
         tool("klipp_remove_clip", "Remove a clip from the timeline.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
+             vec!["clip_id"]),
+        tool("klipp_detect_scene_cuts",
+             "Split a clip at the cuts in its picture: a flattened movie, a montage someone exported, \
+              a long take with edits in it, back into its shots on the timeline. Runs in the \
+              background; the clip is then split at each hard cut, its linked sound with it, as one \
+              undo step. Hard cuts are found well; slow dissolves may be missed. Read klipp_timeline \
+              after a while for the shots.",
+             json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
         tool("klipp_select_clip",
              "Select a clip (or pass no id to clear the selection). The inspector and \

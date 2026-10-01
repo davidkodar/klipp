@@ -2033,6 +2033,32 @@ impl KlippApp {
         }
     }
 
+    /// Detect Scene Cuts' end (#616): the clip split at `cut_times` (its
+    /// file's seconds) as one undoable edit, its linked sound with it, and
+    /// said how many. With none inside it, or a clip since changed so none
+    /// fall inside, it is left as it is and that is said too.
+    fn split_at_scene_cuts(&mut self, clip_id: klipp_core::ClipId, cut_times: &[f64]) {
+        let seq = self.state.sequence();
+        let Some(name) = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)).map(|m| m.filename.clone()) else {
+            self.state.toast.show("Scene cuts found, but the clip is gone".to_string());
+            return;
+        };
+        let ops = klipp_document::ops::scene_cut_ops(seq, clip_id, cut_times);
+        if ops.is_empty() {
+            self.state.toast.show(format!("No scene cuts found in {name}; it is unchanged"));
+            return;
+        }
+        match klipp_document::ops::resolve(seq, &self.state.media_pool, &ops) {
+            Ok(plan) => {
+                let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                self.apply_edits_as_one(&edits, "Detect Scene Cuts");
+                let n = ops.len();
+                self.state.toast.show(format!("Split {name} at {n} scene cut{} into {} shots", if n == 1 { "" } else { "s" }, n + 1));
+            }
+            Err(r) => self.state.toast.show(format!("Scene cuts not applied: {}. {}", r.why, capitalise(&r.hint))),
+        }
+    }
+
     fn apply_edits_as_one(&mut self, edits: &[EditCommand], label: &str) {
         if edits.is_empty() {
             return;
@@ -20631,6 +20657,10 @@ impl KlippApp {
                     let clip_id = *clip_id;
                     self.state.scene_detect_in_progress.insert(clip_id);
                     self.state.scene_detect_progress.insert(clip_id, 0.0);
+                    // Cancel used to forget the run in the UI and leave its
+                    // thread decoding to the end; this stops it (#616).
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    self.state.scene_detect_cancel.insert(clip_id, std::sync::Arc::clone(&cancel));
                     let event_tx = self.proxy_event_tx.clone();
                     let sensitivity = self.prefs.editing.scene_detect_sensitivity;
                     let min_gap = self.prefs.editing.scene_detect_min_gap_secs;
@@ -20692,7 +20722,7 @@ impl KlippApp {
                             source_out_secs,
                             frame_count,
                             &mut || frame_rx.recv().ok(),
-                            &|p| event_tx.send(AppEvent::SceneDetectProgress { clip_id, progress: p }).is_ok(),
+                            &|p| !cancel.load(std::sync::atomic::Ordering::Relaxed) && event_tx.send(AppEvent::SceneDetectProgress { clip_id, progress: p }).is_ok(),
                         );
                         drop(frame_rx);
                         let _ = producer.join();
@@ -20711,11 +20741,31 @@ impl KlippApp {
                 true
             }
             AppCommand::CancelSceneDetect { clip_id } => {
-                // The progress callback returning false stops the thread.
-                // Just remove from in_progress — the thread will exit on next
-                // frame when it can't send to the closed channel.
+                // The thread reads the flag at its next frame and stops; what
+                // it found by then is dropped, as the run is no longer in
+                // progress when its result arrives.
+                if let Some(flag) = self.state.scene_detect_cancel.remove(clip_id) {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.state.scene_detect_in_progress.remove(clip_id);
                 self.state.scene_detect_progress.remove(clip_id);
+                self.state.scene_split_pending.remove(clip_id);
+                self.state.toast.show("Scene detection cancelled; the clip is unchanged".to_string());
+                true
+            }
+            AppCommand::DetectSceneCuts { clip_id } => {
+                if let Some(why) = self.state.scene_cut_refusal(*clip_id) {
+                    self.state.toast.show(format!("No scene cuts to find: {why}"));
+                    return true;
+                }
+                if self.state.scene_detect_in_progress.contains(clip_id) {
+                    self.state.toast.show("Scenes are already being found in this clip".to_string());
+                    return true;
+                }
+                // The detection Detect Scenes runs; on finishing, a split
+                // where it would have left markers.
+                self.state.scene_split_pending.insert(*clip_id);
+                self.send_commands(vec![AppCommand::DetectScenes { clip_id: *clip_id }]);
                 true
             }
             AppCommand::SplitAtSceneMarkers { clip_id } => {
@@ -29104,6 +29154,13 @@ impl eframe::App for KlippApp {
         if self.state.filmstrip_generating || !self.filmstrip_cache_loads.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // And while scenes are being found: their progress moves in the
+        // menu, and the result is taken in, and a clip split, on the frame
+        // after it arrives, which with nothing else moving never came
+        // (#616).
+        if !self.state.scene_detect_in_progress.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.drain_audio_conforms();
         self.drain_proxy_events();
         // If a skim decode just finished and there's a queued request,
@@ -31776,8 +31833,19 @@ impl KlippApp {
                     self.state.scene_detect_progress.insert(clip_id, progress);
                 }
                 AppEvent::SceneDetectComplete { clip_id, cut_times } => {
-                    self.state.scene_detect_in_progress.remove(&clip_id);
+                    self.state.scene_detect_cancel.remove(&clip_id);
+                    let running = self.state.scene_detect_in_progress.remove(&clip_id);
                     self.state.scene_detect_progress.remove(&clip_id);
+                    let split = self.state.scene_split_pending.remove(&clip_id);
+                    // Cancelled: what it found by then is not used. (The next
+                    // event, not out of the drain: that would drop the rest.)
+                    if !running {
+                        continue;
+                    }
+                    if split {
+                        self.split_at_scene_cuts(clip_id, &cut_times);
+                        continue;
+                    }
                     let color = self.prefs.editing.scene_detect_marker_color;
                     let mut added = 0usize;
                     let mut found_clip = false;
@@ -31823,6 +31891,8 @@ impl KlippApp {
                 AppEvent::SceneDetectFailed { clip_id, error } => {
                     self.state.scene_detect_in_progress.remove(&clip_id);
                     self.state.scene_detect_progress.remove(&clip_id);
+                    self.state.scene_detect_cancel.remove(&clip_id);
+                    self.state.scene_split_pending.remove(&clip_id);
                     tracing::warn!("Scene detection failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Scene detection failed: {error}"));
                 }
