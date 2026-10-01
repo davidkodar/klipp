@@ -11226,7 +11226,7 @@ impl KlippApp {
 
     fn handle_speed_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
-                AppCommand::SetClipSpeed { clip_id, speed } => {
+                AppCommand::SetClipSpeed { clip_id, speed, ripple } => {
                     // A negative speed plays the clip backward (#617). The
                     // magnitude is clamped to [0.1, 16.0] — zero would stall
                     // playback and keeps timeline duration math well-defined.
@@ -11243,43 +11243,16 @@ impl KlippApp {
                         self.state.toast.show("Only a clip of a media file can play in reverse".to_string());
                         return true;
                     }
-                    // Its linked sound takes the same speed, so the two stay
-                    // the same length and in step; reversed, both are silent.
-                    let partner = clip.linked_clip_id.filter(|lid| seq.all_clips().any(|c| c.id == *lid && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })));
-                    let opened = !self.state.active_history_mut().is_batching();
-                    if opened {
-                        self.state.active_history_mut().begin_batch();
+                    // As the retime op does it: the linked sound with it, and
+                    // the clips after them rippled, or a refusal rather than
+                    // a clip laid over the next one (#639).
+                    match klipp_document::ops::retime_at(seq, &self.state.media_pool, *clip_id, speed, *ripple) {
+                        Ok((what, edit)) => {
+                            tracing::info!("{what}");
+                            self.apply_edits_as_one(&[edit], "Clip Speed");
+                        }
+                        Err(r) => self.state.toast.show(format!("Speed unchanged: {}. {}", r.why, r.hint)),
                     }
-                    for cid in std::iter::once(*clip_id).chain(partner) {
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        let Some((ti, ci)) = seq.find_clip(cid) else { continue };
-                        let clip = &mut seq.tracks[ti].clips[ci];
-                        let old_speed = clip.speed;
-                        clip.speed = speed;
-                        // Adjust timeline duration: new_duration = source_duration / |speed|.
-                        // Reverse plays the same amount of source in the same
-                        // timeline span — the sign only flips direction.
-                        let source_dur_secs = clip.source_duration().to_secs_f64();
-                        let new_dur_secs = source_dur_secs / speed.abs().max(0.1);
-                        let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
-                        let old_timeline_out = clip.timeline_out;
-                        clip.timeline_out = clip.timeline_in + new_duration;
-                        let new_timeline_out = clip.timeline_out;
-                        self.state.active_history_mut().push(crate::history::HistoryEntry {
-                            command: crate::history::EditCommand::SetClipSpeed {
-                                clip_id: cid,
-                                old_speed,
-                                new_speed: speed,
-                                old_timeline_out,
-                                new_timeline_out,
-                            },
-                        });
-                    }
-                    if opened {
-                        self.state.active_history_mut().end_batch();
-                    }
-                    self.sync_sequence_to_engine();
-                    self.state.dirty = true;
                     true
                 }
                 AppCommand::AddSpeedKeyframe { clip_id, time_secs, speed } => {
@@ -33354,6 +33327,10 @@ impl KlippApp {
                     ui.add_enabled(can_reverse, egui::Checkbox::new(&mut self.state.speed_dialog_reverse, "Reverse playback"))
                         .on_hover_text("Play the clip from its last frame to its first. A reversed clip, and its linked sound, play silent.")
                         .on_disabled_hover_text("Only a clip of a media file can play in reverse");
+                    ui.checkbox(&mut self.state.speed_dialog_ripple, "Move the clips after it")
+                        .on_hover_text("A clip made longer pushes what follows on its track (and its sound's) along; one made shorter pulls it up. Off, a clip that would grow into the next one is not changed.");
+                    // What a speed change does to the sound (#638).
+                    ui.label(egui::RichText::new("At any speed but 100% the clip and its linked sound play silent.").small().weak());
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
@@ -33361,7 +33338,7 @@ impl KlippApp {
                             if let Some(clip_id) = self.state.selected_clip {
                                 let mut speed = self.state.speed_dialog_value / 100.0;
                                 if self.state.speed_dialog_reverse { speed = -speed; }
-                                cmds.push(AppCommand::SetClipSpeed { clip_id, speed });
+                                cmds.push(AppCommand::SetClipSpeed { clip_id, speed, ripple: self.state.speed_dialog_ripple });
                             }
                             self.state.show_speed_dialog = false;
                         }

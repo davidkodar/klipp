@@ -173,9 +173,13 @@ exist until the plan runs.
   1. A second of the same kind replaces the first.
 - `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
   edges a little to hide the movement.
-- `retime {clip_id, speed}`: change a clip's speed. Above 1 is faster
-  and shorter, below 1 slower and longer. The clips after it keep their
-  place, so close the gap or overlap with move or ripple.
+- `retime {clip_id, speed, ripple?}`: change a clip's speed, its linked
+  sound with it. Above 1 is faster and shorter, below 1 slower and
+  longer, negative plays it reversed. At any speed but 1 the clip's own
+  sound is silent (it is not stretched); music and other tracks play on.
+  With `ripple` the clips after it on its tracks move by the change in
+  length; without it a gap is left where it shrinks, and a clip that
+  would grow into the next one is refused.
 - `reframe {clip_id, scale?, x?, y?}`: punch in and reposition a
   picture. `scale` zooms (1 as shot, up to 4); `x` and `y` pan the frame
   from -1 to 1. Use it to salvage a wide or badly-framed shot, to fit a
