@@ -144,6 +144,10 @@ exist until the plan runs.
 - `add_track {kind, name?}`: a video or text track on top, which
   becomes track 0 and moves every other index down by one; an audio or
   subtitle track at the bottom.
+- `remove_track {track, with_clips?}`: a track taken out, by index or
+  kind; every track below moves up by one. Refused while it holds clips
+  unless `with_clips`, which takes them too and unlinks anything on
+  another track from them. One undo step puts it back.
 - `captions {track?, from?, to?, max_chars?, max_lines?, replace?}`: captions for
   what is heard on the timeline, from the transcripts. Each word lands
   where its clip puts it; a cue closes at a sentence, a pause or a cut;

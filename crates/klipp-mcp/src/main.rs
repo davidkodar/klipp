@@ -1524,6 +1524,9 @@ fn tool_definitions() -> Vec<Value> {
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
               other index moves down by one), an audio or subtitle track at the bottom.\n\
+              remove_track {track, with_clips?} — a track out (index or kind), every track below moving \
+              up by one; refused while it holds clips unless with_clips, which takes them and unlinks \
+              their partners elsewhere.\n\
               captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
               on the timeline, from the transcripts (run klipp_analyze first): each word lands \
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
@@ -1708,6 +1711,9 @@ fn tool_definitions() -> Vec<Value> {
               rippled later to make room and a clip straddling the anchor is split.\n\
               add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
               other index moves down by one), an audio or subtitle track at the bottom.\n\
+              remove_track {track, with_clips?} — a track out (index or kind), every track below moving \
+              up by one; refused while it holds clips unless with_clips, which takes them and unlinks \
+              their partners elsewhere.\n\
               captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
               on the timeline, from the transcripts (run klipp_analyze first): each word lands \
               where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \

@@ -85,6 +85,12 @@ impl DocumentView<'_> {
                     seq.renumber_tracks();
                 }
             }
+            EditCommand::RemoveTrack { index, track } => {
+                let seq = &mut self.sequences[self.active];
+                let idx = (*index).min(seq.tracks.len());
+                seq.tracks.insert(idx, track.clone());
+                seq.renumber_tracks();
+            }
             EditCommand::SetBrief { old, .. } => {
                 self.sequences[self.active].brief = old.as_deref().cloned();
             }
@@ -725,6 +731,13 @@ impl DocumentView<'_> {
                 let idx = (*index).min(seq.tracks.len());
                 seq.tracks.insert(idx, track.clone());
                 seq.renumber_tracks();
+            }
+            EditCommand::RemoveTrack { index, track } => {
+                let seq = &mut self.sequences[self.active];
+                if seq.tracks.get(*index).is_some_and(|t| t.id == track.id) {
+                    seq.tracks.remove(*index);
+                    seq.renumber_tracks();
+                }
             }
             EditCommand::SetBrief { new, .. } => {
                 self.sequences[self.active].brief = new.as_deref().cloned();
