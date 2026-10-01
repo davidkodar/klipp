@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use klipp_core::Timecode;
-use klipp_timeline::{Clip, ClipKind};
+use klipp_timeline::{Clip, ClipKind, TrackKind};
 use serde_json::{json, Value};
 
 use crate::{cut_points, ControlContext};
@@ -16,9 +16,36 @@ struct ClipContext {
     track_name: String,
     locked: bool,
     heard: bool,
+    audio_track: bool,
     path: Option<PathBuf>,
     media_id: Option<String>,
     media_duration_secs: Option<f64>,
+}
+
+/// Match the editorial resolver's audibility rule: a linked video's sound
+/// comes from its audio partner, with settings stored on the video clip.
+fn clip_sound_is_heard(
+    sequence: &klipp_timeline::Sequence,
+    pool: &klipp_media::MediaPool,
+    track: &klipp_timeline::Track,
+    clip: &Clip,
+) -> bool {
+    if track.muted || !clip.enabled || !matches!(track.kind, TrackKind::Audio | TrackKind::Video) {
+        return false;
+    }
+    if !clip.media_id().and_then(|id| pool.get(&id)).is_some_and(|media| media.has_audio) {
+        return false;
+    }
+    if track.kind == TrackKind::Video && clip.linked_clip_id.is_some_and(|id| {
+        sequence.tracks.iter().any(|lane| lane.kind == TrackKind::Audio && lane.clips.iter().any(|partner| partner.id == id))
+    }) {
+        return false;
+    }
+    let settings_clip = clip.linked_clip_id.and_then(|id| {
+        sequence.tracks.iter().filter(|lane| lane.kind == TrackKind::Video)
+            .flat_map(|lane| lane.clips.iter()).find(|partner| partner.id == id)
+    }).unwrap_or(clip);
+    settings_clip.volume > 0.0
 }
 
 pub(crate) fn prepare(
@@ -61,7 +88,7 @@ pub(crate) fn prepare(
     let fps_den = sequence.fps.den;
     let from_frame = (from_secs * fps).ceil() as i64;
     let to_frame = (to_secs * fps).floor() as i64;
-    let ripple_tracks: Vec<Value> = sequence
+    let unlocked_tracks: Vec<Value> = sequence
         .tracks
         .iter()
         .enumerate()
@@ -71,6 +98,7 @@ pub(crate) fn prepare(
     let mut clips = Vec::new();
     for (track, lane) in sequence.tracks.iter().enumerate() {
         for clip in &lane.clips {
+            if !clip.enabled { continue; }
             if clip.timeline_out.to_secs_f64() <= from_secs
                 || clip.timeline_in.to_secs_f64() >= to_secs
             {
@@ -83,9 +111,8 @@ pub(crate) fn prepare(
                 track,
                 track_name: lane.name.clone(),
                 locked: lane.locked,
-                heard: item.is_some_and(|media| media.has_audio)
-                    && (lane.kind == klipp_timeline::TrackKind::Audio
-                        || (clip.linked_clip_id.is_none() && clip.volume > 0.0)),
+                heard: clip_sound_is_heard(&sequence, &pool, lane, clip),
+                audio_track: lane.kind == TrackKind::Audio,
                 path: item.map(|item| item.path.clone()),
                 media_id: media_id.map(|id| id.0.to_string()),
                 media_duration_secs: item.map(|item| item.duration.to_secs_f64()),
@@ -120,6 +147,7 @@ pub(crate) fn prepare(
     let mut candidates = Vec::new();
     let mut speech_checks: Vec<(Clip, Vec<(f64, f64)>, bool)> = Vec::new();
     for item in &clips {
+        if item.audio_track && !item.heard { continue; }
         let Some(path) = &item.path else { continue };
         let report = klipp_analysis::report::MediaAnalysis::load(path);
         let clip = &item.clip;
@@ -138,6 +166,7 @@ pub(crate) fn prepare(
         let words: Vec<(f64, f64, String)> = report
             .transcript
             .as_ref()
+            .filter(|_| item.heard)
             .map(|t| {
                 t.words
                     .iter()
@@ -155,6 +184,7 @@ pub(crate) fn prepare(
         let segments: Vec<(f64, f64, String)> = report
             .transcript
             .as_ref()
+            .filter(|_| item.heard)
             .map(|t| {
                 t.segments
                     .iter()
@@ -165,6 +195,7 @@ pub(crate) fn prepare(
         let silences: Vec<(f64, f64)> = report
             .audio
             .as_ref()
+            .filter(|_| item.heard)
             .map(|audio| {
                 audio
                     .silences
@@ -332,7 +363,7 @@ pub(crate) fn prepare(
         "revision": revision, "project_identity": identity,
         "range": { "from_frame": from_frame, "to_frame": to_frame, "fps_num": fps_num, "fps_den": fps_den },
         "clips": context, "candidates": candidates, "ambiguous": ambiguous,
-        "ripple_affects_tracks": ripple_tracks, "intent": intent, "next": next,
+        "unlocked_tracks": unlocked_tracks, "intent": intent, "next": next,
     }))
 }
 
@@ -443,6 +474,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mute_and_disabled_state_remove_audio_evidence() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut media = klipp_media::MediaItem::synthetic_for_test("/tmp/cut-prep-audibility.wav".into(), None);
+        media.has_audio = true;
+        let id = pool.add(media);
+        let time = |secs| Timecode::from_secs_f64(secs, 24);
+        let clip = Clip::media(id, time(0.0), time(2.0), time(0.0), time(2.0));
+        let mut sequence = klipp_timeline::Sequence::new_default();
+        let mut track = klipp_timeline::Track::new("A1", TrackKind::Audio);
+        track.clips.push(clip);
+        sequence.tracks = vec![track];
+        assert!(clip_sound_is_heard(&sequence, &pool, &sequence.tracks[0], &sequence.tracks[0].clips[0]));
+        sequence.tracks[0].muted = true;
+        assert!(!clip_sound_is_heard(&sequence, &pool, &sequence.tracks[0], &sequence.tracks[0].clips[0]));
+        sequence.tracks[0].muted = false;
+        sequence.tracks[0].clips[0].enabled = false;
+        assert!(!clip_sound_is_heard(&sequence, &pool, &sequence.tracks[0], &sequence.tracks[0].clips[0]));
+    }
+
+    #[test]
     fn a_trimmed_double_speed_pause_maps_to_a_sequence_frame_outside_words() {
         let time = |secs| Timecode::from_secs_f64(secs, 24);
         let mut clip = Clip::media(
@@ -459,6 +510,7 @@ mod tests {
             track_name: "V1".into(),
             locked: false,
             heard: false,
+            audio_track: false,
             path: None,
             media_id: None,
             media_duration_secs: Some(8.0),

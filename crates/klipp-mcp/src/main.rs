@@ -1027,6 +1027,10 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
                 message.push_str("\nExact cut changes (before and after, sequence frames):\n");
                 message.push_str(&serde_json::to_string(changes).unwrap_or_default());
             }
+            if let Some(shifted) = result.get("shifted") {
+                message.push_str("\nClips shifted by ripple (count per track and frame offset):\n");
+                message.push_str(&serde_json::to_string(shifted).unwrap_or_default());
+            }
             return Ok(with_next(message));
         }
     }

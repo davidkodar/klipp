@@ -937,6 +937,26 @@ fn a_ripple_cut_reports_linked_picture_and_sound_at_matching_frames() {
 }
 
 #[test]
+fn ripple_reports_later_clips_as_one_bounded_shift() {
+    let mut h = harness();
+    {
+        let mut sequence = h.sequence.write().unwrap();
+        sequence.tracks[0].clips = (0..8).map(|index| {
+            klipp_timeline::Clip::gap(
+                klipp_core::RationalTime::from_secs_f64(index as f64 * 4.0, 24),
+                klipp_core::RationalTime::from_secs_f64((index + 1) as f64 * 4.0, 24),
+            )
+        }).collect();
+    }
+    h.shared.bump_revision();
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+        "ops": [{ "op": "cut", "from": { "frame": 24 }, "to": { "frame": 48 } }] }));
+    assert_eq!(result["applied"], true);
+    assert!(result["changes"].as_array().unwrap().len() <= 3, "{result}");
+    assert_eq!(result["shifted"], json!([{ "track": 0, "clips": 7, "by_frames": -24 }]));
+}
+
+#[test]
 fn apply_refuses_a_plan_for_a_changed_revision_or_project() {
     let mut h = harness();
     // The position names the first clip at 1 s. A person replaces that

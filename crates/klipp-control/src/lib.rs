@@ -1507,12 +1507,34 @@ fn planned_cut_changes(ctx: &ControlContext, edits: &[klipp_document::history::E
     let old = clips(&before);
     let new = clips(&sequences[0]);
     let ids = old.keys().chain(new.keys()).cloned().collect::<std::collections::BTreeSet<_>>();
-    Ok(json!(ids.into_iter().filter_map(|id| {
-        let before = old.get(&id);
+    let mut changes = Vec::new();
+    let mut shifted = std::collections::BTreeMap::<(u64, i64), usize>::new();
+    for id in ids {
+        let prior = old.get(&id);
         let after = new.get(&id);
-        if before == after { None } else { Some(json!({ "clip_id": id, "before": before, "after": after,
-            "created": before.is_none(), "removed": after.is_none() })) }
-    }).collect::<Vec<_>>()))
+        if prior == after { continue; }
+        if let (Some(prior), Some(after)) = (prior, after) {
+            let delta = after["timeline_in_frame"].as_i64().unwrap_or(0)
+                - prior["timeline_in_frame"].as_i64().unwrap_or(0);
+            if delta != 0
+                && prior["track"] == after["track"]
+                && after["timeline_out_frame"].as_i64().unwrap_or(0)
+                    - prior["timeline_out_frame"].as_i64().unwrap_or(0) == delta
+                && prior["source_in_secs"] == after["source_in_secs"]
+                && prior["source_out_secs"] == after["source_out_secs"]
+                && prior["linked_clip_id"] == after["linked_clip_id"]
+            {
+                *shifted.entry((prior["track"].as_u64().unwrap_or(0), delta)).or_default() += 1;
+                continue;
+            }
+        }
+        changes.push(json!({ "clip_id": id, "before": prior, "after": after,
+            "created": prior.is_none(), "removed": after.is_none() }));
+    }
+    let shifted: Vec<_> = shifted.into_iter().map(|((track, by_frames), clips)| {
+        json!({ "track": track, "clips": clips, "by_frames": by_frames })
+    }).collect();
+    Ok(json!({ "changes": changes, "shifted": shifted }))
 }
 
 /// Every reply carries which project it is about: the generation moves
@@ -4756,7 +4778,10 @@ fn handle(
             let label = label.unwrap_or_else(|| apply_label(&ops));
             let mut v = send_full_envelope_for_project(ctx, Vec::new(), edits, true, Some(revision), expected_project_identity, Some(label))?;
             if v["applied"] == true {
-                if let Some(changes) = cut_changes { v["changes"] = changes; }
+                if let Some(changes) = cut_changes {
+                    v["changes"] = changes["changes"].clone();
+                    v["shifted"] = changes["shifted"].clone();
+                }
             }
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
             if detail {
