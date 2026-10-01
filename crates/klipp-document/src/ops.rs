@@ -2670,9 +2670,10 @@ fn through_edit(a: &Clip, b: &Clip) -> bool {
     media && steady && a.enabled == b.enabled && a.timeline_out == b.timeline_in && source_runs_on
 }
 
-/// `b` folded into `a`: `a` running to where `b` ends, `b`'s markers
-/// kept where they were, and `b`'s fade out at the new end. The edits
-/// that make it: `a` replaced, `b` removed.
+/// `b` folded into `a`: `a` running to where `b` ends, both pieces'
+/// markers kept on the frames they mark, `b`'s fade out at the new end,
+/// and a transition out of `b` out of `a` now. The edits that make it:
+/// `a` replaced, those transitions retargeted, `b` removed.
 fn joined(seq: &Sequence, ti: usize, a: &Clip, b: &Clip) -> Vec<EditCommand> {
     let mut whole = a.clone();
     whole.timeline_out = b.timeline_out;
@@ -2681,14 +2682,21 @@ fn joined(seq: &Sequence, ti: usize, a: &Clip, b: &Clip) -> Vec<EditCommand> {
     } else {
         whole.source_out = b.source_out;
     }
-    let shift = secs(b.timeline_in) - secs(a.timeline_in);
-    whole.clip_markers.extend(b.clip_markers.iter().map(|m| klipp_timeline::ClipMarker { time_secs: m.time_secs + shift, ..m.clone() }));
+    // A marker is in the file's seconds from its clip's source in, so it
+    // moves by where that was against the whole's: at any speed, and a
+    // reversed join moves the first piece's too, its source in being the
+    // second's now.
+    let rebased = |c: &Clip| {
+        let shift = secs(c.source_in) - secs(whole.source_in);
+        c.clip_markers.iter().map(move |m| klipp_timeline::ClipMarker { time_secs: m.time_secs + shift, ..m.clone() }).collect::<Vec<_>>()
+    };
+    whole.clip_markers = rebased(a).into_iter().chain(rebased(b)).collect();
     whole.fade_out_secs = b.fade_out_secs;
     let position = seq.tracks[ti].clips.iter().position(|c| c.id == b.id).unwrap_or(0);
-    vec![
-        EditCommand::ReplaceClip { description: "Join", old: Box::new(a.clone()), new: Box::new(whole) },
-        EditCommand::LegacyRemoveClip { clip: b.clone(), track_index: ti, position },
-    ]
+    let mut edits = vec![EditCommand::ReplaceClip { description: "Join", old: Box::new(a.clone()), new: Box::new(whole) }];
+    edits.extend(seq.tracks[ti].transitions.iter().filter(|t| t.clip_a_id == b.id).map(|t| EditCommand::RetargetTransition { track_index: ti, transition_id: t.id, old_a: b.id, new_a: a.id }));
+    edits.push(EditCommand::LegacyRemoveClip { clip: b.clone(), track_index: ti, position });
+    edits
 }
 
 /// [`Op::Join`].
@@ -2718,6 +2726,9 @@ fn join(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, side
         (Some((pti, _, pa)), Some((qti, _, pb))) if pti == qti && through_edit(pa, pb) => {
             if seq.tracks[pti].locked {
                 return Err(refuse(i, format!("its linked track {pti} is locked"), "unlock it first"));
+            }
+            if seq.tracks[pti].transitions.iter().any(|t| t.clip_a_id == pa.id && t.clip_b_id == pb.id) {
+                return Err(refuse(i, "a crossfade sits on that edit in the sound", "remove it first"));
             }
             edits.extend(joined(seq, pti, pa, pb));
             touched.push(pa.id);
@@ -6442,6 +6453,84 @@ mod tests {
         // The side is the one asked for: the first clip has nothing before it.
         let none = resolve(&seq, &pool, &[serde_json::from_value(serde_json::json!({ "op": "join", "clip_id": a.0.to_string(), "side": "previous" })).unwrap()]).unwrap_err();
         assert!(none.why.contains("previous clip"), "{}", none.why);
+    }
+
+    /// #687 review: a join keeps each marker on the frame it marks at 2x
+    /// and reversed, moves a dissolve out of the second piece onto the
+    /// whole, and undoes all of it.
+    #[test]
+    fn a_join_keeps_markers_and_dissolves() {
+        let (base, pool, media, _, b) = fixture();
+        let marker = |t: f64| klipp_timeline::ClipMarker { time_secs: t, name: "m".into(), color: klipp_core::MarkerColor::Blue, comment: String::new() };
+        let run = |seq: &Sequence, op: serde_json::Value| {
+            let plan = resolve(seq, &pool, &[serde_json::from_value(op).unwrap()]).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let done = view.sequences[0].clone();
+            view.apply_inverse(&plan.steps[0].edit);
+            (done, view.sequences[0].clone())
+        };
+        let video_markers = |s: &Sequence| s.tracks[0].clips[0].clip_markers.iter().map(|m| m.time_secs).collect::<Vec<_>>();
+        // At 2x: the file's 0-4 s and 4-8 s at 0-2 s and 2-4 s. A marker
+        // 1 s into the second piece's source is at 5 s of the file.
+        let mut fast = base.clone();
+        for t in fast.tracks.iter_mut() {
+            for (k, c) in t.clips.iter_mut().enumerate() {
+                c.speed = 2.0;
+                c.timeline_in = tc(2.0 * k as f64);
+                c.timeline_out = tc(2.0 * k as f64 + 2.0);
+            }
+        }
+        fast.tracks[0].clips[1].clip_markers = vec![marker(1.0)];
+        let (done, _) = run(&fast, serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" }));
+        assert_eq!(video_markers(&done), vec![5.0], "a marker stays on its frame at 2x");
+        // Reversed: the first piece shows 8 s back to 4 s, the second 4 s
+        // back to 0 s; the whole's source starts at 0, so the first
+        // piece's marker moves by 4 s and the second's stays.
+        let mut back = base.clone();
+        for t in back.tracks.iter_mut() {
+            t.clips[0].source_in = tc(4.0);
+            t.clips[0].source_out = tc(8.0);
+            t.clips[1].source_in = tc(0.0);
+            t.clips[1].source_out = tc(4.0);
+            for c in t.clips.iter_mut() {
+                c.speed = -1.0;
+            }
+        }
+        back.tracks[0].clips[0].clip_markers = vec![marker(1.0)];
+        back.tracks[0].clips[1].clip_markers = vec![marker(1.0)];
+        let (done, _) = run(&back, serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" }));
+        let c = &done.tracks[0].clips[0];
+        assert_eq!((secs(c.source_in), secs(c.source_out)), (0.0, 8.0));
+        assert_eq!(video_markers(&done), vec![5.0, 1.0], "reversed, each marker on its frame");
+        // A dissolve out of the second piece into a third clip goes out of
+        // the whole; undone, out of the second piece again.
+        let mut dis = base.clone();
+        let third = Clip::media(media, tc(8.0), tc(10.0), tc(2.0), tc(4.0));
+        let third_id = third.id;
+        dis.tracks[0].clips.push(third);
+        let tr = klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.4),
+            clip_a_id: b,
+            clip_b_id: third_id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        };
+        dis.tracks[0].transitions.push(tr);
+        let (done, undone) = run(&dis, serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" }));
+        let first = done.tracks[0].clips[0].id;
+        assert_eq!((done.tracks[0].transitions[0].clip_a_id, done.tracks[0].transitions[0].clip_b_id), (first, third_id), "out of the whole now");
+        assert_eq!(undone.tracks[0].transitions[0].clip_a_id, b, "and back on undo");
+        // A crossfade on the sound's edit refuses the join.
+        let mut faded = base.clone();
+        let (sa, sb) = (faded.tracks[1].clips[0].id, faded.tracks[1].clips[1].id);
+        faded.tracks[1].transitions.push(klipp_timeline::Transition { clip_a_id: sa, clip_b_id: sb, ..tr });
+        let err = resolve(&faded, &pool, &[serde_json::from_value(serde_json::json!({ "op": "join", "clip_id": b.0.to_string(), "side": "previous" })).unwrap()]).unwrap_err();
+        assert!(err.why.contains("crossfade"), "{}", err.why);
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the
