@@ -582,7 +582,8 @@ pub enum Op {
     },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
-    /// reversed, silent, at that magnitude (#617). The clips after it on
+    /// reversed at that magnitude (#617), its sound read at the speed,
+    /// pitch and all (#642). The clips after it on
     /// the track keep their place, so a gap or an overlap is yours to close.
     Retime {
         clip_id: ClipRef,
@@ -4291,7 +4292,7 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: ClipId,
         "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}{}",
         clip_name(seq, pool, clip),
         speed.abs(),
-        if speed < 0.0 { " reversed, its sound silent" } else if (speed - 1.0).abs() > 1e-6 { ", its sound silent" } else { "" },
+        if speed < 0.0 { " reversed, its sound backward" } else if (speed - 1.0).abs() > 1e-6 { ", its sound at that speed" } else { "" },
         secs(clip.timeline_in),
         secs(new_out_of_clip),
         if members.len() > 1 { ", its linked sound with it" } else { "" },
@@ -6471,7 +6472,7 @@ mod tests {
         // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
         // 2x makes a 0-2, a gap opens), its linked sound with it.
         let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, ripple: false }]).unwrap();
-        assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s") && plan.steps[0].what.contains("its sound silent"), "{}", plan.steps[0].what);
+        assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s") && plan.steps[0].what.contains("its sound at that speed"), "{}", plan.steps[0].what);
         // Half speed would run over b: refused, not laid over it (#639).
         let refused = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, ripple: false }]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ripple"), "{}", refused.why);

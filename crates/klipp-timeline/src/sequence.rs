@@ -2073,13 +2073,17 @@ impl Clip {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }
 
-    /// Whether the clip's own sound is heard: only at its own speed. Klipp
-    /// does not stretch or pitch sound, and a retimed clip's sound read at
-    /// 1x ran out of step with its picture in the export (#638), while
-    /// playback muted everything. A retimed, ramped or reversed clip is
-    /// silent in both.
+    /// Whether the clip's own sound is heard. At a constant speed it is,
+    /// varispeed: read at that speed, its pitch moving with it as tape's
+    /// does, backward when reversed (#642); playback and export read it
+    /// alike. A speed ramp has no one speed to read at, and is silent.
     pub fn plays_its_sound(&self) -> bool {
-        (self.speed - 1.0).abs() < 1e-6 && self.speed_keyframes.is_empty()
+        self.speed_keyframes.is_empty()
+    }
+
+    /// Whether its sound is read at another speed than its own.
+    pub fn is_varispeed(&self) -> bool {
+        (self.speed - 1.0).abs() > 1e-6
     }
 
     /// Whether the clip plays its source backward: a negative speed (#617).

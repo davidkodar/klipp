@@ -33337,12 +33337,12 @@ impl KlippApp {
                         self.state.speed_dialog_reverse = false;
                     }
                     ui.add_enabled(can_reverse, egui::Checkbox::new(&mut self.state.speed_dialog_reverse, "Reverse playback"))
-                        .on_hover_text("Play the clip from its last frame to its first. A reversed clip, and its linked sound, play silent.")
+                        .on_hover_text("Play the clip from its last frame to its first. Its sound plays backward with it.")
                         .on_disabled_hover_text("Only a clip of a media file can play in reverse");
                     ui.checkbox(&mut self.state.speed_dialog_ripple, "Move the clips after it")
                         .on_hover_text("A clip made longer pushes what follows on its track (and its sound's) along; one made shorter pulls it up. Off, a clip that would grow into the next one is not changed.");
                     // What a speed change does to the sound (#638).
-                    ui.label(egui::RichText::new("At any speed but 100% the clip and its linked sound play silent.").small().weak());
+                    ui.label(egui::RichText::new("The sound plays at the new speed, its pitch moving with it, as tape does.").small().weak());
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {

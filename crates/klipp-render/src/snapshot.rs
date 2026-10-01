@@ -130,6 +130,41 @@ pub struct AudioClipSnapshot {
     /// What the clip does to its sound: playback applies this per clip,
     /// and the render applies the same.
     pub shape: AudioClipShape,
+    /// A retimed clip's sound, read at its speed (#642); `None` at 1x.
+    pub varispeed: Option<VarispeedRead>,
+}
+
+/// How a retimed clip's sound is read (#642): at `speed`, backward when
+/// negative, so the second `e` of the clip on the timeline plays source
+/// second `source_in + e·speed` going forward, `source_out + e·speed`
+/// reversed. `head_secs` is the timeline time the clip's sound starts
+/// before its own start, a crossfade's handle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VarispeedRead {
+    pub speed: f64,
+    pub source_in: f64,
+    pub source_out: f64,
+    pub head_secs: f64,
+}
+
+impl VarispeedRead {
+    /// `clip`'s, when it is retimed.
+    pub fn of(clip: &klipp_timeline::Clip, head_secs: f64) -> Option<Self> {
+        clip.is_varispeed().then(|| Self { speed: clip.speed, source_in: clip.source_in.to_secs_f64(), source_out: clip.source_out.to_secs_f64(), head_secs })
+    }
+
+    /// Where decoding starts: early enough for a forward clip's handle,
+    /// read at its speed; a reversed clip's handle lies past its out.
+    pub fn decode_from(&self) -> f64 {
+        (self.source_in - self.head_secs * self.speed.abs()).max(0.0)
+    }
+
+    /// The source second the clip's sound plays `secs` after its sound
+    /// starts on the timeline.
+    pub fn source_at(&self, secs: f64) -> f64 {
+        let e = secs - self.head_secs;
+        if self.speed < 0.0 { self.source_out + e * self.speed } else { self.source_in + e * self.speed }
+    }
 }
 
 /// A clip's own sound settings — gain, fades, volume, pan, channel
@@ -629,14 +664,16 @@ fn snapshot_audio_track(
                     }
                     // Stretched by the crossfades' handles: the incoming
                     // clip starts sounding early, the outgoing one ends late.
+                    let varispeed = VarispeedRead::of(clip, xfade.head_secs);
                     clips.push(AudioClipSnapshot {
                         timeline_start_frame: time_to_frame(&clip.timeline_in, fps).saturating_sub(head_frames),
                         timeline_end_frame: time_to_frame(&clip.timeline_out, fps) + tail_frames,
-                        source_start_secs: clip.source_in.to_secs_f64() - xfade.head_secs,
+                        source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64() - xfade.head_secs, |v| v.decode_from()),
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
                         audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                         shape,
+                        varispeed,
                     });
                 }
             }
@@ -675,14 +712,16 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
         if shape.is_silent() {
             continue;
         }
+        let varispeed = VarispeedRead::of(clip, 0.0);
         clips.push(AudioClipSnapshot {
             timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
             timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
-            source_start_secs: clip.source_in.to_secs_f64(),
+            source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64(), |v| v.decode_from()),
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             shape,
+            varispeed,
         });
     }
     if clips.is_empty() {
@@ -717,14 +756,16 @@ fn flatten_compound_audio_clips(
         if !media.has_audio {
             continue;
         }
+        let varispeed = VarispeedRead::of(&clip, 0.0);
         out.push(AudioClipSnapshot {
             timeline_start_frame: (clip.timeline_in.to_secs_f64() * fps).round() as u64,
             timeline_end_frame: (clip.timeline_out.to_secs_f64() * fps).round() as u64,
-            source_start_secs: clip.source_in.to_secs_f64(),
+            source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64(), |v| v.decode_from()),
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
             audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             shape: AudioClipShape::of(&clip, clip.duration().to_secs_f64()),
+            varispeed,
         });
     }
     Ok(())
@@ -1094,30 +1135,43 @@ mod tests {
         assert_eq!(at.clips[0].source_start_secs, 1.0);
     }
 
-    /// #638: a retimed clip's sound is left out of the export, as playback
-    /// leaves it out: read at 1x it ran out of step with its picture. The
-    /// clip on the next track, at its own speed, is still heard.
+    /// #642: a retimed clip's sound is in the export, read at its speed
+    /// from its own range, as playback reads it; a ramped one, which has
+    /// no one speed, is left out. The clip at 1x is read as ever.
     #[test]
-    fn a_retimed_clips_sound_is_left_out_and_the_rest_heard() {
-        let (talk, music) = (MediaId::new(), MediaId::new());
+    fn a_retimed_clips_sound_is_read_at_its_speed_and_a_ramp_left_out() {
+        let (talk, music, ramp) = (MediaId::new(), MediaId::new(), MediaId::new());
         let mut pool = MediaPool::new();
         pool.add(make_media_item(talk, "/media/talk.mp4"));
         pool.add(make_media_item(music, "/media/music.wav"));
+        pool.add(make_media_item(ramp, "/media/ramp.mp4"));
         let clip = |media_id, speed: f64| Clip {
             kind: ClipKind::Media { media_id },
-            source_in: make_rational(0, 24),
-            source_out: make_rational(96, 24),
+            source_in: make_rational(24, 24),
+            source_out: make_rational(120, 24),
             speed,
             ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
         };
         let mut seq = make_sequence();
-        seq.tracks[1].clips.push(clip(talk, 2.0));
+        seq.tracks[1].clips.push(clip(talk, -2.0));
         let mut bed = Track::new("A2", TrackKind::Audio);
         bed.clips.push(clip(music, 1.0));
         seq.tracks.push(bed);
+        let mut ramped = Track::new("A3", TrackKind::Audio);
+        let mut r = clip(ramp, 1.0);
+        r.speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 2.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+        ramped.clips.push(r);
+        seq.tracks.push(ramped);
         let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
-        let heard: Vec<_> = snap.audio_tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.path.to_string_lossy().to_string()).collect();
-        assert_eq!(heard, vec!["/media/music.wav"], "the 2x clip silent, the bed at 1x heard");
+        let heard: Vec<_> = snap.audio_tracks.iter().flat_map(|t| t.clips.iter()).map(|c| (c.path.to_string_lossy().to_string(), c.varispeed)).collect();
+        assert_eq!(heard.len(), 2, "the ramp left out: {heard:?}");
+        let read_of = |path: &str| heard.iter().find(|(p, _)| p == path).map(|(_, v)| *v).unwrap_or_else(|| panic!("{path} not heard: {heard:?}"));
+        let v = read_of("/media/talk.mp4").expect("the reversed 2x clip is read at its speed");
+        assert_eq!((v.speed, v.source_in, v.source_out), (-2.0, 1.0, 5.0));
+        // Reversed, its first moment is its range's end, a second in two
+        // seconds back.
+        assert!((v.source_at(0.0) - 5.0).abs() < 1e-9 && (v.source_at(1.0) - 3.0).abs() < 1e-9);
+        assert_eq!(read_of("/media/music.wav"), None, "the bed at 1x");
     }
 
     #[test]

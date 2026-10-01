@@ -3502,7 +3502,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         let label = if is_reversed { "⇄ Reverse" } else { "⇄ Forward" };
                         if ui
                             .selectable_label(is_reversed, egui::RichText::new(label).size(11.0))
-                            .on_hover_text("Play the clip from its last frame to its first. A reversed clip, and its linked sound, play silent.")
+                            .on_hover_text("Play the clip from its last frame to its first. Its sound plays backward with it.")
                             .clicked()
                         {
                             let abs = clip.speed.abs().max(0.1);
