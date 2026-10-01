@@ -55,6 +55,18 @@ fn tilde(path: &std::path::Path) -> String {
     }
 }
 
+/// What the Connect an assistant section says of an assistant that has
+/// Klipp only in some projects, named as `projects` (#625): where, and
+/// that Connect makes it every project's.
+fn projects_only_text(projects: &[String]) -> String {
+    let places = match projects {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    format!("Connected only in {places}. Connect adds it for every project.")
+}
+
 /// What the Connect an assistant section shows (#625).
 #[derive(Default)]
 struct AssistantConnect {
@@ -2400,11 +2412,7 @@ impl PreferencesPanel {
                 // that Connect makes it every project's.
                 Registration::ProjectsOnly(projects) => {
                     let named: Vec<String> = projects.iter().map(|p| tilde(p)).collect();
-                    let which = match named.as_slice() {
-                        [one] => format!("Connected in this project only: {one}"),
-                        many => format!("Connected in {} projects only: {}", many.len(), many.join(", ")),
-                    };
-                    (format!("{which}. Connect adds it for every project."), true, false)
+                    (projects_only_text(&named), true, false)
                 }
             };
             let client = *client;
@@ -4758,6 +4766,15 @@ mod connect_assistant_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Where an assistant has Klipp only for some projects, the section
+    /// names them.
+    #[test]
+    fn a_project_only_connection_names_where() {
+        assert_eq!(projects_only_text(&["~/Klipp".into()]), "Connected only in ~/Klipp. Connect adds it for every project.");
+        assert_eq!(projects_only_text(&["~/a".into(), "~/b".into()]), "Connected only in ~/a and ~/b. Connect adds it for every project.");
+        assert_eq!(projects_only_text(&["~/a".into(), "~/b".into(), "~/c".into()]), "Connected only in ~/a, ~/b and ~/c. Connect adds it for every project.");
     }
 
     /// #625: the Connect an assistant section draws its rows on this
