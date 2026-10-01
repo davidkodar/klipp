@@ -622,11 +622,26 @@ fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
     assert_eq!(status["revision"], json!(h.shared.revision()));
     assert!(status.get("playhead_secs").is_some());
     assert!(status.get("duration_secs").is_some());
-    let clips = h.ok(json!({ "method": "list_clips" }));
+    let clips = h.ok(json!({ "method": "list_clips", "full": true }));
     let first = &clips["tracks"][0]["clips"][0];
     assert!(first["timeline_in_frame"].is_i64(), "{first}");
     assert_eq!(first["kind"], json!("gap"), "the fixture's clips are gaps with a grade");
     assert!(clips["fps"].is_f64());
+    // Short by default (#507): the range, graded only where it is, no frames.
+    let identity = clips["tracks"][0]["clips"][0]["grade_is_identity"] == json!(true);
+    let short = h.ok(json!({ "method": "list_clips" }));
+    let first = &short["tracks"][0]["clips"][0];
+    assert!(first["in_secs"].is_f64() && first.get("timeline_in_frame").is_none(), "{first}");
+    assert_eq!(first.get("graded").is_some(), !identity, "graded only where it is: {first}");
+    // Narrowed: a track by name, a stretch of time; an unknown track says
+    // which there are.
+    let name = short["tracks"][0]["name"].as_str().unwrap().to_string();
+    let one = h.ok(json!({ "method": "list_clips", "track": name }));
+    assert_eq!(one["tracks"].as_array().unwrap().len(), 1, "{one}");
+    let none = h.ok(json!({ "method": "list_clips", "from_secs": 1.0e6 }));
+    assert_eq!(none["tracks"], json!([]), "{none}");
+    let err = h.call(json!({ "method": "list_clips", "track": "nowhere" }));
+    assert!(err["error"].as_str().is_some_and(|e| e.contains("the tracks are")), "{err}");
 }
 
 /// An export is refused where it would go wrong, and otherwise reaches
