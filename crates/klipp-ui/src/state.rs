@@ -4207,23 +4207,30 @@ impl AppState {
     /// not a clip of moving picture whose file is here, or on a locked
     /// track. `None` when it can.
     pub fn scene_cut_refusal(&self, clip_id: klipp_core::ClipId) -> Option<&'static str> {
+        klipp_document::ops::scene_cut_refusal(self.sequence(), &self.media_pool, clip_id)
+    }
+
+    /// Whether the clip meets a piece of its own shot after it (`next`)
+    /// or before it that it can be joined to (#683): the join, tried.
+    pub fn can_join_through_edit(&self, clip_id: klipp_core::ClipId, next: bool) -> bool {
+        let side = if next { klipp_document::ops::JoinSide::Next } else { klipp_document::ops::JoinSide::Previous };
+        let op = klipp_document::ops::Op::Join { clip_id: klipp_document::ops::ClipRef::Id(clip_id), side };
+        klipp_document::ops::resolve(self.sequence(), &self.media_pool, std::slice::from_ref(&op)).is_ok()
+    }
+
+    /// The clip ending at the playhead whose edit there can be joined: on
+    /// the selected clip's track, or else the first picture track with
+    /// one. What Timeline → Join Through Edit at Playhead closes.
+    pub fn through_edit_at_playhead(&self) -> Option<klipp_core::ClipId> {
         let seq = self.sequence();
-        let Some(track) = seq.tracks.iter().find(|t| t.find_clip(clip_id).is_some()) else { return Some("the clip is gone") };
-        let clip = track.find_clip(clip_id)?;
-        if track.kind != klipp_timeline::TrackKind::Video || !matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
-            return Some("only a video clip has scenes to find");
+        let half = 0.5 / seq.fps.as_f64().max(1.0);
+        let at = self.playhead.to_secs_f64();
+        let on = |t: &klipp_timeline::Track| t.clips.iter().find(|c| (c.timeline_out.to_secs_f64() - at).abs() < half).map(|c| c.id).filter(|id| self.can_join_through_edit(*id, true));
+        let selected = self.selected_clip.and_then(|id| seq.tracks.iter().find(|t| t.find_clip(id).is_some()));
+        match selected {
+            Some(t) => on(t),
+            None => seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(on),
         }
-        if track.locked {
-            return Some("its track is locked");
-        }
-        let Some(item) = clip.media_id().and_then(|m| self.media_pool.get(&m)) else { return Some("its media is not in the pool") };
-        if item.is_still || item.video_codec.is_empty() {
-            return Some("a still or a sound has no scene cuts");
-        }
-        if item.offline || !item.path.exists() {
-            return Some("its file is offline");
-        }
-        None
     }
 }
 

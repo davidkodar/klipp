@@ -4514,6 +4514,15 @@ fn handle(
                 return Err("detect_scene_cuts runs in the background; send it on its own".into());
             }
             let id = existing_clip_id(ctx, &clip_id)?;
+            // What the app would refuse, refused here, not answered as
+            // started (#685 review).
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                if let Some(why) = klipp_document::ops::scene_cut_refusal(&seq, &pool, id) {
+                    return Err(format!("no scene cuts to find: {why}"));
+                }
+            }
             let mut v = send(AppCommand::DetectSceneCuts { clip_id: id })?;
             v["text"] = json!("Finding the scene cuts in the background; the clip is split at them, its sound with it, as one undo step when it is done. Read the timeline in a while to see the shots, or undo to put it back.");
             Ok(v)

@@ -20768,6 +20768,18 @@ impl KlippApp {
                 self.send_commands(vec![AppCommand::DetectScenes { clip_id: *clip_id }]);
                 true
             }
+            AppCommand::JoinThroughEdit { clip_id, next } => {
+                let side = if *next { klipp_document::ops::JoinSide::Next } else { klipp_document::ops::JoinSide::Previous };
+                let op = klipp_document::ops::Op::Join { clip_id: klipp_document::ops::ClipRef::Id(*clip_id), side };
+                match klipp_document::ops::resolve(self.state.sequence(), &self.state.media_pool, std::slice::from_ref(&op)) {
+                    Ok(plan) => {
+                        let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+                        self.apply_edits_as_one(&edits, "Join Through Edit");
+                    }
+                    Err(r) => self.state.toast.show(format!("Nothing to join: {}. {}", r.why, capitalise(&r.hint))),
+                }
+                true
+            }
             AppCommand::SplitAtSceneMarkers { clip_id } => {
                 // Razor the clip at every scene marker it carries. Pushes a
                 // single compound history entry so Ctrl+Z undoes the whole

@@ -464,6 +464,15 @@ pub enum EditCommand {
         old_fade_in_b: f32,
         replaced: Option<klipp_timeline::Transition>,
     },
+    /// A transition's outgoing clip changed from `old_a` to `new_a`, and
+    /// nothing else (#683): the dissolve out of a piece a join folds into
+    /// the one before it, out of that one now. Its fades already are.
+    RetargetTransition {
+        track_index: usize,
+        transition_id: klipp_core::TransitionId,
+        old_a: ClipId,
+        new_a: ClipId,
+    },
     /// A transition taken away. The fades at the cut it sat on go with
     /// it, on any track (a picture transition set them; an audio one
     /// set them before it was a crossfade); undo puts both back.
@@ -716,6 +725,7 @@ impl EditCommand {
         match self {
             EditCommand::Named { label, .. } => label,
             EditCommand::AddTitleClip { .. } => "Add Title",
+            EditCommand::RetargetTransition { .. } => "Retarget Transition",
             EditCommand::AddTrack { .. } => "Add Track",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",

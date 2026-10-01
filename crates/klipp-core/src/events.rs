@@ -2921,6 +2921,10 @@ pub enum AppCommand {
     /// with it, as one undoable edit. No markers are left behind.
     DetectSceneCuts { clip_id: ClipId },
     CancelSceneDetect { clip_id: ClipId },
+    /// Join Through Edit (#683): the clip and the piece of the same shot
+    /// after it (`next`) or before it made one again, its linked sound
+    /// with it, one undo step.
+    JoinThroughEdit { clip_id: ClipId, next: bool },
     /// Razor-split a clip at every scene marker it carries, atomically.
     /// Undo restores the original single clip in one step.
     SplitAtSceneMarkers { clip_id: ClipId },

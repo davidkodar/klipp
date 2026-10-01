@@ -646,6 +646,19 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
                 ui.close_menu();
             }
+            let joinable = state.through_edit_at_playhead();
+            let item = ui.add_enabled(joinable.is_some(), egui::Button::new("Join Through Edit at Playhead"));
+            let item = if joinable.is_some() {
+                item.on_hover_text("Close the cut under the playhead: the two pieces of the same shot either side of it made one clip again, their sound with them")
+            } else {
+                item.on_disabled_hover_text("Put the playhead on a cut between two pieces of the same shot (same file and speed, its source running on), on the selected clip's track")
+            };
+            if item.clicked() {
+                if let Some(clip_id) = joinable {
+                    cmds.push(AppCommand::JoinThroughEdit { clip_id, next: true });
+                }
+                ui.close_menu();
+            }
             ui.separator();
             // Detect Scene Cuts (#616): the selected clip split at its
             // picture changes in one step; its progress and Cancel here
