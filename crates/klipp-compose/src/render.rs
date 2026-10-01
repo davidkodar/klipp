@@ -456,6 +456,7 @@ pub struct Renderer {
     /// each sample across the shutter. Filled with the transforms.
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     working: WorkingColorspace,
+    grade_encoding: klipp_core::GradeEncoding,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
     /// The clips the GPU stack had to render on the CPU, so the log says
@@ -540,6 +541,7 @@ impl Renderer {
             shutter: HashMap::new(),
             px_scale: 1.0,
             working: WorkingColorspace::default(),
+            grade_encoding: klipp_core::grade_encoding(),
             last_gpu_stack_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
             nesting: 0,
@@ -665,6 +667,12 @@ impl Renderer {
 
     pub fn set_working_colorspace(&mut self, ws: WorkingColorspace) {
         self.working = ws;
+    }
+
+    /// The project's grade encoding (#467): what the grade's controls
+    /// act in under ACEScg.
+    pub fn set_grade_encoding(&mut self, enc: klipp_core::GradeEncoding) {
+        self.grade_encoding = enc;
     }
 
     pub fn set_global_lut(&mut self, lut: Option<GlobalLut>) {
@@ -983,6 +991,7 @@ impl Renderer {
         // delivery's matrix goes to BT.2020 from it). `grade` sets it for
         // a real graph, but the pass-through below never calls `grade`,
         // and a stale value there is a wrong picture rather than an error.
+        self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         if clip.node_graph.is_identity() {
             let GradeInput::Gpu(g) = &input else { return Single::Refused };
@@ -1215,6 +1224,7 @@ impl Renderer {
         behind_the_camera(seq, time, width, height, &mut transforms);
         self.open_shutter(seq, time, fps, width, height, &transforms);
 
+        self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         let luma = klipp_color::linear::luma_coefs(self.working);
         if !self.executor.gpu_pipeline_or_init().is_some_and(|g| {
@@ -2322,6 +2332,7 @@ impl Renderer {
         }
         let t = Instant::now();
         self.executor.prepare_clip(&clip.node_graph);
+        self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_lut_tetrahedral(self.lut_tetrahedral);
         self.executor.set_current_clip_track_points(&clip.track_points);

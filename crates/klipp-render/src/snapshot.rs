@@ -53,6 +53,10 @@ pub struct SequenceSnapshot {
     /// constructors that pre-date the field.
     #[doc(hidden)]
     pub working_colorspace: klipp_core::WorkingColorspace,
+    /// The project's grade encoding (#467) when the export began. The
+    /// render reads this, not the live setting, so changing it in the
+    /// UI mid-export cannot change the grade partway through the file.
+    pub grade_encoding: klipp_core::GradeEncoding,
 }
 
 /// The video half of an export: the timeline exactly as the viewer's
@@ -591,6 +595,7 @@ impl SequenceSnapshot {
             subtitle_tracks,
             chapters,
             working_colorspace,
+            grade_encoding: klipp_core::grade_encoding(),
         })
     }
 

@@ -117,6 +117,7 @@ impl ExportJob {
         }
         let mut renderer = klipp_compose::Renderer::new(ofx, klipp_title::TitleRenderer::new());
         renderer.set_working_colorspace(self.snapshot.working_colorspace);
+        renderer.set_grade_encoding(self.snapshot.grade_encoding);
         // Tetrahedral, always: the trilinear option exists so the viewer
         // can stay responsive, and a delivery is not the place to trade
         // LUT accuracy for speed.
@@ -863,7 +864,7 @@ mod tests {
             pan_law: Default::default(),
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
-            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear, grade_encoding: klipp_core::GradeEncoding::Bt1886,
         }
     }
 

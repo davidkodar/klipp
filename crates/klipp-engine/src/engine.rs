@@ -7407,6 +7407,7 @@ impl PlaybackEngine {
         // executor so gamut-aware grade ops (Saturation, Vibrance,
         // ToneControls, ColorWheels, etc.) use the right luma vector.
         // Cheap setter; safe to call per-frame.
+        executor.set_grade_encoding(klipp_core::grade_encoding());
         executor.set_working_colorspace(crate::video_decoder::working_colorspace());
         executor.set_current_clip_track_points(&clip_track_points);
         match executor.execute_linear_with_thumbs(

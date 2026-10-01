@@ -487,6 +487,7 @@ impl PlaybackEngine {
         out: klipp_compose::DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, klipp_compose::RenderStats)> {
         self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
+        self.renderer.set_grade_encoding(klipp_core::grade_encoding());
         self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);
         self.push_global_lut();
         let time = self.playhead;
@@ -515,6 +516,7 @@ impl PlaybackEngine {
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
         self.renderer.set_working_colorspace(crate::video_decoder::working_colorspace());
+        self.renderer.set_grade_encoding(klipp_core::grade_encoding());
         // The user's LUT interpolation preference, for the global LUT and
         // every clip's LUT node. An export always asks for tetrahedral.
         self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);

@@ -166,6 +166,11 @@ pub struct GraphExecutor {
     /// The encoding the grade's controls act in (#467), from the
     /// project's choice and the working space: set with it.
     grade_encoding: klipp_color::grade_model::Encoding,
+    /// The project's choice of grade encoding, which `grade_encoding`
+    /// follows only under ACEScg. Starts as the global setting; a
+    /// render that must not see it change midway (an export) sets it
+    /// with [`GraphExecutor::set_grade_encoding`].
+    project_grade_encoding: klipp_core::GradeEncoding,
     /// Tetrahedral 3D-LUT interpolation, or trilinear when the user
     /// picked speed over accuracy in the viewer.
     lut_tetrahedral: bool,
@@ -556,6 +561,7 @@ impl GraphExecutor {
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
+            project_grade_encoding: klipp_core::grade_encoding(),
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
@@ -612,6 +618,7 @@ impl GraphExecutor {
             compound_depth: 0,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
+            project_grade_encoding: klipp_core::grade_encoding(),
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
@@ -664,12 +671,19 @@ impl GraphExecutor {
         self.working_colorspace = ws;
         // The grade encoding goes with it: the project's choice, which
         // only ACEScg takes (#467).
-        let tag = klipp_core::grade_encoding().effective(ws).as_u8();
+        let tag = self.project_grade_encoding.effective(ws).as_u8();
         self.grade_encoding = klipp_color::grade_model::Encoding::from_u8(tag);
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.set_luma_coefs(klipp_color::linear::luma_coefs(ws));
             gpu.set_grade_encoding(tag);
         }
+    }
+
+    /// The project's grade encoding (#467). It takes effect under
+    /// ACEScg only, so it is reapplied with the current working space.
+    pub fn set_grade_encoding(&mut self, enc: klipp_core::GradeEncoding) {
+        self.project_grade_encoding = enc;
+        self.set_working_colorspace(self.working_colorspace);
     }
 
     /// Read the executor's current working colorspace. Mostly useful
@@ -6649,6 +6663,28 @@ mod tests {
     }
 
     // ─── Working-colorspace plumbing (Phase E S5b) ──────────────
+
+    #[test]
+    fn the_given_grade_encoding_holds_under_acescg_in_either_order() {
+        use klipp_color::grade_model::Encoding;
+        use klipp_core::{GradeEncoding, WorkingColorspace};
+        // An export sets the encoding it froze; the global setting,
+        // whatever it is, must not decide (#467 review).
+        let mut a = GraphExecutor::new_cpu_only();
+        a.set_grade_encoding(GradeEncoding::AcesCct);
+        a.set_working_colorspace(WorkingColorspace::AcesCG);
+        assert_eq!(a.grade_encoding, Encoding::AcesCct);
+        let mut b = GraphExecutor::new_cpu_only();
+        b.set_working_colorspace(WorkingColorspace::AcesCG);
+        b.set_grade_encoding(GradeEncoding::AcesCc);
+        assert_eq!(b.grade_encoding, Encoding::AcesCc);
+        b.set_grade_encoding(GradeEncoding::Bt1886);
+        assert_eq!(b.grade_encoding, Encoding::Bt1886);
+        // Outside ACEScg the grade is BT.1886 whatever the choice.
+        b.set_grade_encoding(GradeEncoding::AcesCct);
+        b.set_working_colorspace(WorkingColorspace::Rec709Linear);
+        assert_eq!(b.grade_encoding, Encoding::Bt1886);
+    }
 
     #[test]
     fn set_working_colorspace_round_trips() {
