@@ -439,6 +439,17 @@ impl ExportSettings {
         if self.odt.is_pq() { HdrMode::Pq } else { self.hdr_mode }
     }
 
+    /// The size the picture is encoded at, from a `seq_w`×`seq_h`
+    /// sequence: the resolution asked for, else the sequence's, each side
+    /// rounded down to even. 4:2:0 video, which every codec here writes,
+    /// halves the colour planes, and ffmpeg's picture code aborts the
+    /// process on an odd side; the export job rounded and the encoder did
+    /// not, so an odd size asked for took the app down (hunt #2).
+    pub fn output_size(&self, seq_w: u32, seq_h: u32) -> (u32, u32) {
+        let (w, h) = self.resolution.map_or((seq_w, seq_h), |r| (r.width, r.height));
+        ((w & !1).max(2), (h & !1).max(2))
+    }
+
     /// Whether the picture is rendered for HDR — scene-referred clips keep
     /// their highlights and the encoder writes display light as PQ or HLG
     /// — rather than being an SDR master through an output transform. True
@@ -4228,4 +4239,24 @@ pub struct ExportStatus {
     pub fps: Option<f32>,
     #[serde(default)]
     pub eta_secs: Option<u64>,
+}
+
+#[cfg(test)]
+mod output_size_tests {
+    use super::*;
+
+    /// Hunt #2: whatever size is asked for, or the sequence has, the
+    /// encoder gets even sides, as 4:2:0 video needs; an even size is
+    /// left as it is.
+    #[test]
+    fn an_export_is_encoded_at_even_sides() {
+        let at = |res: Option<(u32, u32)>, seq: (u32, u32)| {
+            let s = ExportSettings { resolution: res.map(|(width, height)| Resolution { width, height }), ..Default::default() };
+            s.output_size(seq.0, seq.1)
+        };
+        assert_eq!(at(Some((1081, 721)), (1920, 1080)), (1080, 720));
+        assert_eq!(at(None, (1919, 1079)), (1918, 1078));
+        assert_eq!(at(None, (1920, 1080)), (1920, 1080));
+        assert_eq!(at(Some((1, 1)), (1920, 1080)), (2, 2), "never nothing");
+    }
 }

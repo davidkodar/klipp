@@ -64,7 +64,6 @@ Options:
 
 static STARTUP_PATHS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
 
-/// The paths to open at startup, given before the app is made.
 /// When this process was started as a transcription worker (#640), run
 /// the job and give the exit code; `None` for a normal start. Checked
 /// first, before anything of the app's is set up.
@@ -85,6 +84,7 @@ pub fn use_transcription_worker() {
     }
 }
 
+/// The paths to open at startup, given before the app is made.
 pub fn set_startup_paths(paths: Vec<PathBuf>) {
     let _ = STARTUP_PATHS.set(paths);
 }
