@@ -347,7 +347,9 @@ impl Default for ExportDialogState {
 }
 
 pub struct KlippApp {
-    cmd_tx: Sender<AppCommand>,
+    /// The playback engine's channel, taking only what it acts on: a UI
+    /// command sent there did nothing, silently (#437).
+    cmd_tx: klipp_engine::commands::EngineSender,
     event_rx: Receiver<AppEvent>,
     /// Commands from the control socket (klipp-control / klipp-mcp).
     ///
@@ -1178,7 +1180,7 @@ impl KlippApp {
             prefs.playback.background_performance.to_scheduler_policy();
 
         let mut app = Self {
-            cmd_tx,
+            cmd_tx: klipp_engine::commands::EngineSender::new(cmd_tx),
             event_rx,
             control_inbox: None,
             frame_buffer,
@@ -43230,5 +43232,47 @@ mod window_track_tests {
         assert!((q[0].0 - 0.4).abs() < 1e-6 && (q[0].1 - (0.5 - 0.1 * aspect)).abs() < 1e-6 && (q[2].0 - 0.6).abs() < 1e-6);
         let q = window_quad(&klipp_core::MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.1, rotation: 0.0 }, aspect);
         assert!((q[1].0 - 0.6).abs() < 1e-6 && (q[2].1 - (0.5 + 0.05 * aspect)).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod engine_send_tests {
+    /// #437: every command the UI sends straight to the playback engine is
+    /// one the engine acts on. Read from the source, so a send on a path no
+    /// test runs fails here rather than doing nothing in the app.
+    #[test]
+    fn every_command_sent_to_the_engine_is_one_it_acts_on() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push((path.clone(), std::fs::read_to_string(&path).unwrap()));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut sent = 0;
+        let mut astray = Vec::new();
+        for (path, text) in &files {
+            for marker in ["cmd_tx.send(AppCommand::", "cmd_tx.send(klipp_core::AppCommand::"] {
+                for (at, _) in text.match_indices(marker) {
+                    let name: String = text[at + marker.len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    // This test's own markers name nothing.
+                    if name.is_empty() {
+                        continue;
+                    }
+                    sent += 1;
+                    if !klipp_engine::commands::NAMES.contains(&name.as_str()) {
+                        let line = text[..at].lines().count();
+                        astray.push(format!("{}:{line} sends {name}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(sent > 100, "the scan found only {sent} sends: has the field been renamed?");
+        assert!(astray.is_empty(), "sent to the engine, which does nothing with them — send them through send_commands:\n{}", astray.join("\n"));
     }
 }
