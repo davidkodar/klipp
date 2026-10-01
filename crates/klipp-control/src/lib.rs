@@ -3964,6 +3964,13 @@ fn handle(
                 return Ok(json!({ "already_imported": true, "media_id": item.id.0.to_string(), "filename": item.filename }));
             }
             drop(pool);
+            // A file ffmpeg cannot open is refused here, with its reason.
+            // Sent on, the import failed in the engine, only the log said
+            // so, and this replied ok with no media id (#654).
+            if let Err(why) = klipp_media::readable(&p) {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone());
+                return Err(format!("{name} could not be imported: {why}. Is it a complete video, audio or image file?"));
+            }
             let mut v = send(if analyze { AppCommand::ImportMedia { path: p.clone() } } else { AppCommand::ImportMediaWithAnalysis { path: p.clone(), analyze } })?;
             // The id it just made, waited for. Without this the first
             // call answers with no media_id at all and only a *second*
@@ -5411,6 +5418,11 @@ reference:   {}",
                 return Err(format!("export path must be absolute (got {path:?})"));
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+            // Nothing to export: it rendered a 261-byte file and called it a
+            // success (#655).
+            if seq.has_nothing_to_export() {
+                return Err("the timeline is empty: there is nothing to export. Place some clips first.".into());
+            }
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             let offline: Vec<String> = seq
                 .tracks

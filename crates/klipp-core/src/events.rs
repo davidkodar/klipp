@@ -3603,6 +3603,8 @@ pub enum AppEvent {
     MediaLoaded(Box<MediaLoadedPayload>),
     MediaLoadFailed {
         media_id: MediaId,
+        /// The file that would not open, for saying so (#654).
+        path: PathBuf,
         error: String,
     },
     /// File watcher detected a source file was modified or deleted.

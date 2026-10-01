@@ -2708,10 +2708,14 @@ impl KlippApp {
                         }
                     }
                 }
-                AppEvent::MediaLoadFailed { media_id, error } => {
+                AppEvent::MediaLoadFailed { media_id, path, error } => {
                     self.state.pending_skip_analysis.remove(&media_id);
                     self.state.pending_media_path = None;
                     tracing::error!("Failed to load media: {error}");
+                    // Said, not only logged: an import that did nothing
+                    // looked like one still on its way (#654).
+                    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+                    self.state.toast.show(format!("Could not import {name}: {error}"));
                 }
                 AppEvent::FrameReady => {
                     self.upload_frame_to_egui(ctx);
@@ -32876,8 +32880,16 @@ impl KlippApp {
             ui.add_space(4.0);
         }
         let path_given = !self.export_dialog.output_path.trim().is_empty();
-        let path_ok = path_given && container_problem.is_none();
-        let disabled_reason = if path_given { "This container cannot hold the chosen codec" } else { "Choose an output file first" };
+        // An empty timeline has nothing to export (#655).
+        let empty = self.state.sequence().has_nothing_to_export();
+        let path_ok = path_given && container_problem.is_none() && !empty;
+        let disabled_reason = if empty {
+            "The timeline is empty: place some clips first"
+        } else if path_given {
+            "This container cannot hold the chosen codec"
+        } else {
+            "Choose an output file first"
+        };
         let h = crate::theme::control::REGULAR;
         ui.horizontal(|ui| {
             // Secondary actions run from the left, the primary one is

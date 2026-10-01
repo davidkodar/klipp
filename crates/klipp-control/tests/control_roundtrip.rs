@@ -546,6 +546,14 @@ fn control_socket_reads_state_and_forwards_commands() {
     }));
     assert_eq!(missing["ok"], json!(false));
     assert!(missing["error"].as_str().unwrap().contains("not found"));
+    // A file that is there but not a video or a sound: refused with why,
+    // not an ok with nothing imported (#654).
+    let junk = std::env::temp_dir().join(format!("klipp-junk-{}.mp4", std::process::id()));
+    std::fs::write(&junk, b"this is not a video file at all").unwrap();
+    let refused = h.call(json!({ "method": "import_media", "path": junk.to_string_lossy() }));
+    let _ = std::fs::remove_file(&junk);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("could not be imported"), "{}", refused["error"]);
 
     // An unparseable line must still get an answer rather than hang the
     // client waiting for one.
@@ -629,6 +637,15 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     let mut h = harness();
     let no_jobs = h.call(json!({ "method": "export_status", "wait": true }));
     assert_eq!(no_jobs["ok"], false);
+    // The fixture's clips are gaps: nothing to export (#655).
+    let empty = h.call(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4" }));
+    assert_eq!(empty["ok"], json!(false));
+    assert!(empty["error"].as_str().unwrap().contains("empty"), "{}", empty["error"]);
+    // Pictures on it from here.
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
     let reply = h.call(json!({ "method": "export", "path": "relative.mp4" }));
     assert_eq!(reply["ok"], json!(false));
     assert!(reply["error"].as_str().unwrap().contains("absolute"));

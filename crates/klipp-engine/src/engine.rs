@@ -9346,6 +9346,7 @@ impl PlaybackEngine {
                 error!("Failed to open media file: {e}");
                 let _ = self.event_tx.send(AppEvent::MediaLoadFailed {
                     media_id,
+                    path: path.clone(),
                     error: e.to_string(),
                 });
                 (self.repaint_cb)();
