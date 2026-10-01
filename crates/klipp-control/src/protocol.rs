@@ -88,6 +88,16 @@ pub enum ControlCommand {
     /// Latest known UI outcome for a queued write. Completed outcomes are
     /// retained for a bounded period in this app process only.
     OperationStatus { operation_id: String },
+    /// Unified render and analysis jobs. With `wait`, return when the
+    /// requested job changes or a bounded long-poll expires.
+    JobStatus {
+        #[serde(default)] job_id: Option<String>,
+        #[serde(default)] wait: bool,
+        #[serde(default)] timeout_ms: Option<u64>,
+    },
+    /// Stop a matching render or one queued analysis item. Running analysis
+    /// and import/sync probes cannot currently be interrupted safely.
+    CancelJob { job_id: String },
     /// Transport state, playhead, resolution, fps, current clip.
     Status,
 

@@ -47,10 +47,15 @@ frames.
    the beat, its tempo, its look off the picture, its motion — so you can
    build a clip in the same feel from your own footage, and your own or
    licensed music, never the reference's track.
-   `klipp_analysis_status` says
-   which analyser is at work and for how long, and which models are
+   `klipp_job_status` says which analyser is at work and for how long;
+   `klipp_analysis_status` also says which models are
    installed; a transcript takes about a third of the file's length. `klipp_contact_sheet` to see a range with
    times burnt in; `klipp_audio_excerpt` to hear one.
+   Import and multicam sync also return a job ID. Import completes when
+   the media enters the pool; its result gives the media ID and, if asked,
+   the analysis job ID to follow next. Sync completes when the new group
+   appears. A queued analysis job or a named render can be stopped with
+   `klipp_cancel_job`; check job status before reporting cancellation.
 3. **Plan.** `klipp_plan` with a list of ops: a dry run that says what
    each step would do and each touched clip's range afterwards.
    Nothing changes. If a step cannot be done the reply says which,
@@ -103,8 +108,14 @@ frames.
    Check always reads the sound faults too — wind, rumble, mains hum,
    hiss — measured from the analysis bands, and names the `clean_audio`
    flag that fixes each.
-7. **Deliver.** `klipp_export` to a file, `klipp_export_status` until
-   it is complete, `klipp_export_subtitles` for captions.
+7. **Deliver.** `klipp_export` to a file, then follow its job ID with
+   `klipp_job_status` or `klipp_follow_job`. The job reports the render
+   percentage, phase, frames done and total, ETA, failure or output path.
+   With an MCP progress token, `klipp_follow_job` sends throttled progress
+   notifications as it runs; without one, it returns after a status change
+   so you can tell the person what happened and call again. `klipp_status`
+   also shows active work. Read the terminal state before saying the file
+   is ready. `klipp_export_subtitles` writes caption sidecars.
 8. **Save.** `klipp_rename_sequence` so the timeline is called what
    the piece is, then `klipp_save_project` with a path the first time,
    without one after. The user carries on from your project, and an unsaved one
