@@ -48,6 +48,7 @@ pub mod app;
 pub mod audio_plugins_disabled;
 pub mod browser;
 pub mod ai_tools;
+pub mod assistant_clients;
 pub mod cache_manager;
 pub mod cli;
 mod clip_edits;
