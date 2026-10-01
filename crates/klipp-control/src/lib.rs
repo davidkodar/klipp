@@ -798,8 +798,17 @@ pub fn resolve_look(name: &str) -> Result<(std::path::PathBuf, String), String> 
     if looks.is_empty() {
         return Err("the bundled LUT library was not found next to the app; give an absolute .cube path instead".into());
     }
-    let ql = q.to_lowercase();
-    let tokens: Vec<&str> = ql.split_whitespace().collect();
+    pick_look(&looks, q)
+}
+
+/// The look in `looks` (category, name, file) that `q` names: words that
+/// all appear in "category name", where a `/` is a word break too, so the
+/// `category/name` that `looks` lists is taken as it is shown (#656).
+/// Several matching: the one whose name, or category/name, is `q`
+/// exactly; else a list to choose from.
+fn pick_look(looks: &[(String, String, std::path::PathBuf)], q: &str) -> Result<(std::path::PathBuf, String), String> {
+    let ql = q.trim().to_lowercase();
+    let tokens: Vec<&str> = ql.split(|c: char| c.is_whitespace() || c == '/').filter(|t| !t.is_empty()).collect();
     let hay = |cat: &str, stem: &str| format!("{cat} {stem}").to_lowercase();
     let matches: Vec<&(String, String, std::path::PathBuf)> = looks.iter()
         .filter(|(cat, stem, _)| tokens.iter().all(|t| hay(cat, stem).contains(t)))
@@ -811,13 +820,76 @@ pub fn resolve_look(name: &str) -> Result<(std::path::PathBuf, String), String> 
         }
         1 => Ok((matches[0].2.clone(), matches[0].1.clone())),
         _ => {
-            // An exact stem match settles it; otherwise ask to be specific.
-            if let Some(exact) = matches.iter().find(|(_, s, _)| s.to_lowercase() == ql) {
+            // An exact name, or category/name, settles it; otherwise ask
+            // to be specific.
+            if let Some(exact) = matches.iter().find(|(c, s, _)| s.to_lowercase() == ql || format!("{c}/{s}").to_lowercase() == ql) {
                 return Ok((exact.2.clone(), exact.1.clone()));
             }
             let names: Vec<String> = matches.iter().take(10).map(|(c, s, _)| format!("{c}/{s}")).collect();
             Err(format!("\"{q}\" matches {} looks; be more specific: {}", matches.len(), names.join(", ")))
         }
+    }
+}
+
+#[cfg(test)]
+mod look_name_tests {
+    use super::pick_look;
+
+    /// #656: a look named as `looks` lists it, category/name, is found;
+    /// words still work; an exact category/name settles a tie.
+    #[test]
+    fn a_look_is_found_by_its_listed_name() {
+        let look = |c: &str, s: &str| (c.to_string(), s.to_string(), std::path::PathBuf::from(format!("/luts/{c}/{s}.cube")));
+        let looks = vec![look("film-print", "Kodak 2383"), look("film-print", "Kodak 2383 D60"), look("cinematic", "Teal Orange")];
+        assert_eq!(pick_look(&looks, "cinematic/Teal Orange").unwrap().1, "Teal Orange");
+        assert_eq!(pick_look(&looks, "teal orange").unwrap().1, "Teal Orange");
+        assert_eq!(pick_look(&looks, "film-print/Kodak 2383").unwrap().1, "Kodak 2383", "exact settles the tie with D60");
+        assert!(pick_look(&looks, "film-print/kodak").unwrap_err().contains("matches 2 looks"));
+        assert!(pick_look(&looks, "nothing/here").is_err());
+    }
+}
+
+/// The picture clip at `tc`, top track first, whose file is missing,
+/// said as "<clip> is offline: <path> is not there" (#657).
+fn offline_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: klipp_core::Timecode) -> Option<String> {
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .filter_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))
+        .filter(|c| c.enabled)
+        .find_map(|c| {
+            let item = pool.get(&c.media_id()?)?;
+            // A ready proxy still gives a picture.
+            let proxy = item.proxy_ready && item.proxy_path.as_ref().is_some_and(|p| p.exists());
+            ((item.offline || !item.path.exists()) && !proxy).then(|| format!("{} is offline: {} is not there", item.filename, item.path.display()))
+        })
+}
+
+#[cfg(test)]
+mod offline_frame_tests {
+    use super::offline_picture_at;
+
+    /// #657: a picture clip whose file is missing is named at once; one
+    /// whose file is there is not.
+    #[test]
+    fn a_missing_file_under_the_time_is_named() {
+        let mut pool = klipp_media::MediaPool::new();
+        let gone = pool.add(klipp_media::MediaItem::synthetic_for_test("/nowhere/gone.mov".into(), None));
+        let here_path = std::env::temp_dir().join(format!("klipp-here-{}.mov", std::process::id()));
+        std::fs::write(&here_path, b"x").unwrap();
+        let here = pool.add(klipp_media::MediaItem::synthetic_for_test(here_path.clone(), None));
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips = vec![
+            klipp_timeline::Clip::media(gone, tc(0.0), tc(2.0), tc(0.0), tc(2.0)),
+            klipp_timeline::Clip::media(here, tc(2.0), tc(4.0), tc(0.0), tc(2.0)),
+        ];
+        seq.tracks = vec![v];
+        let said = offline_picture_at(&seq, &pool, tc(1.0)).expect("the missing file is named");
+        assert!(said.contains("/nowhere/gone.mov") && said.contains("offline"), "{said}");
+        assert_eq!(offline_picture_at(&seq, &pool, tc(3.0)), None);
+        std::fs::remove_file(&here_path).ok();
     }
 }
 
@@ -5458,6 +5530,10 @@ reference:   {}",
             // The default H.264 and AAC do not go in WebM.
             settings.fit_codecs_to_format();
             if let (Some(w), Some(h)) = (width, height) {
+                let most = klipp_core::ExportSettings::MAX_SIDE;
+                if w > most || h > most || w == 0 || h == 0 {
+                    return Err(format!("{w}x{h} is not a size to export at; give each side between 2 and {most}"));
+                }
                 settings.resolution = Some(klipp_core::Resolution { width: w, height: h });
             }
             if let Some(f) = fps {
@@ -5630,9 +5706,19 @@ reference:   {}",
             // seek it out from under each other and the second fails.
             static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
             let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
-            let held = hold_transport(ctx)?;
             let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps;
             let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
+            // A picture there whose file is missing renders nothing to
+            // wait for: said at once, by name, not after the whole timeout
+            // as "the viewer is at 0.000 s" (#657).
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                if let Some(missing) = offline_picture_at(&seq, &pool, target) {
+                    return Err(format!("no frame at {secs:.3} s: {missing}; relink it (relink_media) or look at another time"));
+                }
+            }
+            let held = hold_transport(ctx)?;
             let before = {
                 let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
                 fb.latest_generation()
