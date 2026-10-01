@@ -51,6 +51,27 @@ const WRITE_TOOLS: &[&str] = &[
 ];
 
 fn main() {
+    // `klipp-mcp --check`: is Klipp there for an assistant? The same
+    // read-only status an assistant asks for first, from the same binary
+    // it runs, said in words; exit 0 when it answered (#625). What
+    // Preferences → AI runs to check a connection, and a person can run
+    // it in a terminal.
+    if std::env::args().nth(1).as_deref() == Some("--check") {
+        match control_call(json!({ "method": "status" })) {
+            Ok(v) => {
+                println!("{}", v.get("text").and_then(|t| t.as_str()).unwrap_or("Klipp answered."));
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("klipp-mcp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let reader = BufReader::new(stdin.lock());

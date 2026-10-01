@@ -69,8 +69,36 @@ AI models download when requested and are verified against the bundled
 manifest. Initial model downloads need network access; basic editing does not
 require downloading models. The model manager reports runtime availability.
 
-For an agent, point its MCP configuration at the installed `klipp-mcp` command
-while Klipp is running. No MCP client is needed for normal editing.
+## Connect an AI assistant (optional)
+
+No assistant is needed for normal editing. To let one work in Klipp with
+you, open **Preferences → AI → Connect an assistant**. It shows:
+
+- the installed `klipp-mcp` program (`/usr/bin/klipp-mcp`), which is
+  what the assistant runs;
+- **Check**, which asks the running Klipp for its status through that
+  program and changes nothing;
+- **Connect** and **Disconnect** for Claude Code and Codex when they are
+  installed. These run the assistant's own `mcp add` and `mcp remove`
+  commands, which change Klipp's entry and nothing else, and are safe to
+  repeat;
+- under **Another assistant**, settings to copy into any assistant that
+  runs local MCP servers.
+
+After connecting, start a new session in the assistant so it loads Klipp's
+tools. Klipp must be running, with **AI assistant (MCP)** on under
+Preferences → AI. Then ask it "Is Klipp connected?".
+
+From a terminal instead:
+
+```bash
+klipp-mcp --check                                    # is Klipp reachable?
+claude mcp add --scope user klipp -- /usr/bin/klipp-mcp
+codex mcp add klipp -- /usr/bin/klipp-mcp
+```
+
+ChatGPT in the browser and other online assistants cannot run a program
+on your computer, and Klipp does not offer a way in from the internet yet.
 
 ## Optional capabilities
 

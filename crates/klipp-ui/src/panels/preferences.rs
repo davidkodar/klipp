@@ -40,6 +40,25 @@ pub struct PreferencesPanel {
     /// click result is committed even if cache sizes change between the
     /// click and the user pressing Confirm.
     clear_all_confirm: Option<ClearAllConfirm>,
+    /// Preferences → AI → Connect an assistant (#625): what was found,
+    /// filled and changed on worker threads, since an assistant's own
+    /// command takes a second or two.
+    assistant: std::sync::Arc<std::sync::Mutex<AssistantConnect>>,
+}
+
+/// What the Connect an assistant section shows (#625).
+#[derive(Default)]
+struct AssistantConnect {
+    /// Looked for once the section first shows, and on Refresh.
+    looked: bool,
+    klipp_mcp: Option<std::path::PathBuf>,
+    clients: Vec<(crate::assistant_clients::Client, crate::assistant_clients::Registration)>,
+    /// What is under way, said while it runs.
+    busy: Option<String>,
+    /// The last connection check's answer.
+    check: Option<Result<String, String>>,
+    /// The last Connect or Disconnect that failed, and why.
+    error: Option<String>,
 }
 
 struct ClearAllConfirm {
@@ -56,6 +75,7 @@ impl Default for PreferencesPanel {
             kb_search: String::new(),
             search_query: String::new(),
             clear_all_confirm: None,
+            assistant: Default::default(),
         }
     }
 }
@@ -2203,10 +2223,12 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Screen text (OCR)", theme, |ui| {
             ui.label(egui::RichText::new(text_status).color(theme.text_secondary));
         });
-        Self::setting_row_with_subtitle(ui, "Assistant (MCP)", "Point an MCP client at the klipp-mcp command while Klipp is running.", theme, |ui| {
-            let s = if prefs.ai.assistant { "Ready" } else { "Off" };
+        Self::setting_row(ui, "Assistant (MCP)", theme, |ui| {
+            let s = if prefs.ai.assistant { "On — see Connect an assistant below" } else { "Off" };
             ui.label(egui::RichText::new(s).color(theme.text_secondary));
         });
+
+        self.show_connect_assistant(ui, prefs, theme);
 
         // ── Transcription (speech) ──
         Self::section_header(ui, "TRANSCRIPTION (SPEECH)", theme);
@@ -2268,6 +2290,186 @@ impl PreferencesPanel {
                 cmds.push(AppCommand::OpenAiModelsDialog);
             }
         });
+    }
+
+    /// Preferences → AI → Connect an assistant (#625): the installed
+    /// `klipp-mcp`, each assistant on this computer that can register it by
+    /// its own command with Connect and Disconnect, a read-only check that
+    /// Klipp answers through it, and the settings for any other assistant.
+    fn show_connect_assistant(&mut self, ui: &mut egui::Ui, prefs: &Preferences, theme: &KlippTheme) {
+        use crate::assistant_clients::{self as clients, Registration};
+        Self::section_header(ui, "CONNECT AN ASSISTANT", theme);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("An AI assistant on this computer can work in Klipp with you: edit, grade, mix, title and export in the open project. It runs Klipp's klipp-mcp program, which only talks to the Klipp on this computer.").color(theme.text_secondary));
+        });
+        ui.add_space(4.0);
+        let shared = std::sync::Arc::clone(&self.assistant);
+        let ctx = ui.ctx().clone();
+        // Look, on a worker: which assistants there are and what they have.
+        let refresh = {
+            let shared = std::sync::Arc::clone(&shared);
+            let ctx = ctx.clone();
+            move || {
+                let found = clients::klipp_mcp_path();
+                let regs: Vec<_> = clients::Client::ALL.iter().map(|c| (*c, clients::registration(*c))).collect();
+                if let Ok(mut st) = shared.lock() {
+                    st.klipp_mcp = found;
+                    st.clients = regs;
+                    st.busy = None;
+                }
+                ctx.request_repaint();
+            }
+        };
+        {
+            let mut st = shared.lock().unwrap_or_else(|e| e.into_inner());
+            if !st.looked {
+                st.looked = true;
+                st.busy = Some("Looking for assistants\u{2026}".into());
+                let r = refresh.clone();
+                std::thread::spawn(r);
+            }
+        }
+        let st = shared.lock().unwrap_or_else(|e| e.into_inner());
+        let klipp_mcp = st.klipp_mcp.clone();
+        let clients_now = st.clients.clone();
+        let busy = st.busy.clone();
+        let check = st.check.clone();
+        let error = st.error.clone();
+        drop(st);
+
+        if !prefs.ai.assistant {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new("The AI assistant is off (above), so no assistant can connect. Turn it on and restart Klipp first.").color(theme.marker_warning));
+            });
+        }
+        Self::setting_row_with_subtitle(ui, "Klipp's MCP program", "What an assistant runs to reach Klipp.", theme, |ui| {
+            let text = klipp_mcp.as_ref().map_or("Not found next to Klipp".to_string(), |p| p.display().to_string());
+            ui.label(egui::RichText::new(text).monospace().color(theme.text_secondary));
+        });
+        Self::setting_row_with_subtitle(ui, "Check the connection", "Asks Klipp for its status through that program, reading only.", theme, |ui| {
+            if ui.add_enabled(klipp_mcp.is_some() && busy.is_none(), egui::Button::new("Check")).clicked() {
+                if let Some(path) = klipp_mcp.clone() {
+                    let shared = std::sync::Arc::clone(&shared);
+                    let ctx = ctx.clone();
+                    if let Ok(mut st) = shared.lock() {
+                        st.busy = Some("Checking\u{2026}".into());
+                    }
+                    std::thread::spawn(move || {
+                        let got = clients::check(&path);
+                        if let Ok(mut st) = shared.lock() {
+                            st.check = Some(got);
+                            st.busy = None;
+                        }
+                        ctx.request_repaint();
+                    });
+                }
+            }
+        });
+        if let Some(result) = &check {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                match result {
+                    Ok(summary) => {
+                        ui.label(egui::RichText::new(format!("Connected. {summary}")).color(theme.text_secondary));
+                    }
+                    Err(why) => {
+                        ui.label(egui::RichText::new(why).color(theme.marker_warning));
+                    }
+                }
+            });
+        }
+        for (client, reg) in &clients_now {
+            let (state, can_connect, can_disconnect) = match reg {
+                Registration::NotInstalled => ("Not installed on this computer".to_string(), false, false),
+                Registration::NotConnected => ("Not connected".to_string(), true, false),
+                Registration::Connected(cmd) if klipp_mcp.as_ref().is_some_and(|p| p.to_string_lossy() == cmd.as_str()) => ("Connected".to_string(), false, true),
+                Registration::Connected(cmd) => (format!("Connected to another klipp-mcp ({cmd})"), true, true),
+                Registration::Unknown(why) => (format!("Could not read its settings: {why}"), true, false),
+            };
+            let client = *client;
+            Self::setting_row_with_subtitle(ui, client.name(), &state, theme, |ui| {
+                let idle = busy.is_none() && klipp_mcp.is_some();
+                if can_disconnect && ui.add_enabled(idle, egui::Button::new("Disconnect")).on_hover_text(format!("Remove Klipp from {}'s servers. Nothing else of its settings changes.", client.name())).clicked() {
+                    let (shared, refresh) = (std::sync::Arc::clone(&shared), refresh.clone());
+                    if let Ok(mut st) = shared.lock() {
+                        st.busy = Some(format!("Disconnecting {}\u{2026}", client.name()));
+                    }
+                    std::thread::spawn(move || {
+                        let r = clients::disconnect(client);
+                        if let Ok(mut st) = shared.lock() {
+                            st.error = r.err().map(|e| format!("{}: {e}", client.name()));
+                        }
+                        refresh();
+                    });
+                }
+                let label = if matches!(reg, Registration::Connected(_)) { "Update" } else { "Connect" };
+                if can_connect && ui.add_enabled(idle, egui::Button::new(label)).on_hover_text(format!("Add Klipp to {}'s servers with its own command. Nothing else of its settings changes.", client.name())).clicked() {
+                    if let Some(path) = klipp_mcp.clone() {
+                        let (shared, refresh) = (std::sync::Arc::clone(&shared), refresh.clone());
+                        if let Ok(mut st) = shared.lock() {
+                            st.busy = Some(format!("Connecting {}\u{2026}", client.name()));
+                        }
+                        std::thread::spawn(move || {
+                            let r = clients::connect(client, &path);
+                            if let Ok(mut st) = shared.lock() {
+                                st.error = r.err().map(|e| format!("{}: {e}", client.name()));
+                            }
+                            refresh();
+                        });
+                    }
+                }
+            });
+        }
+        if let Some(b) = &busy {
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.spinner();
+                ui.label(egui::RichText::new(b).color(theme.text_secondary));
+            });
+        }
+        if let Some(e) = &error {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(e).color(theme.marker_warning));
+            });
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("After connecting, start a new session in the assistant (or restart it) so it loads Klipp's tools. Then ask it \u{201c}Is Klipp connected?\u{201d} or \u{201c}What can I do in Klipp?\u{201d}").color(theme.text_secondary));
+            if ui.small_button("Refresh").clicked() && busy.is_none() {
+                if let Ok(mut st) = shared.lock() {
+                    st.busy = Some("Looking for assistants\u{2026}".into());
+                }
+                std::thread::spawn(refresh.clone());
+            }
+        });
+        if let Some(path) = &klipp_mcp {
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new(egui::RichText::new("Another assistant").color(theme.text_primary))
+                .id_salt("connect_other_assistant")
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Any assistant that runs local MCP servers can use Klipp. Add this to its MCP settings:").color(theme.text_secondary));
+                    for (what, text) in [
+                        ("Most assistants (JSON, mcpServers)", clients::json_snippet(path)),
+                        ("Codex (~/.codex/config.toml)", clients::toml_snippet(path)),
+                        ("Claude Code, in a terminal", clients::Client::ClaudeCode.connect_command(path)),
+                        ("Codex, in a terminal", clients::Client::Codex.connect_command(path)),
+                    ] {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(what).color(theme.text_primary));
+                            if ui.small_button("Copy").clicked() {
+                                ui.ctx().copy_text(text.clone());
+                            }
+                        });
+                        ui.label(egui::RichText::new(&text).monospace().color(theme.text_secondary));
+                    }
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("ChatGPT in the browser, and other assistants that run online, cannot reach a program on this computer, and Klipp does not offer a way in from the internet yet.").color(theme.text_secondary));
+                });
+        }
     }
 
     fn show_system(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {
@@ -4521,5 +4723,56 @@ fn fmt_bytes(bytes: u64) -> String {
         format!("{:.1} GB", bytes as f64 / 1e9)
     } else {
         format!("{} MB", (bytes as f64 / 1e6).round() as u64)
+    }
+}
+
+#[cfg(test)]
+mod connect_assistant_tests {
+    use super::*;
+
+    /// Every piece of text drawn in a frame.
+    fn texts(out: &egui::FullOutput) -> Vec<String> {
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #625: the Connect an assistant section draws its rows on this
+    /// computer: the program, the check, each assistant with its state,
+    /// and the settings for another one — with the assistant on, and a
+    /// warning first with it off.
+    #[test]
+    fn the_connect_section_draws_what_it_found() {
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut panel = PreferencesPanel::default();
+        let mut prefs = Preferences::default();
+        prefs.ai.assistant = true;
+        let frame = |panel: &mut PreferencesPanel, prefs: &Preferences| {
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| panel.show_connect_assistant(ui, prefs, &theme));
+            });
+            texts(&out)
+        };
+        let first = frame(&mut panel, &prefs);
+        assert!(first.iter().any(|t| t.contains("CONNECT AN ASSISTANT")), "{first:?}");
+        // The look runs on a worker: give it its moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while panel.assistant.lock().unwrap().busy.is_some() {
+            assert!(std::time::Instant::now() < deadline, "the look for assistants never finished");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let shown = frame(&mut panel, &prefs);
+        for want in ["Klipp's MCP program", "Check the connection", "Claude Code", "Codex", "Another assistant"] {
+            assert!(shown.iter().any(|t| t.contains(want)), "no {want:?} in {shown:?}");
+        }
+        eprintln!("drawn:\n  {}", shown.join("\n  "));
+        prefs.ai.assistant = false;
+        let off = frame(&mut panel, &prefs);
+        assert!(off.iter().any(|t| t.contains("The AI assistant is off")), "{off:?}");
     }
 }
