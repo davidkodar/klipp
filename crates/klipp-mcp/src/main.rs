@@ -1446,7 +1446,8 @@ fn tool_definitions() -> Vec<Value> {
               clip, where playback and the render read them.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
-              sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
+              sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
+              only where its words are, a voiceover throughout), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
@@ -1619,7 +1620,8 @@ fn tool_definitions() -> Vec<Value> {
               clip, where playback and the render read them.\n\
               duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
-              sfx, ambience, foley or broll, nor any set 12 dB under the music), moving over \
+              sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
+              only where its words are, a voiceover throughout), moving over \
               fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \

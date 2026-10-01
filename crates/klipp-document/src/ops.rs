@@ -1056,6 +1056,50 @@ pub struct SpokenWord {
     pub start_secs: f64,
     pub end_secs: f64,
     pub text: String,
+    /// How sure the recogniser was of the word, 0 to 1; 1 where it does
+    /// not say.
+    pub confidence: f32,
+}
+
+/// Where `clip` is heard speaking, in timeline seconds (#457): the words
+/// of its file's transcript inside its source range, those the
+/// recogniser was at all sure of, run together where they come under a
+/// second apart. A phrase of one word it was unsure of (whisper hearing
+/// "so" in street noise) is not speech, and a clip whose transcript has
+/// no words in its range says nothing. `None` when the file has no
+/// transcript: then only the clip's role says what it is.
+pub(crate) fn spoken_spans(clip: &Clip, words: Option<&[SpokenWord]>, fps: f64) -> Option<Vec<(f64, f64)>> {
+    // Under this a word is noise; a word alone needs the second.
+    const HEARD: f32 = 0.3;
+    const ALONE: f32 = 0.7;
+    const JOIN_SECS: f64 = 1.0;
+    let words = words?;
+    let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
+    let (t_in, t_out) = (secs(clip.timeline_in), secs(clip.timeline_out));
+    let on_timeline = |s: f64| (t_in + clip.elapsed_for_source_secs(s.clamp(s_in, s_out), fps)).clamp(t_in, t_out);
+    let mut heard: Vec<(f64, f64, f32)> = words
+        .iter()
+        .filter(|w| w.end_secs > s_in && w.start_secs < s_out && w.confidence >= HEARD)
+        .map(|w| {
+            // A reversed clip shows a word's end before its start.
+            let (a, b) = (on_timeline(w.start_secs), on_timeline(w.end_secs));
+            (a.min(b), a.max(b), w.confidence)
+        })
+        .collect();
+    heard.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // (start, end, words, surest)
+    let mut phrases: Vec<(f64, f64, usize, f32)> = Vec::new();
+    for (a, b, sure) in heard {
+        match phrases.last_mut() {
+            Some(p) if a - p.1 < JOIN_SECS => {
+                p.1 = p.1.max(b);
+                p.2 += 1;
+                p.3 = p.3.max(sure);
+            }
+            _ => phrases.push((a, b, 1, sure)),
+        }
+    }
+    Some(phrases.into_iter().filter(|p| p.2 > 1 || p.3 >= ALONE).map(|p| (p.0, p.1)).collect())
 }
 
 /// Where the resolver gets transcripts from. The document does not know
@@ -1584,7 +1628,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Duck { clip_id, by_db, fade_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            duck(seq, pool, i, ti, clip, *by_db, *fade_secs)
+            duck(seq, pool, i, ti, clip, *by_db, *fade_secs, transcripts)
         }
         Op::Transition { clip_id, kind, secs } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -2213,7 +2257,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
     }
 }
 
-fn db_to_linear(db: f32) -> f32 {
+pub(crate) fn db_to_linear(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
@@ -2321,7 +2365,8 @@ pub(crate) fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline:
     sound_settings_clip(seq, clip).volume > 0.0
 }
 
-fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if !(1.0..=40.0).contains(&by_db) {
         return Err(refuse(i, format!("{by_db} dB is not a duck"), "music under speech comes down six to twelve decibels"));
     }
@@ -2352,17 +2397,30 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         !quiet && !not_speech
     };
     // Where speech is heard over the music, merged where the gaps are
-    // too short to come up and go down again.
-    let mut over: Vec<(f64, f64)> = seq
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
-        .filter(|(t, c)| c.id != music.id && Some(c.id) != music.linked_clip_id && is_heard(seq, pool, t, c) && speaks(c))
-        .map(|(_, c)| (secs(c.timeline_in).max(m_in), secs(c.timeline_out).min(m_out)))
-        .filter(|(a, b)| b > a)
-        .collect();
+    // too short to come up and go down again. A clip with a transcript is
+    // speech where its words are, not along its whole length: a camera's
+    // sound unmarked, at a level heard over the bed, ducked it for 100 s
+    // of street where six voice lines were all the speech (#457). One
+    // marked voiceover is speech throughout.
+    let fps = seq.fps.as_f64();
+    let mut words: std::collections::HashMap<klipp_core::MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
+    let mut over: Vec<(f64, f64)> = Vec::new();
+    for (t, c) in seq.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c))) {
+        if c.id == music.id || Some(c.id) == music.linked_clip_id || !is_heard(seq, pool, t, c) || !speaks(c) {
+            continue;
+        }
+        let whole = vec![(secs(c.timeline_in), secs(c.timeline_out))];
+        let spans = match (c.role, c.media_id().and_then(|id| pool.get(&id))) {
+            (klipp_core::ClipRole::Voiceover, _) | (_, None) => whole,
+            (_, Some(item)) => {
+                let said = words.entry(item.id).or_insert_with(|| transcripts.words(item));
+                spoken_spans(c, said.as_deref(), fps).unwrap_or(whole)
+            }
+        };
+        over.extend(spans.into_iter().map(|(a, b)| (a.max(m_in), b.min(m_out))).filter(|(a, b)| b > a));
+    }
     if over.is_empty() {
-        return Err(refuse(i, "no speech is heard over it", "place the speech first, and mark it dialogue or voiceover (role); a duck ignores music, effects, ambience and anything set 12 dB under the music"));
+        return Err(refuse(i, "no speech is heard over it", "place the speech first, and mark it dialogue or voiceover (role); a duck ignores music, effects, ambience, anything set 12 dB under the music, and a transcribed clip where no words are said"));
     }
     over.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut spans: Vec<(f64, f64)> = Vec::new();
@@ -2394,7 +2452,7 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     new_state.volume_keyframes = kfs;
     let on = if settings.id == music.id { String::new() } else { " (on the video clip it is linked to)".to_string() };
     let what = format!(
-        "duck {} by {by_db:.0} dB under {} stretch{} of other sound ({}), moving over {fade_secs:.2} s{on}",
+        "duck {} by {by_db:.0} dB under {} stretch{} of speech ({}), moving over {fade_secs:.2} s{on}",
         clip_name(seq, pool, music),
         spans.len(),
         if spans.len() == 1 { "" } else { "es" },
@@ -5575,7 +5633,7 @@ mod tests {
     impl Transcripts for Spoken {
         fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
             let say = |at: f64, text: &str| -> Vec<SpokenWord> {
-                text.split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: at + k as f64 * 0.2, end_secs: at + k as f64 * 0.2 + 0.18, text: format!(" {w}") }).collect()
+                text.split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: at + k as f64 * 0.2, end_secs: at + k as f64 * 0.2 + 0.18, text: format!(" {w}"), confidence: 1.0 }).collect()
             };
             Some([say(0.5, "Nobody is afraid of the machine."), say(4.4, "What changed it for me was agents, and that is the long and the short of it."), say(9.0, "Never used.")].concat())
         }
@@ -5858,6 +5916,43 @@ mod tests {
         }
         assert!(duck(&marked).is_err());
         let _ = a;
+    }
+
+    /// A duck follows the words (#457): over camera sound with a
+    /// transcript it comes down where something is said, not along the
+    /// whole clip; a lone word whisper was unsure of, or one under its
+    /// floor, is not speech; a transcript with no words there is nothing
+    /// to come down for, and a clip marked voiceover is speech throughout.
+    #[test]
+    fn a_duck_follows_the_words() {
+        struct Said(Vec<(f64, f64, f32)>);
+        impl Transcripts for Said {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                Some(self.0.iter().map(|&(a, b, confidence)| SpokenWord { start_secs: a, end_secs: b, text: " w".into(), confidence }).collect())
+            }
+        }
+        let (mut seq, pool, media, _, _) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |seq: &Sequence, said: &Said| resolve_with(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }], said);
+        // A phrase at 2-3.2 s; "so" alone at 6 s, unsure; noise at 7 s.
+        let street = Said(vec![(2.0, 2.6, 0.9), (2.7, 3.2, 0.8), (6.0, 6.2, 0.5), (7.0, 7.3, 0.1)]);
+        let plan = duck(&seq, &street).unwrap();
+        assert!(plan.steps[0].what.contains("1 stretch of speech (2.00-3.20 s)"), "{}", plan.steps[0].what);
+        // Said surely, the lone word is speech.
+        let sure = Said(vec![(2.0, 2.6, 0.9), (2.7, 3.2, 0.8), (6.0, 6.2, 0.9)]);
+        assert!(duck(&seq, &sure).unwrap().steps[0].what.contains("2 stretches"));
+        // Nothing said: no duck.
+        assert!(duck(&seq, &Said(vec![(6.0, 6.2, 0.4)])).unwrap_err().why.contains("no speech"));
+        // A voiceover is speech from end to end, transcript or not.
+        let mut vo = seq.clone();
+        for c in vo.tracks[1].clips.iter_mut() {
+            c.role = klipp_core::ClipRole::Voiceover;
+        }
+        assert!(duck(&vo, &Said(vec![])).unwrap().steps[0].what.contains("0.00-8.00"));
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the

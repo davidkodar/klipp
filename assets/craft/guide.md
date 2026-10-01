@@ -150,7 +150,10 @@ exist until the plan runs.
   the duck is written as keyframes from what is on the timeline then.
   It comes down for speech only: not for clips marked music, sfx,
   ambience, foley or broll, nor for any set twelve decibels or more
-  under the music (a camera's street sound under a bed).
+  under the music (a camera's street sound under a bed). A clip whose
+  file is transcribed is speech where its words are, not along its
+  whole length, and a lone word the transcriber was unsure of is not
+  speech; a clip marked voiceover is speech throughout.
 - `role {clip_id, role}`: what a clip is to the mix and the checks:
   dialogue, voiceover, music, sfx, ambience, foley, broll or graphics.
   Mark a camera's own sound `ambience` (or the shot `broll`) when it
