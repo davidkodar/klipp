@@ -410,8 +410,10 @@ pub fn at_rail(rgba: &[u8], w: usize, h: usize, x: usize, y: usize) -> Option<Ra
 /// and measured with them it read "mid 0, 76.9% clipped at black", from
 /// which a match pushed exposure and lift up. A bar is an edge band,
 /// every line of it near black (no channel over 4 of 255) and at least
-/// 2% of the frame: a thinner dark edge is the picture's own, and a
-/// frame that is dark all over has no bars to find.
+/// 2% of the frame, with a matching one on the opposite side, as a
+/// fitted picture is centred: a thinner dark edge, or a dark side alone
+/// (a night shot crushed down one side, the crush the reading is for),
+/// is the picture's own, and a frame dark all over has no bars to find.
 pub fn picture_area(rgba: &[u8], width: u32, height: u32) -> (u32, u32, u32, u32) {
     let (w, h) = (width as usize, height as usize);
     let whole = (0, 0, width, height);
@@ -437,18 +439,17 @@ pub fn picture_area(rgba: &[u8], width: u32, height: u32) -> (u32, u32, u32, u32
     while y1 > y0 + 1 && row(y1 - 1) {
         y1 -= 1;
     }
-    // Thinner than 2% of the frame: the picture's own dark edge.
-    if x0 < w / 50 {
-        x0 = 0;
+    // Bars come in pairs: a fitted picture sits in the middle, so its bars
+    // are the same width either side. One dark side alone — a night shot
+    // crushed down the left — is the picture, and its crush is what the
+    // reading is for. Each pair must be at least 2% of the frame and
+    // equal to within 1% and a pixel.
+    let paired = |a: usize, b: usize, side: usize| a >= side / 50 && b >= side / 50 && a.abs_diff(b) <= side / 100 + 1;
+    if !paired(x0, w - x1, w) {
+        (x0, x1) = (0, w);
     }
-    if w - x1 < w / 50 {
-        x1 = w;
-    }
-    if y0 < h / 50 {
-        y0 = 0;
-    }
-    if h - y1 < h / 50 {
-        y1 = h;
+    if !paired(y0, h - y1, h) {
+        (y0, y1) = (0, h);
     }
     // Next to nothing left: a dark frame, measured whole.
     if (x1 - x0) < w / 5 || (y1 - y0) < h / 5 {
@@ -1791,6 +1792,13 @@ mod tests {
         // has no bars.
         assert_eq!(picture_area(&framed(1, w, 0, h, 120), w as u32, h as u32), (0, 0, 160, 90));
         assert_eq!(picture_area(&framed(0, 0, 0, 0, 0), w as u32, h as u32), (0, 0, 160, 90));
+        // A picture crushed to black down its left side alone is all
+        // picture: measured whole, its crush counted (#649 review).
+        let night = framed(40, w, 0, h, 120);
+        assert_eq!(picture_area(&night, w as u32, h as u32), (0, 0, 160, 90));
+        assert!(measure_frame(&night, w as u32, h as u32, &[]).clip_lo_pct > 20.0, "the crush is read");
+        // Bars of different widths are not a centred picture's.
+        assert_eq!(picture_area(&framed(30, 110, 0, h, 120), w as u32, h as u32), (0, 0, 160, 90));
     }
 
     #[test]
