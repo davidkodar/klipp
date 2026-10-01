@@ -3258,6 +3258,22 @@ impl ViewerPanel {
             let untracked_shape = raw_mask.evaluated_at(clip_time_secs).shape;
             let mask_owned = raw_mask.evaluated_in(clip_time_secs, ih / iw.max(1.0));
             let mask = &mask_owned;
+            // A window tracked in perspective keeps its shape as drawn,
+            // and its outline and handles are carried onto the picture
+            // by the track's map.
+            let ahead = mask.keyframes.warp.and_then(|w| w.inverse());
+            let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
+                let (x, y) = ahead.and_then(|f| f.apply((nx, ny))).unwrap_or((nx, ny));
+                to_screen(x, y)
+            };
+            // The outline through the map, where straight lines stay
+            // straight and a circle does not stay round.
+            let warped_outline = |pts: &[(f32, f32)]| {
+                if ahead.is_some() {
+                    let screen: Vec<egui::Pos2> = pts.iter().map(|&(x, y)| to_screen(x, y)).collect();
+                    ui.painter().add(egui::Shape::closed_line(screen, egui::Stroke::new(1.5_f32, outline_color)));
+                }
+            };
 
             match &mask.shape {
                 klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
@@ -3265,19 +3281,28 @@ impl ViewerPanel {
                     let r_px = radius * iw;
 
                     // Draw outline ellipse (approximate with circle)
-                    ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5_f32, outline_color));
+                    if ahead.is_some() {
+                        let down = radius * iw / ih.max(1.0);
+                        let ring: Vec<(f32, f32)> = (0..64).map(|i| {
+                            let (sin, cos) = (i as f32 * std::f32::consts::TAU / 64.0).sin_cos();
+                            (center_x + radius * cos, center_y + down * sin)
+                        }).collect();
+                        warped_outline(&ring);
+                    } else {
+                        ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5_f32, outline_color));
+                    }
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(center, handle_radius, handle_color);
 
                     // Right edge handle (radius control)
-                    let right = egui::pos2(center.x + r_px, center.y);
+                    let right = to_screen(center_x + radius, *center_y);
                     let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (radius control)
-                    let bottom = egui::pos2(center.x, center.y + r_px);
+                    let bottom = to_screen(*center_x, center_y + radius * iw / ih.max(1.0));
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3337,26 +3362,35 @@ impl ViewerPanel {
                         }
                     }
                 }
-                klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation: _ } => {
+                klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
                     let center = to_screen(*center_x, *center_y);
                     let hw = width * iw * 0.5;
                     let hh = height * ih * 0.5;
 
                     // Draw outline rectangle (ignoring rotation for simplicity in handles)
-                    let rect = egui::Rect::from_center_size(center, egui::vec2(hw * 2.0, hh * 2.0));
-                    ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5_f32, outline_color));
+                    if ahead.is_some() {
+                        // Turned as the rasteriser turns it, in width units.
+                        let aspect = ih / iw.max(1.0);
+                        let (sin, cos) = rotation.to_radians().sin_cos();
+                        let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * aspect);
+                        let (a, b) = (width * 0.5, height * 0.5);
+                        warped_outline(&[corner(-a, -b), corner(a, -b), corner(a, b), corner(-a, b)]);
+                    } else {
+                        let rect = egui::Rect::from_center_size(center, egui::vec2(hw * 2.0, hh * 2.0));
+                        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5_f32, outline_color));
+                    }
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(center, handle_radius, handle_color);
 
                     // Right edge handle (width control)
-                    let right = egui::pos2(center.x + hw, center.y);
+                    let right = to_screen(center_x + hw / iw.max(1.0), *center_y);
                     let right_handle = egui::Rect::from_center_size(right, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (height control)
-                    let bottom = egui::pos2(center.x, center.y + hh);
+                    let bottom = to_screen(*center_x, center_y + hh / ih.max(1.0));
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3477,12 +3511,7 @@ impl ViewerPanel {
                 // Bezier freeform path
                 klipp_core::MaskShape::Bezier { points } => {
                     if points.len() >= 2 {
-                        let screen_pts: Vec<egui::Pos2> = points.iter().map(|(px, py)| {
-                            egui::pos2(
-                                image_rect.left() + px * image_rect.width(),
-                                image_rect.top() + py * image_rect.height(),
-                            )
-                        }).collect();
+                        let screen_pts: Vec<egui::Pos2> = points.iter().map(|&(px, py)| to_screen(px, py)).collect();
                         // Draw path edges
                         for i in 0..screen_pts.len() {
                             let a = screen_pts[i];
@@ -3550,10 +3579,11 @@ impl ViewerPanel {
                                         let b = screen_pts[(i + 1) % n];
                                         let (dist, proj) = point_segment_distance(click, a, b);
                                         if dist < 10.0 {
-                                            let nx = ((proj.x - image_rect.min.x) / image_rect.width())
-                                                .clamp(0.0, 1.0);
-                                            let ny = ((proj.y - image_rect.min.y) / image_rect.height())
-                                                .clamp(0.0, 1.0);
+                                            let on = ((proj.x - image_rect.min.x) / image_rect.width(), (proj.y - image_rect.min.y) / image_rect.height());
+                                            // Back to the window as drawn, when it is
+                                            // carried in perspective.
+                                            let on = mask.keyframes.warp.and_then(|w| w.apply(on)).unwrap_or(on);
+                                            let (nx, ny) = (on.0.clamp(0.0, 1.0), on.1.clamp(0.0, 1.0));
                                             match best {
                                                 Some((_, d, _)) if d <= dist => {}
                                                 _ => best = Some((i, dist, (nx, ny))),
@@ -3610,17 +3640,24 @@ impl ViewerPanel {
             // is now; the edit is to the window as drawn on its reference
             // frame, so both ends of the drag are taken back through the
             // track.
-            let (drag_start, current_pos) = match masks.masks.get(drag_mask_idx).and_then(|m| m.track_at(clip_time_secs)) {
-                Some(motion) => {
+            // In perspective, back through the track's map first.
+            let tracked = masks.masks.get(drag_mask_idx).map(|m| (m.track_at(clip_time_secs), m.evaluated_in(clip_time_secs, ih / iw.max(1.0)).keyframes.warp));
+            let (drag_start, current_pos) = match tracked {
+                Some((motion, warp)) if motion.is_some() || warp.is_some() => {
                     let pivot = initial_shape.pivot();
                     let back = |p: egui::Pos2| {
-                        let n = ((p.x - image_rect.min.x) / iw, (p.y - image_rect.min.y) / ih);
-                        let (x, y) = motion.undo(n, pivot, ih / iw.max(1.0));
-                        egui::pos2(image_rect.min.x + x * iw, image_rect.min.y + y * ih)
+                        let mut n = ((p.x - image_rect.min.x) / iw, (p.y - image_rect.min.y) / ih);
+                        if let Some(w) = warp {
+                            n = w.apply(n).unwrap_or(n);
+                        }
+                        if let Some(motion) = motion {
+                            n = motion.undo(n, pivot, ih / iw.max(1.0));
+                        }
+                        egui::pos2(image_rect.min.x + n.0 * iw, image_rect.min.y + n.1 * ih)
                     };
                     (back(drag_start), back(current_pos))
                 }
-                None => (drag_start, current_pos),
+                _ => (drag_start, current_pos),
             };
 
             if pointer_down {

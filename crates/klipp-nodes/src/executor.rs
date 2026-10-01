@@ -4553,7 +4553,7 @@ fn corrector_has_active_stage(p: &NodeParams) -> bool {
 fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMaskDef> {
     use klipp_core::MaskShape;
     use klipp_effects::gpu::GpuMaskDef;
-    match &mask.shape {
+    let def = match &mask.shape {
         MaskShape::Circle { center_x, center_y, radius } =>
             Some(GpuMaskDef::circle(*center_x, *center_y, *radius, mask.feather, mask.invert, mask.opacity)),
         MaskShape::Rectangle { center_x, center_y, width, height, rotation } =>
@@ -4562,7 +4562,8 @@ fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMas
             Some(GpuMaskDef::linear_gradient(*start_x, *start_y, *end_x, *end_y, mask.feather, mask.invert, mask.opacity)),
         MaskShape::Bezier { points } =>
             Some(GpuMaskDef::bezier(points.clone(), mask.feather, mask.invert, mask.opacity)),
-    }
+    };
+    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)))
 }
 
 /// The four curves as the curves shader and its CPU twin read them:
@@ -6132,6 +6133,21 @@ mod tests {
         apply_tracker_overrides_to_masks(&mut stack, node_id, 0.0, &track_points);
         let klipp_core::MaskShape::Circle { center_x, .. } = stack.masks[0].shape else { panic!("expected Circle") };
         assert!((center_x - 0.5).abs() < 1e-6, "the override left it where its track has it");
+    }
+
+    /// #238: a window tracked in perspective reaches the GPU matte with its
+    /// map, and an untracked one without.
+    #[test]
+    fn a_window_in_perspective_takes_its_map_to_the_gpu() {
+        let mut mask = make_circle_mask(0.5, 0.5);
+        assert_eq!(mask_to_gpu_def(&mask.evaluated_in(0.0, 0.5625)).unwrap().flags & 2, 0);
+        let from = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+        let to = [[0.4, 0.4], [0.58, 0.43], [0.58, 0.57], [0.4, 0.6]];
+        mask.keyframes.track_perspective = Some(klipp_core::PerspectiveTrack { from, keys: vec![klipp_core::CornerKey { time_secs: 0.0, corners: to }] });
+        let evaluated = mask.evaluated_in(0.0, 0.5625);
+        let def = mask_to_gpu_def(&evaluated).unwrap();
+        assert_eq!(def.flags & 2, 2);
+        assert_eq!(def.warp, evaluated.keyframes.warp.unwrap().0);
     }
 
     #[test]

@@ -684,7 +684,8 @@ fn edit_linked_audio_key(keys: &mut Vec<klipp_core::Keyframe>, time: f64, tolera
 /// workspace grades it; fixed for the sequence.
 /// A window track to run (#238): the clip's file, its rate, the file
 /// frames the clip uses, the frame the window was drawn on, and the
-/// window's four corners and pivot there, in frame fractions.
+/// window's four corners and pivot there, in frame fractions, and
+/// whether to follow those corners in perspective.
 struct WindowTrackJob {
     clip_id: klipp_core::ClipId,
     point_index: usize,
@@ -694,6 +695,7 @@ struct WindowTrackJob {
     reference: usize,
     quad: [(f32, f32); 4],
     pivot: (f32, f32),
+    perspective: bool,
 }
 
 /// The frames `first..=last` of the file at `path` (`fps` frames a
@@ -751,29 +753,52 @@ fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, f32); 4] {
     quad.map(|(x, y)| (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
 }
 
-/// A window track's keyframes (#238): for each file frame tracked, its
-/// time on the clip's own clock — the grade's — and the window's move,
-/// size and turn from the reference frame, as (time, dx, dy, scale,
-/// degrees). Frames outside the clip are left out. Through the clip's
-/// speed and in its direction (#617), at the sequence's `seq_fps`; a
-/// reversed clip's keys come in its own order, earliest first.
-fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Vec<(f64, f32, f32, f32, f32)> {
+/// When each frame of a window track (#238) falls on the clip's own
+/// clock — the grade's — as (index into the track's frames, time), for
+/// the frames inside the clip, earliest first. Through the clip's speed
+/// and in its direction (#617), at the sequence's `seq_fps`.
+fn window_track_times(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Vec<(usize, f64)> {
     let Some(fps) = clip.media_id().and_then(|m| pool.get(&m)).map(|it| it.fps.as_f64()).filter(|f| *f > 0.0) else { return Vec::new() };
-    let reference = tp.reference_frame.unwrap_or(tp.start_frame);
-    let Some(&pivot) = tp.positions.get(reference.saturating_sub(tp.start_frame)) else { return Vec::new() };
     let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-    let mut keys: Vec<_> = tp.positions
-        .iter()
-        .zip(&tp.motion)
-        .enumerate()
-        .filter_map(|(i, (&(x, y), &(scale, rot)))| {
+    let mut times: Vec<_> = (0..tp.positions.len())
+        .filter_map(|i| {
             let at = (tp.start_frame + i) as f64 / fps;
-            (at >= s_in - 0.5 / fps && at <= s_out + 0.5 / fps)
-                .then(|| (clip.elapsed_for_source_secs(at, seq_fps), (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
+            (at >= s_in - 0.5 / fps && at <= s_out + 0.5 / fps).then(|| (i, clip.elapsed_for_source_secs(at, seq_fps)))
         })
         .collect();
-    keys.sort_by(|a, b| a.0.total_cmp(&b.0));
-    keys
+    times.sort_by(|a, b| a.1.total_cmp(&b.1));
+    times
+}
+
+/// A window track's keyframes (#238): for each file frame tracked, its
+/// time on the clip's own clock and the window's move, size and turn
+/// from the reference frame, as (time, dx, dy, scale, degrees). Frames
+/// outside the clip are left out; a reversed clip's keys come in its
+/// own order, earliest first (see [`window_track_times`]).
+fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Vec<(f64, f32, f32, f32, f32)> {
+    let reference = tp.reference_frame.unwrap_or(tp.start_frame);
+    let Some(&pivot) = tp.positions.get(reference.saturating_sub(tp.start_frame)) else { return Vec::new() };
+    window_track_times(clip, tp, pool, seq_fps)
+        .into_iter()
+        .filter_map(|(i, t)| {
+            let (&(x, y), &(scale, rot)) = (tp.positions.get(i)?, tp.motion.get(i)?);
+            Some((t, (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
+        })
+        .collect()
+}
+
+/// A window track in perspective (#238) as the window carries it: the
+/// corners on the reference frame, and where they are at each moment on
+/// the clip's own clock. `None` without the reference frame's corners.
+fn window_perspective_track(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Option<klipp_core::PerspectiveTrack> {
+    let reference = tp.reference_frame.unwrap_or(tp.start_frame);
+    let corner = |q: &[(f64, f64); 4]| q.map(|(x, y)| [x as f32, y as f32]);
+    let from = corner(tp.corners.get(reference.checked_sub(tp.start_frame)?)?);
+    let keys = window_track_times(clip, tp, pool, seq_fps)
+        .into_iter()
+        .filter_map(|(i, t)| Some(klipp_core::CornerKey { time_secs: t, corners: corner(tp.corners.get(i)?) }))
+        .collect();
+    Some(klipp_core::PerspectiveTrack { from, keys })
 }
 
 fn timeline_grade_proxy_track_id(seq: &klipp_timeline::Sequence) -> klipp_core::TrackId {
@@ -13967,12 +13992,12 @@ impl KlippApp {
     /// clip's part of the file, its move, size and turn sent back in
     /// `TrackingComplete`.
     fn start_window_track(&mut self, job: WindowTrackJob) {
-        let WindowTrackJob { clip_id, point_index, path, media_fps, frames: (first, last), reference, quad, pivot } = job;
+        let WindowTrackJob { clip_id, point_index, path, media_fps, frames: (first, last), reference, quad, pivot, perspective } = job;
         self.state.tracking_in_progress.insert(clip_id);
         self.state.tracking_progress.insert(clip_id, 0.0);
         let event_tx = self.proxy_event_tx.clone();
         std::thread::spawn(move || {
-            use klipp_effects::window_track::{track_window, GrayFrame, TrackOptions};
+            use klipp_effects::window_track::{track_window, track_window_perspective, GrayFrame, TrackOptions};
             // At most two minutes of frames about the reference: they are
             // held in memory while the track runs.
             const MOST: usize = 3600;
@@ -14007,13 +14032,36 @@ impl KlippApp {
             let backward: Vec<usize> = (first..reference).rev().collect();
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
             let report = |p: f32| event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
-            let ahead = track_window(&reference_frame, quad_px, pivot_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
-            let behind = track_window(&reference_frame, quad_px, pivot_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
-            if ahead.is_empty() && behind.is_empty() && !(forward.is_empty() && backward.is_empty()) {
+            let nothing = || {
                 let _ = event_tx.send(klipp_core::AppEvent::TrackingFailed {
                     clip_id,
                     error: "nothing in the window to follow: draw it over something with detail".into(),
                 });
+            };
+            let tried = !(forward.is_empty() && backward.is_empty());
+            if perspective {
+                // Each frame's map from the reference, carrying the
+                // window's corners and pivot, back in frame fractions.
+                let ahead = track_window_perspective(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
+                let behind = track_window_perspective(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+                if ahead.is_empty() && behind.is_empty() && tried {
+                    nothing();
+                    return;
+                }
+                let still = klipp_effects::homography::Homography::identity();
+                let all: Vec<(usize, klipp_effects::homography::Homography)> =
+                    behind.into_iter().rev().chain(std::iter::once((reference, still))).chain(ahead).collect();
+                let start_frame = all.first().map_or(reference, |a| a.0);
+                let frac = |p: (f64, f64)| (p.0 / gw, p.1 / gh);
+                let positions = all.iter().map(|(_, h)| frac(h.transform(pivot_px.0, pivot_px.1))).collect();
+                let corners = all.iter().map(|(_, h)| quad_px.map(|c| frac(h.transform(c.0, c.1)))).collect();
+                let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion: Vec::new(), corners });
+                return;
+            }
+            let ahead = track_window(&reference_frame, quad_px, pivot_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
+            let behind = track_window(&reference_frame, quad_px, pivot_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+            if ahead.is_empty() && behind.is_empty() && tried {
+                nothing();
                 return;
             }
             // The frames followed, earliest first, the reference among them.
@@ -14023,7 +14071,7 @@ impl KlippApp {
             let start_frame = all.first().map_or(reference, |a| a.0);
             let positions = all.iter().map(|(_, m)| ((pivot_px.0 + m.dx) / gw, (pivot_px.1 + m.dy) / gh)).collect();
             let motion = all.iter().map(|(_, m)| (m.scale, m.rotation.to_degrees())).collect();
-            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion });
+            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners: Vec::new() });
         });
     }
 
@@ -20813,7 +20861,7 @@ impl KlippApp {
                 self.state.tracking_mode = !self.state.tracking_mode;
                 true
             }
-            AppCommand::TrackMaskRegion { clip_id, node_id, mask_index } => {
+            AppCommand::TrackMaskRegion { clip_id, node_id, mask_index, perspective } => {
                 // The window as drawn at the playhead, followed through the
                 // clip in move, size and turn (#238): a track point holds
                 // the result, linked to the mask, and the TrackingComplete
@@ -20821,6 +20869,7 @@ impl KlippApp {
                 let clip_id = *clip_id;
                 let node_id = *node_id;
                 let mask_index = *mask_index;
+                let perspective = *perspective;
                 let playhead_secs = self.state.playhead_smooth_secs;
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let aspect = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
@@ -20868,7 +20917,7 @@ impl KlippApp {
                     klipp_core::TrackTarget::MaskCenter { node_id, mask_index },
                 );
                 self.state.toast.show("Tracking the window\u{2026}");
-                self.start_window_track(WindowTrackJob { clip_id, point_index: index, path, media_fps, frames: (first, last), reference, quad, pivot });
+                self.start_window_track(WindowTrackJob { clip_id, point_index: index, path, media_fps, frames: (first, last), reference, quad, pivot, perspective });
                 self.state.dirty = true;
                 true
             }
@@ -21021,6 +21070,7 @@ impl KlippApp {
                             positions: normalized,
                             start_frame,
                             motion: Vec::new(),
+                            corners: Vec::new(),
                         });
                     });
                 }
@@ -21066,6 +21116,26 @@ impl KlippApp {
                                     });
                                 }
                                 self.state.toast.show("Generated transform keyframes from tracker");
+                            }
+                            klipp_core::TrackTarget::MaskCenter { node_id, mask_index } if !tp.corners.is_empty() => {
+                                // A window track in perspective (#238): the
+                                // corners' course on the window, one undo
+                                // step.
+                                let track = window_perspective_track(clip, tp, &self.state.media_pool, fps);
+                                let count = track.as_ref().map_or(0, |t| t.keys.len());
+                                let old_graph = clip.node_graph.clone();
+                                if let Some(mask) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id)
+                                    .and_then(|n| n.params.masks.as_mut())
+                                    .and_then(|ms| ms.masks.get_mut(mask_index))
+                                {
+                                    mask.keyframes.clear_track();
+                                    mask.keyframes.track_perspective = track.filter(|t| !t.keys.is_empty());
+                                }
+                                let new_graph = clip.node_graph.clone();
+                                if let Some(tp) = clip.track_points.get_mut(point_index) {
+                                    tp.linked_mask = Some((node_id, mask_index));
+                                }
+                                window_edit = Some((EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }, count));
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } if !tp.motion.is_empty() => {
                                 // A window track (#238): the window's move,
@@ -31750,7 +31820,7 @@ impl KlippApp {
                 AppEvent::TrackingProgress { clip_id, progress } => {
                     self.state.tracking_progress.insert(clip_id, progress);
                 }
-                AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion } => {
+                AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame, motion, corners } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -31759,6 +31829,7 @@ impl KlippApp {
                             tp.positions = positions;
                             tp.start_frame = start_frame;
                             tp.motion = motion;
+                            tp.corners = corners;
                         }
                     }
                     // If TrackMaskRegion registered an auto-link for
@@ -43183,7 +43254,7 @@ mod linked_clipboard_tests {
 
 #[cfg(test)]
 mod window_track_tests {
-    use super::{window_quad, window_track_keys};
+    use super::{window_perspective_track, window_quad, window_track_keys};
 
     /// #238: a window track's keyframes sit on the clip's own clock — the
     /// grade's — not the file's: a clip trimmed to start 2 s into its file
@@ -43222,6 +43293,43 @@ mod window_track_tests {
         let last = back.last().unwrap();
         assert!((last.0 - (1.0 - 1.0 / 30.0)).abs() < 1e-6 && last.1.abs() < 1e-6, "the reference frame shows a frame before the clip's end: {last:?}");
         assert!(back.first().unwrap().1 > 0.0, "the later frames show first: {:?}", back.first());
+    }
+
+    /// #238: a track in perspective becomes the window's corner course on
+    /// the same clock, measured from the corners on the reference frame;
+    /// a window evaluated from it is carried there.
+    #[test]
+    fn a_perspective_track_lands_its_corners_on_the_clips_own_clock() {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/sign.mov".into(), None);
+        item.fps = klipp_core::Fps::new(30, 1);
+        let media = pool.add(item);
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 30);
+        let clip = klipp_timeline::Clip::media(media, tc(10.0), tc(11.0), tc(2.0), tc(3.0));
+        let quad = [(0.4, 0.4), (0.6, 0.4), (0.6, 0.6), (0.4, 0.6)];
+        // Frames 58..=70 from frame 60: the right side sliding up and in.
+        let course = |f: usize| {
+            let k = f as f64 - 60.0;
+            [quad[0], (0.6 - 0.002 * k, 0.4 + 0.003 * k), (0.6 - 0.002 * k, 0.6 - 0.003 * k), quad[3]]
+        };
+        let tp = klipp_core::TrackPoint {
+            start_frame: 58,
+            positions: (58..=70).map(|_| (0.5, 0.5)).collect(),
+            corners: (58..=70).map(course).collect(),
+            reference_frame: Some(60),
+            ..Default::default()
+        };
+        let track = window_perspective_track(&clip, &tp, &pool, 30.0).unwrap();
+        assert_eq!(track.from, quad.map(|(x, y)| [x as f32, y as f32]));
+        assert!(track.keys.first().unwrap().time_secs.abs() < 1e-9, "frame 60 opens the clip");
+        assert_eq!(track.keys.len(), 11, "frames 60..=70; 58 and 59 are before the clip");
+        let at = track.keys.iter().find(|k| (k.time_secs - 10.0 / 30.0).abs() < 1e-6).unwrap();
+        assert!((at.corners[1][0] - 0.58).abs() < 1e-6 && (at.corners[1][1] - 0.43).abs() < 1e-6, "{at:?}");
+        let mut mask = klipp_core::Mask::default();
+        mask.keyframes.track_perspective = Some(track);
+        let warp = mask.evaluated_in(10.0 / 30.0, 9.0 / 16.0).keyframes.warp.unwrap();
+        let back = warp.apply((0.58, 0.43)).unwrap();
+        assert!((back.0 - 0.6).abs() < 1e-4 && (back.1 - 0.4).abs() < 1e-4, "{back:?}");
     }
 
     /// The region followed is the one the window covers, as the matte
