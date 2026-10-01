@@ -1523,7 +1523,7 @@ struct AnalysedTranscripts;
 impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<klipp_document::ops::SpokenWord>> {
         let t = klipp_analysis::report::MediaAnalysis::load(&item.path).transcript?;
-        Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text }).collect())
+        Some(t.words.into_iter().map(|w| klipp_document::ops::SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect())
     }
 
     fn silences(&self, item: &klipp_media::MediaItem) -> Vec<(f64, f64)> {

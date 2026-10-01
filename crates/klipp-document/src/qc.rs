@@ -7,7 +7,7 @@ use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TitleObjectContent, TrackKind};
 use serde::Serialize;
 
-use crate::ops::{is_heard, linear_to_db, sound_settings_clip, ScreenBeats, SensitiveText, SpokenWord, Transcripts};
+use crate::ops::{is_heard, linear_to_db, sound_settings_clip, spoken_spans, ScreenBeats, SensitiveText, SpokenWord, Transcripts};
 
 /// A cut this close to a settle point is a cut to the settle.
 const SETTLE_NEAR_SECS: f64 = 0.6;
@@ -411,7 +411,9 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 }
                 continue;
             }
-            speech_spans.push((secs(c.timeline_in), secs(c.timeline_out)));
+            // Speech where its words are, not along the whole clip, and
+            // not one word whisper was unsure of (#457).
+            speech_spans.extend(spoken_spans(c, words.as_deref(), seq.fps.as_f64()).unwrap_or_default());
             const INTO: f64 = 0.06;
             let silences = silence_cache.entry(media_id).or_insert_with(|| transcripts.silences(item));
             for (edge, at, name) in [(s_in, secs(c.timeline_in), "starts"), (s_out, secs(c.timeline_out), "ends")] {
@@ -427,11 +429,20 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         }
     }
     let has_music = !musics.is_empty();
-    for m in musics {
+    let under_speech = |m: &Clip| {
         let (a, b) = (secs(m.timeline_in), secs(m.timeline_out));
+        speech_spans.iter().any(|(x, y)| *x < b && *y > a)
+    };
+    for m in &musics {
+        let a = secs(m.timeline_in);
         let settings = sound_settings_clip(seq, m);
-        let under_speech = speech_spans.iter().any(|(x, y)| *x < b && *y > a);
-        if under_speech && settings.volume_keyframes.is_empty() && settings.volume > 0.26 {
+        // Split around the speech and the pieces under it set lower: a
+        // duck by hand, as good as keyframes (#457). Three dB under a
+        // piece of the same music that plays clear of the speech.
+        let lowered = musics.iter().any(|o| {
+            o.id != m.id && o.media_id() == m.media_id() && !under_speech(o) && sound_settings_clip(seq, o).volume >= settings.volume * crate::ops::db_to_linear(3.0)
+        });
+        if under_speech(m) && settings.volume_keyframes.is_empty() && settings.volume > 0.26 && !lowered {
             add(Severity::Warning, "music_level", Some(a), format!("{} plays at {:.0} dB under speech and never comes down", clip_label(pool, m), linear_to_db(settings.volume)), "Duck it under the speech, six to twelve decibels, with a fade");
         }
     }
@@ -549,7 +560,7 @@ mod tests {
             if item.id != self.0 {
                 return Some(Vec::new());
             }
-            Some("one two three four five six seven eight nine ten".split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: k as f64, end_secs: k as f64 + 0.6, text: w.into() }).collect())
+            Some("one two three four five six seven eight nine ten".split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: k as f64, end_secs: k as f64 + 0.6, text: w.into(), confidence: 1.0 }).collect())
         }
     }
 
@@ -869,6 +880,44 @@ mod tests {
         assert!(rules(&r).contains(&"music_level"), "{}", r.text());
         klipp_core::keyframe::upsert_keyframe(&mut seq.tracks.last_mut().unwrap().clips[0].volume_keyframes, 0.0, 0.3);
         assert!(!rules(&check(&seq, &pool, &Spoken(talk))).contains(&"music_level"));
+    }
+
+    /// #457: speech under the music is where words are said, not a whole
+    /// clip with one word whisper was unsure of in it; and music split
+    /// around the speech, the piece under it set lower, is ducked.
+    #[test]
+    fn music_under_speech_is_judged_by_the_words() {
+        struct Said(klipp_core::MediaId, Vec<(f64, f64, f32)>);
+        impl Transcripts for Said {
+            fn words(&self, item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                Some(if item.id == self.0 { self.1.iter().map(|&(a, b, confidence)| SpokenWord { start_secs: a, end_secs: b, text: " w".into(), confidence }).collect() } else { Vec::new() })
+            }
+        }
+        let (mut seq, pool, talk, music) = piece();
+        let bed = |pieces: &[(f64, f64, f32)]| {
+            let mut t = Track::new("A2", TrackKind::Audio);
+            t.clips = pieces.iter().map(|&(a, b, db)| {
+                let mut c = Clip::media(music, tc(a), tc(b), tc(a), tc(b));
+                c.volume = crate::ops::db_to_linear(db);
+                c
+            }).collect();
+            t
+        };
+        let level = |seq: &Sequence, said: &Said| rules(&check(seq, &pool, said)).contains(&"music_level");
+        // One word, unsure, in street sound: no speech, nothing to duck.
+        seq.tracks.push(bed(&[(0.0, 8.0, 0.0)]));
+        assert!(!level(&seq, &Said(talk, vec![(6.0, 6.2, 0.4)])));
+        // A phrase at 1-2 s under the full bed is said.
+        let phrase = Said(talk, vec![(1.0, 1.5, 0.9), (1.6, 2.0, 0.9), (6.0, 6.2, 0.4)]);
+        assert!(level(&seq, &phrase));
+        // Split at 3 s and the piece under the phrase set 7 dB down: ducked.
+        seq.tracks.pop();
+        seq.tracks.push(bed(&[(0.0, 3.0, -7.0), (3.0, 8.0, 0.0)]));
+        assert!(!level(&seq, &phrase), "{}", check(&seq, &pool, &phrase).text());
+        // Split but left level: still said.
+        seq.tracks.pop();
+        seq.tracks.push(bed(&[(0.0, 3.0, 0.0), (3.0, 8.0, 0.0)]));
+        assert!(level(&seq, &phrase));
     }
 
     #[test]

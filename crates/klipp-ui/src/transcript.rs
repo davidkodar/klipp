@@ -43,7 +43,7 @@ impl TranscriptSource {
         }
         let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
         let words = report.transcript.map(|t| {
-            t.words.into_iter().map(|w| SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text }).collect()
+            t.words.into_iter().map(|w| SpokenWord { start_secs: w.start_secs, end_secs: w.end_secs, text: w.text, confidence: w.confidence }).collect()
         });
         let silences = report.audio.map(|a| a.silences.iter().map(|s| (s.start_secs, s.end_secs)).collect()).unwrap_or_default();
         self.words.borrow_mut().insert(item.id, words);
