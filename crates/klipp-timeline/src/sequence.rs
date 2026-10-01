@@ -2129,6 +2129,13 @@ impl Clip {
 
     /// The inverse of [`Self::source_secs_at`]: the timeline seconds into
     /// the clip at which `source_secs` is shown.
+    ///
+    /// Which frame that is depends on what the time is (#691). A moment of
+    /// sound, a word's edge or a pause, has no frame of its own and goes on
+    /// the nearest frame boundary: this, times the rate, rounded. A change
+    /// in the file's picture belongs on the first frame that shows it,
+    /// which is [`Self::first_frame_showing`]; rounding this instead lands
+    /// a frame early whenever the file's rate is not the sequence's.
     pub fn elapsed_for_source_secs(&self, source_secs: f64, fps: f64) -> f64 {
         if self.is_reversed() {
             let moved = (self.source_out.to_secs_f64() - source_secs).max(0.0);
@@ -2137,6 +2144,52 @@ impl Clip {
             let moved = (source_secs - self.source_in.to_secs_f64()).max(0.0);
             effective_timeline_duration_for_keyframes(&self.speed_keyframes, moved, fps, self.speed)
         }
+    }
+
+    /// Where a change in the file's picture at `source_secs` (the start of
+    /// one of its frames, at `media_fps`) belongs on the timeline, at
+    /// `fps`: the first sequence frame, counted from the timeline's start,
+    /// that shows that frame of the file or one past it (one before it,
+    /// on a reversed clip). `None` when no frame of the clip does (#691).
+    ///
+    /// A sequence frame shows the file's frame nearest the source time it
+    /// asks for, as the decoders take it, so the change comes on the first
+    /// frame whose source time is past the midpoint between that frame of
+    /// the file and the one before. Rounding the mapped time instead puts
+    /// the cut a frame early whenever the rates differ, or at 2x on an odd
+    /// frame, and the new piece opens on a frame of the old shot. Found by
+    /// searching the forward map, which is what the renderer evaluates, so
+    /// it is exact through a speed ramp too.
+    pub fn first_frame_showing(&self, source_secs: f64, media_fps: f64, fps: f64) -> Option<i64> {
+        if !(media_fps > 0.0 && fps > 0.0 && source_secs.is_finite()) {
+            return None;
+        }
+        // The file's frame as the decoder stamps it, and what makes a
+        // sequence frame show it: export's ClipStream::seek_forward takes
+        // a frame whose time is at or before the time asked for plus half
+        // a source frame.
+        let frame_time = (source_secs * media_fps).round() / media_fps;
+        let half = 0.5 / media_fps;
+        // Elapsed time in whole ticks, as the renderer takes it from
+        // timecodes, so a tie falls the same way here as there.
+        let rate = self.timeline_in.rate.max(1);
+        let ticks_per_frame = (rate as f64 / fps).round().max(1.0) as i64;
+        let first = (self.timeline_in.value as f64 / ticks_per_frame as f64).round() as i64;
+        let end = (self.timeline_out.value as f64 / ticks_per_frame as f64).round() as i64;
+        let reversed = self.is_reversed();
+        let past = |f: i64| {
+            let elapsed = (f * ticks_per_frame - self.timeline_in.value) as f64 / rate as f64;
+            let reaches = frame_time <= self.source_secs_at(elapsed, fps) + half;
+            reaches != reversed
+        };
+        // The source time only moves one way through the clip, so the
+        // frames past the change are a run at its end.
+        let (mut lo, mut hi) = (first, end);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if past(mid) { hi = mid } else { lo = mid + 1 }
+        }
+        (lo < end).then_some(lo)
     }
 
     /// Map a sequence time (timeline-space) to the corresponding source

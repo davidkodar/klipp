@@ -1770,17 +1770,18 @@ fn shot_span(ctx: &ControlContext, clip_id: &str) -> Option<(f64, f64)> {
 /// boundaries its media's analysis found. Slivers under half a second
 /// are dropped; when there are more than `max`, the longest `max` are
 /// kept, longest first. A clip with no analysis is one span, itself.
-fn clip_shot_spans(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool, max: usize) -> Vec<(f64, f64)> {
-    let boundaries = clip
-        .media_id()
-        .and_then(|m| pool.get(&m))
+fn clip_shot_spans(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool, fps: f64, max: usize) -> Vec<(f64, f64)> {
+    let item = clip.media_id().and_then(|m| pool.get(&m));
+    let media_fps = item.map(|item| item.fps.as_f64()).filter(|f| *f > 0.0).unwrap_or(fps);
+    let boundaries = item
         .and_then(|item| klipp_analysis::report::MediaAnalysis::load(&item.path).shots)
         .map(|s| s.boundaries)
         .unwrap_or_default();
     // The boundaries on the timeline, through the clip's speed and in its
-    // direction (#617); then cut the span there.
+    // direction (#617), each on the first frame that shows the new shot
+    // (#691); then cut the span there.
     let from = clip.timeline_in.to_secs_f64();
-    let at: Vec<f64> = boundaries.iter().map(|b| from + clip.elapsed_for_source_secs(*b, 30.0)).collect();
+    let at: Vec<f64> = boundaries.iter().filter_map(|b| clip.first_frame_showing(*b, media_fps, fps)).map(|f| f as f64 / fps).collect();
     shot_spans(from, clip.timeline_out.to_secs_f64(), from, 1.0, &at, max)
 }
 
@@ -4978,7 +4979,7 @@ fn handle(
                         Some(t) if t >= a && t < b => Ok(t),
                         Some(t) => Err(format!("{which} secs {t:.2} is outside the clip ({a:.2}–{b:.2} s)")),
                         None => {
-                            let spans = clip_shot_spans(cl, &pool, 1);
+                            let spans = clip_shot_spans(cl, &pool, seq.fps.as_f64(), 1);
                             Ok(spans.first().map(|(x, y)| (x + y) / 2.0).unwrap_or((a + b) / 2.0))
                         }
                     }
@@ -5601,7 +5602,7 @@ reference:   {}",
                 let times: Vec<(f64, (f64, f64))> = if color {
                     seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
                         .map(|t| t.clips.iter().filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
-                            .flat_map(|c| clip_shot_spans(c, &pool, 6))
+                            .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), 6))
                             .map(|(a, b)| ((a + b) / 2.0, (a, b)))
                             .take(24).collect())
                         .unwrap_or_default()

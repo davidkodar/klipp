@@ -2683,22 +2683,26 @@ fn volume_keys(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Cli
 
 /// The splits that cut `clip_id` at the picture changes found in its
 /// file (#616): `source_cuts` in the file's seconds, as the scene
-/// detector gives them, put on the timeline through the clip's speed and
-/// direction and onto whole frames. A cut outside the clip's range, within
-/// a frame of either end, or on the frame of another is left out, so no
-/// piece is shorter than a frame. Each split names the piece by where it
-/// is, just before its cut, so the plan can run them one after another;
-/// the split op cuts the linked sound with the picture. Empty when there
-/// is nothing to cut.
-pub fn scene_cut_ops(seq: &Sequence, clip_id: ClipId, source_cuts: &[f64]) -> Vec<Op> {
+/// detector gives them, each the start of one of the file's frames at
+/// `media_fps`. Each goes on the first sequence frame that shows the new
+/// shot, through the clip's speed and direction (#691): rounding the mapped
+/// time instead cut a frame early whenever the file's rate is not the
+/// sequence's, and the new piece opened on the old shot. A cut outside the
+/// clip's range, within a frame of either end, or on the frame of another
+/// is left out, so no piece is shorter than a frame. Each split names the
+/// piece by where it is, just before its cut, so the plan can run them one
+/// after another; the split op cuts the linked sound with the picture.
+/// Empty when there is nothing to cut.
+pub fn scene_cut_ops(seq: &Sequence, clip_id: ClipId, source_cuts: &[f64], media_fps: f64) -> Vec<Op> {
     let Some((ti, _, clip)) = find_clip(seq, clip_id) else { return Vec::new() };
     let fps = seq.fps.as_f64();
+    let media_fps = if media_fps > 0.0 { media_fps } else { fps };
     let (s_in, s_out) = (secs(clip.source_in), secs(clip.source_out));
     let (first, last) = ((secs(clip.timeline_in) * fps).round() as i64, (secs(clip.timeline_out) * fps).round() as i64);
     let mut frames: Vec<i64> = source_cuts
         .iter()
         .filter(|s| **s > s_in && **s < s_out)
-        .map(|s| ((secs(clip.timeline_in) + clip.elapsed_for_source_secs(*s, fps)) * fps).round() as i64)
+        .filter_map(|s| clip.first_frame_showing(*s, media_fps, fps))
         .filter(|f| *f > first && *f < last)
         .collect();
     frames.sort_unstable();
@@ -6241,7 +6245,7 @@ mod tests {
         // The first clip shows 0-4 s of its file at 0-4 s. Cuts at 1.0 and
         // 2.5 s of the file; one at 2.51 on the same frame, one at the
         // clip's start, one past its end.
-        let ops = scene_cut_ops(&seq, a, &[1.0, 2.5, 2.51, 0.0, 9.0]);
+        let ops = scene_cut_ops(&seq, a, &[1.0, 2.5, 2.51, 0.0, 9.0], seq.fps.as_f64());
         assert_eq!(ops.len(), 2, "{ops:?}");
         let plan = resolve(&seq, &pool, &ops).unwrap();
         let mut seqs = vec![seq.clone()];
@@ -6256,17 +6260,21 @@ mod tests {
             assert_eq!(pieces.len(), 3, "track {}: {pieces:?}", t.name);
             assert!((pieces[1].0 - 1.0).abs() < 1e-6 && (pieces[2].0 - 2.52).abs() < 1e-6 && (pieces[2].2 - 2.52).abs() < 1e-6, "picture and sound cut on the same frames: {pieces:?}");
         }
-        // At double speed the same file times land at half the time: 0.5 s
-        // and 1.25 s, frames 12.5 (rounded up) and 31.25 at 25 fps.
+        // At double speed the cuts go on the first frame that shows the new
+        // shot (#691). The file's frame at 1.0 s is first shown at frame 13
+        // (frame 12 shows 0.96 s, nearer the frame before). 2.5 s falls
+        // between frames and is the frame at 2.52 s, which frame 31 (2.48 s)
+        // does not show yet, so it is frame 32; rounding the mapped time had
+        // put it on 31, a frame of the old shot.
         let mut fast = seq.clone();
         for c in fast.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.id == a) {
             c.speed = 2.0;
             c.timeline_out = tc(2.0);
         }
-        let ops = scene_cut_ops(&fast, a, &[1.0, 2.5]);
-        assert!(matches!(ops.as_slice(), [Op::Split { at: Anchor::Frame(13), .. }, Op::Split { at: Anchor::Frame(31), .. }]), "{ops:?}");
+        let ops = scene_cut_ops(&fast, a, &[1.0, 2.5], seq.fps.as_f64());
+        assert!(matches!(ops.as_slice(), [Op::Split { at: Anchor::Frame(13), .. }, Op::Split { at: Anchor::Frame(32), .. }]), "{ops:?}");
         // Nothing inside: nothing to do.
-        assert!(scene_cut_ops(&seq, a, &[0.0, 4.0, 7.0]).is_empty());
+        assert!(scene_cut_ops(&seq, a, &[0.0, 4.0, 7.0], seq.fps.as_f64()).is_empty());
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the
