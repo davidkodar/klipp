@@ -195,6 +195,32 @@ pub fn show_project_info(
                 // until the next project reload.
                 klipp_engine::video_decoder::set_working_colorspace(ws);
             }
+            // What the grade's controls act in (#467). The ACES log
+            // encodings are ACEScg's; elsewhere the grade is BT.1886.
+            let mut enc = state.project_grade_encoding;
+            let aces = state.project_working_colorspace == klipp_core::WorkingColorspace::AcesCG;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Grade in:").size(11.0).color(theme.text_dim));
+                ui.add_enabled_ui(aces, |ui| {
+                    egui::ComboBox::from_id_salt("proj_grade_encoding")
+                        .width(140.0)
+                        .selected_text(grade_encoding_label(if aces { enc } else { klipp_core::GradeEncoding::Bt1886 }))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::Bt1886, grade_encoding_label(klipp_core::GradeEncoding::Bt1886));
+                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::AcesCct, grade_encoding_label(klipp_core::GradeEncoding::AcesCct));
+                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::AcesCc, grade_encoding_label(klipp_core::GradeEncoding::AcesCc));
+                        })
+                        .response
+                        .on_hover_text("What lift, gamma, gain, offset, contrast and the tone controls act in. ACEScct is what most colourists grade ACES in: offset is an exposure and the wheels move evenly across the stops. ACEScc is the same without the toe in the shadows.")
+                        .on_disabled_hover_text("ACEScct and ACEScc are ACES encodings: choose ACEScg as the working colorspace to grade in them");
+                });
+            });
+            if enc != state.project_grade_encoding {
+                state.project_grade_encoding = enc;
+                state.dirty = true;
+                // The executors read it with the working space each frame.
+                klipp_core::set_grade_encoding(enc);
+            }
             ui.label(
                 egui::RichText::new(
                     "Switching working colorspace re-bases the entire grade \
@@ -244,6 +270,14 @@ pub fn show_project_info(
                 ));
             }
         });
+}
+
+fn grade_encoding_label(enc: klipp_core::GradeEncoding) -> &'static str {
+    match enc {
+        klipp_core::GradeEncoding::Bt1886 => "Display gamma (BT.1886)",
+        klipp_core::GradeEncoding::AcesCct => "ACEScct",
+        klipp_core::GradeEncoding::AcesCc => "ACEScc",
+    }
 }
 
 fn working_colorspace_label(ws: klipp_core::WorkingColorspace) -> &'static str {

@@ -334,6 +334,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         // sequence). Old project.json files lack the field; serde
         // gave us Rec709Linear via #[serde(default)].
         working_colorspace: project.working_colorspace,
+        grade_encoding: project.grade_encoding,
     };
 
     // Decode the synthetic title-asset list into a MediaId-keyed

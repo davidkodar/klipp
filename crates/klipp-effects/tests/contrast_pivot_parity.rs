@@ -51,6 +51,7 @@ fn grade_at(pivot_linear: f32, contrast: f32) -> ColorGrade {
         hue: 0.0,
         global_mix: 1.0,
         luma: [0.2126, 0.7152, 0.0722],
+        encoding: klipp_grade_model::Encoding::Bt1886,
     }
 }
 
@@ -159,4 +160,56 @@ fn the_default_pivot_leaves_every_existing_grade_alone() {
     };
     let (worst, _) = diff(&explicit, &mid_grey);
     assert!(worst < 1e-6, "the default pivot is not mid grey: worst {worst}");
+}
+
+/// #467: a whole grade, the tone controls, the wheels and contrast,
+/// gives the same picture on the CPU and the GPU in each encoding; and in
+/// ACEScct offset is an exposure, which is why colourists grade there.
+#[test]
+fn every_grade_encoding_gives_the_same_picture_on_cpu_and_gpu() {
+    use klipp_grade_model::{encode_contrast_pivot_in, Encoding};
+    let input = frame();
+    let full = |enc: Encoding, log: bool| ColorGrade {
+        contrast: 0.3,
+        contrast_pivot_encoded: encode_contrast_pivot_in(0.18, enc),
+        highlights: -0.05,
+        shadows: 0.04,
+        whites: 0.02,
+        blacks: -0.01,
+        lift: (0.02, 0.0, -0.01),
+        gamma: (0.05, 0.02, 0.0),
+        gain: (0.1, 0.0, -0.05),
+        offset: (0.01, 0.0, 0.02),
+        log_wheels: log.then_some([(0.02, 0.0, -0.01), (0.0, 0.03, 0.0), (-0.02, 0.0, 0.01)]),
+        encoding: enc,
+        ..grade_at(0.18, 0.0)
+    };
+    // Offset in ACEScct is exposure: +1/17.52 there is +1 stop above the toe.
+    let mut stop = grade_at(0.18, 0.0);
+    stop.encoding = Encoding::AcesCct;
+    stop.offset = (1.0 / 17.52, 1.0 / 17.52, 1.0 / 17.52);
+    let out = on_cpu(&input, &stop);
+    for (a, b) in input.chunks_exact(4).zip(out.chunks_exact(4)).filter(|(a, _)| a[0] > 0.01) {
+        assert!((b[0] / a[0] - 2.0).abs() < 1e-3, "{} -> {}", a[0], b[0]);
+    }
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping the GPU half: no GPU");
+        return;
+    };
+    for enc in [Encoding::Bt1886, Encoding::AcesCct, Encoding::AcesCc] {
+        gpu.set_grade_encoding(enc.as_u8());
+        for log in [false, true] {
+            let g = full(enc, log);
+            let cpu = on_cpu(&input, &g);
+            let gpu_out = on_gpu(&mut gpu, &input, &g);
+            let (worst, mean) = diff(&cpu, &gpu_out);
+            eprintln!("{enc:?} log {log}: worst {worst:.6} mean {mean:.6}");
+            assert!(worst < 2e-3, "{enc:?} log {log}: CPU and GPU differ by {worst}");
+            // And the encoding changes the picture: it is not ignored.
+            if enc != Encoding::Bt1886 {
+                let (d, _) = diff(&cpu, &on_cpu(&input, &full(Encoding::Bt1886, log)));
+                assert!(d > 1e-3, "{enc:?} grades like BT.1886");
+            }
+        }
+    }
 }

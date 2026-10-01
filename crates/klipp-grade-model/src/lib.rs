@@ -54,6 +54,133 @@ pub fn grade_decode(e: f32) -> f32 {
 /// and the log wheels' mid band centres.
 pub const MID_GREY_ENCODED: f32 = 0.489_437_1;
 
+/// What the controls' values are when they act (#467): the BT.1886
+/// power curve every project has graded in, or under an ACES working
+/// space one of the ACES log encodings of ACEScg, where offset is an
+/// exposure and the wheels move evenly across the stops.
+///
+/// [`grade_encode`], [`MID_GREY_ENCODED`] and the rest above are the
+/// BT.1886 case; the functions below take the encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Encoding {
+    /// Power 2.4, sign-preserving: mid grey 0.489, white 1.0.
+    #[default]
+    Bt1886,
+    /// ACEScct (S-2016-001): log above 2^-7, a straight toe below it
+    /// that runs on through zero and black, so the shadows lift as a
+    /// colourist expects. Mid grey 0.4136.
+    AcesCct,
+    /// ACEScc (S-2014-003): log all the way down, without the toe;
+    /// zero and below sit at its floor, so a negative value is lost.
+    AcesCc,
+}
+
+impl Encoding {
+    /// Wire tag, as the GPU uniform carries it; pinned.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Encoding::Bt1886 => 0,
+            Encoding::AcesCct => 1,
+            Encoding::AcesCc => 2,
+        }
+    }
+
+    /// From [`Self::as_u8`]; anything else is BT.1886, as every grade was.
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            1 => Encoding::AcesCct,
+            2 => Encoding::AcesCc,
+            _ => Encoding::Bt1886,
+        }
+    }
+}
+
+/// ACES half's largest value: where the ACES log encodings stop.
+const ACES_HALF_MAX: f32 = 65504.0;
+/// ACEScct's toe joins the log at 2^-7 linear.
+const CCT_X_BREAK: f32 = 0.0078125;
+const CCT_Y_BREAK: f32 = 0.155_251_14;
+const CCT_A: f32 = 10.540_237_7;
+const CCT_B: f32 = 0.072_905_534;
+
+/// A linear working-space value in `enc`.
+#[inline]
+pub fn encode(x: f32, enc: Encoding) -> f32 {
+    match enc {
+        Encoding::Bt1886 => grade_encode(x),
+        Encoding::AcesCct => {
+            if x <= CCT_X_BREAK {
+                CCT_A * x + CCT_B
+            } else {
+                (x.min(ACES_HALF_MAX).log2() + 9.72) / 17.52
+            }
+        }
+        Encoding::AcesCc => {
+            if x <= 0.0 {
+                (-16.0 + 9.72) / 17.52
+            } else if x < 2f32.powi(-15) {
+                ((2f32.powi(-16) + x * 0.5).log2() + 9.72) / 17.52
+            } else {
+                (x.min(ACES_HALF_MAX).log2() + 9.72) / 17.52
+            }
+        }
+    }
+}
+
+/// The inverse of [`encode`].
+#[inline]
+pub fn decode(e: f32, enc: Encoding) -> f32 {
+    let top = (ACES_HALF_MAX.log2() + 9.72) / 17.52;
+    match enc {
+        Encoding::Bt1886 => grade_decode(e),
+        Encoding::AcesCct => {
+            if e <= CCT_Y_BREAK {
+                (e - CCT_B) / CCT_A
+            } else if e < top {
+                (e * 17.52 - 9.72).exp2()
+            } else {
+                ACES_HALF_MAX
+            }
+        }
+        Encoding::AcesCc => {
+            if e < (9.72 - 15.0) / 17.52 {
+                ((e * 17.52 - 9.72).exp2() - 2f32.powi(-16)) * 2.0
+            } else if e < top {
+                (e * 17.52 - 9.72).exp2()
+            } else {
+                ACES_HALF_MAX
+            }
+        }
+    }
+}
+
+/// Mid grey, 0.18 linear, in `enc`: where contrast pivots by default.
+#[inline]
+pub fn mid_grey(enc: Encoding) -> f32 {
+    match enc {
+        Encoding::Bt1886 => MID_GREY_ENCODED,
+        _ => encode(0.18, enc),
+    }
+}
+
+/// `l`, a luma in `enc`, as the BT.1886 value the tone bands and the log
+/// wheels' bands are placed by: the same tones of the picture are the
+/// highlights and the shadows whatever the encoding, while the amounts
+/// act in `enc`.
+#[inline]
+pub fn band_luma(l: f32, enc: Encoding) -> f32 {
+    match enc {
+        Encoding::Bt1886 => l,
+        _ => grade_encode(decode(l, enc)),
+    }
+}
+
+/// [`encode_contrast_pivot`] in `enc`.
+#[inline]
+pub fn encode_contrast_pivot_in(pivot_linear: f32, enc: Encoding) -> f32 {
+    encode(pivot_linear.clamp(MIN_CONTRAST_PIVOT, MAX_CONTRAST_PIVOT), enc)
+}
+
 /// One channel of the CDL in the grade encoding. `lift`, `gain`, `gamma`
 /// and `offset` are the wheel amounts: 0 is neutral for all four, so
 /// `gain` and `gamma` are `1 + amount`.
@@ -149,6 +276,61 @@ pub fn tone_weights(l: f32) -> [f32; 4] {
 pub fn log_wheel_weights(l: f32) -> [f32; 3] {
     let g = |centre: f32, sigma: f32| (-((l - centre) * (l - centre)) / (2.0 * sigma * sigma)).exp();
     [g(0.20, 0.14), g(MID_GREY_ENCODED, 0.16), g(0.78, 0.14)]
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    /// #467: ACEScct and ACEScc at the values the ACES specs and OCIO's
+    /// ACES configs give, and back again.
+    #[test]
+    fn the_aces_log_encodings_are_the_specs() {
+        let close = |a: f32, b: f32| (a - b).abs() < 2e-6;
+        // 18 % grey, the same in both above the toe.
+        assert!(close(encode(0.18, Encoding::AcesCct), 0.413_588_4), "{}", encode(0.18, Encoding::AcesCct));
+        assert!(close(encode(0.18, Encoding::AcesCc), 0.413_588_4));
+        // Black: the toe's intercept for ACEScct, the floor for ACEScc.
+        assert!(close(encode(0.0, Encoding::AcesCct), 0.072_905_534));
+        assert!(close(encode(0.0, Encoding::AcesCc), -0.358_447_5));
+        // 1.0 and the break.
+        assert!(close(encode(1.0, Encoding::AcesCct), 9.72 / 17.52));
+        assert!(close(encode(CCT_X_BREAK, Encoding::AcesCct), CCT_Y_BREAK), "the toe meets the log");
+        // Round trips, the toe and below black included for ACEScct.
+        for x in [-0.01f32, 0.0, 0.001, 0.0078125, 0.05, 0.18, 1.0, 8.0, 100.0] {
+            let back = decode(encode(x, Encoding::AcesCct), Encoding::AcesCct);
+            assert!((back - x).abs() <= 1e-5 * x.abs().max(1.0), "ACEScct {x} -> {back}");
+            if x > 0.0 {
+                let back = decode(encode(x, Encoding::AcesCc), Encoding::AcesCc);
+                assert!((back - x).abs() <= 1e-5 * x.max(1.0), "ACEScc {x} -> {back}");
+            }
+        }
+        // The bands find the same tones: mid grey is mid grey in each.
+        for enc in [Encoding::AcesCct, Encoding::AcesCc] {
+            assert!((band_luma(mid_grey(enc), enc) - MID_GREY_ENCODED).abs() < 1e-4);
+        }
+        // And as OpenColorIO 2.5.1 has them, ACEScg to ACEScct and ACEScc in
+        // the ACES 1.3 studio config: the toe, below black, the breaks.
+        const OCIO: [(f32, f32, f32); 11] = [
+            (-0.01, -0.032_496_8, -0.358_447_8),
+            (0.0, 0.072_905_6, -0.358_447_8),
+            (1e-5, 0.073_011_0, -0.335_108_2),
+            (3e-5, 0.073_221_8, -0.302_071_5),
+            (0.001, 0.083_445_8, -0.014_029_0),
+            (0.007_812_5, 0.155_251_2, 0.155_250_9),
+            (0.05, 0.308_109_1, 0.308_109_0),
+            (0.18, 0.413_587_8, 0.413_588_3),
+            (1.0, 0.554_795_3, 0.554_794_5),
+            (8.0, 0.726_028_1, 0.726_027_5),
+            (100.0, 0.934_009_7, 0.934_009_9),
+        ];
+        for (x, cct, cc) in OCIO {
+            assert!((encode(x, Encoding::AcesCct) - cct).abs() < 3e-6, "ACEScct {x}: {} vs OCIO {cct}", encode(x, Encoding::AcesCct));
+            assert!((encode(x, Encoding::AcesCc) - cc).abs() < 3e-6, "ACEScc {x}: {} vs OCIO {cc}", encode(x, Encoding::AcesCc));
+        }
+        assert_eq!(Encoding::from_u8(Encoding::AcesCct.as_u8()), Encoding::AcesCct);
+        assert_eq!(Encoding::from_u8(9), Encoding::Bt1886);
+    }
 }
 
 #[cfg(test)]
