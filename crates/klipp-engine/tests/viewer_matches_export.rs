@@ -96,10 +96,15 @@ fn rgb_source(name: &str, r: &str, g: &str, b: &str) -> PathBuf {
 }
 
 /// [`rgb_source`], coded at another size.
-fn rgb_source_sized(name: &str, (w, h): (u32, u32), r: &str, g: &str, b: &str) -> PathBuf {
+fn rgb_source_sized(name: &str, size: (u32, u32), r: &str, g: &str, b: &str) -> PathBuf {
+    rgb_source_at(name, size, FPS as u32, r, g, b)
+}
+
+/// [`rgb_source_sized`], at its own frame rate.
+fn rgb_source_at(name: &str, (w, h): (u32, u32), rate: u32, r: &str, g: &str, b: &str) -> PathBuf {
     let out = tmp(&format!("{}-{}", uuid::Uuid::new_v4(), name));
     let filter = format!(
-        "color=c=black:s={w}x{h}:r={FPS}:d=10,format=rgb24,geq=r='{r}':g='{g}':b='{b}',\
+        "color=c=black:s={w}x{h}:r={rate}:d=10,format=rgb24,geq=r='{r}':g='{g}':b='{b}',\
          setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"
     );
     let ok = std::process::Command::new("ffmpeg")
@@ -947,4 +952,58 @@ fn a_reversed_clip_shows_as_it_exports() {
     }
     eprintln!("reversed clip, viewer vs export: worst {worst} levels");
     assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}
+
+/// #696: footage at another rate than the sequence's shows the same frame
+/// of the file in the viewer as in the export. Two 10 fps sources in the
+/// 25 fps sequence, a new colour each frame of the file: one across V1
+/// (the primary decoder) and one over its middle on V2 (a clip stream).
+/// Export shows a file's frame from half of *its* frame before it; the
+/// viewer took half a sequence frame, and at frame 4 (0.16 s) the viewer
+/// still showed the file's 0.1 s while export showed 0.2 s. Parked, and
+/// stopped after playing.
+#[test]
+fn footage_at_another_rate_shows_the_same_file_frame_as_the_export() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let (under, over) = (MediaId::new(), MediaId::new());
+    let files = HashMap::from([
+        (under, rgb_source_at("ten-under.mkv", (W, H), 10, "mod(N*20,200)+30", "90", "90")),
+        (over, rgb_source_at("ten-over.mkv", (W, H), 10, "90", "90", "mod(N*20,200)+30")),
+    ]);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let track = |name: &str, clips: Vec<Clip>| {
+        let mut t = Track::new(name, TrackKind::Video);
+        t.clips = clips;
+        t
+    };
+    seq.tracks = vec![
+        track("V2", vec![scaled(media_clip(over, 0, LEN, 0), 0.6, 0.0, 0.0)]),
+        track("V1", vec![media_clip(under, 0, LEN, 0)]),
+    ];
+    let t = Timeline { seq, files, coded: HashMap::new() };
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+
+    // Frames where half a sequence frame and half a file frame pick
+    // different frames of the file (4, 9, 14 …), and some where they agree.
+    let mut worst = 0;
+    for n in [4, 9, 14, 19, 24, 2, 7] {
+        worst = worst.max(compare(&format!("10 fps, frame {n:3}"), &viewer.frame_at(n), &exported_frame(&out, n)));
+    }
+    // Played, then stopped: the frame it stops on is the export's.
+    viewer.cmd.send(AppCommand::SetPlayhead(tc(30))).unwrap();
+    let _ = viewer.frame_at(30);
+    viewer.cmd.send(AppCommand::Play).unwrap();
+    std::thread::sleep(Duration::from_millis(700));
+    viewer.cmd.send(AppCommand::Pause).unwrap();
+    let (v, n) = viewer.settled_frame_at();
+    worst = worst.max(compare(&format!("10 fps, played to {n:3}"), &v, &exported_frame(&out, n)));
+    eprintln!("footage at another rate, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the viewer shows another frame of the file than the export: {worst} levels");
 }

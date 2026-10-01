@@ -336,7 +336,14 @@ fn every_shader_constant_is_registered() {
     let mut unregistered = Vec::new();
     for file in ["klipp-effects/src/gpu.rs", "klipp-effects/src/gpu/thumbs.rs", "klipp-effects/src/nv12_gpu.rs", "klipp-effects/src/p010_gpu.rs"] {
         for line in source(file).lines() {
-            let Some(rest) = line.strip_prefix("const SHADER_") else { continue };
+            // Whatever its visibility: `pub const`, `pub(crate) const` and
+            // the rest count too.
+            let decl = line.trim_start();
+            let decl = match decl.strip_prefix("pub") {
+                Some(after) => after.trim_start().strip_prefix('(').and_then(|r| r.split_once(')')).map_or(after, |(_, r)| r).trim_start(),
+                None => decl,
+            };
+            let Some(rest) = decl.strip_prefix("const SHADER_") else { continue };
             let name = format!("SHADER_{}", rest.split(':').next().unwrap().trim());
             let listed = registered.contains(&name) || ASSEMBLED.iter().any(|(body, whole)| *body == name && registered.contains(*whole));
             if !listed {

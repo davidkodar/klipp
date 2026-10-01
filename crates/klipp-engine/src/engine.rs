@@ -4878,8 +4878,11 @@ impl PlaybackEngine {
         // out of the audio bus. With no plugins reporting latency,
         // this is identical to current_secs() (offset = 0).
         let current_source_secs = self.master_clock.current_display_secs();
-        // Frame presentation tolerance: half a frame duration (scales with FPS)
-        let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
+        // Frame presentation tolerance: half of one of the *file's* frames,
+        // so the frame shown is the nearest of the file, as export picks it
+        // (#696). Half a sequence frame put playback a file frame off export
+        // at a cut whenever the rates differ.
+        let frame_tolerance = self.v1_decoder.as_ref().map_or(self.fps.frame_duration_secs() * 0.5, |d| d.half_source_frame(self.fps.as_f64()));
         let _clock_running = self.master_clock.is_running();
         stage_clock_ramp_us = t_stage.elapsed().as_micros();
         t_stage = std::time::Instant::now();
@@ -7092,8 +7095,10 @@ impl PlaybackEngine {
     /// showed the frame before the playhead.)
     fn take_v1_frame_for_playhead(&mut self, best: &mut Option<crate::types::LinearFrame>) -> bool {
         let Some(target) = self.v1_source_secs() else { return true };
-        let half = self.fps.frame_duration_secs() * 0.5;
         let Some(dec) = self.v1_decoder.as_ref() else { return true };
+        // Half of one of the file's frames, as playback and export take it
+        // (#696).
+        let half = dec.half_source_frame(self.fps.as_f64());
         let epoch = dec.requested_seek();
         let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         while let Some(f) = queue.front() {

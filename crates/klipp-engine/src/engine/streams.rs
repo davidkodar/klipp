@@ -372,8 +372,11 @@ impl ClipStreams {
                     // Not while a seek is in flight: `held` is the old
                     // frame until it lands, and seeking again on every
                     // sync would restart a slow seek for ever.
-                    let held_ahead = s.seeking.is_none() && !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + frame_secs * 0.5);
-                    if target + frame_secs * 0.5 < s.target || target > s.target + 1.0 || held_ahead {
+                    // Half of one of the file's frames, as export decides
+                    // which frame a time shows (#696).
+                    let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+                    let held_ahead = s.seeking.is_none() && !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + half);
+                    if target + half < s.target || target > s.target + 1.0 || held_ahead {
                         s.seek(target);
                     }
                     s.target = target;
@@ -389,14 +392,16 @@ impl ClipStreams {
             }
         }
         for s in self.streams.values_mut() {
-            s.pump(frame_secs * 0.5);
+            let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+            s.pump(half);
         }
     }
 
     /// Take whatever frames arrived, without changing any target.
     pub fn pump(&mut self, frame_secs: f64) {
         for s in self.streams.values_mut() {
-            s.pump(frame_secs * 0.5);
+            let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+            s.pump(half);
         }
     }
 
@@ -426,7 +431,7 @@ impl ClipStreams {
 
     /// Every stream holds its frame for its current time.
     pub fn ready(&self, frame_secs: f64) -> bool {
-        self.streams.values().all(|s| s.ready(frame_secs * 0.5))
+        self.streams.values().all(|s| s.ready(s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6))))
     }
 
     /// Take over the primary decoder at a cut, when the clip it was
