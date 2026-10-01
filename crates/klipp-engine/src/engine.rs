@@ -1876,6 +1876,8 @@ impl PlaybackEngine {
         }
         let have: std::collections::HashSet<usize> = self.audio_sources.iter().map(|a| a.track_index).collect();
         let mut opened = false;
+        // The sources opened here, resumed once their clips' settings are on.
+        let mut started: Vec<usize> = Vec::new();
         for (track_idx, media_id, path, source_secs, fx, kfs) in rows {
             if have.contains(&track_idx) {
                 continue;
@@ -1884,17 +1886,21 @@ impl PlaybackEngine {
             self.open_audio_source(track_idx, media_id, &path, source_secs, fx, kfs);
             if self.audio_sources.len() > before {
                 if let Some(a) = self.audio_sources.last() {
-                    a.source.resume();
+                    started.push(a.track_index);
                 }
                 debug!("audio source on track {track_idx} opened at {source_secs:.3}s for the clip beginning under {:.3}s", tc.to_secs_f64());
                 opened = true;
             }
         }
-        // Each source carries its own clip's volume, pan, gain and
-        // channel config: one opened needs its settings now, not at the
-        // next tick's sync.
+        // Each source carries its own clip's volume, pan, gain, channel
+        // config and speed: one opened needs its settings now, not at the
+        // next tick's sync, and before it plays — resumed first, a
+        // retimed clip's first chunk was read at 1x (#642).
         if opened || !retired.is_empty() {
             self.sync_clip_volumes();
+        }
+        for a in self.audio_sources.iter().filter(|a| started.contains(&a.track_index)) {
+            a.source.resume();
         }
         if opened {
             if let Some(aout) = &self.audio_output {
