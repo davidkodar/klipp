@@ -1199,14 +1199,8 @@ impl GpuEffectsPipeline {
         });
         // Both HDR kernels share the colourspace prelude with the P010
         // decoder, so the PQ/HLG curves on either side are one definition.
-        let hdr10_src = format!(
-            "{}{}{}",
-            crate::color_wgsl::WGSL_PRELUDE,
-            crate::color_wgsl::WGSL_HELPERS,
-            SHADER_HDR10_TO_LINEAR_BODY,
-        );
         let bridge_hdr10_pipeline = create_pipeline(
-            &device, &pipeline_layout, "bridge_hdr10_to_linear", &hdr10_src,
+            &device, &pipeline_layout, "bridge_hdr10_to_linear", shader_hdr10_to_linear(),
         );
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
@@ -9643,6 +9637,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// The HDR10 bridge as it is compiled: the colourspace prelude, shared
+/// with the P010 decoder so the PQ/HLG curves on either side are one
+/// definition, then [`SHADER_HDR10_TO_LINEAR_BODY`]. Built once, so the
+/// pipeline and [`shader_sources`]' checks read the same text.
+fn shader_hdr10_to_linear() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| format!("{}{}{}", crate::color_wgsl::WGSL_PRELUDE, crate::color_wgsl::WGSL_HELPERS, SHADER_HDR10_TO_LINEAR_BODY))
+}
+
 // Linear-f32 RGBA → sRGB-u8 RGBA encode. One workgroup-thread per
 // output pixel. Output buffer is `array<u32>` where each u32 packs
 // RGBA bytes in little-endian order (R = byte 0, A = byte 3),
@@ -13346,7 +13349,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
 
     let live = unpack(input[idx]);
-    let ref_px = plate[idx];
+    let ref_px = unpack(plate[idx]);
 
     var d: f32;
     if params.match_space == 1u {
@@ -16617,6 +16620,24 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SPRITE_PLACE", SHADER_SPRITE_PLACE),
         ("SHADER_SPRITE_GLYPHS", SHADER_SPRITE_GLYPHS),
         ("SHADER_U8_FIT_TO_LINEAR", SHADER_U8_FIT_TO_LINEAR),
+        // Compiled into pipelines but missing from this list until #692,
+        // which kept them out of the WGSL validation and pack lints.
+        ("SHADER_HDR10_TO_LINEAR", shader_hdr10_to_linear()),
+        ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
+        ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
+        ("SHADER_FILM_GRAIN", SHADER_FILM_GRAIN),
+        ("SHADER_FOCUS_BLUR_BLEND", SHADER_FOCUS_BLUR_BLEND),
+        ("SHADER_FOCUS_BLUR_PREMULTIPLY", SHADER_FOCUS_BLUR_PREMULTIPLY),
+        ("SHADER_TILT_SHIFT_BLEND", SHADER_TILT_SHIFT_BLEND),
+        ("SHADER_OLD_FILM", SHADER_OLD_FILM),
+        ("SHADER_VHS", SHADER_VHS),
+        ("SHADER_DEFLICKER", SHADER_DEFLICKER),
+        ("SHADER_BLEND_MIX", SHADER_BLEND_MIX),
+        ("SHADER_LAYER_OVER", SHADER_LAYER_OVER),
+        // Assembled at runtime from the shared prelude and a body.
+        ("SHADER_CHAIN_THUMB", thumbs::shader_chain_thumb()),
+        ("SHADER_NV12", crate::nv12_gpu::nv12_shader()),
+        ("SHADER_P010", crate::p010_gpu::p010_shader()),
     ]
 }
 

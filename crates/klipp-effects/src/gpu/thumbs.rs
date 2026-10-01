@@ -16,6 +16,15 @@ use super::{GpuEffectsPipeline, WORKGROUP_SIZE};
 /// to CPU thumbnails.
 pub const MAX_CHAIN_THUMBS: usize = 64;
 
+/// [`SHADER_CHAIN_THUMB`] after the pixel-storage hook, as it is
+/// compiled: the chain buffer it reads is a frame, so its read goes
+/// through `unpack` like every other. Built once, so the pipeline and
+/// `shader_sources`' checks read the same text.
+pub(super) fn shader_chain_thumb() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| format!("{}{}", super::shader_pixel_storage_source(), SHADER_CHAIN_THUMB))
+}
+
 const SHADER_CHAIN_THUMB: &str = "
 struct Params {
     src_w: u32,
@@ -46,7 +55,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = i / params.dst_w;
     let sy = min(y * params.src_h / params.dst_h, params.src_h - 1u);
     let sx = min(x * params.src_w / params.dst_w, params.src_w - 1u);
-    let p = input[sy * params.src_w + sx];
+    let p = unpack(input[sy * params.src_w + sx]);
     let a = u32(clamp(p.w, 0.0, 1.0) * 255.0);
     output[params.offset + i] = enc(p.x) | (enc(p.y) << 8u) | (enc(p.z) << 16u) | (a << 24u);
 }
@@ -85,7 +94,7 @@ impl ChainThumbs {
         let device = &gpu.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("chain_thumb"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_CHAIN_THUMB.into()),
+            source: wgpu::ShaderSource::Wgsl(shader_chain_thumb().into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("chain_thumb"),
