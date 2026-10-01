@@ -3671,13 +3671,6 @@ fn over_blend_chunk(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Paint a `Shape` layer onto `buf` using its `ObjectTransform`.
-/// `transform.center` and `transform.size` are normalised
-/// 0..1 frame-relative coords; this maps to absolute pixel rect on
-/// the frame, then fills + strokes per the shape's parameters.
-/// Rotation is currently ignored (the on-canvas editor in commit 3
-/// will wire it through). Phase 1 supports only the rectangle
-/// primitive; future shape kinds extend the inner match.
 /// An image layer's pixels, straight-alpha RGBA.
 pub struct DecodedImage {
     pub w: usize,
@@ -3817,6 +3810,10 @@ fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
     (extent(size.x, width), extent(size.y, height))
 }
 
+/// Paint a `Shape` layer onto `buf` using its `ObjectTransform`.
+/// `transform.center` and `transform.size` are normalised 0..1
+/// frame-relative coords, mapped to a pixel rect on the frame and
+/// turned by `rotation` about the anchor, then filled and stroked.
 fn paint_shape_layer(
     buf: &mut [u8],
     shape: &Shape,
@@ -3836,10 +3833,30 @@ fn paint_shape_layer(
     let half_h = (transform.size.y * h_f * 0.5).max(0.0);
     let cx = transform.center.x * w_f;
     let cy = transform.center.y * h_f;
-    let x0 = ((cx - half_w).floor() as i32).max(0);
-    let y0 = ((cy - half_h).floor() as i32).max(0);
-    let x1 = ((cx + half_w).ceil() as i32).min(width as i32);
-    let y1 = ((cy + half_h).ceil() as i32).min(height as i32);
+    // Rotation turns the box about its anchor, as text and paths do.
+    // Each pixel centre is turned back into the box's own frame and
+    // tested against the unrotated rect, so rounded corners and the
+    // stroke rotate with it.
+    let pivot_x = cx + (transform.anchor_norm.x - 0.5) * 2.0 * half_w;
+    let pivot_y = cy + (transform.anchor_norm.y - 0.5) * 2.0 * half_h;
+    let (sin, cos) = transform.rotation.to_radians().sin_cos();
+    let unrotate = |px: f32, py: f32| {
+        let (dx, dy) = (px - pivot_x, py - pivot_y);
+        (pivot_x + cos * dx + sin * dy, pivot_y - sin * dx + cos * dy)
+    };
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for (ux, uy) in [(cx - half_w, cy - half_h), (cx + half_w, cy - half_h), (cx - half_w, cy + half_h), (cx + half_w, cy + half_h)] {
+        let (dx, dy) = (ux - pivot_x, uy - pivot_y);
+        let (rx, ry) = (pivot_x + cos * dx - sin * dy, pivot_y + sin * dx + cos * dy);
+        min_x = min_x.min(rx);
+        min_y = min_y.min(ry);
+        max_x = max_x.max(rx);
+        max_y = max_y.max(ry);
+    }
+    let x0 = (min_x.floor() as i32).max(0);
+    let y0 = (min_y.floor() as i32).max(0);
+    let x1 = (max_x.ceil() as i32).min(width as i32);
+    let y1 = (max_y.ceil() as i32).min(height as i32);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -3863,8 +3880,9 @@ fn paint_shape_layer(
                     // Distance from the rectangle's edge — used both
                     // for the rounded-corner mask and for stroke
                     // detection.
+                    let (px, py) = unrotate(x as f32 + 0.5, y as f32 + 0.5);
                     let in_rect = is_in_rounded_rect(
-                        x as f32 + 0.5, y as f32 + 0.5,
+                        px, py,
                         cx - half_w, cy - half_h, cx + half_w, cy + half_h,
                         scaled_r, r2,
                     );
@@ -3875,7 +3893,7 @@ fn paint_shape_layer(
                     let in_stroke = scaled_sw > 0.0 && {
                         let pad = scaled_sw;
                         !is_in_rounded_rect(
-                            x as f32 + 0.5, y as f32 + 0.5,
+                            px, py,
                             cx - half_w + pad, cy - half_h + pad,
                             cx + half_w - pad, cy + half_h - pad,
                             (scaled_r - pad).max(0.0),
