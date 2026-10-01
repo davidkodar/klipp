@@ -1200,7 +1200,9 @@ fn tool_definitions() -> Vec<Value> {
               picture cuts), EBU R128 loudness and true peak, the spans of silence, and \
               the transcript with word timestamps and the language when the speech model \
               is downloaded, the beat sheet of a screen recording, and its on-screen text \
-              (OCR) when those models are downloaded. One media item by id, or every file in the pool when \
+              (OCR) when those models are downloaded. Those two run only on a screen recording: a file \
+              with no camera metadata, or one tagged screen (klipp_tag_media) to ask for them. \
+              One media item by id, or every file in the pool when \
               media_id is omitted. Pass wait true to wait for completion, then read \
               klipp_media_analysis. Items already analysed cost nothing. Runs on import \
               too, without downloading anything: pass download_models to fetch the \
