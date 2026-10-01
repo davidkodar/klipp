@@ -902,7 +902,7 @@ pub enum Op {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "vector_path", "place", "add_track", "trim", "j_cut", "l_cut", "split", "remove", "move", "cut",
+    "vector_path", "place", "add_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "clean_audio",
@@ -5822,6 +5822,25 @@ mod tests {
         for name in OP_NAMES {
             if let Err(err) = serde_json::from_value::<Op>(serde_json::json!({"op": name})) {
                 assert!(!err.to_string().contains("unknown variant"), "{name}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_agent_guide_names_every_op_and_picture_effect() {
+        let guide = include_str!("../../../assets/craft/guide.md");
+        for name in OP_NAMES {
+            assert!(guide.lines().any(|line| line.starts_with(&format!("- `{name}"))),
+                "document the {name} operation in the agent guide");
+        }
+        let source = include_str!("ops.rs");
+        let effects = source.split("let fx = match kind.to_lowercase().as_str() {").nth(1).unwrap()
+            .split("other => return Err").next().unwrap();
+        for arm in effects.lines().map(str::trim).filter(|line| line.starts_with('"')) {
+            let names = arm.split("=>").next().unwrap();
+            for name in names.split('"').skip(1).step_by(2) {
+                assert!(guide.contains(&format!("`{name}`")),
+                    "document the {name} picture effect in the agent guide");
             }
         }
     }
