@@ -79,11 +79,16 @@ pub struct GpuMaskDef {
     pub p2: f32,  // rect: height, grad: end_y
     pub p3: f32,  // rect: rotation (degrees)
     pub feather: f32,
-    /// bit 0 = invert, bits 8-15 = opacity (0-255)
+    /// bit 0 = invert, bit 1 = `warp` applies, bits 8-15 = opacity
+    /// (0-255)
     pub flags: u32,
     /// Closed-polygon control points for bezier shapes. Empty for
     /// every other shape. Coords are normalised (0..1) on width.
     pub bezier_points: Vec<(f32, f32)>,
+    /// A window tracked in perspective (#238): the plane map, row by
+    /// row, from a pixel's frame position now to where the shape is
+    /// measured. See [`Self::with_warp`].
+    pub warp: [f32; 9],
 }
 
 impl GpuMaskDef {
@@ -92,6 +97,7 @@ impl GpuMaskDef {
             shape_type: 0, cx, cy, p1: radius, p2: 0.0, p3: 0.0, feather,
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
+            warp: [0.0; 9],
         }
     }
     pub fn rectangle(cx: f32, cy: f32, w: f32, h: f32, rotation: f32, feather: f32, invert: bool, opacity: f32) -> Self {
@@ -99,6 +105,7 @@ impl GpuMaskDef {
             shape_type: 1, cx, cy, p1: w, p2: h, p3: rotation, feather,
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
+            warp: [0.0; 9],
         }
     }
     pub fn linear_gradient(sx: f32, sy: f32, ex: f32, ey: f32, feather: f32, invert: bool, opacity: f32) -> Self {
@@ -106,6 +113,7 @@ impl GpuMaskDef {
             shape_type: 2, cx: sx, cy: sy, p1: ex, p2: ey, p3: 0.0, feather,
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
+            warp: [0.0; 9],
         }
     }
     /// `points` are closed-polygon control vertices in normalised
@@ -117,7 +125,19 @@ impl GpuMaskDef {
             shape_type: 3, cx: 0.0, cy: 0.0, p1: 0.0, p2: 0.0, p3: 0.0, feather,
             flags: Self::make_flags(invert, opacity),
             bezier_points: points,
+            warp: [0.0; 9],
         }
+    }
+    /// This window measured through `warp`, a plane map row by row (an
+    /// evaluated window's `keyframes.warp` in klipp-core): a pixel is
+    /// looked up where the map sends it, and one past its horizon is
+    /// outside.
+    pub fn with_warp(mut self, warp: Option<[f32; 9]>) -> Self {
+        if let Some(w) = warp {
+            self.warp = w;
+            self.flags |= 2;
+        }
+        self
     }
     fn make_flags(invert: bool, opacity: f32) -> u32 {
         let opacity_byte = (opacity.clamp(0.0, 1.0) * 255.0) as u32;
@@ -3461,6 +3481,9 @@ impl GpuEffectsPipeline {
                 bezier_count: count,
                 cx: m.cx, cy: m.cy, p1: m.p1, p2: m.p2,
                 p3: m.p3, feather: m.feather, _pad0: 0, _pad1: 0,
+                w0: [m.warp[0], m.warp[1], m.warp[2], 0.0],
+                w1: [m.warp[3], m.warp[4], m.warp[5], 0.0],
+                w2: [m.warp[6], m.warp[7], m.warp[8], 0.0],
             });
         }
         (records, points)
@@ -3472,14 +3495,14 @@ impl GpuEffectsPipeline {
     /// of placeholder data — empty-bezier-stack draws still need
     /// valid bind-group entries.
     fn ensure_mask_storage_buffers(&mut self, records_bytes: u64, points_bytes: u64) {
-        let records_bytes = records_bytes.max(48);  // one MaskRecord
+        let records_bytes = records_bytes.max(96);  // one MaskRecord
         let points_bytes = points_bytes.max(8);     // one vec2<f32>
         let need_records = self.mask_records_buf.as_ref()
             .is_none_or(|b| b.size() < records_bytes);
         if need_records {
             self.mask_records_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("mask_records_buf"),
-                size: records_bytes.next_power_of_two().max(48),
+                size: records_bytes.next_power_of_two().max(96),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
@@ -3526,6 +3549,7 @@ impl GpuEffectsPipeline {
             shape_type: 0, flags: 0, bezier_offset: 0, bezier_count: 0,
             cx: 0.0, cy: 0.0, p1: 0.0, p2: 0.0,
             p3: 0.0, feather: 0.0, _pad0: 0, _pad1: 0,
+            w0: [0.0; 4], w1: [0.0; 4], w2: [0.0; 4],
         }];
         let placeholder_point = [[0.0_f32, 0.0_f32]];
         let records_bytes_to_write: &[u8] = if records.is_empty() {
@@ -8168,8 +8192,8 @@ struct GpuMaskParams {
 
 /// One per-mask record in the storage buffer. Layout matches the
 /// WGSL `MaskRecord` struct in [`SHADER_MASK_V2`] one-for-one (12
-/// `u32`/`f32` slots = 48 bytes, naturally 16-byte aligned for
-/// `array<MaskRecord>` in std430).
+/// `u32`/`f32` slots, then the warp's three rows as `vec4`s at 16-byte
+/// offsets = 96 bytes, 16-byte aligned for `array<MaskRecord>`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MaskRecord {
@@ -8179,6 +8203,7 @@ struct MaskRecord {
     bezier_count: u32,   // number of points (bezier only)
     cx: f32, cy: f32, p1: f32, p2: f32,
     p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+    w0: [f32; 4], w1: [f32; 4], w2: [f32; 4],  // warp rows (flag bit 1)
 }
 
 #[repr(C)]
@@ -15806,6 +15831,7 @@ struct MaskRecord {
     bezier_count: u32,
     cx: f32, cy: f32, p1: f32, p2: f32,
     p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+    w0: vec4<f32>, w1: vec4<f32>, w2: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read_write> output: array<vec4<f32>>;
@@ -15872,8 +15898,25 @@ fn bezier_sdf(nx: f32, ny: f32, aspect: f32, offset: u32, count: u32) -> f32 {
     return dist;
 }
 
-fn eval_record(rec: MaskRecord, nx: f32, ny: f32, aspect: f32) -> f32 {
+fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
+    // A window tracked in perspective is measured where the pixel was
+    // on the frame it was drawn on; past the horizon is outside. As the
+    // CPU rasteriser's PlaneMap::apply.
+    var nx = px;
+    var ny = py;
+    var behind = false;
+    if (rec.flags & 2u) != 0u {
+        let h = vec3<f32>(px, py, 1.0);
+        let w = dot(rec.w2.xyz, h);
+        if !(w > 1.0e-9) {
+            behind = true;
+        } else {
+            nx = dot(rec.w0.xyz, h) / w;
+            ny = dot(rec.w1.xyz, h) / w;
+        }
+    }
     var dist: f32;
+    if behind { dist = 3.0e38; } else {
     switch rec.shape_type {
         case 0u: {
             // circle
@@ -15917,6 +15960,7 @@ fn eval_record(rec: MaskRecord, nx: f32, ny: f32, aspect: f32) -> f32 {
             dist = bezier_sdf(nx, ny, aspect, rec.bezier_offset, rec.bezier_count);
         }
         default: { dist = 1.0; }
+    }
     }
     var m = smooth_step_sdf(dist, rec.feather);
     if (rec.flags & 1u) != 0u { m = 1.0 - m; }

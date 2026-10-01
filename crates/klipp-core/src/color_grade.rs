@@ -394,6 +394,127 @@ impl MaskShape {
     }
 }
 
+/// A plane projective map in frame fractions (#238), row by row, 3×3:
+/// how a window tracked in perspective is carried from the frame it was
+/// drawn on to another. Oriented so a point in front of the eye has a
+/// positive third coordinate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneMap(pub [f32; 9]);
+
+impl PlaneMap {
+    /// Where `p` goes, or `None` when it lies on or past the map's
+    /// horizon, where the picture has nothing.
+    pub fn apply(&self, p: (f32, f32)) -> Option<(f32, f32)> {
+        let h = &self.0;
+        let w = h[6] * p.0 + h[7] * p.1 + h[8];
+        if w.is_nan() || w <= 1e-9 {
+            return None;
+        }
+        Some(((h[0] * p.0 + h[1] * p.1 + h[2]) / w, (h[3] * p.0 + h[4] * p.1 + h[5]) / w))
+    }
+
+    /// The map back, keeping what is in front in front.
+    pub fn inverse(&self) -> Option<PlaneMap> {
+        let m: [f64; 9] = self.0.map(|v| v as f64);
+        invert3(&m).map(|i| PlaneMap(i.map(|v| v as f32)))
+    }
+
+    /// The map taking the quadrilateral `from` (four corners in order) to
+    /// `to`. `None` when either is no quadrilateral — three corners in a
+    /// line, two the same.
+    pub fn from_quads(from: &[[f32; 2]; 4], to: &[[f32; 2]; 4]) -> Option<PlaneMap> {
+        let s = square_to_quad(from)?;
+        let t = square_to_quad(to)?;
+        let mut h = mul3(&t, &invert3(&s)?);
+        // Up to its sign: the one with `from` in front.
+        let (cx, cy) = from.iter().fold((0.0, 0.0), |a, p| (a.0 + p[0] as f64 / 4.0, a.1 + p[1] as f64 / 4.0));
+        if h[6] * cx + h[7] * cy + h[8] < 0.0 {
+            h = h.map(|v| -v);
+        }
+        let norm = h.iter().map(|v| v * v).sum::<f64>().sqrt();
+        (norm.is_finite() && norm > 0.0).then(|| PlaneMap(h.map(|v| (v / norm) as f32)))
+    }
+}
+
+/// The map from the unit square — (0,0) (1,0) (1,1) (0,1) — to four
+/// corners, in closed form (Heckbert).
+fn square_to_quad(q: &[[f32; 2]; 4]) -> Option<[f64; 9]> {
+    let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] = q.map(|p| (p[0] as f64, p[1] as f64));
+    let (sx, sy) = (x0 - x1 + x2 - x3, y0 - y1 + y2 - y3);
+    let (dx1, dy1, dx2, dy2) = (x1 - x2, y1 - y2, x3 - x2, y3 - y2);
+    let det = dx1 * dy2 - dx2 * dy1;
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let g = (sx * dy2 - dx2 * sy) / det;
+    let h = (dx1 * sy - sx * dy1) / det;
+    Some([x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h, 1.0])
+}
+
+fn mul3(a: &[f64; 9], b: &[f64; 9]) -> [f64; 9] {
+    std::array::from_fn(|k| {
+        let (i, j) = (k / 3, k % 3);
+        a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]
+    })
+}
+
+/// The true inverse, not the adjugate: dividing by a negative
+/// determinant keeps a point's side of the horizon.
+fn invert3(m: &[f64; 9]) -> Option<[f64; 9]> {
+    let c = [
+        m[4] * m[8] - m[5] * m[7], m[2] * m[7] - m[1] * m[8], m[1] * m[5] - m[2] * m[4],
+        m[5] * m[6] - m[3] * m[8], m[0] * m[8] - m[2] * m[6], m[2] * m[3] - m[0] * m[5],
+        m[3] * m[7] - m[4] * m[6], m[1] * m[6] - m[0] * m[7], m[0] * m[4] - m[1] * m[3],
+    ];
+    let det = m[0] * c[0] + m[1] * c[3] + m[2] * c[6];
+    (det.is_finite() && det.abs() > 1e-18).then(|| c.map(|v| v / det))
+}
+
+/// Where a window tracked in perspective (#238) has its corners at one
+/// moment, in frame fractions, in the order of [`PerspectiveTrack::from`].
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CornerKey {
+    pub time_secs: f64,
+    pub corners: [[f32; 2]; 4],
+}
+
+/// A window tracked in perspective (#238): the four corners of the
+/// region followed, on the frame the window was drawn on, and where the
+/// tracker found them since. The window is drawn as it was on that
+/// frame and carried by the plane map from those corners to these, so
+/// a window on a screen or a sign turns away with it.
+#[derive(PartialEq, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PerspectiveTrack {
+    /// Top left, top right, bottom right, bottom left.
+    pub from: [[f32; 2]; 4],
+    /// Earliest first.
+    pub keys: Vec<CornerKey>,
+}
+
+impl PerspectiveTrack {
+    /// The corners at `time_secs`: between two keys, each corner on the
+    /// line between them; before the first or after the last, held.
+    pub fn corners_at(&self, time_secs: f64) -> Option<[[f32; 2]; 4]> {
+        let (first, last) = (self.keys.first()?, self.keys.last()?);
+        if time_secs <= first.time_secs {
+            return Some(first.corners);
+        }
+        if time_secs >= last.time_secs {
+            return Some(last.corners);
+        }
+        let i = self.keys.partition_point(|k| k.time_secs <= time_secs);
+        let (a, b) = (&self.keys[i - 1], &self.keys[i]);
+        let span = b.time_secs - a.time_secs;
+        let t = if span > 0.0 { ((time_secs - a.time_secs) / span) as f32 } else { 0.0 };
+        Some(std::array::from_fn(|c| [a.corners[c][0] + (b.corners[c][0] - a.corners[c][0]) * t, a.corners[c][1] + (b.corners[c][1] - a.corners[c][1]) * t]))
+    }
+
+    /// The map from the frame the window was drawn on to `time_secs`.
+    pub fn map_at(&self, time_secs: f64) -> Option<PlaneMap> {
+        PlaneMap::from_quads(&self.from, &self.corners_at(time_secs)?)
+    }
+}
+
 /// Keyframe tracks for animating mask parameters over time.
 /// Each `Vec<Keyframe>` is empty by default (static mask). When non-empty,
 /// the keyframes override the corresponding static parameter at render time.
@@ -442,6 +563,15 @@ pub struct MaskKeyframes {
     /// Degrees, clockwise on the picture.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub track_rotation: Vec<Keyframe>,
+    /// The window tracked in perspective instead (#238).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_perspective: Option<PerspectiveTrack>,
+    /// On an evaluated window only (see [`Mask::evaluated_in`]), never
+    /// saved: the map from a point on the frame now to where it was on
+    /// the frame the window was drawn on, where the window's shape is
+    /// measured. `None` for a window not tracked in perspective.
+    #[serde(skip)]
+    pub warp: Option<PlaneMap>,
 }
 
 impl MaskKeyframes {
@@ -465,6 +595,7 @@ impl MaskKeyframes {
     /// Whether the window tracker drives this window (#238).
     pub fn is_tracked(&self) -> bool {
         !(self.track_x.is_empty() && self.track_y.is_empty() && self.track_scale.is_empty() && self.track_rotation.is_empty())
+            || self.track_perspective.is_some()
     }
 
     /// Take the tracked motion off.
@@ -473,6 +604,7 @@ impl MaskKeyframes {
         self.track_y.clear();
         self.track_scale.clear();
         self.track_rotation.clear();
+        self.track_perspective = None;
     }
 
     /// Get a mutable reference to the keyframe track for a given parameter name.
@@ -632,12 +764,14 @@ impl Mask {
 
     /// [`Self::evaluated_at`], then the window's tracked motion (#238)
     /// applied, on a frame `aspect` (height over width) tall: what is
-    /// drawn at `time_secs`.
+    /// drawn at `time_secs`. A window tracked in perspective keeps its
+    /// shape as drawn and carries the map there in `keyframes.warp`.
     pub fn evaluated_in(&self, time_secs: f64, aspect: f32) -> Mask {
         let mut m = self.evaluated_at(time_secs);
         if let Some(motion) = self.track_at(time_secs) {
             m.shape = m.shape.moved(motion, aspect);
         }
+        m.keyframes.warp = self.keyframes.track_perspective.as_ref().and_then(|p| p.map_at(time_secs)).and_then(|f| f.inverse());
         m
     }
 
@@ -906,5 +1040,60 @@ mod window_motion_tests {
         assert!((center_x - 0.7).abs() < 1e-5 && (radius - 0.15).abs() < 1e-5);
         m.keyframes.clear_track();
         assert!(!m.keyframes.is_tracked());
+    }
+
+    /// #238: a window tracked in perspective keeps its shape as drawn and
+    /// carries the map back to the frame it was drawn on: the tracked
+    /// corners there go back to where they started, a key's corners are
+    /// held past the last key and met halfway between two, and the
+    /// whole round trips through a project file.
+    #[test]
+    fn a_window_in_perspective_is_carried_by_its_corners() {
+        let from = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+        let later = [[0.42, 0.38], [0.58, 0.43], [0.57, 0.57], [0.43, 0.63]];
+        let mut m = Mask { shape: MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.2 * 16.0 / 9.0, rotation: 0.0 }, ..Mask::default() };
+        m.keyframes.track_perspective = Some(PerspectiveTrack { from, keys: vec![CornerKey { time_secs: 0.0, corners: from }, CornerKey { time_secs: 1.0, corners: later }] });
+        assert!(m.keyframes.is_tracked() && !m.keyframes.is_empty());
+        let e = m.evaluated_in(2.0, 9.0 / 16.0);
+        assert_eq!(e.shape, m.shape, "the shape stays as drawn");
+        let back = e.keyframes.warp.expect("a warp");
+        for (now, then) in later.iter().zip(&from) {
+            let got = back.apply((now[0], now[1])).unwrap();
+            assert!(close(got, (then[0], then[1])), "{now:?} went back to {got:?}, not {then:?}");
+        }
+        let half = m.keyframes.track_perspective.as_ref().unwrap().corners_at(0.5).unwrap();
+        assert!(close((half[3][0], half[3][1]), (0.415, 0.615)));
+        // Untracked at the start: no move at all.
+        let start = m.evaluated_in(0.0, 9.0 / 16.0).keyframes.warp.unwrap();
+        assert!(close(start.apply((0.13, 0.77)).unwrap(), (0.13, 0.77)));
+        let json = serde_json::to_string(&m).unwrap();
+        let again: Mask = serde_json::from_str(&json).unwrap();
+        assert_eq!(again, m);
+        assert!(!json.contains("warp"));
+        m.keyframes.clear_track();
+        assert!(!m.keyframes.is_tracked() && m.evaluated_in(1.0, 0.5625).keyframes.warp.is_none());
+    }
+
+    /// A surface turned so far that the frame's corner lies past its
+    /// horizon still maps the window in front of the eye, and a point
+    /// past the horizon maps nowhere.
+    #[test]
+    fn a_plane_map_keeps_the_window_in_front_past_the_horizon() {
+        let from = [[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]];
+        // The right side a sliver of the left: the far edge near the
+        // vanishing point.
+        let to = [[0.40, 0.40], [0.52, 0.49], [0.52, 0.51], [0.40, 0.60]];
+        let f = PlaneMap::from_quads(&from, &to).unwrap();
+        for (a, b) in from.iter().zip(&to) {
+            assert!(close(f.apply((a[0], a[1])).unwrap(), (b[0], b[1])));
+        }
+        let inv = f.inverse().unwrap();
+        let p = inv.apply((0.46, 0.5)).unwrap();
+        assert!(close(f.apply(p).unwrap(), (0.46, 0.5)));
+        // The right side shrinks to a tenth of the left, so a little to
+        // the left of the window the surface is edge-on, and beyond that
+        // behind the eye.
+        assert!(f.apply((0.3, 0.5)).is_none());
+        assert!(PlaneMap::from_quads(&from, &[[0.1, 0.1], [0.2, 0.2], [0.3, 0.3], [0.4, 0.4]]).is_none_or(|m| m.inverse().is_none()));
     }
 }

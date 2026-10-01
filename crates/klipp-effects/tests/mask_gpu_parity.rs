@@ -36,7 +36,7 @@ fn mask_to_gpu_def(mask: &Mask) -> Option<GpuMaskDef> {
     if !mask.enabled {
         return None;
     }
-    match &mask.shape {
+    let def = match &mask.shape {
         MaskShape::Circle { center_x, center_y, radius } => Some(GpuMaskDef::circle(
             *center_x, *center_y, *radius,
             mask.feather, mask.invert, mask.opacity,
@@ -57,7 +57,8 @@ fn mask_to_gpu_def(mask: &Mask) -> Option<GpuMaskDef> {
             points.clone(),
             mask.feather, mask.invert, mask.opacity,
         )),
-    }
+    };
+    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)))
 }
 
 /// Convert an f32 single-channel matte (0..1) to RGBA8 (R=G=B=matte,
@@ -247,7 +248,42 @@ fn fixtures() -> Vec<ParityCase> {
             ] },
             expects_gpu_gap: false,
         },
+        // ── Tracked in perspective (#238): measured through the warp ──
+        ParityCase {
+            name: "rectangle_in_perspective",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![in_perspective(
+                MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.3, height: 0.4, rotation: 10.0 },
+                0.05,
+                [[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]],
+                [[0.2, 0.25], [0.65, 0.4], [0.62, 0.6], [0.25, 0.8]],
+            )] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            // So steep the horizon crosses the frame: the pixels past it
+            // are outside the window, inverted here so they show.
+            name: "bezier_in_perspective_past_the_horizon",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![Mask { invert: true, ..in_perspective(
+                MaskShape::Bezier { points: vec![(0.4, 0.4), (0.6, 0.42), (0.55, 0.6), (0.42, 0.58)] },
+                0.02,
+                [[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]],
+                [[0.40, 0.40], [0.52, 0.49], [0.52, 0.51], [0.40, 0.60]],
+            ) }] },
+            expects_gpu_gap: false,
+        },
     ]
+}
+
+/// A window drawn as `shape`, tracked in perspective from the corners
+/// `from` to `to`, evaluated where it has gone.
+fn in_perspective(shape: MaskShape, feather: f32, from: [[f32; 2]; 4], to: [[f32; 2]; 4]) -> Mask {
+    let mut m = Mask { shape, feather, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default() };
+    m.keyframes.track_perspective = Some(klipp_core::PerspectiveTrack { from, keys: vec![klipp_core::CornerKey { time_secs: 0.0, corners: to }] });
+    let e = m.evaluated_in(0.0, 64.0 / 96.0);
+    assert!(e.keyframes.warp.is_some());
+    e
 }
 
 #[test]

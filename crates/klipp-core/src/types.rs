@@ -336,6 +336,11 @@ pub struct TrackPoint {
     /// from (#238).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_frame: Option<usize>,
+    /// A window tracked in perspective (#238): where the corners of the
+    /// region followed are on each frame of `positions`, in frame
+    /// fractions, top left first, clockwise. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corners: Vec<[(f64, f64); 4]>,
 }
 
 impl Default for TrackPoint {
@@ -351,6 +356,7 @@ impl Default for TrackPoint {
             linked_mask: None,
             motion: Vec::new(),
             reference_frame: None,
+            corners: Vec::new(),
         }
     }
 }

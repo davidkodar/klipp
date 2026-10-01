@@ -802,6 +802,21 @@ impl NodeInspectorPanel {
                             }
                             ui.add_space(4.0);
                         }
+                        // Perspective (#238): follow a flat surface's four
+                        // corners — a screen, a sign — instead of a move,
+                        // size and turn. Off by default; a window tracked
+                        // in perspective re-tracks the same way.
+                        let persp_id = ui.id().with(("track_perspective", node_id, mask_idx));
+                        let was_perspective = mask.keyframes.track_perspective.is_some();
+                        let mut perspective = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(persp_id, || was_perspective));
+                        if ui.selectable_label(perspective, egui::RichText::new("Perspective").size(10.0))
+                            .on_hover_text("Track the window's four corners on a flat surface seen at an angle, so the window turns away with it")
+                            .clicked()
+                        {
+                            perspective = !perspective;
+                            ui.data_mut(|d| d.insert_temp(persp_id, perspective));
+                        }
+                        ui.add_space(4.0);
                         let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
                         let hover = if is_tracked {
                             "Re-run tracking from the playhead — overwrites the existing centre keyframes"
@@ -822,7 +837,7 @@ impl NodeInspectorPanel {
                                 });
                             }
                             cmds.push(AppCommand::TrackMaskRegion {
-                                clip_id, node_id, mask_index: mask_idx,
+                                clip_id, node_id, mask_index: mask_idx, perspective,
                             });
                         }
                     });

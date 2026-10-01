@@ -2935,7 +2935,9 @@ pub enum AppCommand {
     /// Closes the 3-step Place / Analyze / Link dance into a single
     /// gesture for the common case "I want this mask to follow the
     /// thing under it".
-    TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    /// `perspective` follows the window's four corners on a flat surface
+    /// instead of a move, size and turn (#238).
+    TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, perspective: bool },
     /// Remove the tracker bound to this mask plus the mask's centre
     /// keyframes — gives the user a clean "untrack" gesture without
     /// leaving an orphan tracker behind. No-op when no tracker is
@@ -3703,7 +3705,7 @@ pub enum AppEvent {
     TrackingProgress { clip_id: ClipId, progress: f32 },
     /// `motion`: a window track's (scale, degrees) on each frame of
     /// `positions` (#238); empty for a point track.
-    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)> },
+    TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)>, corners: Vec<[(f64, f64); 4]> },
     TrackingFailed { clip_id: ClipId, error: String },
 
     // Audio sync (#61)

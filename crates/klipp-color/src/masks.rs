@@ -22,7 +22,13 @@ pub fn generate_mask_matte(
                 let nx = x as f32 / (width - 1).max(1) as f32;
                 let idx = (y * width + x) as usize;
 
-                let dist = shape_sdf(nx, ny, &mask.shape, aspect);
+                // A window tracked in perspective is measured where this
+                // pixel was on the frame it was drawn on (#238); a pixel
+                // past the surface's horizon is outside it.
+                let dist = match mask.keyframes.warp {
+                    Some(warp) => warp.apply((nx, ny)).map_or(f32::MAX, |(wx, wy)| shape_sdf(wx, wy, &mask.shape, aspect)),
+                    None => shape_sdf(nx, ny, &mask.shape, aspect),
+                };
                 let mut m = smooth_step(dist, mask.feather);
                 if mask.invert {
                     m = 1.0 - m;
