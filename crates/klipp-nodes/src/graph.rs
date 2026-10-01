@@ -508,13 +508,10 @@ impl NodeGraph {
     /// for a locked-off camera, and a face that walks out of it takes
     /// the correction off with it half way through the shot.
     ///
-    /// `MaskShape::Circle` measures its radius in frame *widths* and
-    /// divides the vertical offset by the aspect, so on a 16:9 frame its
-    /// "circle" reaches `radius` across and `radius × aspect` down. That
-    /// is the shipped convention for every mask a user has ever drawn,
-    /// so the radius is chosen to fit the face *under* it rather than
-    /// the convention changed: whichever of the two half-extents needs
-    /// the bigger radius wins.
+    /// `MaskShape::Circle` measures its radius in frame *widths*, both
+    /// ways (#663): it reaches `radius` across and `radius / aspect` of
+    /// the height down. A face box is usually taller than it is wide, so
+    /// whichever of the two half-extents needs the bigger radius wins.
     ///
     /// The window is padded past the face and feathered generously,
     /// because a hard-edged window on a face reads as a sticker the
@@ -530,7 +527,7 @@ impl NodeGraph {
         // A quarter past the face on every side: the detector's box is
         // the face, and a grade that stops at the jaw is a mask.
         const PAD: f32 = 1.25;
-        let radius = |b: [f32; 4]| ((b[2] / 2.0).max(b[3] / (2.0 * aspect)) * PAD).clamp(0.02, 1.2);
+        let radius = |b: [f32; 4]| ((b[2] / 2.0).max(b[3] * aspect / 2.0) * PAD).clamp(0.02, 1.2);
         let (cx, cy) = centre(first.1);
         let mut mask = Mask {
             shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: radius(first.1) },
@@ -1853,9 +1850,9 @@ mod window_tests {
 
     #[test]
     fn the_window_covers_the_face_under_the_circles_own_convention() {
-        // MaskShape::Circle reaches `radius` across and `radius*aspect`
-        // down. A tall face box on a wide frame is the case that a naive
-        // radius gets wrong: it would cut the chin off.
+        // MaskShape::Circle reaches `radius` across and `radius / aspect`
+        // of the height down. A tall face box is the case a radius from
+        // its width alone gets wrong: it would cut the chin off.
         let mut g = graph_with_corrector();
         let (_q, mask, _c) = g.ensure_windowed_secondary(NodeKind::ColorBalance);
         let aspect = 9.0f32 / 16.0;
@@ -1864,7 +1861,7 @@ mod window_tests {
         let m = &g.nodes.iter().find(|n| n.id == mask).unwrap().params.masks.as_ref().unwrap().masks[0];
         let MaskShape::Circle { center_x, center_y, radius } = m.shape else { panic!("a circle") };
         assert!((center_x - 0.5).abs() < 1e-5 && (center_y - 0.35).abs() < 1e-5, "centred on the face");
-        assert!(radius >= face[3] / (2.0 * aspect), "the window reaches the chin: {radius}");
+        assert!(radius / aspect >= face[3] / 2.0, "the window reaches the chin: {radius}");
         assert!(radius >= face[2] / 2.0, "and the cheeks");
     }
 

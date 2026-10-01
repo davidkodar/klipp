@@ -724,25 +724,26 @@ fn grey_frames(path: &std::path::Path, fps: f64, first: usize, last: usize, prog
 
 /// The region of the picture a window covers, as four corners in frame
 /// fractions, on a frame `aspect` (height over width) tall: what the
-/// window tracker follows. A circle reaches its radius across and
-/// radius × aspect down (see `klipp_color::masks`); a rectangle turns
-/// in the same space; a gradient, which has no area, follows a square
+/// window tracker follows. A window's sizes are in frame widths both
+/// ways (see `klipp_color::masks`), so a circle reaches its radius across
+/// and radius / aspect of the height down; a rectangle turns in the same
+/// space; a gradient, which has no area, follows a square
 /// about its middle as wide as it is long.
 fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, f32); 4] {
     use klipp_core::MaskShape;
     let bbox = |x0: f32, y0: f32, x1: f32, y1: f32| [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
     let quad = match shape {
-        MaskShape::Circle { center_x, center_y, radius } => bbox(center_x - radius, center_y - radius * aspect, center_x + radius, center_y + radius * aspect),
+        MaskShape::Circle { center_x, center_y, radius } => bbox(center_x - radius, center_y - radius / aspect, center_x + radius, center_y + radius / aspect),
         MaskShape::Rectangle { center_x, center_y, width, height, rotation } => {
             let (sin, cos) = rotation.to_radians().sin_cos();
-            let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * aspect);
+            let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) / aspect);
             let (hw, hh) = (width / 2.0, height / 2.0);
             [corner(-hw, -hh), corner(hw, -hh), corner(hw, hh), corner(-hw, hh)]
         }
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
             let (mx, my) = ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5);
             let half = ((end_x - start_x).hypot((end_y - start_y) * aspect) * 0.5).max(0.05);
-            bbox(mx - half, my - half * aspect, mx + half, my + half * aspect)
+            bbox(mx - half, my - half / aspect, mx + half, my + half / aspect)
         }
         MaskShape::Bezier { points } => {
             let (x0, x1) = points.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p.0), b.max(p.0)));
@@ -43333,14 +43334,15 @@ mod window_track_tests {
     }
 
     /// The region followed is the one the window covers, as the matte
-    /// draws it: a circle `radius` across and `radius × aspect` down.
+    /// draws it: a circle as far down as across, `radius / aspect` of the
+    /// height.
     #[test]
     fn the_region_followed_is_the_window() {
         let aspect = 9.0 / 16.0;
         let q = window_quad(&klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.1 }, aspect);
-        assert!((q[0].0 - 0.4).abs() < 1e-6 && (q[0].1 - (0.5 - 0.1 * aspect)).abs() < 1e-6 && (q[2].0 - 0.6).abs() < 1e-6);
+        assert!((q[0].0 - 0.4).abs() < 1e-6 && (q[0].1 - (0.5 - 0.1 / aspect)).abs() < 1e-6 && (q[2].0 - 0.6).abs() < 1e-6);
         let q = window_quad(&klipp_core::MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.2, height: 0.1, rotation: 0.0 }, aspect);
-        assert!((q[1].0 - 0.6).abs() < 1e-6 && (q[2].1 - (0.5 + 0.05 * aspect)).abs() < 1e-6);
+        assert!((q[1].0 - 0.6).abs() < 1e-6 && (q[2].1 - (0.5 + 0.05 / aspect)).abs() < 1e-6);
     }
 }
 

@@ -3267,10 +3267,11 @@ impl ViewerPanel {
                 to_screen(x, y)
             };
             // The outline as the matte draws it (klipp_color::masks): a
-            // shape's sizes are in frame widths, so a height of `v` reaches
-            // `v × aspect` of the frame's height down. Through the map, too,
-            // where straight lines stay straight.
-            let aspect = ih / iw.max(1.0);
+            // shape's sizes are in frame widths both ways, so a height of
+            // `v` reaches `v × reach` of the frame's height down, `reach`
+            // being its width over its height. Through the map, too, where
+            // straight lines stay straight.
+            let reach = iw / ih.max(1.0);
             let outline = |pts: &[(f32, f32)]| {
                 let screen: Vec<egui::Pos2> = pts.iter().map(|&(x, y)| to_screen(x, y)).collect();
                 ui.painter().add(egui::Shape::closed_line(screen, egui::Stroke::new(1.5_f32, outline_color)));
@@ -3282,7 +3283,7 @@ impl ViewerPanel {
 
                     let ring: Vec<(f32, f32)> = (0..64).map(|i| {
                         let (sin, cos) = (i as f32 * std::f32::consts::TAU / 64.0).sin_cos();
-                        (center_x + radius * cos, center_y + radius * aspect * sin)
+                        (center_x + radius * cos, center_y + radius * reach * sin)
                     }).collect();
                     outline(&ring);
 
@@ -3296,7 +3297,7 @@ impl ViewerPanel {
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (radius control)
-                    let bottom = to_screen(*center_x, center_y + radius * aspect);
+                    let bottom = to_screen(*center_x, center_y + radius * reach);
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3361,7 +3362,7 @@ impl ViewerPanel {
 
                     // Turned as the matte turns it (the handles are not).
                     let (sin, cos) = rotation.to_radians().sin_cos();
-                    let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * aspect);
+                    let corner = |lx: f32, ly: f32| (center_x + lx * cos - ly * sin, center_y + (lx * sin + ly * cos) * reach);
                     let (a, b) = (width * 0.5, height * 0.5);
                     outline(&[corner(-a, -b), corner(a, -b), corner(a, b), corner(-a, b)]);
 
@@ -3375,7 +3376,7 @@ impl ViewerPanel {
                     ui.painter().circle_filled(right, handle_radius, handle_color);
 
                     // Bottom edge handle (height control)
-                    let bottom = to_screen(*center_x, center_y + height * 0.5 * aspect);
+                    let bottom = to_screen(*center_x, center_y + height * 0.5 * reach);
                     let bottom_handle = egui::Rect::from_center_size(bottom, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
                     ui.painter().circle_filled(bottom, handle_radius, handle_color);
 
@@ -3662,8 +3663,9 @@ impl ViewerPanel {
                         klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
                     }
                     (klipp_core::MaskShape::Circle { center_x, center_y, radius: _ }, MaskHandle::EdgeBottom) => {
-                        // Down, a size reaches `size × aspect` of the height.
-                        let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih / (ih / iw.max(1.0))).abs().max(0.01);
+                        // Sizes are in widths both ways: a drag down is
+                        // measured across.
+                        let new_r = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw).abs().max(0.01);
                         klipp_core::MaskShape::Circle { center_x: *center_x, center_y: *center_y, radius: new_r }
                     }
                     (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation }, MaskHandle::Center) => {
@@ -3680,7 +3682,7 @@ impl ViewerPanel {
                         klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: new_w, height: *height, rotation: *rotation }
                     }
                     (klipp_core::MaskShape::Rectangle { center_x, center_y, width, height: _, rotation }, MaskHandle::EdgeBottom) => {
-                        let new_h = ((current_pos.y - (image_rect.min.y + center_y * ih)) / ih / (ih / iw.max(1.0)) * 2.0).abs().max(0.01);
+                        let new_h = ((current_pos.y - (image_rect.min.y + center_y * ih)) / iw * 2.0).abs().max(0.01);
                         klipp_core::MaskShape::Rectangle { center_x: *center_x, center_y: *center_y, width: *width, height: new_h, rotation: *rotation }
                     }
                     (klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y }, MaskHandle::Center) => {
