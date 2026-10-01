@@ -15855,16 +15855,16 @@ fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
 fn bezier_sdf(nx: f32, ny: f32, aspect: f32, offset: u32, count: u32) -> f32 {
     if count < 3u { return 1.0; }
     let px = nx;
-    let py = ny / aspect;
+    let py = ny * aspect;
     var min_dist_sq: f32 = 1.0e30;
     var winding: i32 = 0;
     for (var i: u32 = 0u; i < count; i = i + 1u) {
         let a_raw = points[offset + i];
         let b_raw = points[offset + ((i + 1u) % count)];
         let ax = a_raw.x;
-        let ay = a_raw.y / aspect;
+        let ay = a_raw.y * aspect;
         let bx = b_raw.x;
-        let by = b_raw.y / aspect;
+        let by = b_raw.y * aspect;
         let ex = bx - ax;
         let ey = by - ay;
         let dx = px - ax;
@@ -15921,7 +15921,7 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
         case 0u: {
             // circle
             let dx = nx - rec.cx;
-            let dy = (ny - rec.cy) / aspect;
+            let dy = (ny - rec.cy) * aspect;
             dist = sqrt(dx * dx + dy * dy) - rec.p1;
         }
         case 1u: {
@@ -15930,7 +15930,7 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
             let cos_r = cos(rad);
             let sin_r = sin(rad);
             let dx = nx - rec.cx;
-            let dy = (ny - rec.cy) / aspect;
+            let dy = (ny - rec.cy) * aspect;
             let lx = abs(dx * cos_r + dy * sin_r);
             let ly = abs(-dx * sin_r + dy * cos_r);
             let hw = rec.p1 / 2.0;
@@ -15944,13 +15944,13 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
         case 2u: {
             // linear gradient
             let gx = rec.p1 - rec.cx;
-            let gy = (rec.p2 - rec.cy) / aspect;
+            let gy = (rec.p2 - rec.cy) * aspect;
             let glen2 = gx * gx + gy * gy;
             if glen2 < 1.0e-8 {
                 dist = 0.0;
             } else {
                 let dx = nx - rec.cx;
-                let dy = (ny - rec.cy) / aspect;
+                let dy = (ny - rec.cy) * aspect;
                 let t = (dx * gx + dy * gy) / glen2;
                 dist = t - 0.5;
             }

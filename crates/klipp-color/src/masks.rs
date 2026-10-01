@@ -3,7 +3,9 @@ use klipp_core::{MaskShape, MaskStack};
 /// Generate a combined mask matte from a stack of masks.
 /// Returns a `Vec<f32>` with one value per pixel (0.0 = outside, 1.0 = inside).
 /// Coordinates are normalized: x in 0..1 (left to right), y in 0..1 (top to bottom).
-/// Aspect ratio correction: radius and distances are in frame-width units.
+/// Sizes and distances are in frame widths both ways, so a circle is round
+/// and a square square on any frame: a vertical distance is the share of
+/// the height times `aspect` (height over width).
 pub fn generate_mask_matte(
     width: u32,
     height: u32,
@@ -51,7 +53,7 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
     match shape {
         MaskShape::Circle { center_x, center_y, radius } => {
             let dx = nx - center_x;
-            let dy = (ny - center_y) / aspect; // correct for aspect ratio
+            let dy = (ny - center_y) * aspect; // in frame widths, as the sizes are
             let dist = (dx * dx + dy * dy).sqrt();
             dist - radius
         }
@@ -61,7 +63,7 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
             let sin_r = rad.sin();
             // Transform point into rectangle's local space
             let dx = nx - center_x;
-            let dy = (ny - center_y) / aspect;
+            let dy = (ny - center_y) * aspect;
             let lx = (dx * cos_r + dy * sin_r).abs();
             let ly = (-dx * sin_r + dy * cos_r).abs();
             let hw = width / 2.0;
@@ -75,11 +77,11 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
         }
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
             let gx = end_x - start_x;
-            let gy = (end_y - start_y) / aspect;
+            let gy = (end_y - start_y) * aspect;
             let glen = (gx * gx + gy * gy).sqrt();
             if glen < 0.0001 { return 0.0; }
             let dx = nx - start_x;
-            let dy = (ny - start_y) / aspect;
+            let dy = (ny - start_y) * aspect;
             let t = (dx * gx + dy * gy) / (glen * glen);
             t - 0.5
         }
@@ -87,15 +89,15 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
             if points.len() < 3 { return 1.0; } // need at least a triangle
             // Signed distance to closed polygon (winding number for inside/outside)
             let px = nx;
-            let py = ny / aspect;
+            let py = ny * aspect;
             let n = points.len();
             let mut min_dist_sq = f32::MAX;
             let mut winding = 0i32;
             for i in 0..n {
                 let (ax, ay_raw) = points[i];
                 let (bx, by_raw) = points[(i + 1) % n];
-                let ay = ay_raw / aspect;
-                let by = by_raw / aspect;
+                let ay = ay_raw * aspect;
+                let by = by_raw * aspect;
                 // Closest point on segment to (px, py)
                 let ex = bx - ax;
                 let ey = by - ay;
@@ -262,6 +264,30 @@ mod tests {
         assert!(m_out <= 0.05, "outside both circles: got {m_out}");
     }
 
+    /// #663: a window is as tall as it is wide in pixels on a wide frame —
+    /// a circle round, a square turned 45° a diamond with equal
+    /// diagonals. Before, a vertical distance was divided by the aspect
+    /// instead of multiplied, and on 16:9 a circle came out under a third
+    /// as tall as it was wide.
+    #[test]
+    fn a_window_is_round_on_a_wide_frame() {
+        let (w, h) = (160u32, 90u32);
+        let at = |m: &[f32], x: u32, y: u32| m[(y * w + x) as usize];
+        let one = |shape| MaskStack { masks: vec![Mask { shape, feather: 0.0, ..Mask::default() }] };
+        // 0.2 of 160 is 32 px; the centre is pixel 79.5, 44.5.
+        let c = generate_mask_matte(w, h, &one(MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 }));
+        assert_eq!(at(&c, 80 + 30, 45), 1.0);
+        assert_eq!(at(&c, 80, 45 + 30), 1.0, "as far down as across");
+        assert_eq!(at(&c, 80, 45 + 34), 0.0);
+        assert_eq!(at(&c, 80 + 34, 45), 0.0);
+        // Half a diagonal: 0.125 × √2 × 160 ≈ 28 px, both ways.
+        let d = generate_mask_matte(w, h, &one(MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.25, height: 0.25, rotation: 45.0 }));
+        assert_eq!(at(&d, 80 + 26, 45), 1.0);
+        assert_eq!(at(&d, 80, 45 + 26), 1.0);
+        assert_eq!(at(&d, 80, 45 + 31), 0.0);
+        assert_eq!(at(&d, 80 + 31, 45), 0.0);
+    }
+
     // ── SDF unit tests (shape_sdf directly) ──────────────────────────────
 
     /// Helper: evaluate shape_sdf with aspect=1 (square frame) for simplicity.
@@ -306,7 +332,7 @@ mod tests {
 
     #[test]
     fn sdf_circle_boundary_with_aspect_ratio() {
-        // With aspect = 0.5625 (16:9), the circle in pixel space is an ellipse.
+        // On 16:9, as round in pixels as on a square frame.
         // Boundary along x-axis: center_x + radius = 0.5 + 0.2 = 0.7
         let shape = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 };
         let d = sdf_aspect(0.7, 0.5, &shape, 0.5625);
