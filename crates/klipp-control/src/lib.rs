@@ -3697,11 +3697,11 @@ fn handle(
             // minute piece outran the tool's two minutes (#519).
             let (job, check) = std::thread::scope(|s| {
                 let check = s.spawn(|| handle(ctx, ControlCommand::Check { color: true }, &mut None));
-                let job = rendered();
+                // The render's own time, not the check's if that ends later.
+                let job = rendered().map(|j| (j, started.elapsed().as_secs_f64()));
                 (job, check.join().unwrap_or_else(|_| Err("the check stopped unexpectedly".into())))
             });
-            let job = job?;
-            let render_secs = started.elapsed().as_secs_f64();
+            let (job, render_secs) = job?;
             let check = check?;
             let frames = frames.unwrap_or(((duration / 2.0).ceil() as u32).clamp(8, 48));
             // The draft is small: its sheet is read on the CPU, as quick
