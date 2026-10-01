@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 fn socket_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("klipp-mcp-test-{}-{}.sock", std::process::id(),
+    // The pre-push gate gives tests a deep scratch path. Unix socket paths
+    // have a much smaller SUN_LEN limit, so use a short, unique path.
+    std::path::PathBuf::from("/tmp").join(format!("klipp-mcp-test-{}-{}.sock", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
 }
 
