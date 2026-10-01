@@ -100,6 +100,11 @@ fn install_native_crash_handler() {
 }
 
 fn main() -> Result<()> {
+    // A transcription worker, started by the app itself (#640): it does
+    // its one job and exits, before any of the app is set up.
+    if let Some(code) = klipp_ui::cli::transcription_worker() {
+        std::process::exit(code);
+    }
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
 
@@ -127,7 +132,10 @@ fn main() -> Result<()> {
             eprintln!("klipp: no option {opt}\n\n{}", klipp_ui::cli::USAGE);
             std::process::exit(2);
         }
-        klipp_ui::cli::Cli::Run(paths) => klipp_ui::cli::set_startup_paths(paths),
+        klipp_ui::cli::Cli::Run(paths) => {
+            klipp_ui::cli::set_startup_paths(paths);
+            klipp_ui::cli::use_transcription_worker();
+        }
     }
 
     // ── Auto-configured env vars ─────────────────────────────
