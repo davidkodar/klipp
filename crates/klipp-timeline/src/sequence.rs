@@ -325,6 +325,13 @@ impl Sequence {
         Some(change)
     }
 
+    /// Whether nothing is on the timeline: no enabled clip but gaps on any
+    /// track. An export of it is refused (#655): it rendered a 261-byte
+    /// file and called that a success.
+    pub fn has_nothing_to_export(&self) -> bool {
+        !self.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.enabled && !matches!(c.kind, ClipKind::Gap))
+    }
+
     /// The grade group `id`, if this sequence has it.
     pub fn grade_group(&self, id: GradeGroupId) -> Option<&GradeGroup> {
         self.grade_groups.iter().find(|g| g.id == id)
