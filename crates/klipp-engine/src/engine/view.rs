@@ -28,7 +28,7 @@ struct ViewerSource<'a> {
     /// The primary decoder's queue: its front is the frame after
     /// `primary`, for frame blending.
     primary_queue: Option<&'a SharedFrameQueue>,
-    streams: &'a ClipStreams,
+    streams: &'a mut ClipStreams,
     media_pool: &'a RwLock<MediaPool>,
 }
 
@@ -124,8 +124,32 @@ fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
 
+/// Reversed clips that start within a second of `time` while playing,
+/// at their first frame: their readers open and start decoding before the
+/// playhead reaches them, so the cut into one does not wait for a seek
+/// and a window's decode (#617).
+fn upcoming_reversed(seq: &Sequence, time: klipp_core::Timecode, playing: bool) -> Vec<Want> {
+    if !playing {
+        return Vec::new();
+    }
+    let (from, to) = (time.to_secs_f64(), time.to_secs_f64() + 1.0);
+    let fps = seq.fps.as_f64();
+    seq.tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled && c.is_reversed() && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
+        .filter_map(|c| Some(Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: true }))
+        .collect()
+}
+
 impl FrameSource for ViewerSource<'_> {
-    fn frame(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
+    fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        // A reversed clip is never the primary decoder's, and its frames
+        // are read at the time asked for (#617).
+        if clip.is_reversed() {
+            return self.streams.reversed_frame(clip, source_secs, width, height);
+        }
         self.held(clip.id).map(source_frame)
     }
 
@@ -205,6 +229,7 @@ impl PlaybackEngine {
     /// every media clip the frame needs besides the primary decoder's.
     pub(super) fn sync_streams(&mut self) {
         let time = self.playhead;
+        let playing = self.state == PlaybackState::Playing;
         let wants: Vec<Want> = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let primary = if self.v1_decoder.is_some() { self.v1_clip_id(&seq) } else { None };
@@ -220,8 +245,10 @@ impl PlaybackEngine {
                         media: c.media_id()?,
                         rotation: c.source_rotation,
                         source_secs: klipp_compose::render::source_secs(c, at, fps),
+                        reversed: c.is_reversed(),
                     })
                 })
+                .chain(upcoming_reversed(&seq, time, playing))
                 .collect()
         };
         // Files are resolved here, for new streams only: resolution logs.
@@ -466,7 +493,7 @@ impl PlaybackEngine {
         let mut src = ViewerSource {
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
-            streams: &self.streams,
+            streams: &mut self.streams,
             media_pool: &self.media_pool,
         };
         let opts = RenderOptions {
@@ -510,7 +537,7 @@ impl PlaybackEngine {
         let mut src = ViewerSource {
             primary,
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
-            streams: &self.streams,
+            streams: &mut self.streams,
             media_pool: &self.media_pool,
         };
         // HDR monitoring renders what the export writes: display light,

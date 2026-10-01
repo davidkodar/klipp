@@ -581,8 +581,9 @@ pub enum Op {
         window_feather: Option<f32>,
     },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
-    /// 1 slower and longer (0.5 is half speed); the clips after it on the
-    /// track keep their place, so a gap or an overlap is yours to close.
+    /// 1 slower and longer (0.5 is half speed); negative plays the clip
+    /// reversed, silent, at that magnitude (#617). The clips after it on
+    /// the track keep their place, so a gap or an overlap is yours to close.
     Retime {
         clip_id: ClipRef,
         speed: f64,
@@ -1095,8 +1096,10 @@ pub fn faces_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcrip
         for c in t.clips.iter().filter(|c| c.enabled && secs(c.timeline_in) < to && secs(c.timeline_out) > from) {
             let Some(item) = c.media_id().and_then(|id| pool.get(&id)) else { continue };
             let (lo, hi) = (from.max(secs(c.timeline_in)), to.min(secs(c.timeline_out)));
-            let file_at = |x: f64| secs(c.source_in) + (x - secs(c.timeline_in)) * c.speed.max(0.001);
-            let (f_lo, f_hi) = (file_at(lo) - 0.75, file_at(hi) + 0.75);
+            let file_at = |x: f64| c.source_secs_at(x - secs(c.timeline_in), seq.fps.as_f64());
+            // A reversed clip's file times fall as the timeline's rise.
+            let (a, b) = (file_at(lo), file_at(hi));
+            let (f_lo, f_hi) = (a.min(b) - 0.75, a.max(b) + 0.75);
             out.extend(transcripts.faces(item).into_iter().filter(|(s, _)| *s >= f_lo && *s <= f_hi).map(|(_, b)| b));
         }
     }
@@ -1699,7 +1702,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
         Op::Retime { clip_id, speed } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            retime(seq, pool, fps, i, ti, ci, clip, *speed)
+            let (what, edit, mut ids) = retime(seq, pool, fps, i, ti, ci, clip, *speed)?;
+            // The linked sound takes the same speed, so the pair stays the
+            // same length and in step, as the speed dialog keeps it (#617).
+            let partner = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).filter(|(_, _, p)| matches!(p.kind, ClipKind::Media { .. }));
+            match partner {
+                Some((pti, pci, p)) => {
+                    let (p_what, p_edit, p_ids) = retime(seq, pool, fps, i, pti, pci, p, *speed).map_err(|mut r| {
+                        r.why = format!("its linked {} cannot follow: {}", if seq.tracks[pti].kind == TrackKind::Audio { "sound" } else { "picture" }, r.why);
+                        r
+                    })?;
+                    ids.extend(p_ids);
+                    Ok((format!("{what}; with it, {p_what}"), EditCommand::Batch(vec![edit, p_edit]), ids))
+                }
+                None => Ok((what, edit, ids)),
+            }
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -2514,8 +2531,11 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
     if media_dur.is_some() && !clip.speed_keyframes.is_empty() {
         return Err(refuse(i, format!("{} has a speed ramp, so its trim has no one source edge", clip_name(seq, pool, clip)), "take the ramp off to trim it, or trim it by hand in the timeline"));
     }
+    // A reversed clip plays its range from the far end (#617): its
+    // timeline head is its source's end, and its tail its source's start.
+    let reversed = clip.is_reversed() && media_dur.is_some();
     let in_source = |delta: Timecode| -> Timecode {
-        let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
+        let speed = if clip.speed.is_finite() && clip.speed != 0.0 { clip.speed.abs() } else { 1.0 };
         if (speed - 1.0).abs() < 1e-9 {
             delta.rescale_to(clip.source_in.rate)
         } else {
@@ -2529,7 +2549,14 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
             }
             let delta = target - clip.timeline_in;
             let src_in = clip.source_in + in_source(delta);
-            if media_dur.is_none() {
+            if reversed {
+                let src_out = clip.source_out - in_source(delta);
+                if media_dur.is_some_and(|d| src_out > d) {
+                    return Err(refuse(i, format!("this clip plays reversed, and only {:.2} s of the file lies after its last frame", secs(media_dur.unwrap_or(clip.source_out) - clip.source_out)), "trim less, or move the clip instead"));
+                }
+                let tl = if ripple { (clip.timeline_in, clip.timeline_out - delta) } else { (target, clip.timeline_out) };
+                (tl.0, tl.1, clip.source_in, src_out)
+            } else if media_dur.is_none() {
                 // A title, generator or still has no source head
                 // to run out of: it starts when it is
                 // told to and is as long as its place on the track.
@@ -2551,13 +2578,21 @@ fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci
                 return Err(refuse(i, "the out point would pass the in point", "trim to a time after the clip's start"));
             }
             let delta = target - clip.timeline_out;
-            let src_out = clip.source_out + in_source(delta);
-            if let Some(d) = media_dur {
-                if src_out > d {
-                    return Err(refuse(i, format!("only {:.2} s of the file lies after this clip's out point", secs(d - clip.source_out)), "trim less, or place more of the file"));
+            if reversed {
+                let src_in = clip.source_in - in_source(delta);
+                if src_in.value < 0 {
+                    return Err(refuse(i, format!("this clip plays reversed, and only {:.2} s of the file lies before its first frame", secs(clip.source_in)), "trim less, or place more of the file"));
                 }
+                (clip.timeline_in, target, src_in, clip.source_out)
+            } else {
+                let src_out = clip.source_out + in_source(delta);
+                if let Some(d) = media_dur {
+                    if src_out > d {
+                        return Err(refuse(i, format!("only {:.2} s of the file lies after this clip's out point", secs(d - clip.source_out)), "trim less, or place more of the file"));
+                    }
+                }
+                (clip.timeline_in, target, clip.source_in, src_out)
             }
-            (clip.timeline_in, target, clip.source_in, src_out)
         }
     };
     if ripple {
@@ -4183,11 +4218,11 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: u
     if !matches!(clip.kind, ClipKind::Media { .. }) {
         return Err(refuse(i, format!("{} cannot be retimed", clip_name(seq, pool, clip)), "retime a media clip"));
     }
-    if !speed.is_finite() || !(0.1..=8.0).contains(&speed) {
-        return Err(refuse(i, format!("a speed of {speed}"), "give speed between 0.1 and 8"));
+    if !speed.is_finite() || !(0.1..=8.0).contains(&speed.abs()) {
+        return Err(refuse(i, format!("a speed of {speed}"), "give speed between 0.1 and 8, negative to play the clip reversed"));
     }
     let source_len = clip.source_out - clip.source_in;
-    let new_len_secs = crate::ops::secs(source_len) / speed;
+    let new_len_secs = crate::ops::secs(source_len) / speed.abs();
     let new_out = clip.timeline_in + snap(new_len_secs, fps);
     if new_out <= clip.timeline_in + one_frame(fps) {
         return Err(refuse(i, "the clip would be shorter than a frame", "use a smaller speed"));
@@ -4196,8 +4231,10 @@ fn retime(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: u
     let runs_into = seq.tracks[ti].clips.get(ci + 1).filter(|n| new_out > n.timeline_in).map(|n| clip_name(seq, pool, n));
     let old_out = clip.timeline_out;
     let what = format!(
-        "retime {} to {speed:.2}x (now {:.2}-{:.2} s){}",
+        "retime {} to {:.2}x{} (now {:.2}-{:.2} s){}",
         clip_name(seq, pool, clip),
+        speed.abs(),
+        if speed < 0.0 { " reversed, silent" } else { "" },
         crate::ops::secs(clip.timeline_in),
         crate::ops::secs(new_out),
         runs_into.map(|n| format!("; it now overlaps {n} — move or ripple to close it")).unwrap_or_default(),
@@ -5506,6 +5543,26 @@ mod tests {
         seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap().speed_keyframes = vec![klipp_core::Keyframe { time_secs: 0.0, value: 1.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
         let refused = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::In, to: Anchor::Secs(1.0), ripple: false, linked: false }]).unwrap_err();
         assert!(refused.why.contains("speed ramp"), "{}", refused.why);
+    }
+
+    /// #617: a reversed clip shows its range from the end, so its head
+    /// on the timeline is its source's end: trimming the in point takes
+    /// frames off the end of the range, the out point off its start.
+    #[test]
+    fn a_reversed_clip_trims_from_the_far_end_of_its_source() {
+        let (mut seq, pool, _, a, _) = fixture();
+        // Clip a reversed: 0-4 s on the timeline plays 6 s down to 2 s of the file.
+        let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == a).unwrap();
+        (clip.speed, clip.source_in, clip.source_out) = (-1.0, tc(2.0), tc(6.0));
+        clip.linked_clip_id = None;
+        let trim = |edge, to: f64| resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge, to: Anchor::Secs(to), ripple: false, linked: false }]).unwrap();
+        let head = &trim(Edge::In, 1.0).steps[0].after[0];
+        assert_eq!((head.timeline_in_secs, head.source_in_secs, head.source_out_secs), (1.0, 2.0, 5.0), "the head trim takes the range's end");
+        let tail = &trim(Edge::Out, 3.0).steps[0].after[0];
+        assert_eq!((tail.timeline_out_secs, tail.source_in_secs, tail.source_out_secs), (3.0, 3.0, 6.0), "the tail trim takes its start");
+        // Past the file's start is refused.
+        let refused = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(7.0), ripple: false, linked: false }]).unwrap_err();
+        assert!(refused.why.contains("reversed"), "{}", refused.why);
     }
 
     #[test]

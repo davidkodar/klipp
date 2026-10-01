@@ -559,9 +559,7 @@ fn hash_multicam(clip: &klipp_timeline::Clip, h: &mut impl std::hash::Hasher) {
 /// Dividing by the base speed put a frame of a ramped clip at the wrong
 /// playhead, and cached it there (#423).
 fn timeline_for_source(clip: &klipp_timeline::Clip, pts_secs: f64, fps: f64, rate: u32) -> RationalTime {
-    let source_elapsed = (pts_secs - clip.source_in.to_secs_f64()).max(0.0);
-    let elapsed = klipp_timeline::effective_timeline_duration_for_keyframes(&clip.speed_keyframes, source_elapsed, fps, clip.speed);
-    clip.timeline_in + RationalTime::from_secs_f64(elapsed, rate)
+    clip.timeline_in + RationalTime::from_secs_f64(clip.elapsed_for_source_secs(pts_secs, fps), rate)
 }
 
 fn timeline_layout_fingerprint(seq: &klipp_timeline::Sequence) -> u64 {
@@ -1619,7 +1617,9 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
             let clip = sounding.clip;
             // A multicam angle is heard where the group's sound rule
             // says, the rule the render gates the same clip by.
-            if !clip.enabled || !seq.multicam_sounds_at(clip, tc) {
+            // A reversed clip is silent (#617): its sound would have to be
+            // read backward too, and export leaves it out alike.
+            if !clip.enabled || clip.is_reversed() || !seq.multicam_sounds_at(clip, tc) {
                 continue;
             }
             let Some(media_id) = clip.media_id() else { continue };
@@ -3389,8 +3389,15 @@ impl PlaybackEngine {
                             }
                         }
                     }
+                    // The clip the primary decoder plays was reversed: it
+                    // cannot play it on, and hands over to the clock (#617).
+                    let now_reversed = self.v1_decoder.is_some()
+                        && seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).is_some_and(|c| c.is_reversed());
                     drop(seq);
-                    if speed_state_changed {
+                    if now_reversed {
+                        let at = self.playhead;
+                        self.seek_in_sequence(at);
+                    } else if speed_state_changed {
                         self.reset_ramp_anchor();
                     }
                 } else if under_playhead_changed {
@@ -3452,6 +3459,14 @@ impl PlaybackEngine {
             self.fps = seq.fps;
         }
 
+        // Only reversed clips' pictures here: nothing for the primary
+        // decoder, which reads forward. The renderer draws them from their
+        // own readers while the clock runs (#617).
+        if self.only_reversed_pictures_at(self.playhead) {
+            self.play_on_the_clock();
+            return;
+        }
+
         // Check if no media clip exists at playhead but a title or generator clip does
         {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -3459,7 +3474,7 @@ impl PlaybackEngine {
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .any(|track| {
                     track.clip_at_timecode(self.playhead)
-                        .map(|(_, c)| c.enabled && c.media_id().is_some())
+                        .map(|(_, c)| c.enabled && c.media_id().is_some() && !c.is_reversed())
                         .unwrap_or(false)
                 });
             let title_info = if !has_media_clip {
@@ -3572,7 +3587,7 @@ impl PlaybackEngine {
             .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|(track_idx, track)| {
                 // Check if playhead is on a non-gap clip
-                if let Some((idx, clip)) = track.clip_at_timecode(self.playhead) {
+                if let Some((idx, clip)) = track.clip_at_timecode(self.playhead).filter(|(_, c)| !c.is_reversed()) {
                     if let Some(media_id) = clip.media_id() {
                         let source_secs = klipp_compose::render::source_secs(clip, self.playhead, seq.fps.as_f64());
                         let clip_source_in = clip.source_in.to_secs_f64();
@@ -3580,7 +3595,7 @@ impl PlaybackEngine {
                     }
                 }
                 // Find next non-gap clip at or after playhead
-                for (idx, clip) in track.clips.iter().enumerate() {
+                for (idx, clip) in track.clips.iter().enumerate().filter(|(_, c)| !c.is_reversed()) {
                     if clip.timeline_in >= self.playhead {
                         if let Some(media_id) = clip.media_id() {
                             let si = clip.source_in.to_secs_f64();
@@ -3589,7 +3604,7 @@ impl PlaybackEngine {
                     }
                 }
                 // Fallback: first non-gap clip
-                for (idx, clip) in track.clips.iter().enumerate() {
+                for (idx, clip) in track.clips.iter().enumerate().filter(|(_, c)| !c.is_reversed()) {
                     if let Some(media_id) = clip.media_id() {
                         let si = clip.source_in.to_secs_f64();
                         return Some((track_idx, idx, media_id, si, clip.timeline_in, si, clip.speed, clip.source_rotation));
@@ -5331,6 +5346,19 @@ impl PlaybackEngine {
             return;
         }
 
+        // A reversed clip next: no decoder for it to take over, as for a
+        // gap; the clock runs on and the renderer draws it from its own
+        // reader (#617). A clip after it is taken over as after a gap.
+        if next_clip.is_reversed() {
+            self.retire_v1_decoder(old_clip);
+            let at = self.playhead;
+            self.enter_clock_only(at);
+            self.master_clock.resume();
+            let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+            self.sync_streams();
+            return;
+        }
+
         let timeline_in = next_clip.timeline_in;
         let next_clip_speed = next_clip.speed;
         let source_rotation = next_clip.source_rotation;
@@ -5796,9 +5824,58 @@ impl PlaybackEngine {
         self.clip_source_start = at.to_secs_f64();
         self.clip_timeline_start = at;
         self.clip_speed = 1.0;
+        // The clock counts timeline seconds here, at their own rate: a
+        // retimed clip before left it running at that clip's speed.
+        self.master_clock.set_speed(1.0);
         self.refresh_speed_keyframes();
         self.last_frame_time = std::time::Instant::now();
         self.master_clock.seek((at.to_secs_f64().max(0.0) * 1_000_000.0) as u64);
+    }
+
+    /// Whether the pictures at `tc` are reversed clips and nothing the
+    /// primary decoder plays: there is a reversed clip on a picture track,
+    /// and no forward media clip on any (#617).
+    fn only_reversed_pictures_at(&self, tc: Timecode) -> bool {
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let mut reversed = false;
+        for track in seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text)) {
+            if let Some((_, c)) = track.clip_at_timecode(tc).filter(|(_, c)| c.enabled && c.media_id().is_some()) {
+                if !c.is_reversed() {
+                    return false;
+                }
+                reversed = true;
+            }
+        }
+        reversed
+    }
+
+    /// Play from the playhead on the clock alone, the renderer drawing
+    /// each frame: where the pictures are reversed clips (#617).
+    fn play_on_the_clock(&mut self) {
+        let at = self.playhead;
+        info!("handle_play: reversed clips at {:.3}s, playing on the clock", at.to_secs_f64());
+        self.enter_clock_only(at);
+        self.present_frame(None);
+        self.start_all_audio(at);
+        if let Some(aout) = &self.audio_output {
+            aout.0.pause();
+        }
+        for active in &self.audio_sources {
+            active.source.resume();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        if let Some(aout) = &self.audio_output {
+            aout.0.resume();
+        }
+        self.master_clock.resume();
+        self.state = PlaybackState::Playing;
+        self.sync_streams();
+        self.dropped_frames = 0;
+        self.frames_consumed = 0;
+        self.last_playback_log = std::time::Instant::now();
+        self.last_frame_time = std::time::Instant::now();
+        let _ = self.event_tx.send(AppEvent::PlaybackStarted);
+        (self.repaint_cb)();
     }
 
     /// A tick of clock-only playback: the playhead follows the clock; a
@@ -5821,7 +5898,8 @@ impl PlaybackEngine {
             seq.tracks
                 .iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .any(|t| t.clip_at_timecode(tc).is_some_and(|(_, c)| c.media_id().is_some() || c.title_data().is_some() || c.generator_data().is_some()))
+                // A reversed clip's picture is drawn on the clock (#617).
+                .any(|t| t.clip_at_timecode(tc).is_some_and(|(_, c)| (c.media_id().is_some() && !c.is_reversed()) || c.title_data().is_some() || c.generator_data().is_some()))
         };
         if picture_here {
             let tc = self.playhead;
@@ -6066,7 +6144,7 @@ impl PlaybackEngine {
                 let clip_info = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                     .find_map(|track| {
-                        track.clip_at_timecode(target).and_then(|(idx, clip)| {
+                        track.clip_at_timecode(target).filter(|(_, c)| !c.is_reversed()).and_then(|(idx, clip)| {
                             let media_id = clip.media_id()?;
                             let source_secs = klipp_compose::render::source_secs(clip, target, seq.fps.as_f64());
                             let clip_source_in = clip.source_in.to_secs_f64();
@@ -6105,6 +6183,9 @@ impl PlaybackEngine {
                     }
                     source_secs
                 } else {
+                    // No picture for the primary decoder there — a gap, or
+                    // only reversed clips (#617): the clock plays it.
+                    self.enter_clock_only(target);
                     target.to_secs_f64()
                 };
 
@@ -6143,7 +6224,7 @@ impl PlaybackEngine {
         let clip_info = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
-                track.clip_at_timecode(target).and_then(|(idx, clip)| {
+                track.clip_at_timecode(target).filter(|(_, c)| !c.is_reversed()).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
                     let source_secs = klipp_compose::render::source_secs(clip, target, seq.fps.as_f64());
                     let clip_source_in = clip.source_in.to_secs_f64();
@@ -6271,8 +6352,9 @@ impl PlaybackEngine {
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
             (self.repaint_cb)();
         } else {
-            // No video clip at target — audio-only loop
-            self.v1_decoder = None;
+            // No video clip at target — audio-only loop, or reversed
+            // clips drawn on the clock (#617).
+            self.enter_clock_only(target);
 
             self.master_clock.pause();
             if let Some(aout) = &self.audio_output { aout.0.pause(); }
@@ -6375,7 +6457,9 @@ impl PlaybackEngine {
         let clip_info = seq.tracks.iter().enumerate().rev()
             .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|(ti, track)| {
-                track.clip_at_timecode(tc).and_then(|(idx, clip)| {
+                // A reversed clip is drawn from its own reader, never the
+                // primary decoder's (#617).
+                track.clip_at_timecode(tc).filter(|(_, c)| !c.is_reversed()).and_then(|(idx, clip)| {
                     let media_id = clip.media_id()?;
                     let source_secs = klipp_compose::render::source_secs(clip, tc, seq.fps.as_f64());
                     let clip_source_in = clip.source_in.to_secs_f64();
@@ -6617,6 +6701,15 @@ impl PlaybackEngine {
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
             // Keep decoder filling the queue for future steps
             self.prefetch_ahead();
+            return;
+        }
+
+        // Nothing for the primary decoder to step through — only reversed
+        // clips there (#617), or no decoder at all: the next position is
+        // rendered as a seek renders it.
+        let target_tc = RationalTime { value: target_frame, rate: self.playhead.rate };
+        if self.v1_decoder.is_none() || self.only_reversed_pictures_at(target_tc) {
+            self.seek_in_sequence(target_tc);
             return;
         }
 
@@ -7277,9 +7370,7 @@ impl PlaybackEngine {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let found = seq.tracks.iter().find_map(|track| {
                 track.clips.iter().find(|c| c.id == clip_id).map(|c| {
-                    let speed = c.speed.max(0.001);
-                    let clip_t = c.source_in.to_secs_f64()
-                        + (playhead - c.timeline_in).to_secs_f64() * speed;
+                    let clip_t = c.source_secs_at((playhead - c.timeline_in).to_secs_f64(), self.fps.as_f64());
                     (c.node_graph.clone(), c.track_points.clone(), clip_t.max(0.0))
                 })
             });

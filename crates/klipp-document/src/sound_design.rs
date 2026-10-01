@@ -100,12 +100,11 @@ fn placements_with_lengths(
         for c in &clips {
             let Some(media) = c.media_id() else { continue };
             let (s_in, s_out) = (c.source_in.to_secs_f64(), c.source_out.to_secs_f64());
-            let speed = c.speed.max(0.001);
             for r in reveals_of(media) {
                 if r <= s_in || r >= s_out {
                     continue;
                 }
-                let t = c.timeline_in.to_secs_f64() + (r - s_in) / speed;
+                let t = c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(r, seq.fps.as_f64());
                 if cuts.iter().any(|cut| (cut - t).abs() < 0.5) || last.is_some_and(|l| t - l < 1.5) {
                     continue;
                 }
