@@ -95,6 +95,7 @@ fn main() {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "klipp", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": INSTRUCTIONS,
                 }
             }),
             "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
@@ -146,11 +147,13 @@ fn main() {
 /// on every Klipp restart — which, during development, is constant.
 fn control_call(command: Value) -> Result<Value, String> {
     let path = klipp_control::protocol::socket_path();
+    // Said so it can be passed on as it is: what the person should do
+    // first, the detail after (#626).
     let stream = UnixStream::connect(&path).map_err(|e| {
         format!(
-            "cannot reach Klipp on {}: {e}. Is Klipp running? \
-             (the socket appears once the app has started; \
-             KLIPP_CONTROL=0 disables it entirely)",
+            "Klipp does not seem to be running: start Klipp, then try again. \
+             (Technical detail: no answer on {}: {e}. The connection opens once \
+             the app has started; KLIPP_CONTROL=0 turns it off.)",
             path.display(),
         )
     })?;
@@ -761,6 +764,18 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
 const GUIDE: &str = include_str!("../../../assets/craft/guide.md");
 const CRAFT: &str = include_str!("../../../assets/craft/reference.md");
 const RECIPES: &str = include_str!("../../../assets/craft/recipes.md");
+/// What a person can do here, for answering them when they ask (#626).
+const ABILITIES: &str = include_str!("../../../assets/craft/abilities.md");
+
+/// Sent with `initialize`, which clients put before the model in every
+/// session: how to answer the two things a person asks first (#626).
+const INSTRUCTIONS: &str = "Klipp is a video editor running on this computer; these tools work in the open project.
+
+When the person asks whether Klipp is connected, open or working: call klipp_status (it reads and changes nothing) and answer from its text, in plain words: yes or no first, then the version, the open project and whether it is saved, the timeline, and the playhead, then say that nothing was changed. No socket paths, ids or JSON. If the call fails, say Klipp does not seem to be running and to start it and ask again.
+
+When the person asks what they can do with Klipp, what you can do in it, or how to start: read klipp_guide with topic abilities and answer from it, short and in their words: a sentence on what working together looks like, the groups that fit with an example request each, then one first step that fits what is open (read with klipp_status). No tool names.
+
+Before editing, read klipp_guide (topic guide) for how to work here.";
 
 fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
     if name == "klipp_guide" {
@@ -769,8 +784,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Vec<Value>, String> {
             "guide" => GUIDE.to_string(),
             "craft" => CRAFT.to_string(),
             "recipes" => RECIPES.to_string(),
+            "abilities" => ABILITIES.to_string(),
             "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}"),
-            other => return Err(format!("unknown topic {other}; use guide, craft, recipes or all")),
+            other => return Err(format!("unknown topic {other}; use guide, craft, recipes, abilities or all")),
         };
         return Ok(vec![json!({ "type": "text", "text": text })]);
     }
@@ -869,6 +885,18 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             return Ok(with_next(out));
         }
     }
+    // The plain summary first, as a person is told it; the fields after
+    // for the agent's own use (#626).
+    if name == "klipp_status" {
+        if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
+            let mut rest = result.clone();
+            if let Some(o) = rest.as_object_mut() {
+                o.remove("text");
+            }
+            let out = format!("{text}\n\nDetails:\n{}", serde_json::to_string_pretty(&rest).unwrap_or_default());
+            return Ok(vec![json!({ "type": "text", "text": out })]);
+        }
+    }
     if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             return Ok(with_next(text.to_string()));
@@ -947,13 +975,15 @@ fn tool_definitions() -> Vec<Value> {
               craft reference (what a professional does without being asked), and the \
               recipes (worked plans for an interview with B-roll, a social cut-down, a \
               montage). Files the user can read and change.",
-             json!({ "topic": { "type": "string", "description": "guide (default), craft, recipes, or all" } }),
+             json!({ "topic": { "type": "string", "description": "guide (default), craft, recipes, abilities (what a person can do here, for answering them when they ask), or all" } }),
              vec![]),
         tool("klipp_status",
-             "Which build is running (commit, dirty, when it was built, and whether \
-              a newer build is on disk so a restart is due), transport state, \
-              timeline summary, viewer resolution and the latest performance sample \
-              from the running Klipp instance. Start here.",
+             "Whether Klipp is there and what is open, read live without changing anything: \
+              first a plain summary to tell a person who asks whether Klipp is connected \
+              (version, project and whether it is saved, timeline, playhead, media), then \
+              the details: the build (commit, dirty, when it was built, and whether a newer \
+              build is on disk so a restart is due), transport state, timeline summary, \
+              viewer resolution and the latest performance sample. Start here.",
              json!({}), vec![]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),
@@ -2077,6 +2107,32 @@ fn tool_definitions() -> Vec<Value> {
              }),
              vec![]),
     ]
+}
+
+#[cfg(test)]
+mod friendly_answer_tests {
+    use super::*;
+
+    /// #626: a status reply leads with the plain summary a person is told,
+    /// the fields after it; the guide answers "what can I do"; and the
+    /// server tells the client how to answer both questions.
+    #[test]
+    fn the_first_answers_are_in_a_persons_words() {
+        let reply = json!({ "text": "Klipp 0.1.0 is running (build abc).\nProject: \u{201c}Trip\u{201d}, all changes saved.", "revision": 3, "clips": 0 });
+        let content = content_for("klipp_status", &reply).unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.starts_with("Klipp 0.1.0 is running"), "{text}");
+        assert!(text.contains("Details:") && text.contains("\"revision\": 3") && !text.contains("\"text\""), "{text}");
+
+        let abilities = call_tool("klipp_guide", &json!({ "topic": "abilities" })).unwrap();
+        let abilities = abilities[0]["text"].as_str().unwrap();
+        assert!(abilities.starts_with("# What you can do in Klipp"), "{abilities}");
+        assert!(!abilities.contains("klipp_apply"), "no tool names a person would have to read");
+
+        for asked in ["klipp_status", "klipp_guide with topic abilities", "nothing was changed", "No tool names"] {
+            assert!(INSTRUCTIONS.contains(asked), "the instructions say {asked:?}");
+        }
+    }
 }
 
 #[cfg(test)]
