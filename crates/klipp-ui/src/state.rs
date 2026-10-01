@@ -1662,6 +1662,11 @@ pub struct AppState {
     // Scene (shot-boundary) detection state
     pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub scene_detect_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// Detections that split their clip when they finish (Detect Scene
+    /// Cuts) rather than marking it (#616).
+    pub scene_split_pending: std::collections::HashSet<klipp_core::ClipId>,
+    /// Set to stop a running detection; its thread reads it each frame.
+    pub scene_detect_cancel: std::collections::HashMap<klipp_core::ClipId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
 
     // Audio spectrum analyser — shared PCM ring fed by the mix thread,
     // plus the latest FFT magnitude bins (dBFS, log-frequency) rendered by
@@ -3828,6 +3833,8 @@ impl Default for AppState {
             stabilization_progress: std::collections::HashMap::new(),
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
+            scene_split_pending: std::collections::HashSet::new(),
+            scene_detect_cancel: std::collections::HashMap::new(),
             spectrum_ring: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             spectrum_bins: vec![-96.0f32; 256],
             spectrum_sample_rate: 48000,
@@ -4192,6 +4199,31 @@ impl Default for AppState {
             viewer_text_cursor_font_size: None,
             viewer_text_cursor_color: None,
         }
+    }
+}
+
+impl AppState {
+    /// Why the clip cannot have its scene cuts found and split (#616):
+    /// not a clip of moving picture whose file is here, or on a locked
+    /// track. `None` when it can.
+    pub fn scene_cut_refusal(&self, clip_id: klipp_core::ClipId) -> Option<&'static str> {
+        let seq = self.sequence();
+        let Some(track) = seq.tracks.iter().find(|t| t.find_clip(clip_id).is_some()) else { return Some("the clip is gone") };
+        let clip = track.find_clip(clip_id)?;
+        if track.kind != klipp_timeline::TrackKind::Video || !matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
+            return Some("only a video clip has scenes to find");
+        }
+        if track.locked {
+            return Some("its track is locked");
+        }
+        let Some(item) = clip.media_id().and_then(|m| self.media_pool.get(&m)) else { return Some("its media is not in the pool") };
+        if item.is_still || item.video_codec.is_empty() {
+            return Some("a still or a sound has no scene cuts");
+        }
+        if item.offline || !item.path.exists() {
+            return Some("its file is offline");
+        }
+        None
     }
 }
 

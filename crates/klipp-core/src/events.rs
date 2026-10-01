@@ -2916,6 +2916,10 @@ pub enum AppCommand {
 
     // Scene (shot-boundary) detection
     DetectScenes { clip_id: ClipId },
+    /// Timeline → Detect Scene Cuts (#616): find the picture changes in
+    /// the clip's part of its file and split it there, its linked sound
+    /// with it, as one undoable edit. No markers are left behind.
+    DetectSceneCuts { clip_id: ClipId },
     CancelSceneDetect { clip_id: ClipId },
     /// Razor-split a clip at every scene marker it carries, atomically.
     /// Undo restores the original single clip in one step.
