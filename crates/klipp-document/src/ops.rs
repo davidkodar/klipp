@@ -388,6 +388,31 @@ pub enum Op {
     /// music bed and a sound effect are told from speech by this, so
     /// they are never taken for speech and speech is never ducked.
     Role { clip_id: ClipRef, role: String },
+    /// A clip seen only through another (#677), a track matte: footage
+    /// inside the letters of a title, or inside a shape. `source` is
+    /// the clip it shows through; left out, the clip above it at its
+    /// time, on a picture or text track. `channel` is "auto" (a
+    /// title's alpha, anything else its luma), "alpha" or "luma".
+    /// `invert` shows it everywhere but there; `feather_px` softens and
+    /// `choke_px` shrinks the edge. The source is hidden from the
+    /// picture unless `show_source`. `clear` takes the matte off.
+    Matte {
+        clip_id: ClipRef,
+        #[serde(default)]
+        source: Option<ClipRef>,
+        #[serde(default)]
+        channel: Option<String>,
+        #[serde(default)]
+        invert: bool,
+        #[serde(default)]
+        feather_px: f32,
+        #[serde(default)]
+        choke_px: f32,
+        #[serde(default)]
+        show_source: bool,
+        #[serde(default)]
+        clear: bool,
+    },
     /// The sequence's picture size, and its rate when given: what the
     /// delivery is. The picture is fitted, never stretched. The brief's
     /// size, when the footage is another.
@@ -761,6 +786,11 @@ pub enum Op {
         /// `{"left": 0.3}` (#592).
         #[serde(default)]
         edge_fade: Option<klipp_core::title_motion::EdgeFade>,
+        /// The words are a window for footage (a `matte` source, #677),
+        /// not text read over the shot: they may cover a face, and stay
+        /// where they are put.
+        #[serde(default)]
+        over_faces: bool,
     },
     /// Compose a picture into the frame rather than letting it fill the
     /// frame: `x`,`y` is where its centre sits and `width`,`height` how
@@ -1668,6 +1698,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let what = format!("{} is {}", clip_name(seq, pool, clip), role.trim().to_lowercase());
             Ok((what, EditCommand::SetClipRole { clip_id: clip.id, old: clip.role, new }, vec![clip.id]))
         }
+        Op::Matte { clip_id, source, channel, invert, feather_px, choke_px, show_source, clear } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            matte(seq, pool, fps, i, ti, clip, MatteAsk { source: source.as_ref(), channel: channel.as_deref(), invert: *invert, feather_px: *feather_px, choke_px: *choke_px, show_source: *show_source, clear: *clear })
+        }
         Op::Format { width, height, fps: rate } => {
             if *width < 16 || *height < 16 || *width > 16384 || *height > 16384 {
                 return Err(refuse(i, format!("{width}x{height} is not a picture size"), "give the delivery's width and height in pixels"));
@@ -1809,7 +1843,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
-        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade } => {
+        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade , over_faces } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             // The look the style names fills what the op leaves out.
             let look = match style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1824,7 +1858,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 .map_err(|e| refuse(i, format!("title motion (style {:?}): {e}", look.name), "correct the effective title motion or its inherited style"))?;
             let full_frame_color = full_frame.clone().or_else(|| look.full_frame.filter(|f| *f).map(|_| look.fill.clone().unwrap_or_else(|| "#101418".into())));
             let backing_color = backing_color.clone().or_else(|| if look.full_frame.unwrap_or(false) { None } else { look.fill.clone() });
-            let keep_out = faces_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs);
+            let keep_out = if *over_faces { Vec::new() } else { faces_under(seq, pool, transcripts, crate::ops::secs(at), crate::ops::secs(at) + *secs) };
             let args = TitleArgs {
                 keep_out,
                 text, secs: *secs, track: track.as_ref(), x: x.or(look.x), y: y.or(look.y), size: size.or(look.size),
@@ -2468,6 +2502,112 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         new_linked_state: None,
     };
     Ok((what, edit, vec![music.id]))
+}
+
+/// What a [`Op::Matte`] asks for, past the clip it is on.
+struct MatteAsk<'a> {
+    source: Option<&'a ClipRef>,
+    channel: Option<&'a str>,
+    invert: bool,
+    feather_px: f32,
+    choke_px: f32,
+    show_source: bool,
+    clear: bool,
+}
+
+/// [`Op::Matte`]: `clip` bound to its source as the app's "Use clip
+/// above as matte" binds it, the consumer and the source each replaced
+/// whole, as one undo step.
+fn matte(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, ask: MatteAsk) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let named = |c: &Clip| match &c.kind {
+        ClipKind::Title(td) => format!("the title \"{}\"", td.text().lines().collect::<Vec<_>>().join(" / ")),
+        _ => clip_name(seq, pool, c),
+    };
+    let find = |id: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
+    if ask.clear {
+        let Some(binding) = &clip.matte_source else {
+            return Err(refuse(i, format!("{} has no matte", clip_name(seq, pool, clip)), "nothing to clear"));
+        };
+        let mut new = clip.clone();
+        new.matte_source = None;
+        let mut edits = vec![EditCommand::ReplaceClip { description: "Clear Matte", old: Box::new(clip.clone()), new: Box::new(new) }];
+        let mut touched = vec![clip.id];
+        // The source back in the picture, unless another clip still
+        // shows through it.
+        let shared = seq.tracks.iter().flat_map(|t| t.clips.iter()).any(|c| c.id != clip.id && c.matte_source.as_ref().is_some_and(|b| b.source_clip_id == binding.source_clip_id));
+        if let Some(src) = find(binding.source_clip_id).filter(|s| s.consumed_as_matte && !shared) {
+            let mut shown = src.clone();
+            shown.consumed_as_matte = false;
+            edits.push(EditCommand::ReplaceClip { description: "Clear Matte", old: Box::new(src.clone()), new: Box::new(shown) });
+            touched.push(src.id);
+        }
+        let what = format!("{} no longer shown through a matte", clip_name(seq, pool, clip));
+        return Ok((what, EditCommand::Named { label: "Clear Matte".into(), edit: Box::new(EditCommand::Batch(edits)) }, touched));
+    }
+    if seq.tracks[ti].kind == TrackKind::Audio {
+        return Err(refuse(i, format!("{} is sound", clip_name(seq, pool, clip)), "a matte is on a picture clip"));
+    }
+    let source: &Clip = match ask.source {
+        Some(r) => resolve_clip(seq, fps, r, i)?.2,
+        // Above on screen is a lower track index; the nearest that
+        // overlaps the clip in time, passing over empty tracks.
+        None => (0..ti)
+            .rev()
+            .filter(|&k| matches!(seq.tracks[k].kind, TrackKind::Video | TrackKind::Text))
+            .find_map(|k| seq.tracks[k].clips.iter().find(|c| c.enabled && c.timeline_in < clip.timeline_out && c.timeline_out > clip.timeline_in))
+            .ok_or_else(|| refuse(i, format!("nothing above {} to show it through", clip_name(seq, pool, clip)), "put a title (or a shape) on a track above it first, over the same time, or name the source"))?,
+    };
+    if source.id == clip.id {
+        return Err(refuse(i, "a clip cannot be its own matte", "name another clip as the source"));
+    }
+    if matches!(source.kind, ClipKind::AdjustmentLayer) {
+        return Err(refuse(i, "an adjustment layer has no picture of its own to show through", "use a title, a shape or a picture clip"));
+    }
+    // A chain of mattes that leads back to the clip would never draw.
+    let mut at = Some(source);
+    let mut hops = 0;
+    while let Some(c) = at {
+        if c.id == clip.id || hops > 64 {
+            return Err(refuse(i, format!("{} is already shown through {}", named(source), clip_name(seq, pool, clip)), "a matte cannot loop back to itself"));
+        }
+        at = c.matte_source.as_ref().and_then(|b| find(b.source_clip_id));
+        hops += 1;
+    }
+    let channel = match ask.channel.map(|c| c.trim().to_lowercase()).as_deref() {
+        None | Some("auto") => {
+            if matches!(source.kind, ClipKind::Title(_)) {
+                klipp_nodes::params::MatteChannel::Alpha
+            } else {
+                klipp_nodes::params::MatteChannel::Luminance
+            }
+        }
+        Some("alpha") => klipp_nodes::params::MatteChannel::Alpha,
+        Some("luma") | Some("luminance") => klipp_nodes::params::MatteChannel::Luminance,
+        Some(other) => return Err(refuse(i, format!("\"{other}\" is not a matte channel"), "use auto, alpha or luma")),
+    };
+    for (name, v) in [("feather_px", ask.feather_px), ("choke_px", ask.choke_px)] {
+        if !(0.0..=500.0).contains(&v) {
+            return Err(refuse(i, format!("{name} {v} is out of range"), "give 0 to 500 pixels"));
+        }
+    }
+    let mut new = clip.clone();
+    new.matte_source = Some(klipp_timeline::MatteBinding { source_clip_id: source.id, channel, invert: ask.invert, feather_px: ask.feather_px, choke_px: ask.choke_px });
+    let mut edits = vec![EditCommand::ReplaceClip { description: "Matte", old: Box::new(clip.clone()), new: Box::new(new) }];
+    if source.consumed_as_matte == ask.show_source {
+        let mut hidden = source.clone();
+        hidden.consumed_as_matte = !ask.show_source;
+        edits.push(EditCommand::ReplaceClip { description: "Matte", old: Box::new(source.clone()), new: Box::new(hidden) });
+    }
+    let channel_word = if channel == klipp_nodes::params::MatteChannel::Alpha { "its shape" } else { "its brightness" };
+    let what = format!(
+        "{} shown {} {} ({channel_word}{}){}",
+        clip_name(seq, pool, clip),
+        if ask.invert { "everywhere but through" } else { "only through" },
+        named(source),
+        if ask.feather_px > 0.0 { format!(", edge softened {:.0} px", ask.feather_px) } else { String::new() },
+        if ask.show_source { ", which still shows itself" } else { ", which is hidden from the picture" },
+    );
+    Ok((what, EditCommand::Named { label: "Matte".into(), edit: Box::new(EditCommand::Batch(edits)) }, vec![clip.id, source.id]))
 }
 
 /// [`Op::Volume`]: the clip's volume keyframes, from levels at timeline
@@ -4779,7 +4919,7 @@ fn style(
     if *look == Look::default() {
         return Err(refuse(i, "nothing to change", "give size, color, font, bold, align, x, y, backing or outline"));
     }
-    for (name, v, lo, hi) in [("size", look.size, 6.0, 400.0), ("x", look.x, 0.0, 1.0), ("y", look.y, 0.0, 1.0), ("backing", look.backing, 0.0, 1.0), ("outline", look.outline, 0.0, 40.0)] {
+    for (name, v, lo, hi) in [("size", look.size, 6.0, 1000.0), ("x", look.x, 0.0, 1.0), ("y", look.y, 0.0, 1.0), ("backing", look.backing, 0.0, 1.0), ("outline", look.outline, 0.0, 40.0)] {
         if let Some(v) = v {
             if !v.is_finite() || v < lo || v > hi {
                 return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
@@ -4989,8 +5129,10 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     // object once the title is made.
     let mut fx = klipp_timeline::LayerFx::default();
     if let Some(s) = a.size {
-        if !s.is_finite() || !(4.0..=400.0).contains(&s) {
-            return Err(refuse(i, format!("size {s} is out of range"), "give size between 4 and 400"));
+        // To 1000, as far as the viewer drags it: a word that fills the
+        // frame, with footage inside it, wants about that (#677).
+        if !s.is_finite() || !(4.0..=1000.0).contains(&s) {
+            return Err(refuse(i, format!("size {s} is out of range"), "give size between 4 and 1000"));
         }
         tb.font_size = s;
     }
@@ -5374,7 +5516,7 @@ mod tests {
             }
         }
         let (seq, pool, media, _, _) = fixture();
-        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
         let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -5394,7 +5536,7 @@ mod tests {
     fn a_title_rolls_as_credits_or_crawls_as_a_ticker() {
         let (seq, pool, _, _, _) = fixture();
         let looped = |name: &str| {
-            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
+            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
             let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -5423,7 +5565,7 @@ mod tests {
 
         let (mut seq, pool, _, _, _) = fixture();
         seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
-        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
+        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -5527,7 +5669,7 @@ mod tests {
             type_styles: vec![TypeStyle { name: "kicker".into(), size: Some(28.0), y: Some(0.12), color: Some("#ff6600".into()), animate: Some("drop".into()), ..Default::default() }],
             ..Default::default()
         });
-        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None };
+        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), None)]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
@@ -5953,6 +6095,53 @@ mod tests {
             c.role = klipp_core::ClipRole::Voiceover;
         }
         assert!(duck(&vo, &Said(vec![])).unwrap().steps[0].what.contains("0.00-8.00"));
+    }
+
+    /// #677: footage inside a word. A title over the first clip, then a
+    /// matte with no source, in one plan: the clip shows only through
+    /// the title's shape, the title is hidden, and both are one undo
+    /// step. Undo takes it back; `clear` takes the matte off and shows
+    /// the title again. Refused: nothing above, a loop, a bad channel,
+    /// a matte on sound.
+    #[test]
+    fn footage_goes_inside_a_title() {
+        let (seq, pool, _, a, b) = fixture();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            { "op": "title", "text": "CITY", "at": { "secs": 0.0 }, "secs": 4.0, "size": 300, "bold": true },
+            { "op": "matte", "clip_id": a.0.to_string() }
+        ])).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[1].what.contains("only through the title \"CITY\"") && plan.steps[1].what.contains("hidden"), "{}", plan.steps[1].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let done = view.sequences[0].clone();
+        let all = || done.tracks.iter().flat_map(|t| t.clips.iter());
+        let title = all().find(|c| matches!(c.kind, ClipKind::Title(_))).unwrap();
+        let shown = all().find(|c| c.id == a).unwrap();
+        let binding = shown.matte_source.as_ref().expect("bound");
+        assert_eq!((binding.source_clip_id, binding.channel), (title.id, klipp_nodes::params::MatteChannel::Alpha), "a title's shape");
+        assert!(title.consumed_as_matte, "the title is not drawn itself");
+        assert_eq!(plan.steps[1].edit.label(), "Matte", "one undo step");
+        // Undone, as it was.
+        view.apply_inverse(&plan.steps[1].edit);
+        assert!(view.sequences[0].tracks.iter().flat_map(|t| t.clips.iter()).all(|c| c.matte_source.is_none() && !c.consumed_as_matte));
+        view.apply_forward(&plan.steps[1].edit);
+        // Cleared: the title comes back.
+        let cleared = resolve(&done, &pool, &[serde_json::from_value(serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "clear": true })).unwrap()]).unwrap();
+        view.apply_forward(&cleared.steps[0].edit);
+        assert!(view.sequences[0].tracks.iter().flat_map(|t| t.clips.iter()).all(|c| c.matte_source.is_none() && !c.consumed_as_matte));
+        // Refused.
+        let one = |seq: &Sequence, v: serde_json::Value| resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]);
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": b.0.to_string() })).unwrap_err().why.contains("nothing above"), "the title is over the first clip only");
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "channel": "red" })).unwrap_err().why.contains("not a matte channel"));
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": title.id.0.to_string(), "source": a.0.to_string() })).unwrap_err().hint.contains("loop"));
+        let sound = done.tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().clips[0].id;
+        assert!(one(&done, serde_json::json!({ "op": "matte", "clip_id": sound.0.to_string() })).unwrap_err().why.contains("is sound"));
+        assert!(one(&seq, serde_json::json!({ "op": "matte", "clip_id": a.0.to_string(), "clear": true })).unwrap_err().why.contains("has no matte"));
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the
@@ -6690,7 +6879,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
-        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false }]).is_err());
     }
 
     /// #237: clips put in a grade group; a look on its post-clip grade

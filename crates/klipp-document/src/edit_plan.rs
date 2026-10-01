@@ -402,6 +402,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         animate: motion.animate, enter: motion.enter, exit: motion.exit,
         animate_secs: motion.animate_secs, stagger: motion.stagger,
         loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None, roll_shape: None, edge_fade: None,
+        over_faces: false,
     }
 }
 

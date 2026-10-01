@@ -95,6 +95,9 @@ answer from here, in their words, and short:
 
 - Titles, lower thirds with names and roles, animated text and cards.
   *"Add her name and title when she first speaks."*
+- Footage inside text, or inside any shape: the picture plays through
+  the letters of a big word.
+  *"Put the city shot inside the word CITY."*
 - Captions from the speech, which you can read and correct; subtitles
   exported as a file.
 
