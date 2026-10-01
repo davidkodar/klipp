@@ -849,20 +849,31 @@ mod look_name_tests {
     }
 }
 
-/// The picture clip at `tc`, top track first, whose file is missing,
-/// said as "<clip> is offline: <path> is not there" (#657).
+/// When nothing at `tc` can be drawn because every picture there is a
+/// file that is missing: the first of them, said as "<clip> is offline:
+/// <path> is not there" (#657). One missing layer under another that is
+/// there still gives a frame — the engine draws what opens — and is not
+/// a reason to refuse one.
 fn offline_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: klipp_core::Timecode) -> Option<String> {
-    seq.tracks
+    let clips: Vec<&klipp_timeline::Clip> = seq
+        .tracks
         .iter()
         .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
         .filter_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))
-        .filter(|c| c.enabled)
-        .find_map(|c| {
-            let item = pool.get(&c.media_id()?)?;
-            // A ready proxy still gives a picture.
-            let proxy = item.proxy_ready && item.proxy_path.as_ref().is_some_and(|p| p.exists());
-            ((item.offline || !item.path.exists()) && !proxy).then(|| format!("{} is offline: {} is not there", item.filename, item.path.display()))
-        })
+        .filter(|c| c.enabled && !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+        .collect();
+    // A clip's file that is missing, with no ready proxy to stand in.
+    let missing = |c: &klipp_timeline::Clip| -> Option<String> {
+        let item = pool.get(&c.media_id()?)?;
+        let proxy = item.proxy_ready && item.proxy_path.as_ref().is_some_and(|p| p.exists());
+        ((item.offline || !item.path.exists()) && !proxy).then(|| format!("{} is offline: {} is not there", item.filename, item.path.display()))
+    };
+    // Anything there that draws — a file that is there, a title, a
+    // generator — and the frame is not refused.
+    if clips.is_empty() || clips.iter().any(|c| missing(c).is_none()) {
+        return None;
+    }
+    clips.iter().find_map(|c| missing(c))
 }
 
 #[cfg(test)]
@@ -889,6 +900,12 @@ mod offline_frame_tests {
         let said = offline_picture_at(&seq, &pool, tc(1.0)).expect("the missing file is named");
         assert!(said.contains("/nowhere/gone.mov") && said.contains("offline"), "{said}");
         assert_eq!(offline_picture_at(&seq, &pool, tc(3.0)), None);
+        // An online clip on a track above the gone one draws: the frame is
+        // not refused for the layer under it (#660 review).
+        let mut top = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+        top.clips = vec![klipp_timeline::Clip::media(here, tc(0.0), tc(2.0), tc(0.0), tc(2.0))];
+        seq.tracks.insert(0, top);
+        assert_eq!(offline_picture_at(&seq, &pool, tc(1.0)), None);
         std::fs::remove_file(&here_path).ok();
     }
 }
@@ -5531,7 +5548,7 @@ reference:   {}",
             settings.fit_codecs_to_format();
             if let (Some(w), Some(h)) = (width, height) {
                 let most = klipp_core::ExportSettings::MAX_SIDE;
-                if w > most || h > most || w == 0 || h == 0 {
+                if w > most || h > most || w < 2 || h < 2 {
                     return Err(format!("{w}x{h} is not a size to export at; give each side between 2 and {most}"));
                 }
                 settings.resolution = Some(klipp_core::Resolution { width: w, height: h });
