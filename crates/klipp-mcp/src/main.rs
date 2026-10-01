@@ -1428,7 +1428,7 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
+              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer; negative plays it reversed and silent); the \
               clips after keep their place, close the gap or overlap yourself. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \
@@ -1601,7 +1601,7 @@ fn tool_definitions() -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer); the \
+              retime {clip_id, speed} — change speed (>1 faster/shorter, <1 slower/longer; negative plays it reversed and silent); the \
               clips after keep their place, close the gap or overlap yourself. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
               with exactly one duration secs or end anchor. Omit track for a Background video track below all \

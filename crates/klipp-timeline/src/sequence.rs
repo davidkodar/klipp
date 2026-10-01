@@ -1241,6 +1241,23 @@ impl Track {
 
         let offset = cut_at - clip.timeline_in;
         let cut_secs = offset.to_secs_f64();
+        // Where the cut falls in the source: through the clip's speed, and
+        // from its far end when it plays reversed, whose earlier half on
+        // the timeline is the later part of its range (#617). The source
+        // was split one to one with the timeline, so a half of a 2x clip
+        // showed the wrong part of the file.
+        let rate = clip.source_in.rate;
+        let at_source = |secs: f64| Timecode::from_secs_f64(secs, rate);
+        let moved = clip.speed_integral(cut_secs, SPLIT_STEP_FPS);
+        let ((a_in, a_out), (b_in, b_out)) = if (clip.speed - 1.0).abs() < 1e-9 && clip.speed_keyframes.is_empty() {
+            ((clip.source_in, clip.source_in + offset), (clip.source_in + offset, clip.source_out))
+        } else if clip.is_reversed() {
+            let split = at_source(clip.source_out.to_secs_f64() - moved);
+            ((split, clip.source_out), (clip.source_in, split))
+        } else {
+            let split = at_source(clip.source_in.to_secs_f64() + moved);
+            ((clip.source_in, split), (split, clip.source_out))
+        };
         // A fade cannot outlast the piece it is left on: the left half may
         // be shorter than the clip's fade in, the right shorter than its
         // fade out.
@@ -1319,8 +1336,8 @@ impl Track {
             kind: clip.kind.clone(),
             timeline_in: clip.timeline_in,
             timeline_out: cut_at,
-            source_in: clip.source_in,
-            source_out: clip.source_in + offset,
+            source_in: a_in,
+            source_out: a_out,
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
@@ -1388,8 +1405,8 @@ impl Track {
             kind: clip.kind.clone(),
             timeline_in: cut_at,
             timeline_out: clip.timeline_out,
-            source_in: clip.source_in + offset,
-            source_out: clip.source_out,
+            source_in: b_in,
+            source_out: b_out,
             node_graph: clip.node_graph.clone(),
             effects: clip.effects.clone(),
             builtin_effects: clip.builtin_effects.clone(),
@@ -2050,8 +2067,56 @@ impl Clip {
     /// Integrate the speed curve from 0 to `timeline_elapsed_secs` and return
     /// the source-time offset that a constant-speed clip would reach in the
     /// same interval. Uses `dt = 1/fps` Riemann sum clamped to [0.1, 16.0].
+    /// The magnitude: how far through its range the clip has moved, in
+    /// whichever direction it plays.
     pub fn speed_integral(&self, timeline_elapsed_secs: f64, fps: f64) -> f64 {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
+    }
+
+    /// Whether the clip plays its source backward: a negative speed (#617).
+    /// Its first frame on the timeline is the last of its range, and it
+    /// walks back to `source_in` at its end.
+    pub fn is_reversed(&self) -> bool {
+        self.speed < 0.0
+    }
+
+    /// The source second shown `elapsed` timeline seconds into the clip,
+    /// through its speed curve and in its direction. Before the clip or
+    /// past its end (a transition running into a handle) it goes on at the
+    /// edge's speed.
+    ///
+    /// A reversed clip is the forward one mirrored, a frame earlier: its
+    /// first timeline frame shows the frame that starts one frame before
+    /// `source_out` — the last of its range — and its last shows the frame
+    /// at `source_in`.
+    pub fn source_secs_at(&self, elapsed: f64, fps: f64) -> f64 {
+        let dur = (self.timeline_out - self.timeline_in).to_secs_f64();
+        let offset = |e: f64| {
+            if e < 0.0 {
+                e * self.speed_at(0.0).abs()
+            } else if e > dur {
+                self.speed_integral(dur, fps) + (e - dur) * self.speed_at(dur).abs()
+            } else {
+                self.speed_integral(e, fps)
+            }
+        };
+        if self.is_reversed() {
+            self.source_out.to_secs_f64() - offset(elapsed + 1.0 / fps.max(1.0))
+        } else {
+            self.source_in.to_secs_f64() + offset(elapsed)
+        }
+    }
+
+    /// The inverse of [`Self::source_secs_at`]: the timeline seconds into
+    /// the clip at which `source_secs` is shown.
+    pub fn elapsed_for_source_secs(&self, source_secs: f64, fps: f64) -> f64 {
+        if self.is_reversed() {
+            let moved = (self.source_out.to_secs_f64() - source_secs).max(0.0);
+            (effective_timeline_duration_for_keyframes(&self.speed_keyframes, moved, fps, self.speed) - 1.0 / fps.max(1.0)).max(0.0)
+        } else {
+            let moved = (source_secs - self.source_in.to_secs_f64()).max(0.0);
+            effective_timeline_duration_for_keyframes(&self.speed_keyframes, moved, fps, self.speed)
+        }
     }
 
     /// Map a sequence time (timeline-space) to the corresponding source
@@ -2074,8 +2139,7 @@ impl Clip {
             return None;
         }
         let timeline_elapsed = (seq_time - self.timeline_in).to_secs_f64().max(0.0);
-        let source_offset = self.speed_integral(timeline_elapsed, fps);
-        let source_secs = self.source_in.to_secs_f64() + source_offset;
+        let source_secs = self.source_secs_at(timeline_elapsed, fps);
         Some(Timecode::from_secs_f64(source_secs, self.source_in.rate))
     }
 
@@ -2096,13 +2160,7 @@ impl Clip {
         if source_time < self.source_in || source_time >= self.source_out {
             return None;
         }
-        let source_offset = (source_time - self.source_in).to_secs_f64().max(0.0);
-        let timeline_elapsed = effective_timeline_duration_for_keyframes(
-            &self.speed_keyframes,
-            source_offset,
-            fps,
-            self.speed,
-        );
+        let timeline_elapsed = self.elapsed_for_source_secs(source_time.to_secs_f64(), fps);
         let timeline_secs = self.timeline_in.to_secs_f64() + timeline_elapsed;
         // Clamp to the clip's timeline range so a near-edge round-trip
         // doesn't land 1 sample past timeline_out.
@@ -2472,6 +2530,11 @@ impl Clip {
 // Time Remap — free helpers
 // ═══════════════════════════════════════════════════════════════════
 
+/// The integration step [`Track::split_at`] finds a ramped clip's cut in
+/// its source with: it has no sequence rate to hand, and a sixtieth of a
+/// second puts the cut within a frame of where playback has it.
+const SPLIT_STEP_FPS: f64 = 60.0;
+
 /// Speed clamp used by the time-remap integrator. Matches the UI graph range
 /// (0.1× – 16×) and the `SetClipSpeed` handler clamp. Prevents zero/negative
 /// step sizes from stalling integration or producing NaN source times.
@@ -2493,7 +2556,8 @@ pub fn speed_at_keyframes(
     }
 }
 
-/// Integrate the (clamped) speed curve from 0 to `timeline_elapsed_secs` using
+/// Integrate the (clamped) speed curve's magnitude — a reversed clip moves
+/// through its source as far as a forward one — from 0 to `timeline_elapsed_secs` using
 /// `dt = 1/fps` Riemann sums with a partial-step correction on the tail.
 ///
 /// Returns the corresponding source-time offset: for constant speed=1.0 this is
@@ -2510,7 +2574,7 @@ pub fn speed_integral_keyframes(
         return 0.0;
     }
     if keyframes.is_empty() {
-        return default_speed.clamp(SPEED_MIN, SPEED_MAX) * timeline_elapsed_secs;
+        return default_speed.abs().clamp(SPEED_MIN, SPEED_MAX) * timeline_elapsed_secs;
     }
     let dt = 1.0 / fps.max(1.0);
     // Number of full steps; the last partial step gets a separate correction.
@@ -2518,14 +2582,14 @@ pub fn speed_integral_keyframes(
     let mut source_offset = 0.0f64;
     for i in 0..full_steps {
         let t = i as f64 * dt;
-        let spd = speed_at_keyframes(keyframes, t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * dt;
     }
     // Tail: the fractional step between full_steps*dt and timeline_elapsed_secs.
     let tail_start = full_steps as f64 * dt;
     let tail_len = (timeline_elapsed_secs - tail_start).max(0.0);
     if tail_len > 0.0 {
-        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         source_offset += spd * tail_len;
     }
     source_offset
@@ -2550,7 +2614,7 @@ pub fn effective_timeline_duration_for_keyframes(
         return 0.0;
     }
     if keyframes.is_empty() {
-        let spd = default_speed.clamp(SPEED_MIN, SPEED_MAX);
+        let spd = default_speed.abs().clamp(SPEED_MIN, SPEED_MAX);
         return source_duration_secs / spd;
     }
     let dt = 1.0 / fps.max(1.0);
@@ -2558,7 +2622,7 @@ pub fn effective_timeline_duration_for_keyframes(
     let mut source_offset = 0.0f64;
     let mut timeline_t = 0.0f64;
     while source_offset < source_duration_secs && timeline_t < safety_cap {
-        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).abs().clamp(SPEED_MIN, SPEED_MAX);
         let step_source = spd * dt;
         if source_offset + step_source >= source_duration_secs {
             // Partial final step: only use the fraction needed to hit the target.
@@ -3496,6 +3560,53 @@ mod tests {
     /// assertions. Production code can use `to_secs_f64()` directly.
     fn tc_to_frames(t: Timecode) -> i64 {
         (t.to_secs_f64() * RATE as f64).round() as i64
+    }
+
+    /// #617: a reversed clip shows its range's last frame first and its
+    /// first frame last, a frame a frame at full speed, each frame twice
+    /// at half; the inverse finds the timeline frame a source frame is
+    /// shown on.
+    #[test]
+    fn a_reversed_clip_maps_its_range_backward() {
+        let fps = RATE as f64;
+        let frame_at = |clip: &Clip, k: i64| (clip.source_secs_at(k as f64 / fps, fps) * fps + 1e-6).floor() as i64;
+        // Timeline [24, 72), source [10, 58): 48 frames, reversed.
+        let mut clip = make_clip(24, 72, 10, 58);
+        clip.speed = -1.0;
+        assert_eq!(frame_at(&clip, 0), 57, "the first timeline frame is the range's last");
+        assert_eq!(frame_at(&clip, 47), 10, "the last is its first");
+        assert!((1..48).all(|k| frame_at(&clip, k) == frame_at(&clip, k - 1) - 1), "one frame back per frame");
+        for k in [0, 5, 47] {
+            let src = clip.source_secs_at(k as f64 / fps, fps);
+            assert!((clip.elapsed_for_source_secs(src, fps) * fps - k as f64).abs() < 1e-6, "inverse at {k}");
+        }
+        // Half speed: 96 timeline frames, each source frame twice.
+        let mut slow = make_clip(0, 96, 10, 58);
+        slow.speed = -0.5;
+        let shown: Vec<i64> = (0..96).map(|k| frame_at(&slow, k)).collect();
+        let want: Vec<i64> = (10..58).rev().flat_map(|n| [n, n]).collect();
+        assert_eq!(shown, want);
+        // Forward is as it was.
+        let fwd = make_clip(24, 72, 10, 58);
+        assert_eq!((frame_at(&fwd, 0), frame_at(&fwd, 47)), (10, 57));
+    }
+
+    /// #617: a split cuts the source where the clip shows it — through its
+    /// speed, and from the far end when it plays reversed, whose earlier
+    /// half is the later part of its range.
+    #[test]
+    fn a_split_cuts_the_source_where_the_clip_shows_it() {
+        let split = |speed: f64, src: (i64, i64), len: i64| {
+            let mut c = make_clip(0, len, src.0, src.1);
+            c.speed = speed;
+            let id = c.id;
+            let mut t = make_track(vec![c]);
+            let (a, b) = t.split_at(id, tc(12)).expect("splits");
+            ((tc_to_frames(a.source_in), tc_to_frames(a.source_out)), (tc_to_frames(b.source_in), tc_to_frames(b.source_out)))
+        };
+        assert_eq!(split(1.0, (0, 48), 48), ((0, 12), (12, 48)));
+        assert_eq!(split(2.0, (0, 48), 24), ((0, 24), (24, 48)), "half the clip at 2x is 24 frames of source");
+        assert_eq!(split(-1.0, (0, 48), 48), ((36, 48), (0, 36)), "reversed: the first half is the range's end");
     }
 
     #[test]

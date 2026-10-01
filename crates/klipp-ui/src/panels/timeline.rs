@@ -17017,7 +17017,7 @@ fn resolve_compound_at_frac(
     // duration; multiplying by speed converts to source-media seconds.
     let media_id = inner_clip.media_id()?;
     let local_offset = inner_seq_timeline_secs - inner_clip.timeline_in.to_secs_f64();
-    let inner_source_secs = inner_clip.source_in.to_secs_f64() + local_offset * inner_clip.speed;
+    let inner_source_secs = inner_clip.source_secs_at(local_offset, 30.0);
 
     Some((media_id, inner_source_secs))
 }

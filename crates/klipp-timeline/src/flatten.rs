@@ -535,6 +535,10 @@ fn flatten_clip_inner(
     out
 }
 
+/// The integration step a ramped inner clip's source window is found
+/// with when sliced.
+const SLICE_STEP_FPS: f64 = 60.0;
+
 /// Slice one inner clip to a compound clip's source window and remap its
 /// time coordinates onto the parent timeline.
 ///
@@ -565,17 +569,31 @@ pub fn slice_inner_clip_to_compound(
     let visible_in = ic_in.max(compound_source_in_secs);
     let visible_out = ic_out.min(compound_source_out_secs);
 
-    // Defensive: avoid divide-by-zero if speed is somehow 0 or negative.
-    let speed = if compound_speed.abs() < 1e-9 { 1.0 } else { compound_speed };
+    // Defensive: avoid divide-by-zero if speed is somehow 0. A compound
+    // plays its scene forward: reverse is a media clip's (#617), and a
+    // negative speed here put the slice before the compound's start.
+    let speed = if compound_speed.abs() < 1e-9 { 1.0 } else { compound_speed.abs() };
 
     let parent_in =
         compound_timeline_in_secs + (visible_in - compound_source_in_secs) / speed;
     let parent_out =
         compound_timeline_in_secs + (visible_out - compound_source_in_secs) / speed;
 
-    let source_in_offset = visible_in - ic_in;
-    let inner_source_in_secs = inner.source_in.to_secs_f64() + source_in_offset;
-    let inner_source_out_secs = inner.source_out.to_secs_f64() - (ic_out - visible_out);
+    // What the window trims off the inner clip's head and tail, moved into
+    // its source through its own speed, and from the far end of its range
+    // when it plays reversed (#617). Taken one to one, a retimed clip inside
+    // a compound showed the wrong part of its file.
+    let (head, kept) = (visible_in - ic_in, visible_out - ic_in);
+    let (src_in, src_out) = (inner.source_in.to_secs_f64(), inner.source_out.to_secs_f64());
+    let moved = |t: f64| if t <= 0.0 { 0.0 } else { inner.speed_integral(t, SLICE_STEP_FPS) };
+    let whole = (ic_out - ic_in) <= kept + 1e-9 && head <= 1e-9;
+    let (inner_source_in_secs, inner_source_out_secs) = if whole {
+        (src_in, src_out)
+    } else if inner.is_reversed() {
+        (src_out - moved(kept), src_out - moved(head))
+    } else {
+        (src_in + moved(head), src_in + moved(kept))
+    };
 
     let mut flat = inner.clone();
     flat.timeline_in = RationalTime::from_secs_f64(parent_in, rate);
@@ -661,6 +679,34 @@ mod tests {
         let flat = flatten_sequence(&reel, &[reel.clone(), seq.clone()]);
         let member = flat.all_clips().find(|c| c.grade_group.is_some()).expect("the member is in the flattened reel");
         assert_eq!(ids(member), vec![pre_node, own_node, post_node]);
+    }
+
+    /// #617: a compound's window trims an inner clip's source through
+    /// its speed, and from the far end of its range when it plays
+    /// reversed: a reversed clip cut to its second half on the timeline
+    /// keeps the first half of its source.
+    #[test]
+    fn a_compound_window_trims_an_inner_clip_through_its_speed_and_direction() {
+        let rate = 24;
+        let inner = |speed: f64| {
+            let mut c = Clip::media(MediaId::new(), t(0), t(48), t(0), t(48));
+            c.speed = speed;
+            c
+        };
+        let secs = |rt: RationalTime| (rt.to_secs_f64() * 24.0).round() as i64;
+        // The compound shows inner seconds 1..2 (frames 24..48).
+        let fwd = slice_inner_clip_to_compound(&inner(1.0), 0.0, 1.0, 2.0, 1.0, rate).unwrap();
+        assert_eq!((secs(fwd.source_in), secs(fwd.source_out)), (24, 48));
+        let rev = slice_inner_clip_to_compound(&inner(-1.0), 0.0, 1.0, 2.0, 1.0, rate).unwrap();
+        assert_eq!((secs(rev.source_in), secs(rev.source_out)), (0, 24), "reversed: the later half of the timeline is the source's start");
+        assert!(rev.is_reversed());
+        // A clip at 2x covering the whole window keeps its whole range.
+        let mut fast = Clip::media(MediaId::new(), t(0), t(24), t(0), t(48));
+        fast.speed = 2.0;
+        let whole = slice_inner_clip_to_compound(&fast, 0.0, 0.0, 1.0, 1.0, rate).unwrap();
+        assert_eq!((secs(whole.source_in), secs(whole.source_out)), (0, 48));
+        let half = slice_inner_clip_to_compound(&fast, 0.0, 0.5, 1.0, 1.0, rate).unwrap();
+        assert_eq!((secs(half.source_in), secs(half.source_out)), (24, 48), "half the timeline at 2x is the second 24 source frames");
     }
 
     /// #370: a compound whose sequence has a timeline grade is left whole

@@ -515,7 +515,7 @@ fn face_regions_at_playhead(state: &AppState, whole: bool) -> Vec<[f32; 4]> {
     let Some(item) = clip.media_id().and_then(|m| state.media_pool.get(&m)) else {
         return Vec::new();
     };
-    let source = clip.source_in.to_secs_f64() + (tc.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
+    let source = clip.source_secs_at((tc.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0), 30.0);
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else {
         return Vec::new();
     };

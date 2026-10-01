@@ -591,7 +591,8 @@ fn snapshot_audio_track(
 ) -> Result<AudioTrackSnapshot, RenderError> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled { continue; }
+        // A reversed clip is silent, as it plays (#617).
+        if !clip.enabled || clip.is_reversed() { continue; }
         // A precomposition's sound is not taken here: flattening puts
         // it on runtime tracks of its own, with the scene's controls,
         // and the snapshot takes those below — once.
@@ -656,7 +657,7 @@ fn snapshot_audio_track(
 fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaPool, fps: f64) -> Option<AudioTrackSnapshot> {
     let mut clips = Vec::new();
     for clip in &track.clips {
-        if !clip.enabled || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
+        if !clip.enabled || clip.is_reversed() || matches!(clip.kind, ClipKind::Sequence { .. } | ClipKind::Precomposition { .. }) {
             continue;
         }
         let Some(media) = clip.media_id().and_then(|id| media_pool.get(&id)) else { continue };
@@ -707,6 +708,9 @@ fn flatten_compound_audio_clips(
         depth,
     );
     for clip in flat_clips {
+        if clip.is_reversed() {
+            continue;
+        }
         let Some(media_id) = clip.media_id() else { continue };
         let Some(media) = media_pool.get(&media_id) else { continue };
         if !media.has_audio {

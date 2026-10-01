@@ -3475,19 +3475,23 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
         egui::Frame::default()
             .inner_margin(egui::Margin::symmetric(pad, 6.0))
             .show(ui, |ui| {
-                let mut rate = (clip.speed * 100.0) as f32;
+                // The rate is the magnitude; a reversed clip keeps its
+                // direction through a change of rate (#617).
+                let sign = if clip.is_reversed() { -1.0 } else { 1.0 };
+                let mut rate = (clip.speed.abs() * 100.0) as f32;
                 let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
                 if r_rate.changed {
-                    let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0);
+                    let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0) * sign;
                     cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
                 }
 
                 ui.add_space(4.0);
 
                 // Direction row — toggle between Forward and Reverse by flipping
-                // the sign of clip.speed. The engine does not yet decode
-                // backwards; this stores the user's intent for a follow-up.
-                ui.horizontal(|ui| {
+                // the sign of clip.speed (#617). A media clip's only: a title
+                // or a compound has no file to read backward.
+                let can_reverse = matches!(clip.kind, klipp_timeline::ClipKind::Media { .. });
+                if can_reverse { ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Direction")
                             .size(11.0)
@@ -3498,7 +3502,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         let label = if is_reversed { "⇄ Reverse" } else { "⇄ Forward" };
                         if ui
                             .selectable_label(is_reversed, egui::RichText::new(label).size(11.0))
-                            .on_hover_text("Toggle reverse playback (negates clip speed)")
+                            .on_hover_text("Play the clip from its last frame to its first. A reversed clip, and its linked sound, play silent.")
                             .clicked()
                         {
                             let abs = clip.speed.abs().max(0.1);
@@ -3506,7 +3510,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                             cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
                         }
                     });
-                });
+                }); }
 
                 // Separator
                 ui.add_space(4.0);
@@ -3520,7 +3524,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                     ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
                     let btn_text = |label: &str| egui::RichText::new(label).size(11.0);
                     for (label, speed_val) in [("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0), ("400%", 4.0)] {
-                        let is_active = (clip.speed - speed_val).abs() < 0.001;
+                        let is_active = (clip.speed.abs() - speed_val).abs() < 0.001;
                         let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
                         let stroke = if is_active {
                             egui::Stroke::new(1.0_f32, theme.accent)
@@ -3531,7 +3535,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                             .fill(fill).stroke(stroke)
                             .rounding(2.0).min_size(egui::vec2(0.0, 20.0))
                         ).clicked() {
-                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val });
+                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: speed_val * sign });
                         }
                     }
                 });

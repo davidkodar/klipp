@@ -2793,17 +2793,9 @@ pub fn frame_index(secs: f64, fps: f64) -> i64 {
 
 /// Source time for `time`, through the clip's speed curve. Outside the
 /// clip (a transition running into a handle) it extends at the edge speed.
+/// A reversed clip walks back from the end of its range (#617).
 pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
-    let elapsed = (time - clip.timeline_in).to_secs_f64();
-    let dur = (clip.timeline_out - clip.timeline_in).to_secs_f64();
-    let offset = if elapsed < 0.0 {
-        elapsed * clip.speed_at(0.0)
-    } else if elapsed > dur {
-        clip.speed_integral(dur, fps) + (elapsed - dur) * clip.speed_at(dur)
-    } else {
-        clip.speed_integral(elapsed, fps)
-    };
-    clip.source_in.to_secs_f64() + offset
+    clip.source_secs_at((time - clip.timeline_in).to_secs_f64(), fps)
 }
 
 /// How many render pixels one sequence pixel is, across and down: 1 when
@@ -3395,7 +3387,9 @@ pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     let blend = clip.builtin_effects.iter().enumerate().any(|(i, e)| {
         enabled(i) && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, freeze: false, .. })
     });
-    blend && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
+    // A reversed clip's next frame is the one before: there is no
+    // following frame to blend toward.
+    blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
 }
 
 /// Mix `current` (the frame at `pts`) with `next`, by where `at` falls

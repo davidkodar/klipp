@@ -752,22 +752,26 @@ fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, f32); 4] {
 /// A window track's keyframes (#238): for each file frame tracked, its
 /// time on the clip's own clock — the grade's — and the window's move,
 /// size and turn from the reference frame, as (time, dx, dy, scale,
-/// degrees). Frames outside the clip are left out.
-fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool) -> Vec<(f64, f32, f32, f32, f32)> {
+/// degrees). Frames outside the clip are left out. Through the clip's
+/// speed and in its direction (#617), at the sequence's `seq_fps`; a
+/// reversed clip's keys come in its own order, earliest first.
+fn window_track_keys(clip: &klipp_timeline::Clip, tp: &klipp_core::TrackPoint, pool: &klipp_media::MediaPool, seq_fps: f64) -> Vec<(f64, f32, f32, f32, f32)> {
     let Some(fps) = clip.media_id().and_then(|m| pool.get(&m)).map(|it| it.fps.as_f64()).filter(|f| *f > 0.0) else { return Vec::new() };
-    let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
     let reference = tp.reference_frame.unwrap_or(tp.start_frame);
     let Some(&pivot) = tp.positions.get(reference.saturating_sub(tp.start_frame)) else { return Vec::new() };
-    let length = clip.duration().to_secs_f64();
-    tp.positions
+    let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
+    let mut keys: Vec<_> = tp.positions
         .iter()
         .zip(&tp.motion)
         .enumerate()
         .filter_map(|(i, (&(x, y), &(scale, rot)))| {
-            let t = ((tp.start_frame + i) as f64 / fps - clip.source_in.to_secs_f64()) / speed;
-            (t >= -0.5 / fps && t <= length + 0.5 / fps).then_some((t.max(0.0), (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
+            let at = (tp.start_frame + i) as f64 / fps;
+            (at >= s_in - 0.5 / fps && at <= s_out + 0.5 / fps)
+                .then(|| (clip.elapsed_for_source_secs(at, seq_fps), (x - pivot.0) as f32, (y - pivot.1) as f32, scale as f32, rot as f32))
         })
-        .collect()
+        .collect();
+    keys.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keys
 }
 
 fn timeline_grade_proxy_track_id(seq: &klipp_timeline::Sequence) -> klipp_core::TrackId {
@@ -4077,8 +4081,7 @@ impl KlippApp {
             .find_map(|t| t.clip_at_timecode(self.state.playhead))
             .and_then(|(_, clip)| {
                 clip.media_id().map(|mid| {
-                    let source_secs = (playhead_secs - clip.timeline_in.to_secs_f64())
-                        * clip.speed + clip.source_in.to_secs_f64();
+                    let source_secs = clip.source_secs_at(playhead_secs - clip.timeline_in.to_secs_f64(), seq.fps.as_f64());
                     (mid, source_secs)
                 })
             });
@@ -11222,30 +11225,43 @@ impl KlippApp {
     fn handle_speed_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::SetClipSpeed { clip_id, speed } => {
-                    // Accept negative speeds so the Direction toggle in the
-                    // inspector can store reverse intent. Magnitude is still
-                    // clamped to [0.1, 16.0] — zero would stall playback and
-                    // keeps timeline duration math well-defined.
+                    // A negative speed plays the clip backward (#617). The
+                    // magnitude is clamped to [0.1, 16.0] — zero would stall
+                    // playback and keeps timeline duration math well-defined.
                     let speed = if *speed < 0.0 {
                         -(speed.abs().clamp(0.1, 16.0))
                     } else {
                         speed.clamp(0.1, 16.0)
                     };
-                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                    if let Some((ti, ci)) = seq.find_clip(* clip_id) {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
+                    // Reverse is a media clip's: a compound or a title has
+                    // no file of its own to read backward.
+                    if speed < 0.0 && !matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
+                        self.state.toast.show("Only a clip of a media file can play in reverse".to_string());
+                        return true;
+                    }
+                    // Its linked sound takes the same speed, so the two stay
+                    // the same length and in step; reversed, both are silent.
+                    let partner = clip.linked_clip_id.filter(|lid| seq.all_clips().any(|c| c.id == *lid && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })));
+                    let opened = !self.state.active_history_mut().is_batching();
+                    if opened {
+                        self.state.active_history_mut().begin_batch();
+                    }
+                    for cid in std::iter::once(*clip_id).chain(partner) {
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        let Some((ti, ci)) = seq.find_clip(cid) else { continue };
                         let clip = &mut seq.tracks[ti].clips[ci];
                         let old_speed = clip.speed;
                         clip.speed = speed;
                         // Adjust timeline duration: new_duration = source_duration / |speed|.
-                        // Reverse (negative speed) plays the same amount of source
-                        // in the same timeline span — the sign only flips direction.
+                        // Reverse plays the same amount of source in the same
+                        // timeline span — the sign only flips direction.
                         let source_dur_secs = clip.source_duration().to_secs_f64();
                         let new_dur_secs = source_dur_secs / speed.abs().max(0.1);
                         let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
                         let old_timeline_out = clip.timeline_out;
                         clip.timeline_out = clip.timeline_in + new_duration;
-                        // Push undo
-                        let cid = *clip_id;
                         let new_timeline_out = clip.timeline_out;
                         self.state.active_history_mut().push(crate::history::HistoryEntry {
                             command: crate::history::EditCommand::SetClipSpeed {
@@ -11256,6 +11272,9 @@ impl KlippApp {
                                 new_timeline_out,
                             },
                         });
+                    }
+                    if opened {
+                        self.state.active_history_mut().end_batch();
                     }
                     self.sync_sequence_to_engine();
                     self.state.dirty = true;
@@ -20837,8 +20856,8 @@ impl KlippApp {
                 // The grade's clock is the clip's own, from its first frame
                 // on the timeline; the tracker's is the file's frames.
                 let clip_time = (playhead_secs - clip.timeline_in.to_secs_f64()).max(0.0);
-                let speed = if clip.speed.is_finite() && clip.speed > 0.0 { clip.speed } else { 1.0 };
-                let source_secs = clip.source_in.to_secs_f64() + clip_time * speed;
+                // Through its speed and in its direction (#617).
+                let source_secs = clip.source_secs_at(clip_time, seq.fps.as_f64());
                 let reference = (source_secs * media_fps).round() as usize;
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
@@ -21073,7 +21092,7 @@ impl KlippApp {
                                 // A window track (#238): the window's move,
                                 // size and turn, as keyframes on its own
                                 // clock, one undo step.
-                                let keys = window_track_keys(clip, tp, &self.state.media_pool);
+                                let keys = window_track_keys(clip, tp, &self.state.media_pool, fps);
                                 let old_graph = clip.node_graph.clone();
                                 if let Some(mask) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id)
                                     .and_then(|n| n.params.masks.as_mut())
@@ -33322,7 +33341,17 @@ impl KlippApp {
                     });
                     ui.add_space(4.0);
 
-                    ui.checkbox(&mut self.state.speed_dialog_reverse, "Reverse playback");
+                    // Reverse reads a media file backward (#617): a title or
+                    // a compound has none.
+                    let can_reverse = self.state.selected_clip
+                        .and_then(|id| self.state.sequence().all_clips().find(|c| c.id == id).map(|c| matches!(c.kind, klipp_timeline::ClipKind::Media { .. })))
+                        .unwrap_or(false);
+                    if !can_reverse {
+                        self.state.speed_dialog_reverse = false;
+                    }
+                    ui.add_enabled(can_reverse, egui::Checkbox::new(&mut self.state.speed_dialog_reverse, "Reverse playback"))
+                        .on_hover_text("Play the clip from its last frame to its first. A reversed clip, and its linked sound, play silent.")
+                        .on_disabled_hover_text("Only a clip of a media file can play in reverse");
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
@@ -43175,12 +43204,21 @@ mod window_track_tests {
             reference_frame: Some(60),
             ..Default::default()
         };
-        let keys = window_track_keys(&clip, &tp, &pool);
+        let keys = window_track_keys(&clip, &tp, &pool, 30.0);
         let first = keys.first().unwrap();
         assert!(first.0.abs() < 1e-9 && first.1.abs() < 1e-6 && (first.3 - 1.0).abs() < 1e-6, "{first:?}");
         let quarter = keys.iter().find(|k| (k.0 - 0.25).abs() < 1e-6).expect("a key a quarter second in");
         assert!((quarter.1 - 0.15).abs() < 1e-5 && (quarter.4 - 7.5).abs() < 1e-4, "{quarter:?}");
         assert!(keys.iter().all(|k| k.0 >= 0.0 && k.0 <= 1.0 + 1e-6), "only what the clip plays");
+
+        // Reversed (#617): the same frames run the other way on the clip's
+        // clock — the reference frame, its range's start, comes last.
+        clip.speed = -2.0;
+        let back = window_track_keys(&clip, &tp, &pool, 30.0);
+        assert!(back.windows(2).all(|w| w[0].0 <= w[1].0), "earliest first");
+        let last = back.last().unwrap();
+        assert!((last.0 - (1.0 - 1.0 / 30.0)).abs() < 1e-6 && last.1.abs() < 1e-6, "the reference frame shows a frame before the clip's end: {last:?}");
+        assert!(back.first().unwrap().1 > 0.0, "the later frames show first: {:?}", back.first());
     }
 
     /// The region followed is the one the window covers, as the matte

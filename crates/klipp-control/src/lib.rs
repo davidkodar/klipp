@@ -1510,7 +1510,7 @@ fn skin_regions(ctx: &ControlContext, secs: f64, data: &[u8], w: u32, h: u32) ->
         let item = pool.get(&c.media_id()?)?;
         c.enabled.then_some((c.clone(), item.clone()))
     }) else { return Vec::new() };
-    let source = clip.source_in.to_secs_f64() + (secs - clip.timeline_in.to_secs_f64()).max(0.0) * clip.speed.max(0.001);
+    let source = clip.source_secs_at((secs - clip.timeline_in.to_secs_f64()).max(0.0), seq.fps.as_f64());
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
     let Some(sample) = framing.people_at(source, 4.0) else { return Vec::new() };
     if !sample.faces.is_empty() {
@@ -1554,7 +1554,7 @@ fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::W
     let Some(item) = clip.media_id().and_then(|m| pool.get(&m)) else { return Vec::new() };
     let Some(framing) = klipp_analysis::report::MediaAnalysis::load(&item.path).framing else { return Vec::new() };
     let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-    let speed = clip.speed.max(0.001);
+    let fps = seq.fps.as_f64();
     let mut keys: Vec<klipp_document::ops::WindowKey> = framing
         .samples
         .iter()
@@ -1564,7 +1564,7 @@ fn face_track(ctx: &ControlContext, clip_id: &str) -> Vec<klipp_document::ops::W
             // a face in the background would leave the subject's own
             // face outside the correction.
             let b = face_or_head_regions(&framing, s).into_iter().max_by(|a, b| (a[2] * a[3]).total_cmp(&(b[2] * b[3])))?;
-            Some(klipp_document::ops::WindowKey { at: (s.secs - s_in) / speed, x: b[0], y: b[1], w: b[2], h: b[3] })
+            Some(klipp_document::ops::WindowKey { at: clip.elapsed_for_source_secs(s.secs, fps), x: b[0], y: b[1], w: b[2], h: b[3] })
         })
         .collect();
     keys.sort_by(|a, b| a.at.total_cmp(&b.at));
@@ -1599,14 +1599,11 @@ fn clip_shot_spans(clip: &klipp_timeline::Clip, pool: &klipp_media::MediaPool, m
         .and_then(|item| klipp_analysis::report::MediaAnalysis::load(&item.path).shots)
         .map(|s| s.boundaries)
         .unwrap_or_default();
-    shot_spans(
-        clip.timeline_in.to_secs_f64(),
-        clip.timeline_out.to_secs_f64(),
-        clip.source_in.to_secs_f64(),
-        clip.speed.max(0.001),
-        &boundaries,
-        max,
-    )
+    // The boundaries on the timeline, through the clip's speed and in its
+    // direction (#617); then cut the span there.
+    let from = clip.timeline_in.to_secs_f64();
+    let at: Vec<f64> = boundaries.iter().map(|b| from + clip.elapsed_for_source_secs(*b, 30.0)).collect();
+    shot_spans(from, clip.timeline_out.to_secs_f64(), from, 1.0, &at, max)
 }
 
 /// [`clip_shot_spans`] on numbers: the timeline span `from..to` of a
@@ -3228,7 +3225,6 @@ fn handle(
                 let name = item.map(|it| it.filename.clone()).unwrap_or_else(|| "the clip".into());
                 let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
                 let (s_in, s_out) = (clip.source_in.to_secs_f64(), clip.source_out.to_secs_f64());
-                let speed = clip.speed.max(0.001);
                 let biggest = item
                     .and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).framing)
                     .and_then(|f| {
@@ -3240,7 +3236,7 @@ fn handle(
                                 (area > 0.0).then_some((s.secs, area))
                             })
                             .max_by(|a, b| a.1.total_cmp(&b.1))
-                            .map(|(secs, _)| t_in + (secs - s_in) / speed)
+                            .map(|(secs, _)| t_in + clip.elapsed_for_source_secs(secs, seq.fps.as_f64()))
                     })
                     .filter(|t| *t >= t_in && *t < t_out);
                 (biggest.unwrap_or((t_in + t_out) / 2.0), name)

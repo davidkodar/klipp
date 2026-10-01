@@ -17,6 +17,7 @@ use tracing::warn;
 
 use crate::clip_decoder::{DecodedPixels, RenderDecoder, SceneReferredFrame};
 use crate::snapshot::MediaFile;
+use klipp_media::frame_reader::fitted_size;
 
 struct Decoded {
     pts: f64,
@@ -128,6 +129,10 @@ pub(crate) struct ExportFrameSource<'a> {
     fps: f64,
     working: WorkingColorspace,
     streams: HashMap<ClipId, ClipStream>,
+    /// A reversed clip's frames (#617), read backward from their own
+    /// file: the clip's decoder reads forward only. With the rotation
+    /// they are turned by.
+    reversed: HashMap<ClipId, (klipp_media::frame_reader::BackwardFrameReader<Vec<f32>>, i32)>,
     used: HashSet<ClipId>,
     /// NV12 → linear working-space f32 on the GPU: one converter for the
     /// whole export, shared by every clip's decoder.
@@ -155,6 +160,7 @@ impl<'a> ExportFrameSource<'a> {
             fps,
             working,
             streams: HashMap::new(),
+            reversed: HashMap::new(),
             used: HashSet::new(),
             gpu: crate::clip_decoder::GpuConverters::shared(),
             t_decode: std::time::Duration::ZERO,
@@ -181,6 +187,7 @@ impl<'a> ExportFrameSource<'a> {
     pub(crate) fn end_frame(&mut self) -> Result<(), crate::error::RenderError> {
         let used = std::mem::take(&mut self.used);
         self.streams.retain(|id, _| used.contains(id));
+        self.reversed.retain(|id, _| used.contains(id));
         if let Some(e) = self.streams.values_mut().find_map(|s| s.error.take()) {
             return Err(crate::error::RenderError::Source(e));
         }
@@ -230,11 +237,36 @@ impl<'a> ExportFrameSource<'a> {
     }
 }
 
+impl ExportFrameSource<'_> {
+    /// A reversed clip's frame at `source_secs` (#617): from a reader
+    /// that decodes a window back from the time asked for, turned and
+    /// sized as the clip's forward decoder would have it.
+    fn reversed_frame(&mut self, clip: &Clip, file: &MediaFile, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let t0 = std::time::Instant::now();
+        if !self.reversed.contains_key(&clip.id) {
+            let rotation = if clip.source_rotation != 0 { clip.source_rotation } else { file.source_rotation };
+            let reader = klipp_media::frame_reader::BackwardFrameReader::open_linear(&file.path, file.log_format, self.working)
+                .or_else(|| {
+                    warn!("export: cannot open {:?} to read it backward", file.path);
+                    None
+                })?;
+            self.reversed.insert(clip.id, (reader, rotation));
+        }
+        let (reader, rotation) = self.reversed.get_mut(&clip.id)?;
+        let (pixels, w, h, pts) = reader.decode_upright(source_secs, (width, height), *rotation)?;
+        self.t_decode += t0.elapsed();
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
+    }
+}
+
 impl FrameSource for ExportFrameSource<'_> {
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         let ClipKind::Media { media_id } = &clip.kind else { return None };
         let file = self.media.get(media_id)?;
         self.used.insert(clip.id);
+        if clip.is_reversed() {
+            return self.reversed_frame(clip, file, source_secs, width, height);
+        }
         if !self.streams.contains_key(&clip.id) {
             let s = self.open(clip, file, source_secs, width, height)?;
             self.streams.insert(clip.id, s);
@@ -369,29 +401,6 @@ fn seed_matrix(to_working: Option<[[f32; 3]; 3]>) -> [[f32; 4]; 3] {
     ]
 }
 
-/// A picture of `sw`×`sh` fitted into a `fw`×`fh` frame, aspect kept:
-/// the frame itself when the two have the same shape (to within a pixel
-/// of rounding), else the frame's full height or width.
-fn fitted_size(sw: u32, sh: u32, fw: u32, fh: u32) -> (u32, u32) {
-    if sw == 0 || sh == 0 {
-        return (fw, fh);
-    }
-    let (sw, sh, fw64, fh64) = (sw as u64, sh as u64, fw as u64, fh as u64);
-    // Width at the frame's height, and the other way round.
-    let w_at_fh = (sw * fh64 + sh / 2) / sh;
-    let h_at_fw = (sh * fw64 + sw / 2) / sw;
-    if w_at_fh.abs_diff(fw64) <= 1 || h_at_fw.abs_diff(fh64) <= 1 {
-        return (fw, fh);
-    }
-    // Not rounded to even: an odd picture, 1920x803, decodes at its own
-    // 803 rows, as the viewer's does, so the bars fall on the same rows.
-    let side = |v: u64| (v as u32).max(1);
-    if w_at_fh < fw64 {
-        (side(w_at_fh), fh)
-    } else {
-        (fw, side(h_at_fw))
-    }
-}
 
 fn source_frame(
     d: &Decoded,

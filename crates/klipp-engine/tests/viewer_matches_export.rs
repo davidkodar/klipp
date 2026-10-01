@@ -907,3 +907,44 @@ fn an_odd_sized_clip_is_barred_on_the_same_rows_in_the_viewer_and_the_export() {
         assert_eq!(luma(&v, y) > 35.0, lit, "viewer row {y} (luma {:.0})", luma(&v, y));
     }
 }
+
+/// #617: the main timeline with b reversed — it walks its range back
+/// from its last frame, entering the dissolve from past its end. The
+/// export shows it backward, and the viewer shows the export's frames:
+/// parked on it, in the dissolve, and after playing through it.
+#[test]
+fn a_reversed_clip_shows_as_it_exports() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = timeline();
+    let b = t.seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.timeline_in == tc(100)).expect("clip b");
+    b.speed = -1.0;
+    let out = exported(&t);
+
+    // b's green rises five levels a source frame: reversed, it falls a
+    // frame of timeline at a time.
+    let green = |n: i64| px(&exported_frame(&out, n), 30, 30)[1];
+    assert_eq!(green(120) - green(121), 5, "the export plays b backward: {} then {}", green(120), green(121));
+
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    for n in [120, 160, LEN - 1, 100, 95, 121] {
+        worst = worst.max(compare(&format!("reversed frame {n:3}"), &viewer.frame_at(n), &exported_frame(&out, n)));
+    }
+    // Played within it, and into it from a through the dissolve: the
+    // playhead runs at the timeline's rate, not off to the end.
+    for from in [115, 70] {
+        viewer.frame_at(from);
+        viewer.cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(Duration::from_millis(1600));
+        viewer.cmd.send(AppCommand::Pause).unwrap();
+        let (v, n) = viewer.settled_frame_at();
+        assert!(n > from + 20 && n < from + 60, "playback from {from} is at {n} after 1.6 s at 25 fps");
+        worst = worst.max(compare(&format!("played {from}->{n:3}"), &v, &exported_frame(&out, n)));
+    }
+    eprintln!("reversed clip, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the viewer differs from the export by {worst} levels");
+}

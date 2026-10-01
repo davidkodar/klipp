@@ -20,6 +20,7 @@ use tracing::{debug, warn};
 
 use crate::types::{HdrInput, LinearFrame, SharedFrameQueue};
 use crate::video_decoder::VideoDecoder;
+use klipp_media::frame_reader::BackwardFrameReader;
 
 /// A decoded frame the viewer keeps and may render from many times (a
 /// paused frame is regraded on every slider tick). Conversions happen on
@@ -196,6 +197,16 @@ pub(crate) struct Want {
     /// The clip's own rotation, for when its media has none recorded.
     pub rotation: i32,
     pub source_secs: f64,
+    /// The clip plays its source backward (#617): read by a
+    /// [`BackwardFrameReader`], not a decoder that only reads forward and
+    /// would seek on every frame.
+    pub reversed: bool,
+}
+
+/// A reversed clip's reader, with the rotation its frames are turned by.
+struct Reversed {
+    reader: BackwardFrameReader<Vec<f32>>,
+    rotation: i32,
 }
 
 /// A decoder following one clip's source time.
@@ -312,13 +323,15 @@ impl Drop for ClipStream {
 /// The viewer's decoders for everything but the primary track's clip.
 pub(crate) struct ClipStreams {
     streams: HashMap<ClipId, ClipStream>,
+    /// Reversed clips' readers (#617).
+    reversed: HashMap<ClipId, Reversed>,
     /// At most this many decoders at once.
     cap: usize,
 }
 
 impl ClipStreams {
     pub fn new(cap: usize) -> Self {
-        Self { streams: HashMap::new(), cap }
+        Self { streams: HashMap::new(), reversed: HashMap::new(), cap }
     }
 
     /// Follow `wants`: open streams for new clips, close those no longer
@@ -327,8 +340,26 @@ impl ClipStreams {
     /// the file and rotation to decode a clip's media from, asked only
     /// when a stream opens.
     pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32)>) {
-        self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id));
-        for w in wants {
+        self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
+        self.reversed.retain(|id, _| wants.iter().any(|w| w.clip == *id && w.reversed));
+        for w in wants.iter().filter(|w| w.reversed) {
+            let r = match self.reversed.entry(w.clip) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let Some((path, rotation)) = resolve(w) else { continue };
+                    let log_format = crate::video_decoder::log_format_for_path(&path);
+                    let Some(reader) = BackwardFrameReader::open_linear(&path, log_format, crate::video_decoder::working_colorspace()) else {
+                        warn!("clip streams: cannot open {path:?} to read it backward");
+                        continue;
+                    };
+                    e.insert(Reversed { reader, rotation })
+                }
+            };
+            // Its frames for the time wanted start decoding now, off this
+            // thread: a clip about to come up is ready when it does.
+            r.reader.prepare(w.source_secs);
+        }
+        for w in wants.iter().filter(|w| !w.reversed) {
             let target = w.source_secs.max(0.0);
             let full = self.streams.len() >= self.cap;
             match self.streams.get_mut(&w.clip) {
@@ -370,7 +401,16 @@ impl ClipStreams {
     }
 
     pub fn has(&self, clip: ClipId) -> bool {
-        self.streams.contains_key(&clip)
+        self.streams.contains_key(&clip) || self.reversed.contains_key(&clip)
+    }
+
+    /// A reversed clip's frame at `source_secs`, fitted into `width` ×
+    /// `height` and upright (#617). Read when asked: its reader decodes a
+    /// window back from the time and answers the next frames from it.
+    pub fn reversed_frame(&mut self, clip: &klipp_timeline::Clip, source_secs: f64, width: u32, height: u32) -> Option<klipp_compose::SourceFrame> {
+        let r = self.reversed.get_mut(&clip.id)?;
+        let (pixels, w, h, pts) = r.reader.decode_upright(source_secs, (width, height), r.rotation)?;
+        Some(klipp_compose::SourceFrame { pixels: SourcePixels::Linear(Arc::new(pixels)), width: w, height: h, pts: Some(pts) })
     }
 
     pub fn frame(&self, clip: ClipId) -> Option<&HeldFrame> {
@@ -399,6 +439,7 @@ impl ClipStreams {
 
     pub fn clear(&mut self) {
         self.streams.clear();
+        self.reversed.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -439,7 +480,7 @@ mod tests {
             return;
         };
         let frame = 1.0 / 25.0;
-        let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs };
+        let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs, reversed: false };
         let w = want(1.0);
         let mut streams = ClipStreams::new(4);
         let resolve = |_: &Want| Some((path.clone(), 0));
