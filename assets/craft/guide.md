@@ -82,6 +82,8 @@ frames.
    the timeline to see whether that edit landed before sending it
    again. A project identity from before a restart never matches the
    project after it. `klipp_undo` takes the whole action back.
+   A read sent alongside a write may see the timeline before that write;
+   read again after the write's reply before using its revision or clip IDs.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
    `klipp_contact_sheet` over the range you cut. `klipp_frame_stats`

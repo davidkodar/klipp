@@ -255,3 +255,76 @@ fn following_a_render_emits_progress_and_the_terminal_event() {
     server.join().unwrap();
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn a_review_longer_than_thirty_two_seconds_keeps_its_reply() {
+    let path = socket_path();
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "review");
+        std::thread::sleep(Duration::from_secs(33));
+        writeln!(stream, "{}", json!({"id":request["id"],"ok":true,
+            "result":{"text":"draft render completed"}})).unwrap();
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_klipp-mcp"))
+        .env("KLIPP_CONTROL_SOCKET", &path).stdin(Stdio::piped()).stdout(Stdio::piped())
+        .stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let output = child.stdout.take().unwrap();
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        BufReader::new(output).read_line(&mut line).unwrap();
+        reply_tx.send(serde_json::from_str::<Value>(&line).unwrap()).unwrap();
+    });
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":41,"method":"tools/call",
+        "params":{"name":"klipp_review","arguments":{}}})).unwrap();
+    input.flush().unwrap();
+    let reply = reply_rx.recv_timeout(Duration::from_secs(45)).unwrap();
+    assert_eq!(reply["id"], 41);
+    assert_eq!(reply["result"]["isError"], false);
+    assert!(reply["result"]["content"][0]["text"].as_str().unwrap().contains("draft render completed"));
+    drop(input);
+    child.wait().unwrap();
+    reader.join().unwrap();
+    server.join().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn an_analysis_wait_keeps_the_callers_timeout() {
+    let path = socket_path();
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "analyze");
+        assert_eq!(request["timeout_ms"], 120_000);
+        std::thread::sleep(Duration::from_millis(350));
+        writeln!(stream, "{}", json!({"id":request["id"],"ok":true,
+            "result":{"finished":true}})).unwrap();
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_klipp-mcp"))
+        .env("KLIPP_CONTROL_SOCKET", &path).env("KLIPP_MCP_SOCKET_TIMEOUT_MS", "250")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":42,"method":"tools/call",
+        "params":{"name":"klipp_analyze","arguments":{"wait":true,"timeout_ms":120_000}}})).unwrap();
+    input.flush().unwrap();
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["id"], 42);
+    assert_eq!(reply["result"]["isError"], false);
+    drop(input);
+    child.wait().unwrap();
+    server.join().unwrap();
+    std::fs::remove_file(path).unwrap();
+}

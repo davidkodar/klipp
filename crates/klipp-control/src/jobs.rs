@@ -2,7 +2,7 @@
 //! The jobs remain owned by those services, so reconnecting clients can
 //! read their latest known state by ID without relying on MCP session data.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -81,6 +81,25 @@ fn with_timestamps(jobs: &mut [Value]) {
 
 fn is_terminal(job: &Value) -> bool {
     matches!(job["state"].as_str(), Some("completed" | "failed" | "cancelled" | "unavailable"))
+}
+
+fn prune_submitted(jobs: &[Value]) {
+    const KEEP_TERMINAL: usize = 256;
+    const RETAIN_MS: u128 = 10 * 60 * 1_000;
+    let now = now_ms();
+    let mut terminal: Vec<_> = jobs.iter()
+        .filter(|job| matches!(job["kind"].as_str(), Some("import" | "sync")) && is_terminal(job))
+        .filter_map(|job| Some((job["job_id"].as_str()?.to_owned(), job["finished_at_ms"].as_u64()? as u128)))
+        .collect();
+    terminal.sort_by_key(|(_, finished)| *finished);
+    let overflow = terminal.len().saturating_sub(KEEP_TERMINAL);
+    let stale: HashSet<String> = terminal.iter().enumerate()
+        .filter(|(index, (_, finished))| *index < overflow || now.saturating_sub(*finished) > RETAIN_MS)
+        .map(|(_, (id, _))| id.clone()).collect();
+    if stale.is_empty() { return; }
+    submitted().lock().unwrap_or_else(|e| e.into_inner()).retain(|id, _| !stale.contains(id));
+    OBSERVED.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner())
+        .retain(|id, _| !stale.contains(id));
 }
 
 pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
@@ -168,6 +187,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
     }
     jobs.sort_by_key(is_terminal);
     with_timestamps(&mut jobs);
+    prune_submitted(&jobs);
     jobs
 }
 

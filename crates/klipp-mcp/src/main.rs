@@ -16,6 +16,8 @@
 //! tool answers with a clear "is Klipp running?" error if it is not,
 //! since that is the overwhelmingly common cause.
 
+#![forbid(unsafe_code)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
 
@@ -291,6 +293,14 @@ fn negotiated_version(client: Option<&str>) -> &'static str {
 /// on every Klipp restart — which, during development, is constant.
 fn control_call(command: Value) -> Result<Value, String> {
     let path = klipp_control::protocol::socket_path();
+    let method = command.get("method").and_then(Value::as_str).unwrap_or("");
+    let job_poll = method == "job_status";
+    // Some tools deliberately hold their control reply until the work is
+    // done. Keep that reply intact; the stdio read worker leaves ping and
+    // other tools responsive while it waits.
+    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
+        | "search_music" | "search_sfx" | "add_music")
+        || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
     let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.clamp(250, 120_000)).unwrap_or(32_000);
@@ -306,16 +316,15 @@ fn control_call(command: Value) -> Result<Value, String> {
     })?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .map_err(|e| format!("setting Klipp socket write timeout failed: {e}"))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_millis(read_timeout_ms)))
+    stream.set_read_timeout((!long_call).then(|| std::time::Duration::from_millis(read_timeout_ms)))
         .map_err(|e| format!("setting Klipp socket read timeout failed: {e}"))?;
     let mut writer = stream.try_clone().map_err(|e| format!("socket clone failed: {e}"))?;
     let mut reader = BufReader::new(stream);
 
     let mut payload = command;
-    // A long server-side wait must return a fresh snapshot periodically so
-    // the client can see progress and the worker cannot occupy resources for
-    // an hour after its caller goes away.
-    if payload.get("wait").and_then(Value::as_bool) == Some(true) {
+    // Only job polling is short and repeatable. Other wait:true calls keep
+    // the caller's timeout, since transcription and recording may take minutes.
+    if job_poll && payload.get("wait").and_then(Value::as_bool) == Some(true) {
         let bounded = payload.get("timeout_ms").and_then(Value::as_u64).unwrap_or(10_000)
             .min(10_000).min(read_timeout_ms.saturating_sub(200));
         payload["timeout_ms"] = json!(bounded);

@@ -4341,7 +4341,7 @@ fn handle(
             // one finds the path in the pool — so an agent importing a
             // batch gets a list of nothing and has to ask again for
             // every file.
-            match if v["applied"] == true { imported_id_within(ctx, &p, std::time::Duration::from_millis(500)) } else { None } {
+            match if v["applied"] == true { imported_id_within(ctx, &p, std::time::Duration::from_secs(10)) } else { None } {
                 Some(id) => {
                     v["media_id"] = json!(id);
                 }
