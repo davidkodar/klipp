@@ -75,8 +75,14 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// This run of Klipp, as the prefix of every operation id it hands out:
+/// an id from before a restart says so, rather than "unknown" (#693).
+fn launch_tag() -> String {
+    format!("{:x}", klipp_core::launch_identity_base() >> 20)
+}
+
 pub(crate) fn queued(background_job: Option<&'static str>) -> String {
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = format!("{}-{}", launch_tag(), uuid::Uuid::new_v4());
     let now = now_ms();
     let (lock, _) = registry();
     let mut registry = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,7 +134,7 @@ pub(crate) fn status(id: &str) -> Result<Value, String> {
     let outcome = registry
         .outcomes
         .get(id)
-        .ok_or_else(|| format!("operation {id} is unknown or has expired"))?;
+        .ok_or_else(|| unknown(id))?;
     Ok(json!({
         "operation_id": id,
         "state": outcome.state,
@@ -256,9 +262,37 @@ fn prune(registry: &mut Registry) {
     }
 }
 
+/// Why `id` has no record: Klipp has restarted since it was given out,
+/// or its outcome was dropped after an hour (or past the newest 1,024),
+/// or it was never one of Klipp's. Outcomes live only while Klipp runs.
+fn unknown(id: &str) -> String {
+    match id.split_once('-') {
+        Some((tag, _)) if tag != launch_tag() && tag.len() < 16 && u64::from_str_radix(tag, 16).is_ok() => format!(
+            "operation {id} is from before Klipp last started, and outcomes are kept only while Klipp runs: read the timeline to see whether that edit landed"
+        ),
+        _ => format!("operation {id} is unknown or has expired: outcomes are kept for an hour, and only while Klipp runs; read the timeline to see whether the edit landed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #693: an operation id carries its launch. One from before Klipp
+    /// last started says so; one of this run's, or any other id, is
+    /// unknown or expired; both say outcomes live only while Klipp runs.
+    #[test]
+    fn an_operation_from_before_a_restart_says_so() {
+        let ours = queued(None);
+        assert!(ours.starts_with(&format!("{}-", launch_tag())), "{ours}");
+        assert!(status(&ours).is_ok());
+        let earlier = format!("{:x}-{}", (klipp_core::launch_identity_base() >> 20) ^ 1, uuid::Uuid::new_v4());
+        let said = status(&earlier).unwrap_err();
+        assert!(said.contains("before Klipp last started") && said.contains("read the timeline"), "{said}");
+        let gone = status(&format!("{}-{}", launch_tag(), uuid::Uuid::new_v4())).unwrap_err();
+        assert!(gone.contains("unknown or has expired") && gone.contains("only while Klipp runs"), "{gone}");
+        assert!(status("write-42").unwrap_err().contains("unknown or has expired"));
+    }
 
     #[test]
     fn a_panicking_first_run_settles_the_key_for_later_retries() {

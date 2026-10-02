@@ -71,7 +71,12 @@ frames.
    or `refused`. Never send the same cut with a new key while it is
    queued. Klipp also caches an error reply for that key for up to one
    hour; after an error, inspect the project and use a new key only for
-   a deliberate new attempt. `klipp_undo` takes the whole action back.
+   a deliberate new attempt. Outcomes and keys are kept only while Klipp
+   runs: after it restarts, an earlier operation id is answered as from
+   before the restart, and an old key no longer stops a retry, so read
+   the timeline to see whether that edit landed before sending it
+   again. A project identity from before a restart never matches the
+   project after it. `klipp_undo` takes the whole action back.
 5. **Look.** `klipp_frame_at` for the frame at a time (the playhead
    comes back where it was), `klipp_screenshot` for the viewer,
    `klipp_contact_sheet` over the range you cut. `klipp_frame_stats`
