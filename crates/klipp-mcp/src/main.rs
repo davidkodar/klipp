@@ -557,9 +557,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let mut v = json!({
                 "method": "track_surface",
                 "clip_id": arg_str(args, "clip_id")?,
-                "corners": args.get("corners").cloned().ok_or("corners is required: four [x, y] pairs, fractions of the frame")?,
             });
-            for key in ["at_secs", "name", "surface", "direction"] {
+            for key in ["corners", "click", "at_secs", "name", "surface", "direction"] {
                 if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
                     v[key] = x.clone();
                 }
@@ -1513,8 +1512,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_track_surface",
              "Follow a flat surface in a clip (a phone or laptop screen, a monitor, a sign, a book \
               cover) in perspective through the clip, so a picture can be pinned to it with the pin \
-              op. Give its four corners on one frame, top left, top right, bottom right, bottom left, \
-              as fractions of the frame: read them off klipp_frame_at at at_secs. Runs in the \
+              op. Give click, a point inside it as fractions of the frame, and its corners are found \
+              from the edges round it; or give its four corners on one frame, top left, top right, \
+              bottom right, bottom left, as fractions of the frame: read them off klipp_frame_at at at_secs. Runs in the \
               background; the surface then shows under the clip in klipp_list_clips with its id and \
               the stretch it was followed over, one undo step. The track stops where the surface is \
               lost (covered, out of frame, blurred) rather than drifting: look at frames near there. \
@@ -1523,6 +1523,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               over the old track and the rest kept.",
              json!({
                  "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
+                 "click": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" }, "description": "[x,y] inside the surface, fractions of the frame; instead of corners" },
                  "corners": { "type": "array", "minItems": 4, "maxItems": 4,
                               "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
                               "description": "[[x,y] top left, top right, bottom right, bottom left], fractions of the frame" },
@@ -1531,7 +1532,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "surface": { "type": "string", "description": "Id or name of a surface to track again from these corners" },
                  "direction": { "type": "string", "enum": ["both", "forward", "backward"], "description": "One way only, merged into the surface's track; needs surface" },
              }),
-             vec!["clip_id", "corners"]),
+             vec!["clip_id"]),
         tool("klipp_select_clip",
              "Select a clip (or pass no id to clear the selection). The inspector and \
               colour page follow the selection.",

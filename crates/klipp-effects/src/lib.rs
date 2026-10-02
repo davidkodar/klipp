@@ -59,6 +59,7 @@ pub mod stabilization;
 pub mod temporal_denoise;
 pub mod track_matte;
 pub mod transform;
+pub mod surface_snap;
 pub mod window_track;
 
 use serde::{Deserialize, Serialize};

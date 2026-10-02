@@ -1703,6 +1703,8 @@ pub struct AppState {
     pub tracking_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
     /// A surface track running on a clip, stopped by setting this (#684).
     pub surface_track_cancel: std::collections::HashMap<klipp_core::ClipId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Snaps of a surface's corners still being worked out (#684).
+    pub surface_snaps_pending: usize,
     /// Pending auto-link bindings keyed by `(clip_id, point_index)`.
     /// When a `TrackingComplete` event arrives, the handler checks
     /// this map; if an entry exists, it dispatches
@@ -3866,6 +3868,7 @@ impl Default for AppState {
             tracking_in_progress: std::collections::HashSet::new(),
             tracking_progress: std::collections::HashMap::new(),
             surface_track_cancel: std::collections::HashMap::new(),
+            surface_snaps_pending: 0,
             pending_mask_track_link: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,

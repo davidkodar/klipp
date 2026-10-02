@@ -2945,6 +2945,7 @@ impl KlippApp {
                 | AppEvent::TrackingFailed { .. }
                 | AppEvent::SurfaceTracked { .. }
                 | AppEvent::SurfaceTrackFailed { .. }
+                | AppEvent::SurfaceSnapped { .. }
                 | AppEvent::SceneDetectProgress { .. }
                 | AppEvent::SceneDetectComplete { .. }
                 | AppEvent::SceneDetectFailed { .. } => {}
@@ -14198,6 +14199,83 @@ impl KlippApp {
         self.state.toast.show(format!("Tracked \u{201c}{}\u{201d} over {total} frames{note}", surface.name));
     }
 
+    /// Where `clip`'s own picture sits in the frame at timeline second
+    /// `at`: its size as shown and its own placement then. `None` for a
+    /// clip not from a file.
+    fn clip_picture_at(&self, clip: &klipp_timeline::Clip, at: f64) -> Option<([u32; 2], klipp_timeline::surface::Placement)> {
+        let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m))?;
+        let (w, h) = (item.resolution.width, item.resolution.height);
+        let shown = if item.source_rotation.rem_euclid(180) == 90 { [h, w] } else { [w, h] };
+        let fps = self.state.sequence().fps.as_f64();
+        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(elapsed, clip.timeline_in.rate.max(1));
+        Some((shown, klipp_compose::eval::evaluate_clip_own_transform(clip, elapsed, &klipp_compose::eval::eval_context(clip, when, fps))))
+    }
+
+    /// Find a surface's corners round a click in the clip's picture (#684),
+    /// on a thread: the frame is read as the tracker reads it, so the
+    /// corners found are on the frame a track would start from.
+    fn start_surface_snap(&mut self, clip_id: klipp_core::ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String>) {
+        let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
+        let seq = self.state.sequence();
+        let frame = [seq.resolution.width, seq.resolution.height];
+        let fps = seq.fps.as_f64();
+        let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+            self.state.toast.show("Only a clip from a file has a surface to find");
+            return;
+        };
+        let Some((shown, placed)) = self.clip_picture_at(&clip, at) else { return };
+        let point = klipp_timeline::surface::frame_quad_in_source(&[click; 4], shown, frame, Some(placed))[0];
+        if !(0.0..=1.0).contains(&point[0]) || !(0.0..=1.0).contains(&point[1]) {
+            self.state.toast.show("Click on the clip's picture to find a surface there");
+            return;
+        }
+        let elapsed = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+        let media_fps = item.fps.as_f64().max(1.0);
+        // The start of the file frame shown, as the tracker counts frames.
+        let source_secs = (clip.source_secs_at(elapsed, fps) * media_fps).round() / media_fps;
+        let path = item.path.clone();
+        let event_tx = self.proxy_event_tx.clone();
+        self.state.surface_snaps_pending += 1;
+        std::thread::spawn(move || {
+            let picture = klipp_engine::SequentialFrameDecoder::open(&path, SURFACE_TRACK_SIDE)
+                .and_then(|mut d| {
+                    d.seek_to(source_secs)?;
+                    d.next_frame()
+                })
+                .ok()
+                .flatten();
+            let corners = picture.and_then(|(rgba, w, h)| klipp_effects::surface_snap::snap_quad(&rgba, w as usize, h as usize, (point[0], point[1])));
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceSnapped { clip_id, at_secs: at, corners, then_track, name });
+        });
+    }
+
+    /// Snapped corners into the surface tool, or tracked from at once for
+    /// the assistant; or, found nothing, said so.
+    fn apply_surface_snap(&mut self, clip_id: klipp_core::ClipId, at: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String>) {
+        let Some(clip) = self.state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let Some(on_source) = corners else {
+            self.state.toast.show("No surface with an edge all round there: drag the corners onto it instead");
+            return;
+        };
+        let Some((shown, placed)) = self.clip_picture_at(&clip, at) else { return };
+        let frame = [self.state.sequence().resolution.width, self.state.sequence().resolution.height];
+        let on_frame = klipp_timeline::surface::source_quad_in_frame(&on_source, shown, frame, Some(placed));
+        if then_track {
+            self.send_commands(vec![AppCommand::TrackSurface { clip_id, corners: on_frame, at_secs: Some(at), name, surface: None, direction: 0, interactive: false }]);
+            return;
+        }
+        match self.state.surface_tool.as_mut() {
+            Some(tool) if tool.clip_id == clip_id => {
+                tool.corners = on_frame;
+                tool.drag = None;
+                self.state.toast.show("Corners on the surface's edges: adjust them if need be, and Track");
+            }
+            _ => {}
+        }
+    }
+
     /// The viewer's surface tool on `clip_id` (#684 phase 2): corners where
     /// `surface` is at the playhead, or a box in the middle of the clip's
     /// picture for a new one. The playhead goes onto the clip if it is not.
@@ -21210,6 +21288,10 @@ impl KlippApp {
             }
             AppCommand::OpenSurfaceTool { clip_id, surface } => {
                 self.open_surface_tool(*clip_id, *surface);
+                true
+            }
+            AppCommand::SnapSurface { clip_id, click, at_secs, then_track, name } => {
+                self.start_surface_snap(*clip_id, *click, *at_secs, *then_track, name.clone());
                 true
             }
             AppCommand::RemoveSurface { clip_id, surface } => {
@@ -29493,7 +29575,7 @@ impl eframe::App for KlippApp {
         }
         // Likewise a track, a window's or a surface's: with the window
         // idle its result sat unapplied until the pointer moved.
-        if !self.state.tracking_in_progress.is_empty() {
+        if !self.state.tracking_in_progress.is_empty() || self.state.surface_snaps_pending > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.drain_audio_conforms();
@@ -32282,6 +32364,10 @@ impl KlippApp {
                         source_size,
                         media_fps,
                     }, held_secs, direction, interactive);
+                }
+                AppEvent::SurfaceSnapped { clip_id, at_secs, corners, then_track, name } => {
+                    self.state.surface_snaps_pending = self.state.surface_snaps_pending.saturating_sub(1);
+                    self.apply_surface_snap(clip_id, at_secs, corners, then_track, name);
                 }
                 AppEvent::SurfaceTrackFailed { clip_id, surface, error } => {
                     self.state.tracking_in_progress.remove(&clip_id);

@@ -4632,7 +4632,7 @@ impl ViewerPanel {
         let Some(mut tool) = state.surface_tool.clone() else { return };
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, tool.corners[i][0], tool.corners[i][1]));
-        let (pointer, pressed, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
+        let (pointer, pressed, down, released) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.primary_released()));
         let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= 12.0);
         let inside = |p: egui::Pos2| {
             // Inside the quad: on the same side of all four edges.
@@ -4654,7 +4654,7 @@ impl ViewerPanel {
                 let r = frame.show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let what = match (tool.direction, tool.surface.is_some()) {
-                            (0, false) => "Drag the four corners onto the surface",
+                            (0, false) => "Click the surface to find its corners, or drag them onto it",
                             (0, true) => "Put the corners right, then track again",
                             _ => "Put the corners on the surface here, then continue",
                         };
@@ -4695,9 +4695,20 @@ impl ViewerPanel {
                     tool.drag = Some((c, p, tool.corners));
                 } else if inside(p) {
                     tool.drag = Some((4, p, tool.corners));
+                } else if image_rect.contains(p) {
+                    // Off the quad: a click, to find the surface there.
+                    tool.drag = Some((5, p, tool.corners));
                 }
             }
-            if let Some((which, from, start)) = tool.drag {
+            // A press let go where it was, not on a corner: find the
+            // surface's edges round it.
+            if let Some((which, from, _)) = tool.drag {
+                if released && which >= 4 && (p - from).length() < 3.0 {
+                    let (nx, ny) = viewer_screen_to_norm(image_rect, from);
+                    cmds.push(AppCommand::SnapSurface { clip_id: tool.clip_id, click: [nx, ny], at_secs: None, then_track: false, name: tool.name.clone() });
+                }
+            }
+            if let Some((which, from, start)) = tool.drag.filter(|d| d.0 < 5) {
                 if down {
                     let (nx, ny) = viewer_screen_to_norm(image_rect, p);
                     let (fx, fy) = viewer_screen_to_norm(image_rect, from);

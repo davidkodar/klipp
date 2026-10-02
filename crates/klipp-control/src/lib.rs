@@ -4854,7 +4854,7 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::TrackSurface { clip_id, corners, at_secs, name, surface, direction } => {
+        ControlCommand::TrackSurface { clip_id, corners, click, at_secs, name, surface, direction } => {
             let direction: i8 = match direction.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
                 None | Some("") | Some("both") => 0,
                 Some("forward") | Some("later") => 1,
@@ -4868,8 +4868,15 @@ fn handle(
                 return Err("track_surface runs in the background; send it on its own".into());
             }
             let id = existing_clip_id(ctx, &clip_id)?;
-            if !klipp_timeline::surface::quad_is_usable(&corners) || corners.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) {
-                return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+            match (corners, click) {
+                (Some(_), Some(_)) => return Err("give corners or click, not both".into()),
+                (None, None) => return Err("give the surface's four corners, or click: a point inside it, fractions of the frame".into()),
+                (None, Some(c)) if c.iter().any(|v| !(0.0..=1.0).contains(v)) => return Err("click is a point in the frame, x and y from 0 to 1".into()),
+                (None, Some(_)) if surface.is_some() || direction != 0 => return Err("click finds a new surface: to track one again or continue it, give its corners".into()),
+                (Some(corners), _) if !klipp_timeline::surface::quad_is_usable(&corners) || corners.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) => {
+                    return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+                }
+                _ => {}
             }
             let surface = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -4893,8 +4900,16 @@ fn handle(
                     None => None,
                 }
             };
-            let mut v = send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false })?;
-            v["text"] = json!("Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op.");
+            let mut v = match (corners, click) {
+                (Some(corners), _) => send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false })?,
+                (None, Some(click)) => send(AppCommand::SnapSurface { clip_id: id, click, at_secs, then_track: true, name })?,
+                (None, None) => unreachable!("refused above"),
+            };
+            v["text"] = json!(if click.is_some() {
+                "Finding the surface's edges round the click, then tracking it, in the background: it shows under the clip's surfaces in klipp_list_clips when done. If nothing shows, there was no surface with an edge all round there: look at the frame and give its corners."
+            } else {
+                "Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op."
+            });
             Ok(v)
         }
 
