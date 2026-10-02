@@ -216,7 +216,7 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
         }
         crate::hold::wait();
         let t = std::time::Instant::now();
-        match a.run(item, ctx) {
+        match crate::worker::run_analyser(a.as_ref(), item, ctx) {
             Ok(v) => match crate::store::save(&key, a.id(), a.schema_version(), &v) {
                 Ok(()) => {
                     tracing::info!("analysis {} of {} in {:.1} s", a.id(), item.filename, t.elapsed().as_secs_f64());

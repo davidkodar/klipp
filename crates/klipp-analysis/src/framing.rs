@@ -354,6 +354,10 @@ impl crate::Analyser for FramingAnalyser {
             && model_path().is_some()
             && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
     }
+    /// ONNX Runtime, in a worker (#689).
+    fn native(&self) -> bool {
+        true
+    }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
         use klipp_ml::MaskGenerator;
         let (model_id, model) = model_path().ok_or_else(|| format!("no detection model downloaded; ask with download_models ({MODEL_ID})"))?;

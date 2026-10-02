@@ -444,6 +444,10 @@ impl crate::Analyser for ScreenTextAnalyser {
     fn wants(&self, item: &klipp_media::MediaItem) -> bool {
         !item.is_still && !item.video_codec.is_empty() && item.duration.to_secs_f64() > 0.0 && crate::looks_like_screen(item) && installed() && klipp_ml_ort::runtime_resolve::ensure_runtime_loadable().is_ok()
     }
+    /// ONNX Runtime, in a worker (#689).
+    fn native(&self) -> bool {
+        true
+    }
     fn run(&self, item: &klipp_media::MediaItem, ctx: &crate::AnalysisCtx) -> Result<serde_json::Value, String> {
         let (det, rec) = model_paths().ok_or_else(|| format!("the screen-text models are not downloaded; ask with download_models ({})", MODEL_IDS.join(" + ")))?;
         let duration = item.duration.to_secs_f64();

@@ -100,9 +100,10 @@ fn install_native_crash_handler() {
 }
 
 fn main() -> Result<()> {
-    // A transcription worker, started by the app itself (#640): it does
-    // its one job and exits, before any of the app is set up.
-    if let Some(code) = klipp_ui::cli::transcription_worker() {
+    // A worker, started by the app itself for native analysis code
+    // (#640, #689): it does its one job and exits, before any of the app
+    // is set up.
+    if let Some(code) = klipp_ui::cli::worker() {
         std::process::exit(code);
     }
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
@@ -134,7 +135,7 @@ fn main() -> Result<()> {
         }
         klipp_ui::cli::Cli::Run(paths) => {
             klipp_ui::cli::set_startup_paths(paths);
-            klipp_ui::cli::use_transcription_worker();
+            klipp_ui::cli::use_workers();
         }
     }
 
