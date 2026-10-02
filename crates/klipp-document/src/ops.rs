@@ -410,6 +410,24 @@ pub enum Op {
         #[serde(default)]
         amount: Option<f32>,
     },
+    /// Put a picture onto a surface tracked in a clip (#684), a phone
+    /// screen, a sign, a monitor: `media_id` goes on a video track above
+    /// (one is made on top if none has room) from `from` to `to` (the
+    /// clip's own edges when left out), its whole frame pinned to the
+    /// surface's four corners and following them as the shot moves. Re-
+    /// tracking the surface moves the picture with it. `surface` is the
+    /// surface's id or name; left out, the clip's latest. Track one first
+    /// with track_surface.
+    Pin {
+        clip_id: ClipRef,
+        media_id: MediaId,
+        #[serde(default)]
+        surface: Option<String>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
+    },
     /// Move what a clip shows without moving the clip: its source in and
     /// out both by `secs` (later in the file for positive), the timeline
     /// untouched. Refused past the file's start or end.
@@ -909,7 +927,7 @@ pub enum Op {
 pub const OP_NAMES: &[&str] = &[
     "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "slide", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
+    "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
 ];
@@ -1781,6 +1799,12 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
+        }
+        Op::Pin { clip_id, media_id, surface, from, to } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
+            let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
+            pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to)
         }
         Op::Slide { clip_id, secs: by } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3752,6 +3776,63 @@ fn redact(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip:
         short_name(&pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_default()), clip_name(seq, pool, clip), secs(a), secs(b), x * 100.0, y * 100.0, w * 100.0, h * 100.0
     );
     let _ = fps;
+    Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
+}
+
+/// The surface `name` (an id or a name) on `clip`, or its latest.
+pub fn find_surface<'c>(clip: &'c Clip, name: Option<&str>) -> Option<&'c klipp_timeline::Surface> {
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => clip.surfaces.iter().rev().find(|s| s.id.to_string() == n || s.name.eq_ignore_ascii_case(n)),
+        None => clip.surfaces.last(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media_id: MediaId, surface: Option<&str>, from: Option<Timecode>, to: Option<Timecode>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let host = clip_name(seq, pool, clip);
+    let Some(s) = find_surface(clip, surface) else {
+        let hint = if clip.surfaces.is_empty() {
+            "track one with track_surface first".to_string()
+        } else {
+            format!("its surfaces are {}", clip.surfaces.iter().map(|s| format!("\"{}\" ({})", s.name, s.id)).collect::<Vec<_>>().join(", "))
+        };
+        return Err(refuse(i, match surface { Some(n) => format!("{host} has no surface \"{n}\""), None => format!("{host} has no tracked surface") }, hint));
+    };
+    if !klipp_timeline::surface::quad_is_usable(&s.corners) {
+        return Err(refuse(i, format!("the surface \"{}\" has no area", s.name), "track it again with four corners round it"));
+    }
+    let Some(item) = pool.get(&media_id) else {
+        return Err(refuse(i, format!("no media {media_id}"), "use a media_id from list_media"));
+    };
+    if item.resolution.width == 0 && !item.is_still {
+        return Err(refuse(i, format!("{} has no picture", short_name(&item.filename)), "pin a picture, a video or a still"));
+    }
+    let a = from.unwrap_or(clip.timeline_in).max(clip.timeline_in);
+    let mut b = to.unwrap_or(clip.timeline_out).min(clip.timeline_out);
+    if !item.is_still && item.duration.value > 0 {
+        b = b.min(a + item.duration);
+    }
+    if b <= a {
+        return Err(refuse(i, format!("{:.2}-{:.2} s is not a stretch inside {host}", secs(a), secs(b)), "give from and to inside the clip, in order"));
+    }
+    let mut picture = Clip::media(media_id, a, b, Timecode { value: 0, rate: b.rate }, b - a);
+    picture.volume = 0.0;
+    let [tl, tr, br, bl] = s.corners;
+    picture.builtin_effects = vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }];
+    picture.builtin_effects_enabled = vec![true];
+    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id });
+    let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
+    let (video, created) = match above {
+        Some(k) => ((picture, k), None),
+        None => ((picture, 0), Some(0)),
+    };
+    let ids = vec![video.0.id];
+    let where_ = match created {
+        Some(_) => "a new video track on top; every other track's index moves down by one".to_string(),
+        None => format!("track {}", video.1),
+    };
+    let tracked = if s.keys.is_empty() { ", where it stays until the surface is tracked" } else { ", following it" };
+    let what = format!("pin {} to the surface \"{}\" of {host} from {:.2} to {:.2} s on {where_}{tracked}", short_name(&item.filename), s.name, secs(a), secs(b));
     Ok((what, EditCommand::LinkedImport { video: Some(video), audio: None, created_video_track_at: created, created_audio_track_at: None, autoset: None }, ids))
 }
 
@@ -6300,6 +6381,36 @@ mod tests {
         // Alone, when asked.
         let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false, linked: false }]).unwrap();
         assert_eq!(plan.steps[0].after.len(), 1);
+    }
+
+    /// #684: a picture pinned to a tracked surface goes on the track
+    /// above with its corner pin on the surface's corners, linked to it.
+    #[test]
+    fn a_picture_pins_to_a_tracked_surface() {
+        let (mut seq, mut pool, _, a, _) = fixture();
+        let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
+        logo.is_still = true;
+        let logo = pool.add(logo);
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: logo, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None };
+        assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
+
+        let corners = [[0.3, 0.3], [0.6, 0.32], [0.62, 0.6], [0.28, 0.58]];
+        let id = ClipId::new().0;
+        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey { source_secs: 2.0, corners }] });
+        let plan = resolve(&seq, &pool, &[pin_op(Some("phone"))]).unwrap();
+        let step = &plan.steps[0];
+        assert!(step.what.contains("surface \"Phone\"") && step.what.contains("following it") && step.what.contains("a new video track on top"), "{}", step.what);
+        let EditCommand::LinkedImport { video: Some((picture, 0)), created_video_track_at: Some(0), .. } = &step.edit else { panic!("{:?}", step.edit) };
+        assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
+        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id }));
+        assert!(matches!(picture.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects);
+
+        // Named by id too; an unknown name is refused with the names there are.
+        assert!(resolve(&seq, &pool, &[pin_op(Some(&id.to_string()))]).is_ok());
+        assert!(resolve(&seq, &pool, &[pin_op(Some("laptop"))]).unwrap_err().hint.contains("\"Phone\""));
+        // Round trip through the wire format.
+        let json = serde_json::to_string(&pin_op(None)).unwrap();
+        assert!(json.contains("\"op\":\"pin\""), "{json}");
     }
 
     #[test]

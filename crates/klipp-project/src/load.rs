@@ -599,6 +599,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: c.track_points.clone(),
+                    surfaces: c.surfaces.clone(),
+                    surface_pin: c.surface_pin,
                     precomp: None,
                 };
                 // Titles saved with the old whole-title or

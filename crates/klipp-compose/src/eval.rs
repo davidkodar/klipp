@@ -40,6 +40,21 @@ pub fn eval_with_modifiers(
 /// fields the title / V2 paths feed into `BuiltinEffect::Transform`.
 pub type ResolvedTransform = (f32, f32, f32, f32, f32, f32, f32);
 
+/// Where a pinned clip's corners are at `time`: on the surface it is
+/// pinned to, read in the host clip's file time (#684). `None` when the
+/// clip is not pinned, or its host or surface is gone or untracked, and
+/// its corner pin keeps its own corners, the reference frame's.
+pub fn surface_pin_corners(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, time: klipp_core::Timecode, fps: f64) -> Option<klipp_timeline::surface::Quad> {
+    let pin = clip.surface_pin?;
+    let host = seq.tracks.iter().find_map(|t| t.find_clip(pin.host))?;
+    let surface = host.surfaces.iter().find(|s| s.id == pin.surface)?;
+    if surface.keys.is_empty() {
+        return None;
+    }
+    let elapsed = (time - host.timeline_in).to_secs_f64();
+    Some(surface.corners_at(host.source_secs_at(elapsed, fps)))
+}
+
 /// Evaluate a single clip's *own* transform — keyframes + modifiers
 /// resolved against the clip's `BuiltinEffect::Transform` defaults
 /// (or the conventional `(0,0,1,1,0,0.5,0.5)` if no Transform effect

@@ -355,6 +355,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         }).collect(),
                         active_grade_version: c.active_grade_version,
                         track_points: c.track_points.clone(),
+                        surfaces: c.surfaces.clone(),
+                        surface_pin: c.surface_pin,
                     }
                 }).collect(),
             }

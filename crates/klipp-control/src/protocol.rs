@@ -190,6 +190,24 @@ pub enum ControlCommand {
     /// sound, one undoable edit. Returns at once; the split shows on the
     /// timeline when the detection is done.
     DetectSceneCuts { clip_id: String },
+    /// Follow a flat surface in a clip, a phone screen, a sign, a monitor,
+    /// in perspective through the clip (#684), from four `corners` (top
+    /// left, top right, bottom right, bottom left, fractions of the frame)
+    /// as they are at timeline second `at_secs` (the playhead when left
+    /// out). Runs in the background; the surface shows on the clip in the
+    /// timeline readout when done, one undoable edit. With `surface` (an
+    /// id or name), that surface is tracked again from these corners and
+    /// what is pinned to it follows.
+    TrackSurface {
+        clip_id: String,
+        corners: [[f32; 2]; 4],
+        #[serde(default)]
+        at_secs: Option<f64>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        surface: Option<String>,
+    },
 
     // ── Colour / grade ─────────────────────────────────────────────
     /// The clip's node graph, as the serialised `NodeGraph`.

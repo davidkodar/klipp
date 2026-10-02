@@ -55,6 +55,8 @@ mod marker;
 pub mod multicam;
 mod sequence;
 pub mod shared;
+pub mod surface;
+pub use surface::{Surface, SurfaceKey, SurfacePin};
 pub use shared::{SequenceSnapshot, SequenceWrite, SharedSequence};
 
 pub use klipp_core::title_motion::{CrawlDirection, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};

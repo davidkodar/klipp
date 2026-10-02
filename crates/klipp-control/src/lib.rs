@@ -2167,7 +2167,7 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
     };
     let clip_json = |c: &klipp_timeline::Clip| -> serde_json::Value {
         if f.full {
-            return json!({
+            let mut v = json!({
                 "clip_id": c.id.0.to_string(),
                 "kind": clip_kind_name(c),
                 "enabled": c.enabled,
@@ -2191,6 +2191,8 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
                         "log_format": log_format_json(m),
                     })),
             });
+            surfaces_json(c, fps, &mut v);
+            return v;
         }
         let mut v = json!({
             "clip_id": c.id.0.to_string(),
@@ -2217,6 +2219,7 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
         if fx > 0 {
             v["effects"] = json!(fx);
         }
+        surfaces_json(c, fps, &mut v);
         v
     };
     let tracks: Vec<serde_json::Value> = seq
@@ -2245,6 +2248,26 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
         reply["note"] = json!("short form: pass full true for source ranges, frames, blend, grade group and file paths; get_grade for a clip's grade");
     }
     Ok(reply)
+}
+
+/// A clip's tracked surfaces and what it is pinned to (#684), on its
+/// readout: each surface's id and name, and the timeline stretch the
+/// track covers, which is where a pin follows it.
+fn surfaces_json(c: &klipp_timeline::Clip, fps: f64, v: &mut serde_json::Value) {
+    let on_timeline = |src: f64| ((c.timeline_in.to_secs_f64() + c.elapsed_for_source_secs(src, fps)) * 1000.0).round() / 1000.0;
+    if !c.surfaces.is_empty() {
+        v["surfaces"] = json!(c.surfaces.iter().map(|s| {
+            let mut j = json!({ "surface_id": s.id.to_string(), "name": s.name, "frames": s.keys.len() });
+            if let Some((a, b)) = s.tracked_secs() {
+                let (a, b) = (on_timeline(a), on_timeline(b));
+                j["tracked_secs"] = json!([a.min(b), a.max(b)]);
+            }
+            j
+        }).collect::<Vec<_>>());
+    }
+    if let Some(pin) = c.surface_pin {
+        v["pinned_to"] = json!({ "clip_id": pin.host.0.to_string(), "surface_id": pin.surface.to_string() });
+    }
 }
 
 /// A clip's kind as a client reads it.
@@ -4593,6 +4616,41 @@ fn handle(
             }
             let mut v = send(AppCommand::DetectSceneCuts { clip_id: id })?;
             v["text"] = json!("Finding the scene cuts in the background; the clip is split at them, its sound with it, as one undo step when it is done. Read the timeline in a while to see the shots, or undo to put it back.");
+            Ok(v)
+        }
+
+        ControlCommand::TrackSurface { clip_id, corners, at_secs, name, surface } => {
+            if in_batch {
+                return Err("track_surface runs in the background; send it on its own".into());
+            }
+            let id = existing_clip_id(ctx, &clip_id)?;
+            if !klipp_timeline::surface::quad_is_usable(&corners) || corners.iter().flatten().any(|v| !(-1.0..=2.0).contains(v)) {
+                return Err("the corners must enclose an area, as fractions of the frame: top left, top right, bottom right, bottom left".into());
+            }
+            let surface = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let clip = seq.tracks.iter().find_map(|t| t.find_clip(id)).ok_or_else(|| format!("no clip with id {clip_id}"))?;
+                if clip.media_id().and_then(|m| pool.get(&m)).is_none_or(|m| m.is_still) {
+                    return Err("only a clip of moving footage from a file can be tracked".into());
+                }
+                if let Some(at) = at_secs {
+                    let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                    if !(a..b).contains(&at) {
+                        return Err(format!("at_secs {at:.2} is outside the clip ({a:.2}-{b:.2} s): set the corners on a frame of it"));
+                    }
+                }
+                match surface.as_deref() {
+                    Some(n) => Some(
+                        klipp_document::ops::find_surface(clip, Some(n))
+                            .ok_or_else(|| format!("the clip has no surface \"{n}\""))?
+                            .id,
+                    ),
+                    None => None,
+                }
+            };
+            let mut v = send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface })?;
+            v["text"] = json!("Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op.");
             Ok(v)
         }
 

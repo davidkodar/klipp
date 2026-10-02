@@ -379,6 +379,10 @@ pub struct ClipJson {
     pub active_grade_version: Option<usize>,
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<klipp_timeline::Surface>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_pin: Option<klipp_timeline::SurfacePin>,
 }
 
 /// Wire-format mirror of [`klipp_timeline::MatteBinding`]. The clip-id is
@@ -1016,6 +1020,8 @@ mod tests {
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
+            surfaces: Vec::new(),
+            surface_pin: None,
         };
 
         let serialised = serde_json::to_string(&clip).expect("serialise clip");
@@ -1084,6 +1090,8 @@ mod tests {
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
+            surfaces: Vec::new(),
+            surface_pin: None,
         };
         let serialised = serde_json::to_string(&clip).expect("serialise");
         assert!(!serialised.contains("audio_effect_keyframes"),
@@ -1252,6 +1260,8 @@ mod tests {
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
+            surfaces: Vec::new(),
+            surface_pin: None,
         }
     }
 

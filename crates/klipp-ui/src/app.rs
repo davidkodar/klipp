@@ -698,19 +698,53 @@ struct WindowTrackJob {
     perspective: bool,
 }
 
+/// A surface to follow through a clip's file (#684): the file, its
+/// rate, the frames the clip uses, the frame the corners were set on, and
+/// the corners there in frame fractions.
+struct SurfaceTrackJob {
+    clip_id: klipp_core::ClipId,
+    surface: uuid::Uuid,
+    name: String,
+    path: std::path::PathBuf,
+    media_fps: f64,
+    frames: (usize, usize),
+    reference: usize,
+    corners: [[f32; 2]; 4],
+    /// Pixels in one frame as it is read for tracking.
+    pixels: usize,
+}
+
+/// The width surfaces are tracked at, and the memory the frames may take
+/// while they are (#684).
+const SURFACE_TRACK_SIDE: u32 = 1280;
+const SURFACE_TRACK_BYTES: usize = 1_250_000_000;
+
 /// The frames `first..=last` of the file at `path` (`fps` frames a
 /// second), grey, for the window tracker (#238): read once, in order,
 /// from a seek to the first, at half of a decode no more than 960 on its
 /// long side. `progress` hears the share read, and stops it by returning
 /// false.
 fn grey_frames(path: &std::path::Path, fps: f64, first: usize, last: usize, progress: &dyn Fn(f32) -> bool) -> Result<Vec<klipp_effects::window_track::GrayFrame>, String> {
-    let mut decoder = klipp_engine::SequentialFrameDecoder::open(path, 960)?;
+    grey_frames_sized(path, fps, first, last, 960, true, progress)
+}
+
+/// [`grey_frames`] at a decode no more than `long_side` wide as shown,
+/// halved again when `half`. A surface is followed on the sharper frames
+/// (#684): a pin sits on its corners to about a pixel only when the
+/// tracker sees pixels that small.
+fn grey_frames_sized(path: &std::path::Path, fps: f64, first: usize, last: usize, long_side: u32, half: bool, progress: &dyn Fn(f32) -> bool) -> Result<Vec<klipp_effects::window_track::GrayFrame>, String> {
+    let mut decoder = klipp_engine::SequentialFrameDecoder::open(path, long_side)?;
     decoder.seek_to(first as f64 / fps)?;
     let count = last + 1 - first;
     let mut out = Vec::with_capacity(count);
     while out.len() < count {
         let Some((rgba, w, h)) = decoder.next_frame()? else { break };
-        let (data, gw, gh) = klipp_effects::rolling_shutter::to_gray_half(&rgba, w, h);
+        let (data, gw, gh) = if half {
+            klipp_effects::rolling_shutter::to_gray_half(&rgba, w, h)
+        } else {
+            // The same luma as the half-size reduction, a pixel at a time.
+            (rgba.chunks_exact(4).map(|p| ((p[0] as u32 * 54 + p[1] as u32 * 183 + p[2] as u32 * 19) >> 8) as u8).collect(), w, h)
+        };
         out.push(klipp_effects::window_track::GrayFrame { data, width: gw as usize, height: gh as usize });
         if out.len() % 8 == 0 && !progress(out.len() as f32 / count as f32) {
             return Err("cancelled".into());
@@ -2890,6 +2924,8 @@ impl KlippApp {
                 | AppEvent::TrackingProgress { .. }
                 | AppEvent::TrackingComplete { .. }
                 | AppEvent::TrackingFailed { .. }
+                | AppEvent::SurfaceTracked { .. }
+                | AppEvent::SurfaceTrackFailed { .. }
                 | AppEvent::SceneDetectProgress { .. }
                 | AppEvent::SceneDetectComplete { .. }
                 | AppEvent::SceneDetectFailed { .. } => {}
@@ -8417,6 +8453,8 @@ impl KlippApp {
                             stabilization_data: None,
                             smoothed_trajectory: None,
                             track_points: Vec::new(),
+                            surfaces: Vec::new(),
+                            surface_pin: None,
                             precomp: None,
                         };
                         let track = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_index];
@@ -14074,6 +14112,106 @@ impl KlippApp {
         });
     }
 
+    /// A tracked surface onto its clip as one undo step (#684), replacing
+    /// the one it re-tracks; what is pinned to it follows on the next frame
+    /// drawn. Says how much of the clip it covers, and where it was lost.
+    fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let fps = seq.fps.as_f64();
+        let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
+            self.state.toast.show("The tracked clip is gone; the track was dropped");
+            return;
+        };
+        let mut new = old.clone();
+        match new.surfaces.iter_mut().find(|s| s.id == surface.id) {
+            Some(s) => *s = surface.clone(),
+            None => new.surfaces.push(surface.clone()),
+        }
+        let edit = EditCommand::ReplaceClip { description: "Track Surface", old: Box::new(old.clone()), new: Box::new(new) };
+        self.apply_edits_as_one(std::slice::from_ref(&edit), "Track Surface");
+        // Where the track ends short of the clip, in timeline seconds.
+        let (from, to) = surface.tracked_secs().unwrap_or((surface.reference_secs, surface.reference_secs));
+        let on_timeline = |src: f64| old.timeline_in.to_secs_f64() + old.elapsed_for_source_secs(src, fps);
+        let (lo, hi) = (old.source_in.to_secs_f64(), old.source_out.to_secs_f64());
+        let frame = 1.0 / fps.max(1.0);
+        let mut lost = Vec::new();
+        if from > lo + frame * 1.5 {
+            lost.push(format!("before {:.2} s", on_timeline(from)));
+        }
+        if to < hi - frame * 1.5 {
+            lost.push(format!("after {:.2} s", on_timeline(to)));
+        }
+        let note = if lost.is_empty() { String::new() } else { format!("; lost {}", lost.join(" and ")) };
+        self.state.toast.show(format!("Tracked \u{201c}{}\u{201d} over {} frames{note}", surface.name, surface.keys.len()));
+    }
+
+    /// Follow a surface in perspective both ways from its reference frame
+    /// (#684), on a thread: the frames are read once, as for a window, and
+    /// each followed frame's corners come back by file time.
+    fn start_surface_track(&mut self, job: SurfaceTrackJob) {
+        let SurfaceTrackJob { clip_id, surface, name, path, media_fps, frames: (first, last), reference, corners, pixels } = job;
+        self.state.tracking_in_progress.insert(clip_id);
+        self.state.tracking_progress.insert(clip_id, 0.0);
+        let event_tx = self.proxy_event_tx.clone();
+        std::thread::spawn(move || {
+            use klipp_effects::window_track::{track_window_perspective, GrayFrame, TrackOptions};
+            let fail = |error: String| {
+                let _ = event_tx.send(klipp_core::AppEvent::SurfaceTrackFailed { clip_id, surface, error });
+            };
+            // Frames held at once: as many as fit about a gigabyte and a
+            // quarter at the size they are read, around the reference.
+            let most = (SURFACE_TRACK_BYTES / pixels.max(1)).clamp(50, 3600);
+            let (first, last) = if last + 1 - first > most {
+                let lo = reference.saturating_sub(most / 2).max(first);
+                (lo, (lo + most - 1).min(last))
+            } else {
+                (first, last)
+            };
+            let loading = 0.6;
+            let frames = match grey_frames_sized(&path, media_fps, first, last, SURFACE_TRACK_SIDE, false, &|p| {
+                event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * loading }).is_ok()
+            }) {
+                Ok(f) => f,
+                Err(e) => return fail(e),
+            };
+            let decode = |f: usize| -> Option<GrayFrame> { f.checked_sub(first).and_then(|i| frames.get(i)).cloned() };
+            let Some(reference_frame) = decode(reference) else {
+                return fail("the frame the corners were set on could not be read".into());
+            };
+            let last = first + frames.len().saturating_sub(1);
+            let (gw, gh) = (reference_frame.width as f64, reference_frame.height as f64);
+            let quad_px = corners.map(|c| (c[0] as f64 * gw, c[1] as f64 * gh));
+            // At this size a frame's move is larger in pixels than the
+            // window tracker's halved frames see it: search wider, and
+            // match on patches big enough to carry texture.
+            let opts = TrackOptions { search_radius: 32, patch_half: 8, ..TrackOptions::default() };
+            let forward: Vec<usize> = (reference + 1..=last).collect();
+            let backward: Vec<usize> = (first..reference).rev().collect();
+            let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
+            let report = |p: f32| event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
+            let ahead = track_window_perspective(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
+            let behind = track_window_perspective(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
+            if ahead.is_empty() && behind.is_empty() && !(forward.is_empty() && backward.is_empty()) {
+                return fail("nothing on the surface to follow: set the corners round something with detail".into());
+            }
+            let still = klipp_effects::homography::Homography::identity();
+            let keys = behind
+                .into_iter()
+                .rev()
+                .chain(std::iter::once((reference, still)))
+                .chain(ahead)
+                .map(|(f, h)| {
+                    let quad = quad_px.map(|c| {
+                        let (x, y) = h.transform(c.0, c.1);
+                        [(x / gw) as f32, (y / gh) as f32]
+                    });
+                    (f as f64 / media_fps, quad)
+                })
+                .collect();
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys });
+        });
+    }
+
     fn resolve_graph_at_path_mut<'a>(
         clip: &'a mut klipp_timeline::Clip,
         path: &[klipp_nodes::NodeId],
@@ -16879,6 +17017,8 @@ impl KlippApp {
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
+                    surfaces: Vec::new(),
+                    surface_pin: None,
                     precomp: None,
                 };
                 let clip_id = clip.id;
@@ -17241,6 +17381,8 @@ impl KlippApp {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         };
         self.state.sequences[seq_idx].tracks[track_idx]
@@ -20894,6 +21036,45 @@ impl KlippApp {
             }
             AppCommand::ToggleTrackingMode => {
                 self.state.tracking_mode = !self.state.tracking_mode;
+                true
+            }
+            AppCommand::TrackSurface { clip_id, corners, at_secs, name, surface } => {
+                let clip_id = *clip_id;
+                if !klipp_timeline::surface::quad_is_usable(corners) {
+                    self.state.toast.show("The surface's corners need to enclose an area");
+                    return true;
+                }
+                if self.state.tracking_in_progress.contains(&clip_id) {
+                    self.state.toast.show("This clip is already being tracked");
+                    return true;
+                }
+                let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
+                let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
+                    self.state.toast.show("Only a clip from a file can be tracked");
+                    return true;
+                };
+                let media_fps = item.fps.as_f64().max(1.0);
+                let path = item.path.clone();
+                let frame_count = (item.duration.to_secs_f64() * media_fps).round() as usize;
+                let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
+                let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
+                let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
+                let reference = ((clip.source_secs_at(clip_time, seq.fps.as_f64()) * media_fps).round() as usize).clamp(first, last);
+                let existing = surface.and_then(|id| clip.surfaces.iter().find(|s| s.id == id));
+                let id = surface.unwrap_or_else(uuid::Uuid::new_v4);
+                let name = name.clone()
+                    .or_else(|| existing.map(|s| s.name.clone()))
+                    .unwrap_or_else(|| format!("Surface {}", clip.surfaces.len() + 1));
+                self.state.toast.show(format!("Tracking the surface \u{201c}{name}\u{201d}\u{2026}"));
+                let (w, h) = (item.resolution.width.max(1) as f64, item.resolution.height.max(1) as f64);
+                // The decoder bounds the picture's width as shown, which for
+                // a turned phone shot is the file's height: size the budget
+                // for the larger of the two.
+                let scale = (SURFACE_TRACK_SIDE as f64 / w.min(h)).min(1.0);
+                let pixels = ((w * scale) * (h * scale)) as usize;
+                self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: *corners, pixels });
                 true
             }
             AppCommand::TrackMaskRegion { clip_id, node_id, mask_index, perspective } => {
@@ -24819,6 +25000,8 @@ impl KlippApp {
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
+                surfaces: Vec::new(),
+                surface_pin: None,
                 precomp: None,
             };
             track.clips.insert(i + 1, right_clip);
@@ -24955,6 +25138,8 @@ impl KlippApp {
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
+                surfaces: Vec::new(),
+                surface_pin: None,
                 precomp: None,
             };
             track.clips.insert(i + 1, right_clip);
@@ -31923,6 +32108,23 @@ impl KlippApp {
                     self.state.tracking_progress.remove(&clip_id);
                     tracing::warn!("Point tracking failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Point tracking failed: {error}"));
+                }
+                AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs, keys } => {
+                    self.state.tracking_in_progress.remove(&clip_id);
+                    self.state.tracking_progress.remove(&clip_id);
+                    self.apply_surface_track(clip_id, klipp_timeline::Surface {
+                        id: surface,
+                        name,
+                        corners,
+                        reference_secs,
+                        keys: keys.into_iter().map(|(source_secs, corners)| klipp_timeline::SurfaceKey { source_secs, corners }).collect(),
+                    });
+                }
+                AppEvent::SurfaceTrackFailed { clip_id, surface, error } => {
+                    self.state.tracking_in_progress.remove(&clip_id);
+                    self.state.tracking_progress.remove(&clip_id);
+                    tracing::warn!("Surface tracking failed for {:?} ({surface}): {}", clip_id, error);
+                    self.state.toast.show(format!("Surface tracking failed: {error}"));
                 }
                 AppEvent::MediaSyncComplete { video_id, sync } => {
                     self.apply_media_sync(video_id, sync);
@@ -43275,6 +43477,8 @@ fn pasted_clips(cb: &ClipboardContent, at: klipp_core::Timecode) -> Vec<(klipp_t
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
+                surfaces: Vec::new(),
+                surface_pin: None,
                 precomp: None,
                 ..clip.clone()
             };

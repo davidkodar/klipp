@@ -2948,6 +2948,13 @@ pub enum AppCommand {
     /// `perspective` follows the window's four corners on a flat surface
     /// instead of a move, size and turn (#238).
     TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, perspective: bool },
+    /// Follow a flat surface in a clip, a phone screen, a sign, a monitor,
+    /// through the clip in perspective (#684), from `corners` (top left,
+    /// top right, bottom right, bottom left, fractions of the frame) as
+    /// they are at timeline second `at_secs` (the playhead when `None`).
+    /// With `surface`, that surface is tracked again from these corners,
+    /// and whatever is pinned to it follows the new track.
+    TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid> },
     /// Remove the tracker bound to this mask plus the mask's centre
     /// keyframes — gives the user a clean "untrack" gesture without
     /// leaving an orphan tracker behind. No-op when no tracker is
@@ -3717,6 +3724,11 @@ pub enum AppEvent {
     /// `positions` (#238); empty for a point track.
     TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize, motion: Vec<(f64, f64)>, corners: Vec<[(f64, f64); 4]> },
     TrackingFailed { clip_id: ClipId, error: String },
+    /// A surface tracked (#684): where its corners are in each file frame
+    /// followed, `(file seconds, corners)`, earliest first, the reference
+    /// frame's among them.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])> },
+    SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
 
     // Audio sync (#61)
     /// Background cross-correlation finished. `offset_samples` at 48 kHz —

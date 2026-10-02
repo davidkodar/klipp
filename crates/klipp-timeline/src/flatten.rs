@@ -361,6 +361,9 @@ fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
             if let Some(m) = &mut c.matte_source {
                 m.source_clip_id = renamed(m.source_clip_id);
             }
+            if let Some(pin) = &mut c.surface_pin {
+                pin.host = renamed(pin.host);
+            }
             for e in &mut c.builtin_effects {
                 if let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
                     match f {

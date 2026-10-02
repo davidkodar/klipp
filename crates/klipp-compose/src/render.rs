@@ -455,6 +455,9 @@ pub struct Renderer {
     /// sequence camera's shutter is open, its transform and clip time at
     /// each sample across the shutter. Filled with the transforms.
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
+    /// Pinned clips' corners on their surfaces this frame (#684), resolved
+    /// with the transforms.
+    pins: HashMap<ClipId, klipp_timeline::surface::Quad>,
     working: WorkingColorspace,
     grade_encoding: klipp_core::GradeEncoding,
     /// The motion data of the clip being rendered, for the CPU arm of
@@ -542,6 +545,7 @@ impl Renderer {
             warm_rx: None,
             glyph_cache: HashMap::new(),
             shutter: HashMap::new(),
+            pins: HashMap::new(),
             px_scale: 1.0,
             working: WorkingColorspace::default(),
             grade_encoding: klipp_core::grade_encoding(),
@@ -941,7 +945,7 @@ impl Renderer {
             Some(cam) => eval::apply_camera(resolved, cam, width, height),
             None => resolved,
         };
-        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved));
+        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps));
         if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
         }
@@ -1223,6 +1227,10 @@ impl Renderer {
                 );
             }
         }
+        self.resolve_pins(seq, items.iter().flat_map(|(_, item)| match item {
+            Item::Clip { c, .. } => vec![*c],
+            Item::Transition { a, b, .. } => vec![*a, *b],
+        }), time, fps);
         in_render_pixels(seq, width, height, &mut transforms);
         self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
@@ -1434,7 +1442,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         stats: &mut RenderStats,
     ) -> Result<Option<Placed>, &'static str> {
-        let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
+        let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
@@ -1621,7 +1629,7 @@ impl Renderer {
         stats: &mut RenderStats,
     ) -> Result<(), &'static str> {
         let clip_time = eval_clip_time(c, time);
-        let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied());
+        let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
@@ -1732,6 +1740,7 @@ impl Renderer {
                 );
             }
         }
+        self.resolve_pins(seq, stack.iter().flat_map(|(_, _, item)| item.clips()), time, fps);
         in_render_pixels(seq, width, height, &mut transforms);
         self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
@@ -1990,7 +1999,7 @@ impl Renderer {
         if let Some(t) = hdr {
             self.display_render(&mut pixels, t);
         }
-        let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
@@ -2502,6 +2511,16 @@ impl Renderer {
     /// moves while it is open, its full transform — own keyframes, the
     /// camera from its depth — at each sample across the shutter. A clip
     /// that does not move gets none and renders once.
+    /// Where every pinned clip in play is on its surface at `time`.
+    fn resolve_pins<'c>(&mut self, seq: &Sequence, clips: impl Iterator<Item = &'c Clip>, time: Timecode, fps: f64) {
+        self.pins.clear();
+        for c in clips {
+            if let Some(q) = eval::surface_pin_corners(c, seq, time, fps) {
+                self.pins.insert(c.id, q);
+            }
+        }
+    }
+
     fn open_shutter(&mut self, seq: &Sequence, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>) {
         self.shutter.clear();
         let cam = &seq.camera;
@@ -2720,7 +2739,7 @@ impl Renderer {
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(below)), clip_time, fps, width, height);
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
-        let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
+        let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.at_render_scale(&mut fx);
         // An adjustment layer has no footage of its own to analyse, so its
         // stabilisation and rolling-shutter correction have no motion data
@@ -2907,6 +2926,7 @@ pub fn clip_effects(
     time: Timecode,
     fps: f64,
     resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
 ) -> (Vec<BuiltinEffect>, f32) {
     let t = eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
@@ -2916,6 +2936,7 @@ pub fn clip_effects(
 
     let mut opacity = 1.0f32;
     let mut have_opacity = false;
+    let mut pinned = false;
     for (i, effect) in fx.iter_mut() {
         let param = |name: &str, v: f32| {
             let kfs = clip.effect_keyframes.get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -2978,6 +2999,12 @@ pub fn clip_effects(
                 *width = param("width", *width);
                 *softness = param("softness", *softness);
                 *radius = param("radius", *radius);
+            }
+            // A pinned clip's first corner pin is on its surface.
+            BuiltinEffect::CornerPin { tl, tr, br, bl } if pin.is_some() && !pinned => {
+                let q = pin.unwrap_or_default();
+                (*tl, *tr, *br, *bl) = (q[0], q[1], q[2], q[3]);
+                pinned = true;
             }
             BuiltinEffect::CornerPin { tl, tr, br, bl } => {
                 for (corner, names) in [tl, tr, br, bl].into_iter().zip(klipp_effects::corner_pin::PARAMS) {
@@ -3675,7 +3702,7 @@ mod temporal_denoise_placement_tests {
             BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.02 },
             BuiltinEffect::Sharpen { amount: 0.5 },
         ]);
-        let (fx, _) = clip_effects(&clip, tc(0), 24.0, None);
+        let (fx, _) = clip_effects(&clip, tc(0), 24.0, None, None);
         assert!(
             !fx.iter().any(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })),
             "temporal denoise reached the chain: {fx:?}",
