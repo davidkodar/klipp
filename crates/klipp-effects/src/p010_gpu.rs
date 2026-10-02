@@ -182,11 +182,78 @@ fn load_u16_le_uv(byte_idx: u32) -> u32 {
     }
 }
 
+// One source pixel of a display-referred frame, as linear working-space
+// RGB: the same reads and stages as `main` below, for the downscale to
+// average (#744).
+fn display_working_at(sx: u32, sy: u32) -> vec3<f32> {
+    let y_10 = f32(load_u16_le_y(sy * params.y_stride + sx * 2u) >> 6u);
+    let cw = (params.src_width + 1u) / 2u;
+    let ch = (params.src_height + 1u) / 2u;
+    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, cw - 1u);
+    let y1 = min(y0 + 1u, ch - 1u);
+    let tx = fx - floor(fx);
+    let ty = fy - floor(fy);
+    var u_acc = 0.0;
+    var v_acc = 0.0;
+    for (var j = 0u; j < 2u; j = j + 1u) {
+        let cy = select(y0, y1, j == 1u);
+        let wy = select(1.0 - ty, ty, j == 1u);
+        for (var i = 0u; i < 2u; i = i + 1u) {
+            let cx = select(x0, x1, i == 1u);
+            let w = select(1.0 - tx, tx, i == 1u) * wy;
+            let ub = cy * params.uv_stride + cx * 4u;
+            u_acc = u_acc + f32(load_u16_le_uv(ub) >> 6u) * w;
+            v_acc = v_acc + f32(load_u16_le_uv(ub + 2u) >> 6u) * w;
+        }
+    }
+    let yuv = yuv_normalise(y_10, u_acc, v_acc, params.color_range, 1023.0);
+    let rgb_linear = display_to_linear(yuv_to_rgb_display(yuv, params.matrix_id), params.transfer_id);
+    return vec3<f32>(
+        dot(params.primaries_row0.xyz, rgb_linear),
+        dot(params.primaries_row1.xyz, rgb_linear),
+        dot(params.primaries_row2.xyz, rgb_linear),
+    );
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dx = gid.x;
     let dy = gid.y;
     if (dx >= params.dst_width || dy >= params.dst_height) { return; }
+
+    // A downscale of a display-referred frame averages the footprint in
+    // linear light (#744); see `nv12_gpu::RESIZE_WGSL`. A scene-referred
+    // one keeps the nearest lookup below, which its CPU twin matches.
+    let scene_referred = params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || params.transfer_id >= 100u;
+    if (!scene_referred) {
+        let fp = resize_footprint(dx, dy);
+        let nx = resize_samples(fp.y);
+        let ny = resize_samples(fp.w);
+        if (nx > 1u || ny > 1u) {
+            var acc = vec3<f32>(0.0);
+            for (var j = 0u; j < ny; j = j + 1u) {
+                let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
+                for (var i = 0u; i < nx; i = i + 1u) {
+                    acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+                }
+            }
+            let working = acc / f32(nx * ny);
+            if params.write_linear != 0u {
+                linear[dy * params.dst_width + dx] = pack(vec4<f32>(working, 1.0));
+                return;
+            }
+            let srgb = linear_to_srgb_vec(working);
+            let r = u32(clamp(srgb.x * 255.0 + 0.5, 0.0, 255.0));
+            let g = u32(clamp(srgb.y * 255.0 + 0.5, 0.0, 255.0));
+            let b = u32(clamp(srgb.z * 255.0 + 0.5, 0.0, 255.0));
+            output[dy * params.dst_width + dx] = r | (g << 8u) | (b << 16u) | (255u << 24u);
+            return;
+        }
+    }
 
     // Source coord (rotation + nearest-neighbour resize).
     var sx: u32;
@@ -331,6 +398,7 @@ fn p010_shader_source() -> String {
         crate::color_wgsl::WGSL_PRELUDE.len()
             + crate::color_wgsl::WGSL_HELPERS.len()
             + SHADER_P010_BODY.len()
+            + crate::nv12_gpu::RESIZE_WGSL.len()
             + 256,
     );
     s.push_str(crate::color_wgsl::WGSL_PRELUDE);
@@ -338,6 +406,7 @@ fn p010_shader_source() -> String {
     // The `linear` output is a frame in the chain's own format, so its
     // store goes through `pack`, as the NV12 decoder's does.
     s.push_str(crate::gpu::shader_pixel_storage_source());
+    s.push_str(crate::nv12_gpu::RESIZE_WGSL);
     s.push_str(SHADER_P010_BODY);
     s
 }

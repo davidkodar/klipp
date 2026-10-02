@@ -573,7 +573,7 @@ impl RenderDecoder {
     /// `None` whenever this is not the right route, and the caller falls
     /// back to downloading and converting with swscale: no converter (no
     /// usable GPU, or software decode), a frame that does not download as
-    /// NV12, a resize (see below), or a scene-referred source — camera
+    /// NV12 or P010, an upscale (see below), or a scene-referred source — camera
     /// log and PQ/HLG have their own tested path through
     /// `scene_referred_frame` and packed codes, and this shader's code
     /// output is not wired up here.
@@ -639,18 +639,20 @@ impl RenderDecoder {
 
         let (src_w, src_h) = ((*sw_frame).width as u32, (*sw_frame).height as u32);
 
-        // Only at 1:1. The shader maps each output pixel back to a single
-        // source pixel, which is exact for a straight conversion and for
-        // a 90/180/270 rotation — both are permutations — but is
-        // nearest-neighbour for a real resize, and that aliases. A
-        // timeline whose resolution differs from the source keeps
-        // swscale's Lanczos, which is the same line `scaler_flags` draws.
+        // At 1:1 and when shrinking. A straight conversion and a 90/180/270
+        // rotation are permutations, exact one source pixel per output
+        // pixel; a downscale averages each output pixel's footprint in
+        // linear light (#744), as the viewer's decode now does too. That
+        // used to be refused, so every 4K phone shot on a 1080 timeline
+        // went down to the CPU, through swscale and back up: 22 ms of a
+        // 41 ms frame. An upscale keeps swscale's Lanczos, where averaging
+        // has nothing to average and nearest would be blocky.
         let (want_w, want_h) = if self.source_rotation == 90 || self.source_rotation == 270 {
             (self.target_height, self.target_width)
         } else {
             (self.target_width, self.target_height)
         };
-        if (src_w, src_h) != (want_w, want_h) {
+        if src_w < want_w || src_h < want_h {
             av_frame_free(&mut (sw_frame as *mut _));
             return None;
         }

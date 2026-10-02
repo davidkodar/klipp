@@ -134,11 +134,80 @@ struct Params {
     primaries_row2: vec4<f32>,
 }
 
+// One source pixel of a display-referred frame, as linear working-space
+// RGB: the same reads and the same four stages as `main` below, for the
+// downscale to average (#744).
+fn display_working_at(sx: u32, sy: u32) -> vec3<f32> {
+    let yb = sy * params.y_stride + sx;
+    let y_val = f32((y_plane[yb / 4u] >> ((yb % 4u) * 8u)) & 0xFFu);
+    let cw = (params.src_width + 1u) / 2u;
+    let ch = (params.src_height + 1u) / 2u;
+    let fx = clamp(f32(sx) * 0.5, 0.0, f32(cw - 1u));
+    let fy = clamp(f32(sy) * 0.5 - 0.25, 0.0, f32(ch - 1u));
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, cw - 1u);
+    let y1 = min(y0 + 1u, ch - 1u);
+    let tx = fx - floor(fx);
+    let ty = fy - floor(fy);
+    var u_acc = 0.0;
+    var v_acc = 0.0;
+    for (var j = 0u; j < 2u; j = j + 1u) {
+        let cy = select(y0, y1, j == 1u);
+        let wy = select(1.0 - ty, ty, j == 1u);
+        for (var i = 0u; i < 2u; i = i + 1u) {
+            let cx = select(x0, x1, i == 1u);
+            let w = select(1.0 - tx, tx, i == 1u) * wy;
+            let ub = cy * params.uv_stride + cx * 2u;
+            u_acc = u_acc + f32((uv_plane[ub / 4u] >> ((ub % 4u) * 8u)) & 0xFFu) * w;
+            let vb = ub + 1u;
+            v_acc = v_acc + f32((uv_plane[vb / 4u] >> ((vb % 4u) * 8u)) & 0xFFu) * w;
+        }
+    }
+    let yuv = yuv_normalise(y_val, u_acc, v_acc, params.color_range, 255.0);
+    let rgb_linear = display_to_linear(yuv_to_rgb_display(yuv, params.matrix_id), params.transfer_id);
+    return vec3<f32>(
+        dot(params.primaries_row0.xyz, rgb_linear),
+        dot(params.primaries_row1.xyz, rgb_linear),
+        dot(params.primaries_row2.xyz, rgb_linear),
+    );
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dx = gid.x;
     let dy = gid.y;
     if (dx >= params.dst_width || dy >= params.dst_height) { return; }
+
+    // A downscale of a display-referred frame averages the footprint in
+    // linear light (#744); see `RESIZE_WGSL`. A scene-referred one keeps
+    // the nearest lookup below, which its CPU twin matches.
+    let scene_referred = params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG || params.transfer_id >= 100u;
+    if (!scene_referred) {
+        let fp = resize_footprint(dx, dy);
+        let nx = resize_samples(fp.y);
+        let ny = resize_samples(fp.w);
+        if (nx > 1u || ny > 1u) {
+            var acc = vec3<f32>(0.0);
+            for (var j = 0u; j < ny; j = j + 1u) {
+                let py = resize_tap(fp.z, fp.w, j, ny, params.src_height);
+                for (var i = 0u; i < nx; i = i + 1u) {
+                    acc = acc + display_working_at(resize_tap(fp.x, fp.y, i, nx, params.src_width), py);
+                }
+            }
+            let working = acc / f32(nx * ny);
+            if params.write_linear != 0u {
+                linear[dy * params.dst_width + dx] = pack(vec4<f32>(working, 1.0));
+                return;
+            }
+            let srgb = linear_to_srgb_vec(working);
+            let r = u32(clamp(srgb.x * 255.0 + 0.5, 0.0, 255.0));
+            let g = u32(clamp(srgb.y * 255.0 + 0.5, 0.0, 255.0));
+            let b = u32(clamp(srgb.z * 255.0 + 0.5, 0.0, 255.0));
+            output[dy * params.dst_width + dx] = r | (g << 8u) | (b << 16u) | (255u << 24u);
+            return;
+        }
+    }
 
     // Source coord lookup (rotation + nearest-neighbour resize).
     var sx: u32;
@@ -275,6 +344,48 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
+/// WGSL shared by the NV12 and P010 decode shaders for a downscale (#744):
+/// where an output pixel's footprint lies in the source, through the
+/// rotation, and how many samples across it to average.
+///
+/// The nearest-neighbour lookup each shader keeps for 1:1 and upscales
+/// takes one source pixel per output pixel. Shrinking 4K to 1080 that
+/// way drops three pixels in four, and fine detail aliases: the viewer
+/// shimmered on it, and the export could not use this shader at all and
+/// went back through the CPU. A downscale instead averages an `n x m`
+/// grid of samples spread evenly over the footprint, in linear light: a
+/// box filter at integer ratios, close to an area filter otherwise. The
+/// grid is capped at 8 a side, so a thumbnail of a 4K frame stays cheap.
+pub(crate) const RESIZE_WGSL: &str = "
+// The source footprint of output pixel (dx, dy): x0, width, y0, height,
+// in source pixels, through the rotation the nearest lookup uses.
+fn resize_footprint(dx: u32, dy: u32) -> vec4<f32> {
+    var a: u32; var a_n: u32; var b: u32; var b_n: u32;
+    if (params.rotation == 0u) {
+        a = dx; a_n = params.dst_width; b = dy; b_n = params.dst_height;
+    } else if (params.rotation == 90u) {
+        a = dy; a_n = params.dst_height; b = params.dst_width - 1u - dx; b_n = params.dst_width;
+    } else if (params.rotation == 180u) {
+        a = params.dst_width - 1u - dx; a_n = params.dst_width; b = params.dst_height - 1u - dy; b_n = params.dst_height;
+    } else {
+        a = params.dst_height - 1u - dy; a_n = params.dst_height; b = dx; b_n = params.dst_width;
+    }
+    let sw = f32(params.src_width) / f32(a_n);
+    let sh = f32(params.src_height) / f32(b_n);
+    return vec4<f32>(f32(a) * sw, sw, f32(b) * sh, sh);
+}
+
+// Samples to take across a footprint `span` source pixels wide.
+fn resize_samples(span: f32) -> u32 {
+    return clamp(u32(ceil(span - 0.001)), 1u, 8u);
+}
+
+// The source pixel under sample `i` of `n` across [x0, x0 + span).
+fn resize_tap(x0: f32, span: f32, i: u32, n: u32, extent: u32) -> u32 {
+    return min(u32(x0 + (f32(i) + 0.5) / f32(n) * span), extent - 1u);
+}
+";
+
 /// Full shader source: shared prelude + helpers + the pixel storage hook
 /// + NV12-specific body.
 ///
@@ -289,11 +400,13 @@ fn nv12_shader_source() -> String {
         crate::color_wgsl::WGSL_PRELUDE.len()
             + crate::color_wgsl::WGSL_HELPERS.len()
             + SHADER_NV12_BODY.len()
+            + RESIZE_WGSL.len()
             + 256,
     );
     s.push_str(crate::color_wgsl::WGSL_PRELUDE);
     s.push_str(crate::color_wgsl::WGSL_HELPERS);
     s.push_str(crate::gpu::shader_pixel_storage_source());
+    s.push_str(RESIZE_WGSL);
     s.push_str(SHADER_NV12_BODY);
     s
 }
