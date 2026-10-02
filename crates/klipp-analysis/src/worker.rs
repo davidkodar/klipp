@@ -89,14 +89,30 @@ pub(crate) fn worker_exe(exe: &Path) -> PathBuf {
 pub(crate) fn run<T: DeserializeOwned>(exe: &Path, job: Job) -> Result<Result<T, String>, String> {
     let exe = worker_exe(exe);
     let started = Instant::now();
-    let mut child = std::process::Command::new(&exe)
-        .arg(job.flag)
-        .arg(&job.spec)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
+    let spawn = || {
+        std::process::Command::new(&exe)
+            .arg(job.flag)
+            .arg(&job.spec)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    };
+    // An executable still open for writing somewhere cannot be started
+    // (ETXTBSY): one just written, while another thread's fork holds the
+    // writer's descriptor until its exec closes it, or a binary being
+    // replaced by a build. Either lets go within moments.
+    let mut child = spawn();
+    for _ in 0..50 {
+        match &child {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(Duration::from_millis(20));
+                child = spawn();
+            }
+            _ => break,
+        }
+    }
+    let mut child = child.map_err(|e| format!("could not start {}: {e}", exe.display()))?;
     // The input written, and the answers read, each on a thread of its
     // own: a worker that fills one pipe while we wait on another would
     // otherwise wait on us as we wait on it.
