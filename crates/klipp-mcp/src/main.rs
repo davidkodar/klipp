@@ -1565,7 +1565,10 @@ fn tool_definitions() -> Vec<Value> {
               every member; on \"timeline\" grades the whole sequence after every clip. One look \
               over a scene is a group and one look on it, not the same look on every shot.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
-              secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
+              secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
+              much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
+              its picture and length kept: the one before longer, the one after shorter, sound with them; \
+              refused where a neighbour runs out. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
               voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
               {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
@@ -1752,7 +1755,10 @@ fn tool_definitions() -> Vec<Value> {
               every member; on \"timeline\" grades the whole sequence after every clip. One look \
               over a scene is a group and one look on it, not the same look on every shot.\n\
               slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
-              secs (later in the file for positive), the timeline untouched. role {clip_id, role} — \
+              secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
+              much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
+              its picture and length kept: the one before longer, the one after shorter, sound with them; \
+              refused where a neighbour runs out. role {clip_id, role} — \
               what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
               voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
               {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \

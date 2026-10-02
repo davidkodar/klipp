@@ -316,7 +316,7 @@ impl DocumentView<'_> {
             }
             EditCommand::LegacySlipClip {
                 clip_id,
-                old_source_in, old_source_out, ..
+                old_source_in, old_source_out, new_source_in, ..
             } => {
                 // Undo slip: restore original source in/out
                 let seq = &mut self.sequences[self.active];
@@ -329,11 +329,14 @@ impl DocumentView<'_> {
                         c.source_out = *old_source_out;
                     }
                 }
+                // The partner back by what it moved: its own range, a J or L
+                // cut's offset kept (#458).
                 if let Some(lid) = linked_id {
+                    let back = *old_source_in - *new_source_in;
                     for track in &mut self.sequences[self.active].tracks {
                         if let Some(c) = track.find_clip_mut(lid) {
-                            c.source_in = *old_source_in;
-                            c.source_out = *old_source_out;
+                            c.source_in += back;
+                            c.source_out += back;
                         }
                     }
                 }
@@ -965,7 +968,7 @@ impl DocumentView<'_> {
             }
             EditCommand::LegacySlipClip {
                 clip_id,
-                new_source_in, new_source_out, ..
+                old_source_in, new_source_in, new_source_out, ..
             } => {
                 // Redo slip: apply new source in/out
                 let seq = &mut self.sequences[self.active];
@@ -977,11 +980,16 @@ impl DocumentView<'_> {
                         c.source_out = *new_source_out;
                     }
                 }
+                // The partner moves by as much as the clip, through its own
+                // range: copying the clip's range onto it collapsed a J or L
+                // cut and left the sound's source a different length from its
+                // place on the timeline (#458).
                 if let Some(lid) = linked_id {
+                    let by = *new_source_in - *old_source_in;
                     for track in &mut self.sequences[self.active].tracks {
                         if let Some(c) = track.find_clip_mut(lid) {
-                            c.source_in = *new_source_in;
-                            c.source_out = *new_source_out;
+                            c.source_in += by;
+                            c.source_out += by;
                         }
                     }
                 }

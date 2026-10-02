@@ -414,6 +414,12 @@ pub enum Op {
     /// out both by `secs` (later in the file for positive), the timeline
     /// untouched. Refused past the file's start or end.
     Slip { clip_id: ClipRef, secs: f64 },
+    /// Move a clip along the timeline between its neighbours, its picture
+    /// and length unchanged: the clip before it gets `secs` longer (later
+    /// for positive) and the clip after it that much shorter, so nothing
+    /// else moves (#458). Its linked sound and theirs go with it. Refused
+    /// where a neighbour would run out of its file or of its length.
+    Slide { clip_id: ClipRef, secs: f64 },
     /// What a clip is to the mix and the checks: "dialogue", "music",
     /// "sfx", "ambience", "foley", "voiceover", "broll" or "graphics". A
     /// music bed and a sound effect are told from speech by this, so
@@ -1708,6 +1714,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
+        }
+        Op::Slide { clip_id, secs: by } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            slide(seq, pool, fps, i, ti, clip, *by)
         }
         Op::Slip { clip_id, secs: by } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -4635,8 +4645,69 @@ fn slip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &
     if shift.value == 0 {
         return Err(refuse(i, "a slip of no frames", "give secs of at least a frame"));
     }
+    // Its linked sound slips with it, by the same amount through its own
+    // range: a J or L cut's sound starts earlier or ends later than the
+    // picture, and may be the one to run out of file (#458).
+    if let Some((pti, _, partner)) = clip.linked_clip_id.and_then(|id| find_clip(seq, id)) {
+        if seq.tracks[pti].locked {
+            return Err(refuse(i, format!("its linked track {pti} is locked"), "unlock it first"));
+        }
+        let (p_in, p_out) = if by >= 0.0 { (partner.source_in + shift, partner.source_out + shift) } else { (partner.source_in - shift, partner.source_out - shift) };
+        let p_len = partner.media_id().and_then(|m| pool.get(&m)).map(|m| secs(m.duration));
+        if p_in.value < 0 || p_len.is_some_and(|len| secs(p_out) > len + 1e-6) {
+            return Err(refuse(i, format!("its linked sound would run off the end of its file ({:.2}-{:.2} s)", secs(p_in), secs(p_out)), "slip it by less"));
+        }
+    }
     let what = format!("slip {} by {:+.2} s: it now shows {:.2}-{:.2} s of the file, where it was", clip_name(seq, pool, clip), if by >= 0.0 { secs(shift) } else { -secs(shift) }, secs(new_in), secs(new_out));
     Ok((what, EditCommand::LegacySlipClip { clip_id: clip.id, old_source_in: clip.source_in, old_source_out: clip.source_out, new_source_in: new_in, new_source_out: new_out }, vec![clip.id]))
+}
+
+/// [`Op::Slide`]: a trim of the neighbour it slides into, a move, and a
+/// trim of the neighbour it leaves, planned in that order so nothing
+/// overlaps between them, each with its linked sound and at its speed,
+/// as the trim and move ops do; one undo step.
+#[allow(clippy::too_many_arguments)]
+fn slide(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: &Clip, by: f64) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let shift = secs(snap(by.abs(), fps));
+    if shift <= 0.0 {
+        return Err(refuse(i, "a slide of no frames", "give secs of at least a frame"));
+    }
+    let d = if by > 0.0 { shift } else { -shift };
+    let track = &seq.tracks[ti];
+    let before = track.clips.iter().find(|c| c.id != clip.id && c.timeline_out == clip.timeline_in);
+    let after = track.clips.iter().find(|c| c.id != clip.id && c.timeline_in == clip.timeline_out);
+    if before.is_none() && after.is_none() {
+        return Err(refuse(i, format!("{} has no clip touching it either side", clip_name(seq, pool, clip)), "slide moves a clip between its neighbours; use move for a clip on its own"));
+    }
+    let (start, end) = (secs(clip.timeline_in), secs(clip.timeline_out));
+    let trim = |c: &Clip, edge: Edge, to: f64| Op::Trim { clip_id: ClipRef::Id(c.id), edge, to: Anchor::Secs(to), ripple: false, linked: true };
+    let mut ops = Vec::new();
+    // The side it moves into gives way first.
+    if d > 0.0 {
+        if let Some(a) = after {
+            ops.push(trim(a, Edge::In, end + d));
+        }
+    } else if let Some(b) = before {
+        ops.push(trim(b, Edge::Out, start + d));
+    }
+    ops.push(Op::Move { clip_id: ClipRef::Id(clip.id), to: Anchor::Secs(start + d) });
+    if d > 0.0 {
+        if let Some(b) = before {
+            ops.push(trim(b, Edge::Out, start + d));
+        }
+    } else if let Some(a) = after {
+        ops.push(trim(a, Edge::In, end + d));
+    }
+    let plan = resolve(seq, pool, &ops).map_err(|r| refuse(i, format!("{} cannot slide {:+.2} s: {}", clip_name(seq, pool, clip), d, r.why), r.hint))?;
+    let edits: Vec<EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
+    let what = format!("slide {} {:+.2} s to {:.2}-{:.2} s, its neighbours trimmed to meet it", clip_name(seq, pool, clip), d, start + d, end + d);
+    let mut touched: Vec<ClipId> = vec![clip.id];
+    touched.extend(before.map(|c| c.id));
+    touched.extend(after.map(|c| c.id));
+    Ok((what, EditCommand::Named { label: "Slide".into(), edit: Box::new(EditCommand::Batch(edits)) }, touched))
 }
 
 fn stabilize(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, smoothing: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -6629,6 +6700,53 @@ mod tests {
         view.apply_inverse(&plan.steps[0].edit);
         let clips = |s: &Sequence| serde_json::to_value(s.tracks.iter().map(|t| (t.id, &t.clips)).collect::<Vec<_>>()).unwrap();
         assert_eq!(clips(&view.sequences[0]), clips(&seq));
+    }
+
+    /// #458: a slip moves the linked sound by as much, keeping a J cut's
+    /// offset; a slide moves a clip between its neighbours, theirs and its
+    /// sound with it, nothing else, and undoes as one step.
+    #[test]
+    fn slip_keeps_a_j_cut_and_slide_moves_between_neighbours() {
+        let (seq, pool, _, a, b) = fixture();
+        let apply = |seq: &Sequence, v: serde_json::Value| {
+            let plan = resolve(seq, &pool, &[serde_json::from_value(v).unwrap()]).unwrap();
+            let mut seqs = vec![seq.clone()];
+            let (mut p, mut fps) = (pool.clone(), seq.fps);
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&plan.steps[0].edit);
+            let done = view.sequences[0].clone();
+            view.apply_inverse(&plan.steps[0].edit);
+            (done, view.sequences[0].clone())
+        };
+        let ranges = |s: &Sequence, t: usize| s.tracks[t].clips.iter().map(|c| (secs(c.timeline_in), secs(c.timeline_out), secs(c.source_in), secs(c.source_out))).collect::<Vec<_>>();
+        // A J cut on the second clip: its sound starts 0.4 s before its
+        // picture, 0.4 s earlier in the file too.
+        let mut j = seq.clone();
+        j.tracks[1].clips[0].timeline_out = tc(3.6);
+        j.tracks[1].clips[0].source_out = tc(3.6);
+        j.tracks[1].clips[1].timeline_in = tc(3.6);
+        j.tracks[1].clips[1].source_in = tc(3.6);
+        // Slipped 1 s earlier in the file: picture 3-7, sound 2.6-7.
+        let (done, undone) = apply(&j, serde_json::json!({ "op": "slip", "clip_id": b.0.to_string(), "secs": -1.0 }));
+        assert_eq!(ranges(&done, 0)[1], (4.0, 8.0, 3.0, 7.0));
+        assert_eq!(ranges(&done, 1)[1], (3.6, 8.0, 2.6, 7.0), "the sound moved by as much, its own range kept");
+        assert_eq!(ranges(&undone, 1), ranges(&j, 1), "and back");
+        // The sound runs out of file first (the picture would start at
+        // 0.2 s, its sound at -0.2 s): refused.
+        let err = resolve(&j, &pool, &[serde_json::from_value(serde_json::json!({ "op": "slip", "clip_id": b.0.to_string(), "secs": -3.8 })).unwrap()]).unwrap_err();
+        assert!(err.why.contains("linked sound would run off"), "{}", err.why);
+        // Slide: the fixture's first clip ends at 4 s against the second.
+        // A third clip after the second gives it neighbours both sides.
+        let mut three = seq.clone();
+        let next = Clip::media(three.tracks[0].clips[0].media_id().unwrap(), tc(8.0), tc(10.0), tc(8.0), tc(10.0));
+        three.tracks[0].clips.push(next);
+        let (done, undone) = apply(&three, serde_json::json!({ "op": "slide", "clip_id": b.0.to_string(), "secs": 0.4 }));
+        assert_eq!(ranges(&done, 0), vec![(0.0, 4.4, 0.0, 4.4), (4.4, 8.4, 4.0, 8.0), (8.4, 10.0, 8.4, 10.0)], "before longer, it moved with its picture, after shorter");
+        assert_eq!(ranges(&done, 1)[1].0, 4.4, "its sound went with it");
+        assert_eq!(ranges(&undone, 0), ranges(&three, 0), "one undo step");
+        // Nothing either side, or a neighbour too short: refused.
+        assert!(resolve(&three, &pool, &[serde_json::from_value(serde_json::json!({ "op": "slide", "clip_id": b.0.to_string(), "secs": 3.0 })).unwrap()]).is_err());
+        let _ = a;
     }
 
     /// Volume drawn by hand: keys at timeline seconds in dB become the
