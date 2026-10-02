@@ -6082,7 +6082,7 @@ reference:   {}",
             };
             if let Some(job_id) = job_id {
                 v["job_id"] = json!(job_id);
-                v["next"] = json!(format!("Render submitted. Follow job_id {job_id} with job_status or follow_job; only completed means the file is ready.{}",
+                v["next"] = json!(format!("Render submitted. follow_job {job_id} waits until it ends and says how; only completed means the file is ready. To tell the person its progress as it goes, run `klipp-mcp follow {job_id}` as a background task: a line per step, the last when it ends.{}",
                     if burnt { "" } else { " Captions are not burnt in: write export_subtitles for a sidecar SRT." }));
             } else {
                 v["next"] = json!("The UI acknowledged export, but no render job appeared. It may be awaiting a confirmation dialog or the snapshot may have failed. Read status and export_status before reporting a render as started.");

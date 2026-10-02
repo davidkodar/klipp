@@ -92,6 +92,10 @@ fn main() {
             }
         }
     }
+    if std::env::args().nth(1).as_deref() == Some("follow") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(follow_main(&rest));
+    }
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("klipp-mcp {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -228,51 +232,131 @@ fn response_for(req: &Value, stdout: &Mutex<std::io::Stdout>, structured: &Atomi
     }
 }
 
-/// Follow a job through bounded control reads. MCP clients that supplied a
-/// progress token receive throttled notifications; other clients get one
-/// changed snapshot so they can report it and call again.
+/// Follow a job to its end through bounded control reads (#732), calling
+/// `step` with the job and its line in words whenever what a person is
+/// told changes: the state, the phase, or the percentage by `every`
+/// points. Returns the last read and whether it ended, or why it could
+/// not be read. `None` for `max_wait` follows to the end.
+fn follow(job_id: &str, max_wait: Option<std::time::Duration>, every: i64, mut step: impl FnMut(&Value, &str)) -> Result<(Value, bool), String> {
+    let started = std::time::Instant::now();
+    let mut told: Option<(String, String, i64)> = None;
+    loop {
+        let left = max_wait.map(|w| w.saturating_sub(started.elapsed()));
+        let timeout = left.unwrap_or(std::time::Duration::from_secs(10)).as_millis().min(10_000) as u64;
+        let result = control_call(json!({ "method": "job_status", "job_id": job_id, "wait": told.is_some(), "timeout_ms": timeout }))?;
+        let job = result["jobs"].as_array().and_then(|jobs| jobs.first()).cloned().ok_or("job status had no job")?;
+        let state = job["state"].as_str().unwrap_or("unknown").to_owned();
+        let phase = job["phase"].as_str().unwrap_or(&state).to_owned();
+        let percent = job["progress"].as_f64().map(|p| (p * 100.0).floor() as i64).unwrap_or(-1);
+        let terminal = matches!(state.as_str(), "completed" | "failed" | "cancelled" | "unavailable");
+        let news = match &told {
+            None => true,
+            Some((s, p, at)) => *s != state || *p != phase || terminal || percent >= at + every.max(1),
+        };
+        if news {
+            let line = result["text"].as_str().and_then(|t| t.lines().next()).map(str::to_owned).unwrap_or_else(|| job_line(&job));
+            step(&job, &line);
+            told = Some((state, phase, percent));
+        }
+        if terminal {
+            return Ok((job, true));
+        }
+        if left.is_some_and(|l| l.is_zero()) {
+            return Ok((job, false));
+        }
+    }
+}
+
+/// A job in words when Klipp's reply carries no line of its own.
+fn job_line(job: &Value) -> String {
+    let state = job["state"].as_str().unwrap_or("unknown");
+    let mut line = format!("{} {state}", job["kind"].as_str().unwrap_or("job"));
+    if let Some(p) = job["progress"].as_f64().filter(|_| state != "completed") {
+        line.push_str(&format!(" {:.0}%", (p * 100.0).floor()));
+    }
+    let ended = matches!(state, "completed" | "failed" | "cancelled" | "unavailable");
+    if let Some(phase) = job["phase"].as_str().filter(|p| *p != state && !ended) {
+        line.push_str(&format!(": {phase}"));
+    }
+    if let Some(artifact) = job["artifact"].as_str() {
+        line.push_str(&format!(" — {artifact}"));
+    }
+    if let Some(error) = job["error"].as_str() {
+        line.push_str(&format!("; {error}"));
+    }
+    line
+}
+
+fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// `klipp_follow_job`: wait for the job to end (#732) and say how it
+/// ended, with the way there. An MCP client's progress token also gets
+/// throttled notifications on the way, for a client that shows them;
+/// the model sees only this reply, so the reply carries it all.
 fn follow_job(args: &Value, token: Option<&Value>, stdout: &Mutex<std::io::Stdout>) -> Result<Vec<Value>, String> {
     let job_id = arg_str(args, "job_id")?;
     let token = token.filter(|value| value.is_string() || value.is_number());
-    let max_wait = std::time::Duration::from_millis(args.get("max_wait_ms").and_then(Value::as_u64).unwrap_or(60_000).clamp(1, 600_000));
+    let max_wait = std::time::Duration::from_millis(args.get("max_wait_ms").and_then(Value::as_u64).unwrap_or(600_000).clamp(1, 3_600_000));
     let started = std::time::Instant::now();
-    let mut last_sent: Option<(String, String, i64)> = None;
-    let mut last_notification = std::time::Instant::now() - std::time::Duration::from_secs(6);
-    let mut first = true;
-    loop {
-        let remaining = max_wait.saturating_sub(started.elapsed()).as_millis().min(10_000) as u64;
-        let result = control_call(json!({ "method":"job_status", "job_id":job_id,
-            "wait": token.is_none() || !first, "timeout_ms":remaining }))?;
-        first = false;
-        let job = result["jobs"].as_array().and_then(|jobs| jobs.first()).ok_or("job status had no job")?;
-        let state = job["state"].as_str().unwrap_or("unknown");
-        let phase = job["phase"].as_str().unwrap_or(state);
-        let kind = job["kind"].as_str().unwrap_or("job");
-        let percent = job["progress"].as_f64().map(|fraction| (fraction * 100.0).round() as i64);
-        let signature = (state.to_owned(), phase.to_owned(), percent.unwrap_or(-1));
-        let terminal = matches!(state, "completed" | "failed" | "cancelled" | "unavailable");
+    let mut history: Vec<String> = Vec::new();
+    let mut last_line = String::new();
+    let (job, ended) = follow(&job_id, Some(max_wait), 10, |job, line| {
+        let percent = job["progress"].as_f64().map(|p| (p * 100.0).floor() as i64);
+        let phase = job["phase"].as_str().unwrap_or("");
+        history.push(match percent {
+            Some(p) => format!("{} {p}% {phase}", clock(started.elapsed())),
+            None => format!("{} {phase}", clock(started.elapsed())),
+        });
         if let Some(token) = token {
-            let phase_changed = last_sent.as_ref().is_some_and(|sent| sent.0 != state || sent.1 != phase);
-            let progress_step = last_sent.as_ref().is_some_and(|sent| (sent.2 - signature.2).abs() >= 5);
-            if terminal || last_sent.is_none() || phase_changed
-                || (progress_step && last_notification.elapsed() >= std::time::Duration::from_secs(1))
-                || last_notification.elapsed() >= std::time::Duration::from_secs(5) {
-                let message = match percent { Some(percent) => format!("{kind} {percent}%: {phase} ({state})"),
-                    None => format!("{kind}: {phase} ({state}; percentage unavailable)") };
-                let mut params = json!({ "progressToken":token, "progress":percent.unwrap_or(0), "message":message });
-                if percent.is_some() { params["total"] = json!(100); }
-                send_response(stdout, &json!({ "jsonrpc":"2.0", "method":"notifications/progress", "params":params }));
-                last_sent = Some(signature);
-                last_notification = std::time::Instant::now();
-            }
+            let mut params = json!({ "progressToken": token, "progress": percent.unwrap_or(0), "message": line });
+            if percent.is_some() { params["total"] = json!(100); }
+            send_response(stdout, &json!({ "jsonrpc": "2.0", "method": "notifications/progress", "params": params }));
         }
-        if terminal || token.is_none() || started.elapsed() >= max_wait {
-            let mut summary = format!("{kind} {state}: {phase}");
-            if let Some(percent) = percent { summary.push_str(&format!(" ({percent}%)")); }
-            if let Some(error) = job["error"].as_str() { summary.push_str(&format!("; {error}")); }
-            if let Some(artifact) = job["artifact"].as_str() { summary.push_str(&format!("; output {artifact}")); }
-            summary.push_str(&format!("\nJob ID: {job_id}. Read klipp_job_status for the latest state."));
-            return Ok(vec![json!({ "type":"text", "text":summary })]);
+        last_line = line.to_owned();
+    })?;
+    let mut text = last_line;
+    if ended {
+        text.push_str(&format!("\nEnded after {} of following.", clock(started.elapsed())));
+    } else {
+        text.push_str(&format!("\nStill {} after {}: call klipp_follow_job again to keep waiting.",
+            job["state"].as_str().unwrap_or("running"), clock(started.elapsed())));
+    }
+    if history.len() > 1 {
+        text.push_str(&format!("\nOn the way: {}.", history.join(" · ")));
+    }
+    if job["state"] == "completed" && job["kind"] == "render" {
+        text.push_str("\nThe file is written; the render is done.");
+    }
+    Ok(vec![json!({ "type": "text", "text": text })])
+}
+
+/// `klipp-mcp follow <job_id> [--every N]`: the job's progress as lines
+/// on standard output, one whenever its state or phase changes or it
+/// moves N percent (10 unless given), the last when it ends; exit 0 when
+/// it completed, 1 when it failed or was cancelled, 2 when it could not
+/// be read (#732). An agent's harness runs it in the background and
+/// hears each line as it comes — the push MCP itself does not give.
+fn follow_main(args: &[String]) -> i32 {
+    let Some(job_id) = args.first() else {
+        eprintln!("usage: klipp-mcp follow <job_id> [--every N]");
+        return 2;
+    };
+    let every = args.iter().position(|a| a == "--every").and_then(|i| args.get(i + 1)).and_then(|n| n.parse().ok()).unwrap_or(10);
+    let started = std::time::Instant::now();
+    let out = follow(job_id, None, every, |_, line| {
+        println!("{} {line}", clock(started.elapsed()));
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    });
+    match out {
+        Ok((job, _)) if job["state"] == "completed" => 0,
+        Ok(_) => 1,
+        Err(e) => {
+            println!("{} could not follow {job_id}: {e}", clock(started.elapsed()));
+            2
         }
     }
 }
@@ -1164,7 +1248,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     }
     // The plain summary first, as a person is told it; the fields after
     // for the agent's own use (#626).
-    if name == "klipp_status" {
+    if name == "klipp_status" || name == "klipp_job_status" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let mut rest = result.clone();
             if let Some(o) = rest.as_object_mut() {
@@ -1344,9 +1428,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "job_id": { "type": "string" }, "wait": { "type": "boolean" },
                      "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 10000 } }), vec![]),
         tool("klipp_follow_job",
-             "Follow one render or analysis job. With an MCP progress token, send throttled progress notifications until it ends or max_wait_ms expires. Without a token, return after one status change so the agent can report progress and call again.",
+             "Wait for one render or analysis job to end, then say how it ended: completed with the file and its \
+              loudness, failed with why, or cancelled, and the way there (each 10% with the time). Waits up to \
+              max_wait_ms (10 minutes unless given, at most an hour); if the job is still running then, says so — \
+              call again. Your client may show progress meanwhile, but you see only this reply. For live progress \
+              you can tell the person as it happens, run `klipp-mcp follow <job_id>` as a background task \
+              instead: it prints a line per step and a last line when the job ends.",
              json!({ "job_id": { "type": "string" },
-                     "max_wait_ms": { "type": "integer", "minimum": 1, "maximum": 600000 } }), vec!["job_id"]),
+                     "max_wait_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 } }), vec!["job_id"]),
         tool("klipp_cancel_job",
              "Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.",
              json!({ "job_id": { "type": "string" } }), vec!["job_id"]),

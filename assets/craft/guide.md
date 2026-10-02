@@ -110,14 +110,21 @@ frames.
    Check always reads the sound faults too — wind, rumble, mains hum,
    hiss — measured from the analysis bands, and names the `clean_audio`
    flag that fixes each.
-7. **Deliver.** `klipp_export` to a file, then follow its job ID with
-   `klipp_job_status` or `klipp_follow_job`. The job reports the render
-   percentage, phase, frames done and total, ETA, failure or output path.
-   With an MCP progress token, `klipp_follow_job` sends throttled progress
-   notifications as it runs; without one, it returns after a status change
-   so you can tell the person what happened and call again. `klipp_status`
-   also shows active work. Read the terminal state before saying the file
-   is ready. `klipp_export_subtitles` writes caption sidecars.
+7. **Deliver.** `klipp_export` to a file, then `klipp_follow_job` with
+   its job ID: it waits until the render ends (ten minutes unless you
+   give `max_wait_ms`) and replies how it ended — completed with the file
+   and its measured loudness, or failed and why — with the way there.
+   If it is still running when the wait is up, the reply says so; call it
+   again. Progress notifications go to your client, not to you: you see
+   only the replies. To tell the person how far the render is as it goes,
+   run `klipp-mcp follow <job_id>` as a background task where your
+   harness hears a background command's output: it prints one line per
+   step ("render 40%: Encoding, about 0:31 left") and a last line when the
+   job ends, and exits 0 only when the file is done. `klipp_job_status`
+   reads the state at once, its first line in words; a finished render
+   stays readable for an hour even after the person clears it from the
+   render queue. `klipp_status` also shows active work.
+   `klipp_export_subtitles` writes caption sidecars.
 8. **Save.** `klipp_rename_sequence` so the timeline is called what
    the piece is, then `klipp_save_project` with a path the first time,
    without one after. The user carries on from your project, and an unsaved one

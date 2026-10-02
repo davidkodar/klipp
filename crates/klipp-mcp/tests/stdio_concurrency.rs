@@ -334,3 +334,77 @@ fn an_analysis_wait_keeps_the_callers_timeout() {
     server.join().unwrap();
     std::fs::remove_file(path).unwrap();
 }
+
+/// A fake Klipp that answers job_status for "render-1" with each of
+/// `steps` (state, progress) in turn, one per connection.
+fn fake_render(path: &std::path::Path, steps: Vec<(&'static str, f64)>) -> std::thread::JoinHandle<()> {
+    let listener = UnixListener::bind(path).unwrap();
+    std::thread::spawn(move || {
+        for (state, progress) in steps {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "job_status");
+            let done = state == "completed";
+            let _ = writeln!(stream, "{}", json!({"id":request["id"],"ok":true,"result":{"jobs":[{
+                "job_id":"render-1","kind":"render","state":state,"phase":"Encoding","progress":progress,
+                "artifact":if done {Some("/tmp/render.mp4")} else {None}, "error": if state == "failed" {Some("disk full")} else {None}
+            }]}}));
+        }
+    })
+}
+
+/// #732: without a progress token (the model never sees notifications),
+/// follow_job still waits through the render to its end and says how it
+/// ended and the way there, rather than returning at the first change.
+#[test]
+fn follow_job_waits_to_the_end_without_a_progress_token() {
+    let path = socket_path();
+    let server = fake_render(&path, vec![("running", 0.1), ("running", 0.4), ("running", 0.8), ("completed", 1.0)]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_klipp-mcp"))
+        .env("KLIPP_CONTROL_SOCKET", &path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+        "name":"klipp_follow_job","arguments":{"job_id":"render-1","max_wait_ms":20000}}})).unwrap();
+    input.flush().unwrap();
+    let text = loop {
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_ne!(value["method"], "notifications/progress", "no token, no notifications");
+        if value["id"] == 7 {
+            break value["result"]["content"][0]["text"].as_str().unwrap().to_owned();
+        }
+    };
+    assert!(text.starts_with("render completed — /tmp/render.mp4"), "{text}");
+    assert!(text.contains("On the way:") && text.contains("10% Encoding") && text.contains("80% Encoding"), "{text}");
+    assert!(text.contains("the render is done"), "{text}");
+    child.kill().unwrap();
+    let _ = child.wait();
+    server.join().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+/// #732: `klipp-mcp follow` prints a line per step and the last when the
+/// job ends, for an agent's harness to hear as they come; its exit says
+/// whether the file was made.
+#[test]
+fn the_follow_command_prints_each_step_and_exits_by_the_outcome() {
+    for (last, code) in [("completed", 0), ("failed", 1)] {
+        let path = socket_path();
+        let server = fake_render(&path, vec![("running", 0.05), ("running", 0.07), ("running", 0.5), (last, 1.0)]);
+        let out = Command::new(env!("CARGO_BIN_EXE_klipp-mcp")).args(["follow", "render-1"])
+            .env("KLIPP_CONTROL_SOCKET", &path).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "5% and 50% and the end; 7% is not a step: {text}");
+        assert!(lines[0].ends_with("render running 5%: Encoding") && lines[1].ends_with("render running 50%: Encoding"), "{text}");
+        assert!(lines[2].contains(&format!("render {last}")), "{text}");
+        assert_eq!(out.status.code(), Some(code), "{text}");
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+}
