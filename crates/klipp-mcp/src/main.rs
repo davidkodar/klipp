@@ -1363,7 +1363,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               seconds, name (file, title text or generator) and media id, with speed, \
               off, graded and effects only where set. Narrow it to a track, a stretch \
               of time or one media item; full adds source ranges, frames, blend, grade \
-              group and paths. Clip ids from here are what the grade tools take.",
+              group and paths. Each track lists its transitions too: kind, length, \
+              the stretch they cover and their two clips. Clip ids from here are what \
+              the grade tools take.",
              json!({
                  "track": { "type": ["integer", "string"], "description": "A track's index or name" },
                  "from_secs": { "type": "number", "description": "Only clips that end after this" },
@@ -1527,7 +1529,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_timeline",
              "The timeline as text: tracks top first, every clip with its range in \
               seconds and frames, what it is (media file, title text, generator), its \
-              grade and effects in a word, its id, and the markers. Read this before \
+              grade and effects in a word, its id, the transitions on each track, and \
+              the markers. Read this before \
               planning an edit; klipp_list_clips is the same as JSON with more fields.",
              json!({ "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" } }),
              vec![]),
