@@ -706,7 +706,8 @@ pub enum Op {
     /// `#rrggbbaa`; `x` and `y` are where the text's centre goes, 0 to 1
     /// of the frame, everything in the title moving with it; `backing`
     /// is how dark a panel sits behind the text as the eye sees it, 0
-    /// (none) to 1 (black); `outline` is a width in pixels, 0 for none.
+    /// (none) to 1 (black); `outline` is a width in pixels, 0 for none;
+    /// `shadow` a drop shadow behind the text, opacity 0 taking it off.
     Style {
         #[serde(default)]
         clip_id: Option<ClipRef>,
@@ -738,6 +739,8 @@ pub enum Op {
         /// fill, changed after the fact.
         #[serde(default)]
         full_frame: Option<String>,
+        #[serde(default)]
+        shadow: Option<ShadowSpec>,
     },
     /// Create a title from scratch with any look and motion — the way to
     /// put a heading, a callout or a hero card on screen. `text` is the
@@ -747,8 +750,8 @@ pub enum Op {
     /// `font`, `bold`, `align` (left/center/right); `backing` a dark
     /// panel behind the text (0..1) or `backing_color`, `full_frame` a
     /// solid colour card behind everything, `outline`+`outline_color` a
-    /// stroke, `glow`+`glow_color` a neon glow, `gradient` a two-colour
-    /// fill (#top,#bottom). Motion: `animate` an entrance (fade, rise,
+    /// stroke, `glow`+`glow_color` a neon glow, `shadow` a soft drop
+    /// shadow, `gradient` a two-colour fill (#top,#bottom). Motion: `animate` an entrance (fade, rise,
     /// drop, slide_left, slide_right, scale_up, scale_down, blur,
     /// mask_rise, mask_drop, typewriter) over `animate_secs`, `stagger` (line/word/char) for
     /// per-unit timing; `loop` a continuous effect (pulse, flash/blink,
@@ -828,6 +831,8 @@ pub enum Op {
         /// where they are put.
         #[serde(default)]
         over_faces: bool,
+        #[serde(default)]
+        shadow: Option<ShadowSpec>,
     },
     /// Compose a picture into the frame rather than letting it fill the
     /// frame: `x`,`y` is where its centre sits and `width`,`height` how
@@ -909,6 +914,56 @@ pub const OP_NAMES: &[&str] = &[
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
 ];
 
+/// A drop shadow behind a title's text, what keeps bright words
+/// readable over a bright sky. `x` and `y` move it in pixels of a
+/// 1080-line frame (right and down for positive), `blur` softens it in
+/// the same pixels, `color` is `#rrggbb`, `opacity` 0 to 1. Left out,
+/// they are 0, 4, 8, black and 0.6.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowSpec {
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub blur: Option<f32>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
+}
+
+/// The shadow a spec asks for, or `None` at opacity 0.
+fn title_shadow(spec: &ShadowSpec, i: usize) -> Result<Option<klipp_timeline::TitleShadow>, Refusal> {
+    let range = |v: Option<f32>, default: f32, lo: f32, hi: f32, what: &str| match v {
+        Some(v) if !v.is_finite() || !(lo..=hi).contains(&v) => Err(refuse(i, format!("shadow {what} {v} is out of range"), format!("give the shadow's {what} {lo} to {hi}"))),
+        v => Ok(v.unwrap_or(default)),
+    };
+    let x = range(spec.x, 0.0, -100.0, 100.0, "x")?;
+    let y = range(spec.y, 4.0, -100.0, 100.0, "y")?;
+    let blur = range(spec.blur, 8.0, 0.0, 100.0, "blur")?;
+    let opacity = range(spec.opacity, 0.6, 0.0, 1.0, "opacity")?;
+    let mut color = match spec.color.as_deref() {
+        Some(c) => parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write the shadow colour as #rrggbb"))?,
+        None => [0, 0, 0, 255],
+    };
+    if opacity <= 0.0 {
+        return Ok(None);
+    }
+    color[3] = (color[3] as f32 * opacity).round() as u8;
+    Ok(Some(klipp_timeline::TitleShadow {
+        enabled: true,
+        color,
+        offset_x: x,
+        offset_x_keyframes: Vec::new(),
+        offset_y: y,
+        offset_y_keyframes: Vec::new(),
+        blur,
+        blur_keyframes: Vec::new(),
+    }))
+}
+
 /// What a `style` op changes, gathered.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Look {
@@ -922,6 +977,8 @@ struct Look {
     y: Option<f32>,
     backing: Option<f32>,
     outline: Option<f32>,
+    /// `Some(None)` takes the shadow off.
+    shadow: Option<Option<klipp_timeline::TitleShadow>>,
 }
 
 fn default_caption_chars() -> usize {
@@ -1867,7 +1924,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ];
             grade(i, target, &knobs, *reset)
         }
-        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame } => {
+        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow } => {
             let look = Look {
                 full_frame: full_frame.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write the full-frame colour as #rrggbb"))).transpose()?,
                 size: *size,
@@ -1887,6 +1944,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 y: *y,
                 backing: *backing,
                 outline: *outline,
+                shadow: shadow.as_ref().map(|s| title_shadow(s, i)).transpose()?,
             };
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
@@ -1894,7 +1952,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
-        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade , over_faces } => {
+        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade, over_faces, shadow } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             // The look the style names fills what the op leaves out.
             let look = match style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1920,6 +1978,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 loop_effect: loop_effect.as_deref().or(look.loop_effect.as_deref()), glitch: *glitch, chromatic: *chromatic,
                 roll_shape: *roll_shape,
                 edge_fade: *edge_fade,
+                shadow: shadow.as_ref().map(|s| title_shadow(s, i)).transpose()?.flatten(),
             };
             title_op(seq, fps, i, at, args)
         }
@@ -5220,6 +5279,9 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
                 fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: w, enabled: true, width_keyframes: Vec::new() });
             }
         }
+        if let Some(shadow) = &look.shadow {
+            fx.get_or_insert_with(Default::default).shadows = shadow.iter().cloned().collect();
+        }
     }
     if let Some(color) = look.full_frame {
         new.background = TitleBackground::FullFrame { color };
@@ -5300,6 +5362,7 @@ fn style(
     if look.x.is_some() || look.y.is_some() { said.push(format!("centre at {}, {}", look.x.map(|x| format!("{x:.2}")).unwrap_or_else(|| "its x".into()), look.y.map(|y| format!("{y:.2}")).unwrap_or_else(|| "its y".into()))); }
     if let Some(d) = look.backing { said.push(if d <= 0.0 { "no backing".into() } else { format!("backing {:.0}% dark", d * 100.0) }); }
     if let Some(w) = look.outline { said.push(if w <= 0.0 { "no outline".into() } else { format!("outline {w:.0} px") }); }
+    if let Some(sh) = &look.shadow { said.push(if sh.is_none() { "no shadow".into() } else { "a drop shadow".into() }); }
     let first = targets.first().map(|(_, c)| secs(c.timeline_in)).unwrap_or(0.0);
     let last = targets.last().map(|(_, c)| secs(c.timeline_out)).unwrap_or(0.0);
     let what = format!("restyle {} title{} from {first:.2} to {last:.2} s: {}", edits.len(), if edits.len() == 1 { "" } else { "s" }, said.join(", "));
@@ -5435,6 +5498,7 @@ struct TitleArgs<'a> {
     chromatic: Option<f32>,
     roll_shape: Option<klipp_core::title_motion::RollShape>,
     edge_fade: Option<klipp_core::title_motion::EdgeFade>,
+    shadow: Option<klipp_timeline::TitleShadow>,
     /// Faces under the title's span: the words keep clear of them.
     keep_out: Vec<[f32; 4]>,
 }
@@ -5500,6 +5564,9 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         }
         let color = col(a.glow_color, "the glow")?.unwrap_or(tb.color);
         fx.glows = vec![TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() }];
+    }
+    if let Some(shadow) = a.shadow {
+        fx.shadows = vec![shadow];
     }
     if let Some(gr) = a.gradient {
         let top = parse_color(&gr[0]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[0]), "write the gradient colours as #rrggbb"))?;
@@ -5895,7 +5962,7 @@ mod tests {
             }
         }
         let (seq, pool, media, _, _) = fixture();
-        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
         let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -5915,7 +5982,7 @@ mod tests {
     fn a_title_rolls_as_credits_or_crawls_as_a_ticker() {
         let (seq, pool, _, _, _) = fixture();
         let looped = |name: &str| {
-            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
+            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
             let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -5944,7 +6011,7 @@ mod tests {
 
         let (mut seq, pool, _, _, _) = fixture();
         seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
-        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
+        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -6048,7 +6115,7 @@ mod tests {
             type_styles: vec![TypeStyle { name: "kicker".into(), size: Some(28.0), y: Some(0.12), color: Some("#ff6600".into()), animate: Some("drop".into()), ..Default::default() }],
             ..Default::default()
         });
-        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false };
+        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), None)]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
@@ -7541,7 +7608,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
-        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false, shadow: None }]).is_err());
     }
 
     /// #237: clips put in a grade group; a look on its post-clip grade
@@ -7810,6 +7877,47 @@ mod tests {
         assert!(bad(r##"[{"op":"style","track":"video"}]"##).why.contains("nothing to change"));
         assert!(bad(r##"[{"op":"style","track":"video","color":"yellow"}]"##).why.contains("not a colour"));
         assert!(bad(r##"[{"op":"style","track":"video","size":40}]"##).why.contains("no title there"));
+    }
+
+    /// #509: a soft drop shadow on a new title, and on titles restyled,
+    /// opacity 0 taking it off again.
+    #[test]
+    fn a_title_takes_a_drop_shadow_and_style_can_take_it_off() {
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r##"[{"op":"title","text":"Sand","at":{"secs":0.5},"secs":2.0,"shadow":{"x":2,"blur":12,"color":"#102030","opacity":0.5}}]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let shadows = &clip.title_data().unwrap().objects[0].fx().shadows;
+        assert_eq!(shadows.len(), 1);
+        let sh = &shadows[0];
+        assert_eq!((sh.offset_x, sh.offset_y, sh.blur, sh.color), (2.0, 4.0, 12.0, [0x10, 0x20, 0x30, 128]), "y defaults to 4, the opacity is the alpha");
+
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        assert!(bad(r##"[{"op":"title","text":"A","at":{"secs":0.5},"shadow":{"opacity":2}}]"##).why.contains("out of range"));
+        assert!(bad(r##"[{"op":"title","text":"A","at":{"secs":0.5},"shadow":{"color":"grey"}}]"##).why.contains("not a colour"));
+        assert!(serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"A","at":{"secs":0.5},"shadow":{"offset":4}}]"##).is_err(), "an unknown shadow field is refused");
+
+        // Restyled: the captions take a shadow, then lose it.
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"captions","max_chars":30},
+            {"op":"style","track":"subtitle","shadow":{}},
+            {"op":"style","track":"subtitle","shadow":{"opacity":0}}
+        ]"##).unwrap();
+        let plan = resolve_with(&seq, &pool, &ops, &Spoken).unwrap();
+        assert!(plan.steps[1].what.contains("a drop shadow"), "{}", plan.steps[1].what);
+        assert!(plan.steps[2].what.contains("no shadow"), "{}", plan.steps[2].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        let shadows = |view: &crate::apply::DocumentView| view.sequences[0].tracks.last().unwrap().clips[0].title_data().unwrap().objects[0].fx().shadows.clone();
+        view.apply_forward(&plan.steps[0].edit);
+        view.apply_forward(&plan.steps[1].edit);
+        let on = shadows(&view);
+        assert_eq!(on.len(), 1);
+        assert_eq!((on[0].offset_x, on[0].offset_y, on[0].blur, on[0].color), (0.0, 4.0, 8.0, [0, 0, 0, 153]), "the defaults");
+        view.apply_forward(&plan.steps[2].edit);
+        assert!(shadows(&view).is_empty(), "opacity 0 takes it off");
     }
 
     /// The `k`th caption as the plan's captions step made it.
