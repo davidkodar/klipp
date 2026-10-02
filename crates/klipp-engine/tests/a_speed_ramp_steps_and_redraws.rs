@@ -33,7 +33,7 @@ fn held_at(speed: f32) -> Vec<Keyframe> {
 struct Engine {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
-    seq: Arc<RwLock<Sequence>>,
+    seq: Arc<klipp_timeline::SharedSequence>,
     playhead: Arc<Mutex<Option<RationalTime>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -133,7 +133,7 @@ fn parked_at_frame_5(seq: Sequence, pool: MediaPool) -> Engine {
         }
     });
     let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
-    let seq = Arc::new(RwLock::new(seq));
+    let seq = Arc::new(klipp_timeline::SharedSequence::new(seq));
     let engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
         Arc::clone(&seq), Arc::new(RwLock::new(pool)), Box::new(|| {}),

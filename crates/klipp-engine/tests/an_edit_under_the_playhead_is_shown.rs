@@ -66,7 +66,7 @@ fn clip_of(media_id: MediaId, fps: Fps) -> Clip {
 struct Engine {
     cmd: crossbeam_channel::Sender<AppCommand>,
     fb: Arc<Mutex<FrameBuffer>>,
-    seq: Arc<RwLock<Sequence>>,
+    seq: Arc<klipp_timeline::SharedSequence>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -145,7 +145,7 @@ fn parked_on_red(extra: Option<(MediaId, PathBuf)>) -> Option<(Engine, MediaId)>
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
     std::thread::spawn(move || while ev_rx.recv().is_ok() {});
     let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
-    let seq = Arc::new(RwLock::new(seq));
+    let seq = Arc::new(klipp_timeline::SharedSequence::new(seq));
     let engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
         Arc::clone(&seq), Arc::new(RwLock::new(pool)), Box::new(|| {}),

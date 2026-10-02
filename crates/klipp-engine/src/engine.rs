@@ -227,7 +227,6 @@ use crossbeam_queue::ArrayQueue;
 use klipp_core::{AppCommand, AppEvent, Fps, MediaId, ParamChange, RationalTime, Resolution, Timecode};
 use klipp_jobs::ForegroundActivity;
 use klipp_media::MediaPool;
-use klipp_timeline::Sequence;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -998,7 +997,7 @@ fn apply_override_recursive_impl(
 }
 
 pub fn apply_param_changes(
-    sequence: &Arc<RwLock<Sequence>>,
+    sequence: &Arc<klipp_timeline::SharedSequence>,
     queue: &Arc<ArrayQueue<ParamChange>>,
     grade_hash: &mut u64,
     graph_arc: &mut Option<Arc<klipp_nodes::NodeGraph>>,
@@ -1088,7 +1087,7 @@ pub fn apply_param_changes(
     applied
 }
 
-/// Ownership-tag for the shared `Arc<RwLock<Sequence>>`. Every
+/// Ownership-tag for the shared `Arc<klipp_timeline::SharedSequence>`. Every
 /// `sequence.write()` call that holds the guard for more than a
 /// few microseconds sets this to its site name on acquire and
 /// clears it on release. The engine's `apply_param_changes`
@@ -1159,7 +1158,7 @@ pub struct PlaybackEngine {
     contiguous_audio: std::sync::atomic::AtomicBool,
     fps: Fps,
     playhead: Timecode,
-    sequence: Arc<RwLock<Sequence>>,
+    sequence: Arc<klipp_timeline::SharedSequence>,
     media_pool: Arc<RwLock<MediaPool>>,
     repaint_cb: Box<dyn Fn() + Send>,
     last_frame_time: std::time::Instant,
@@ -1955,7 +1954,7 @@ impl PlaybackEngine {
         event_tx: Sender<AppEvent>,
         frame_buffer: SharedFrameBuffer,
         source_frame_buffer: SharedFrameBuffer,
-        sequence: Arc<RwLock<Sequence>>,
+        sequence: Arc<klipp_timeline::SharedSequence>,
         media_pool: Arc<RwLock<MediaPool>>,
         repaint_cb: Box<dyn Fn() + Send>,
         skim_consumer: crate::audio_output::SkimConsumer,
@@ -11974,13 +11973,13 @@ mod param_change_queue_tests {
     use super::{apply_param_changes, ArrayQueue, PARAM_CHANGE_QUEUE_CAPACITY};
     use klipp_core::{MediaId, ParamChange, RationalTime};
     use klipp_timeline::Sequence;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     /// Build a Sequence with a single clip and an Exposure node added
     /// to its graph. Returns (shared sequence, clip id, exposure node id).
     /// The default clip graph is bare Source → Output, so the test
     /// pushes the Exposure node it needs explicitly.
-    fn make_fixture() -> (Arc<RwLock<Sequence>>, klipp_core::ClipId, klipp_nodes::NodeId) {
+    fn make_fixture() -> (Arc<klipp_timeline::SharedSequence>, klipp_core::ClipId, klipp_nodes::NodeId) {
         let mut seq = Sequence::new_default();
         let media_id = MediaId::new();
         let duration = RationalTime::from_frames(120, 24);
@@ -12003,7 +12002,7 @@ mod param_change_queue_tests {
                 break;
             }
         }
-        (Arc::new(RwLock::new(seq)), clip_id, exposure_id)
+        (Arc::new(klipp_timeline::SharedSequence::new(seq)), clip_id, exposure_id)
     }
 
     #[test]
@@ -12799,6 +12798,7 @@ mod mix_lead_tests {
 #[cfg(test)]
 mod audio_edited_tests {
     use super::*;
+    use klipp_timeline::Sequence;
     use std::sync::Mutex;
 
     /// #580: playback crossing a cut changes the clips under the playhead
@@ -12818,7 +12818,7 @@ mod audio_edited_tests {
         let mut music = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
         music.clips = vec![klipp_timeline::Clip::media(b, tc(0.0), tc(2.0), tc(0.0), tc(2.0))];
         seq.tracks = vec![v1, music];
-        let sequence = Arc::new(RwLock::new(seq));
+        let sequence = Arc::new(klipp_timeline::SharedSequence::new(seq));
         let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
         let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
@@ -12847,6 +12847,7 @@ mod audio_edited_tests {
 #[cfg(test)]
 mod preroll_retry_tests {
     use super::*;
+    use klipp_timeline::Sequence;
     use std::sync::Mutex;
 
     /// #576: the look-ahead asks for the next clip's preroll on every frame
@@ -12873,7 +12874,7 @@ mod preroll_retry_tests {
         let fb = || Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
         let mut engine = PlaybackEngine::new(
             cmd_rx, ev_tx, fb(), fb(),
-            Arc::new(RwLock::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
         );
         engine.current_track_index = 0;

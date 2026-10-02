@@ -50,7 +50,7 @@ pub struct ControlContext {
     /// idle window would otherwise sit on a queued command until the
     /// mouse next moved.
     pub wake_ui: std::sync::Arc<dyn Fn() + Send + Sync>,
-    pub sequence: Arc<RwLock<klipp_timeline::Sequence>>,
+    pub sequence: Arc<klipp_timeline::SharedSequence>,
     pub media_pool: Arc<RwLock<klipp_media::MediaPool>>,
     pub frame_buffer: Arc<Mutex<klipp_engine::FrameBuffer>>,
     pub perf_ring: klipp_engine::perf::SharedPerfRing,

@@ -22,7 +22,7 @@ fn import(path: &Path) -> MediaLoadedPayload {
     let fb = Arc::new(Mutex::new(FrameBuffer::new(64, 64)));
     let engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(64, 64))),
-        Arc::new(RwLock::new(Sequence::new_default())), Arc::new(RwLock::new(MediaPool::default())), Box::new(|| {}),
+        Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default())), Arc::new(RwLock::new(MediaPool::default())), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(PerfRing::default())),
     );
     let thread = std::thread::spawn(move || engine.run());

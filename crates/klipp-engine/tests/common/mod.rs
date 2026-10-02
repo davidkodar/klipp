@@ -172,7 +172,7 @@ impl Parked {
         let perf = Arc::new(Mutex::new(PerfRing::default()));
         let engine = PlaybackEngine::new(
             cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(width, height))),
-            Arc::new(RwLock::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::clone(&perf),
         );
         let params = engine.param_change_queue();

@@ -28,7 +28,7 @@ struct Harness {
     edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>>,
     shared: Arc<klipp_core::ControlShared>,
     media_pool: Arc<RwLock<klipp_media::MediaPool>>,
-    sequence: Arc<RwLock<klipp_timeline::Sequence>>,
+    sequence: Arc<klipp_timeline::SharedSequence>,
     log: std::path::PathBuf,
     socket: std::path::PathBuf,
     next_id: u64,
@@ -186,7 +186,7 @@ fn harness() -> Harness {
     // reaching for the wrong one is an easy mistake to make and used to
     // be an impossible one to notice.
     let (sequence, ids) = sequence_with_two_clips();
-    let sequence = Arc::new(RwLock::new(sequence));
+    let sequence = Arc::new(klipp_timeline::SharedSequence::new(sequence));
     let frame_buffer = Arc::new(Mutex::new(fb));
     let ctx = ControlContext {
         commands: env_tx,

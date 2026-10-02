@@ -291,7 +291,7 @@ impl Viewer {
             ev_tx,
             Arc::clone(&fb),
             Arc::new(Mutex::new(FrameBuffer::new(W, H))),
-            Arc::new(RwLock::new(t.seq.clone())),
+            Arc::new(klipp_timeline::SharedSequence::new(t.seq.clone())),
             Arc::new(RwLock::new(pool)),
             Box::new(|| {}),
             Arc::new(Mutex::new(None)),
