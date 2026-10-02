@@ -698,6 +698,19 @@ struct WindowTrackJob {
     perspective: bool,
 }
 
+/// Where `surface` on `clip` is drawn at timeline second `at`, in
+/// fractions of the frame: the clip's picture fitted and placed by its own
+/// transform, as the viewer shows it. `source_secs` reads the track there
+/// rather than at the frame shown.
+fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> [[f32; 2]; 4] {
+    let fps = seq.fps.as_f64();
+    let elapsed = (at - clip.timeline_in.to_secs_f64()).max(0.0);
+    let q = surface.corners_shown_at(source_secs.unwrap_or_else(|| clip.source_secs_at(elapsed, fps)));
+    let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(elapsed, clip.timeline_in.rate.max(1));
+    let placed = klipp_compose::eval::evaluate_clip_own_transform(clip, elapsed, &klipp_compose::eval::eval_context(clip, when, fps));
+    klipp_timeline::surface::source_quad_in_frame(&q, surface.source_size, [seq.resolution.width, seq.resolution.height], Some(placed))
+}
+
 /// A surface to follow through a clip's file (#684): the file, its
 /// rate, the frames the clip uses, the frame the corners were set on, and
 /// the corners there in frame fractions.
@@ -712,6 +725,10 @@ struct SurfaceTrackJob {
     corners: [[f32; 2]; 4],
     /// Pixels in one frame as it is read for tracking.
     pixels: usize,
+    /// 1 or -1: only later or only earlier frames, merged; 0 both ways.
+    direction: i8,
+    interactive: bool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The width surfaces are tracked at, and the memory the frames may take
@@ -14113,9 +14130,12 @@ impl KlippApp {
     }
 
     /// A tracked surface onto its clip as one undo step (#684), replacing
-    /// the one it re-tracks; what is pinned to it follows on the next frame
-    /// drawn. Says how much of the clip it covers, and where it was lost.
-    fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64)) {
+    /// the one it re-tracks, or, continued one way, laid over its track;
+    /// what is pinned to it follows on the next frame drawn. Says how much
+    /// of the clip it covers and where it was lost; for a person at the
+    /// viewer, the playhead goes to the first frame lost with the corners
+    /// up to put right and continue.
+    fn apply_surface_track(&mut self, clip_id: klipp_core::ClipId, surface: klipp_timeline::Surface, held_secs: (f64, f64), direction: i8, interactive: bool) {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
         let Some(old) = seq.all_clips().find(|c| c.id == clip_id).cloned() else {
@@ -14124,12 +14144,13 @@ impl KlippApp {
         };
         let mut new = old.clone();
         match new.surfaces.iter_mut().find(|s| s.id == surface.id) {
+            Some(s) if direction != 0 => s.merge_keys(surface.keys.clone()),
             Some(s) => *s = surface.clone(),
             None => new.surfaces.push(surface.clone()),
         }
-        let edit = EditCommand::ReplaceClip { description: "Track Surface", old: Box::new(old.clone()), new: Box::new(new) };
+        let edit = EditCommand::ReplaceClip { description: "Track Surface", old: Box::new(old.clone()), new: Box::new(new.clone()) };
         self.apply_edits_as_one(std::slice::from_ref(&edit), "Track Surface");
-        // Where the track ends short of the clip, in timeline seconds.
+        // Where this run ends short of the clip, in the direction it ran.
         let (from, to) = surface.tracked_secs().unwrap_or((surface.reference_secs, surface.reference_secs));
         let on_timeline = |src: f64| old.timeline_in.to_secs_f64() + old.elapsed_for_source_secs(src, fps);
         let (lo, hi) = (old.source_in.to_secs_f64(), old.source_out.to_secs_f64());
@@ -14137,10 +14158,16 @@ impl KlippApp {
         // Short of the clip at an edge of the frames read is the memory
         // limit, not the tracker losing the surface.
         let (mut lost, mut held) = (Vec::new(), Vec::new());
-        for (short, edge, held_edge, side) in [(from > lo + frame * 1.5, from, held_secs.0, "before"), (to < hi - frame * 1.5, to, held_secs.1, "after")] {
+        let mut first_lost: Option<(f64, i8)> = None;
+        for (short, edge, held_edge, side, way) in [(direction >= 0 && to < hi - frame * 1.5, to, held_secs.1, "after", 1i8), (direction <= 0 && from > lo + frame * 1.5, from, held_secs.0, "before", -1i8)] {
             if short {
                 let said = format!("{side} {:.2} s", on_timeline(edge));
-                if (edge - held_edge).abs() < frame * 1.5 { held.push(said) } else { lost.push(said) }
+                if (edge - held_edge).abs() < frame * 1.5 {
+                    held.push(said)
+                } else {
+                    lost.push(said);
+                    first_lost.get_or_insert((edge, way));
+                }
             }
         }
         let mut note = String::new();
@@ -14150,14 +14177,72 @@ impl KlippApp {
         if !held.is_empty() {
             note.push_str(&format!("; not tracked {}, past the frames held at once: track again from a frame there", held.join(" and ")));
         }
-        self.state.toast.show(format!("Tracked \u{201c}{}\u{201d} over {} frames{note}", surface.name, surface.keys.len()));
+        let total = new.surfaces.iter().find(|s| s.id == surface.id).map_or(0, |s| s.keys.len());
+        // Stop and fix: on the frame after the last one followed, the
+        // corners where they last were, to drag onto the surface.
+        if let (true, Some((edge, way))) = (interactive, first_lost) {
+            let step = 1.0 / surface.media_fps.max(1.0);
+            let src = (edge + way as f64 * step).clamp(lo, (hi - step).max(lo));
+            let at = on_timeline(src).clamp(new.timeline_in.to_secs_f64(), new.timeline_out.to_secs_f64() - 1.0 / fps.max(1.0));
+            let rate = new.timeline_in.rate.max(1);
+            self.send_commands(vec![AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(at, rate))]);
+            if let Some(s) = new.surfaces.iter().find(|s| s.id == surface.id) {
+                let corners = surface_on_frame(self.state.sequence(), &new, s, at, Some(edge));
+                self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface: Some(s.id), name: Some(s.name.clone()), corners, direction: way, drag: None });
+            }
+            self.state.toast.show(format!("Lost \u{201c}{}\u{201d} at {at:.2} s: drag the corners onto it and press Continue", surface.name));
+            return;
+        }
+        self.state.toast.show(format!("Tracked \u{201c}{}\u{201d} over {total} frames{note}", surface.name));
+    }
+
+    /// The viewer's surface tool on `clip_id` (#684 phase 2): corners where
+    /// `surface` is at the playhead, or a box in the middle of the clip's
+    /// picture for a new one. The playhead goes onto the clip if it is not.
+    fn open_surface_tool(&mut self, clip_id: klipp_core::ClipId, surface: Option<uuid::Uuid>) {
+        let seq = self.state.sequence();
+        let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+            self.state.toast.show("Only a clip from a file can be tracked");
+            return;
+        };
+        if item.is_still {
+            self.state.toast.show("A still does not move: a surface is tracked in footage");
+            return;
+        }
+        let (a, b) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+        let mut at = self.state.playhead.to_secs_f64();
+        if !(a..b).contains(&at) {
+            at = surface.and_then(|id| clip.surfaces.iter().find(|s| s.id == id)).map_or(a, |s| a + clip.elapsed_for_source_secs(s.reference_secs, seq.fps.as_f64())).clamp(a, b);
+            self.send_commands(vec![AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(at, clip.timeline_in.rate.max(1)))]);
+        }
+        let (w, h) = (item.resolution.width, item.resolution.height);
+        let shown = if item.source_rotation.rem_euclid(180) == 90 { [h, w] } else { [w, h] };
+        let existing = surface.and_then(|id| clip.surfaces.iter().find(|s| s.id == id));
+        let corners = match existing {
+            Some(s) => surface_on_frame(self.state.sequence(), &clip, s, at, None),
+            None => {
+                let middle = klipp_timeline::surface::Surface {
+                    id: uuid::Uuid::nil(),
+                    name: String::new(),
+                    corners: [[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]],
+                    reference_secs: 0.0,
+                    keys: Vec::new(),
+                    source_size: shown,
+                    media_fps: 0.0,
+                };
+                surface_on_frame(self.state.sequence(), &clip, &middle, at, None)
+            }
+        };
+        self.state.surface_tool = Some(crate::state::SurfaceTool { clip_id, surface, name: existing.map(|s| s.name.clone()), corners, direction: 0, drag: None });
+        self.state.selected_clip = Some(clip_id);
     }
 
     /// Follow a surface in perspective both ways from its reference frame
     /// (#684), on a thread: the frames are read once, as for a window, and
     /// each followed frame's corners come back by file time.
     fn start_surface_track(&mut self, job: SurfaceTrackJob) {
-        let SurfaceTrackJob { clip_id, surface, name, path, media_fps, frames: (first, last), reference, corners, pixels } = job;
+        let SurfaceTrackJob { clip_id, surface, name, path, media_fps, frames: (first, last), reference, corners, pixels, direction, interactive, cancel } = job;
         self.state.tracking_in_progress.insert(clip_id);
         self.state.tracking_progress.insert(clip_id, 0.0);
         let event_tx = self.proxy_event_tx.clone();
@@ -14176,8 +14261,15 @@ impl KlippApp {
                 (first, last)
             };
             let loading = 0.6;
+            let going = || !cancel.load(std::sync::atomic::Ordering::Relaxed);
+            // Continuing one way reads only that way's frames.
+            let (first, last) = match direction {
+                1 => (reference, last),
+                -1 => (first, reference),
+                _ => (first, last),
+            };
             let frames = match grey_frames_sized(&path, media_fps, first, last, SURFACE_TRACK_SIDE, false, &|p| {
-                event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * loading }).is_ok()
+                going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * loading }).is_ok()
             }) {
                 Ok(f) => f,
                 Err(e) => return fail(e),
@@ -14194,10 +14286,10 @@ impl KlippApp {
             // (16 px here is 24 at 1080p) on patches a little larger. The
             // cost grows with both squared, so not as wide as the halving.
             let opts = TrackOptions { search_radius: 16, patch_half: 6, ..TrackOptions::default() };
-            let forward: Vec<usize> = (reference + 1..=last).collect();
-            let backward: Vec<usize> = (first..reference).rev().collect();
+            let forward: Vec<usize> = if direction >= 0 { (reference + 1..=last).collect() } else { Vec::new() };
+            let backward: Vec<usize> = if direction <= 0 { (first..reference).rev().collect() } else { Vec::new() };
             let share = (forward.len() as f32 / (forward.len() + backward.len()).max(1) as f32).max(0.01);
-            let report = |p: f32| event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
+            let report = |p: f32| going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: loading + p * (1.0 - loading) }).is_ok();
             let ahead = track_window_perspective(&reference_frame, quad_px, &forward, &mut |f| decode(f), &opts, &|p| report(p * share));
             let behind = track_window_perspective(&reference_frame, quad_px, &backward, &mut |f| decode(f), &opts, &|p| report(share + p * (1.0 - share)));
             if ahead.is_empty() && behind.is_empty() && !(forward.is_empty() && backward.is_empty()) {
@@ -14219,7 +14311,10 @@ impl KlippApp {
                 .collect();
             let held_secs = (first as f64 / media_fps, last as f64 / media_fps);
             let source_size = [gw as u32, gh as u32];
-            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs });
+            if !going() {
+                return fail("cancelled".into());
+            }
+            let _ = event_tx.send(klipp_core::AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs: reference as f64 / media_fps, keys, source_size, media_fps, held_secs, direction, interactive });
         });
     }
 
@@ -21049,7 +21144,7 @@ impl KlippApp {
                 self.state.tracking_mode = !self.state.tracking_mode;
                 true
             }
-            AppCommand::TrackSurface { clip_id, corners, at_secs, name, surface } => {
+            AppCommand::TrackSurface { clip_id, corners, at_secs, name, surface, direction, interactive } => {
                 let clip_id = *clip_id;
                 if !klipp_timeline::surface::quad_is_usable(corners) {
                     self.state.toast.show("The surface's corners need to enclose an area");
@@ -21061,6 +21156,8 @@ impl KlippApp {
                 }
                 let at = at_secs.unwrap_or(self.state.playhead_smooth_secs);
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let frame = [seq.resolution.width, seq.resolution.height];
+                let fps = seq.fps.as_f64();
                 let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
                 let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else {
                     self.state.toast.show("Only a clip from a file can be tracked");
@@ -21072,20 +21169,56 @@ impl KlippApp {
                 let clip_time = (at - clip.timeline_in.to_secs_f64()).clamp(0.0, (clip.timeline_out - clip.timeline_in).to_secs_f64());
                 let first = (clip.source_in.to_secs_f64() * media_fps).floor() as usize;
                 let last = ((clip.source_out.to_secs_f64() * media_fps).ceil() as usize).min(frame_count.saturating_sub(1)).max(first);
-                let reference = ((clip.source_secs_at(clip_time, seq.fps.as_f64()) * media_fps).round() as usize).clamp(first, last);
+                let reference = ((clip.source_secs_at(clip_time, fps) * media_fps).round() as usize).clamp(first, last);
                 let existing = surface.and_then(|id| clip.surfaces.iter().find(|s| s.id == id));
+                if *direction != 0 && existing.is_none() {
+                    self.state.toast.show("A track continues only on a surface the clip already has");
+                    return true;
+                }
                 let id = surface.unwrap_or_else(uuid::Uuid::new_v4);
                 let name = name.clone()
                     .or_else(|| existing.map(|s| s.name.clone()))
                     .unwrap_or_else(|| format!("Surface {}", clip.surfaces.len() + 1));
-                self.state.toast.show(format!("Tracking the surface \u{201c}{name}\u{201d}\u{2026}"));
                 let (w, h) = (item.resolution.width.max(1) as f64, item.resolution.height.max(1) as f64);
+                let turned = item.source_rotation.rem_euclid(180) == 90;
+                // The corners come as the frame shows the clip: back into its
+                // own picture, as the tracker reads it.
+                let shown = if turned { [h as u32, w as u32] } else { [w as u32, h as u32] };
+                let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(clip_time, clip.timeline_in.rate.max(1));
+                let placed = klipp_compose::eval::evaluate_clip_own_transform(clip, clip_time, &klipp_compose::eval::eval_context(clip, when, fps));
+                let on_source = klipp_timeline::surface::frame_quad_in_source(corners, shown, frame, Some(placed));
+                if !klipp_timeline::surface::quad_is_usable(&on_source) {
+                    self.state.toast.show("The surface's corners need to be on the clip's picture");
+                    return true;
+                }
                 // The decoder bounds the picture's width as shown, which for
                 // a turned phone shot is the file's height.
-                let shown_w = if item.source_rotation.rem_euclid(180) == 90 { h } else { w };
+                let shown_w = if turned { h } else { w };
                 let scale = (SURFACE_TRACK_SIDE as f64 / shown_w).min(1.0);
                 let pixels = ((w * scale) * (h * scale)) as usize;
-                self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: *corners, pixels });
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.state.surface_track_cancel.insert(clip_id, cancel.clone());
+                self.state.surface_tool = None;
+                self.state.toast.show(match direction {
+                    0 => format!("Tracking the surface \u{201c}{name}\u{201d}\u{2026}"),
+                    _ => format!("Continuing the track of \u{201c}{name}\u{201d}\u{2026}"),
+                });
+                self.start_surface_track(SurfaceTrackJob { clip_id, surface: id, name, path, media_fps, frames: (first, last), reference, corners: on_source, pixels, direction: *direction, interactive: *interactive, cancel });
+                true
+            }
+            AppCommand::OpenSurfaceTool { clip_id, surface } => {
+                self.open_surface_tool(*clip_id, *surface);
+                true
+            }
+            AppCommand::RemoveSurface { clip_id, surface } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let Some(old) = seq.all_clips().find(|c| c.id == *clip_id).cloned() else { return true };
+                let mut new = old.clone();
+                new.surfaces.retain(|s| s.id != *surface);
+                if new.surfaces.len() != old.surfaces.len() {
+                    let edit = EditCommand::ReplaceClip { description: "Remove Surface", old: Box::new(old), new: Box::new(new) };
+                    self.apply_edits_as_one(std::slice::from_ref(&edit), "Remove Surface");
+                }
                 true
             }
             AppCommand::TrackMaskRegion { clip_id, node_id, mask_index, perspective } => {
@@ -21188,6 +21321,10 @@ impl KlippApp {
             AppCommand::CancelTrackAnalysis { clip_id } => {
                 self.state.tracking_in_progress.remove(clip_id);
                 self.state.tracking_progress.remove(clip_id);
+                // A surface track stops where it is, and its result is dropped.
+                if let Some(cancel) = self.state.surface_track_cancel.remove(clip_id) {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 true
             }
             AppCommand::AnalyzeTrackPoint { clip_id, point_index } => {
@@ -27060,7 +27197,10 @@ impl KlippApp {
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 // Unlock scope cursor on Escape
-                if self.state.scope_cursor_locked {
+                if self.state.surface_tool.is_some() {
+                    // The viewer's surface tool goes; the clip stays selected.
+                    self.state.surface_tool = None;
+                } else if self.state.scope_cursor_locked {
                     self.state.scope_cursor_locked = false;
                     self.state.scope_cursor_locked_pos = None;
                     self.state.scope_cursor_locked_data = None;
@@ -29347,6 +29487,11 @@ impl eframe::App for KlippApp {
         // after it arrives, which with nothing else moving never came
         // (#616).
         if !self.state.scene_detect_in_progress.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // Likewise a track, a window's or a surface's: with the window
+        // idle its result sat unapplied until the pointer moved.
+        if !self.state.tracking_in_progress.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.drain_audio_conforms();
@@ -32122,9 +32267,10 @@ impl KlippApp {
                     tracing::warn!("Point tracking failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Point tracking failed: {error}"));
                 }
-                AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs, keys, source_size, media_fps, held_secs } => {
+                AppEvent::SurfaceTracked { clip_id, surface, name, corners, reference_secs, keys, source_size, media_fps, held_secs, direction, interactive } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
+                    self.state.surface_track_cancel.remove(&clip_id);
                     self.apply_surface_track(clip_id, klipp_timeline::Surface {
                         id: surface,
                         name,
@@ -32133,13 +32279,18 @@ impl KlippApp {
                         keys: keys.into_iter().map(|(source_secs, corners)| klipp_timeline::SurfaceKey { source_secs, corners }).collect(),
                         source_size,
                         media_fps,
-                    }, held_secs);
+                    }, held_secs, direction, interactive);
                 }
                 AppEvent::SurfaceTrackFailed { clip_id, surface, error } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
-                    tracing::warn!("Surface tracking failed for {:?} ({surface}): {}", clip_id, error);
-                    self.state.toast.show(format!("Surface tracking failed: {error}"));
+                    self.state.surface_track_cancel.remove(&clip_id);
+                    if error == "cancelled" {
+                        self.state.toast.show("Surface tracking stopped");
+                    } else {
+                        tracing::warn!("Surface tracking failed for {:?} ({surface}): {}", clip_id, error);
+                        self.state.toast.show(format!("Surface tracking failed: {error}"));
+                    }
                 }
                 AppEvent::MediaSyncComplete { video_id, sync } => {
                     self.apply_media_sync(video_id, sync);

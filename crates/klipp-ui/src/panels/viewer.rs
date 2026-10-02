@@ -1743,7 +1743,10 @@ impl ViewerPanel {
         let title_object_active = state
             .selected_title_object
             .is_some_and(|(selected_clip, _)| Some(selected_clip) == state.selected_clip);
-        if state.show_transform_controls
+        // The surface tool, while it is up, has the viewer to itself.
+        if state.surface_tool.is_some() && !state.has_modal_open() {
+            self.draw_surface_tool(ui, state, image_rect, cmds);
+        } else if state.show_transform_controls
             && !state.show_color_panel
             && !state.viewer_text_edit
             && !title_object_active
@@ -1754,6 +1757,7 @@ impl ViewerPanel {
             self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
             self.draw_surface_outlines(ui, state, image_rect);
         }
+        self.draw_surface_tracking_badge(ui, state, image_rect, cmds);
 
         // ── On-canvas Title-object editor ──
         // Active for any selected Title clip, regardless of
@@ -4620,6 +4624,136 @@ impl ViewerPanel {
     /// inside the viewer (a portrait picture's corners cross into the
     /// toolbar), and opens the gesture only once the pointer has moved:
     /// a click on a corner changes nothing and records nothing (#408).
+    /// The surface tool (#684 phase 2): four corners to drag onto a flat
+    /// surface in the picture (or the whole quad, grabbed inside it), and
+    /// Track, or Continue where a track was lost. Esc cancels it, in the
+    /// shortcuts, before the clip would be deselected.
+    fn draw_surface_tool(&self, ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+        let Some(mut tool) = state.surface_tool.clone() else { return };
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, tool.corners[i][0], tool.corners[i][1]));
+        let (pointer, pressed, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_pressed(), i.pointer.primary_down()));
+        let hit = |p: egui::Pos2| screen.iter().position(|s| (p - *s).length() <= 12.0);
+        let inside = |p: egui::Pos2| {
+            // Inside the quad: on the same side of all four edges.
+            let side = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+            let sides: Vec<f32> = (0..4).map(|i| side(screen[i], screen[(i + 1) % 4])).collect();
+            sides.iter().all(|v| *v >= 0.0) || sides.iter().all(|v| *v <= 0.0)
+        };
+
+        // The bar: what to do, and the two ways out. Laid out first so a
+        // press on it is not taken as grabbing the quad.
+        let mut bar_rect = egui::Rect::NOTHING;
+        let mut run = false;
+        let mut cancel = false;
+        egui::Area::new(egui::Id::new("surface_tool_bar"))
+            .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                let frame = egui::Frame::popup(ui.style());
+                let r = frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let what = match (tool.direction, tool.surface.is_some()) {
+                            (0, false) => "Drag the four corners onto the surface",
+                            (0, true) => "Put the corners right, then track again",
+                            _ => "Put the corners on the surface here, then continue",
+                        };
+                        ui.label(what);
+                        let go = if tool.direction == 0 { "Track" } else { "Continue" };
+                        if ui.button(go).on_hover_text("Follow it through the clip from this frame").clicked() {
+                            run = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+                bar_rect = r.response.rect;
+            });
+        if cancel {
+            state.surface_tool = None;
+            return;
+        }
+        if run {
+            cmds.push(AppCommand::TrackSurface {
+                clip_id: tool.clip_id,
+                corners: tool.corners,
+                at_secs: None,
+                name: tool.name.clone(),
+                surface: tool.surface,
+                direction: tool.direction,
+                interactive: true,
+            });
+            state.surface_tool = None;
+            return;
+        }
+
+        // Grab a corner, or the whole quad from inside it; drag; let go.
+        if let Some(p) = pointer.filter(|p| !bar_rect.contains(*p)) {
+            if pressed && image_rect.expand(16.0).contains(p) {
+                if let Some(c) = hit(p) {
+                    tool.drag = Some((c, p, tool.corners));
+                } else if inside(p) {
+                    tool.drag = Some((4, p, tool.corners));
+                }
+            }
+            if let Some((which, from, start)) = tool.drag {
+                if down {
+                    let (nx, ny) = viewer_screen_to_norm(image_rect, p);
+                    let (fx, fy) = viewer_screen_to_norm(image_rect, from);
+                    if which < 4 {
+                        tool.corners[which] = [nx.clamp(-0.5, 1.5), ny.clamp(-0.5, 1.5)];
+                    } else {
+                        tool.corners = start.map(|c| [c[0] + nx - fx, c[1] + ny - fy]);
+                    }
+                }
+            }
+            let hover = hit(p).is_some() || tool.drag.is_some_and(|d| d.0 < 4);
+            ui.ctx().set_cursor_icon(if tool.drag.is_some() { egui::CursorIcon::Grabbing } else if hover || inside(p) { egui::CursorIcon::Grab } else { egui::CursorIcon::Crosshair });
+        }
+        if !down {
+            tool.drag = None;
+        }
+        // Take the pointer from the viewer under it, so a drag here does not
+        // also scrub or pan.
+        let _ = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
+
+        let accent = egui::Color32::from_rgb(90, 200, 255);
+        let screen: [egui::Pos2; 4] = std::array::from_fn(|i| viewer_norm_to_screen(image_rect, tool.corners[i][0], tool.corners[i][1]));
+        painter.add(egui::Shape::convex_polygon(screen.to_vec(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 28), egui::Stroke::NONE));
+        painter.add(egui::Shape::closed_line(screen.to_vec(), egui::Stroke::new(1.5_f32, accent)));
+        for (i, p) in screen.iter().enumerate() {
+            let held = tool.drag.is_some_and(|d| d.0 == i);
+            painter.circle_filled(*p, if held { 7.0 } else { 5.5 }, egui::Color32::WHITE);
+            painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, accent));
+        }
+        state.surface_tool = Some(tool);
+    }
+
+    /// While a surface is tracked in the selected clip: how far it has got,
+    /// and a way to stop it.
+    fn draw_surface_tracking_badge(&self, ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+        let Some(clip_id) = state.selected_clip else { return };
+        if !state.surface_track_cancel.contains_key(&clip_id) {
+            return;
+        }
+        let pct = (state.tracking_progress.get(&clip_id).copied().unwrap_or(0.0) * 100.0).round();
+        egui::Area::new(egui::Id::new("surface_tracking_badge"))
+            .fixed_pos(image_rect.left_top() + egui::vec2(8.0, 8.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Tracking the surface\u{2026} {pct:.0}%"));
+                        if ui.small_button("Cancel").clicked() {
+                            cmds.push(AppCommand::CancelTrackAnalysis { clip_id });
+                        }
+                    });
+                });
+            });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
     /// The selected clip's tracked surfaces where they are at the playhead,
     /// or the surface it is pinned to, outlined and named (#684).
     fn draw_surface_outlines(&self, ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect) {

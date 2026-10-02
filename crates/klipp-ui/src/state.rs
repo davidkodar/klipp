@@ -189,6 +189,23 @@ pub struct ViewerTransformDrag {
     pub added: bool,
 }
 
+/// The viewer's surface tool (#684 phase 2): four corners being set on a
+/// surface in a clip, in fractions of the frame as it is shown, before a
+/// track is run from them.
+#[derive(Debug, Clone)]
+pub struct SurfaceTool {
+    pub clip_id: klipp_core::ClipId,
+    /// The surface tracked again or continued; `None` makes a new one.
+    pub surface: Option<uuid::Uuid>,
+    pub name: Option<String>,
+    pub corners: [[f32; 2]; 4],
+    /// 1 or -1 continues the track only later or only earlier from here,
+    /// laid over the rest of it; 0 tracks both ways.
+    pub direction: i8,
+    /// The corner held, or 4 for the whole quad, and where the press was.
+    pub drag: Option<(usize, egui::Pos2, [[f32; 2]; 4])>,
+}
+
 /// A corner-pin handle being dragged in the viewer: which corner, and
 /// the four as they were when the drag last wrote them.
 #[derive(Debug, Clone, Copy)]
@@ -1684,6 +1701,8 @@ pub struct AppState {
     pub tracking_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     /// Track analysis progress (0.0-1.0) per clip.
     pub tracking_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// A surface track running on a clip, stopped by setting this (#684).
+    pub surface_track_cancel: std::collections::HashMap<klipp_core::ClipId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Pending auto-link bindings keyed by `(clip_id, point_index)`.
     /// When a `TrackingComplete` event arrives, the handler checks
     /// this map; if an entry exists, it dispatches
@@ -2444,6 +2463,7 @@ pub struct AppState {
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
     /// A corner-pin handle drag in the viewer.
     pub viewer_corner_pin_drag: Option<ViewerCornerPinDrag>,
+    pub surface_tool: Option<SurfaceTool>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
     /// Currently selected object inside a Title clip. The first
@@ -3845,6 +3865,7 @@ impl Default for AppState {
             active_track_point: None,
             tracking_in_progress: std::collections::HashSet::new(),
             tracking_progress: std::collections::HashMap::new(),
+            surface_track_cancel: std::collections::HashMap::new(),
             pending_mask_track_link: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,
@@ -4132,6 +4153,7 @@ impl Default for AppState {
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
             viewer_corner_pin_drag: None,
+            surface_tool: None,
             show_transform_controls: true,
             selected_title_object: None,
             title_object_drag: None,
