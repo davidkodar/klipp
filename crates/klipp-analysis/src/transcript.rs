@@ -11,7 +11,11 @@
 use serde::{Deserialize, Serialize};
 
 pub const ID: &str = "transcript";
-pub const VERSION: u32 = 5;
+/// Bumped whenever what a transcript says can change for the same
+/// sound, so a stored one made before is made again (#731): 6 drops a
+/// segment whose words all lie in measured silence, and takes in the
+/// confidence filtering of #593, which changed transcripts without a bump.
+pub const VERSION: u32 = 6;
 
 /// The models the analyser can run with, best first; it uses the best
 /// one installed. The small one is what came first; on real speech it
@@ -807,8 +811,22 @@ pub fn drop_words_in_silence(t: &mut Transcript, env: &crate::audio::AudioEnvelo
         let span = (b - a).max(0.01);
         env.silence_within(a, b) / span >= SILENT_SHARE
     };
-    t.segments.retain(|s| !silent(s.start_secs, s.end_secs));
+    // A segment whose words all lie in silence was not heard either, even
+    // when the window it spans is not silent enough to drop as a whole:
+    // whisper stretched "So, let's go." over thirty seconds of a street
+    // walk where the voice detector had caught a passer-by (#731). Only
+    // for segments that had words; one from a transcript without word
+    // times is judged by its span alone.
+    let words_in = |s: &Segment, words: &[Word]| words.iter().filter(|w| w.start_secs >= s.start_secs - 0.05 && w.start_secs < s.end_secs + 0.05).count();
+    let before: Vec<usize> = t.segments.iter().map(|s| words_in(s, &t.words)).collect();
     t.words.retain(|w| !silent(w.start_secs, w.end_secs));
+    let mut i = 0;
+    let words = t.words.clone();
+    t.segments.retain(|s| {
+        let had = before[i];
+        i += 1;
+        !silent(s.start_secs, s.end_secs) && !(had > 0 && words_in(s, &words) == 0)
+    });
     if t.segments.is_empty() {
         t.language = None;
     }
@@ -914,6 +932,37 @@ mod tests {
         t.segments.clear();
         drop_words_in_silence(&mut t, &env);
         assert!(t.language.is_none());
+    }
+
+    /// #731: a sentence stretched over a long window whose words all lie
+    /// in measured silence goes, though the window itself is mostly
+    /// sound; one with a word in the sound stays; and a transcript with
+    /// no word times keeps its segments, judged by span alone.
+    #[test]
+    fn a_segment_whose_words_were_all_silent_goes_too() {
+        let env = crate::audio::AudioEnvelope {
+            duration_secs: 40.0,
+            silences: vec![crate::audio::Span { start_secs: 10.0, end_secs: 12.0 }],
+            ..Default::default()
+        };
+        let stretched = Segment { start_secs: 0.0, end_secs: 30.0, text: "So, let's go.".into() };
+        let mut t = Transcript {
+            language: Some("en".into()),
+            segments: vec![stretched.clone(), Segment { start_secs: 31.0, end_secs: 33.0, text: "Look at that.".into() }],
+            words: vec![
+                Word { start_secs: 10.2, end_secs: 10.6, text: "So,".into(), confidence: 0.4 },
+                Word { start_secs: 10.7, end_secs: 11.2, text: "let's".into(), confidence: 0.4 },
+                Word { start_secs: 11.3, end_secs: 11.8, text: "go.".into(), confidence: 0.4 },
+                Word { start_secs: 31.0, end_secs: 31.4, text: "Look".into(), confidence: 0.9 },
+            ],
+            ..Default::default()
+        };
+        drop_words_in_silence(&mut t, &env);
+        assert_eq!(t.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["Look at that."], "the stretched sentence was never heard");
+        // Without word times there is nothing to judge it by but its span.
+        let mut bare = Transcript { segments: vec![stretched], ..Default::default() };
+        drop_words_in_silence(&mut bare, &env);
+        assert_eq!(bare.segments.len(), 1);
     }
 
     #[test]
