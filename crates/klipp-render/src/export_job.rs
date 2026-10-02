@@ -624,7 +624,7 @@ fn pad_linear(frame: Vec<f32>, w: u32, h: u32, dst_w: u32, dst_h: u32, x: u32, y
 /// `.partial` to the full filename so the original extension survives
 /// (ffmpeg's muxer selection + any downstream stale-cleanup tool that
 /// greps for the base name + `.partial`).
-fn partial_path_for(final_path: &Path) -> PathBuf {
+pub fn partial_path_for(final_path: &Path) -> PathBuf {
     let mut buf = final_path.as_os_str().to_owned();
     buf.push(".partial");
     PathBuf::from(buf)
