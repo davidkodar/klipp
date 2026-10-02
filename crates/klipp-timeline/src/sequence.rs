@@ -1112,6 +1112,8 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         });
         clip_id
@@ -1407,6 +1409,9 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            // The keys are in file time: each half keeps the track (#684).
+            surfaces: clip.surfaces.clone(),
+            surface_pin: clip.surface_pin,
             precomp: None,
         };
         let clip_b = Clip {
@@ -1475,6 +1480,8 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: clip.surfaces.clone(),
+            surface_pin: clip.surface_pin,
             precomp: None,
         };
 
@@ -2024,6 +2031,13 @@ pub struct Clip {
     /// Tracked points for motion tracking.
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
+    /// Surfaces tracked in this clip (#684).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<crate::Surface>,
+    /// The surface on another clip this clip is pinned to (#684): its
+    /// corner pin follows that surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_pin: Option<crate::SurfacePin>,
     /// A precomposition's scene, resolved for rendering: the inner
     /// sequence with its compounds flattened, its own precompositions
     /// resolved, and every clip re-identified for this instance. Set by
@@ -2391,6 +2405,8 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         }
     }
@@ -2499,6 +2515,8 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         }
     }
@@ -2596,6 +2614,8 @@ impl Clip {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         }
     }

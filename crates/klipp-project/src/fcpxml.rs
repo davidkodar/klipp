@@ -686,6 +686,8 @@ mod tests {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
+            surfaces: Vec::new(),
+            surface_pin: None,
             precomp: None,
         }
     }

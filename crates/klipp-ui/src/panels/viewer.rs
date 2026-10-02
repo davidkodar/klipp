@@ -1752,6 +1752,7 @@ impl ViewerPanel {
         {
             self.draw_transform_controls(ui, state, image_rect, frame.viewer_rect, video_w, video_h, cmds);
             self.draw_corner_pin_handles(ui, state, image_rect, frame.viewer_rect, cmds);
+            self.draw_surface_outlines(ui, state, image_rect);
         }
 
         // ── On-canvas Title-object editor ──
@@ -4619,6 +4620,47 @@ impl ViewerPanel {
     /// inside the viewer (a portrait picture's corners cross into the
     /// toolbar), and opens the gesture only once the pointer has moved:
     /// a click on a corner changes nothing and records nothing (#408).
+    /// The selected clip's tracked surfaces where they are at the playhead,
+    /// or the surface it is pinned to, outlined and named (#684).
+    fn draw_surface_outlines(&self, ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect) {
+        let Some(clip_id) = state.selected_clip else { return };
+        let seq = state.sequence();
+        let fps = seq.fps.as_f64();
+        let find = |id: klipp_core::ClipId| seq.tracks.iter().find_map(|t| t.find_clip(id));
+        let Some(clip) = find(clip_id) else { return };
+        let playhead = state.playhead.to_secs_f64();
+        let frame = [seq.resolution.width, seq.resolution.height];
+        // On the frame as the renderer puts it: the host's picture fitted,
+        // then placed by its own transform.
+        let at = |host: &klipp_timeline::Clip, s: &klipp_timeline::Surface| {
+            let elapsed = playhead - host.timeline_in.to_secs_f64();
+            let on_source = s.corners_shown_at(host.source_secs_at(elapsed, fps));
+            let ctx = klipp_compose::eval::eval_context(host, state.playhead, fps);
+            let placed = klipp_compose::eval::evaluate_clip_own_transform(host, elapsed.max(0.0), &ctx);
+            klipp_timeline::surface::source_quad_in_frame(&on_source, s.source_size, frame, Some(placed))
+        };
+        let mut quads: Vec<(String, klipp_timeline::surface::Quad)> = Vec::new();
+        let inside = playhead >= clip.timeline_in.to_secs_f64() && playhead < clip.timeline_out.to_secs_f64();
+        if inside {
+            quads.extend(clip.surfaces.iter().map(|s| (s.name.clone(), at(clip, s))));
+        }
+        if let Some(pin) = clip.surface_pin {
+            if let Some((host, s)) = find(pin.host).and_then(|h| h.surfaces.iter().find(|s| s.id == pin.surface).map(|s| (h, s))) {
+                quads.push((s.name.clone(), at(host, s)));
+            }
+        }
+        if quads.is_empty() {
+            return;
+        }
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let colour = egui::Color32::from_rgb(90, 200, 255);
+        for (name, q) in quads {
+            let screen: Vec<egui::Pos2> = q.iter().map(|c| viewer_norm_to_screen(image_rect, c[0], c[1])).collect();
+            painter.add(egui::Shape::closed_line(screen.clone(), egui::Stroke::new(1.5_f32, colour)));
+            painter.text(screen[0] + egui::vec2(0.0, -4.0), egui::Align2::LEFT_BOTTOM, name, egui::FontId::proportional(11.0), colour);
+        }
+    }
+
     fn draw_corner_pin_handles(
         &self,
         ui: &mut egui::Ui,
@@ -4630,6 +4672,11 @@ impl ViewerPanel {
         use klipp_effects::corner_pin::{corners, with_corners, PARAMS};
         let Some(clip_id) = state.selected_clip else { return };
         let Some(clip) = state.sequence().tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip_id) else { return };
+        // A pin on a surface goes where the surface does: its outline is
+        // drawn instead, and its own corners are not for dragging.
+        if clip.surface_pin.is_some() {
+            return;
+        }
         let Some(effect_index) = clip.builtin_effects.iter().position(|e| matches!(e, klipp_effects::BuiltinEffect::CornerPin { .. })) else { return };
         let Some(base) = corners(&clip.builtin_effects[effect_index]) else { return };
         let clip_time = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);

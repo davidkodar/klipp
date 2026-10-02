@@ -22,7 +22,7 @@ fn a_keyed_corner_is_where_its_keys_say_at_that_frame() {
     clip.effect_keyframes.insert("0:tr_x".into(), vec![key(0.0, 0.9), key(2.0, 0.5)]);
     clip.effect_keyframes.insert("0:bl_y".into(), vec![key(0.0, 1.0), key(2.0, 0.6)]);
 
-    let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None);
+    let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None, None);
     let pin = fx.iter().find_map(corner_pin::corners).expect("the pin is in the chain");
     assert!((pin[1][0] - 0.7).abs() < 1e-6, "tr_x halfway between its keys: {}", pin[1][0]);
     assert!((pin[3][1] - 0.8).abs() < 1e-6, "bl_y halfway between its keys: {}", pin[3][1]);
@@ -35,6 +35,6 @@ fn a_still_pin_is_not_in_the_chain() {
     let scene = Sequence::new_default();
     let mut clip = Clip::sequence(scene.id, tc(0.0), tc(4.0));
     clip.builtin_effects.push(corner_pin::still());
-    let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None);
+    let (fx, _) = clip_effects(&clip, tc(1.0), 24.0, None, None);
     assert!(!fx.iter().any(|e| matches!(e, BuiltinEffect::CornerPin { .. })));
 }

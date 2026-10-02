@@ -465,6 +465,19 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "enabled": args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         }),
         "klipp_detect_scene_cuts" => json!({ "method": "detect_scene_cuts", "clip_id": arg_str(args, "clip_id")? }),
+        "klipp_track_surface" => {
+            let mut v = json!({
+                "method": "track_surface",
+                "clip_id": arg_str(args, "clip_id")?,
+                "corners": args.get("corners").cloned().ok_or("corners is required: four [x, y] pairs, fractions of the frame")?,
+            });
+            for key in ["at_secs", "name", "surface"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_select_clip" => json!({
             "method": "select_clip",
             "clip_id": args.get("clip_id").and_then(|v| v.as_str()),
@@ -1402,6 +1415,25 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               after a while for the shots.",
              json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
+        tool("klipp_track_surface",
+             "Follow a flat surface in a clip (a phone or laptop screen, a monitor, a sign, a book \
+              cover) in perspective through the clip, so a picture can be pinned to it with the pin \
+              op. Give its four corners on one frame, top left, top right, bottom right, bottom left, \
+              as fractions of the frame: read them off klipp_frame_at at at_secs. Runs in the \
+              background; the surface then shows under the clip in klipp_list_clips with its id and \
+              the stretch it was followed over, one undo step. The track stops where the surface is \
+              lost (covered, out of frame, blurred) rather than drifting: look at frames near there. \
+              To correct it, track the same surface again from better corners on another frame.",
+             json!({
+                 "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
+                 "corners": { "type": "array", "minItems": 4, "maxItems": 4,
+                              "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
+                              "description": "[[x,y] top left, top right, bottom right, bottom left], fractions of the frame" },
+                 "at_secs": { "type": "number", "description": "Timeline second the corners are on; the playhead when left out" },
+                 "name": { "type": "string", "description": "What to call the surface, e.g. Phone screen" },
+                 "surface": { "type": "string", "description": "Id or name of a surface to track again from these corners" },
+             }),
+             vec!["clip_id", "corners"]),
         tool("klipp_select_clip",
              "Select a clip (or pass no id to clear the selection). The inspector and \
               colour page follow the selection.",
@@ -1798,6 +1830,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
               from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
               from and to default to the clip's edges. auto_redact does every finding at once.\n\
+              pin {clip_id, media_id, surface?, from?, to?} — a picture, video or still onto a surface \
+              klipp_track_surface followed in the clip: on a video track above, its frame on the \
+              surface's corners and following them; surface is its id or name, the clip's latest when \
+              left out.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
@@ -1988,6 +2024,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
               from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
               from and to default to the clip's edges. auto_redact does every finding at once.\n\
+              pin {clip_id, media_id, surface?, from?, to?} — a picture, video or still onto a surface \
+              klipp_track_surface followed in the clip: on a video track above, its frame on the \
+              surface's corners and following them; surface is its id or name, the clip's latest when \
+              left out.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
