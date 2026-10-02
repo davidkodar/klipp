@@ -2533,6 +2533,28 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
 mod interface_tests {
     use super::*;
 
+    /// Claude Code cuts an MCP tool's description off at about 2,048
+    /// characters, without a word, and sends the agent only that much
+    /// (measured for #688: the token cost stops rising there). Before #669
+    /// `klipp_apply` and `klipp_plan` carried the op reference in 17,000
+    /// characters of description each, and the agent saw about the first
+    /// eighth. What does not fit belongs in the input schema, which is not
+    /// cut, or in `klipp_guide`.
+    #[test]
+    fn every_tool_description_fits_the_clients_cut_off() {
+        const CUT_OFF: usize = 2048;
+        for structured in [false, true] {
+            let long: Vec<String> = tool_definitions_for(structured)
+                .iter()
+                .filter_map(|t| {
+                    let chars = t["description"].as_str().unwrap_or("").chars().count();
+                    (chars > CUT_OFF).then(|| format!("{} ({chars} characters)", t["name"].as_str().unwrap_or("?")))
+                })
+                .collect();
+            assert!(long.is_empty(), "past the {CUT_OFF}-character cut-off, so the agent would not see the end (structured {structured}): {long:?}");
+        }
+    }
+
     #[test]
     fn negotiated_catalog_is_compact_and_old_clients_keep_text() {
         assert_eq!(negotiated_version(Some("2024-11-05")), LEGACY_PROTOCOL_VERSION);
