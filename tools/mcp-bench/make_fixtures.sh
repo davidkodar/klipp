@@ -3,6 +3,7 @@
 # letter and its own frame number burned in, and a tone of its own pitch:
 # a cut or trim can be checked to the frame, and nothing personal is in them.
 set -e
+mkdir -p "$(dirname "$0")/fixtures"
 cd "$(dirname "$0")/fixtures"
 mk() { # name colour freq
   ffmpeg -hide_banner -loglevel error -y \

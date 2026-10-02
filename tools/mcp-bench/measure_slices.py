@@ -1,16 +1,18 @@
 """Real token cost of catalog slices through Claude Code (#688)."""
 import json, subprocess, sys
-sys.path.insert(0, sys.path[0])
+from pathlib import Path
+# This directory: where the builds are, and the stand-in server.
+B = str(Path(__file__).resolve().parent)
+sys.path.insert(0, B)
 from catalog import catalog
-B = sys.path[0]
-from bench import CWD
+from bench import CWD, MODEL
 CWD.mkdir(parents=True, exist_ok=True)
 cats = {v: catalog(f"{B}/bin/klipp-mcp-{v}") for v in ("pre", "post")}
 def cost(tools, tag):
     tf = f"{B}/slice-{tag}.json"; json.dump(tools, open(tf, "w"))
     cfg = f"{B}/mcp-slice.json"
     json.dump({"mcpServers": {"klipp": {"command": "python3", "args": [f"{B}/fake_mcp.py"], "env": {"FAKE_TOOLS": tf}}}}, open(cfg, "w"))
-    out = subprocess.run(["claude", "-p", "Do not call any tool. Reply with the single word OK.", "--model", "sonnet", "--mcp-config", cfg,
+    out = subprocess.run(["claude", "-p", "Do not call any tool. Reply with the single word OK.", "--model", MODEL, "--mcp-config", cfg,
                           "--strict-mcp-config", "--setting-sources", "", "--tools", "", "--output-format", "json", "--no-session-persistence"],
                          cwd=CWD, capture_output=True, text=True, timeout=300).stdout
     u = json.loads(out)["usage"]
