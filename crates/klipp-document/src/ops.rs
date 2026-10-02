@@ -2405,7 +2405,22 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 if linked_partner.is_some() { ", its linked partner with it" } else { "" }
             );
             if let Some(tj) = to_track {
-                let what = format!("{what}, onto track {tj}");
+                let mut what = format!("{what}, onto track {tj}");
+                // The transitions on its cuts would be left naming a clip
+                // no longer there (#760 review), and its partner's, whose
+                // time moves: taken off in the same step.
+                let mut off: Vec<EditCommand> = Vec::new();
+                let partner = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)).map(|(pti, _, p)| (pti, p.id));
+                for (track, id) in std::iter::once((ti, clip.id)).chain(partner) {
+                    for tr in seq.tracks[track].transitions.iter().filter(|t| t.clip_a_id == id || t.clip_b_id == id) {
+                        let find = |cid: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid);
+                        let (fa, fb) = (find(tr.clip_a_id).map_or(0.0, |c| c.fade_out_secs), find(tr.clip_b_id).map_or(0.0, |c| c.fade_in_secs));
+                        off.push(EditCommand::RemoveTransition { track_index: track, transition: *tr, old_fade_out_a: fa, old_fade_in_b: fb });
+                    }
+                }
+                if !off.is_empty() {
+                    what.push_str(&format!(", the {} transition{} on its cuts taken off", off.len(), if off.len() == 1 { "" } else { "s" }));
+                }
                 let edit = EditCommand::LegacyMoveClipToTrack {
                     clip: clip.clone(),
                     old_timeline_in: clip.timeline_in,
@@ -2415,7 +2430,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     to_track: tj,
                     linked_partner,
                 };
-                return Ok((what, edit, touched));
+                if off.is_empty() {
+                    return Ok((what, edit, touched));
+                }
+                off.push(edit);
+                return Ok((what, EditCommand::Batch(off), touched));
             }
             let edit = EditCommand::LegacyMoveClip {
                 clip_id: *clip_id,
@@ -6520,6 +6539,34 @@ mod tests {
     /// sound stays on its own track. A picture cannot go to a sound track.
     #[test]
     fn a_clip_moves_to_another_track() {
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
+        // A dissolve on the cut out of it, crossfading its sound too: both
+        // must come off with the move, not be left naming a clip gone.
+        let dissolve = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        {
+            let mut seqs = vec![seq.clone()];
+            let mut p = pool.clone();
+            let mut fps = seq.fps;
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&dissolve.steps[0].edit);
+            seq = view.sequences[0].clone();
+        }
+        assert!(seq.tracks.iter().any(|t| !t.transitions.is_empty()));
+        // The clip after the cut, its incoming side, half a second later.
+        let shifted: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"move","clip_id":"{}","to":{{"secs":4.5}},"track":0}}]"#, b.0)).unwrap();
+        let plan = resolve(&seq, &pool, &shifted).unwrap();
+        assert!(plan.steps[0].what.contains("taken off"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks.iter().all(|t| t.transitions.is_empty()), "no transition left naming the moved clip");
+        let moved = view.sequences[0].tracks[0].clips.iter().find(|c| c.id == b).expect("on the new track");
+        assert!((moved.timeline_in.to_secs_f64() - 4.5).abs() < 0.05);
+        let sound = view.sequences[0].tracks.iter().flat_map(|t| t.clips.iter()).find(|c| Some(c.id) == moved.linked_clip_id).unwrap();
+        assert!((sound.timeline_in.to_secs_f64() - 4.5).abs() < 0.05, "its sound moved in time with it");
         let (mut seq, pool, _, a, _) = fixture();
         seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
         let mv = |track: usize| -> Vec<Op> { serde_json::from_str(&format!(r#"[{{"op":"move","clip_id":"{}","to":{{"secs":0}},"track":{track}}}]"#, a.0)).unwrap() };

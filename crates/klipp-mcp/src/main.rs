@@ -386,7 +386,7 @@ fn control_call(command: Value) -> Result<Value, String> {
     // alone (#719, #720): a whole piece is a minute or more on a busy
     // machine.
     let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
-        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes")
+        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet")
         || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
     let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
