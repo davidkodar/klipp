@@ -651,6 +651,10 @@ mod next_step_tests {
         let brief = klipp_timeline::Brief { captions: false, music: true, ..Default::default() };
         let told = next_after_ops(&ops, Some(&brief)).unwrap();
         assert!(!told.contains("captions") && !told.contains("jump cut") && told.contains("beat"), "{told}");
+        // Without music, nothing about a beat (#758 review).
+        let silent = klipp_timeline::Brief { captions: false, music: false, ..Default::default() };
+        let told = next_after_ops(&ops, Some(&silent)).unwrap();
+        assert!(!told.contains("captions") && !told.contains("beat"), "{told}");
     }
 }
 
@@ -1754,8 +1758,10 @@ fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline
     let uncaptioned = brief.is_some_and(|b| !b.captions);
     if has(&|o| matches!(o, Op::Redact { .. })) {
         Some("Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again.")
-    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned {
+    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned && brief.is_some_and(|b| b.music) {
         Some("The selects are down. Look at them together (frame_at across the cut), cut them to the music's beat (klipp_beats), then titles in the brief's type styles, the grade, and check.")
+    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned {
+        Some("The selects are down. Look at them together (frame_at across the cut) and tighten each cut, then titles in the brief's type styles, the grade, and check.")
     } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
         Some("The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check.")
     } else if has(&|o| matches!(o, Op::Captions { .. })) {
