@@ -1264,6 +1264,11 @@ fn read_next_packet(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    // The tests that open a RenderDecoder try CUDA first. Run with
+    // `--ignored`, the first cuInit of the process could meet a VAAPI test
+    // loading nvidia-vaapi-driver, the deadlock #568 found with NVENC, so
+    // they take the same lock as the encoder and VAAPI tests.
+    use serial_test::serial;
 
     fn test_media_path() -> Option<PathBuf> {
         std::env::var("TEST_MEDIA_FILE").ok().map(PathBuf::from)
@@ -1278,6 +1283,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
+    #[serial]
     fn decoder_produces_frames() {
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
@@ -1308,6 +1314,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
+    #[serial]
     fn decoder_seeks_correctly() {
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
@@ -1330,6 +1337,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires TEST_MEDIA_FILE env var pointing to a video file"]
+    #[serial]
     fn decoder_respects_source_end() {
         let path = test_media_path().expect("set TEST_MEDIA_FILE env var");
         let fps = 30.0;
@@ -1362,6 +1370,7 @@ mod tests {
     /// return the same variant both times and the timings would match.
     #[test]
     #[ignore = "perf probe: needs KLIPP_TENBIT"]
+    #[serial]
     fn tenbit_decode_cost() {
         let Ok(path) = std::env::var("KLIPP_TENBIT") else {
             eprintln!("skipping: set KLIPP_TENBIT to a 10-bit file");
