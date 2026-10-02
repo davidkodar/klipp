@@ -265,7 +265,8 @@ exist until the plan runs.
   would grow into the next one is refused.
 - `reframe {clip_id, scale?, x?, y?}`: punch in and reposition a
   picture. `scale` zooms (1 as shot, up to 4); `x` and `y` pan the frame
-  from -1 to 1. Use it to salvage a wide or badly-framed shot, to fit a
+  from -1 to 1. What you leave out stays as the clip has it, so a re-pan
+  names only the axis it moves. Use it to salvage a wide or badly-framed shot, to fit a
   vertical delivery, or to set a slow push. It sits before other
   effects, so a vignette or grade after it sees the reframed picture.
 - `qualify {clip_id, target?|hue?, …, exposure?, saturation?, hue_shift?,
@@ -438,6 +439,9 @@ exist until the plan runs.
   length follows. The ramp's sound is silent.
 - `compose {clip_id, poses:[{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]}`:
   place a picture inside the frame. One pose holds; more animate.
+  A pose with no `x`, `y`, `width` or `height` keeps the clip where it
+  is, as reframed or composed before: poses of `opacity` alone fade a
+  shot, or a colour card (a generator), in or out without moving it.
   `secs` is relative to the clip; `x,y` place its centre as frame
   fractions (-1 to 2, default 0.5). `width` and `height` must be equal
   (0.01 to 4, default 1); rotation is -360 to 360 degrees and opacity

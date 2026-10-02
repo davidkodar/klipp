@@ -624,7 +624,8 @@ impl TitleRenderer {
         if tb.text_direction == TextDirection::Rtl {
             resolved_text = resolved_text.chars().rev().collect();
         }
-        let fit = fit_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), text_box_extent(title, width, height).0);
+        let (box_w, box_h) = text_box_extent(title, width, height);
+        let fit = fit_block_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
 
         // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
@@ -2404,7 +2405,8 @@ impl TitleRenderer {
             _ => 1.0,
         };
         let font_px = tb.font_size * scale * case_scale;
-        let fit = fit_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), text_box_extent(title, width, height).0);
+        let (box_w, box_h) = text_box_extent(title, width, height);
+        let fit = fit_block_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
 
         let h_align = match tb.alignment {
@@ -3785,6 +3787,77 @@ fn fit_ratio(font: &fontdue::Font, text: &str, px_at: impl Fn(usize) -> f32, max
     } else {
         1.0
     }
+}
+
+/// [`fit_ratio`], and then smaller again until the text, wrapped at
+/// `max_width` between words as the layout wraps it, is no taller than
+/// `max_height` (#722). A big two-word title ("LA MATA" at 760 px for a
+/// word matte) wrapped at the space and ran off the top and bottom of
+/// the frame; now it shrinks until it fits — on one line when one line
+/// fits, as that is the larger size. Steps of four percent from the
+/// width's fit down, so the first size that fits is the largest.
+fn fit_block_ratio(font: &fontdue::Font, text: &str, px_at: impl Fn(usize) -> f32, max_width: f32, max_height: f32, line_spacing: f32) -> f32 {
+    let mut ratio = fit_ratio(font, text, &px_at, max_width);
+    if !(max_height > 0.0 && max_width > 0.0) {
+        return ratio;
+    }
+    for _ in 0..60 {
+        if wrapped_height(font, text, |i| px_at(i) * ratio, max_width, line_spacing) <= max_height {
+            break;
+        }
+        ratio *= 0.96;
+    }
+    // A big title set on the lines its author gave reads better than one
+    // the box broke: when keeping each line whole costs no more than a
+    // sixth of the size, keep them whole.
+    let mut widest_line = 0.0f32;
+    let mut offset = 0usize;
+    for line in text.split('\n') {
+        let w: f32 = line.char_indices().map(|(i, c)| font.metrics(c, px_at(offset + i)).advance_width).sum();
+        widest_line = widest_line.max(w);
+        offset += line.len() + 1;
+    }
+    if widest_line * ratio > max_width {
+        let whole = max_width / widest_line * 0.98;
+        if whole >= ratio * 0.85 && wrapped_height(font, text, |i| px_at(i) * whole, max_width, line_spacing) <= max_height {
+            return whole;
+        }
+    }
+    ratio
+}
+
+/// How tall `text` is laid out at `px_at`, wrapped between words at
+/// `max_width` and at its own line breaks: each line as tall as its
+/// largest type's line spacing.
+fn wrapped_height(font: &fontdue::Font, text: &str, px_at: impl Fn(usize) -> f32, max_width: f32, line_spacing: f32) -> f32 {
+    // Every line after the first is moved down by the box's line spacing.
+    let spacing = |px: f32| font.horizontal_line_metrics(px).map_or(px * 1.2, |m| m.new_line_size) * line_spacing.max(1.0);
+    let mut total = 0.0f32;
+    let mut offset = 0usize;
+    for line in text.split('\n') {
+        let mut x = 0.0f32;
+        let mut line_px = 0.0f32;
+        let mut first = true;
+        let mut word_start = offset;
+        for word in line.split(' ') {
+            let w: f32 = word.char_indices().map(|(i, c)| font.metrics(c, px_at(word_start + i)).advance_width).sum();
+            let space = font.metrics(' ', px_at(word_start)).advance_width;
+            let px = word.char_indices().map(|(i, _)| px_at(word_start + i)).fold(px_at(word_start), f32::max);
+            if !first && x + space + w > max_width {
+                total += spacing(line_px.max(px));
+                x = w;
+                line_px = px;
+            } else {
+                x += if first { w } else { space + w };
+                line_px = line_px.max(px);
+            }
+            first = false;
+            word_start += word.len() + 1;
+        }
+        total += spacing(line_px.max(px_at(offset)));
+        offset += line.len() + 1;
+    }
+    total
 }
 
 /// The size a character at byte offset `i` is laid out at: its style
@@ -5663,6 +5736,33 @@ mod tests {
         let fits = renderer.compute_char_positions(&text_title("Wherever We Walk", 72.0), w, h);
         let unfitted = TitleRenderer::new().compute_char_positions(&text_title("Hi", 72.0), w, h);
         assert!((fits[0].height - unfitted[0].height).abs() < 0.5, "text that fits keeps its size");
+    }
+
+    /// #722: a big two-word title for a word matte, too wide for one line
+    /// at its size, wrapped at the space and ran off the top and bottom
+    /// of the frame. It now shrinks until it fits: on one line, which is
+    /// the larger size, and inside the frame.
+    #[test]
+    fn a_big_two_word_title_fits_the_frame() {
+        let mut renderer = TitleRenderer::new();
+        let (w, h) = (1920, 1080);
+        let pos = renderer.compute_char_positions(&text_title("LA MATA", 760.0), w, h);
+        assert!(pos.windows(2).all(|p| p[1].x > p[0].x), "it broke across lines: {:?}", pos.iter().map(|c| (c.x, c.y)).collect::<Vec<_>>());
+        let top = pos.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        let bottom = pos.iter().map(|c| c.y + c.height).fold(0.0f32, f32::max);
+        assert!(top >= 0.0 && bottom <= h as f32, "the title runs off the frame: {top}..{bottom}");
+        let right = pos.iter().map(|c| c.x + c.advance).fold(0.0f32, f32::max) - pos[0].x;
+        assert!(right <= 0.9 * w as f32 + 1.0, "wider than the box: {right}");
+        // Lines given by the author stay lines, and the block fits.
+        let text = "SALT\nAND SUN";
+        let two = renderer.compute_char_positions(&text_title(text, 900.0), w, h);
+        // The glyphs, not the boxes given to the spaces and the break.
+        let chars: Vec<char> = text.chars().collect();
+        let glyphs: Vec<&CharPosition> = two.iter().filter(|c| chars.get(c.char_index).is_some_and(|ch| !ch.is_whitespace())).collect();
+        let top = glyphs.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        let bottom = glyphs.iter().map(|c| c.y + c.height).fold(0.0f32, f32::max);
+        assert!(top >= 0.0 && bottom <= h as f32, "two lines run off the frame: {top}..{bottom}");
+        assert!(glyphs.iter().filter(|c| c.char_index < 4).all(|c| c.y < glyphs[4].y), "the author's break is kept");
     }
 
     /// #508 review: the fit shrinks the whole title alike, a style run
