@@ -1858,7 +1858,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
               never by default. Both clips need footage beyond the cut to overlap.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?} \
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
@@ -1873,14 +1873,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
+              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?, shadow?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
               Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or in_cubic. \
               Timing: duration (0,5] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
               Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
               Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
-              a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
+              a stroke, glow+glow_color a neon glow, shadow {x?, y?, blur?, color?, opacity?} a soft drop shadow (px of a 1080 frame; opacity 0 removes it), gradient [#top,#bottom]; animate an entrance (fade, \
               rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
               glitch and chromatic (0..1) for a digital edge.\n\
@@ -2048,7 +2048,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
               never by default. Both clips need footage beyond the cut to overlap.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?} \
+              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
@@ -2063,14 +2063,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               as fractions of the frame inside title-safe.\n\
               vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
               backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
+              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?, shadow?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?}. \
               Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or in_cubic. \
               Timing: duration (0,5] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
               Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
               Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
               any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
               backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
-              a stroke, glow+glow_color a neon glow, gradient [#top,#bottom]; animate an entrance (fade, \
+              a stroke, glow+glow_color a neon glow, shadow {x?, y?, blur?, color?, opacity?} a soft drop shadow (px of a 1080 frame; opacity 0 removes it), gradient [#top,#bottom]; animate an entrance (fade, \
               rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
               (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
               glitch and chromatic (0..1) for a digital edge.\n\

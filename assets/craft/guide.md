@@ -306,13 +306,17 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, shadow?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given. `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
   `x` and `y` are where the text's centre goes (0 to 1 of the frame),
   `backing` is how dark a panel sits behind the text (0 none, 1 black),
-  `outline` a width in pixels. Lift the captions with it for as long as
+  `outline` a width in pixels, `shadow {x?, y?, blur?, color?, opacity?}`
+  a soft drop shadow behind the words: offset and blur in pixels of a
+  1080-line frame (0, 4 and 8 when left out), `#rrggbb`, opacity 0 to 1
+  (0.6), and opacity 0 takes it off. Bright text over a bright sky or
+  sand wants the shadow; a dark glow barely shows. Lift the captions with it for as long as
   a lower third is up, so the two do not share the bottom of the frame.
 - `lower_third {name, role?, at, secs?, track?, side?, x?, y?}`: a name
   and a role bottom left in title-safe, four seconds unless you say
@@ -324,12 +328,12 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its
   fields fill every one left out here. `x`, `y`, `size`, `color`,
-  `backing` and `outline` read as in `style`; `full_frame` is a solid
+  `backing`, `outline` and `shadow` read as in `style`; `full_frame` is a solid
   `#rrggbb` card behind everything, `gradient` a two-colour fill
   (`#top,#bottom`). `animate` is the entrance (fade, rise, drop,
   slide_left, slide_right, scale_up, scale_down, blur, mask_rise,
