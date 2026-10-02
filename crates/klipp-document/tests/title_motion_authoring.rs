@@ -441,3 +441,27 @@ fn stored_legacy_timing_keeps_clamping_and_approval_includes_implicit_stagger() 
     assert!((spaced.span_secs("one two")-1.6).abs()<1e-5);
     assert!(serde_json::from_value::<klipp_document::ops::Op>(json!({"op":"title","text":"Hi","at":{"secs":0},"enter":{"kind":"rise","typo":1}})).is_err());
 }
+
+/// #736: an exit named grow grows by the given scale without fading, one
+/// named shrink shrinks, an entrance named grow is scale_up as before,
+/// and a scale that goes the wrong way, or on a kind that does not
+/// scale, is refused.
+#[test]
+fn grow_and_shrink_exits_scale_by_an_amount_without_fading() {
+    let spec = |kind: &str, scale: Option<f32>| klipp_timeline::TitleMotionSpec { kind: kind.into(), scale, ..Default::default() };
+    let exit_of = |kind: &str, scale: Option<f32>| {
+        let style = TypeStyle { exit: Some(spec(kind, scale)), ..Default::default() };
+        klipp_document::title_style::resolve_motion(&style).map(|m| m.exit.unwrap())
+    };
+    let grow = exit_of("grow", Some(12.0)).unwrap();
+    assert_eq!((grow.kind, grow.amount), (MotionKind::Larger, Some(12.0)));
+    let (alpha, _, _, scale, _, _) = grow.pose(0.0, 100.0);
+    assert_eq!((alpha, scale), (1.0, 12.0), "at the clip's end: fully grown, fully there");
+    assert_eq!(exit_of("shrink", None).unwrap().kind, MotionKind::Smaller);
+    let entrance = TypeStyle { enter: Some(spec("grow", None)), ..Default::default() };
+    assert_eq!(klipp_document::title_style::resolve_motion(&entrance).unwrap().enter.unwrap().kind, MotionKind::ScaleUp);
+    assert!(exit_of("grow", Some(0.5)).is_err(), "grow scales up");
+    assert!(exit_of("shrink", Some(2.0)).is_err(), "shrink scales down");
+    assert!(exit_of("fade", Some(2.0)).is_err(), "fade does not scale");
+    assert_eq!(exit_of("scale_up", Some(0.0)).unwrap().amount, Some(0.0), "scale_up from nothing");
+}

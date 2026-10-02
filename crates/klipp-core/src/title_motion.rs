@@ -119,15 +119,23 @@ pub enum MotionKind {
     FocusIn,
     /// Rises into place out of a blur.
     SoftRise,
+    /// Scales from larger, `amount` times its size (4 unless set), with
+    /// no fade: as an exit the title grows until, held as a matte, the
+    /// picture inside its letters fills the frame (#736).
+    Larger,
+    /// Scales from smaller, `amount` times its size (nothing unless set),
+    /// with no fade: as an exit the title shrinks away.
+    Smaller,
 }
 
 impl MotionKind {
-    pub const ALL: [MotionKind; 21] = [
+    pub const ALL: [MotionKind; 23] = [
         MotionKind::Fade, MotionKind::Blur, MotionKind::FocusIn, MotionKind::Flicker,
         MotionKind::Rise, MotionKind::Drop, MotionKind::SoftRise, MotionKind::Bounce, MotionKind::SlideLeft, MotionKind::SlideRight,
         MotionKind::FlyLeft, MotionKind::FlyRight, MotionKind::FlyTop, MotionKind::FlyBottom,
         MotionKind::ScaleUp, MotionKind::ScaleDown, MotionKind::Pop, MotionKind::Slam,
         MotionKind::MaskRise, MotionKind::MaskDrop, MotionKind::Typewriter,
+        MotionKind::Larger, MotionKind::Smaller,
     ];
 
     /// Whether the motion blurs: a blur cannot be posed glyph by glyph,
@@ -154,7 +162,7 @@ impl MotionKind {
             MotionKind::Fade | MotionKind::Blur | MotionKind::FocusIn | MotionKind::Flicker => "Fade",
             MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight | MotionKind::SoftRise | MotionKind::Bounce => "Move",
             MotionKind::FlyLeft | MotionKind::FlyRight | MotionKind::FlyTop | MotionKind::FlyBottom => "Fly",
-            MotionKind::ScaleUp | MotionKind::ScaleDown | MotionKind::Pop | MotionKind::Slam => "Scale",
+            MotionKind::ScaleUp | MotionKind::ScaleDown | MotionKind::Pop | MotionKind::Slam | MotionKind::Larger | MotionKind::Smaller => "Scale",
             MotionKind::MaskRise | MotionKind::MaskDrop | MotionKind::Typewriter => "Reveal",
         }
     }
@@ -182,6 +190,8 @@ impl MotionKind {
             MotionKind::Flicker => "Flicker",
             MotionKind::FocusIn => "Focus in",
             MotionKind::SoftRise => "Soft rise",
+            MotionKind::Larger => "Scale from large",
+            MotionKind::Smaller => "Scale from small",
         }
     }
 }
@@ -267,6 +277,10 @@ pub struct Motion {
     pub stagger_secs: f32,
     /// Travel for the moving kinds, as a fraction of the font size.
     pub distance: f32,
+    /// How far the scaling kinds scale when away from rest, as a factor
+    /// of the resting size; `None` for the kind's own (#736).
+    #[serde(default)]
+    pub amount: Option<f32>,
 }
 
 impl Default for Motion {
@@ -279,6 +293,7 @@ impl Default for Motion {
             stagger: StaggerUnit::None,
             stagger_secs: 0.05,
             distance: 0.6,
+            amount: None,
         }
     }
 }
@@ -292,20 +307,25 @@ impl Motion {
     pub fn easing(mut self, easing: Easing) -> Self { self.easing = easing; self }
     pub fn stagger(mut self, unit: StaggerUnit, secs: f32) -> Self { self.stagger = unit; self.stagger_secs = secs; self }
     pub fn distance(mut self, fraction: f32) -> Self { self.distance = fraction; self }
+    pub fn amount(mut self, factor: f32) -> Self { self.amount = Some(factor); self }
 
     /// The pose of a unit at eased progress `p` (0 = fully away, 1 =
     /// resting): (alpha, dx, dy, scale, blur sigma, clip to rest box).
     /// Offsets are in pixels for a font of `font_px`.
     pub fn pose(&self, p: f32, font_px: f32) -> (f32, f32, f32, f32, f32, bool) {
         let travel = font_px * self.distance;
+        let away = |own: f32| self.amount.unwrap_or(own);
+        let scale_from = |from: f32| from + (1.0 - from) * p;
         match self.kind {
             MotionKind::Fade => (p, 0.0, 0.0, 1.0, 0.0, false),
             MotionKind::Rise => (p, 0.0, (1.0 - p) * travel, 1.0, 0.0, false),
             MotionKind::Drop => (p, 0.0, -(1.0 - p) * travel, 1.0, 0.0, false),
             MotionKind::SlideLeft => (p, (1.0 - p) * travel * 1.5, 0.0, 1.0, 0.0, false),
             MotionKind::SlideRight => (p, -(1.0 - p) * travel * 1.5, 0.0, 1.0, 0.0, false),
-            MotionKind::ScaleUp => (p, 0.0, 0.0, 0.6 + 0.4 * p, 0.0, false),
-            MotionKind::ScaleDown => (p, 0.0, 0.0, 1.4 - 0.4 * p, 0.0, false),
+            MotionKind::ScaleUp => (p, 0.0, 0.0, scale_from(away(0.6)), 0.0, false),
+            MotionKind::ScaleDown => (p, 0.0, 0.0, scale_from(away(1.4)), 0.0, false),
+            MotionKind::Larger => (1.0, 0.0, 0.0, scale_from(away(4.0)), 0.0, false),
+            MotionKind::Smaller => (1.0, 0.0, 0.0, scale_from(away(0.0)), 0.0, false),
             MotionKind::Blur => (p, 0.0, 0.0, 1.0, (1.0 - p) * font_px * 0.12, false),
             MotionKind::MaskRise => (1.0, 0.0, (1.0 - p) * font_px * 1.15, 1.0, 0.0, true),
             MotionKind::MaskDrop => (1.0, 0.0, -(1.0 - p) * font_px * 1.15, 1.0, 0.0, true),
@@ -911,6 +931,19 @@ mod loop_tests {
         assert_eq!(Motion::new(MotionKind::Pop).easing, Easing::OutBack, "a pop overshoots");
         assert_eq!(Motion::new(MotionKind::Bounce).easing, Easing::OutBounce);
         assert!(MotionKind::FocusIn.blurs() && MotionKind::SoftRise.blurs() && !MotionKind::Pop.blurs());
+    }
+
+    /// #736: the scaling kinds take an amount, and the plain ones scale
+    /// without fading.
+    #[test]
+    fn scaling_motions_take_an_amount() {
+        let (a, _, _, s, _, _) = Motion::new(MotionKind::Larger).amount(12.0).pose(0.0, 100.0);
+        assert_eq!((a, s), (1.0, 12.0), "fully grown, fully opaque");
+        let (a, _, _, s, _, _) = Motion::new(MotionKind::Larger).amount(12.0).pose(0.5, 100.0);
+        assert_eq!((a, s), (1.0, 6.5));
+        assert_eq!(Motion::new(MotionKind::Smaller).pose(0.0, 100.0).3, 0.0, "shrinks to nothing by default");
+        assert_eq!(Motion::new(MotionKind::ScaleDown).amount(2.0).pose(0.0, 100.0).3, 2.0);
+        assert_eq!(Motion::new(MotionKind::ScaleDown).pose(0.0, 100.0).3, 1.4, "the kind's own without one");
     }
 
     /// A flicker is the same on every run and every machine, and comes
