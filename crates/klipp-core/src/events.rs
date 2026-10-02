@@ -4198,7 +4198,7 @@ pub struct TransportStatus {
 }
 
 /// The open project as a client sees it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectStatus {
     /// Where it is saved; `None` for a project never saved.
     pub path: Option<PathBuf>,
@@ -4214,12 +4214,65 @@ pub struct ProjectStatus {
     /// saved where it already was. A client's timeline and media ids
     /// stay good for as long as this does not move; `generation` moves
     /// on every save, for a client waiting on one.
+    ///
+    /// It starts from [`launch_identity_base`], a random base for each
+    /// run of Klipp, so an identity a client kept from before a restart
+    /// never names a project after it, though the document revision
+    /// starts again from 0 (#693).
     #[serde(default)]
     pub identity: u64,
     /// What made the project unsaved, when it is: "edits", or something
     /// that changed it on its own, such as analysis markers arriving.
     #[serde(default)]
     pub changed_by: Option<String>,
+}
+
+impl Default for ProjectStatus {
+    fn default() -> Self {
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None }
+    }
+}
+
+/// Where this run of Klipp's project identities start (#693): random for
+/// each launch, so a plan's identity from an earlier run cannot match a
+/// project in this one. It is a multiple of 2^20, room for that many
+/// projects a launch, and under 2^52, so a client that reads JSON numbers
+/// as doubles reads it exactly.
+pub fn launch_identity_base() -> u64 {
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BASE.get_or_init(|| {
+        let bytes = *uuid::Uuid::new_v4().as_bytes();
+        identity_base_from(u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]))
+    })
+}
+
+/// [`launch_identity_base`] from a random number: a multiple of 2^20
+/// under 2^52, never 0, which is what a reply without an identity
+/// decodes to.
+fn identity_base_from(random: u64) -> u64 {
+    ((random % (1 << 32)).max(1)) << 20
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    /// #693: each run of Klipp numbers its projects from its own random
+    /// base, so an identity a client kept from an earlier run, with a
+    /// revision that started again from 0, cannot match a project now.
+    #[test]
+    fn identities_from_two_launches_never_meet() {
+        let base = launch_identity_base();
+        assert_eq!(base, launch_identity_base(), "one base for the whole run");
+        assert_eq!(ProjectStatus::default().identity, base, "the first project of a run starts there");
+        for random in [0u64, 1, 7, u64::MAX, 0xdead_beef_cafe_f00d] {
+            let b = identity_base_from(random);
+            assert!(b != 0 && b.is_multiple_of(1 << 20) && b < (1 << 52), "{random}: {b}");
+        }
+        // Two runs: their identities, a million projects each, apart.
+        let (one, two) = (identity_base_from(41), identity_base_from(42));
+        assert!(one + (1 << 20) <= two || two + (1 << 20) <= one);
+    }
 }
 
 impl ControlShared {
