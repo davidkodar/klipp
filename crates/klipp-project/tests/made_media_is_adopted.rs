@@ -38,20 +38,32 @@ fn a_save_brings_made_media_into_the_project() {
     let report = klipp_project::adopt_made_media(&project, &mut pool);
     assert_eq!((report.adopted, report.failed.len()), (2, 0), "{report:?}");
 
-    let at = |i: usize| pool.get(&ids[i]).unwrap().path.clone();
-    assert_eq!(at(0), project.join("media").join("audio").join("Artist-Song-1.mp3"));
-    assert_eq!(at(1), project.join("media").join("recordings").join("take.mkv"));
-    assert_eq!(at(2), shot, "the user's own footage is not copied");
-    assert_eq!(std::fs::read(at(0)).unwrap().len(), 4096);
-    assert_eq!(std::fs::read(at(1)).unwrap().len(), 8192);
-    assert!(at(0).with_extension("klipp-credit.txt").is_file(), "the credit comes with it");
+    let at = |pool: &MediaPool, i: usize| pool.get(&ids[i]).unwrap().path.clone();
+    assert_eq!(at(&pool, 0), project.join("media").join("audio").join("Artist-Song-1.mp3"));
+    assert_eq!(at(&pool, 1), project.join("media").join("recordings").join("take.mkv"));
+    assert_eq!(at(&pool, 2), shot, "the user's own footage is not copied");
+    assert_eq!(std::fs::read(at(&pool, 0)).unwrap().len(), 4096);
+    assert_eq!(std::fs::read(at(&pool, 1)).unwrap().len(), 8192);
+    assert!(at(&pool, 0).with_extension("klipp-credit.txt").is_file(), "the credit comes with it");
     assert!(song.is_file() && take.is_file(), "copied, not moved: another project may use them");
 
     // The cache cleared: the project still has its media.
     std::fs::remove_dir_all(&cache).unwrap();
-    assert!(at(1).is_file());
+    assert!(at(&pool, 1).is_file());
 
     // The next save has nothing to bring.
     assert!(klipp_project::adopt_made_media(&project, &mut pool).is_empty());
+
+    // A take recorded again under the same name, the same length but
+    // other content (#763 review): it gets a name of its own, and the
+    // first take's copy is left as it was.
+    std::fs::create_dir_all(take.parent().unwrap()).unwrap();
+    std::fs::write(&take, [9u8; 8192]).unwrap();
+    let retake = pool.add(MediaItem::synthetic_for_test(take.clone(), None));
+    assert_eq!(klipp_project::adopt_made_media(&project, &mut pool).adopted, 1);
+    let retake_at = pool.get(&retake).unwrap().path.clone();
+    assert_eq!(retake_at, project.join("media").join("recordings").join("take-2.mkv"));
+    assert_eq!(std::fs::read(&retake_at).unwrap(), vec![9u8; 8192], "the new take's own bytes");
+    assert_eq!(std::fs::read(at(&pool, 1)).unwrap(), vec![2u8; 8192], "the first take untouched");
     std::fs::remove_dir_all(&root).ok();
 }

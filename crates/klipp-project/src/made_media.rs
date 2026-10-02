@@ -32,12 +32,55 @@ fn credit_of(path: &Path) -> Option<PathBuf> {
     credit.is_file().then_some(credit)
 }
 
-/// Copy `from` to `to`, unless `to` is already that file.
-fn copy_once(from: &Path, to: &Path) -> std::io::Result<()> {
-    if let (Ok(a), Ok(b)) = (std::fs::metadata(from), std::fs::metadata(to)) {
-        if a.len() == b.len() {
-            return Ok(());
+/// Whether two files hold the same bytes.
+fn same_contents(a: &Path, b: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let (mut fa, mut fb) = (std::fs::File::open(a)?, std::fs::File::open(b)?);
+    let (mut ba, mut bb) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let n = fa.read(&mut ba)?;
+        if n == 0 {
+            return Ok(true);
         }
+        fb.read_exact(&mut bb[..n])?;
+        if ba[..n] != bb[..n] {
+            return Ok(false);
+        }
+    }
+}
+
+/// Where `from` goes in the project, given the place `want` it would go:
+/// `want` when nothing is there or the same file already is, else the
+/// first free `name-2.ext`, `name-3.ext` (#763 review). A same-length
+/// file there may still be another take — a re-recorded `take.mkv`, a
+/// narration made again at the same length — and the pool must not be
+/// pointed at it.
+fn place_for(from: &Path, want: &Path) -> std::io::Result<PathBuf> {
+    if !want.exists() || same_contents(from, want)? {
+        return Ok(want.to_path_buf());
+    }
+    let stem = want.file_stem().and_then(|s| s.to_str()).unwrap_or("media");
+    let ext = want.extension().and_then(|e| e.to_str());
+    for n in 2.. {
+        let name = match ext {
+            Some(e) => format!("{stem}-{n}.{e}"),
+            None => format!("{stem}-{n}"),
+        };
+        let candidate = want.with_file_name(name);
+        if !candidate.exists() || same_contents(from, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("an unbounded range ends only by returning")
+}
+
+/// Copy `from` to `to`, unless `to` already holds the same bytes.
+fn copy_once(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.exists() && same_contents(from, to)? {
+        return Ok(());
     }
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir)?;
@@ -60,7 +103,14 @@ pub fn adopt_made_media(project_dir: &Path, pool: &mut klipp_media::MediaPool) -
             continue;
         }
         let Some(rel) = klipp_media::made::made_relative(&item.path) else { continue };
-        let to = media.join(&rel);
+        let to = match place_for(&item.path, &media.join(&rel)) {
+            Ok(to) => to,
+            Err(e) => {
+                warn!("could not bring {} into the project: {e}", item.path.display());
+                report.failed.push((item.path.clone(), e));
+                continue;
+            }
+        };
         match copy_once(&item.path, &to) {
             Ok(()) => {
                 if let Some(credit) = credit_of(&item.path) {
