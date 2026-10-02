@@ -495,6 +495,10 @@ pub enum ControlCommand {
         /// away the latitude the format exists to keep.
         #[serde(default)]
         force: bool,
+        /// How far each knob may move from where the shot started:
+        /// gentle (the default), normal or bold (#742).
+        #[serde(default)]
+        strength: Option<String>,
     },
     /// Where every requested item stands.
     AnalysisStatus {

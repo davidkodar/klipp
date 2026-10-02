@@ -684,6 +684,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "rounds": args.get("rounds").cloned().unwrap_or(serde_json::Value::Null),
             "force": args.get("force").and_then(|v| v.as_bool()).unwrap_or(false),
+            "strength": args.get("strength").cloned().unwrap_or(serde_json::Value::Null),
         }),
         "klipp_audio_spectrum" => json!({
             "method": "audio_spectrum",
@@ -1684,11 +1685,15 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               against the look's numbers, and the primaries are moved toward the target — lift \
               from the black point, gain from the white, exposure from the median, temperature \
               and tint from the cast, saturation from the chroma — then read again, up to three \
-              rounds. A dry run reports where every shot stands and its first step; apply true \
-              grades them, the whole pass as one undo step. A screen recording is held only to its cast \
+              rounds. Each knob moves at most so far from where the shot started (strength gentle, \
+              the default; normal; bold), and a round that turns a sky from blue, foliage from \
+              green, skin off its band or colours garish is put back and the shot left there. \
+              A dry run reports where every shot stands and the first step it would take; shots \
+              of one file are named as a scene to grade together. apply true grades them, the \
+              whole pass as one undo step. A screen recording is held only to its cast \
               and to clipping. Then klipp_skin_balance for a face still off the band, and a \
               look (klipp_look) for style on top.",
-             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" } }), vec![]),
+             json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" }, "strength": { "type": "string", "enum": ["gentle", "normal", "bold"], "description": "how far each knob may move from where the shot started; gentle unless asked" } }), vec![]),
         tool("klipp_audio_spectrum",
              "A file's sound as frequency against time: where a hum starts, when a hiss creeps \
               in, which stretch has the air conditioning in it. The scrolling analyser in the \

@@ -2222,6 +2222,76 @@ fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::mea
 }
 
 /// The clip's Corrector knobs as they are: what a grade step adds to.
+/// How far grade_to_target may move each knob from where a shot
+/// started (#742). Gentle by default: chasing a look's chroma on vivid
+/// phone footage took saturation to 1.3x and turned a sky olive.
+struct GradeLimits {
+    name: &'static str,
+    exposure: f32,
+    lift: f32,
+    gain: f32,
+    temperature: f32,
+    tint: f32,
+    /// Saturation as a factor of the start's: down to 1/x, up to x.
+    saturation: f32,
+}
+
+impl GradeLimits {
+    fn named(name: &str) -> Result<Self, String> {
+        let (name, k) = match name.to_lowercase().as_str() {
+            "gentle" => ("gentle", 1.0),
+            "normal" => ("normal", 2.0),
+            "bold" => ("bold", 3.0),
+            other => return Err(format!("strength {other:?} is not one of gentle, normal or bold")),
+        };
+        Ok(Self { name, exposure: 0.5 * k, lift: 0.05 * k, gain: 0.1 * k, temperature: 8.0 * k, tint: 6.0 * k, saturation: 1.0 + 0.12 * k })
+    }
+
+    /// The knobs after `step` from `now`, held within the limits around
+    /// `start`, and the names of the knobs the limits held.
+    fn clamp(&self, start: &klipp_color::measure::PrimaryStep, now: &klipp_color::measure::PrimaryStep, step: &klipp_color::measure::PrimaryStep) -> (klipp_color::measure::PrimaryStep, Vec<&'static str>) {
+        let mut held = Vec::new();
+        let mut within = |name: &'static str, want: f32, lo: f32, hi: f32| {
+            let got = want.clamp(lo, hi);
+            if (got - want).abs() > 1e-4 {
+                held.push(name);
+            }
+            got
+        };
+        let out = klipp_color::measure::PrimaryStep {
+            exposure: within("exposure", now.exposure + step.exposure, start.exposure - self.exposure, start.exposure + self.exposure).clamp(-6.0, 6.0),
+            lift: within("lift", now.lift + step.lift, start.lift - self.lift, start.lift + self.lift).clamp(-1.0, 1.0),
+            gain: within("gain", now.gain + step.gain, start.gain - self.gain, start.gain + self.gain).clamp(-1.0, 1.0),
+            temperature: within("temperature", now.temperature + step.temperature, start.temperature - self.temperature, start.temperature + self.temperature).clamp(-50.0, 50.0),
+            tint: within("tint", now.tint + step.tint, start.tint - self.tint, start.tint + self.tint).clamp(-50.0, 50.0),
+            saturation: within("saturation", now.saturation * (1.0 + step.saturation), start.saturation / self.saturation, start.saturation * self.saturation).clamp(0.0, 4.0),
+            held_for_highlights: step.held_for_highlights,
+        };
+        (out, held)
+    }
+}
+
+/// A step as the knobs it moves, from `from` to `to`: "exposure +0.30,
+/// temperature -6.0, saturation x1.10"; "nothing" when none moves.
+fn describe_step(from: &klipp_color::measure::PrimaryStep, to: &klipp_color::measure::PrimaryStep) -> String {
+    let mut parts = Vec::new();
+    for (name, d, min) in [
+        ("exposure", to.exposure - from.exposure, 0.01),
+        ("lift", to.lift - from.lift, 0.002),
+        ("gain", to.gain - from.gain, 0.002),
+        ("temperature", to.temperature - from.temperature, 0.1),
+        ("tint", to.tint - from.tint, 0.1),
+    ] {
+        if d.abs() >= min {
+            parts.push(format!("{name} {d:+.2}"));
+        }
+    }
+    if from.saturation > 0.0 && (to.saturation / from.saturation - 1.0).abs() >= 0.005 {
+        parts.push(format!("saturation x{:.2}", to.saturation / from.saturation));
+    }
+    if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
+}
+
 fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
     let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
     if let Some(n) = clip.own_grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
@@ -4004,10 +4074,11 @@ fn handle(
             Ok(json!({ "text": text, "before": before, "rounds": rounds, "hue_shift": shift, "applied": apply && !rounds.is_empty(), "undo_steps": undo_steps, "revision": ctx.shared.revision(), "next": if apply { "frame_at to see it; check with color reads every shot." } else { "Run it with apply true to turn the skin onto the band as one undo step." } }))
         }
 
-        ControlCommand::GradeToTarget { clip_id, apply, rounds, force } => {
+        ControlCommand::GradeToTarget { clip_id, apply, rounds, force, strength } => {
             if in_batch {
                 return Err("grade_to_target measures and applies; send it on its own".into());
             }
+            let limits = GradeLimits::named(strength.as_deref().unwrap_or("gentle"))?;
             let shots: Vec<(String, f64, String)> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
@@ -4055,6 +4126,20 @@ fn handle(
                 let mut step = klipp_color::measure::primaries_toward(&m, &look);
                 let mut done_rounds = 0u32;
                 let mut stalled: Option<String> = None;
+                // Where the shot started, knobs and colours: the limits
+                // and the memory colours are held against this, not
+                // against the last round, so small steps cannot add up
+                // to an olive sky (#742).
+                let cid = klipp_core::ClipId(id.parse().map_err(|e| format!("{e}"))?);
+                let start_knobs = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
+                };
+                let start_m = m.clone();
+                let mut held_at_limit: Vec<&'static str> = Vec::new();
+                // The first step as it would be taken, inside the limits:
+                // what a dry run shows.
+                let (first_step, first_held) = limits.clamp(&start_knobs, &start_knobs, &step);
                 for _ in 0..n_rounds {
                     let fails = colour_report(&m, &look, *mid);
                     let moving = step.exposure.abs() > 0.03 || step.lift.abs() > 0.01 || step.gain.abs() > 0.01 || step.temperature.abs() > 0.5 || step.tint.abs() > 0.5 || step.saturation.abs() > 0.03;
@@ -4063,17 +4148,24 @@ fn handle(
                     }
                     let now = {
                         let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                        let cid = klipp_core::ClipId(id.parse().map_err(|e| format!("{e}"))?);
                         seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).map(corrector_now).unwrap_or_default()
                     };
+                    let (next, held) = limits.clamp(&start_knobs, &now, &step);
+                    for k in held {
+                        if !held_at_limit.contains(&k) {
+                            held_at_limit.push(k);
+                        }
+                    }
+                    let unchanged = (next.exposure - now.exposure).abs() < 1e-3 && (next.lift - now.lift).abs() < 1e-4 && (next.gain - now.gain).abs() < 1e-4
+                        && (next.temperature - now.temperature).abs() < 1e-2 && (next.tint - now.tint).abs() < 1e-2 && (next.saturation - now.saturation).abs() < 1e-3;
+                    if unchanged {
+                        stalled = Some(format!("stopped at the {} limit for {}: further is past what this strength allows; strength normal or bold goes further, or a group grade, a secondary or a look does it more kindly", limits.name, held_at_limit.join(", ")));
+                        break;
+                    }
                     let op: klipp_document::ops::Op = serde_json::from_value(json!({
                         "op": "grade", "clip_id": id,
-                        "exposure": (now.exposure + step.exposure).clamp(-6.0, 6.0),
-                        "lift": (now.lift + step.lift).clamp(-1.0, 1.0),
-                        "gain": (now.gain + step.gain).clamp(-1.0, 1.0),
-                        "temperature": (now.temperature + step.temperature).clamp(-50.0, 50.0),
-                        "tint": (now.tint + step.tint).clamp(-50.0, 50.0),
-                        "saturation": (now.saturation * (1.0 + step.saturation)).clamp(0.0, 4.0),
+                        "exposure": next.exposure, "lift": next.lift, "gain": next.gain,
+                        "temperature": next.temperature, "tint": next.tint, "saturation": next.saturation,
                     })).map_err(|e| e.to_string())?;
                     let (plan, revision) = resolve_plan(ctx, &[op])?;
                     let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
@@ -4089,7 +4181,8 @@ fn handle(
                     // never moves the cast at all. Put the knobs back
                     // where they were and say why it stopped.
                     let after_round = colour_report(&m, &look, *mid);
-                    if after_round.len() > fails.len() {
+                    let turned = klipp_color::measure::memory_colours_broken(&start_m, &m);
+                    if after_round.len() > fails.len() || turned.is_some() {
                         let op: klipp_document::ops::Op = serde_json::from_value(json!({
                             "op": "grade", "clip_id": id,
                             "exposure": now.exposure, "lift": now.lift, "gain": now.gain,
@@ -4104,12 +4197,15 @@ fn handle(
                         // clip left with its 4 (#516).
                         m = m_before_round;
                         done_rounds -= 1;
-                        stalled = Some(format!(
-                            "stopped after {done_rounds} round(s): the next one made it worse ({} findings against {}), so it was put back. What is left is past what the primaries can reach — {}",
-                            after_round.len(),
-                            fails.len(),
-                            if m.cast() >= 3.0 { "the cast needs the white balance set at the source, or a qualified secondary" } else { "try a secondary, or accept it" },
-                        ));
+                        stalled = Some(match turned {
+                            Some(why) => format!("stopped after {done_rounds} round(s): the next one turned colours an eye knows — {why} — so it was put back. The look's numbers are not worth that; hold the shot there, or reach the rest with a secondary that leaves those colours out"),
+                            None => format!(
+                                "stopped after {done_rounds} round(s): the next one made it worse ({} findings against {}), so it was put back. What is left is past what the primaries can reach — {}",
+                                after_round.len(),
+                                fails.len(),
+                                if m.cast() >= 3.0 { "the cast needs the white balance set at the source, or a qualified secondary" } else { "try a secondary, or accept it" },
+                            ),
+                        });
                         break;
                     }
                     step = klipp_color::measure::primaries_toward(&m, &look);
@@ -4119,10 +4215,21 @@ fn handle(
                 if step.held_for_highlights && stalled.is_none() {
                     stalled = Some("held short of the exposure target: brighter would take more than a twentieth of the frame to white. Lift the face on its own, with a window or a secondary, rather than the whole picture".into());
                 }
+                if stalled.is_none() && !held_at_limit.is_empty() {
+                    stalled = Some(format!("held at the {} limit for {}", limits.name, held_at_limit.join(", ")));
+                }
                 let after = colour_report(&m, &look, *mid);
                 let short: String = name.chars().take(28).collect();
+                // The dry run says the step, not only the problems.
+                let first = if apply {
+                    String::new()
+                } else if first_held.is_empty() {
+                    format!("; first step: {}", describe_step(&start_knobs, &first_step))
+                } else {
+                    format!("; first step: {} (held at the {} limit for {})", describe_step(&start_knobs, &first_step), limits.name, first_held.join(", "))
+                };
                 lines.push(format!(
-                    "{short} at {mid:.2} s [{}]: {} before, {} after{}{}{}",
+                    "{short} at {mid:.2} s [{}]: {} before, {} after{}{first}{}{}",
                     look.name,
                     before.len(),
                     after.len(),
@@ -4135,7 +4242,25 @@ fn handle(
                         (None, None) => String::new(),
                     },
                 ));
-                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "stalled": stalled, "drift": drift, "frames_read": reads.len(), "lab": m }));
+                per_shot.push(json!({ "clip_id": id, "secs": mid, "look": look.name, "before": before.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "after": after.iter().map(|f| json!({ "severity": f.0, "what": f.2, "fix": f.3 })).collect::<Vec<_>>(), "rounds": done_rounds, "next_step": step, "first_step": first_step, "held_at_limit": held_at_limit, "stalled": stalled, "drift": drift, "frames_read": reads.len(), "lab": m }));
+            }
+            // Shots of one file are one scene: one grade on them all keeps
+            // them alike at every cut, where a primary each drifts apart
+            // chasing the target shot by shot (#742).
+            let mut by_file: Vec<(&str, Vec<&str>)> = Vec::new();
+            for (id, _, name) in &shots {
+                match by_file.iter_mut().find(|(n, _)| *n == name.as_str()) {
+                    Some(g) => g.1.push(id.as_str()),
+                    None => by_file.push((name.as_str(), vec![id.as_str()])),
+                }
+            }
+            let groups: Vec<serde_json::Value> = by_file.iter().filter(|(_, ids)| ids.len() >= 2).map(|(name, ids)| json!({ "file": name, "clips": ids })).collect();
+            for g in &groups {
+                lines.push(format!(
+                    "{} shots come from {}: one scene. Grade them together (grade_group with these clips, then grade on the group) and keep per-shot moves small; a primary each, chasing the target alone, pulls them apart at the cuts.",
+                    g["clips"].as_array().map_or(0, |a| a.len()),
+                    g["file"].as_str().unwrap_or(""),
+                ));
             }
             // A preset is a guess at what the piece wants; a reference
             // is what it was actually asked for.
@@ -4147,7 +4272,7 @@ fn handle(
             if undo_steps > 1 {
                 lines.push(format!("The pass is {undo_steps} undo steps, not one: the document changed while it ran."));
             }
-            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "applied": apply, "undo_steps": undo_steps, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, as one undo step." } }))
+            Ok(json!({ "text": lines.join("\n"), "shots": per_shot, "scene_groups": groups, "strength": limits.name, "applied": apply, "undo_steps": undo_steps, "revision": ctx.shared.revision(), "look_from_brief": briefed, "next": if apply { "check with color reads every shot again; match_scenes holds the shots to each other, which is what the eye sees at a cut; skin_balance for a face still off the band; a look (klipp_look) for style, after the grade." } else { "That is where every shot stands against the look and the first step each would take. Run it with apply true to grade them, as one undo step." } }))
         }
 
         ControlCommand::Review { max_width, frames, cols, path } => {
@@ -6933,5 +7058,31 @@ mod audio_fixes_tests {
         assert!(wind.and(AudioFixes::ALL).covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
         let off = klipp_core::AudioEffectInstance { enabled: false, ..fx("voice_isolation", &[]) };
         assert!(!AudioFixes::on(&[off]).covers("high-frequency hiss or air is loud against the sound"));
+    }
+}
+
+#[cfg(test)]
+mod grade_limit_tests {
+    use super::{describe_step, GradeLimits};
+    use klipp_color::measure::PrimaryStep;
+
+    /// #742: a step is held within the strength's reach of where the shot
+    /// started, however many rounds ask for more, and says which knobs
+    /// were held.
+    #[test]
+    fn knobs_stay_within_reach_of_where_the_shot_started() {
+        let start = PrimaryStep { saturation: 1.0, ..Default::default() };
+        let greedy = PrimaryStep { saturation: 0.3, temperature: 5.0, exposure: 0.1, ..Default::default() };
+        let gentle = GradeLimits::named("gentle").unwrap();
+        let (one, held) = gentle.clamp(&start, &start, &greedy);
+        assert!((one.saturation - 1.12).abs() < 1e-4 && held == vec!["saturation"], "{one:?} {held:?}");
+        // A second round asking for the same is held where the first was.
+        let (two, held) = gentle.clamp(&start, &one, &greedy);
+        assert!((two.saturation - 1.12).abs() < 1e-4 && (two.temperature - 8.0).abs() < 1e-4, "{two:?}");
+        assert_eq!(held, vec!["temperature", "saturation"]);
+        let bold = GradeLimits::named("bold").unwrap();
+        assert!((bold.clamp(&start, &start, &greedy).0.saturation - 1.3).abs() < 1e-4, "bold reaches the 1.3x gentle refused");
+        assert!(GradeLimits::named("wild").is_err());
+        assert_eq!(describe_step(&start, &one), "exposure +0.10, temperature +5.00, saturation x1.12");
     }
 }
