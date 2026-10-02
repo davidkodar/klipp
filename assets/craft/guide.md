@@ -231,6 +231,8 @@ exist until the plan runs.
   Instead of `clip_id`, `on: {group, stage}` grades a grade group (`stage`
   `pre` or `post`, as `grade_group` made it) and `on: "timeline"` the
   timeline grade, after every clip's own.
+  `from: <clip_id>` instead of knobs copies that clip's whole grade onto
+  this one (a colourist's "apply grade from"); grade again after to adjust.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose
   neutral is 1. `exposure` is in stops; `temperature` and `tint` are the
   white balance; `lift`, `gamma`, `gain` move the shadows, mids and
@@ -310,8 +312,9 @@ exist until the plan runs.
   against the camera's scratch track. It cross-correlates the two,
   reports the match confidence, and moves the clip into sync; it refuses
   when the two share no common sound.
-- `transition {clip_id, kind?, secs?}`: a transition between a clip and
-  the one after it, `secs` long, on the cut. `cross_dissolve` is the
+- `transition {clip_id, kind?, secs?, remove?}`: a transition between a clip and
+  the one after it, `secs` long, on the cut. `remove: true` takes the
+  transition on that cut off again, the crossfade on its sound with it. `cross_dissolve` is the
   default and the only one an interview or a documentary wants; a
   dissolve marks a passage of time or place. `dip_to_black` and
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
@@ -322,6 +325,8 @@ exist until the plan runs.
   (`"subtitle"` for all the captions), between `from` and `to` when
   given. `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
   `x` and `y` are where the text's centre goes (0 to 1 of the frame),
+  or, for a left- or right-aligned title, where its left or right edge
+  goes, so a chapter title and its kicker share one margin,
   `backing` is how dark a panel sits behind the text (0 none, 1 black),
   `outline` a width in pixels, `shadow {x?, y?, blur?, color?, opacity?}`
   a soft drop shadow behind the words: offset and blur in pixels of a
@@ -390,8 +395,10 @@ exist until the plan runs.
   the linked pair's timeline ranges differ (a J or L cut) or the
   partner's track is locked, since the tracks would close up by
   different amounts; lift it with `ripple: false` instead.
-- `move {clip_id, to}`: the clip's start to an anchor; a linked audio
-  or video partner goes with it.
+- `move {clip_id, to, track?}`: the clip's start to an anchor; a linked audio
+  or video partner goes with it. With `track` the clip goes onto that
+  track (a picture to a video track, a title to a text or video track):
+  to put a title above a card, or a shot on the track above.
 - `j_cut {incoming_clip, frames}`: the incoming clip's sound starts so
   many frames before its picture.
 - `l_cut {outgoing_clip, frames}`: the outgoing clip's sound stays so

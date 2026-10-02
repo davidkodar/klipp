@@ -24229,6 +24229,7 @@ impl KlippApp {
                     clip_id: klipp_document::ops::ClipRef::Id(*clip_a_id),
                     kind: spec.string_key.to_string(),
                     secs,
+                    remove: false,
                 };
                 match klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)) {
                     Ok(plan) => {
