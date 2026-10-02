@@ -1820,3 +1820,62 @@ fn a_missing_font_is_warned_about() {
     let fonts = h.ok(json!({ "method": "fonts" }));
     assert!(fonts["bundled"].as_array().unwrap().iter().any(|f| f == "Bebas Neue"), "{fonts}");
 }
+
+/// #723: a bass note in a music track is not mains hum under a voice.
+/// The same sound — a tone in the voice band with a 115 Hz note in it —
+/// reads as hum when it could be dialogue, and as music, with no noise
+/// findings, when it is a library track or plays in the music role.
+#[test]
+fn audio_spectrum_does_not_judge_music_by_the_dialogue_rules() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-spectrum-music-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("piano.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=20",
+               "-f", "lavfi", "-i", "sine=frequency=115:duration=20",
+               "-filter_complex", "[1]volume=enable='between(t,10,12.5)':volume=6,volume=enable='not(between(t,10,12.5))':volume=0[b];[0][b]amix=inputs=2:normalize=0",
+               "-ar", "48000", "-ac", "1"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.duration = klipp_core::RationalTime::from_secs_f64(20.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    let read = |h: &mut Harness| h.ok(json!({ "method": "audio_spectrum", "media_id": media.0.to_string() }));
+
+    let plain = read(&mut h);
+    assert_eq!(plain["music"], json!(false));
+    assert!(plain["findings"].as_array().unwrap().iter().any(|f| f["what"].as_str().unwrap().starts_with("hum")), "the note reads as hum when it could be dialogue: {plain}");
+
+    // A library track: its credit beside it.
+    std::fs::write(wav.with_extension("klipp-credit.txt"), "Piano by Someone, CC BY").unwrap();
+    let library = read(&mut h);
+    assert_eq!(library["music"], json!(true), "{library}");
+    assert!(library["findings"].as_array().unwrap().is_empty(), "{library}");
+    let text = library["text"].as_str().unwrap();
+    assert!(text.contains("This is music (a library track)") && !text.contains("relative to the voice"), "{library}");
+    assert!(!library["next"].as_str().unwrap().contains("clean_audio"), "{library}");
+
+    // Without the credit, a clip of it in the music role.
+    std::fs::remove_file(wav.with_extension("klipp-credit.txt")).unwrap();
+    {
+        let fps = h.sequence.read().unwrap().fps;
+        let mut clip = klipp_timeline::Clip::media(media, klipp_core::Timecode::from_secs_f64(0.0, fps.num), klipp_core::Timecode::from_secs_f64(20.0, fps.num), klipp_core::Timecode::from_secs_f64(0.0, fps.num), klipp_core::Timecode::from_secs_f64(20.0, fps.num));
+        clip.role = klipp_core::ClipRole::Music;
+        let mut seq = h.sequence.write().unwrap();
+        if !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio) {
+            seq.tracks.push(klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio));
+        }
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a].clips = vec![clip];
+    }
+    let scored = read(&mut h);
+    assert_eq!(scored["music"], json!(true), "{scored}");
+    assert!(scored["text"].as_str().unwrap().contains("its clips play as music"), "{scored}");
+    std::fs::remove_dir_all(&dir).ok();
+}

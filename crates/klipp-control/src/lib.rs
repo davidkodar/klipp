@@ -2486,6 +2486,21 @@ fn explain_bad_request(line: &str, e: &serde_json::Error) -> String {
     fallback
 }
 
+/// Why `path` (media `id`) is music, when it is: a track from a library,
+/// its credit file beside it, or media whose every clip on the timeline
+/// plays in the music role. `None` for anything that may carry a voice.
+fn music_reason(ctx: &ControlContext, path: &std::path::Path, id: klipp_core::MediaId) -> Option<&'static str> {
+    if klipp_analysis::is_licensed_audio(path) {
+        return Some("a library track");
+    }
+    let seq = ctx.sequence.read().ok()?;
+    let roles: Vec<klipp_core::ClipRole> = seq.tracks.iter().flat_map(|t| t.clips.iter())
+        .filter(|c| c.media_id() == Some(id))
+        .map(|c| sound_owner(&seq, c).role)
+        .collect();
+    (!roles.is_empty() && roles.iter().all(|r| *r == klipp_core::ClipRole::Music)).then_some("its clips play as music")
+}
+
 /// The clip a sound's settings live on: the picture an audio clip is
 /// linked to, as the `audio` and `clean_audio` ops keep them, else the
 /// clip itself.
@@ -3336,7 +3351,12 @@ fn handle(
             // column on anything up to an hour, and the cost is the
             // same whatever the file's length.
             let spec = klipp_analysis::spectrogram::of_file(std::path::Path::new("ffmpeg"), &path, from, to, 600, 128)?;
-            let found = klipp_analysis::spectrogram::findings(&spec);
+            // Music has no voice for the noise rules to measure against
+            // (#723): its bass read as mains hum "under the voice". A
+            // track from a library (its credit beside it), or media every
+            // clip of plays as music, is not judged by them.
+            let music = music_reason(ctx, &path, id);
+            let found = if music.is_some() { Vec::new() } else { klipp_analysis::spectrogram::findings(&spec) };
             let lines: Vec<String> = found.iter().map(|(sev, what, fix)| format!("[{sev}] {what} — {fix}")).collect();
             // The bands as numbers, thinned so a reply stays readable:
             // the loudest column of each second.
@@ -3351,11 +3371,16 @@ fn handle(
                 .collect();
             Ok(json!({
                 "text": format!(
-                    "The sound of {filename}{}, {:.1} s read in {:.2} s columns:\n{}\n\nEvery threshold here is a level *relative to the voice*, never an absolute one: a quiet recording of a clean room and a loud recording of a noisy one have the same absolute noise floor and different problems. Under about 30 dB below the voice a steady noise stops being audible under speech; at 20 dB down it is plainly there.",
+                    "The sound of {filename}{}, {:.1} s read in {:.2} s columns:\n{}{}",
                     if from > 0.0 || to.is_some() { format!(" from {:.1} s", from) } else { String::new() },
                     spec.duration_secs,
                     spec.hop_secs,
-                    if lines.is_empty() { "Nothing to report: no band comes close enough to the voice to be heard under it.".to_string() } else { lines.join("\n") },
+                    match &music {
+                        Some(why) => format!("This is music ({why}): the noise rules measure hum, rumble, hiss and sibilance against a voice, and music has none to measure against; its low end is its bass. The bands below show its balance."),
+                        None if lines.is_empty() => "Nothing to report: no band comes close enough to the voice to be heard under it.".to_string(),
+                        None => lines.join("\n"),
+                    },
+                    if music.is_some() { "" } else { "\n\nEvery threshold here is a level *relative to the voice*, never an absolute one: a quiet recording of a clean room and a loud recording of a noisy one have the same absolute noise floor and different problems. Under about 30 dB below the voice a steady noise stops being audible under speech; at 20 dB down it is plainly there." },
                 ),
                 "media_id": media_id,
                 "filename": filename,
@@ -3364,8 +3389,13 @@ fn handle(
                 "hop_secs": spec.hop_secs,
                 "rate": spec.rate,
                 "findings": found.iter().map(|(sev, what, fix)| json!({ "severity": sev, "what": what, "fix": fix })).collect::<Vec<_>>(),
+                "music": music.is_some(),
                 "bands": bands,
-                "next": "clean_audio on the clip whose sound plays takes voice (Voice Isolation, for dialogue), wind, hiss, hum and deess; run audio_spectrum again to see whether it worked.",
+                "next": if music.is_some() {
+                    "For music, audio sets its level and duck lowers it under speech; the dialogue cleaners are for recorded sound."
+                } else {
+                    "clean_audio on the clip whose sound plays takes voice (Voice Isolation, for dialogue), wind, hiss, hum and deess; run audio_spectrum again to see whether it worked."
+                },
             }))
         }
 
