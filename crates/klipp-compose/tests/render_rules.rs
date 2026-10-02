@@ -1084,6 +1084,7 @@ fn rising_letters() -> klipp_core::title_motion::Motion {
         stagger: klipp_core::title_motion::StaggerUnit::Char,
         stagger_secs: 0.08,
         distance: 1.0,
+        amount: None,
     }
 }
 
@@ -1915,5 +1916,44 @@ fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
     for (arm, (a, u)) in ["CPU", "GPU"].iter().zip(alone.iter().zip(&under)) {
         let worst = a.iter().zip(u).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
         assert!(worst < 2e-3, "{arm}: the adjustment layer stabilised by the clip below's motion, by {worst}");
+    }
+}
+
+/// #736: a word matte whose exit grows its letters twelvefold opens onto
+/// the picture inside them, on the CPU and the GPU alike: on the clip's
+/// last frame the shot shows through many times more of the frame than
+/// at rest. It never fades: inside the letters the shot is whole.
+#[test]
+fn a_word_matte_that_grows_opens_onto_its_picture() {
+    let tb = klipp_timeline::TextBox { text: "HOME".into(), font_size: 300.0, color: [255, 255, 255, 255], ..Default::default() };
+    let grow = klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Larger).duration(1.0).amount(12.0);
+    let fx = klipp_timeline::LayerFx { motion: klipp_timeline::TitleMotion { enter: None, exit: Some(grow) }, ..Default::default() };
+    let mut matte = clip(ClipKind::Title(klipp_timeline::TitleData::single_text_fx(tb, fx)), 0.0, 5.0);
+    matte.consumed_as_matte = true;
+    let mut shot = solid([0, 255, 0], 0.0, 5.0);
+    let mut binding = klipp_timeline::MatteBinding::new(matte.id);
+    binding.channel = klipp_nodes::params::MatteChannel::Alpha;
+    shot.matte_source = Some(binding);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: 480, height: 270 };
+    let mut text = Track::new("Text 1", TrackKind::Text);
+    text.clips = vec![matte];
+    let mut video = Track::new("V1", TrackKind::Video);
+    video.clips = vec![shot];
+    seq.tracks = vec![text, video];
+    let green = |img: &[f32]| img.chunks_exact(4).filter(|p| p[1] > 0.5).count() as f32 / (480.0 * 270.0);
+    for gpu in [false, true] {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let at_rest = green(&r.render(&seq, tc(2.0), 480, 270, &mut White, RenderOptions::default()));
+        // The clip's last frame at 24 fps.
+        let grown = r.render(&seq, tc(119.0 / 24.0), 480, 270, &mut White, RenderOptions::default());
+        let full = grown.chunks_exact(4).filter(|p| p[1] > 0.99).count() as f32 / (480.0 * 270.0);
+        assert!(at_rest > 0.02 && at_rest < 0.5, "gpu {gpu}: the word shows the shot in its letters only: {at_rest}");
+        assert!(green(&grown) > at_rest * 8.0, "gpu {gpu}: grown, the letters open onto the shot: {} of the frame against {at_rest} at rest", green(&grown));
+        // Inside the letters the shot is whole: a fading exit would leave
+        // it dimmed everywhere (the edges are soft, the letters' own
+        // edges magnified).
+        assert!(full > 0.2, "gpu {gpu}: the grown matte does not fade: only {full} of the frame shows the shot whole");
     }
 }

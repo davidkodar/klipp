@@ -35,8 +35,21 @@ fn motion_kind(name: &str) -> Result<klipp_core::title_motion::MotionKind, Strin
         "fly_left" | "fly_from_left" => FlyLeft, "fly_right" | "fly_from_right" => FlyRight,
         "fly_top" | "fly_from_top" => FlyTop, "fly_bottom" | "fly_from_bottom" => FlyBottom,
         "bounce" => Bounce, "flicker" => Flicker, "focus_in" => FocusIn, "soft_rise" => SoftRise,
-        _ => return Err(format!("{name:?} is not a motion kind; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in or soft_rise")),
+        "shrink" => Larger,
+        _ => return Err(format!("{name:?} is not a motion kind; use fade, rise, drop, slide_left, slide_right, scale_up, scale_down, grow, shrink, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in or soft_rise")),
     })
+}
+
+/// A motion kind named for what it does in its place: as an exit, grow
+/// grows and shrink shrinks, neither fading (#736); as an entrance, grow
+/// is scale_up as it always was, and shrink settles down from large.
+fn motion_kind_as(name: &str, exit: bool) -> Result<klipp_core::title_motion::MotionKind, String> {
+    use klipp_core::title_motion::MotionKind::*;
+    match name.to_lowercase().as_str() {
+        "grow" if exit => Ok(Larger),
+        "shrink" if exit => Ok(Smaller),
+        _ => motion_kind(name),
+    }
 }
 
 fn stagger_unit(name: &str) -> Result<klipp_core::title_motion::StaggerUnit, String> {
@@ -56,6 +69,7 @@ fn stagger_unit(name: &str) -> Result<klipp_core::title_motion::StaggerUnit, Str
 
 fn parse_motion(
     spec: &klipp_timeline::TitleMotionSpec,
+    exit: bool,
 ) -> Result<Option<klipp_core::title_motion::Motion>, String> {
     use klipp_core::title_motion::{Easing, Motion, MotionKind, StaggerUnit};
     if spec.kind.eq_ignore_ascii_case("none") {
@@ -65,12 +79,13 @@ fn parse_motion(
             || spec.stagger.is_some()
             || spec.stagger_secs.is_some()
             || spec.distance.is_some()
+            || spec.scale.is_some()
         {
-            return Err("motion kind none cannot have timing, easing, stagger or distance".into());
+            return Err("motion kind none cannot have timing, easing, stagger, distance or scale".into());
         }
         return Ok(None);
     }
-    let kind = motion_kind(&spec.kind)?;
+    let kind = motion_kind_as(&spec.kind, exit)?;
     let mut m = Motion::new(kind);
     if kind == MotionKind::Typewriter && spec.stagger.is_none() {
         m = m.stagger(StaggerUnit::Char, 0.04);
@@ -105,6 +120,23 @@ fn parse_motion(
             );
         }
         m.distance = v;
+    }
+    if let Some(v) = spec.scale {
+        // Larger kinds scale from above 1, smaller from below.
+        let larger = match kind {
+            MotionKind::Larger | MotionKind::ScaleDown => true,
+            MotionKind::Smaller | MotionKind::ScaleUp => false,
+            _ => return Err("scale is only supported for grow, shrink, scale_up and scale_down".into()),
+        };
+        let ok = v.is_finite() && if larger { v > 1.0 && v <= 50.0 } else { (0.0..1.0).contains(&v) };
+        if !ok {
+            return Err(format!(
+                "motion scale for {} must be {}; got {v}",
+                spec.kind,
+                if larger { "above 1 and at most 50" } else { "at least 0 and below 1" }
+            ));
+        }
+        m.amount = Some(v);
     }
     if let Some(v) = &spec.stagger {
         m.stagger = stagger_unit(v)?;
@@ -230,7 +262,7 @@ impl MotionFields {
             style.stagger.as_deref(),
         )?;
         let enter = if let Some(m) = &style.enter {
-            parse_motion(m).map_err(|e| format!("enter: {e}"))?
+            parse_motion(m, false).map_err(|e| format!("enter: {e}"))?
         } else if let Some(a) = &style.animate {
             let kind = motion_kind(a)?;
             let mut m =
@@ -247,7 +279,7 @@ impl MotionFields {
         let exit = style
             .exit
             .as_ref()
-            .map(parse_motion)
+            .map(|m| parse_motion(m, true))
             .transpose()
             .map_err(|e| format!("exit: {e}"))?
             .flatten();

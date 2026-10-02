@@ -332,6 +332,11 @@ pub struct TitleMotionSpec {
     /// kinds reject this field. Zero to 100; default 0.6.
     #[serde(default)]
     pub distance: Option<f32>,
+    /// How far grow, shrink, scale_up and scale_down scale, as a factor
+    /// of the resting size: above 1 for grow and scale_down, below 1 for
+    /// shrink and scale_up (#736). Other kinds reject this field.
+    #[serde(default)]
+    pub scale: Option<f32>,
 }
 
 impl TitleMotionSpec {

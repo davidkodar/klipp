@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 fn strict_motion_fields(value: &serde_json::Value) -> Result<(), String> {
     let Some(object) = value.as_object() else { return Ok(()) };
     for key in object.keys() {
-        if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance"].contains(&key.as_str()) {
+        if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance", "scale"].contains(&key.as_str()) {
             return Err(format!("unknown motion field {key:?}"));
         }
     }

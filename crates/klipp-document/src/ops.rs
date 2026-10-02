@@ -21,7 +21,7 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
     value.map(|v| {
         if let Some(object) = v.as_object() {
             for key in object.keys() {
-                if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance"].contains(&key.as_str()) {
+                if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance", "scale"].contains(&key.as_str()) {
                     return Err(serde::de::Error::custom(format!("unknown motion field {key:?}")));
                 }
             }
@@ -798,7 +798,7 @@ pub enum Op {
     /// add a digital edge. `style` names a look from the brief's type
     /// styles (or heading, callout, card): the look's fields fill every
     /// one left out here. `enter`/`exit` expose kind, duration_secs, delay_secs,
-    /// easing, stagger, stagger_secs and distance (TitleMotionSpec). Each
+    /// easing, stagger, stagger_secs, distance and scale (TitleMotionSpec). Each
     /// explicit side replaces its style default; kind "none" disables it.
     /// `enter` cannot coexist with explicit legacy entrance fields.
     Title {
