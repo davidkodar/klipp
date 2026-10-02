@@ -914,6 +914,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
             if let Some(c) = args.get("instrumental").and_then(|v| v.as_bool()) { v["instrumental"] = json!(c); }
+            if let Some(x) = args.get("listen").and_then(|v| v.as_u64()) { v["listen"] = json!(x); }
             v
         }
         "klipp_search_sfx" => {
@@ -2345,12 +2346,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
              "Search royalty-free music by mood or genre (e.g. \"upbeat electronic\", \"calm \
-              piano\", \"cinematic\") from Jamendo. Each result shows its title, artist, length, \
-              and licence — including whether it clears commercial use. Preview a result's \
-              preview_url before committing, then add it with klipp_add_music. Needs a Jamendo \
+              piano\", \"cinematic\") from Jamendo, best match to the words first. Each result \
+              shows its title, artist, length, tags, pace and licence — including whether it \
+              clears commercial use. Pass listen: 3 to hear the first three previews without \
+              importing them: tempo, how clear the beat is, and the energy over the track \
+              (steady, builds, falls away). Then add one with klipp_add_music. Needs a Jamendo \
               client id in the user's key config. Use the reference's feel (style_profile) to \
               pick music of matching energy — never the reference's own track.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "type": "integer", "description": "hear the first this-many previews (at most 5): tempo, beat and energy, nothing imported" } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
               \"impact\") from Freesound. Each result shows its licence and whether it clears \

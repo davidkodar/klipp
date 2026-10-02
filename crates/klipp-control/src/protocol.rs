@@ -769,6 +769,11 @@ pub enum ControlCommand {
         /// Only instrumental tracks.
         #[serde(default)]
         instrumental: bool,
+        /// Listen to the first this-many results' previews (at most 5):
+        /// tempo, how sure the beat is, and the energy over the track,
+        /// read without importing anything (#739).
+        #[serde(default)]
+        listen: Option<u32>,
     },
     /// Search royalty-free sound effects (Freesound) by keyword. A read;
     /// needs a Freesound token in the user's key config.

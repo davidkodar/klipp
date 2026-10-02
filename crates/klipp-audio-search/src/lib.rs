@@ -49,6 +49,10 @@ pub struct Track {
     pub image_url: String,
     /// A few descriptive tags.
     pub tags: Vec<String>,
+    /// The library's own read of the tempo ("low", "medium", "high"…),
+    /// when it gives one.
+    #[serde(default)]
+    pub pace: String,
 }
 
 impl Track {
@@ -193,6 +197,7 @@ pub fn search_sfx(query: &str, limit: u32) -> Result<Vec<Track>, String> {
             page_url: str_of("url"),
             image_url: String::new(),
             tags,
+            pace: String::new(),
         });
     }
     Ok(tracks)
@@ -217,8 +222,10 @@ pub fn search_music(query: &str, limit: u32) -> Result<Vec<Track>, String> {
 
 pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
     let limit = limit.clamp(1, 50);
-    // Ask for more than wanted when a filter will thin the results.
-    let ask = if filter.commercial_only || filter.instrumental { (limit * 3).min(200) } else { limit };
+    // A pool larger than wanted, to rank by the query's own words: the
+    // library orders by popularity, so its first answer to "chill
+    // acoustic guitar" was a dance track (#739).
+    let page = (limit * 3).clamp(30, 200);
     let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
     let mut attempts: Vec<String> = vec![format!("fuzzytags={}", encode(&words.join("+"))), format!("search={}", encode(query.trim()))];
     if words.len() > 1 {
@@ -226,24 +233,75 @@ pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Re
     }
     let mut tracks = Vec::new();
     for extra in attempts {
-        tracks = jamendo_tracks(&extra, ask, filter.instrumental)?;
-        tracks.retain(|t| !t.preview_url.is_empty() || !t.download_url.is_empty());
-        if filter.commercial_only {
-            tracks.retain(|t| t.commercial_ok);
+        // The filters are asked of the library and applied again here, and
+        // a second page is read when they thin the first, so a limit of
+        // six gives six, not the two of a page's six that passed (#739).
+        for offset in [0, page] {
+            let mut got = jamendo_tracks(&extra, page, offset, filter)?;
+            let read = got.len();
+            got.retain(|t| !t.preview_url.is_empty() || !t.download_url.is_empty());
+            if filter.commercial_only {
+                got.retain(|t| t.commercial_ok);
+            }
+            got.retain(|t| !tracks.iter().any(|k: &Track| k.id == t.id));
+            tracks.extend(got);
+            if tracks.len() >= limit as usize || read < page as usize {
+                break;
+            }
         }
         if !tracks.is_empty() {
             break;
         }
     }
+    rank_by_query(&mut tracks, &words);
     tracks.truncate(limit as usize);
+    for t in &mut tracks {
+        t.tags.truncate(8);
+    }
     Ok(tracks)
 }
 
-fn jamendo_tracks(extra: &str, limit: u32, instrumental: bool) -> Result<Vec<Track>, String> {
+/// Moods that pull against each other: a track tagged with one side is
+/// a poor answer to a query asking for the other.
+const CALM: &[&str] = &["chill", "calm", "relaxing", "relax", "ambient", "soft", "peaceful", "mellow", "gentle", "quiet", "slow", "lounge", "dreamy", "meditative", "acoustic"];
+const DRIVING: &[&str] = &["energetic", "energy", "dance", "upbeat", "powerful", "aggressive", "epic", "edm", "fast", "hard", "intense", "party", "electro"];
+
+/// Put the tracks that answer the query's words first: a word met in a
+/// track's tags or title counts for it, a mood from the opposite side
+/// counts against it. Ties keep the library's popularity order.
+fn rank_by_query(tracks: &mut [Track], words: &[String]) {
+    let score = |t: &Track| -> i32 {
+        let tags: Vec<String> = t.tags.iter().map(|x| x.to_lowercase()).collect();
+        let title = t.title.to_lowercase();
+        let has = |w: &str| tags.iter().any(|x| x == w || x.contains(w)) || title.split(|c: char| !c.is_alphanumeric()).any(|x| x == w);
+        let mut s = 0;
+        for w in words {
+            if has(w) {
+                s += 2;
+            }
+        }
+        let asks = |side: &[&str]| words.iter().any(|w| side.contains(&w.as_str()));
+        let meets = |side: &[&str]| side.iter().filter(|m| tags.iter().any(|x| x == *m)).count() as i32;
+        if asks(CALM) && !asks(DRIVING) {
+            s -= 2 * meets(DRIVING);
+        }
+        if asks(DRIVING) && !asks(CALM) {
+            s -= 2 * meets(CALM);
+        }
+        s
+    };
+    // A stable sort: equal scores stay in popularity order.
+    tracks.sort_by_key(|t| std::cmp::Reverse(score(t)));
+}
+
+fn jamendo_tracks(extra: &str, limit: u32, offset: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
     let cid = jamendo_client_id().ok_or_else(|| "no Jamendo client id set — put jamendo_client_id in ~/.config/klipp/keys.toml or set KLIPP_JAMENDO_CLIENT_ID".to_string())?;
-    let vocal = if instrumental { "&vocalinstrumental=instrumental" } else { "" };
+    let vocal = if filter.instrumental { "&vocalinstrumental=instrumental" } else { "" };
+    // `ccnc=false`: no non-commercial licences, filtered by the library
+    // before it counts the page.
+    let commercial = if filter.commercial_only { "&ccnc=false" } else { "" };
     let url = format!(
-        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32{vocal}&{extra}"
+        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&offset={offset}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32{vocal}{commercial}&{extra}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -275,9 +333,9 @@ fn jamendo_tracks(extra: &str, limit: u32, instrumental: bool) -> Result<Vec<Tra
                     v.extend(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())));
                 }
             }
-            v.truncate(8);
             v
         }).unwrap_or_default();
+        let pace = r.get("musicinfo").and_then(|m| m.get("speed")).and_then(|v| v.as_str()).unwrap_or("").to_string();
         tracks.push(Track {
             source: Source::JamendoMusic,
             id: get("id"),
@@ -292,6 +350,7 @@ fn jamendo_tracks(extra: &str, limit: u32, instrumental: bool) -> Result<Vec<Tra
             page_url: get("shareurl"),
             image_url: get("image"),
             tags,
+            pace,
         });
     }
     Ok(tracks)
@@ -446,6 +505,31 @@ pub fn download_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn track(title: &str, tags: &[&str]) -> Track {
+        Track {
+            source: Source::JamendoMusic, id: title.into(), title: title.into(), artist: String::new(),
+            duration_secs: 120.0, license: String::new(), license_url: String::new(), commercial_ok: true,
+            preview_url: String::new(), download_url: String::new(), page_url: String::new(),
+            image_url: String::new(), tags: tags.iter().map(|t| t.to_string()).collect(), pace: String::new(),
+        }
+    }
+
+    /// #739: the most popular answer to "chill acoustic guitar" was a dance
+    /// track; ranked by the query's words, the acoustic one comes first and
+    /// the energetic one last.
+    #[test]
+    fn music_is_ranked_by_the_query_not_popularity() {
+        let mut t = vec![
+            track("Energy", &["happy", "energetic", "dance", "electronic"]),
+            track("Morning", &["pop"]),
+            track("Porch", &["chill", "acoustic", "guitar"]),
+        ];
+        let words: Vec<String> = ["chill", "acoustic", "guitar"].iter().map(|w| w.to_string()).collect();
+        rank_by_query(&mut t, &words);
+        let order: Vec<&str> = t.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(order, vec!["Porch", "Morning", "Energy"]);
+    }
 
     #[test]
     fn cc_labels_and_commercial_flag() {
