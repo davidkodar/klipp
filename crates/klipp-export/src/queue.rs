@@ -166,9 +166,14 @@ impl RenderQueue {
         output_path: PathBuf,
         settings: ExportSettings,
         label: String,
-        snapshot: RenderSnapshot,
+        mut snapshot: RenderSnapshot,
     ) -> Uuid {
         let id = Uuid::new_v4();
+        // Counted from the range the snapshot carries now. A caller that
+        // narrows the range after taking the snapshot (selected clips,
+        // Render Again) used to keep the whole sequence's count, and the
+        // window said "frame n of" too many while the bar ran short.
+        snapshot.total_frames = snapshot.sequence_snapshot.frames_to_export();
         let total_frames = snapshot.total_frames;
         let timeline_fps = snapshot.sequence_snapshot.fps;
         // The size delivered: the settings' when they name one, else the
@@ -542,6 +547,30 @@ mod tests {
             export_range: None,
             sequence_id: klipp_core::SequenceId::new(),
         }
+    }
+
+    /// A range narrowed after the snapshot was taken counts its own
+    /// frames, for the window and for the progress bar.
+    #[test]
+    fn a_range_set_after_the_snapshot_is_what_the_job_counts() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips.push(klipp_timeline::Clip::gap(
+            klipp_core::Timecode::from_secs_f64(0.0, 24),
+            klipp_core::Timecode::from_secs_f64(10.0, 24),
+        ));
+        let mut snap = RenderSnapshot::from_sequence(&seq, &MediaPool::default(), &ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        assert!(snap.total_frames > 30, "the whole sequence first: {}", snap.total_frames);
+        snap.sequence_snapshot.export_range = Some((10, 40));
+        // The queue starts a job as it is added; it is stopped at once, and
+        // writes nowhere that matters.
+        let dir = std::env::temp_dir().join(format!("klipp-queue-range-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut q = RenderQueue::new();
+        let id = q.add_job(dir.join("range.mp4"), ExportSettings::default(), "range".into(), snap);
+        let counted = q.jobs.iter().find(|j| j.id == id).unwrap().total_frames;
+        q.kill_active();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(counted, 30);
     }
 
     #[test]
