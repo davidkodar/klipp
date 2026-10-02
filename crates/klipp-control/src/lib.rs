@@ -407,10 +407,33 @@ fn parse_log_format(name: &str) -> Result<klipp_core::LogFormat, String> {
     })
 }
 
+/// Where a transition sits on its track (#711): the cut between its two
+/// clips, and the stretch it covers there by its alignment, in seconds.
+/// `None` when its first clip is no longer on the track.
+fn transition_span(t: &klipp_timeline::Track, tr: &klipp_timeline::Transition) -> Option<(f64, f64, f64)> {
+    let cut = t.find_clip(tr.clip_a_id)?.timeline_out.to_secs_f64();
+    let d = tr.duration.to_secs_f64();
+    let (from, to) = match tr.alignment {
+        klipp_core::TransitionAlignment::Center => (cut - d / 2.0, cut + d / 2.0),
+        klipp_core::TransitionAlignment::StartAtCut => (cut, cut + d),
+        klipp_core::TransitionAlignment::EndAtCut => (cut - d, cut),
+    };
+    Some((cut, from, to))
+}
+
+/// A transition's alignment in words, and as a client names it.
+fn transition_alignment(a: klipp_core::TransitionAlignment) -> (&'static str, &'static str) {
+    match a {
+        klipp_core::TransitionAlignment::Center => ("centred on the cut", "center"),
+        klipp_core::TransitionAlignment::StartAtCut => ("after the cut", "start_at_cut"),
+        klipp_core::TransitionAlignment::EndAtCut => ("before the cut", "end_at_cut"),
+    }
+}
+
 /// The timeline as text: what a model reads before it plans. Tracks top
 /// first; every clip with its range in seconds and frames at the
 /// sequence's rate; the clip's kind and source; its grade and effects in
-/// a word; the markers. Ids are there because an operation needs them,
+/// a word; the transitions on each track; the markers. Ids are there because an operation needs them,
 /// at the end of the line where they cost the least attention.
 fn timeline_text(
     seq: &klipp_timeline::Sequence,
@@ -522,6 +545,26 @@ fn timeline_text(
                 }
             }
             let _ = write!(line, "  id {}", c.id.0);
+            let _ = writeln!(out, "{line}");
+        }
+        // The transitions on the track's cuts (#711): what an agent that
+        // made a dissolve reads back to see it there.
+        for tr in &t.transitions {
+            let spec = klipp_core::spec_for_kind(tr.kind);
+            let d = tr.duration.to_secs_f64();
+            let (words, _) = transition_alignment(tr.alignment);
+            let mut line = format!("  transition {} ({}) {:.2} s ({} f)", spec.display_name, spec.string_key, d, (d * fps).round() as i64);
+            match transition_span(t, tr) {
+                Some((cut, from, to)) => {
+                    let _ = write!(
+                        line,
+                        "  [{:.2}-{:.2} s | {}-{} f]  {words} at {:.2} s",
+                        from, to, (from * fps).round() as i64, (to * fps).round() as i64, cut,
+                    );
+                }
+                None => line.push_str("  (its first clip is gone)"),
+            }
+            let _ = write!(line, "  from {} to {}  id {}", tr.clip_a_id.0, tr.clip_b_id.0, tr.id.0);
             let _ = writeln!(out, "{line}");
         }
     }
@@ -2240,6 +2283,36 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
                 v["locked"] = json!(true);
             }
             v["clips"] = json!(clips);
+            // The transitions between the clips listed (#711), in both
+            // forms: there are few, and nothing else shows them.
+            let transitions: Vec<serde_json::Value> = t
+                .transitions
+                .iter()
+                .filter(|tr| [tr.clip_a_id, tr.clip_b_id].iter().any(|id| t.find_clip(*id).is_some_and(&want_clip)))
+                .map(|tr| {
+                    let spec = klipp_core::spec_for_kind(tr.kind);
+                    let d = tr.duration.to_secs_f64();
+                    let mut j = json!({
+                        "transition_id": tr.id.0.to_string(),
+                        "kind": spec.string_key,
+                        "name": spec.display_name,
+                        "secs": r3(d),
+                        "frames": (d * fps).round() as i64,
+                        "alignment": transition_alignment(tr.alignment).1,
+                        "clip_a_id": tr.clip_a_id.0.to_string(),
+                        "clip_b_id": tr.clip_b_id.0.to_string(),
+                    });
+                    if let Some((cut, from, to)) = transition_span(t, tr) {
+                        j["cut_secs"] = json!(r3(cut));
+                        j["from_secs"] = json!(r3(from));
+                        j["to_secs"] = json!(r3(to));
+                    }
+                    j
+                })
+                .collect();
+            if !transitions.is_empty() {
+                v["transitions"] = json!(transitions);
+            }
             Some(v)
         })
         .collect();

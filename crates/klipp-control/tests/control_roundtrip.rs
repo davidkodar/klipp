@@ -856,6 +856,61 @@ fn sync_job_completes_only_after_its_multicam_group_appears() {
     assert!(done["jobs"][0]["result"]["group_id"].as_str().is_some());
 }
 
+/// #711: a transition reads back. The timeline text and `list_clips`
+/// (both forms) show it on its cut: kind, length in seconds and frames,
+/// the stretch it covers by its alignment, its two clips and its id. An
+/// agent that made a dissolve could not see it before; only the saved
+/// project held it.
+#[test]
+fn a_transition_reads_back_in_the_timeline_and_list_clips() {
+    let mut h = harness();
+    let fps = h.sequence.read().unwrap().fps;
+    let time = |secs| klipp_core::Timecode::from_secs_f64(secs, fps.num);
+    let (a, b) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+    let clips = vec![
+        klipp_timeline::Clip::media(a, time(0.0), time(2.0), time(0.0), time(2.0)),
+        klipp_timeline::Clip::media(b, time(2.0), time(4.0), time(2.0), time(4.0)),
+    ];
+    let (ca, cb) = (clips[0].id, clips[1].id);
+    let tr = klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        kind: klipp_core::TransitionKind::CrossDissolve,
+        duration: time(0.5),
+        clip_a_id: ca,
+        clip_b_id: cb,
+        user_params: Default::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    };
+    {
+        let mut seq = h.sequence.write().unwrap();
+        seq.tracks[0].clips = clips;
+        seq.tracks[0].transitions = vec![tr];
+    }
+    let f = |secs: f64| (secs * fps.as_f64()).round() as i64;
+    let text = h.ok(json!({ "method": "timeline" }))["text"].as_str().unwrap().to_string();
+    let want = format!(
+        "transition Cross Dissolve (CrossDissolve) 0.50 s ({} f)  [1.75-2.25 s | {}-{} f]  centred on the cut at 2.00 s  from {} to {}  id {}",
+        f(0.5), f(1.75), f(2.25), ca.0, cb.0, tr.id.0,
+    );
+    assert!(text.contains(&want), "want {want:?} in:\n{text}");
+
+    for full in [false, true] {
+        let v = h.ok(json!({ "method": "list_clips", "full": full }));
+        let t = &v["tracks"][0]["transitions"][0];
+        assert_eq!(t["kind"], "CrossDissolve", "full {full}: {v}");
+        assert_eq!((t["secs"].as_f64(), t["frames"].as_i64()), (Some(0.5), Some(f(0.5))));
+        assert_eq!((t["alignment"].as_str(), t["cut_secs"].as_f64(), t["from_secs"].as_f64(), t["to_secs"].as_f64()), (Some("center"), Some(2.0), Some(1.75), Some(2.25)));
+        assert_eq!((t["clip_a_id"].as_str(), t["clip_b_id"].as_str()), (Some(ca.0.to_string().as_str()), Some(cb.0.to_string().as_str())));
+    }
+
+    // Wholly before the cut: the stretch says so.
+    h.sequence.write().unwrap().tracks[0].transitions[0].alignment = klipp_core::TransitionAlignment::EndAtCut;
+    let t = h.ok(json!({ "method": "list_clips" }))["tracks"][0]["transitions"][0].clone();
+    assert_eq!((t["alignment"].as_str(), t["from_secs"].as_f64(), t["to_secs"].as_f64()), (Some("end_at_cut"), Some(1.5), Some(2.0)));
+    // A track without transitions carries no empty list.
+    assert!(h.ok(json!({ "method": "list_clips" }))["tracks"][1].get("transitions").is_none());
+}
+
 /// The text view carries what a model needs to plan and respects its
 /// budget on a line boundary.
 #[test]
