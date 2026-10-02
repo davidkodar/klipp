@@ -155,6 +155,13 @@ fn montage_spans(seq: &Sequence) -> Vec<(f64, f64)> {
     merged
 }
 
+/// A skip within one take shorter than this is a jump whatever the
+/// camera did: the travel films' real jump cuts skipped 0.6 to 1.7 s, the
+/// montage's cuts between places 4 s and more (#461).
+const JUMP_PLACE_SECS: f64 = 2.0;
+/// The motion analyser's mean YDIF from which a camera is moving.
+const MOVING_YDIF: f32 = 4.0;
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -273,7 +280,17 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             // On a screen recording, a cut to where a change has just
             // settled is the cut the beat sheet asked for, not a jump.
             let to_settle = a.media_id().and_then(&mut beats_of).is_some_and(|bt| bt.settles.iter().any(|s| (s - secs(b.source_in)).abs() <= SETTLE_NEAR_SECS));
-            if source_cut_between || to_settle {
+            // A camera that kept moving over the stretch skipped has gone
+            // somewhere else: in a walk cut to a montage, a cut between
+            // places in one take, not a jump cut (#461). A short skip, or
+            // a camera standing still (an interview), is still a jump.
+            let skipped = (secs(b.source_in) - secs(a.source_out)).abs();
+            let moved_on = skipped >= JUMP_PLACE_SECS
+                && a.media_id().and_then(|id| pool.get(&id)).and_then(|item| {
+                    let (lo, hi) = (secs(a.source_out).min(secs(b.source_in)), secs(a.source_out).max(secs(b.source_in)));
+                    transcripts.motion_between(item, lo, hi)
+                }).is_some_and(|m| m >= MOVING_YDIF);
+            if source_cut_between || to_settle || moved_on {
                 continue;
             }
             // Covered when a picture on a track above runs across the cut,
@@ -562,6 +579,37 @@ mod tests {
             }
             Some("one two three four five six seven eight nine ten".split(' ').enumerate().map(|(k, w)| SpokenWord { start_secs: k as f64, end_secs: k as f64 + 0.6, text: w.into(), confidence: 1.0 }).collect())
         }
+    }
+
+    /// A take whose camera moves (YDIF `self.1`) all through it.
+    struct Moving(klipp_core::MediaId, f32);
+
+    impl Transcripts for Moving {
+        fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+            Some(Vec::new())
+        }
+        fn motion_between(&self, item: &klipp_media::MediaItem, _from: f64, _to: f64) -> Option<f32> {
+            (item.id == self.0).then_some(self.1)
+        }
+    }
+
+    /// #461: in a walk cut to a montage, a cut far along one moving take
+    /// goes somewhere else and is not a jump cut; a short skip still is,
+    /// and so is a long one on a camera standing still.
+    #[test]
+    fn a_cut_between_places_in_one_walking_take_is_not_a_jump_cut() {
+        let (mut seq, pool, talk, _) = piece();
+        let skip_to = |seq: &mut Sequence, src: f64| {
+            for t in seq.tracks.iter_mut() {
+                let c = &mut t.clips[1];
+                (c.timeline_in, c.timeline_out, c.source_in, c.source_out) = (tc(4.0), tc(8.0), tc(src), tc(src + 4.0));
+            }
+        };
+        skip_to(&mut seq, 24.0);
+        assert!(!rules(&check(&seq, &pool, &Moving(talk, 6.5))).contains(&"jump_cut"), "20 s along a walk: another place");
+        assert!(rules(&check(&seq, &pool, &Moving(talk, 1.0))).contains(&"jump_cut"), "20 s on a still camera: a jump");
+        skip_to(&mut seq, 5.0);
+        assert!(rules(&check(&seq, &pool, &Moving(talk, 6.5))).contains(&"jump_cut"), "a second along a walk: still a jump");
     }
 
     /// Two selects of one interview meeting at 4 s, their sound linked under them.
