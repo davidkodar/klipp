@@ -302,6 +302,62 @@ pub struct FrameMeasure {
     /// the file; see [`looks_like_log`].
     #[serde(default)]
     pub log_prior: LogPrior,
+    /// The colours an eye knows by heart, read so a grade can be stopped
+    /// before it turns them (#742).
+    #[serde(default)]
+    pub memory: MemoryColours,
+}
+
+/// Sky and foliage: how much of the frame each is, and its median hue
+/// and chroma. Sky is light blue (Lab hue 200–300°, L* over 50, some
+/// colour); foliage is green (hue 95–165°, chroma over 10, L* 15–80).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct MemoryColours {
+    pub sky_pct: f32,
+    pub sky_chroma: f32,
+    pub foliage_pct: f32,
+    pub foliage_chroma: f32,
+}
+
+fn sky_candidate(c: Lab) -> bool {
+    let h = c.hue();
+    c.l > 50.0 && c.chroma() >= 6.0 && (200.0..=300.0).contains(&h)
+}
+
+fn foliage_candidate(c: Lab) -> bool {
+    let h = c.hue();
+    (15.0..=80.0).contains(&c.l) && c.chroma() >= 10.0 && (95.0..=165.0).contains(&h)
+}
+
+/// What a grade did to the colours an eye knows, read against the shot
+/// as it was before the grade: the sky leaving blue (olive, under a warm
+/// push), foliage leaving green, either going neon, skin leaving its
+/// band, or the picture's strongest colours going garish. `None` when
+/// none of them moved too far (#742).
+pub fn memory_colours_broken(start: &FrameMeasure, now: &FrameMeasure) -> Option<String> {
+    let (a, b) = (start.memory, now.memory);
+    if a.sky_pct >= 3.0 && b.sky_pct < a.sky_pct * 0.6 {
+        return Some(format!("the sky leaves blue ({:.0}% of the frame was sky, {:.0}% is)", a.sky_pct, b.sky_pct));
+    }
+    if a.sky_pct >= 3.0 && b.sky_chroma > (a.sky_chroma * 1.35).max(a.sky_chroma + 8.0) {
+        return Some(format!("the sky goes neon (chroma {:.0} from {:.0})", b.sky_chroma, a.sky_chroma));
+    }
+    if a.foliage_pct >= 3.0 && b.foliage_pct < a.foliage_pct * 0.6 {
+        return Some(format!("foliage leaves green ({:.0}% of the frame was green, {:.0}% is)", a.foliage_pct, b.foliage_pct));
+    }
+    if a.foliage_pct >= 3.0 && b.foliage_chroma > (a.foliage_chroma * 1.35).max(a.foliage_chroma + 8.0) {
+        return Some(format!("foliage goes neon (chroma {:.0} from {:.0})", b.foliage_chroma, a.foliage_chroma));
+    }
+    let skin_off = |m: &FrameMeasure| m.faces.iter().find(|f| f.readable()).map(|f| hue_off_skin_band(f.hue)).or(m.skin_all.map(|s| hue_off_skin_band(s.hue)));
+    if let (Some(x), Some(y)) = (skin_off(start), skin_off(now)) {
+        if y > x + 6.0 {
+            return Some(format!("skin leaves its band ({y:.0}° off it, from {x:.0}°)"));
+        }
+    }
+    if start.chroma_p95 > 0.0 && now.chroma_p95 > (start.chroma_p95 * 1.25).max(60.0) {
+        return Some(format!("the strongest colours go garish (95th-percentile chroma {:.0} from {:.0})", now.chroma_p95, start.chroma_p95));
+    }
+    None
 }
 
 /// What a file's own metadata says about being camera log, which a flat
@@ -508,6 +564,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // greys are blue, and that is the finding.
     let mut mids: Vec<(f32, f32, f32)> = Vec::new();
     let (mut skin_h, mut skin_c, mut skin_l): (Vec<f32>, Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut sky_c, mut leaf_c): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let (mut clip_hi, mut clip_lo, mut gamut_clip, mut n) = (0usize, 0usize, 0usize, 0usize);
     let mut i = 0;
     while i < total && rgba.len() >= (i + 1) * 4 {
@@ -540,6 +597,11 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
             skin_h.push(c.hue());
             skin_c.push(c.chroma());
             skin_l.push(c.l);
+        }
+        if sky_candidate(c) {
+            sky_c.push(c.chroma());
+        } else if foliage_candidate(c) {
+            leaf_c.push(c.chroma());
         }
         n += 1;
         i += step;
@@ -614,6 +676,12 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
         skin_all,
         sampled: n as u32,
         log_prior: LogPrior::Unknown,
+        memory: MemoryColours {
+            sky_pct: sky_c.len() as f32 / nn * 100.0,
+            sky_chroma: median(&mut sky_c),
+            foliage_pct: leaf_c.len() as f32 / nn * 100.0,
+            foliage_chroma: median(&mut leaf_c),
+        },
     }
 }
 
@@ -2421,5 +2489,36 @@ mod unbriefed_tests {
         let blown: Vec<u8> = [255u8, 255, 255, 255].repeat(100 * 100);
         let m = measure_frame(&blown, 100, 100, &[]);
         assert!(judge(&m, &LookTarget::unbriefed()).iter().any(|f| f.rule == "clipped_white" && f.verdict == Verdict::Fail));
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    fn frame(sky: [u8; 3], leaves: [u8; 3]) -> FrameMeasure {
+        let (w, h) = (64usize, 64usize);
+        let mut px = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for _ in 0..w {
+                let c = if y < h / 2 { sky } else { leaves };
+                px.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+        }
+        measure_frame(&px, w as u32, h as u32, &[])
+    }
+
+    /// #742: a blue sky over green leaves reads as both; a gentle warm
+    /// step keeps them; the warm push that turned a sky olive, and a
+    /// saturation push that made the leaves neon, are each caught.
+    #[test]
+    fn a_grade_that_turns_the_sky_or_the_leaves_is_caught() {
+        let start = frame([120, 170, 230], [70, 120, 55]);
+        assert!(start.memory.sky_pct > 40.0 && start.memory.foliage_pct > 40.0, "{:?}", start.memory);
+        assert_eq!(memory_colours_broken(&start, &frame([126, 170, 222], [74, 121, 52])), None, "a gentle warm step");
+        let olive = memory_colours_broken(&start, &frame([165, 168, 130], [80, 120, 45])).unwrap();
+        assert!(olive.contains("sky leaves blue"), "{olive}");
+        let neon = memory_colours_broken(&start, &frame([120, 170, 230], [60, 170, 20])).unwrap();
+        assert!(neon.contains("foliage goes neon") || neon.contains("garish"), "{neon}");
     }
 }
