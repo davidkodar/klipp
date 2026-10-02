@@ -1167,6 +1167,100 @@ fn decode_frame_rgba(path: &std::path::Path, secs: f64) -> Result<(Vec<u8>, u32,
     Ok((out.stdout[..need].to_vec(), w, h))
 }
 
+/// What one listen to a track's preview found.
+struct PreviewListen {
+    bpm: f32,
+    beat_confidence: f32,
+    loudness_db: f32,
+    /// The level over eight equal parts of the track, dB.
+    energy_db: Vec<f32>,
+    shape: &'static str,
+}
+
+impl PreviewListen {
+    fn describe(&self) -> String {
+        let beat = if self.beat_confidence < 0.3 { "no clear beat".to_string() } else { format!("{:.0} BPM", self.bpm) };
+        let curve: Vec<String> = self.energy_db.iter().map(|d| format!("{d:.0}")).collect();
+        format!("{beat}, {:.0} dB, {} (dB by eighths: {})", self.loudness_db, self.shape, curve.join(" "))
+    }
+}
+
+/// Hear a preview URL straight off the library through ffmpeg: nothing
+/// is imported or kept.
+fn listen_to_preview(url: &str) -> Result<PreviewListen, String> {
+    const SR: u32 = 22_050;
+    // Only a library's own https stream goes to ffmpeg, never a file, a
+    // pipe or another protocol a result could name (#767 review).
+    if !url.starts_with("https://") {
+        return Err("the preview is not an https address".into());
+    }
+    let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), std::path::Path::new(url), SR, 0.0, 420.0)
+        .map_err(|_| "the preview could not be read".to_string())?;
+    if pcm.len() < SR as usize * 2 {
+        return Err("the preview is too short to judge".into());
+    }
+    let beats = klipp_analysis::beats::detect_from_pcm(&pcm, SR);
+    let (energy_db, shape) = energy_shape(&pcm);
+    Ok(PreviewListen { bpm: beats.bpm, beat_confidence: beats.confidence, loudness_db: rms_db(&pcm), energy_db, shape })
+}
+
+fn rms_db(pcm: &[f32]) -> f32 {
+    let ms = pcm.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / pcm.len().max(1) as f64;
+    (10.0 * ms.max(1e-12).log10()) as f32
+}
+
+/// The level over eight equal parts of a track and a word for its course:
+/// whether it builds, falls away, swells in the middle or holds steady.
+fn energy_shape(pcm: &[f32]) -> (Vec<f32>, &'static str) {
+    let n = 8;
+    let part = (pcm.len() / n).max(1);
+    let db: Vec<f32> = pcm.chunks(part).take(n).map(rms_db).collect();
+    if db.len() < n {
+        return (db, "steady");
+    }
+    let mean = |s: &[f32]| s.iter().sum::<f32>() / s.len() as f32;
+    let (start, middle, end) = (mean(&db[..2]), mean(&db[3..5]), mean(&db[6..]));
+    let spread = db.iter().cloned().fold(f32::MIN, f32::max) - db.iter().cloned().fold(f32::MAX, f32::min);
+    let shape = if spread < 4.0 {
+        "steady"
+    } else if middle > start + 3.0 && middle > end + 3.0 {
+        "swells in the middle"
+    } else if end > start + 3.0 {
+        "builds"
+    } else if start > end + 3.0 {
+        "falls away"
+    } else {
+        "varies"
+    };
+    (db, shape)
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::{energy_shape, listen_to_preview};
+
+    /// #767 review: only an https stream is handed to ffmpeg.
+    #[test]
+    fn only_an_https_preview_is_listened_to() {
+        for url in ["file:///etc/passwd", "/etc/passwd", "http://example.com/a.mp3", "pipe:0"] {
+            assert!(listen_to_preview(url).is_err_and(|e| e.contains("https")), "{url}");
+        }
+    }
+
+    fn tone(levels: &[f32]) -> Vec<f32> {
+        levels.iter().flat_map(|a| (0..1000).map(move |i| a * ((i as f32) * 0.3).sin())).collect()
+    }
+
+    /// #739: a track's course read from its level over eighths.
+    #[test]
+    fn energy_shapes_are_named() {
+        assert_eq!(energy_shape(&tone(&[0.5; 8])).1, "steady");
+        assert_eq!(energy_shape(&tone(&[0.05, 0.05, 0.1, 0.2, 0.3, 0.4, 0.6, 0.6])).1, "builds");
+        assert_eq!(energy_shape(&tone(&[0.6, 0.6, 0.4, 0.3, 0.2, 0.1, 0.05, 0.05])).1, "falls away");
+        assert_eq!(energy_shape(&tone(&[0.05, 0.05, 0.2, 0.6, 0.6, 0.2, 0.05, 0.05])).1, "swells in the middle");
+    }
+}
+
 /// Summarise a reference's editing from its shots and beats: the cut
 /// cadence, and how tightly the cuts fall on the beat. Pure, so it is
 /// unit-tested without ffmpeg. `shots` are `(start, end)` in seconds,
@@ -5724,7 +5818,7 @@ reference:   {}",
             }))
         }
 
-        ControlCommand::SearchMusic { query, limit, commercial_only, instrumental } => {
+        ControlCommand::SearchMusic { query, limit, commercial_only, instrumental, listen } => {
             if in_batch {
                 return read_in_batch("search_music");
             }
@@ -5732,17 +5826,59 @@ reference:   {}",
                 return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
             }
             let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental })?;
-            let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo):\n", tracks.len());
-            for t in &tracks {
-                text.push_str(&format!("  {} — {}  ({}, {:.0}s){}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }));
+            // The first few previews heard, side by side, so a candidate is
+            // judged before it is imported (#739).
+            let heard: Vec<Option<Result<PreviewListen, String>>> = {
+                let n = listen.unwrap_or(0).min(5) as usize;
+                // Each listen answers on a channel, and all of them together
+                // get thirty seconds: a stalled stream is reported as not
+                // heard rather than holding the reply (#767 review). A listen
+                // still running is left to end on ffmpeg's read timeout.
+                let receivers: Vec<_> = tracks.iter().enumerate().map(|(i, t)| {
+                    let url = t.preview_url.clone();
+                    (i < n && !url.is_empty()).then(|| {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(listen_to_preview(&url));
+                        });
+                        rx
+                    })
+                }).collect();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                receivers.into_iter().map(|r| r.map(|r| match r.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(heard) => heard,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("the preview did not answer within thirty seconds".into()),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the listen failed".into()),
+                })).collect()
+            };
+            let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
+            for (t, h) in tracks.iter().zip(&heard) {
+                let pace = if t.pace.is_empty() { String::new() } else { format!(", {} pace", t.pace) };
+                text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
+                match h {
+                    Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
+                    Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
+                    None => {}
+                }
             }
-            let results: Vec<serde_json::Value> = tracks.iter().map(|t| json!({
-                "title": t.title, "artist": t.artist, "track_id": t.id,
-                "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
-                "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
-                "page_url": t.page_url, "tags": t.tags,
-            })).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Listen to a track's preview_url before you commit. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you." }))
+            let results: Vec<serde_json::Value> = tracks.iter().zip(&heard).map(|(t, h)| {
+                let mut v = json!({
+                    "title": t.title, "artist": t.artist, "track_id": t.id,
+                    "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
+                    "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                    "page_url": t.page_url, "tags": t.tags, "pace": t.pace,
+                });
+                if let Some(Ok(l)) = h {
+                    v["heard"] = json!({ "bpm": l.bpm, "beat_confidence": l.beat_confidence, "loudness_db": l.loudness_db, "energy_db": l.energy_db, "shape": l.shape });
+                }
+                v
+            }).collect();
+            let next = if listen.unwrap_or(0) == 0 {
+                "Judge candidates before importing: search again with listen: 3 to hear the first three (tempo, beat, energy over the track). Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
+            } else {
+                "Pick by the brief's energy: a steady or gently building track sits under a calm piece, a driving one under a fast montage. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
+            };
+            Ok(json!({ "text": text, "results": results, "next": next }))
         }
 
         ControlCommand::SearchSfx { query, limit } => {
@@ -5774,7 +5910,7 @@ reference:   {}",
                 source: klipp_audio_search::Source::JamendoMusic,
                 id: track_id, title: title.clone(), artist: artist.clone(),
                 duration_secs: 0.0, license: license.clone(), license_url,
-                commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(),
+                commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(),
             };
             let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
             let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string(), analyze: true }, &mut None)?;

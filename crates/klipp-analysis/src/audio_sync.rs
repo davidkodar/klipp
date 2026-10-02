@@ -210,8 +210,17 @@ pub fn decode_mono_pcm(ffmpeg: &std::path::Path, path: &std::path::Path, sample_
         args.push("-ss".into());
         args.push(format!("{from_secs}"));
     }
+    // A stream read off the network stalls rather than ends when the
+    // server stops answering, and ffmpeg's HTTP input has no read
+    // timeout of its own: fifteen seconds without a byte gives up (#767
+    // review).
+    let input = path.to_string_lossy().into_owned();
+    if input.starts_with("http://") || input.starts_with("https://") {
+        args.push("-rw_timeout".into());
+        args.push("15000000".into());
+    }
     args.push("-i".into());
-    args.push(path.to_string_lossy().into_owned());
+    args.push(input);
     if max_secs > 0.0 {
         args.push("-t".into());
         args.push(format!("{max_secs}"));
