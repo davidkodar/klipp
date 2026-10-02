@@ -1,0 +1,11 @@
+# Built and generated per run: binaries, fixtures, configs and results.
+bin/
+fixtures/
+results.jsonl
+run.log
+klipp.out
+mcp-*.json
+slice-*.json
+slices.json
+catalog.json
+__pycache__/
