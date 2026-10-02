@@ -20,6 +20,18 @@ struct Observed {
 
 static OBSERVED: OnceLock<Mutex<HashMap<String, Observed>>> = OnceLock::new();
 
+/// Renders that have finished, as last read, by job id, with when they
+/// were first seen finished (#721). The UI's render queue is the user's
+/// to clear; a job removed from it is still answered from here for an
+/// hour, so an agent can read the outcome it is waiting for.
+static FINISHED_RENDERS: OnceLock<Mutex<HashMap<String, (u128, Value)>>> = OnceLock::new();
+const FINISHED_RETAIN_MS: u128 = 60 * 60 * 1_000;
+const FINISHED_KEEP: usize = 256;
+
+fn finished_renders() -> &'static Mutex<HashMap<String, (u128, Value)>> {
+    FINISHED_RENDERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[derive(Clone)]
 enum Submitted {
     Import { path: std::path::PathBuf, analyze: bool, project_identity: u64 },
@@ -102,6 +114,34 @@ fn prune_submitted(jobs: &[Value]) {
         .retain(|id, _| !stale.contains(id));
 }
 
+/// Keep the finished renders in `jobs`, and add back the ones the UI's
+/// queue no longer lists, marked `in_queue: false`.
+fn remember_finished_renders(jobs: &mut Vec<Value>) {
+    let now = now_ms();
+    let mut kept = finished_renders().lock().unwrap_or_else(|e| e.into_inner());
+    for job in jobs.iter().filter(|job| is_terminal(job)) {
+        let id = job["job_id"].as_str().unwrap_or_default().to_owned();
+        let first = kept.get(&id).map(|(at, _)| *at).unwrap_or(now);
+        kept.insert(id, (first, job.clone()));
+    }
+    kept.retain(|_, (at, _)| now.saturating_sub(*at) <= FINISHED_RETAIN_MS);
+    if kept.len() > FINISHED_KEEP {
+        let mut by_age: Vec<(String, u128)> = kept.iter().map(|(id, (at, _))| (id.clone(), *at)).collect();
+        by_age.sort_by_key(|(_, at)| *at);
+        for (id, _) in by_age.into_iter().take(kept.len() - FINISHED_KEEP) {
+            kept.remove(&id);
+        }
+    }
+    let listed: HashSet<String> = jobs.iter().filter_map(|job| job["job_id"].as_str().map(str::to_owned)).collect();
+    for (id, (_, job)) in kept.iter() {
+        if !listed.contains(id) {
+            let mut job = job.clone();
+            job["in_queue"] = json!(false);
+            jobs.push(job);
+        }
+    }
+}
+
 pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
     let exports = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut jobs: Vec<Value> = exports.into_iter().map(|render| {
@@ -115,8 +155,10 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             "completed_units": render.frames_done, "total_units": render.total_frames,
             "unit": "frames", "eta_secs": render.eta_secs, "error": render.error,
             "artifact": if state == "completed" { Some(render.path.to_string_lossy().to_string()) } else { None },
+            "loudness": render.loudness,
         })
     }).collect();
+    remember_finished_renders(&mut jobs);
     jobs.extend(klipp_analysis::service::all().into_iter().map(|analysis| {
         let state = match analysis.state {
             klipp_analysis::service::State::Queued => "queued",
@@ -208,18 +250,118 @@ pub(super) fn status(ctx: &ControlContext, job_id: Option<&str>, wait: bool, tim
     };
     let started = Instant::now();
     let deadline = Duration::from_millis(timeout_ms.unwrap_or(10_000).min(10_000));
+    let reply = |jobs: Vec<Value>, changed: bool, timed_out: bool| json!({
+        "text": summary(&jobs), "jobs": jobs, "changed": changed, "timed_out": timed_out,
+    });
     let initial = pick(snapshot(ctx))?;
     if !wait || initial.is_empty() || initial.iter().all(is_terminal) {
-        return Ok(json!({ "jobs": initial, "changed": false, "timed_out": false }));
+        return Ok(reply(initial, false, false));
     }
+    let seen: Vec<Value> = initial.iter().map(progress_signature).collect();
     loop {
         if started.elapsed() >= deadline {
-            return Ok(json!({ "jobs": pick(snapshot(ctx))?, "changed": false, "timed_out": true }));
+            return Ok(reply(pick(snapshot(ctx))?, false, true));
         }
         std::thread::sleep(Duration::from_millis(200).min(deadline.saturating_sub(started.elapsed())));
         let latest = pick(snapshot(ctx))?;
-        if latest != initial {
-            return Ok(json!({ "jobs": latest, "changed": true, "timed_out": false }));
+        // A render's frame count and time left move with every frame;
+        // waking on those made `wait` return within 200 ms with nothing
+        // a caller follows changed (#721). Wake on what a caller reports.
+        if latest.iter().map(progress_signature).collect::<Vec<_>>() != seen {
+            return Ok(reply(latest, true, false));
         }
+    }
+}
+
+/// What a caller following a job reports: its state, phase, whole
+/// percent, error and result, and, for jobs with no percentage, how many
+/// of its units are done. Not the per-frame counters or the time left.
+pub(super) fn progress_signature(job: &Value) -> Value {
+    let percent = job["progress"].as_f64().map(|p| (p * 100.0).floor() as i64);
+    let units = if percent.is_none() { job["completed_units"].clone() } else { Value::Null };
+    json!([job["job_id"], job["state"], job["phase"], percent, units, job["error"], job["artifact"], job["result"]])
+}
+
+/// The jobs in words, one line each, the state first: what a caller
+/// reads before the fields.
+pub(super) fn summary(jobs: &[Value]) -> String {
+    if jobs.is_empty() {
+        return "No jobs.".into();
+    }
+    jobs.iter().map(|job| {
+        let kind = job["kind"].as_str().unwrap_or("job");
+        let state = job["state"].as_str().unwrap_or("unknown");
+        let mut line = format!("{kind} {state}");
+        if let Some(p) = job["progress"].as_f64().filter(|_| state != "completed") {
+            line.push_str(&format!(" {:.0}%", (p * 100.0).floor()));
+        }
+        if let Some(phase) = job["phase"].as_str().filter(|phase| *phase != state && !phase.is_empty() && !is_terminal(job)) {
+            line.push_str(&format!(": {phase}"));
+        }
+        if let Some(artifact) = job["artifact"].as_str() {
+            line.push_str(&format!(" — {artifact}"));
+        }
+        if let Some(loudness) = job["loudness"].as_str() {
+            line.push_str(&format!(", {loudness}"));
+        }
+        if let Some(eta) = job["eta_secs"].as_u64().filter(|_| state == "running") {
+            line.push_str(&format!(", about {}:{:02} left", eta / 60, eta % 60));
+        }
+        if let Some(error) = job["error"].as_str() {
+            line.push_str(&format!("; {error}"));
+        }
+        if job["in_queue"] == json!(false) {
+            line.push_str(" (removed from the render queue)");
+        }
+        format!("{line}  [{}]", job["job_id"].as_str().unwrap_or("?"))
+    }).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render(id: &str, state: &str, progress: f64, frames: u64, eta: u64) -> Value {
+        json!({ "job_id": id, "kind": "render", "state": state, "phase": "Encoding", "progress": progress,
+                "completed_units": frames, "total_units": 3484, "eta_secs": eta, "error": null,
+                "artifact": if state == "completed" { Some("/tmp/out.mp4") } else { None }, "loudness": null })
+    }
+
+    /// #721: a render's frames and time left move every frame; a waiter
+    /// wakes on its state, phase or whole percent, not on those.
+    #[test]
+    fn a_waiter_wakes_on_progress_not_on_every_frame() {
+        let a = progress_signature(&render("r", "running", 0.101, 350, 64));
+        assert_eq!(a, progress_signature(&render("r", "running", 0.104, 362, 61)), "same whole percent");
+        assert_ne!(a, progress_signature(&render("r", "running", 0.11, 383, 60)), "a percent further");
+        assert_ne!(a, progress_signature(&render("r", "completed", 1.0, 3484, 0)), "ended");
+    }
+
+    /// #721: a finished render the person clears from the render queue is
+    /// still answered, marked as gone from the queue; a running one is not
+    /// kept.
+    #[test]
+    fn a_finished_render_outlives_the_queue() {
+        let mut listed = vec![render("done-721", "completed", 1.0, 3484, 0), render("live-721", "running", 0.5, 10, 9)];
+        remember_finished_renders(&mut listed);
+        assert_eq!(listed.len(), 2);
+        let mut cleared: Vec<Value> = Vec::new();
+        remember_finished_renders(&mut cleared);
+        let kept: Vec<&Value> = cleared.iter().filter(|j| j["job_id"] == "done-721").collect();
+        assert_eq!(kept.len(), 1, "{cleared:?}");
+        assert_eq!(kept[0]["in_queue"], false);
+        assert!(!cleared.iter().any(|j| j["job_id"] == "live-721"));
+        assert!(summary(&cleared).contains("render completed — /tmp/out.mp4"), "{}", summary(&cleared));
+        assert!(summary(&cleared).contains("removed from the render queue"));
+    }
+
+    /// The state comes first, in words, then where it is and what it made.
+    #[test]
+    fn the_summary_says_the_state_first() {
+        let mut job = render("r1", "running", 0.457, 1600, 75);
+        assert_eq!(summary(std::slice::from_ref(&job)), "render running 45%: Encoding, about 1:15 left  [r1]");
+        job = render("r1", "completed", 1.0, 3484, 0);
+        job["loudness"] = json!("-14.0 LUFS");
+        assert_eq!(summary(&[job]), "render completed — /tmp/out.mp4, -14.0 LUFS  [r1]");
     }
 }
