@@ -2327,7 +2327,6 @@ fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::mea
         .collect()
 }
 
-/// The clip's Corrector knobs as they are: what a grade step adds to.
 /// How far grade_to_target may move each knob from where a shot
 /// started (#742). Gentle by default: chasing a look's chroma on vivid
 /// phone footage took saturation to 1.3x and turned a sky olive.
@@ -2398,6 +2397,7 @@ fn describe_step(from: &klipp_color::measure::PrimaryStep, to: &klipp_color::mea
     if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
 }
 
+/// The clip's Corrector knobs as they are: what a grade step adds to.
 fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
     let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
     if let Some(n) = clip.own_grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
@@ -4353,14 +4353,20 @@ fn handle(
             // Shots of one file are one scene: one grade on them all keeps
             // them alike at every cut, where a primary each drifts apart
             // chasing the target shot by shot (#742).
-            let mut by_file: Vec<(&str, Vec<&str>)> = Vec::new();
+            // Grouped by the media itself, not its file name: two cards'
+            // IMG_0001.mov are two scenes (#770 review).
+            let media_of: std::collections::HashMap<String, klipp_core::MediaId> = ctx.sequence.read().map(|seq| {
+                seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().map(|m| (c.id.0.to_string(), m))).collect()
+            }).unwrap_or_default();
+            let mut by_file: Vec<(klipp_core::MediaId, &str, Vec<&str>)> = Vec::new();
             for (id, _, name) in &shots {
-                match by_file.iter_mut().find(|(n, _)| *n == name.as_str()) {
-                    Some(g) => g.1.push(id.as_str()),
-                    None => by_file.push((name.as_str(), vec![id.as_str()])),
+                let Some(media) = media_of.get(id).copied() else { continue };
+                match by_file.iter_mut().find(|(m, _, _)| *m == media) {
+                    Some(g) => g.2.push(id.as_str()),
+                    None => by_file.push((media, name.as_str(), vec![id.as_str()])),
                 }
             }
-            let groups: Vec<serde_json::Value> = by_file.iter().filter(|(_, ids)| ids.len() >= 2).map(|(name, ids)| json!({ "file": name, "clips": ids })).collect();
+            let groups: Vec<serde_json::Value> = by_file.iter().filter(|(_, _, ids)| ids.len() >= 2).map(|(media, name, ids)| json!({ "file": name, "media_id": media.0.to_string(), "clips": ids })).collect();
             for g in &groups {
                 lines.push(format!(
                     "{} shots come from {}: one scene. Grade them together (grade_group with these clips, then grade on the group) and keep per-shot moves small; a primary each, chasing the target alone, pulls them apart at the cuts.",
