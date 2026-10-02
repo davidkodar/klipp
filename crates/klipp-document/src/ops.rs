@@ -441,6 +441,15 @@ pub enum Op {
         from: Option<Anchor>,
         #[serde(default)]
         to: Option<Anchor>,
+        /// "fit" keeps the picture's shape inside the surface, "stretch"
+        /// puts it on the four corners; left out, stretch when the shapes
+        /// nearly match, else fit.
+        #[serde(default)]
+        fit: Option<String>,
+        /// A margin inside the surface's edges, 0 to 0.45 of its width and
+        /// height on each side: for a screen tracked by its bezel.
+        #[serde(default)]
+        inset: Option<f32>,
     },
     /// Move what a clip shows without moving the clip: its source in and
     /// out both by `secs` (later in the file for positive), the timeline
@@ -1830,11 +1839,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             redact(seq, pool, fps, i, ti, clip, from, to, [*x, *y, *w, *h], kind, *amount)
         }
-        Op::Pin { clip_id, media_id, surface, from, to } => {
+        Op::Pin { clip_id, media_id, surface, from, to, fit, inset } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             let from = match from { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
             let to = match to { Some(a) => Some(resolve_anchor(seq, fps, a, i)?), None => None };
-            pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to)
+            let fit = match fit.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") | Some("auto") => None,
+                Some("fit") | Some("contain") => Some(klipp_timeline::PinFit::Fit),
+                Some("stretch") | Some("corners") => Some(klipp_timeline::PinFit::Stretch),
+                Some(other) => return Err(refuse(i, format!("\"{other}\" is not a fit"), "use fit, stretch or auto")),
+            };
+            let inset = inset.unwrap_or(0.0);
+            if !inset.is_finite() || !(0.0..=0.45).contains(&inset) {
+                return Err(refuse(i, format!("inset {inset} is out of range"), "give inset 0 to 0.45 of the surface each side"));
+            }
+            pin(seq, pool, i, ti, clip, *media_id, surface.as_deref(), from, to, fit, inset)
         }
         Op::Slide { clip_id, secs: by } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3881,7 +3900,7 @@ pub fn find_surface<'c>(clip: &'c Clip, name: Option<&str>) -> Option<&'c klipp_
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media_id: MediaId, surface: Option<&str>, from: Option<Timecode>, to: Option<Timecode>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media_id: MediaId, surface: Option<&str>, from: Option<Timecode>, to: Option<Timecode>, fit: Option<klipp_timeline::PinFit>, inset: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let host = clip_name(seq, pool, clip);
     let Some(s) = find_surface(clip, surface) else {
         let hint = if clip.surfaces.is_empty() {
@@ -3917,11 +3936,13 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     // At rest, where the reference frame has them with the host unmoved;
     // the renderer follows the track from there.
     let frame = [seq.resolution.width, seq.resolution.height];
+    let fit = fit.unwrap_or_else(|| klipp_timeline::PinFit::for_shapes(picture_size, s.aspect()));
     let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
-    let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&on_frame, picture_size, frame).unwrap_or(on_frame);
+    let target = klipp_timeline::surface::pin_target(&on_frame, s.aspect(), picture_size, fit, inset).unwrap_or(on_frame);
+    let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&target, picture_size, frame).unwrap_or(target);
     picture.builtin_effects = vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }];
     picture.builtin_effects_enabled = vec![true];
-    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size });
+    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size, fit, inset });
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
         Some(k) => ((picture, k), None),
@@ -6749,10 +6770,11 @@ mod tests {
         let mut logo = klipp_media::MediaItem::synthetic_for_test("/tmp/logo.png".into(), None);
         logo.is_still = true;
         let logo = pool.add(logo);
-        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: logo, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None };
+        let pin_op = |surface: Option<&str>| Op::Pin { clip_id: ClipRef::Id(a), media_id: logo, surface: surface.map(str::to_string), from: Some(Anchor::Secs(1.0)), to: None, fit: None, inset: None };
         assert!(resolve(&seq, &pool, &[pin_op(None)]).unwrap_err().hint.contains("track_surface"), "nothing tracked yet");
 
-        let corners = [[0.3, 0.3], [0.6, 0.32], [0.62, 0.6], [0.28, 0.58]];
+        // A 16:9 surface (0.3 of a 1920 frame across, 0.3 of 1080 down).
+        let corners = [[0.3, 0.3], [0.6, 0.3], [0.6, 0.6], [0.3, 0.6]];
         let id = ClipId::new().0;
         let frame = [seq.resolution.width, seq.resolution.height];
         seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey { source_secs: 2.0, corners }], source_size: frame, media_fps: 25.0 });
@@ -6761,9 +6783,27 @@ mod tests {
         assert!(step.what.contains("surface \"Phone\"") && step.what.contains("following it") && step.what.contains("a new video track on top"), "{}", step.what);
         let EditCommand::LinkedImport { video: Some((picture, 0)), created_video_track_at: Some(0), .. } = &step.edit else { panic!("{:?}", step.edit) };
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
-        // The logo is 1920x1080 as the test media is: the frame's shape, so its frame goes straight onto the corners.
-        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]) }));
+        // The logo is 1920x1080 as the test media is: the surface's shape, so it stretches straight onto the corners.
+        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]), fit: klipp_timeline::PinFit::Stretch, inset: 0.0 }));
         assert!(matches!(picture.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects);
+
+        // A square picture keeps its shape: it fits, inside the surface.
+        let mut square = klipp_media::MediaItem::synthetic_for_test("/tmp/square.png".into(), None);
+        square.is_still = true;
+        square.resolution = klipp_core::Resolution { width: 800, height: 800 };
+        let square = pool.add(square);
+        let fitted = |fit: Option<&str>, inset: Option<f32>| {
+            let op = Op::Pin { clip_id: ClipRef::Id(a), media_id: square, surface: None, from: None, to: None, fit: fit.map(str::to_string), inset };
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::LinkedImport { video: Some((picture, _)), .. } = &plan.steps[0].edit else { panic!() };
+            picture.surface_pin.unwrap()
+        };
+        assert_eq!(fitted(None, None).fit, klipp_timeline::PinFit::Fit);
+        assert_eq!(fitted(Some("stretch"), Some(0.02)).fit, klipp_timeline::PinFit::Stretch);
+        assert_eq!(fitted(None, Some(0.02)).inset, 0.02);
+        let bad = |fit: &str, inset: f32| resolve(&seq, &pool, &[Op::Pin { clip_id: ClipRef::Id(a), media_id: square, surface: None, from: None, to: None, fit: Some(fit.into()), inset: Some(inset) }]).unwrap_err().why;
+        assert!(bad("squash", 0.0).contains("not a fit"));
+        assert!(bad("fit", 0.6).contains("out of range"));
 
         // Named by id too; an unknown name is refused with the names there are.
         assert!(resolve(&seq, &pool, &[pin_op(Some(&id.to_string()))]).is_ok());

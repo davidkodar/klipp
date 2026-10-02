@@ -45,7 +45,7 @@ fn scene() -> (Sequence, Clip) {
     let mut pin = Clip::media(MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
     let [tl, tr, br, bl] = quad(0.1);
     pin.builtin_effects.push(BuiltinEffect::CornerPin { tl, tr, br, bl });
-    pin.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None });
+    pin.surface_pin = Some(SurfacePin { host: host.id, surface: id, picture_size: None, fit: Default::default(), inset: 0.0 });
     seq.tracks[0].clips.push(host);
     (seq, pin)
 }
@@ -142,4 +142,27 @@ fn without_its_surface_the_pin_keeps_the_reference_corners() {
     let (mut seq, pin) = scene();
     seq.tracks[0].clips.clear();
     assert_eq!(surface_pin_corners(&pin, &seq, tc(2.0), FPS, &none), None, "the host is gone");
+}
+
+/// A square picture fitted to a wide surface, with a margin: its corner
+/// pin puts the fitted square inside the surface, short of its edges,
+/// where a stretch would reach them.
+#[test]
+fn a_fitted_pin_keeps_its_shape_inside_the_surface() {
+    let (mut seq, mut pin) = scene();
+    let full = [[0.1, 0.2], [0.9, 0.2], [0.9, 0.6], [0.1, 0.6]];
+    let s = &mut seq.tracks[0].clips[0].surfaces[0];
+    s.corners = full;
+    s.keys = vec![SurfaceKey { source_secs: 10.0, corners: full }];
+    let stretched = surface_pin_corners(&pin, &seq, tc(1.0), FPS, &none).unwrap();
+    assert!(close(stretched, full));
+    let p = pin.surface_pin.as_mut().unwrap();
+    p.picture_size = Some([seq.resolution.width, seq.resolution.height]);
+    p.fit = klipp_timeline::PinFit::Fit;
+    p.inset = 0.05;
+    let fitted = surface_pin_corners(&pin, &seq, tc(1.0), FPS, &none).unwrap();
+    // The surface is 0.8 x 0.4 of a 16:9 frame: 3.56:1, wider than the
+    // picture, so the picture keeps the inset height and is narrower.
+    assert!(fitted[0][1] > 0.2 && fitted[3][1] < 0.6, "inset from top and bottom: {fitted:?}");
+    assert!(fitted[0][0] > 0.2 && fitted[1][0] < 0.8, "narrower than the surface: {fitted:?}");
 }

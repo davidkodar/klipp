@@ -103,6 +103,19 @@ impl Surface {
         self.keys = keys;
     }
 
+    /// The surface's width over its height, from its reference corners in
+    /// the picture's pixels: what a picture fitted to it keeps its shape
+    /// against.
+    pub fn aspect(&self) -> Option<f32> {
+        let [w, h] = self.source_size;
+        let (w, h) = (if w > 0 { w as f32 } else { 1.0 }, if h > 0 { h as f32 } else { 1.0 });
+        let len = |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]) * w).hypot((a[1] - b[1]) * h);
+        let c = self.corners;
+        let across = (len(c[0], c[1]) + len(c[3], c[2])) * 0.5;
+        let down = (len(c[0], c[3]) + len(c[1], c[2])) * 0.5;
+        (across > 0.0 && down > 0.0).then(|| across / down)
+    }
+
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
@@ -120,6 +133,46 @@ pub struct SurfacePin {
     /// goes onto the surface. `None` reads as the frame's own shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture_size: Option<[u32; 2]>,
+    /// How the picture takes the surface's shape (#684 phase 2).
+    #[serde(default, skip_serializing_if = "PinFit::is_stretch")]
+    pub fit: PinFit,
+    /// A margin left inside the surface's edges, a fraction of its width
+    /// and height on each side: a screen's bezel when its outer corners
+    /// were tracked.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub inset: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// How a pinned picture takes a surface's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PinFit {
+    /// Onto the four corners whatever its shape.
+    #[default]
+    Stretch,
+    /// Its own shape kept, as large as fits, in the middle.
+    Fit,
+}
+
+impl PinFit {
+    fn is_stretch(&self) -> bool {
+        *self == PinFit::Stretch
+    }
+
+    /// Stretch when the picture is near enough the surface's shape that
+    /// nobody would see it squeezed, else fit.
+    pub fn for_shapes(picture: Option<[u32; 2]>, surface_aspect: Option<f32>) -> PinFit {
+        match (picture, surface_aspect) {
+            (Some([w, h]), Some(a)) if w > 0 && h > 0 && a > 0.0 => {
+                if ((w as f32 / h as f32) / a).ln().abs() < 1.08f32.ln() { PinFit::Stretch } else { PinFit::Fit }
+            }
+            _ => PinFit::Stretch,
+        }
+    }
 }
 
 /// A clip's placement on the frame: position, scale, rotation and anchor
@@ -181,6 +234,39 @@ pub fn frame_quad_in_source(q: &Quad, source: [u32; 2], frame: [u32; 2], placeme
         }
         [((x - x0) / dw) as f32, ((y - y0) / dh) as f32]
     })
+}
+
+/// Where on a surface's quad (in the frame) a picture goes: all of it for
+/// a stretch, or the part its shape fills for a fit, and `inset` in from
+/// the edges either way, mapped through the surface's own perspective.
+pub fn pin_target(quad: &Quad, surface_aspect: Option<f32>, picture: Option<[u32; 2]>, fit: PinFit, inset: f32) -> Option<Quad> {
+    let inset = inset.clamp(0.0, 0.45);
+    let (mut u, mut v) = ([inset, 1.0 - inset], [inset, 1.0 - inset]);
+    if let (PinFit::Fit, Some([w, h]), Some(a)) = (fit, picture, surface_aspect) {
+        if w > 0 && h > 0 && a > 0.0 {
+            let picture = w as f32 / h as f32;
+            let span = 1.0 - 2.0 * inset;
+            if picture > a {
+                let keep = span * a / picture;
+                v = [0.5 - keep * 0.5, 0.5 + keep * 0.5];
+            } else {
+                let keep = span * picture / a;
+                u = [0.5 - keep * 0.5, 0.5 + keep * 0.5];
+            }
+        }
+    }
+    if u == [0.0, 1.0] && v == [0.0, 1.0] {
+        return Some(*quad);
+    }
+    let unit = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let to = quad.map(|c| (c[0] as f64, c[1] as f64));
+    let h = klipp_effects::homography::Homography::from_4_points(&unit, &to)?;
+    let mut out = [[0.0f32; 2]; 4];
+    for (o, (x, y)) in out.iter_mut().zip([(u[0], v[0]), (u[1], v[0]), (u[1], v[1]), (u[0], v[1])]) {
+        let (mx, my) = h.map(x as f64, y as f64)?;
+        *o = [mx as f32, my as f32];
+    }
+    Some(out)
 }
 
 /// The corner pin, in fractions of the frame, that puts a picture of
@@ -317,6 +403,24 @@ mod tests {
         assert_eq!(s.keys[7].corners, square(0.0), "before the new stretch, kept");
         assert_eq!(s.keys[8].corners, square(0.5), "over it, the new keys");
         assert!(s.keys.windows(2).all(|w| w[0].source_secs < w[1].source_secs));
+    }
+
+    /// A square picture on a wide surface keeps its shape in the middle;
+    /// one of the surface's own shape stretches onto it; an inset leaves a
+    /// margin.
+    #[test]
+    fn a_pin_fits_its_picture_to_the_surface() {
+        let quad = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.5], [0.1, 0.5]];
+        assert_eq!(PinFit::for_shapes(Some([1920, 1080]), Some(16.0 / 9.0)), PinFit::Stretch);
+        assert_eq!(PinFit::for_shapes(Some([1000, 1000]), Some(16.0 / 9.0)), PinFit::Fit);
+        let square = pin_target(&quad, Some(2.0), Some([500, 500]), PinFit::Fit, 0.0).unwrap();
+        // Half the width, centred: x from 0.3 to 0.7, the full height.
+        assert!((square[0][0] - 0.3).abs() < 1e-5 && (square[1][0] - 0.7).abs() < 1e-5 && (square[0][1] - 0.1).abs() < 1e-5, "{square:?}");
+        assert_eq!(pin_target(&quad, Some(2.0), Some([500, 500]), PinFit::Stretch, 0.0), Some(quad));
+        let inset = pin_target(&quad, Some(2.0), None, PinFit::Stretch, 0.05).unwrap();
+        assert!((inset[0][0] - 0.14).abs() < 1e-5 && (inset[0][1] - 0.12).abs() < 1e-5, "{inset:?}");
+        let s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]], reference_secs: 0.0, keys: Vec::new(), source_size: [1920, 1080], media_fps: 0.0 };
+        assert!((s.aspect().unwrap() - 16.0 / 9.0).abs() < 1e-4);
     }
 
     #[test]

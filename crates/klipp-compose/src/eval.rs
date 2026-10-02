@@ -74,7 +74,8 @@ pub fn surface_pin_corners(
     let frame = [seq.resolution.width, seq.resolution.height];
     let placed = placement(host).unwrap_or_else(|| evaluate_clip_own_transform(host, elapsed.max(0.0), &eval_context(host, time, fps)));
     let on_frame = klipp_timeline::surface::source_quad_in_frame(&on_source, surface.source_size, frame, Some(placed));
-    klipp_timeline::surface::pin_frame_corners(&on_frame, pin.picture_size, frame)
+    let target = klipp_timeline::surface::pin_target(&on_frame, surface.aspect(), pin.picture_size, pin.fit, pin.inset)?;
+    klipp_timeline::surface::pin_frame_corners(&target, pin.picture_size, frame)
 }
 
 /// Evaluate a single clip's *own* transform — keyframes + modifiers

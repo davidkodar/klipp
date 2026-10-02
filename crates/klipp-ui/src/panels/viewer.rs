@@ -24,6 +24,11 @@ fn opaque_for_outline(c: egui::Color32) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// How far in from a surface's edges a picture dropped on it sits, of its
+/// width and height each side: the tracked corners are often a screen's
+/// outer edge, and the picture belongs inside the bezel.
+const SURFACE_DROP_INSET: f32 = 0.015;
+
 /// Map a normalised `(0..1, 0..1)` clip-space point to the image
 /// rect's pixel coordinates. The viewer paints frame content into
 /// `image_rect`; gizmos that store positions in clip-space (focal
@@ -1758,6 +1763,7 @@ impl ViewerPanel {
             self.draw_surface_outlines(ui, state, image_rect);
         }
         self.draw_surface_tracking_badge(ui, state, image_rect, cmds);
+        self.handle_surface_drop(ui, state, image_rect);
 
         // ── On-canvas Title-object editor ──
         // Active for any selected Title clip, regardless of
@@ -4739,6 +4745,56 @@ impl ViewerPanel {
             painter.circle_stroke(*p, if held { 7.0 } else { 5.5 }, egui::Stroke::new(1.5_f32, accent));
         }
         state.surface_tool = Some(tool);
+    }
+
+    /// A file from the media pool dragged over a tracked surface at the
+    /// playhead (#684 phase 2): the surface lights up, and let go there the
+    /// file is pinned to it, one undo step, its shape kept or stretched as
+    /// the shapes suggest and a little in from the edges for a bezel.
+    fn handle_surface_drop(&self, ui: &mut egui::Ui, state: &mut AppState, image_rect: egui::Rect) {
+        let Some(media_id) = state.dragging_media else { return };
+        let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) else { return };
+        if !image_rect.contains(pointer) {
+            return;
+        }
+        let at = state.playhead.to_secs_f64();
+        let seq = state.sequence();
+        let under: Option<(klipp_core::ClipId, klipp_timeline::Surface, [[f32; 2]; 4])> = seq
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.timeline_in.to_secs_f64() <= at && at < c.timeline_out.to_secs_f64())
+            .flat_map(|c| c.surfaces.iter().filter(|s| !s.keys.is_empty()).map(move |s| (c, s)))
+            .map(|(c, s)| (c.id, s.clone(), crate::app::surface_on_frame(seq, c, s, at, None)))
+            .find(|(_, _, q)| {
+                let screen: Vec<egui::Pos2> = q.iter().map(|c| viewer_norm_to_screen(image_rect, c[0], c[1])).collect();
+                let side = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (pointer.y - a.y) - (b.y - a.y) * (pointer.x - a.x);
+                let sides: Vec<f32> = (0..4).map(|i| side(screen[i], screen[(i + 1) % 4])).collect();
+                sides.iter().all(|v| *v >= 0.0) || sides.iter().all(|v| *v <= 0.0)
+            });
+        let Some((host, surface, quad)) = under else { return };
+        let screen: Vec<egui::Pos2> = quad.iter().map(|c| viewer_norm_to_screen(image_rect, c[0], c[1])).collect();
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let accent = egui::Color32::from_rgb(90, 200, 255);
+        painter.add(egui::Shape::convex_polygon(screen.clone(), egui::Color32::from_rgba_unmultiplied(90, 200, 255, 60), egui::Stroke::new(2.0_f32, accent)));
+        painter.text(screen[0] + egui::vec2(0.0, -4.0), egui::Align2::LEFT_BOTTOM, format!("Pin to \u{201c}{}\u{201d}", surface.name), egui::FontId::proportional(12.0), accent);
+        // Let go here: pinned, and the drag is over before the timeline
+        // can take it as a drop of its own.
+        if !ui.input(|i| i.pointer.any_down()) {
+            let op = klipp_document::ops::Op::Pin {
+                clip_id: klipp_document::ops::ClipRef::Id(host),
+                media_id,
+                surface: Some(surface.id.to_string()),
+                from: None,
+                to: None,
+                fit: None,
+                inset: Some(SURFACE_DROP_INSET),
+            };
+            state.pending_doc_ops.push(crate::state::DocOpsRequest { label: format!("Pin to {}", surface.name), ops: vec![op], independent: false });
+            state.dragging_media = None;
+            state.dragging_media_group.clear();
+        }
     }
 
     /// While a surface is tracked in the selected clip: how far it has got,

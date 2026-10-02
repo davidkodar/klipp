@@ -702,7 +702,7 @@ struct WindowTrackJob {
 /// fractions of the frame: the clip's picture fitted and placed by its own
 /// transform, as the viewer shows it. `source_secs` reads the track there
 /// rather than at the frame shown.
-fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> [[f32; 2]; 4] {
+pub(crate) fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> [[f32; 2]; 4] {
     let fps = seq.fps.as_f64();
     let elapsed = (at - clip.timeline_in.to_secs_f64()).max(0.0);
     let q = surface.corners_shown_at(source_secs.unwrap_or_else(|| clip.source_secs_at(elapsed, fps)));
