@@ -1742,3 +1742,66 @@ fn a_failed_clip_alone_read_still_clears_and_repaints() {
     assert!(cleared > set, "{sent:?}");
     assert!(sent[cleared..].iter().any(|c| matches!(c, klipp_core::AppCommand::SeekTo(_))), "and the frame redrawn: {sent:?}");
 }
+
+/// #741: undo and redo say what they took back or put back, by the name
+/// the history gives the step, and say so when there is nothing to undo.
+#[test]
+fn undo_says_what_it_undid() {
+    let mut h = harness();
+    let r = h.ok(json!({ "method": "undo" }));
+    assert_eq!(r["text"], "Nothing to undo.", "{r}");
+    h.shared.project.lock().unwrap().undo = Some("Compose".into());
+    let r = h.ok(json!({ "method": "undo" }));
+    assert!(r["text"].as_str().unwrap().starts_with("Undid \u{201c}Compose\u{201d}."), "{r}");
+    assert_eq!(r["undid"], "Compose");
+}
+
+/// #740: list_clips reads a clip's sound back, from the clip that holds
+/// its settings: a sound linked to a picture keeps them on the picture,
+/// and its audio clip shows them too.
+#[test]
+fn list_clips_reads_the_sound_back() {
+    let mut h = harness();
+    let fps = h.sequence.read().unwrap().fps;
+    let time = |secs| klipp_core::Timecode::from_secs_f64(secs, fps.num);
+    let media = klipp_core::MediaId::new();
+    let mut picture = klipp_timeline::Clip::media(media, time(0.0), time(2.0), time(0.0), time(2.0));
+    let mut sound = klipp_timeline::Clip::media(media, time(0.0), time(2.0), time(0.0), time(2.0));
+    picture.linked_clip_id = Some(sound.id);
+    sound.linked_clip_id = Some(picture.id);
+    picture.volume = 10f32.powf(-14.0 / 20.0);
+    picture.fade_out_secs = 0.5;
+    picture.role = klipp_core::ClipRole::Ambience;
+    picture.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "denoiser".into(), enabled: true, wet_dry: 1.0, params: vec![("wind".into(), 1.0)] }];
+    let sound_id = sound.id;
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        if !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio) {
+            seq.tracks.push(klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio));
+        }
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[v].clips = vec![picture];
+        seq.tracks[a].clips = vec![sound];
+    }
+    let r = h.ok(json!({ "method": "list_clips" }));
+    let clip = r["tracks"].as_array().unwrap().iter().flat_map(|t| t["clips"].as_array().unwrap().iter()).find(|c| c["clip_id"] == sound_id.0.to_string()).unwrap_or_else(|| panic!("{r}")).clone();
+    let s = &clip["sound"];
+    assert_eq!((s["volume_db"].as_f64(), s["fade_out_secs"].as_f64(), s["role"].as_str()), (Some(-14.0), Some(0.5), Some("ambience")), "{clip}");
+    assert_eq!(s["effects"], json!(["denoiser"]));
+}
+
+/// #729: an op that cannot be read is named by its step and op, with
+/// what a clip is named by and where a group grade goes, not as a byte
+/// offset in serde's words.
+#[test]
+fn an_unreadable_op_is_named_by_its_step() {
+    let mut h = harness();
+    let r = h.call(json!({ "method": "plan", "ops": [
+        { "op": "trim", "clip_id": "00000000-0000-0000-0000-000000000000", "edge": "out", "to": { "secs": 1.0 } },
+        { "op": "grade", "clip_id": { "group": "piece", "stage": "pre" }, "exposure": 0.1 },
+    ] }));
+    let e = r["error"].as_str().unwrap();
+    assert!(e.starts_with("step 2 (grade) could not be read"), "{e}");
+    assert!(e.contains("\"on\""), "{e}");
+}
