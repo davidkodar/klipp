@@ -637,6 +637,18 @@ fn restore_transport(ctx: &ControlContext, held: HeldTransport) {
 }
 
 #[cfg(test)]
+mod made_media_tests {
+    /// #730: downloaded music, effects and narration land in the kept
+    /// made-media folder, never the cache, so a project's save can adopt
+    /// them and a cache clean cannot take them.
+    #[test]
+    fn downloads_land_in_the_kept_made_media_folder() {
+        assert_eq!(klipp_audio_search::download_dir(), klipp_media::made::made_dir("audio"));
+        assert!(!klipp_audio_search::download_dir().starts_with(klipp_media::disk_cache::cache_base_dir()));
+    }
+}
+
+#[cfg(test)]
 mod next_step_tests {
     use super::*;
 
@@ -3278,8 +3290,8 @@ fn handle(
                 // avoids two socket clients writing/importing the same WAV.
                 static SYNTH_IMPORT: Mutex<()> = Mutex::new(());
                 let _guard = SYNTH_IMPORT.lock().unwrap_or_else(|e| e.into_inner());
-                let dir = klipp_media::disk_cache::cache_base_dir().join("auto-sfx");
-                std::fs::create_dir_all(&dir).map_err(|e| format!("create SFX cache: {e}"))?;
+                let dir = klipp_media::made::made_dir("auto-sfx");
+                std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
                 let path = dir.join("whoosh-short-v1.wav");
                 if !path.is_file() {
                     let staging = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -4268,7 +4280,7 @@ fn handle(
             let out = match path {
                 Some(p) => std::path::PathBuf::from(p),
                 None => {
-                    let dir = klipp_audio_search::download_dir().parent().map(|p| p.join("recordings")).unwrap_or_else(std::env::temp_dir);
+                    let dir = klipp_media::made::made_dir("recordings");
                     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                     dir.join(format!("klipp-recording-{}.mp4", chrono_stamp()))
                 }

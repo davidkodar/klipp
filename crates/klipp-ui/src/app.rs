@@ -25676,6 +25676,27 @@ impl KlippApp {
         }
     }
 
+    /// Music, effects, narration and recordings Klipp made or fetched
+    /// for the project, copied into its folder on every save (#730): kept
+    /// where a cache clean or a moved project cannot leave them behind.
+    fn adopt_made_media(&mut self, project_dir: &std::path::Path) {
+        let report = klipp_project::adopt_made_media(project_dir, &mut self.state.media_pool);
+        if report.is_empty() {
+            return;
+        }
+        if report.adopted > 0 {
+            self.sync_media_pool_to_engine();
+        }
+        if let Some((path, e)) = report.failed.first() {
+            let n = report.failed.len();
+            self.state.toast.show(format!(
+                "Could not copy {n} downloaded or recorded file{} into the project ({}: {e}); the project still points outside it",
+                if n == 1 { "" } else { "s" },
+                path.display(),
+            ));
+        }
+    }
+
     fn do_save_project(&mut self, path: &std::path::Path) -> bool {
         if !self.may_write_project(path) {
             // The control socket waits on a project event for every save.
@@ -25702,6 +25723,7 @@ impl KlippApp {
         // nothing.
         let new_home = self.state.project_path.as_deref() != Some(path);
         self.adopt_temp_stills(path);
+        self.adopt_made_media(path);
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {

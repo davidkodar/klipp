@@ -438,9 +438,19 @@ pub fn preview_stop() {
     });
 }
 
-/// The directory downloaded audio lands in: the user's cache.
+/// The directory downloaded audio lands in (and narration, below it):
+/// a kept folder, `klipp_media::made::made_dir("audio")`, not the cache
+/// (#730). A cache is safe to delete, and a project's music must not go
+/// with it; a project's save copies what it uses into its own folder.
+/// Spelled out here rather than called, as this crate does not depend on
+/// klipp-media; a klipp-control test holds the two to one place.
 pub fn download_dir() -> std::path::PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("klipp").join("audio")
+    dirs::data_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("klipp")
+        .join("media")
+        .join("audio")
 }
 
 #[cfg(test)]
