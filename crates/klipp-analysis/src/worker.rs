@@ -105,7 +105,7 @@ pub(crate) fn run<T: DeserializeOwned>(exe: &Path, job: Job) -> Result<Result<T,
     let mut child = spawn();
     for _ in 0..50 {
         match &child {
-            Err(e) if e.raw_os_error() == Some(26) => {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 std::thread::sleep(Duration::from_millis(20));
                 child = spawn();
             }
@@ -229,10 +229,17 @@ struct AnalysisJob {
 }
 
 /// How long an analyser may take on a file of `duration_secs` before it
-/// is taken for hung: the models load in seconds and look at a few
-/// hundred frames at most, so this is generous.
+/// is taken for hung. The models load in seconds, and the analysers that
+/// run in a worker read at most `FRAME_BUDGET` frames whatever the file's
+/// length, so their work is bounded by frames as much as by time: on a
+/// machine reading text off 4K frames on the CPU, a few seconds a frame,
+/// a short screen recording took longer than twice its length (#710
+/// review). Generous on both counts; a hang is still caught.
 pub(crate) fn analysis_deadline(duration_secs: f64) -> Duration {
-    Duration::from_secs_f64(duration_secs.max(0.0) * 2.0 + 300.0)
+    const FRAME_BUDGET: f64 = 360.0;
+    const SLOW_FRAME_SECS: f64 = 6.0;
+    let work = (duration_secs.max(0.0) * 2.0).max(FRAME_BUDGET * SLOW_FRAME_SECS);
+    Duration::from_secs_f64(work + 300.0)
 }
 
 /// `a`'s result for `item`: in a worker when `a` runs native code and the
@@ -364,6 +371,8 @@ mod tests {
         assert_eq!(reply.unwrap_err(), "the native analysis did not finish in 1 s and was stopped");
         assert!(started.elapsed() < Duration::from_secs(10), "stopped at once: {:?}", started.elapsed());
         assert!(analysis_deadline(3600.0) > Duration::from_secs(7200));
+        // A short clip still gets time for the whole frame budget on a slow machine.
+        assert!(analysis_deadline(60.0) >= Duration::from_secs(360 * 6));
         std::fs::remove_dir_all(&dir).ok();
     }
 

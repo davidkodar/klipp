@@ -8,11 +8,12 @@
 //!
 //! Here the sequence is an immutable snapshot behind a short lock. A reader
 //! takes the lock only to clone the `Arc`, a few nanoseconds, then renders
-//! from that snapshot holding nothing. A writer takes the same short lock
-//! and changes the sequence copy-on-write: if a reader still holds the old
+//! from that snapshot holding nothing. A writer holds the lock while it
+//! changes the sequence, copy-on-write: if a reader still holds the old
 //! snapshot, the writer gets its own copy rather than waiting for it, and
-//! the reader finishes its frame from the sequence as it was. Neither ever
-//! waits for the other's work.
+//! the reader finishes its frame from the sequence as it was. A writer
+//! never waits for a reader's frame; a reader waits only for a writer's
+//! edit, which is quick, and `try_read` does not wait for that.
 //!
 //! The methods keep the shape of `RwLock`'s (`read`, `write`, `try_read`,
 //! `try_write`, results with a poison error the caller can recover from),
@@ -32,16 +33,16 @@ pub struct SharedSequence {
 
 /// The sequence as it was when read: holds no lock.
 #[derive(Debug, Clone)]
-pub struct SequenceSnapshot(Arc<Sequence>);
+pub struct SequenceRead(Arc<Sequence>);
 
-impl Deref for SequenceSnapshot {
+impl Deref for SequenceRead {
     type Target = Sequence;
     fn deref(&self) -> &Sequence {
         &self.0
     }
 }
 
-impl SequenceSnapshot {
+impl SequenceRead {
     /// The snapshot as an `Arc`, to keep or hand on.
     pub fn into_arc(self) -> Arc<Sequence> {
         self.0
@@ -81,14 +82,17 @@ impl SharedSequence {
     }
 
     /// [`Self::snapshot`] in `RwLock::read`'s shape. Never an error.
-    pub fn read(&self) -> LockResult<SequenceSnapshot> {
-        Ok(SequenceSnapshot(self.snapshot()))
+    pub fn read(&self) -> LockResult<SequenceRead> {
+        Ok(SequenceRead(self.snapshot()))
     }
 
-    /// As [`Self::read`]: a read never has to wait for a writer's work, so
-    /// there is nothing to try.
-    pub fn try_read(&self) -> TryLockResult<SequenceSnapshot> {
-        Ok(SequenceSnapshot(self.snapshot()))
+    /// [`Self::read`], or `WouldBlock` while a writer is making its change.
+    pub fn try_read(&self) -> TryLockResult<SequenceRead> {
+        match self.current.try_lock() {
+            Ok(current) => Ok(SequenceRead(Arc::clone(&current))),
+            Err(TryLockError::Poisoned(e)) => Ok(SequenceRead(Arc::clone(&e.into_inner()))),
+            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+        }
     }
 
     /// The sequence for a change. Waits only for another writer.
@@ -137,6 +141,16 @@ mod tests {
         assert_eq!(shared.read().unwrap().name, "edited", "a later read sees the edit");
         // And a try_write succeeds while a snapshot is held.
         assert!(shared.try_write().is_ok());
+    }
+
+    /// `try_read` does not wait for a writer making its change.
+    #[test]
+    fn try_read_gives_way_to_a_writer() {
+        let shared = SharedSequence::new(Sequence::new_default());
+        let edit = shared.write().unwrap();
+        assert!(matches!(shared.try_read(), Err(TryLockError::WouldBlock)));
+        drop(edit);
+        assert!(shared.try_read().is_ok());
     }
 
     /// A writer copies only when a reader still holds the snapshot: with
