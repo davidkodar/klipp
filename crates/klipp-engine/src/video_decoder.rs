@@ -506,6 +506,8 @@ pub struct VideoDecoder {
     /// container seek. Read by [`VideoDecoder::seek`] to decide whether a
     /// seek can be answered by decoding on.
     last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
+    /// The stream's declared average frame rate, when it declares one.
+    source_fps: Option<f64>,
 }
 
 /// [`VideoDecoder::last_decoded_pts`] when there is no frame.
@@ -531,15 +533,19 @@ impl VideoDecoder {
     /// Open a video file for decoding with optional VAAPI hardware acceleration.
     /// `source_rotation` is the media rotation in degrees (0, 90, 180, 270) from metadata.
     pub fn open(path: &Path, source_rotation: i32) -> Result<Self, DecoderError> {
-        // Validate file can be opened before spawning the thread
-        {
+        // Validate file can be opened before spawning the thread, and read
+        // the stream's own frame rate: which of its frames a time shows
+        // is decided at half of *its* frame, as export's decoder does (#696).
+        let source_fps = {
             let ctx = ffmpeg_next::format::input(path)
                 .map_err(|e| DecoderError::Open(e.to_string()))?;
-            let _stream = ctx
+            let stream = ctx
                 .streams()
                 .best(ffmpeg_next::media::Type::Video)
                 .ok_or(DecoderError::NoVideoStream)?;
-        }
+            let r = stream.avg_frame_rate();
+            (r.numerator() > 0 && r.denominator() > 0).then(|| r.numerator() as f64 / r.denominator() as f64)
+        };
 
         let queue_cap = FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize;
         let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(queue_cap)));
@@ -579,7 +585,20 @@ impl VideoDecoder {
             stop_flag,
             last_decode_us,
             last_decoded_pts,
+            source_fps,
         })
+    }
+
+    /// Half of one of the file's frames, in seconds: how far past the time
+    /// asked for a frame may be stamped and still be the frame shown for it,
+    /// which makes the shown frame the nearest one of the file. The same
+    /// rule as export's `ClipStream::seek_forward` (klipp-render), so
+    /// playback and export show the same frame of the file at the same
+    /// moment when the file's rate is not the sequence's (#696). Half of
+    /// `fallback_fps`, the sequence's rate, for a stream that declares none,
+    /// as export falls back too.
+    pub fn half_source_frame(&self, fallback_fps: f64) -> f64 {
+        0.5 / self.source_fps.unwrap_or(fallback_fps).max(1.0)
     }
 
     pub fn frame_queue(&self) -> &SharedFrameQueue {
