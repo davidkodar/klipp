@@ -559,7 +559,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 "clip_id": arg_str(args, "clip_id")?,
                 "corners": args.get("corners").cloned().ok_or("corners is required: four [x, y] pairs, fractions of the frame")?,
             });
-            for key in ["at_secs", "name", "surface"] {
+            for key in ["at_secs", "name", "surface", "direction"] {
                 if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
                     v[key] = x.clone();
                 }
@@ -1518,7 +1518,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               background; the surface then shows under the clip in klipp_list_clips with its id and \
               the stretch it was followed over, one undo step. The track stops where the surface is \
               lost (covered, out of frame, blurred) rather than drifting: look at frames near there. \
-              To correct it, track the same surface again from better corners on another frame.",
+              To continue past where it was lost, put the corners right on a frame there and track \
+              the same surface again with direction forward (or backward): the new stretch is laid \
+              over the old track and the rest kept.",
              json!({
                  "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
                  "corners": { "type": "array", "minItems": 4, "maxItems": 4,
@@ -1527,6 +1529,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "at_secs": { "type": "number", "description": "Timeline second the corners are on; the playhead when left out" },
                  "name": { "type": "string", "description": "What to call the surface, e.g. Phone screen" },
                  "surface": { "type": "string", "description": "Id or name of a surface to track again from these corners" },
+                 "direction": { "type": "string", "enum": ["both", "forward", "backward"], "description": "One way only, merged into the surface's track; needs surface" },
              }),
              vec!["clip_id", "corners"]),
         tool("klipp_select_clip",

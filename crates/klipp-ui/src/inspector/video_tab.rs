@@ -1340,6 +1340,48 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
 
                 ui.add_space(4.0);
 
+                // Surfaces (#684): a flat thing in the shot followed in
+                // perspective, for a picture to be pinned to.
+                let footage = clip
+                    .media_id()
+                    .and_then(|m| state.media_pool.get(&m))
+                    .is_some_and(|m| !m.is_still);
+                let busy = state.tracking_in_progress.contains(&clip_id);
+                let open = state.surface_tool.as_ref().is_some_and(|t| t.clip_id == clip_id);
+                let track = ui
+                    .add_enabled(footage && !busy && !open, egui::Button::new("Track Surface\u{2026}"))
+                    .on_hover_text("Set four corners on a screen, a sign or a wall in the viewer, and follow it through the clip")
+                    .on_disabled_hover_text(if !footage { "Only footage from a file can be tracked" } else if busy { "This clip is being tracked" } else { "The surface tool is open in the viewer" });
+                if track.clicked() {
+                    cmds.push(AppCommand::OpenSurfaceTool { clip_id, surface: None });
+                }
+                let fps = state.sequence().fps.as_f64();
+                for surface in &clip.surfaces {
+                    ui.horizontal(|ui| {
+                        let span = surface.tracked_secs().map(|(a, b)| {
+                            let on = |src: f64| clip.timeline_in.to_secs_f64() + clip.elapsed_for_source_secs(src, fps);
+                            let (a, b) = (on(a), on(b));
+                            format!("{:.1}\u{2013}{:.1} s", a.min(b), a.max(b))
+                        });
+                        ui.label(egui::RichText::new(&surface.name).size(11.0).color(theme.text_primary));
+                        ui.label(egui::RichText::new(span.unwrap_or_else(|| "not tracked".into())).size(10.0).color(theme.text_dim));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("\u{2715}").on_hover_text("Remove the surface; what is pinned to it stays where it was").clicked() {
+                                cmds.push(AppCommand::RemoveSurface { clip_id, surface: surface.id });
+                            }
+                            if ui
+                                .add_enabled(!busy && !open, egui::Button::new("Fix here").small())
+                                .on_hover_text("Put its corners right at the playhead and track it again from there")
+                                .clicked()
+                            {
+                                cmds.push(AppCommand::OpenSurfaceTool { clip_id, surface: Some(surface.id) });
+                            }
+                        });
+                    });
+                }
+
+                ui.add_space(4.0);
+
                 // Track active_track_point via egui temp data (inspector state is immutable)
                 let tp_sel_id = egui::Id::new("track_point_selected");
                 let selected_tp: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(tp_sel_id).unwrap_or(state.active_track_point));

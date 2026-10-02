@@ -2954,11 +2954,25 @@ pub enum AppCommand {
     TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, perspective: bool },
     /// Follow a flat surface in a clip, a phone screen, a sign, a monitor,
     /// through the clip in perspective (#684), from `corners` (top left,
-    /// top right, bottom right, bottom left, fractions of the frame) as
-    /// they are at timeline second `at_secs` (the playhead when `None`).
-    /// With `surface`, that surface is tracked again from these corners,
-    /// and whatever is pinned to it follows the new track.
-    TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid> },
+    /// top right, bottom right, bottom left, fractions of the frame as it
+    /// is shown, the clip's fit and placement included) as they are at
+    /// timeline second `at_secs` (the playhead when `None`). With
+    /// `surface`, that surface is tracked again from these corners, and
+    /// whatever is pinned to it follows the new track.
+    ///
+    /// `direction` 1 or -1 follows only later or only earlier frames and
+    /// lays the result over the surface's track, keeping the rest: how a
+    /// track lost partway is continued. 0 follows both ways and replaces
+    /// it. `interactive` is a person at the viewer: where the surface is
+    /// lost, the playhead goes there with the corners up to correct.
+    TrackSurface { clip_id: ClipId, corners: [[f32; 2]; 4], at_secs: Option<f64>, name: Option<String>, surface: Option<uuid::Uuid>, direction: i8, interactive: bool },
+    /// The viewer's surface tool on a clip (#684 phase 2): four corners to
+    /// set on the surface, then Track. With `surface`, they start where
+    /// that surface is at the playhead, to correct and track it again.
+    OpenSurfaceTool { clip_id: ClipId, surface: Option<uuid::Uuid> },
+    /// Take a tracked surface off a clip, one undo step; what is pinned to
+    /// it stays where it was on the reference frame.
+    RemoveSurface { clip_id: ClipId, surface: uuid::Uuid },
     /// Remove the tracker bound to this mask plus the mask's centre
     /// keyframes — gives the user a clean "untrack" gesture without
     /// leaving an orphan tracker behind. No-op when no tracker is
@@ -3734,7 +3748,8 @@ pub enum AppEvent {
     /// `source_size` is the picture the corners are fractions of, as
     /// shown; `held_secs` the file seconds read for the track, which can
     /// be fewer than the clip's when they would not all fit in memory.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64) },
+    /// `direction` and `interactive` are the request's.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
 
     // Audio sync (#61)

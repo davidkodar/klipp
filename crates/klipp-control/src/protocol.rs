@@ -207,6 +207,13 @@ pub enum ControlCommand {
         name: Option<String>,
         #[serde(default)]
         surface: Option<String>,
+        /// "forward" or "backward" follows only later or only earlier
+        /// frames from these corners and lays that over the surface's
+        /// track, keeping the rest: a track lost partway, continued from
+        /// a frame where the corners were put right. Left out, both ways,
+        /// replacing it.
+        #[serde(default)]
+        direction: Option<String>,
     },
 
     // ── Colour / grade ─────────────────────────────────────────────

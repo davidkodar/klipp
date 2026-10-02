@@ -4722,7 +4722,16 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::TrackSurface { clip_id, corners, at_secs, name, surface } => {
+        ControlCommand::TrackSurface { clip_id, corners, at_secs, name, surface, direction } => {
+            let direction: i8 = match direction.as_deref().map(str::trim).map(str::to_lowercase).as_deref() {
+                None | Some("") | Some("both") => 0,
+                Some("forward") | Some("later") => 1,
+                Some("backward") | Some("earlier") => -1,
+                Some(other) => return Err(format!("direction \"{other}\" is not one: use forward, backward or both")),
+            };
+            if direction != 0 && surface.is_none() {
+                return Err("a track continues one way only on a surface it already has: give surface".into());
+            }
             if in_batch {
                 return Err("track_surface runs in the background; send it on its own".into());
             }
@@ -4752,7 +4761,7 @@ fn handle(
                     None => None,
                 }
             };
-            let mut v = send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface })?;
+            let mut v = send(AppCommand::TrackSurface { clip_id: id, corners, at_secs, name, surface, direction, interactive: false })?;
             v["text"] = json!("Tracking the surface in the background; it shows under the clip's surfaces in klipp_list_clips when done, one undo step, with where the track was lost if it was. Then pin a picture to it with the pin op.");
             Ok(v)
         }

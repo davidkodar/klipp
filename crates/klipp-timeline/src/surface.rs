@@ -90,6 +90,19 @@ impl Surface {
         }
     }
 
+    /// The track with `newer` laid over it: keys from `newer` across the
+    /// file time it covers, the earlier keys kept either side of it, so a
+    /// track continued from where it was lost (#684 phase 2) keeps what
+    /// was good.
+    pub fn merge_keys(&mut self, newer: Vec<SurfaceKey>) {
+        let (Some(first), Some(last)) = (newer.first().map(|k| k.source_secs), newer.last().map(|k| k.source_secs)) else { return };
+        let near = if self.media_fps > 0.0 { 0.5 / self.media_fps } else { 1e-6 };
+        let mut keys: Vec<SurfaceKey> = self.keys.iter().copied().filter(|k| k.source_secs < first - near || k.source_secs > last + near).collect();
+        keys.extend(newer);
+        keys.sort_by(|a, b| a.source_secs.total_cmp(&b.source_secs));
+        self.keys = keys;
+    }
+
     /// The file time the track covers, first to last key.
     pub fn tracked_secs(&self) -> Option<(f64, f64)> {
         Some((self.keys.first()?.source_secs, self.keys.last()?.source_secs))
@@ -146,6 +159,27 @@ pub fn source_quad_in_frame(q: &Quad, source: [u32; 2], frame: [u32; 2], placeme
             y = ay + py as f64 + dx * sin + dy * cos;
         }
         [(x / fw) as f32, (y / fh) as f32]
+    })
+}
+
+/// The inverse of [`source_quad_in_frame`]: a quad in fractions of the
+/// frame, as it is drawn on the viewer, as fractions of the clip's own
+/// picture, through which the tracker follows it.
+pub fn frame_quad_in_source(q: &Quad, source: [u32; 2], frame: [u32; 2], placement: Option<Placement>) -> Quad {
+    let [x0, y0, dw, dh] = fitted(source, frame);
+    let (fw, fh) = (frame[0].max(1) as f64, frame[1].max(1) as f64);
+    q.map(|c| {
+        let (mut x, mut y) = (c[0] as f64 * fw, c[1] as f64 * fh);
+        if let Some((px, py, sx, sy, rot, ax, ay)) = placement {
+            let (ax, ay) = (ax as f64 * fw, ay as f64 * fh);
+            let (dx, dy) = (x - ax - px as f64, y - ay - py as f64);
+            let (sin, cos) = (rot as f64).to_radians().sin_cos();
+            let (rx, ry) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+            let (sx, sy) = (if sx.abs() > f32::EPSILON { sx as f64 } else { 1.0 }, if sy.abs() > f32::EPSILON { sy as f64 } else { 1.0 });
+            x = ax + rx / sx;
+            y = ay + ry / sy;
+        }
+        [((x - x0) / dw) as f32, ((y - y0) / dh) as f32]
     })
 }
 
@@ -257,6 +291,32 @@ mod tests {
             let (mx, my) = h.map(x, y).unwrap();
             assert!((mx / 1920.0 - want[0] as f64).abs() < 1e-4 && (my / 1080.0 - want[1] as f64).abs() < 1e-4, "{mx},{my} vs {want:?}");
         }
+    }
+
+    /// Frame to picture undoes picture to frame, through a fit and a
+    /// placement that moves, scales and turns.
+    #[test]
+    fn frame_corners_go_back_to_the_picture() {
+        let q = [[0.2, 0.3], [0.7, 0.25], [0.75, 0.8], [0.15, 0.7]];
+        let placed = Some((120.0, -40.0, 1.3, 0.8, 12.0, 0.4, 0.6));
+        let there = source_quad_in_frame(&q, [1080, 1920], [1920, 1080], placed);
+        let back = frame_quad_in_source(&there, [1080, 1920], [1920, 1080], placed);
+        for (a, b) in q.iter().flatten().zip(back.iter().flatten()) {
+            assert!((a - b).abs() < 1e-4, "{q:?} came back {back:?}");
+        }
+    }
+
+    /// Continuing a track from where it was lost lays the new keys over
+    /// that stretch and keeps the rest.
+    #[test]
+    fn a_continued_track_keeps_what_was_good() {
+        let key = |f: i32, x: f32| SurfaceKey { source_secs: f as f64 / 25.0, corners: square(x) };
+        let mut s = Surface { id: uuid::Uuid::nil(), name: "S".into(), corners: square(0.0), reference_secs: 0.0, keys: (0..10).map(|f| key(f, 0.0)).collect(), source_size: [0, 0], media_fps: 25.0 };
+        s.merge_keys((8..20).map(|f| key(f, 0.5)).collect());
+        assert_eq!(s.keys.len(), 20);
+        assert_eq!(s.keys[7].corners, square(0.0), "before the new stretch, kept");
+        assert_eq!(s.keys[8].corners, square(0.5), "over it, the new keys");
+        assert!(s.keys.windows(2).all(|w| w[0].source_secs < w[1].source_secs));
     }
 
     #[test]
