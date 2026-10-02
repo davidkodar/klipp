@@ -1090,8 +1090,9 @@ pub struct ComposePose {
     pub width: Option<f32>,
     #[serde(default)]
     pub height: Option<f32>,
+    /// Left out, 0, or in a pose with no geometry the clip's own turn.
     #[serde(default)]
-    pub rotation_deg: f32,
+    pub rotation_deg: Option<f32>,
     #[serde(default = "one")]
     pub opacity: f32,
     /// How the move into this pose eases; `in_out` when left out.
@@ -1100,16 +1101,16 @@ pub struct ComposePose {
     /// Tilt in perspective about the picture's horizontal axis, degrees:
     /// positive leans the top away, like a screen on a desk.
     #[serde(default)]
-    pub tilt_x_deg: f32,
+    pub tilt_x_deg: Option<f32>,
     /// Tilt in perspective about its vertical axis, degrees: positive
     /// swings the right edge away, like a door.
     #[serde(default)]
-    pub tilt_y_deg: f32,
+    pub tilt_y_deg: Option<f32>,
 }
 
 impl Default for ComposePose {
     fn default() -> Self {
-        Self { secs: 0.0, x: None, y: None, width: None, height: None, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: 0.0, tilt_y_deg: 0.0 }
+        Self { secs: 0.0, x: None, y: None, width: None, height: None, rotation_deg: None, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: None, tilt_y_deg: None }
     }
 }
 
@@ -4092,13 +4093,18 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     // Where the clip is now at each pose's time, in the units the keyframes
     // hold: its compose keyframes if it has them, else its static
     // transform (a reframe's scale and pan), else full frame and centred.
-    let (still_x, still_y, still_scale) = clip.builtin_effects.iter().find_map(|e| match e {
-        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, .. } => Some((*position_x, *position_y, *scale_x)),
+    let (still_x, still_y, still_scale, still_turn, still_tx, still_ty) = clip.builtin_effects.iter().find_map(|e| match e {
+        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, rotation, rotation_x, rotation_y, .. } => Some((*position_x, *position_y, *scale_x, *rotation, *rotation_x, *rotation_y)),
         _ => None,
-    }).unwrap_or((0.0, 0.0, 1.0));
+    }).unwrap_or((0.0, 0.0, 1.0, 0.0, 0.0, 0.0));
+    let at = |kf: &[klipp_core::Keyframe], t: f64, still: f32| if kf.is_empty() { still } else { klipp_core::keyframe::evaluate(kf, t, still) };
     let now_at = |t: f64| -> (f32, f32, f32) {
-        let at = |kf: &[klipp_core::Keyframe], still: f32| if kf.is_empty() { still } else { klipp_core::keyframe::evaluate(kf, t, still) };
-        (at(&clip.transform_pos_x_keyframes, still_x), at(&clip.transform_pos_y_keyframes, still_y), at(&clip.transform_scale_keyframes, still_scale))
+        (at(&clip.transform_pos_x_keyframes, t, still_x), at(&clip.transform_pos_y_keyframes, t, still_y), at(&clip.transform_scale_keyframes, t, still_scale))
+    };
+    // Its turn and tilt, which a pose with no geometry keeps too: an
+    // opacity ramp does not straighten a turned clip (#751 review).
+    let turn_at = |t: f64| -> (f32, f32, f32) {
+        (at(&clip.transform_rotation_keyframes, t, still_turn), at(&clip.transform_tilt_x_keyframes, t, still_tx), at(&clip.transform_tilt_y_keyframes, t, still_ty))
     };
     // Each pose with its size settled: what it gives, else what the clip has.
     // A pose that gives no geometry keeps the clip's (an opacity ramp
@@ -4107,10 +4113,19 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     let poses: Vec<ComposePose> = poses.iter().map(|p| {
         if p.x.is_none() && p.y.is_none() && p.width.is_none() && p.height.is_none() {
             let size = now_at(p.secs).2;
-            ComposePose { width: Some(size), height: Some(size), ..*p }
+            let (turn, tx, ty) = turn_at(p.secs);
+            ComposePose {
+                width: Some(size), height: Some(size),
+                rotation_deg: Some(p.rotation_deg.unwrap_or(turn)), tilt_x_deg: Some(p.tilt_x_deg.unwrap_or(tx)), tilt_y_deg: Some(p.tilt_y_deg.unwrap_or(ty)),
+                ..*p
+            }
         } else {
             let size = p.width.or(p.height).unwrap_or(1.0);
-            ComposePose { x: Some(p.x.unwrap_or(0.5)), y: Some(p.y.unwrap_or(0.5)), width: Some(p.width.unwrap_or(size)), height: Some(p.height.unwrap_or(size)), ..*p }
+            ComposePose {
+                x: Some(p.x.unwrap_or(0.5)), y: Some(p.y.unwrap_or(0.5)), width: Some(p.width.unwrap_or(size)), height: Some(p.height.unwrap_or(size)),
+                rotation_deg: Some(p.rotation_deg.unwrap_or(0.0)), tilt_x_deg: Some(p.tilt_x_deg.unwrap_or(0.0)), tilt_y_deg: Some(p.tilt_y_deg.unwrap_or(0.0)),
+                ..*p
+            }
         }
     }).collect();
     let poses = poses.as_slice();
@@ -4134,13 +4149,13 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         if (pw - ph).abs() > 1e-4 {
             return Err(refuse(i, format!("width {pw:.2} and height {ph:.2} differ"), "give the same width and height: a picture is scaled evenly, never stretched"));
         }
-        if !p.rotation_deg.is_finite() || !(-360.0..=360.0).contains(&p.rotation_deg) {
-            return Err(refuse(i, format!("a turn of {} degrees", p.rotation_deg), "give rotation_deg between -360 and 360"));
+        if !p.rotation_deg.unwrap_or(0.0).is_finite() || !(-360.0..=360.0).contains(&p.rotation_deg.unwrap_or(0.0)) {
+            return Err(refuse(i, format!("a turn of {} degrees", p.rotation_deg.unwrap_or(0.0)), "give rotation_deg between -360 and 360"));
         }
         if !p.opacity.is_finite() || !(0.0..=1.0).contains(&p.opacity) {
             return Err(refuse(i, format!("an opacity of {}", p.opacity), "give opacity between 0 and 1"));
         }
-        for (name, v) in [("tilt_x_deg", p.tilt_x_deg), ("tilt_y_deg", p.tilt_y_deg)] {
+        for (name, v) in [("tilt_x_deg", p.tilt_x_deg.unwrap_or(0.0)), ("tilt_y_deg", p.tilt_y_deg.unwrap_or(0.0))] {
             // At 90 degrees the card is edge-on and gone.
             if !v.is_finite() || !(-80.0..=80.0).contains(&v) {
                 return Err(refuse(i, format!("a tilt of {v} degrees"), format!("give {name} between -80 and 80")));
@@ -4161,14 +4176,14 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         // What is placed is the visible picture: its centre, turned and
         // scaled with the rest about the frame's middle, lands on x, y.
         let width = p.width.unwrap_or(1.0);
-        let (sin, cos) = p.rotation_deg.to_radians().sin_cos();
+        let (sin, cos) = p.rotation_deg.unwrap_or(0.0).to_radians().sin_cos();
         let (cx, cy) = (width * (ox * cos - oy * sin), width * (ox * sin + oy * cos));
         // A pose that does not say where keeps where the clip is.
         let (now_x, now_y, _) = now_at(p.secs);
         klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, p.x.map_or(now_x, |x| (x - 0.5) * fw - cx));
         klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, p.y.map_or(now_y, |y| (y - 0.5) * fh - cy));
         klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, width);
-        klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg);
+        klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg.unwrap_or(0.0));
         klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
     }
     let eases: Vec<_> = sorted.iter().map(|p| p.ease).collect();
@@ -4176,10 +4191,10 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     // Tilt only when a pose asks for it: a flat card keeps no tilt
     // tracks, and so is not drawn in perspective at all.
     let (mut tx, mut ty) = (Vec::new(), Vec::new());
-    if sorted.iter().any(|p| p.tilt_x_deg != 0.0 || p.tilt_y_deg != 0.0) {
+    if sorted.iter().any(|p| p.tilt_x_deg.unwrap_or(0.0) != 0.0 || p.tilt_y_deg.unwrap_or(0.0) != 0.0) {
         for p in &sorted {
-            klipp_core::keyframe::upsert_keyframe(&mut tx, p.secs, p.tilt_x_deg);
-            klipp_core::keyframe::upsert_keyframe(&mut ty, p.secs, p.tilt_y_deg);
+            klipp_core::keyframe::upsert_keyframe(&mut tx, p.secs, p.tilt_x_deg.unwrap_or(0.0));
+            klipp_core::keyframe::upsert_keyframe(&mut ty, p.secs, p.tilt_y_deg.unwrap_or(0.0));
         }
         ease_tracks(&mut [&mut tx, &mut ty], &eases);
     }
@@ -4193,9 +4208,9 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     let poses_text: Vec<String> = sorted
         .iter()
         .map(|p| {
-            let turn = if p.rotation_deg.abs() > 1e-4 { format!(" turned {:.0} degrees", p.rotation_deg) } else { String::new() };
+            let turn = if p.rotation_deg.unwrap_or(0.0).abs() > 1e-4 { format!(" turned {:.0} degrees", p.rotation_deg.unwrap_or(0.0)) } else { String::new() };
             let fade = if p.opacity < 0.999 { format!(" at {:.0}%", p.opacity * 100.0) } else { String::new() };
-            let lean = if p.tilt_x_deg != 0.0 || p.tilt_y_deg != 0.0 { format!(" tilted {:.0},{:.0}", p.tilt_x_deg, p.tilt_y_deg) } else { String::new() };
+            let lean = if p.tilt_x_deg.unwrap_or(0.0) != 0.0 || p.tilt_y_deg.unwrap_or(0.0) != 0.0 { format!(" tilted {:.0},{:.0}", p.tilt_x_deg.unwrap_or(0.0), p.tilt_y_deg.unwrap_or(0.0)) } else { String::new() };
             let at = match (p.x, p.y) {
                 (None, None) => "where it is".to_string(),
                 (x, y) => format!("at {},{}", x.map_or("its x".into(), |x| format!("{x:.2}")), y.map_or("its y".into(), |y| format!("{y:.2}"))),
@@ -7453,7 +7468,7 @@ mod tests {
             (plan.steps[0].what.clone(), new_state)
         };
         let half = ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() };
-        let (what, state) = card(ComposePose { tilt_y_deg: 55.0, ..half }, ComposePose { secs: 1.5, ..half });
+        let (what, state) = card(ComposePose { tilt_y_deg: Some(55.0), ..half }, ComposePose { secs: 1.5, ..half });
         assert!(what.contains("tilted 0,55"), "{what}");
         let ys: Vec<f32> = state.transform_tilt_y_keyframes.iter().map(|k| k.value).collect();
         assert_eq!(ys, vec![55.0, 0.0], "it swings from 55 degrees to square");
@@ -7462,7 +7477,7 @@ mod tests {
         let (_, flat) = card(half, ComposePose { secs: 1.5, x: Some(0.3), ..half });
         assert!(flat.transform_tilt_x_keyframes.is_empty() && flat.transform_tilt_y_keyframes.is_empty(), "a flat card is not drawn in perspective");
 
-        let bad = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![ComposePose { tilt_x_deg: 90.0, ..half }] }]).unwrap_err();
+        let bad = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![ComposePose { tilt_x_deg: Some(90.0), ..half }] }]).unwrap_err();
         assert!(bad.why.contains("tilt"), "{}", bad.why);
     }
 
@@ -7485,7 +7500,7 @@ mod tests {
         let (x, y) = place(ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() });
         assert!((x + 240.0).abs() < 1e-3 && y.abs() < 1e-3, "{x}, {y}");
         // Turned a quarter, the offset turns with it: down, not right.
-        let (x, y) = place(ComposePose { width: Some(0.5), height: Some(0.5), rotation_deg: 90.0, ..Default::default() });
+        let (x, y) = place(ComposePose { width: Some(0.5), height: Some(0.5), rotation_deg: Some(90.0), ..Default::default() });
         assert!(x.abs() < 1e-2 && (y + 240.0).abs() < 1e-2, "{x}, {y}");
     }
 
@@ -7619,7 +7634,7 @@ mod tests {
         // One pose: a half-size picture left of centre and low in a
         // 1920x1080 frame, turned, half seen. Position is pixels from the
         // middle of the frame, which is where the anchor sits.
-        let pose = ComposePose { x: Some(0.25), y: Some(0.75), width: Some(0.5), height: Some(0.5), rotation_deg: 15.0, opacity: 0.5, ..Default::default() };
+        let pose = ComposePose { x: Some(0.25), y: Some(0.75), width: Some(0.5), height: Some(0.5), rotation_deg: Some(15.0), opacity: 0.5, ..Default::default() };
         let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] }]).unwrap();
         assert!(plan.steps[0].what.contains("0.50 of the frame at 0.25,0.75"), "{}", plan.steps[0].what);
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframe edit") };
@@ -7783,6 +7798,28 @@ mod tests {
         seq.tracks.insert(0, card);
         let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1.8,"opacity":1}}]}}]"#, card_id.0)).unwrap();
         assert!(resolve(&seq, &pool, &ops).is_ok(), "a generator can be composed");
+    }
+
+    /// #751 review: a fade does not straighten a turned clip. Composed at
+    /// a 15 degree turn and a tilt, a later opacity-only compose keeps both.
+    #[test]
+    fn a_compose_fade_keeps_the_turn_and_the_tilt() {
+        let (seq, pool, _, a, _) = fixture();
+        let turned: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"x":0.4,"width":0.6,"height":0.6,"rotation_deg":15,"tilt_y_deg":20}}]}}]"#, a.0)).unwrap();
+        let plan = resolve(&seq, &pool, &turned).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let fade: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1,"opacity":1}}]}}]"#, a.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &fade).unwrap();
+        view.apply_forward(&plan.steps[0].edit);
+        let c = &view.sequences[0].tracks[0].clips[0];
+        let at = |kf: &[klipp_core::Keyframe]| klipp_core::keyframe::evaluate(kf, 0.5, f32::NAN);
+        assert!((at(&c.transform_rotation_keyframes) - 15.0).abs() < 1e-3, "the turn holds");
+        assert!((at(&c.transform_tilt_y_keyframes) - 20.0).abs() < 1e-3, "the tilt holds");
+        assert!((at(&c.transform_scale_keyframes) - 0.6).abs() < 1e-4, "and the size");
     }
 
     /// #727: a re-pan keeps what it does not name. Reframed at 3.17 and
