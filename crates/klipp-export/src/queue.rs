@@ -40,6 +40,17 @@ pub struct RenderJob {
     pub render_stage: String,
     /// Loudness normalization result (set on completion if normalization was enabled).
     pub loudness_result: Option<String>,
+    /// The picture size delivered: the settings' when they name one, else
+    /// the sequence's, so the window can always show it (#717).
+    pub width: u32,
+    pub height: u32,
+    /// The frames of the sequence rendered, start inclusive, end
+    /// exclusive; `None` for the whole sequence. Render Again asks for the
+    /// same stretch.
+    pub export_range: Option<(u64, u64)>,
+    /// The sequence rendered, so Render Again renders that one whichever
+    /// is open.
+    pub sequence_id: klipp_core::SequenceId,
 }
 
 pub enum RenderQueueEvent {
@@ -160,6 +171,11 @@ impl RenderQueue {
         let id = Uuid::new_v4();
         let total_frames = snapshot.total_frames;
         let timeline_fps = snapshot.sequence_snapshot.fps;
+        // The size delivered: the settings' when they name one, else the
+        // sequence's.
+        let (width, height) = settings.resolution.as_ref().map(|r| (r.width, r.height)).unwrap_or((snapshot.sequence_snapshot.width, snapshot.sequence_snapshot.height));
+        let export_range = snapshot.sequence_snapshot.export_range;
+        let sequence_id = snapshot.sequence_snapshot.video.sequence.id;
         self.jobs.push(RenderJob {
             id,
             label,
@@ -177,6 +193,10 @@ impl RenderQueue {
             timeline_fps,
             render_stage: String::new(),
             loudness_result: None,
+            width,
+            height,
+            export_range,
+            sequence_id,
         });
         self.snapshots.push((id, snapshot));
         self.start_next_jobs();
@@ -517,6 +537,10 @@ mod tests {
             timeline_fps: 24.0,
             render_stage: String::new(),
             loudness_result: None,
+            width: 1920,
+            height: 1080,
+            export_range: None,
+            sequence_id: klipp_core::SequenceId::new(),
         }
     }
 
