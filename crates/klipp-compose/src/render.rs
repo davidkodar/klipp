@@ -945,7 +945,7 @@ impl Renderer {
             Some(cam) => eval::apply_camera(resolved, cam, width, height),
             None => resolved,
         };
-        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps));
+        let (fx, opacity) = clip_effects(clip, time, fps, Some(resolved), eval::surface_pin_corners(clip, seq, time, fps, &|_| None));
         if !fx.is_empty() || (opacity - 1.0).abs() > 1e-6 {
             return Single::ForTheStack;
         }
@@ -1230,7 +1230,7 @@ impl Renderer {
         self.resolve_pins(seq, items.iter().flat_map(|(_, item)| match item {
             Item::Clip { c, .. } => vec![*c],
             Item::Transition { a, b, .. } => vec![*a, *b],
-        }), time, fps);
+        }), time, fps, &transforms);
         in_render_pixels(seq, width, height, &mut transforms);
         self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
@@ -1740,7 +1740,7 @@ impl Renderer {
                 );
             }
         }
-        self.resolve_pins(seq, stack.iter().flat_map(|(_, _, item)| item.clips()), time, fps);
+        self.resolve_pins(seq, stack.iter().flat_map(|(_, _, item)| item.clips()), time, fps, &transforms);
         in_render_pixels(seq, width, height, &mut transforms);
         self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
@@ -2511,11 +2511,13 @@ impl Renderer {
     /// moves while it is open, its full transform — own keyframes, the
     /// camera from its depth — at each sample across the shutter. A clip
     /// that does not move gets none and renders once.
-    /// Where every pinned clip in play is on its surface at `time`.
-    fn resolve_pins<'c>(&mut self, seq: &Sequence, clips: impl Iterator<Item = &'c Clip>, time: Timecode, fps: f64) {
+    /// Where every pinned clip in play is on its surface at `time`, its
+    /// host placed as `transforms` resolved it (in sequence pixels, before
+    /// the render scale).
+    fn resolve_pins<'c>(&mut self, seq: &Sequence, clips: impl Iterator<Item = &'c Clip>, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>) {
         self.pins.clear();
         for c in clips {
-            if let Some(q) = eval::surface_pin_corners(c, seq, time, fps) {
+            if let Some(q) = eval::surface_pin_corners(c, seq, time, fps, &|host| transforms.get(&host.id).copied()) {
                 self.pins.insert(c.id, q);
             }
         }

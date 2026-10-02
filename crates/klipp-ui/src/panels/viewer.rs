@@ -4629,8 +4629,15 @@ impl ViewerPanel {
         let find = |id: klipp_core::ClipId| seq.tracks.iter().find_map(|t| t.find_clip(id));
         let Some(clip) = find(clip_id) else { return };
         let playhead = state.playhead.to_secs_f64();
+        let frame = [seq.resolution.width, seq.resolution.height];
+        // On the frame as the renderer puts it: the host's picture fitted,
+        // then placed by its own transform.
         let at = |host: &klipp_timeline::Clip, s: &klipp_timeline::Surface| {
-            s.corners_at(host.source_secs_at(playhead - host.timeline_in.to_secs_f64(), fps))
+            let elapsed = playhead - host.timeline_in.to_secs_f64();
+            let on_source = s.corners_shown_at(host.source_secs_at(elapsed, fps));
+            let ctx = klipp_compose::eval::eval_context(host, state.playhead, fps);
+            let placed = klipp_compose::eval::evaluate_clip_own_transform(host, elapsed.max(0.0), &ctx);
+            klipp_timeline::surface::source_quad_in_frame(&on_source, s.source_size, frame, Some(placed))
         };
         let mut quads: Vec<(String, klipp_timeline::surface::Quad)> = Vec::new();
         let inside = playhead >= clip.timeline_in.to_secs_f64() && playhead < clip.timeline_out.to_secs_f64();

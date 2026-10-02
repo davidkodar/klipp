@@ -3817,10 +3817,18 @@ fn pin(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, media
     }
     let mut picture = Clip::media(media_id, a, b, Timecode { value: 0, rate: b.rate }, b - a);
     picture.volume = 0.0;
-    let [tl, tr, br, bl] = s.corners;
+    // The picture as shown, turned for a phone shot: fitted into the
+    // frame, that is what goes on the surface.
+    let (pw, ph) = (item.resolution.width, item.resolution.height);
+    let picture_size = (pw > 0 && ph > 0).then_some(if item.source_rotation.rem_euclid(180) == 90 { [ph, pw] } else { [pw, ph] });
+    // At rest, where the reference frame has them with the host unmoved;
+    // the renderer follows the track from there.
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let on_frame = klipp_timeline::surface::source_quad_in_frame(&s.corners, s.source_size, frame, None);
+    let [tl, tr, br, bl] = klipp_timeline::surface::pin_frame_corners(&on_frame, picture_size, frame).unwrap_or(on_frame);
     picture.builtin_effects = vec![klipp_effects::BuiltinEffect::CornerPin { tl, tr, br, bl }];
     picture.builtin_effects_enabled = vec![true];
-    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id });
+    picture.surface_pin = Some(klipp_timeline::SurfacePin { host: clip.id, surface: s.id, picture_size });
     let above = (0..ti).rev().find(|k| seq.tracks[*k].kind == TrackKind::Video && !seq.tracks[*k].locked && overlapping(seq, *k, a, b, None).is_none());
     let (video, created) = match above {
         Some(k) => ((picture, k), None),
@@ -6396,13 +6404,15 @@ mod tests {
 
         let corners = [[0.3, 0.3], [0.6, 0.32], [0.62, 0.6], [0.28, 0.58]];
         let id = ClipId::new().0;
-        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey { source_secs: 2.0, corners }] });
+        let frame = [seq.resolution.width, seq.resolution.height];
+        seq.tracks[0].clips[0].surfaces.push(klipp_timeline::Surface { id, name: "Phone".into(), corners, reference_secs: 2.0, keys: vec![klipp_timeline::SurfaceKey { source_secs: 2.0, corners }], source_size: frame, media_fps: 25.0 });
         let plan = resolve(&seq, &pool, &[pin_op(Some("phone"))]).unwrap();
         let step = &plan.steps[0];
         assert!(step.what.contains("surface \"Phone\"") && step.what.contains("following it") && step.what.contains("a new video track on top"), "{}", step.what);
         let EditCommand::LinkedImport { video: Some((picture, 0)), created_video_track_at: Some(0), .. } = &step.edit else { panic!("{:?}", step.edit) };
         assert_eq!((secs(picture.timeline_in), secs(picture.timeline_out)), (1.0, 4.0));
-        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id }));
+        // The logo is 1920x1080 as the test media is: the frame's shape, so its frame goes straight onto the corners.
+        assert_eq!(picture.surface_pin, Some(klipp_timeline::SurfacePin { host: a, surface: id, picture_size: Some([1920, 1080]) }));
         assert!(matches!(picture.builtin_effects.as_slice(), [klipp_effects::BuiltinEffect::CornerPin { tl, br, .. }] if *tl == corners[0] && *br == corners[2]), "{:?}", picture.builtin_effects);
 
         // Named by id too; an unknown name is refused with the names there are.

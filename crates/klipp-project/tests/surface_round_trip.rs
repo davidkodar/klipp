@@ -26,11 +26,13 @@ fn a_surface_and_its_pin_read_back() {
         corners: quad,
         reference_secs: 2.5,
         keys: vec![SurfaceKey { source_secs: 2.5, corners: quad }, SurfaceKey { source_secs: 2.54, corners: [[0.31, 0.3], [0.61, 0.32], [0.63, 0.6], [0.29, 0.58]] }],
+        source_size: [1080, 1920],
+        media_fps: 25.0,
     };
     let mut host = Clip::sequence(scene.id, tc(0.0), tc(4.0));
     host.surfaces.push(surface.clone());
     let mut pinned = Clip::sequence(scene.id, tc(0.0), tc(4.0));
-    pinned.surface_pin = Some(SurfacePin { host: host.id, surface: surface.id });
+    pinned.surface_pin = Some(SurfacePin { host: host.id, surface: surface.id, picture_size: Some([640, 640]) });
     let (host_id, pinned_id) = (host.id, pinned.id);
     outer.tracks[0].clips = vec![host];
     outer.tracks.insert(0, klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video));
@@ -40,7 +42,7 @@ fn a_surface_and_its_pin_read_back() {
     let (sequences, ..) = load_project(&dir).unwrap();
     let find = |id| sequences[0].tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == id)).expect("the clip");
     assert_eq!(find(host_id).surfaces, vec![surface.clone()]);
-    assert_eq!(find(pinned_id).surface_pin, Some(SurfacePin { host: host_id, surface: surface.id }));
+    assert_eq!(find(pinned_id).surface_pin, Some(SurfacePin { host: host_id, surface: surface.id, picture_size: Some([640, 640]) }));
     assert!(find(host_id).surface_pin.is_none() && find(pinned_id).surfaces.is_empty());
     let written = std::fs::read_to_string(dir.join("project.json")).unwrap();
     assert_eq!(written.matches("\"surfaces\"").count(), 1, "only the host writes surfaces");

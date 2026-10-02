@@ -40,19 +40,41 @@ pub fn eval_with_modifiers(
 /// fields the title / V2 paths feed into `BuiltinEffect::Transform`.
 pub type ResolvedTransform = (f32, f32, f32, f32, f32, f32, f32);
 
-/// Where a pinned clip's corners are at `time`: on the surface it is
-/// pinned to, read in the host clip's file time (#684). `None` when the
-/// clip is not pinned, or its host or surface is gone or untracked, and
-/// its corner pin keeps its own corners, the reference frame's.
-pub fn surface_pin_corners(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, time: klipp_core::Timecode, fps: f64) -> Option<klipp_timeline::surface::Quad> {
+/// Where a pinned clip's corner pin puts its corners at `time`, in
+/// fractions of the frame (#684): the surface's corners on the host's
+/// picture shown then, carried through the host's fit and placement
+/// (`placement` when the caller resolved it, else the host's own), and
+/// the pinned picture's fitted rectangle mapped onto them. `None` when
+/// the clip is not pinned, or its surface is gone or untracked, and its
+/// corner pin keeps its own corners, the reference frame's.
+///
+/// The host is the clip carrying the surface under `time`, preferring
+/// the one the pin names: a split host's halves both carry it.
+pub fn surface_pin_corners(
+    clip: &klipp_timeline::Clip,
+    seq: &klipp_timeline::Sequence,
+    time: klipp_core::Timecode,
+    fps: f64,
+    placement: &dyn Fn(&klipp_timeline::Clip) -> Option<ResolvedTransform>,
+) -> Option<klipp_timeline::surface::Quad> {
     let pin = clip.surface_pin?;
-    let host = seq.tracks.iter().find_map(|t| t.find_clip(pin.host))?;
+    let carries = |c: &&klipp_timeline::Clip| c.surfaces.iter().any(|s| s.id == pin.surface);
+    let under = |c: &&klipp_timeline::Clip| c.timeline_in <= time && time < c.timeline_out;
+    let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter());
+    let host = clips()
+        .find(|c| c.id == pin.host && carries(c) && under(c))
+        .or_else(|| clips().find(|c| carries(c) && under(c)))
+        .or_else(|| clips().find(|c| c.id == pin.host && carries(c)))?;
     let surface = host.surfaces.iter().find(|s| s.id == pin.surface)?;
     if surface.keys.is_empty() {
         return None;
     }
     let elapsed = (time - host.timeline_in).to_secs_f64();
-    Some(surface.corners_at(host.source_secs_at(elapsed, fps)))
+    let on_source = surface.corners_shown_at(host.source_secs_at(elapsed, fps));
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let placed = placement(host).unwrap_or_else(|| evaluate_clip_own_transform(host, elapsed.max(0.0), &eval_context(host, time, fps)));
+    let on_frame = klipp_timeline::surface::source_quad_in_frame(&on_source, surface.source_size, frame, Some(placed));
+    klipp_timeline::surface::pin_frame_corners(&on_frame, pin.picture_size, frame)
 }
 
 /// Evaluate a single clip's *own* transform — keyframes + modifiers

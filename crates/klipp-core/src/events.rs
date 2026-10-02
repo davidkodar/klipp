@@ -3727,7 +3727,10 @@ pub enum AppEvent {
     /// A surface tracked (#684): where its corners are in each file frame
     /// followed, `(file seconds, corners)`, earliest first, the reference
     /// frame's among them.
-    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])> },
+    /// `source_size` is the picture the corners are fractions of, as
+    /// shown; `held_secs` the file seconds read for the track, which can
+    /// be fewer than the clip's when they would not all fit in memory.
+    SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64) },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
 
     // Audio sync (#61)

@@ -1409,8 +1409,9 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
-            surfaces: Vec::new(),
-            surface_pin: None,
+            // The keys are in file time: each half keeps the track (#684).
+            surfaces: clip.surfaces.clone(),
+            surface_pin: clip.surface_pin,
             precomp: None,
         };
         let clip_b = Clip {
@@ -1479,8 +1480,8 @@ impl Track {
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
-            surfaces: Vec::new(),
-            surface_pin: None,
+            surfaces: clip.surfaces.clone(),
+            surface_pin: clip.surface_pin,
             precomp: None,
         };
 
