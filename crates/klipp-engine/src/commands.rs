@@ -35,7 +35,7 @@ engine_commands!(
     SampleNodeInput, SeekRelative, SeekSource, SeekTo, SequenceUpdated,
     SetActiveScopeModes, SetAntiClickFade, SetClipChannelConfig, SetClipGain,
     SetClipPan, SetClipVolume, SetGlobalLutEnabled, SetGlobalLutOpacity, SetHdrMonitor,
-    SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetLoopPlayback,
+    SetHdrReferenceOutput, SetInspectorMattePreviewTarget, SetMeasureOnlyClip, SetLoopPlayback,
     SetLutTetrahedral, SetMasterVolume, SetMattePreview, SetNodeSolo, SetPanLaw,
     SetPlayhead, SetRenderCacheEnabled, SetScopeBloom, SetScopeLowPass,
     SetScopeRenderMode, SetScopeSettings, SetScopeSizes, SetScopesVisible,

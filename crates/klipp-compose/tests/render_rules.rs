@@ -850,6 +850,33 @@ fn inspecting_a_clip_returns_its_ungraded_picture() {
     assert_eq!(img, plain);
 }
 
+/// #719: a colour measurement of a clip reads the clip alone. Graded to
+/// 0.4 grey, matted out by a black matte and covered by an opaque red
+/// card, the whole frame is red; rendered `only` it is its own picture,
+/// graded, unmatted, at full strength, with nothing over it.
+#[test]
+fn a_clip_rendered_alone_is_its_own_graded_picture() {
+    let mut c = media(0.0, 2.0);
+    c.node_graph = exposure(1.0);
+    let mut matte = solid([0, 0, 0], 0.0, 2.0);
+    matte.consumed_as_matte = true;
+    let mut binding = klipp_timeline::MatteBinding::new(matte.id);
+    binding.channel = klipp_nodes::params::MatteChannel::Luminance;
+    c.matte_source = Some(binding);
+    let card = solid([255, 0, 0], 0.0, 2.0);
+    let seq = sequence(vec![vec![card], vec![matte], vec![c.clone()]]);
+    let mut src = Flat::default().grey(&c, 0.2);
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let whole = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    assert_px("whole", px(&whole, 16, 9), [1.0, 0.0, 0.0], 0.005);
+    let inspect = Inspect { only: Some(c.id), ..Default::default() };
+    let (alone, _) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), inspect);
+    assert_px("alone", px(&alone, 16, 9), [0.4; 3], 0.005);
+    // And the next plain render is the whole frame again.
+    assert_eq!(r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()), whole);
+}
+
 /// `active_layers` names what a render stacks: a transition's two clips
 /// on its track, a clip above it, bottom first.
 #[test]

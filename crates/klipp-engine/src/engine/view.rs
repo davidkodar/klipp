@@ -352,6 +352,7 @@ impl PlaybackEngine {
             solo: self.solo_node,
             ungraded: self.bypass_color_grade,
             matte_of: self.inspector_matte_preview_target,
+            only: self.measure_only_clip,
         }
     }
 
@@ -632,7 +633,7 @@ impl PlaybackEngine {
                 ((pw, ph) == (w, h)).then_some(published);
         }
 
-        let cache_key = if progress || stack_only { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
+        let cache_key = if progress || stack_only || self.measure_only_clip.is_some() { None } else { self.render_cache_key(&seq, primary_clip, (w, h)) };
         if let Some(key) = &cache_key {
             // The cached frame is 8-bit, so the display transform over it is
             // a table: no expansion to float on the way to the same bytes.
@@ -683,7 +684,7 @@ impl PlaybackEngine {
         // present, for the same bytes. Everything the blockers name —
         // a grade, an effect, a LUT, a tone map, a scope tap, node
         // thumbnails — still takes the full path.
-        if let Some(p) = primary.as_ref().filter(|_| !stack_only) {
+        if let Some(p) = primary.as_ref().filter(|_| !stack_only && self.measure_only_clip.is_none()) {
             let mut blockers = self.fast_path_blockers_for(super::FastPath::PausedPresent);
             blockers.extend(self.picture_shape_blocker((p.width, p.height)));
             if !blockers.is_empty() {
@@ -1207,7 +1208,7 @@ fn matte_preview_event(consumer: ClipId, mask: &[f32], width: u32, height: u32) 
 /// names the primary and changes nothing until something else is asked
 /// of it.
 fn inspect_is_plain(i: &Inspect) -> bool {
-    !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none()
+    !i.ungraded && i.thumbs.is_none() && i.scope_tap.is_none() && i.matte_view.is_none() && i.solo.is_none() && i.matte_of.is_none() && i.only.is_none()
 }
 
 #[cfg(test)]

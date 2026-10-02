@@ -1287,6 +1287,9 @@ pub struct PlaybackEngine {
     /// stays in sync with what the user is grading. `None` = no
     /// preview wanted (default).
     inspector_matte_preview_target: Option<klipp_core::ClipId>,
+    /// A clip the next frames render alone, for a colour measurement of
+    /// it (#719); `None` for the picture as composited.
+    measure_only_clip: Option<klipp_core::ClipId>,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
     /// An eyedropper read of a node's input, waiting on the render
@@ -2115,6 +2118,7 @@ impl PlaybackEngine {
             hdr_reference_output: false,
             hdr_writer: None,
             inspector_matte_preview_target: None,
+            measure_only_clip: None,
             scope_tap_node: None,
             node_sample: None,
             solo_node: None,
@@ -3169,6 +3173,11 @@ impl PlaybackEngine {
                     self.matte_preview_node = None;
                 }
                 debug!("Matte preview: {}", self.matte_preview);
+            }
+
+            AppCommand::SetMeasureOnlyClip(clip) => {
+                self.measure_only_clip = clip;
+                debug!("Measure only clip: {:?}", clip);
             }
 
             AppCommand::SetInspectorMattePreviewTarget(target) => {

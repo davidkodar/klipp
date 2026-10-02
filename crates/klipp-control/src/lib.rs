@@ -685,13 +685,35 @@ fn has_picture(rgba: &[u8]) -> bool {
 }
 
 fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
+    grab_frame_rgba_of(ctx, secs, None, timeout_ms)
+}
+
+/// [`grab_frame_rgba`], with `only` the frame is that clip alone —
+/// graded and placed, with nothing over or under it (#719): what a colour
+/// tool measures a clip by, so a title, a matte or a colour card over it
+/// is not taken for its footage. The viewer is back to the whole picture
+/// before this returns, whatever happened.
+fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>, timeout_ms: Option<u64>) -> Result<(Vec<u8>, u32, u32), String> {
     static ONE_GRAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE_GRAB.lock().unwrap_or_else(|e| e.into_inner());
     let held = hold_transport(ctx)?;
     let fps = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.fps;
     let target = klipp_core::Timecode::from_secs_f64(secs.max(0.0), fps.rate());
     let before = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?.latest_generation();
-    send_envelope(ctx, vec![AppCommand::Pause, AppCommand::SeekTo(target)], false)?;
+    let mut seek = vec![AppCommand::Pause];
+    if only.is_some() {
+        seek.push(AppCommand::SetMeasureOnlyClip(only));
+    }
+    seek.push(AppCommand::SeekTo(target));
+    send_envelope(ctx, seek, false)?;
+    // Whole again before the transport is put back, so the frame the
+    // viewer is left on is the composite.
+    let finish = |held| {
+        if only.is_some() {
+            let _ = send_envelope(ctx, vec![AppCommand::SetMeasureOnlyClip(None)], false);
+        }
+        restore_transport(ctx, held);
+    };
     let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(FRAME_READ_TIMEOUT_MS));
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -703,7 +725,7 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
             break;
         }
         if std::time::Instant::now() >= deadline {
-            restore_transport(ctx, held);
+            finish(held);
             return Err(format!("no frame at {secs:.3} s within {} ms; give a longer timeout_ms", wait.as_millis()));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -721,7 +743,7 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
             break (data, width, height);
         }
         if std::time::Instant::now() >= deadline {
-            restore_transport(ctx, held);
+            finish(held);
             return Err(format!(
                 "the viewer has no picture of {secs:.3} s to measure yet (its copy of the frame is empty); \
                  a window that is not on screen renders slowly, so give a longer timeout_ms"
@@ -729,7 +751,7 @@ fn grab_frame_rgba(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> 
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    restore_transport(ctx, held);
+    finish(held);
     let expected = (width as usize) * (height as usize) * 4;
     Ok((data[..expected].to_vec(), width, height))
 }
@@ -1920,7 +1942,7 @@ mod shot_span_tests {
     }
 }
 
-fn measure_clip(ctx: &ControlContext, from: f64, to: f64, timeout_ms: Option<u64>) -> Result<(Vec<(f64, klipp_color::measure::FrameMeasure)>, Option<String>), String> {
+fn measure_clip(ctx: &ControlContext, from: f64, to: f64, only: Option<klipp_core::ClipId>, timeout_ms: Option<u64>) -> Result<(Vec<(f64, klipp_color::measure::FrameMeasure)>, Option<String>), String> {
     let span = (to - from).max(0.05);
     let times: Vec<f64> = if span < 0.6 {
         vec![from + span / 2.0]
@@ -1929,7 +1951,7 @@ fn measure_clip(ctx: &ControlContext, from: f64, to: f64, timeout_ms: Option<u64
     };
     let mut out = Vec::new();
     for t in times {
-        match measure_at(ctx, t, timeout_ms) {
+        match measure_at(ctx, t, only, timeout_ms) {
             Ok(m) => out.push((t, m)),
             Err(e) if out.is_empty() => return Err(e),
             Err(_) => {}
@@ -1980,8 +2002,15 @@ fn median_measure(reads: &[(f64, klipp_color::measure::FrameMeasure)]) -> (f64, 
 }
 
 /// The frame at a timeline second, measured: Lab readings and the faces.
-fn measure_at(ctx: &ControlContext, secs: f64, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
-    let (data, w, h) = grab_frame_rgba(ctx, secs, timeout_ms)?;
+/// A clip id given as text, for the colour tools' clip-alone reads.
+fn clip_of(id: &str) -> Option<klipp_core::ClipId> {
+    id.parse().ok().map(klipp_core::ClipId)
+}
+
+/// The frame at `secs` measured in Lab — with `only`, that clip alone
+/// (#719).
+fn measure_at(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>, timeout_ms: Option<u64>) -> Result<klipp_color::measure::FrameMeasure, String> {
+    let (data, w, h) = grab_frame_rgba_of(ctx, secs, only, timeout_ms)?;
     let faces = skin_regions(ctx, secs, &data, w, h);
     let mut m = klipp_color::measure::measure_frame(&data, w, h, &faces);
     m.log_prior = log_prior_at(ctx, secs);
@@ -3262,7 +3291,7 @@ fn handle(
                     // against.
                     let mut best: Option<(f32, klipp_color::measure::FrameMeasure, String, f64)> = None;
                     for (from, to, name) in &shots {
-                        let (frames, _) = measure_clip(ctx, *from, *to, Some(6000))?;
+                        let (frames, _) = measure_clip(ctx, *from, *to, None, Some(6000))?;
                         let (at, m) = median_measure(&frames);
                         if klipp_color::measure::looks_like_log(&m) {
                             continue;
@@ -3367,8 +3396,7 @@ fn handle(
             // frames, the middle reading grading it.
             let mut read: Vec<(usize, f64, klipp_color::measure::FrameMeasure)> = Vec::new();
             for (i, (id, from, to, _)) in shots.iter().enumerate() {
-                let _ = id;
-                let (frames, _drift) = measure_clip(ctx, *from, *to, Some(6000))?;
+                let (frames, _drift) = measure_clip(ctx, *from, *to, clip_of(id), Some(6000))?;
                 let (at, m) = median_measure(&frames);
                 read.push((i, at, m));
             }
@@ -3457,7 +3485,7 @@ fn handle(
                             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                             fold.send(ctx, edits, revision)?;
                             done += 1;
-                            read[i].2 = measure_at(ctx, read[i].1, Some(6000))?;
+                            read[i].2 = measure_at(ctx, read[i].1, clip_of(&shots[read[i].0].0), Some(6000))?;
                             if match_distance(&read[hero].2, &read[i].2) <= MATCH_GOOD {
                                 break;
                             }
@@ -3674,6 +3702,7 @@ fn handle(
             // Read where the face is largest in the clip, not at its
             // midpoint: a face a hundred pixels across is what a skin
             // read needs, and the clip's middle may hold none at all.
+            let only = clip_of(&clip_id);
             let (mid, name) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
@@ -3703,7 +3732,7 @@ fn handle(
             let target = look.skin_hue.unwrap_or(SKIN_HUE_CENTRE);
             let mut rounds = Vec::new();
             let mut shift = 0.0f32;
-            let mut m = measure_at(ctx, mid, Some(6000))?;
+            let mut m = measure_at(ctx, mid, only, Some(6000))?;
             let Some(face0) = m.faces.iter().find(|f| f.readable()).cloned() else {
                 return Err(format!("no face to read in {name} at {mid:.2} s, where the largest face in the clip is: the framing analysis found no face there (analyze — the face model comes with the detector), or the face is too small or too dark to read skin in"));
             };
@@ -3757,7 +3786,7 @@ fn handle(
                 let (plan, revision) = resolve_plan(ctx, &[op])?;
                 let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
                 fold.send(ctx, edits, revision)?;
-                m = measure_at(ctx, mid, Some(6000))?;
+                m = measure_at(ctx, mid, only, Some(6000))?;
                 let after = m.faces.iter().find(|f| f.patches >= 4).map(|f| json!({ "hue": f.hue, "chroma": f.chroma }));
                 rounds.push(json!({ "round": round + 1, "hue_shift": shift, "after": after }));
             }
@@ -3780,10 +3809,11 @@ fn handle(
                 let want = clip_id.as_deref().map(|s| s.parse::<uuid::Uuid>().map_err(|e| format!("clip_id is not a uuid: {e}"))).transpose()?;
                 // One clip asked for is found on whichever video track
                 // holds it; the whole pass takes the picture track.
-                let tracks: Vec<&klipp_timeline::Track> = match want {
-                    Some(_) => seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).collect(),
-                    None => picture_track(&seq).into_iter().collect(),
-                };
+                // Every visible video track, the asked-for clip or all of
+                // them: the top one alone left the main picture under an
+                // overlay ungraded (#720). Each is measured alone (#719).
+                let tracks: Vec<&klipp_timeline::Track> =
+                    seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).collect();
                 tracks.into_iter()
                     .flat_map(|t| t.clips.iter())
                     .filter(|c| is_picture_clip(c) && want.is_none_or(|w| c.id.0 == w))
@@ -3806,7 +3836,7 @@ fn handle(
                 // Three frames across the shot, not one: the middle
                 // reading grades it and the drift between them is said.
                 let span = shot_span(ctx, id).unwrap_or((*mid - 0.5, *mid + 0.5));
-                let (reads, drift) = measure_clip(ctx, span.0, span.1, Some(6000))?;
+                let (reads, drift) = measure_clip(ctx, span.0, span.1, clip_of(id), Some(6000))?;
                 let (mid_t, mut m) = median_measure(&reads);
                 let mid = &mid_t;
                 // Log with no input transform is not a grading problem.
@@ -3845,7 +3875,7 @@ fn handle(
                     fold.send(ctx, edits, revision)?;
                     done_rounds += 1;
                     let m_before_round = m.clone();
-                    m = measure_at(ctx, *mid, Some(6000))?;
+                    m = measure_at(ctx, *mid, clip_of(id), Some(6000))?;
                     // A round that leaves the shot worse off is not a
                     // step toward anything. The commonest case is a
                     // cast the primaries cannot reach — a tungsten shot
@@ -5194,9 +5224,9 @@ fn handle(
                 let name = pool.get(&tc.media_id().unwrap_or(klipp_core::MediaId(uuid::Uuid::nil()))).map(|m| m.filename.clone()).unwrap_or_else(|| "the clip".into());
                 (at(&tc, secs, "the target's")?, at(&rc, reference_secs, "the reference's")?, name)
             };
-            let (td, tw, th) = grab_frame_rgba(ctx, t_mid, Some(4000))?;
+            let (td, tw, th) = grab_frame_rgba_of(ctx, t_mid, clip_of(&c), Some(4000))?;
             let target_stats = frame_stats(&td, tw, th, t_mid);
-            let (rd, rw, rh) = grab_frame_rgba(ctx, r_mid, Some(4000))?;
+            let (rd, rw, rh) = grab_frame_rgba_of(ctx, r_mid, clip_of(&r), Some(4000))?;
             let ref_stats = frame_stats(&rd, rw, rh, r_mid);
             let knobs = match_grade_knobs(&target_stats, &ref_stats);
             if knobs.is_empty() {
@@ -5801,18 +5831,27 @@ reference:   {}",
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
-                // Each detected shot of each picture clip on the top video
-                // track, read on its own — a clip holding a cut, or a long
-                // walk through changing light, is several shots, and one
-                // median across them all judged none of them (#329). At
-                // most six per clip (the longest) and 24 in all.
-                let times: Vec<(f64, (f64, f64))> = if color {
-                    seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-                        .map(|t| t.clips.iter().filter(|c| c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. }))
-                            .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), 6))
-                            .map(|(a, b)| ((a + b) / 2.0, (a, b)))
-                            .take(24).collect())
-                        .unwrap_or_default()
+                // Each detected shot of each picture clip, read on its own
+                // — a clip holding a cut, or a long walk through changing
+                // light, is several shots, and one median across them all
+                // judged none of them (#329) — on every visible video
+                // track: a short clip on a track above (an overlay, a
+                // reveal) used to stand for the whole piece, and the main
+                // picture under it went unread (#720). Each clip is read
+                // alone, so what is over it is not taken for it (#719).
+                // Up to six shots a clip (the longest), fewer when there
+                // are many clips, 48 in all.
+                let times: Vec<(f64, (f64, f64), klipp_core::ClipId)> = if color {
+                    let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+                        .flat_map(|t| t.clips.iter())
+                        .filter(|c| is_picture_clip(c))
+                        .collect();
+                    let per_clip = (48 / clips.len().max(1)).clamp(1, 6);
+                    clips.into_iter()
+                        .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), per_clip).into_iter().map(move |span| (span, c.id)))
+                        .map(|((a, b), id)| ((a + b) / 2.0, (a, b), id))
+                        .take(48).collect()
                 } else {
                     Vec::new()
                 };
@@ -5845,8 +5884,23 @@ reference:   {}",
             // neutral one, or the screen recording's), faces and all.
             let mut color_findings: Vec<(String, f64, String, String)> = Vec::new();
             let mut shots_on_target = 0usize;
-            for (t, span) in &color_times {
-                let Ok((reads, drift)) = measure_clip(ctx, span.0, span.1, Some(4000)) else { continue };
+            // A survey of many shots reads each once, at its middle; a few
+            // are read three times across, so drift within a shot is said.
+            let survey = color_times.len() > 8;
+            let mut unread: Vec<String> = Vec::new();
+            for (t, span, clip) in &color_times {
+                let read = if survey {
+                    measure_at(ctx, *t, Some(*clip), Some(4000)).map(|m| (vec![(*t, m)], None))
+                } else {
+                    measure_clip(ctx, span.0, span.1, Some(*clip), Some(4000))
+                };
+                let (reads, drift) = match read {
+                    Ok(r) => r,
+                    Err(e) => {
+                        unread.push(format!("{t:.2} s ({e})"));
+                        continue;
+                    }
+                };
                 let (_, m) = median_measure(&reads);
                 let look = look_for(ctx, *t);
                 let mut found = colour_report(&m, &look, *t);
@@ -5855,7 +5909,7 @@ reference:   {}",
                 // rounds the loop runs.
                 {
                     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                    if let Some(c) = seq.tracks.iter().flat_map(|tr| tr.clips.iter()).find(|c| c.timeline_in.to_secs_f64() <= *t && c.timeline_out.to_secs_f64() > *t && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })) {
+                    if let Some(c) = seq.tracks.iter().flat_map(|tr| tr.clips.iter()).find(|c| c.id == *clip) {
                         for fault in c.own_grade().chain_out_of_order() {
                             found.push(("warning".to_string(), *t, format!("{fault} [grade order]"), "grade_chain shows the chain; the order is input, balance, secondary, look, output".to_string()));
                         }
@@ -5917,13 +5971,18 @@ reference:   {}",
                 }
             }
             if color {
-                text.push_str(&format!("\n\nColour (measured in Lab on {} shot{}, {shots_on_target} on target):", color_times.len(), if color_times.len() == 1 { "" } else { "s" }));
+                let read = color_times.len() - unread.len();
+                text.push_str(&format!("\n\nColour (measured in Lab on {read} shot{}, {shots_on_target} on target):", if read == 1 { "" } else { "s" }));
                 if color_findings.is_empty() {
                     text.push_str(" nothing amiss.");
                 } else {
                     for f in &color_findings {
                         text.push_str(&format!("\n[{}] {:.2} s  {}. {}", f.0, f.1, f.2, f.3));
                     }
+                }
+                // A shot that could not be read is not one that passed.
+                if !unread.is_empty() {
+                    text.push_str(&format!("\n[warning] {} shot{} could not be read, so are not judged: {}", unread.len(), if unread.len() == 1 { "" } else { "s" }, unread.join("; ")));
                 }
             }
             if !audio_findings.is_empty() {
