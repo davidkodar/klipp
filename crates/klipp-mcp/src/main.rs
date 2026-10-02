@@ -1946,10 +1946,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
               from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
               from and to default to the clip's edges. auto_redact does every finding at once.\n\
-              pin {clip_id, media_id, surface?, from?, to?} — a picture, video or still onto a surface \
-              klipp_track_surface followed in the clip: on a video track above, its frame on the \
-              surface's corners and following them; surface is its id or name, the clip's latest when \
-              left out.\n\
+              pin {clip_id, media_id, surface?, from?, to?, fit?, inset?} — a picture, video or still \
+              onto a surface klipp_track_surface followed in the clip: on a video track above, following \
+              it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
+              shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
@@ -2143,10 +2143,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default) or blurred on a video track above; x, y, w, h are fractions of the frame \
               from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
               from and to default to the clip's edges. auto_redact does every finding at once.\n\
-              pin {clip_id, media_id, surface?, from?, to?} — a picture, video or still onto a surface \
-              klipp_track_surface followed in the clip: on a video track above, its frame on the \
-              surface's corners and following them; surface is its id or name, the clip's latest when \
-              left out.\n\
+              pin {clip_id, media_id, surface?, from?, to?, fit?, inset?} — a picture, video or still \
+              onto a surface klipp_track_surface followed in the clip: on a video track above, following \
+              it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
+              shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
               effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \

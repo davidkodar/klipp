@@ -410,14 +410,17 @@ exist until the plan runs.
   It is refused through a retimed clip.
 - `format {width, height, fps?}`: set the sequence's picture size and
   optionally its rate. Fit the picture rather than stretching it.
-- `pin {clip_id, media_id, surface?, from?, to?}`: a picture, video or
-  still, onto a surface tracked in the clip (a phone screen, a sign, a
-  monitor): it goes on a video track above, its whole frame on the
-  surface's four corners, following them as the shot moves, from `from`
-  to `to` (the clip's edges when left out). `surface` is the id or name
-  `klipp_track_surface` gave; left out, the clip's latest. Track first;
-  re-tracking moves what is pinned with it. Look at a frame after: a
-  picture whose shape is not the surface's is squeezed to it.
+- `pin {clip_id, media_id, surface?, from?, to?, fit?, inset?}`: a
+  picture, video or still, onto a surface tracked in the clip (a phone
+  screen, a sign, a monitor): it goes on a video track above, following
+  the surface as the shot moves, from `from` to `to` (the clip's edges
+  when left out). `surface` is the id or name `klipp_track_surface` gave;
+  left out, the clip's latest. `fit` is `stretch` (onto the four corners)
+  or `fit` (its own shape kept, in the middle); left out, it stretches
+  when the shapes nearly match and fits when they do not. `inset` leaves
+  a margin inside the edges, 0 to 0.45 each side: about 0.02 for a
+  screen tracked by its bezel. Track first; re-tracking moves what is
+  pinned with it. Look at a frame after.
 - `redact {clip_id, x, y, w, h, from?, to?, kind?, amount?}`: hide a
   patch of picture for a stretch. Coordinates are fractions of the
   frame from the top left, as `klipp_screen_text` reports them. The

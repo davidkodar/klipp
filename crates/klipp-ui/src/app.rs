@@ -702,7 +702,7 @@ struct WindowTrackJob {
 /// fractions of the frame: the clip's picture fitted and placed by its own
 /// transform, as the viewer shows it. `source_secs` reads the track there
 /// rather than at the frame shown.
-fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> [[f32; 2]; 4] {
+pub(crate) fn surface_on_frame(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip, surface: &klipp_timeline::Surface, at: f64, source_secs: Option<f64>) -> [[f32; 2]; 4] {
     let fps = seq.fps.as_f64();
     let elapsed = (at - clip.timeline_in.to_secs_f64()).max(0.0);
     let q = surface.corners_shown_at(source_secs.unwrap_or_else(|| clip.source_secs_at(elapsed, fps)));
@@ -14332,22 +14332,21 @@ impl KlippApp {
                 let _ = event_tx.send(klipp_core::AppEvent::SurfaceTrackFailed { clip_id, surface, error });
             };
             // Frames held at once: as many as fit about a gigabyte and a
-            // quarter at the size they are read, around the reference.
+            // quarter at the size they are read. Continuing one way reads
+            // only that way's frames, so all of them go that way; both ways,
+            // they are shared about the reference.
             let most = (SURFACE_TRACK_BYTES / pixels.max(1)).clamp(50, 3600);
-            let (first, last) = if last + 1 - first > most {
-                let lo = reference.saturating_sub(most / 2).max(first);
-                (lo, (lo + most - 1).min(last))
-            } else {
-                (first, last)
+            let (first, last) = match direction {
+                1 => (reference, last.min(reference + most - 1)),
+                -1 => (first.max((reference + 1).saturating_sub(most)), reference),
+                _ if last + 1 - first > most => {
+                    let lo = reference.saturating_sub(most / 2).max(first);
+                    (lo, (lo + most - 1).min(last))
+                }
+                _ => (first, last),
             };
             let loading = 0.6;
             let going = || !cancel.load(std::sync::atomic::Ordering::Relaxed);
-            // Continuing one way reads only that way's frames.
-            let (first, last) = match direction {
-                1 => (reference, last),
-                -1 => (first, reference),
-                _ => (first, last),
-            };
             let frames = match grey_frames_sized(&path, media_fps, first, last, SURFACE_TRACK_SIDE, false, &|p| {
                 going() && event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * loading }).is_ok()
             }) {
