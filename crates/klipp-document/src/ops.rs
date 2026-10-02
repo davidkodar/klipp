@@ -902,9 +902,9 @@ pub enum Op {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "vector_path", "place", "add_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
-    "slip", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
+    "slip", "slide", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
 ];

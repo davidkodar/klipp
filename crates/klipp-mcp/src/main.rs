@@ -2397,7 +2397,7 @@ mod interface_tests {
         let modern = tool_definitions_for(true);
         assert_eq!(legacy.len(), modern.len());
         let catalog_bytes = serde_json::to_vec(&legacy).unwrap().len();
-        eprintln!("legacy tool catalog: {catalog_bytes} bytes");
+        eprintln!("legacy tool catalog: {} tools, {catalog_bytes} bytes", legacy.len());
         assert!(catalog_bytes < 90_000, "catalog is {catalog_bytes} bytes");
         let plan = modern.iter().find(|tool| tool["name"] == "klipp_plan").unwrap();
         assert_eq!(plan["inputSchema"]["properties"]["ops"]["items"]["oneOf"][0]["properties"]["op"]["const"], "cut");

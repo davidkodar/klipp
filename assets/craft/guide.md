@@ -368,9 +368,6 @@ exist until the plan runs.
   splitting clips and their linked halves at the edges; move everything
   after it earlier by the removed length. This is a text-based delete.
   It is refused through a retimed clip.
-- `slip {clip_id, secs}`: move what a clip shows, not the clip itself:
-  source in and out both move by `secs` (positive means later in the
-  file); the timeline range stays put.
 - `format {width, height, fps?}`: set the sequence's picture size and
   optionally its rate. Fit the picture rather than stretching it.
 - `redact {clip_id, x, y, w, h, from?, to?, kind?, amount?}`: hide a
