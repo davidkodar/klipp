@@ -116,6 +116,12 @@ frames.
 - Every write returns the document revision after it. Pass the revision
   from a plan to apply, with its project identity when available; if
   either moved, plan again.
+- On MCP 2025-06-18, status, timeline, plan and apply also return their
+  exact fields in `structuredContent`; use those fields for revisions,
+  frames, clip ids and write status. Older clients receive readable text.
+  The tool catalog gives short descriptions; this guide is the full op
+  reference. Common edit ops reject misspelled fields and malformed
+  anchors before sending anything to Klipp.
 
 ## Anchors
 
@@ -203,8 +209,20 @@ exist until the plan runs.
   highlights; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
-  clip. `kind` is vignette, grain, glow, blur or sharpen; `amount` 0 to
-  1. A second of the same kind replaces the first. `fill_bars` fills
+  clip. `amount` is 0 to 1; a second of the same kind replaces the first.
+  Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
+  (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
+  `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,
+  `blur`, `radial_blur` (`zoom_blur`), `spin_blur`, `directional_blur`
+  (`motion_blur`), `sharpen`, `chromatic_aberration` (`rgb_split`,
+  `fringe`), `tilt_shift`, `mosaic` (`pixelate`), `posterize`, `invert`,
+  `mirror`, `lens_distortion` (`barrel`), `emboss`, `edge_detect`
+  (`edges`), `denoise`, `vhs`, and `old_film`. `corners`
+  (`rounded_corners`) rounds a layer's alpha mask, `shadow`
+  (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
+  silhouette; compose the picture smaller than the frame to see these.
+  For example, `{op: effect, clip_id: ID, kind: corners, amount: 0.4}`.
+  `fill_bars` (`blanking_fill`, `blur_fill`, `blurred_background`) fills
   the black bars round a picture that does not fill the frame (an
   upright phone shot in a wide sequence, a wide one in a vertical
   sequence) with the picture itself, enlarged and blurred, so the frame
@@ -342,9 +360,84 @@ exist until the plan runs.
 - `move {clip_id, to}`: the clip's start to an anchor; a linked audio
   or video partner goes with it.
 - `j_cut {incoming_clip, frames}`: the incoming clip's sound starts so
-  many frames before its picture. `l_cut {outgoing_clip, frames}`: the
-  outgoing clip's sound stays so many frames past its picture. Both
-  need the clips' linked audio, adjacent on one audio track.
+  many frames before its picture.
+- `l_cut {outgoing_clip, frames}`: the outgoing clip's sound stays so
+  many frames past its picture. Both J and L cuts need linked audio,
+  adjacent on one audio track.
+- `cut {from, to}`: remove that stretch from every unlocked track,
+  splitting clips and their linked halves at the edges; move everything
+  after it earlier by the removed length. This is a text-based delete.
+  It is refused through a retimed clip.
+- `format {width, height, fps?}`: set the sequence's picture size and
+  optionally its rate. Fit the picture rather than stretching it.
+- `redact {clip_id, x, y, w, h, from?, to?, kind?, amount?}`: hide a
+  patch of picture for a stretch. Coordinates are fractions of the
+  frame from the top left, as `klipp_screen_text` reports them. The
+  default kind is `mosaic`; `blur` is also available. The range
+  defaults to the clip edges; `klipp_auto_redact` handles all findings.
+- `grade_group {group, clips:[clip_id…], leave?}`: put clips in a named
+  group, or take them out with `leave`. Group grades run before (`pre`)
+  or after (`post`) each clip's own grade. `grade` and `look` can target
+  `{group, stage}` instead of a clip, or `"timeline"` after all clips.
+  Use one group look for a scene.
+- `remove_grade_group {group}`: end a group and leave its clips' own
+  grades in place.
+- `zoom {clip_id, from?, to, x?, y?}`: animate a zoom over the clip,
+  from one scale to another (1 as shot, up to 4). `x,y` can move the
+  focus toward a frame point (-1 to 1), for a Ken Burns move on a
+  still. It renders on the GPU.
+- `pan {clip_id, keys:[{secs, scale?, x?, y?}]}`: animate a crop through
+  poses in the clip's own seconds. `scale` is 1 to 4, centred on frame
+  point `x,y` from 0 to 1; Klipp eases between poses without crossing
+  the picture edge.
+- `follow {clip_id, scale?, hold_secs?}`: make a pan from the beat
+  sheet's spots, pushing to each event, holding, then easing out.
+- `highlight {at, secs?, x, y, w, h, kind?, color?, stroke?, track?}`:
+  draw attention to a region. `x,y` are its centre and `w,h` its size
+  as frame fractions; `kind` is `box`, `ring` or `spot` (dim outside).
+  The highlight fades in and out.
+- `ramp {clip_id, from, to, secs?}`: ramp speed from `from` times to
+  `to` times over timeline seconds, then hold the new speed; the clip's
+  length follows. The ramp's sound is silent.
+- `compose {clip_id, poses:[{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]}`:
+  place a picture inside the frame. One pose holds; more animate.
+  `secs` is relative to the clip; `x,y` place its centre as frame
+  fractions (-1 to 2, default 0.5). `width` and `height` must be equal
+  (0.01 to 4, default 1); rotation is -360 to 360 degrees and opacity
+  0 to 1. Example: `{op: compose, clip_id: ID, poses:[{x:0.7,
+  y:0.7, width:0.4, height:0.4}]}`.
+- `camera {keys:[{secs?, x?, y?, zoom?, roll_deg?}]}`: move the whole
+  sequence, including all its layers. `secs` is timeline time, not a
+  clip offset. `x,y` are the look point (-1 to 2, default 0.5), `zoom`
+  is 0.1 to 8 and `roll_deg` -360 to 360. One key holds; `keys:[]`
+  clears the camera.
+- `crop {clip_id, left?, right?, top?, bottom?}`: take those fractions
+  off the picture's sides. The remainder is transparent, so a cropped
+  screen window can be composed as a card and rounded with `corners`.
+  All four zero removes the crop.
+- `generator {data, at, secs?|end?, track?}`: place native generator
+  data as in `klipp_generator`. Give exactly one duration, `secs` or
+  an `end` anchor. Without a track it uses a bottom Background video
+  track. Example: `{op: generator, data:{SolidColor:{color:
+  [16,24,32,255]}}, at:{secs:0}, secs:3}`.
+- `depth {clip_id, depth}`: set how far back the clip sits for the
+  sequence camera. `1` is the composed plane, `3` drifts a third as
+  much and grows less under a push, `0.5` is nearer, and `0` fixes it
+  to the screen while the scene moves behind it.
+- `motion_blur {shutter_deg, samples?}`: blur everything that moves.
+  `shutter_deg` is the open shutter's share of a frame (180 is the film
+  look, 360 a full frame, 0 off); `samples` defaults to 8, and higher
+  values are smoother and slower.
+- `vector_path {clip_id, object_id?, path}`: add or replace a title's
+  editable path layer. `path` has `pose:{contours:[{closed,vertices:
+  [{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],
+  stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}}`,
+  optional `keyframes:[{time_secs,pose,easing}]` and optional
+  `trim:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}`.
+  Coordinates are normalized to the title box; keyed contours must
+  keep their topology. Open paths clip, closed paths wrap trim offset,
+  and the glow follows only the revealed stroke. Trim leaves the fill
+  unchanged; strokes use round caps and joins.
 
 Ops run in order and each sees what the ones before did. Overlaps,
 locked tracks, edges past the media and cuts outside a clip are refused.
