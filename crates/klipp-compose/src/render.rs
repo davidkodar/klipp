@@ -457,6 +457,9 @@ pub struct Renderer {
     shutter: HashMap<ClipId, Vec<(ResolvedTransform, f64)>>,
     working: WorkingColorspace,
     grade_encoding: klipp_core::GradeEncoding,
+    /// The motion data of the clip being rendered, for the CPU arm of
+    /// its stabilisation and rolling-shutter correction.
+    motion: klipp_effects::MotionData,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
     /// The clips the GPU stack had to render on the CPU, so the log says
@@ -542,6 +545,7 @@ impl Renderer {
             px_scale: 1.0,
             working: WorkingColorspace::default(),
             grade_encoding: klipp_core::grade_encoding(),
+            motion: klipp_effects::MotionData::default(),
             last_gpu_stack_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
             nesting: 0,
@@ -2173,10 +2177,13 @@ impl Renderer {
         }
     }
 
-    /// Upload the per-frame data the GPU's stabilisation and rolling-shutter
-    /// effects read: the stabilisation correction for this frame, and the
-    /// row transforms from motion between the neighbouring source frames.
-    /// Both exist on the GPU path only; the CPU effects skip them.
+    /// Work out the per-frame data the stabilisation and rolling-shutter
+    /// effects warp by: the stabilisation correction for this frame, and
+    /// the row transforms from motion between the neighbouring source
+    /// frames. Kept for the CPU arm (`effects`) and uploaded to the GPU
+    /// pipeline, so a chain stabilises the same on either (#698). What a
+    /// clip lacks is cleared on both, so no clip is warped by the data of
+    /// the one before it.
     fn prepare_temporal_effects(
         &mut self,
         clip: &Clip,
@@ -2194,11 +2201,15 @@ impl Renderer {
             }
             _ => None,
         });
+        self.motion = klipp_effects::MotionData::default();
         if !stabilise && rsc.is_none() {
             return;
         }
         let clip_time = eval_clip_time(clip, time);
         if stabilise {
+            if let Some(gpu) = self.gpu() {
+                gpu.clear_stabilization_homography();
+            }
             if let Some(tr) = clip.smoothed_trajectory.as_ref().filter(|t| !t.corrections.is_empty()) {
                 let source_dur = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.001);
                 let idx = ((clip_time * tr.corrections.len() as f64 / source_dur).round() as usize).min(tr.corrections.len() - 1);
@@ -2212,11 +2223,12 @@ impl Renderer {
                 if let Some(gpu) = self.gpu() {
                     gpu.upload_stabilization_homography(&m);
                 }
+                self.motion.stabilization = Some(m);
             }
         }
         if let Some((strength, readout)) = rsc {
-            if self.gpu().is_none() {
-                return;
+            if let Some(gpu) = self.gpu() {
+                gpu.clear_rsc_row_transforms();
             }
             let at = source_secs(clip, time, fps);
             let key = (clip.id, (at * 1000.0).round() as i64);
@@ -2250,6 +2262,7 @@ impl Renderer {
                 if let Some(gpu) = self.gpu() {
                     gpu.upload_rsc_row_transforms(&rows);
                 }
+                self.motion.rsc_rows = Some(rows);
             }
         }
     }
@@ -2464,8 +2477,8 @@ impl Renderer {
                 gpu.set_luma_coefs(luma);
                 gpu.apply_effects(fx, &pixels, width, height)
             }
-            _ => klipp_effects::apply_effects_with_luma(
-                fx, pixels, width, height, clip_time, luma,
+            _ => klipp_effects::apply_effects_with_motion(
+                fx, pixels, width, height, clip_time, luma, &self.motion,
             ),
         };
         self.found.stats.effects_ms += ms_since(t);

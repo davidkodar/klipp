@@ -91,6 +91,21 @@ impl Flat {
         }));
         self
     }
+    /// A horizontal ramp with vertical bands, for the warps: a flat frame
+    /// warps to itself.
+    fn ramp(mut self, c: &Clip) -> Self {
+        let mut v = Vec::with_capacity((W * H * 4) as usize);
+        for y in 0..H {
+            for x in 0..W {
+                let r = x as f32 / (W - 1) as f32;
+                let g = if (x / 4) % 2 == 0 { 0.7 } else { 0.1 };
+                v.extend_from_slice(&[r, g, y as f32 / (H - 1) as f32, 1.0]);
+            }
+        }
+        let v = Arc::new(v);
+        self.0.insert(c.id, Box::new(move || SourcePixels::Linear(v.clone())));
+        self
+    }
     fn slog3(self, c: &Clip, code: u32) -> Self {
         self.scene(c, klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3), code)
     }
@@ -1775,4 +1790,38 @@ fn a_scope_tap_returns_the_input_a_qualifier_reads() {
             assert_px(&format!("gpu {gpu}, tap {want}"), px(&tapped, 16, 9), [want; 3], 0.005);
         }
     }
+}
+
+/// #698: a stabilised clip renders the same with the CPU paths as with the
+/// GPU, and is stabilised on both. The CPU arm used to pass the frame
+/// through, so any render taking it dropped the stabilisation. A frei0r
+/// plugin in the chain sends it there even with a GPU; here the renderer
+/// is simply told to use none.
+#[test]
+fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
+    use klipp_effects::homography::Homography;
+    use klipp_effects::stabilization::SmoothedTrajectory;
+    let mut c = media(0.0, 2.0);
+    c.builtin_effects = vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }];
+    // Every frame's correction a shift of 3.5 px to the left.
+    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+    c.smoothed_trajectory = Some(SmoothedTrajectory {
+        smoothed: Vec::new(),
+        corrections: vec![shift; 48],
+        smoothing_window_secs: 1.0,
+        raw_jitter_px: 1.0,
+        smoothed_jitter_px: 0.1,
+    });
+    let mut plain = c.clone();
+    plain.builtin_effects.clear();
+    let mut src = Flat::default().ramp(&c).ramp(&plain);
+    let [cpu, gpu] = render(&sequence(vec![vec![c]]), 0.5, &mut src);
+    let [unwarped, _] = render(&sequence(vec![vec![plain]]), 0.5, &mut src);
+    let moved = cpu.iter().zip(&unwarped).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(moved > 0.1, "the CPU render was not stabilised (largest change {moved})");
+    // Bilinear: each pixel half of its neighbours 3 and 4 px to the right.
+    let want = (px(&unwarped, 10 + 3, 9)[0] + px(&unwarped, 10 + 4, 9)[0]) / 2.0;
+    assert_px("CPU, shifted", px(&cpu, 10, 9), [want, px(&cpu, 10, 9)[1], px(&cpu, 10, 9)[2]], 1e-3);
+    let worst = cpu.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 2e-3, "CPU and GPU stabilise differently, by {worst}");
 }

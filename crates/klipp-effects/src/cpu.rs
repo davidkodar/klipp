@@ -933,6 +933,48 @@ pub(crate) fn apply(
     }
 }
 
+/// The motion shaders' bilinear sample: clamp-to-edge corners around
+/// `(fx, fy)`, mixed as WGSL's `mix` mixes.
+fn bilinear(f: &Frame, fx: f32, fy: f32) -> Px {
+    let (x0f, y0f) = (fx.floor(), fy.floor());
+    let (x, y) = (x0f as i32, y0f as i32);
+    let (dx, dy) = (fx - x0f, fy - y0f);
+    let lerp = |a: Px, b: Px, t: f32| [0, 1, 2, 3].map(|c| a[c] * (1.0 - t) + b[c] * t);
+    let top = lerp(f.clamped(x, y), f.clamped(x + 1, y), dx);
+    let bottom = lerp(f.clamped(x, y + 1), f.clamped(x + 1, y + 1), dx);
+    lerp(top, bottom, dy)
+}
+
+/// Video stabilisation's warp, the CPU twin of `SHADER_STABILIZATION`:
+/// each output pixel, scaled about the centre by `crop_zoom`, is taken
+/// from where the frame's correction `h` (a row-major 3x3 homography,
+/// padded to 12) carries it (#698).
+pub(crate) fn stabilize(p: &[f32], w: u32, h: u32, m: &[f32; 12], crop_zoom: f32) -> Vec<f32> {
+    let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+    each_pixel(p, w, h, |px, py, f| {
+        let x = (px as f32 - cx) / crop_zoom + cx;
+        let y = (py as f32 - cy) / crop_zoom + cy;
+        let w_div = m[6] * x + m[7] * y + m[8];
+        let sx = (m[0] * x + m[1] * y + m[2]) / w_div;
+        let sy = (m[3] * x + m[4] * y + m[5]) / w_div;
+        bilinear(f, sx, sy)
+    })
+}
+
+/// Rolling-shutter correction's warp, the CPU twin of
+/// `SHADER_ROLLING_SHUTTER`: each row is taken through its own affine
+/// transform, the strength already in them (#698). A row without one,
+/// past the end of the list, keeps its pixels.
+pub(crate) fn rolling_shutter(p: &[f32], w: u32, h: u32, rows: &[crate::rolling_shutter::RowTransform]) -> Vec<f32> {
+    each_pixel(p, w, h, |x, y, f| match rows.get(y) {
+        Some(t) => {
+            let (fx, fy) = (x as f32, y as f32);
+            bilinear(f, t.a * fx + t.b * fy + t.tx, t.c * fx + t.d * fy + t.ty)
+        }
+        None => f.at(x, y),
+    })
+}
+
 /// HSV hue shift (degrees), saturation and value multipliers, as the
 /// shader computes them.
 fn hsv_adjust(s: [f32; 3], hue_shift: f32, saturation: f32, value: f32) -> [f32; 3] {
