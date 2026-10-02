@@ -1805,3 +1805,18 @@ fn an_unreadable_op_is_named_by_its_step() {
     assert!(e.starts_with("step 2 (grade) could not be read"), "{e}");
     assert!(e.contains("\"on\""), "{e}");
 }
+
+/// #738: a title or type style naming a font that is neither bundled nor
+/// installed is warned about, and a bundled one is not.
+#[test]
+fn a_missing_font_is_warned_about() {
+    let mut h = harness();
+    let plan = |font: &str| json!({ "method": "plan", "ops": [{ "op": "title", "text": "Hi", "at": { "secs": 0.0 }, "secs": 1.0, "font": font }] });
+    let r = h.ok(plan("Nowhere Grotesk Xyz"));
+    assert!(r["warnings"][0].as_str().unwrap().contains("Nowhere Grotesk Xyz"), "{r}");
+    assert!(r["text"].as_str().unwrap().contains("[warning] font"), "{r}");
+    let r = h.ok(plan("Bebas Neue"));
+    assert!(r.get("warnings").is_none(), "{r}");
+    let fonts = h.ok(json!({ "method": "fonts" }));
+    assert!(fonts["bundled"].as_array().unwrap().iter().any(|f| f == "Bebas Neue"), "{fonts}");
+}

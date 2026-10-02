@@ -227,8 +227,17 @@ pub enum Op {
         linked: bool,
     },
     /// A clip's start to an anchor, its length unchanged; a linked audio
-    /// or video partner goes with it. Refused into another clip.
-    Move { clip_id: ClipRef, to: Anchor },
+    /// or video partner goes with it. Refused into another clip. With
+    /// `track`, the clip goes to that track too (#735): a picture to a
+    /// video track, a title to a text or video track, a sound to an audio
+    /// track; its linked partner stays on its own track and moves in time
+    /// with it.
+    Move {
+        clip_id: ClipRef,
+        to: Anchor,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
     /// The stretch from `from` to `to` out of the timeline: taken from
     /// every unlocked track, a clip across either edge split there (its
     /// linked half with it), and everything after it on those tracks
@@ -375,6 +384,11 @@ pub enum Op {
         /// Take the grade back to neutral first, then set what is given.
         #[serde(default)]
         reset: bool,
+        /// Copy the grade of this clip — its whole grade graph — onto the
+        /// target instead of turning knobs (#734): a colourist's "apply
+        /// grade from". Grade again after it to adjust.
+        #[serde(default)]
+        from: Option<ClipRef>,
     },
     /// A finishing effect on a picture clip. `kind` is "vignette" (darken
     /// the edges), "grain" (film grain), "glow" (soften the highlights, a
@@ -718,6 +732,10 @@ pub enum Op {
         kind: String,
         #[serde(default = "default_transition_secs")]
         secs: f64,
+        /// Take the transition on the clip's cut off instead (#735), the
+        /// crossfade on its linked sound with it; undo puts both back.
+        #[serde(default)]
+        remove: bool,
     },
     /// The look and place of titles: one clip, or every title on a track
     /// (the captions, all at once), between `from` and `to` when given —
@@ -1790,7 +1808,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             duck(seq, pool, i, ti, clip, *by_db, *fade_secs, transcripts)
         }
-        Op::Transition { clip_id, kind, secs } => {
+        Op::Transition { clip_id, remove: true, .. } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            remove_transition(seq, pool, i, ti, clip)
+        }
+        Op::Transition { clip_id, kind, secs, .. } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
         }
@@ -1932,8 +1954,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
         }
-        Op::Grade { clip_id, on, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset } => {
+        Op::Grade { clip_id, on, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
+            if let Some(from) = from {
+                let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
+                if knobs.iter().any(|k| k.is_some()) || *reset {
+                    return Err(refuse(i, "a grade copied from another clip takes no knobs", "copy it in one op, then grade the knobs in the next"));
+                }
+                let (_, _, source) = resolve_clip(seq, fps, from, i)?;
+                if source.id == target.id {
+                    return Err(refuse(i, "a clip's grade copied onto itself", "name another clip in from"));
+                }
+                let what = format!("grade {} as {} is graded", target.name, clip_name(seq, pool, source));
+                let edit = EditCommand::SetNodeGraph { clip_id: target.id, old_graph: target.graph, new_graph: source.node_graph.clone() };
+                return Ok((what, edit, target.touched));
+            }
             let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
                 ("exposure", "exposure", *exposure, -6.0, 6.0),
                 // The grade's contrast is 0 at neutral (+1 doubles the distance
@@ -2318,7 +2353,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             cut_range(seq, pool, i, from, to)
         }
 
-        Op::Move { clip_id: clip_ref, to } => {
+        Op::Move { clip_id: clip_ref, to, track } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
             let clip_id = &clip.id;
             if seq.tracks[ti].locked {
@@ -2327,7 +2362,25 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let new_in = resolve_anchor(seq, fps, to, i)?;
             let len = clip.timeline_out - clip.timeline_in;
             let new_out = new_in + len;
-            if let Some(c) = overlapping(seq, ti, new_in, new_out, Some(*clip_id)) {
+            // To another track (#735): one that takes this kind of clip.
+            let to_track = match track {
+                Some(t) => Some(resolve_track(seq, t, i)?).filter(|&tj| tj != ti),
+                None => None,
+            };
+            if let Some(tj) = to_track {
+                let fits = match &clip.kind {
+                    ClipKind::Title(_) => matches!(seq.tracks[tj].kind, TrackKind::Text | TrackKind::Video),
+                    _ => seq.tracks[tj].kind == seq.tracks[ti].kind,
+                };
+                if !fits {
+                    return Err(refuse(i, format!("track {tj} is a {:?} track and {} cannot go on it", seq.tracks[tj].kind, clip_name(seq, pool, clip)), "a picture goes to a video track, a title to a text or video track, a sound to an audio track"));
+                }
+                if seq.tracks[tj].locked {
+                    return Err(refuse(i, format!("track {tj} is locked"), "unlock it first"));
+                }
+            }
+            let dest = to_track.unwrap_or(ti);
+            if let Some(c) = overlapping(seq, dest, new_in, new_out, Some(*clip_id)) {
                 return Err(refuse(i, format!("it would overlap {} at {:.2}-{:.2} s", clip_name(seq, pool, c), secs(c.timeline_in), secs(c.timeline_out)), format!("move it to clip_end of {}, or remove that clip first", c.id.0)));
             }
             let delta = new_in - clip.timeline_in;
@@ -2351,6 +2404,38 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 secs(new_out),
                 if linked_partner.is_some() { ", its linked partner with it" } else { "" }
             );
+            if let Some(tj) = to_track {
+                let mut what = format!("{what}, onto track {tj}");
+                // The transitions on its cuts would be left naming a clip
+                // no longer there (#760 review), and its partner's, whose
+                // time moves: taken off in the same step.
+                let mut off: Vec<EditCommand> = Vec::new();
+                let partner = clip.linked_clip_id.and_then(|pid| find_clip(seq, pid)).map(|(pti, _, p)| (pti, p.id));
+                for (track, id) in std::iter::once((ti, clip.id)).chain(partner) {
+                    for tr in seq.tracks[track].transitions.iter().filter(|t| t.clip_a_id == id || t.clip_b_id == id) {
+                        let find = |cid: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid);
+                        let (fa, fb) = (find(tr.clip_a_id).map_or(0.0, |c| c.fade_out_secs), find(tr.clip_b_id).map_or(0.0, |c| c.fade_in_secs));
+                        off.push(EditCommand::RemoveTransition { track_index: track, transition: *tr, old_fade_out_a: fa, old_fade_in_b: fb });
+                    }
+                }
+                if !off.is_empty() {
+                    what.push_str(&format!(", the {} transition{} on its cuts taken off", off.len(), if off.len() == 1 { "" } else { "s" }));
+                }
+                let edit = EditCommand::LegacyMoveClipToTrack {
+                    clip: clip.clone(),
+                    old_timeline_in: clip.timeline_in,
+                    old_timeline_out: clip.timeline_out,
+                    new_timeline_in: new_in,
+                    from_track: ti,
+                    to_track: tj,
+                    linked_partner,
+                };
+                if off.is_empty() {
+                    return Ok((what, edit, touched));
+                }
+                off.push(edit);
+                return Ok((what, EditCommand::Batch(off), touched));
+            }
             let edit = EditCommand::LegacyMoveClip {
                 clip_id: *clip_id,
                 old_timeline_in: clip.timeline_in,
@@ -4921,7 +5006,7 @@ fn slide(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, clip: 
     } else if let Some(b) = before {
         ops.push(trim(b, Edge::Out, start + d));
     }
-    ops.push(Op::Move { clip_id: ClipRef::Id(clip.id), to: Anchor::Secs(start + d) });
+    ops.push(Op::Move { clip_id: ClipRef::Id(clip.id), to: Anchor::Secs(start + d), track: None });
     if d > 0.0 {
         if let Some(b) = before {
             ops.push(trim(b, Edge::Out, start + d));
@@ -5194,6 +5279,38 @@ fn transition(
         }
     }
     Ok((what, edit, vec![clip.id, next.id]))
+}
+
+/// The transition on the cut out of `clip` taken off (#735), and the
+/// crossfade on their linked sound where a picture transition made one,
+/// as one step: the cut is straight again, picture and sound alike.
+fn remove_transition(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    let on_cut = |track: usize, a: ClipId| seq.tracks[track].transitions.iter().find(|t| t.clip_a_id == a).copied();
+    let Some(tr) = on_cut(ti, clip.id) else {
+        return Err(refuse(i, format!("there is no transition on the cut out of {}", clip_name(seq, pool, clip)), "name the clip before the cut the transition sits on; klipp_timeline lists each transition with its two clips"));
+    };
+    let fades = |a: ClipId, b: ClipId| {
+        let find = |id: ClipId| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id);
+        (find(a).map_or(0.0, |c| c.fade_out_secs), find(b).map_or(0.0, |c| c.fade_in_secs))
+    };
+    let (fa, fb) = fades(tr.clip_a_id, tr.clip_b_id);
+    let mut edits = vec![EditCommand::RemoveTransition { track_index: ti, transition: tr, old_fade_out_a: fa, old_fade_in_b: fb }];
+    let mut what = format!("take the transition off the cut out of {}", clip_name(seq, pool, clip));
+    // The sound's crossfade a picture transition made goes with it.
+    if seq.tracks[ti].kind != TrackKind::Audio {
+        if let Some((sti, _, sound)) = clip.linked_clip_id.and_then(|id| find_clip(seq, id)) {
+            if let Some(cross) = on_cut(sti, sound.id) {
+                let (fa, fb) = fades(cross.clip_a_id, cross.clip_b_id);
+                edits.push(EditCommand::RemoveTransition { track_index: sti, transition: cross, old_fade_out_a: fa, old_fade_in_b: fb });
+                what.push_str(", and the crossfade on their sound");
+            }
+        }
+    }
+    let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
+    Ok((what, edit, vec![clip.id]))
 }
 
 /// Whether a transition of `dur` aligned `alignment` fits between `a`
@@ -5788,9 +5905,18 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     // (#460).
     if a.full_frame.is_none() {
         let (w, h) = text_extent(text, td.font_size(), seq.resolution);
+        let align = td.primary_text().map(|tb| tb.alignment);
         if let Some(obj) = td.objects.get_mut(0) {
             let keep = |c: f32, half: f32| if half < 0.45 { c.clamp(0.05 + half, 0.95 - half) } else { 0.5 };
-            obj.transform.center.x = keep(obj.transform.center.x, w / 2.0);
+            // `x` is the edge a left- or right-aligned title rests on, as
+            // the renderer anchors it, not its centre: clamped as one, a
+            // left-aligned chapter title at x 0.18 was pushed in by half
+            // its width and no longer lined up with its kicker (#737).
+            obj.transform.center.x = match align {
+                Some(TextAlignment::Left) if w < 0.9 => obj.transform.center.x.clamp(0.05, 0.95 - w),
+                Some(TextAlignment::Right) if w < 0.9 => obj.transform.center.x.clamp(0.05 + w, 0.95),
+                _ => keep(obj.transform.center.x, w / 2.0),
+            };
             obj.transform.center.y = keep(obj.transform.center.y, h / 2.0);
         }
     }
@@ -5800,12 +5926,16 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     let mut moved: Option<&'static str> = None;
     if !a.keep_out.is_empty() && a.full_frame.is_none() {
         let font = td.font_size();
+        let td_align = td.primary_text().map(|tb| tb.alignment);
         if let Some(obj) = td.objects.get_mut(0) {
             let size = text_extent(text, font, seq.resolution);
-            let center = (obj.transform.center.x, obj.transform.center.y);
+            // The text's centre, from the edge a left or right alignment
+            // anchors, and back after the move.
+            let shift = match td_align { Some(TextAlignment::Left) => size.0 / 2.0, Some(TextAlignment::Right) => -size.0 / 2.0, _ => 0.0 };
+            let center = (obj.transform.center.x + shift, obj.transform.center.y);
             match clear_zone(center, size, &a.keep_out) {
                 Some((c, Some(zone))) => {
-                    obj.transform.center.x = c.0;
+                    obj.transform.center.x = c.0 - shift;
                     obj.transform.center.y = c.1;
                     moved = Some(zone);
                 }
@@ -6341,6 +6471,117 @@ mod tests {
         let plan = resolve(&seq, &pool, &[title(6.2)]).unwrap();
         let EditCommand::AddTitleClip { track_index, created_track, .. } = &plan.steps[0].edit else { panic!() };
         assert_eq!((*track_index, *created_track), (1, false), "after the card: the free text track");
+    }
+
+    /// #737: left-aligned titles of any length start at the x they are
+    /// given, so a chapter title and its kicker share a margin; the
+    /// title-safe clamp used to treat x as the centre and push the longer
+    /// one in by half its width. A right-aligned one ends at its x.
+    #[test]
+    fn left_aligned_titles_share_a_margin() {
+        let (seq, pool, _, _, _) = fixture();
+        let title = |text: &str, size: f32, align: &str, x: f32| -> f32 {
+            let op: Op = serde_json::from_value(serde_json::json!({ "op": "title", "text": text, "at": { "secs": 1.0 }, "secs": 2.0, "size": size, "align": align, "x": x, "y": 0.8 })).unwrap();
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+            clip.title_data().unwrap().objects[0].transform.center.x
+        };
+        assert_eq!(title("UP ON THE ROOF", 120.0, "left", 0.18), 0.18);
+        assert_eq!(title("La Mata from above", 34.0, "left", 0.18), 0.18);
+        assert_eq!(title("UP ON THE ROOF", 120.0, "right", 0.82), 0.82);
+        // Still inside title-safe: too far left comes in to the margin.
+        assert_eq!(title("UP ON THE ROOF", 120.0, "left", 0.0), 0.05);
+    }
+
+    /// #734: one clip's grade copied onto another, whole, as one step;
+    /// knobs in the same op are refused (grade again after).
+    #[test]
+    fn a_grade_is_copied_from_another_clip() {
+        let (seq, pool, _, a, b) = fixture();
+        let graded = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(0.5), contrast: None, saturation: Some(1.3), temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&graded.steps[0].edit);
+        let copy: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}"}}]"#, b.0, a.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &copy).unwrap();
+        assert!(plan.steps[0].what.contains(" as ") , "{}", plan.steps[0].what);
+        view.apply_forward(&plan.steps[0].edit);
+        let clips = &view.sequences[0].tracks[0].clips;
+        assert_eq!(clips[1].node_graph, clips[0].node_graph, "the same grade");
+        let both: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}","exposure":0.2}}]"#, b.0, a.0)).unwrap();
+        assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
+    }
+
+    /// #735: a transition comes off as one step, the crossfade a picture
+    /// dissolve made on the linked sound with it; with nothing on the cut
+    /// the op says so.
+    #[test]
+    fn a_transition_comes_off_with_its_crossfade() {
+        let (seq, pool, _, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks.iter().filter(|t| !t.transitions.is_empty()).count() >= 1);
+        let off: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"transition","clip_id":"{}","remove":true}}]"#, a.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &off).unwrap();
+        assert!(plan.steps[0].what.contains("crossfade on their sound"), "{}", plan.steps[0].what);
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks.iter().all(|t| t.transitions.is_empty()), "both off");
+        assert!(resolve(&view.sequences[0], view.media_pool, &off).unwrap_err().why.contains("no transition"));
+    }
+
+    /// #735: a clip moves to another track at the time given; its linked
+    /// sound stays on its own track. A picture cannot go to a sound track.
+    #[test]
+    fn a_clip_moves_to_another_track() {
+        let (mut seq, pool, _, a, b) = fixture();
+        seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
+        // A dissolve on the cut out of it, crossfading its sound too: both
+        // must come off with the move, not be left naming a clip gone.
+        let dissolve = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        {
+            let mut seqs = vec![seq.clone()];
+            let mut p = pool.clone();
+            let mut fps = seq.fps;
+            let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+            view.apply_forward(&dissolve.steps[0].edit);
+            seq = view.sequences[0].clone();
+        }
+        assert!(seq.tracks.iter().any(|t| !t.transitions.is_empty()));
+        // The clip after the cut, its incoming side, half a second later.
+        let shifted: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"move","clip_id":"{}","to":{{"secs":4.5}},"track":0}}]"#, b.0)).unwrap();
+        let plan = resolve(&seq, &pool, &shifted).unwrap();
+        assert!(plan.steps[0].what.contains("taken off"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks.iter().all(|t| t.transitions.is_empty()), "no transition left naming the moved clip");
+        let moved = view.sequences[0].tracks[0].clips.iter().find(|c| c.id == b).expect("on the new track");
+        assert!((moved.timeline_in.to_secs_f64() - 4.5).abs() < 0.05);
+        let sound = view.sequences[0].tracks.iter().flat_map(|t| t.clips.iter()).find(|c| Some(c.id) == moved.linked_clip_id).unwrap();
+        assert!((sound.timeline_in.to_secs_f64() - 4.5).abs() < 0.05, "its sound moved in time with it");
+        let (mut seq, pool, _, a, _) = fixture();
+        seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
+        let mv = |track: usize| -> Vec<Op> { serde_json::from_str(&format!(r#"[{{"op":"move","clip_id":"{}","to":{{"secs":0}},"track":{track}}}]"#, a.0)).unwrap() };
+        let plan = resolve(&seq, &pool, &mv(0)).unwrap();
+        assert!(plan.steps[0].what.contains("onto track 0"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips.iter().any(|c| c.id == a), "on the new track");
+        assert!(!view.sequences[0].tracks[1].clips.iter().any(|c| c.id == a), "off the old one");
+        assert_eq!(view.sequences[0].tracks[2].clips.len(), 2, "the sound stays on its track");
+        let audio = seq.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+        assert!(resolve(&seq, &pool, &mv(audio)).unwrap_err().why.contains("cannot go on it"));
     }
 
     fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
@@ -7196,7 +7437,7 @@ mod tests {
     fn a_transition_goes_between_two_clips_and_undo_removes_it() {
         let (seq, pool, _, a, b) = fixture();
         // The two clips meet at 4 s and each is 4 s long with source beyond.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
         assert!(plan.steps[0].what.starts_with("Cross Dissolve of 0.40 s") && plan.steps[0].what.contains("at 4.00 s"), "{}", plan.steps[0].what);
         // The picture's transition, and its linked sound crossfaded with it.
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch: {:?}", plan.steps[0].edit) };
@@ -7222,16 +7463,16 @@ mod tests {
         assert_eq!(view.sequences[0].tracks[0].clips[0].fade_out_secs, 0.0);
 
         // A stylised name by its alias.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4, remove: false }]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
         let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
         assert_eq!(transition.kind, klipp_core::TransitionKind::WhipPan, "a whip is a whip pan, not a zoom (#512)");
 
         // Refusals: the last clip has no next; an unknown kind; too long.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5 }).why.contains("no clip after"));
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5 }).why.contains("not a transition"));
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0 }).why.contains("as long as one of its clips"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5, remove: false }).why.contains("no clip after"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5, remove: false }).why.contains("not a transition"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0, remove: false }).why.contains("as long as one of its clips"));
 
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
@@ -7242,7 +7483,7 @@ mod tests {
     fn a_transition_on_an_audio_track_is_a_crossfade_and_fades_nothing() {
         let (seq, pool, _, _, _) = fixture();
         let sound_a = seq.tracks[1].clips[0].id;
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "dip_to_black".into(), secs: 0.4 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "dip_to_black".into(), secs: 0.4, remove: false }]).unwrap();
         assert!(plan.steps[0].what.starts_with("Crossfade of 0.40 s"), "{}", plan.steps[0].what);
         let EditCommand::AddTransition { track_index, .. } = &plan.steps[0].edit else { panic!("one transition, no batch") };
         assert_eq!(*track_index, 1);
@@ -7387,10 +7628,10 @@ mod tests {
         ab.source_in = tc(0.0);
         ab.source_out = tc(4.0);
         let sound_a = seq.tracks[1].clips[0].id;
-        let err = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "crossfade".into(), secs: 0.4 }]).unwrap_err();
+        let err = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "crossfade".into(), secs: 0.4, remove: false }]).unwrap_err();
         assert!(err.why.contains("no footage beyond the cut"), "{err}");
         // The picture still dissolves, its sound dipped as before.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
         assert!(matches!(plan.steps[0].edit, EditCommand::AddTransition { track_index: 0, .. }), "{:?}", plan.steps[0].edit);
     }
 
@@ -8106,7 +8347,7 @@ mod tests {
     #[test]
     fn a_grade_sets_the_primary_knobs_and_undo_takes_it_back() {
         let (seq, pool, media, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(0.5), contrast: Some(1.2), saturation: Some(1.3), temperature: Some(0.1), tint: None, lift: Some(0.05), gamma: None, gain: Some(-0.1), highlights: None, shadows: Some(0.2), vibrance: Some(0.3), reset: false, from: None }]).unwrap();
         assert!(plan.steps[0].what.contains("exposure 0.5") && plan.steps[0].what.contains("gain -0.1"), "{}", plan.steps[0].what);
         // Contrast is said as the multiplier it was given, not the offset
         // the node stores, and without float noise.
@@ -8130,8 +8371,8 @@ mod tests {
 
         // Out of range, nothing to change, a title: refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("out of range"));
-        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false }).why.contains("nothing to grade"));
+        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: Some(99.0), contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }).why.contains("out of range"));
+        assert!(bad(Op::Grade { clip_id: Some(ClipRef::Id(a)), on: None, exposure: None, contrast: None, saturation: None, temperature: None, tint: None, lift: None, gamma: None, gain: None, highlights: None, shadows: None, vibrance: None, reset: false, from: None }).why.contains("nothing to grade"));
 
         // As the tools send it.
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"grade","clip_id":{"track":0,"secs":1.0},"exposure":0.3,"saturation":1.1,"reset":true}]"#).unwrap();
@@ -8317,11 +8558,11 @@ mod tests {
         assert!(over.hint.contains("clip_end"), "{over}");
         let past = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false, linked: false }]).unwrap_err();
         assert!(past.why.contains("after this clip's out point"), "{past}");
-        let into = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Secs(1.0) }]).unwrap_err();
+        let into = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Secs(1.0), track: None }]).unwrap_err();
         assert!(into.why.contains("overlap"), "{into}");
         let outside = resolve(&seq, &pool, &[Op::Split { clip_id: ClipRef::Id(a), at: Anchor::Secs(4.0) }]).unwrap_err();
         assert!(outside.why.contains("not inside"), "{outside}");
-        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Marker("outro".into()) }]).unwrap_err();
+        let no_marker = resolve(&seq, &pool, &[Op::Move { clip_id: ClipRef::Id(a), to: Anchor::Marker("outro".into()), track: None }]).unwrap_err();
         assert!(no_marker.why.contains("no marker"), "{no_marker}");
     }
 

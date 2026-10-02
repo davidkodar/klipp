@@ -711,6 +711,9 @@ pub enum ControlCommand {
         #[serde(default)]
         remove: bool,
     },
+    /// The font families titles can be set in: bundled with Klipp, and
+    /// installed on this machine (#738).
+    Fonts,
     /// The bundled looks (3D LUTs) an agent can apply, by category, so it
     /// knows what names `look` will take.
     Looks {
@@ -995,6 +998,24 @@ pub enum ControlCommand {
     },
     /// The frame at `secs`, as a PNG, without leaving the playhead where
     /// it was: seeks there, waits for the frame, captures, seeks back.
+    /// A contact sheet of the timeline (#733): one tile for each stretch
+    /// between cuts on the visible picture tracks (each shot once), or
+    /// `frames` tiles evenly spaced, over `from_secs`..`to_secs`, as one
+    /// PNG, with each tile's time and what is on it in the reply.
+    TimelineSheet {
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        frames: Option<usize>,
+        #[serde(default)]
+        cols: Option<u32>,
+        #[serde(default)]
+        tile_width: Option<u32>,
+        #[serde(default)]
+        path: Option<String>,
+    },
     FrameAt {
         secs: f64,
         #[serde(default)]

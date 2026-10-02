@@ -386,7 +386,7 @@ fn control_call(command: Value) -> Result<Value, String> {
     // alone (#719, #720): a whole piece is a minute or more on a busy
     // machine.
     let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
-        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes")
+        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet")
         || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
     let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
@@ -941,6 +941,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("max_offset_secs").and_then(|v| v.as_f64()) { v["max_offset_secs"] = json!(x); }
             v
         }
+        "klipp_fonts" => json!({ "method": "fonts" }),
         "klipp_looks" => {
             let mut v = json!({ "method": "looks" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -1075,6 +1076,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("secs").and_then(|v| v.as_f64()) { v["secs"] = json!(x); }
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) { v["path"] = json!(p); }
             if let Some(t) = args.get("timeout_ms").and_then(|v| v.as_u64()) { v["timeout_ms"] = json!(t); }
+            v
+        }
+        "klipp_timeline_sheet" => {
+            let mut v = json!({ "method": "timeline_sheet" });
+            for key in ["from_secs", "to_secs", "frames", "cols", "tile_width", "path"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
+                    v[key] = x.clone();
+                }
+            }
             v
         }
         "klipp_frame_at" => {
@@ -1313,7 +1323,7 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     // Pictures and sound come back as a path; inline them too when
     // small enough to be worth a context window.
     let inline = match name {
-        "klipp_screenshot" | "klipp_frame_at" | "klipp_scope" => Some(("image", "image/png")),
+        "klipp_screenshot" | "klipp_frame_at" | "klipp_scope" | "klipp_timeline_sheet" => Some(("image", "image/png")),
         "klipp_contact_sheet" => Some(("image", "image/jpeg")),
         "klipp_audio_excerpt" => Some(("audio", "audio/wav")),
         _ => None,
@@ -2376,6 +2386,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               max_offset_secs bounds the search (30 by default). Both clips must carry audio.",
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
+        tool("klipp_fonts",
+             "The font families a title or a brief's type style can name: those bundled with Klipp, \
+              always there, and those installed on this machine. Any other name falls back to Inter; \
+              set_brief, plan and apply warn when one is named.",
+             json!({}), vec![]),
         tool("klipp_looks",
              "The bundled looks — 3D LUTs — an agent can apply, by category: cinematic and film \
               emulations (B&W, slide, negative, print, instant, Fuji). Read it to see the names \
@@ -2633,6 +2648,19 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               that fixes it. Read it before and after a grade — grade to the numbers, not by \
               eye, and match a shot to its neighbours by them.",
              json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
+        tool("klipp_timeline_sheet",
+             "A contact sheet of the timeline as one image: a tile for each shot (each stretch between \
+              cuts on the picture tracks), or frames tiles evenly spaced, over a range of it. The look \
+              at a whole cut — framing, grade continuity, titles — in one call instead of a frame_at \
+              per shot. The reply lists each tile's time and what is on it.",
+             json!({
+                 "from_secs": { "type": "number" },
+                 "to_secs": { "type": "number" },
+                 "frames": { "type": "integer", "description": "Evenly spaced tiles instead of one per shot (1-60)" },
+                 "cols": { "type": "integer", "description": "Tiles to a row (default 6)" },
+                 "tile_width": { "type": "integer", "description": "Pixels (default 320)" },
+                 "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
+             }), vec![]),
         tool("klipp_frame_at",
              "The frame at a time on the timeline, as a PNG, without leaving the playhead \
               where it was: seeks there, waits for the frame, captures, seeks back. Use \

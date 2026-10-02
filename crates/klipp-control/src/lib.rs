@@ -1746,6 +1746,49 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     }
 }
 
+/// Whether titles can be set in `family`: bundled with Klipp or
+/// installed, matched without case (#738).
+fn font_available(family: &str) -> bool {
+    let f = family.trim();
+    klipp_title::bundled::families().iter().any(|(name, _)| name.eq_ignore_ascii_case(f))
+        || klipp_title::font_discovery::discover_system_fonts().keys().any(|k| k.eq_ignore_ascii_case(f))
+}
+
+/// What to tell a client that named fonts titles cannot be set in (#738):
+/// a brief once took "Montserrat" without a word, and its kickers came out
+/// in the fallback.
+fn font_warnings<'a>(fonts: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for f in fonts.map(str::trim).filter(|f| !f.is_empty()) {
+        if !font_available(f) && !seen.iter().any(|s| s.eq_ignore_ascii_case(f)) {
+            seen.push(f.to_owned());
+        }
+    }
+    seen.into_iter()
+        .map(|f| format!("font \"{f}\" is neither bundled nor installed: titles in it fall back to {}. klipp_fonts lists the fonts there are.", klipp_title::bundled::DEFAULT_FAMILY))
+        .collect()
+}
+
+/// The fonts the ops in a plan name that cannot be had.
+fn op_font_warnings(ops: &[klipp_document::ops::Op]) -> Vec<String> {
+    use klipp_document::ops::Op;
+    font_warnings(ops.iter().filter_map(|o| match o {
+        Op::Title { font: Some(f), .. } | Op::Style { font: Some(f), .. } => Some(f.as_str()),
+        _ => None,
+    }))
+}
+
+/// `warnings` on a reply, and said in its text.
+fn with_warnings(v: &mut serde_json::Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    if let Some(text) = v["text"].as_str() {
+        v["text"] = json!(format!("{text}\n{}", warnings.iter().map(|w| format!("[warning] {w}")).collect::<Vec<_>>().join("\n")));
+    }
+    v["warnings"] = json!(warnings);
+}
+
 /// What to do after a batch of ops was applied, from the ops in it: the
 /// reply points at the next step so a session follows a trail rather
 /// than recalling a recipe.
@@ -5135,6 +5178,7 @@ fn handle(
             if detail {
                 v["steps"] = json!(plan.report());
             }
+            with_warnings(&mut v, op_font_warnings(&ops));
             Ok(v)
         }
 
@@ -5173,6 +5217,7 @@ fn handle(
                 }
             }
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            with_warnings(&mut v, op_font_warnings(&ops));
             if detail {
                 v["steps"] = json!(plan.report());
             }
@@ -5262,7 +5307,7 @@ fn handle(
                 return Err(format!("the offset {offset_secs:+.3} s would push {tgt_name} before the timeline start; move the reference clip later first, then align"));
             }
             use klipp_document::ops::{Anchor, ClipRef, Op};
-            let op = Op::Move { clip_id: ClipRef::Id(tgt_id), to: Anchor::Secs(new_in) };
+            let op = Op::Move { clip_id: ClipRef::Id(tgt_id), to: Anchor::Secs(new_in), track: None };
             let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
             let mut v = send_full_envelope(ctx, Vec::new(), edits, true, Some(revision), Some(format!("sync {tgt_name}")))?;
@@ -5271,6 +5316,19 @@ fn handle(
             v["confidence"] = json!(confidence);
             v["next"] = json!("Play across the join to confirm the sound and picture line up. If it drifts over a long take, the two clocks differ — you may need a second sync point.");
             Ok(v)
+        }
+
+        ControlCommand::Fonts => {
+            if in_batch {
+                return read_in_batch("fonts");
+            }
+            let bundled: Vec<String> = klipp_title::bundled::families().into_iter().map(|(name, _)| name.to_owned()).collect();
+            let installed: Vec<String> = klipp_title::font_discovery::discover_system_fonts().keys().cloned().collect();
+            let text = format!(
+                "Bundled with Klipp, always there: {}.\nInstalled on this machine ({}): {}.\nA title or type style takes any of these by its family name; anything else falls back to {}.",
+                bundled.join(", "), installed.len(), installed.join(", "), klipp_title::bundled::DEFAULT_FAMILY,
+            );
+            Ok(json!({ "text": text, "bundled": bundled, "installed": installed, "fallback": klipp_title::bundled::DEFAULT_FAMILY }))
         }
 
         ControlCommand::Looks { category } => {
@@ -5387,7 +5445,7 @@ reference: {}", target_stats["text"].as_str().unwrap_or(""), ref_stats["text"].a
                 exposure: knobs.exposure, contrast: None, saturation: None,
                 temperature: knobs.temperature, tint: knobs.tint,
                 lift: knobs.lift, gamma: None, gain: knobs.gain,
-                highlights: None, shadows: None, vibrance: None, reset: false,
+                highlights: None, shadows: None, vibrance: None, reset: false, from: None,
             };
             let (plan, revision) = resolve_plan(ctx, std::slice::from_ref(&op))?;
             let edits: Vec<klipp_document::history::EditCommand> = plan.steps.iter().map(|s| s.edit.clone()).collect();
@@ -5870,6 +5928,7 @@ reference:   {}",
                 json!({ "revision": revision, "applied": false, "next": "That is what it builds. build_edit_plan with apply true builds it as one undo step." })
             };
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });
+            with_warnings(&mut v, op_font_warnings(&ops));
             v["steps_resolved"] = json!(plan.steps.len());
             v["duration_secs"] = json!(plan.duration_secs);
             v["ops"] = json!(ops);
@@ -5933,12 +5992,14 @@ reference:   {}",
                 return Err(format!("\"{c}\" is not a brand colour; give #rrggbb"));
             }
             let old = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?.brief.clone();
+            let fonts_named: Vec<String> = brief.type_styles.iter().filter_map(|t| t.font.clone()).collect();
             let text = brief.text();
             let new_spellings = brief.spellings();
             let edit = klipp_document::history::EditCommand::SetBrief { old: old.clone().map(Box::new), new: Some(Box::new(brief)) };
             let respelt = old.as_ref().map(|b| b.spellings()).unwrap_or_default() != new_spellings;
             let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Set Brief".into()))?;
             v["text"] = json!(text);
+            with_warnings(&mut v, font_warnings(fonts_named.iter().map(String::as_str)));
             if respelt && !new_spellings.is_empty() {
                 // Only when a transcript was made without them: one that
                 // already carries them is as good as it will get.
@@ -6428,6 +6489,82 @@ reference:   {}",
             v["look"] = json!(look);
             v["findings"] = json!(findings);
             Ok(v)
+        }
+
+        ControlCommand::TimelineSheet { from_secs, to_secs, frames, cols, tile_width, path } => {
+            if in_batch {
+                return read_in_batch("timeline_sheet");
+            }
+            // Where to look: the middle of each stretch between cuts on the
+            // visible picture tracks, so each shot is seen once, or evenly.
+            let (tiles, names): (Vec<f64>, Vec<String>) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let end = seq.total_duration().to_secs_f64();
+                let (a, b) = (from_secs.unwrap_or(0.0).max(0.0), to_secs.unwrap_or(end).min(end));
+                if b <= a {
+                    return Err(format!("{a:.2}-{b:.2} s is not a stretch of the timeline (0-{end:.2} s)"));
+                }
+                let pictures = || seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled);
+                let times: Vec<f64> = match frames {
+                    Some(n) => {
+                        let n = n.clamp(1, 60);
+                        (0..n).map(|k| a + (b - a) * (k as f64 + 0.5) / n as f64).collect()
+                    }
+                    None => {
+                        let mut cuts: Vec<f64> = vec![a, b];
+                        for c in pictures() {
+                            for t in [c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64()] {
+                                if t > a && t < b {
+                                    cuts.push(t);
+                                }
+                            }
+                        }
+                        cuts.sort_by(f64::total_cmp);
+                        cuts.dedup_by(|x, y| (*x - *y).abs() < 0.05);
+                        cuts.windows(2).map(|w| (w[0] + w[1]) / 2.0).take(60).collect()
+                    }
+                };
+                // What is on each tile: the pictures, and titles over them.
+                let seen = || seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled && !c.consumed_as_matte);
+                let names = times.iter().map(|t| {
+                    seen().filter(|c| c.timeline_in.to_secs_f64() <= *t && c.timeline_out.to_secs_f64() > *t).map(|c| match &c.kind {
+                        klipp_timeline::ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "media".into()),
+                        klipp_timeline::ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("").chars().take(24).collect::<String>()),
+                        klipp_timeline::ClipKind::Generator(_) => "generator".into(),
+                        _ => "clip".into(),
+                    }).collect::<Vec<_>>().join(" over ")
+                }).collect();
+                (times, names)
+            };
+            let tw = tile_width.unwrap_or(320).clamp(80, 960);
+            let cols = cols.unwrap_or(6).clamp(1, 12).min(tiles.len() as u32).max(1);
+            let mut grabbed: Vec<(Vec<u8>, u32, u32)> = Vec::new();
+            for t in &tiles {
+                let (rgba, w, h) = grab_frame_rgba(ctx, *t, Some(8000))?;
+                grabbed.push(downscale_rgba(&rgba, w, h, tw));
+            }
+            let th = grabbed.iter().map(|g| g.2).max().unwrap_or(1);
+            let rows = (grabbed.len() as u32).div_ceil(cols);
+            let (sw, sh) = (cols * tw, rows * th);
+            let mut sheet = vec![0u8; (sw * sh * 4) as usize];
+            for (k, (px, w, h)) in grabbed.iter().enumerate() {
+                let (x0, y0) = ((k as u32 % cols) * tw, (k as u32 / cols) * th);
+                for y in 0..*h {
+                    let src = &px[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
+                    let at = (((y0 + y) * sw + x0) * 4) as usize;
+                    sheet[at..at + src.len()].copy_from_slice(src);
+                }
+            }
+            let out = path.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("klipp-timeline-sheet-{}.png", uuid::Uuid::new_v4())));
+            write_png(&out, &sheet, sw, sh)?;
+            let listed: Vec<serde_json::Value> = tiles.iter().zip(&names).enumerate().map(|(k, (t, n))| json!({ "tile": k + 1, "secs": (t * 100.0).round() / 100.0, "shows": n })).collect();
+            let text = format!(
+                "{} tiles, {cols} to a row, left to right then down:\n{}",
+                tiles.len(),
+                tiles.iter().zip(&names).enumerate().map(|(k, (t, n))| format!("  {:>2}. {t:.2} s  {n}", k + 1)).collect::<Vec<_>>().join("\n"),
+            );
+            Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed }))
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {
