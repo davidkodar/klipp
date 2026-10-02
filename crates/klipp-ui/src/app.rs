@@ -365,7 +365,7 @@ pub struct KlippApp {
     /// viewer panel uploads from it via the same defer-drop pattern
     /// the program viewer uses.
     pub(crate) source_frame_buffer: SharedFrameBuffer,
-    sequence: Arc<RwLock<Sequence>>,
+    sequence: Arc<klipp_timeline::SharedSequence>,
     media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     state: AppState,
     toolbar: ToolbarPanel,
@@ -634,7 +634,7 @@ pub struct KlippApp {
     /// Lock-free queue of colour-grade parameter changes sent to the engine.
     /// Populated by the `SetNodeParam` handler at slider-scrub rate (60-120 Hz);
     /// drained by the engine at the start of each frame. Bypasses the
-    /// `Arc<RwLock<Sequence>>` write lock / `flatten_sequence` rebuild path
+    /// `Arc<klipp_timeline::SharedSequence>` write lock / `flatten_sequence` rebuild path
     /// that `sync_sequence_to_engine` takes — which would otherwise contend
     /// with the engine's long read lock during active grading.
     param_change_queue: Arc<ArrayQueue<ParamChange>>,
@@ -1116,7 +1116,7 @@ impl KlippApp {
         event_rx: Receiver<AppEvent>,
         frame_buffer: SharedFrameBuffer,
         source_frame_buffer: SharedFrameBuffer,
-        sequence: Arc<RwLock<Sequence>>,
+        sequence: Arc<klipp_timeline::SharedSequence>,
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
         spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
@@ -4944,58 +4944,22 @@ impl KlippApp {
         // to the change itself, seen over the control socket and
         // possible for a fast ctrl+z too. The queue is multi-consumer.
         while self.param_change_queue.pop().is_some() {}
-        // ROOT CAUSE FIX (2026-04-28): a plain `self.sequence.write()`
-        // on Linux uses pthread_rwlock_t, which is reader-preferring
-        // by default. The engine acquires `sequence.read()` every
-        // ~16 ms during `post_process_rgba` for the paused-viewer
-        // redraw; on a busy frame the UI's blocking `write()` here
-        // never gets a turn and the UI thread sits forever at
-        // `stage=SendCommands` (observed: 60+ s stalls right after
-        // project open). Match the same try-write-with-retry pattern
-        // the engine uses in `apply_param_changes` so the UI can
-        // bound the wait, log who's holding the lock when contended,
-        // and (on long contention) yield CPU between attempts so the
-        // engine's read drops promptly.
-        let try_start = std::time::Instant::now();
-        let mut last_log = try_start;
-        let mut seq = loop {
-            match self.sequence.try_write() {
-                Ok(w) => break w,
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    if last_log.elapsed() >= std::time::Duration::from_secs(1) {
-                        let held = klipp_engine::SEQ_WRITE_HOLDER
-                            .load(std::sync::atomic::Ordering::Acquire);
-                        tracing::warn!(
-                            "UI_SEQ_WRITE_BLOCKED {}ms — current holder={}",
-                            try_start.elapsed().as_millis(),
-                            klipp_engine::seq_write_holder_name(held),
-                        );
-                        last_log = std::time::Instant::now();
-                    }
-                    // 1 ms is short enough to catch the engine's
-                    // brief release window between consecutive
-                    // post_process reads, but long enough that we're
-                    // not pure-spinning. yield_now first to let the
-                    // scheduler hand the engine a chance to drop its
-                    // current read.
-                    std::thread::yield_now();
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
-            }
-        };
-        klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiSyncToEngine);
+        // The sequence the engine renders from is built here, with nothing
+        // locked, and put in place whole (#690). It used to be written in
+        // place under a read-write lock the engine read for every frame,
+        // and a busy frame kept the UI waiting; once, after a project
+        // opened, for over a minute.
         let active = &self.state.sequences[self.state.active_sequence_idx];
         // Flatten compound clips so the engine receives a plain sequence
         // with no ClipKind::Sequence clips — the engine has no compound-clip
         // awareness. This mirrors the export path exactly: viewer and export
         // are consistent by construction.
-        *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
+        let mut flat = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
         // A command in the Colour workspace can sync while the timeline
         // grade stands in as a clip: the engine gets the grade, never the
         // stand-in.
-        settle_timeline_grade_proxy(&mut seq, None);
-        klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
+        settle_timeline_grade_proxy(&mut flat, None);
+        self.sequence.replace(flat);
     }
 
     /// Fast UI-thread re-grade at reduced resolution for instant scope
@@ -15355,7 +15319,7 @@ impl KlippApp {
                 // Update the UI-local sequence mirror — required so the UI's
                 // own scope-preview re-grade (runs on this thread) sees the
                 // new value. This mutates `self.state.sequences[...]` only,
-                // not the shared `Arc<RwLock<Sequence>>` the engine reads.
+                // not the shared `Arc<klipp_timeline::SharedSequence>` the engine reads.
                 let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {

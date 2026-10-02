@@ -3755,7 +3755,7 @@ pub enum TrackTarget {
 ///
 /// Written to a lock-free `ArrayQueue` by the UI's `SetNodeParam` handler at
 /// slider-scrub rate (60-120 Hz). Drained by the engine at the start of each
-/// frame, which applies the change to the shared `Arc<RwLock<Sequence>>`
+/// frame, which applies the change to the shared `Arc<klipp_timeline::SharedSequence>`
 /// with ONE write-lock acquisition per frame (not one per slider tick).
 ///
 /// This path bypasses `sync_sequence_to_engine` (which rebuilds the whole

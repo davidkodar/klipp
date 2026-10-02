@@ -68,7 +68,7 @@ fn furthest_played(graded: bool) -> f64 {
     let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
     let engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
-        Arc::new(RwLock::new(flat)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+        Arc::new(klipp_timeline::SharedSequence::new(flat)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
     let thread = std::thread::spawn(move || engine.run());

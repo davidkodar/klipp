@@ -8,7 +8,7 @@
 //! 2. Pre-warm expensive probes (audio devices, OFX plugins, font
 //!    registry) on background threads so the first frame doesn't
 //!    block on them.
-//! 3. Construct shared `Arc<RwLock<Sequence>>` and
+//! 3. Construct shared `Arc<klipp_timeline::SharedSequence>` and
 //!    `Arc<RwLock<MediaPool>>` state.
 //! 4. Spawn the playback engine on its own thread (crossbeam channel
 //!    for commands, another for events).
@@ -285,7 +285,7 @@ fn main() -> Result<()> {
     // never collide with the program viewer's. Same struct, second
     // instance — UI's existing texture-upload code handles both.
     let source_frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
-    let sequence = Arc::new(RwLock::new(Sequence::new_default()));
+    let sequence = Arc::new(klipp_timeline::SharedSequence::new(Sequence::new_default()));
     let media_pool = Arc::new(RwLock::new(MediaPool::new()));
 
     // Skim audio consumer — shared between engine (cpal callback) and app (UI thread)

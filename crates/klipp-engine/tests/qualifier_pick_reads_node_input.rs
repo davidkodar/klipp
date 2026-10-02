@@ -69,7 +69,7 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     let fb = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
     let engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
-        Arc::new(RwLock::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+        Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
     let thread = std::thread::spawn(move || engine.run());
