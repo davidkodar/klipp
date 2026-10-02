@@ -107,32 +107,50 @@ impl MediaAnalysis {
         }
         #[cfg(feature = "framing")]
         if let Some(f) = self.framing.as_ref().filter(|_| with_picture) {
+            // Read from the frames sampled inside the range (#724): a
+            // detected shot can run the whole of a walking take, and its
+            // people and objects were said of every clip cut from it.
+            // Objects are named only from a shot that lies within the range.
+            let samples: Vec<&crate::framing::FrameSample> = f.samples.iter().filter(|x| x.secs >= from && x.secs < to).collect();
             let shots = f.within(from, to);
-            if let Some(first) = shots.first() {
+            let inside: Vec<&crate::framing::ShotFraming> = shots.iter().copied().filter(|x| x.start_secs >= from - 0.5 && x.end_secs <= to + 0.5).collect();
+            let objects: Vec<String> = inside.iter().flat_map(|x| x.objects.iter().cloned()).take(3).collect();
+            let said = if let Some(busiest) = samples.iter().max_by_key(|x| x.people.len()) {
+                let n = busiest.people.len();
+                let mut t = format!("framing {}", crate::framing::framing_for(&busiest.people));
+                if n > 0 {
+                    let pos = crate::framing::position_for(&busiest.people);
+                    let _ = write!(t, " {n} {}{}", if n == 1 { "person" } else { "people" }, if pos.is_empty() { String::new() } else { format!(" {pos}") });
+                }
+                Some(t)
+            } else {
+                shots.first().map(|first| {
+                    let mut t = format!("framing {}", first.framing);
+                    if first.people > 0 {
+                        let _ = write!(t, " {} {}", first.people, if first.people == 1 { "person" } else { "people" });
+                    }
+                    t
+                })
+            };
+            if let Some(mut t) = said {
+                if !objects.is_empty() {
+                    let _ = write!(t, " with {}", objects.join(", "));
+                }
                 if !s.is_empty() {
                     s.push_str("  ");
                 }
-                // The first shot's framing, and how many framings the range holds.
-                let distinct: std::collections::BTreeSet<&str> = shots.iter().map(|x| x.framing.as_str()).collect();
-                let _ = write!(s, "framing {}", first.framing);
-                if first.people > 0 {
-                    let _ = write!(s, " {} {}{}", first.people, if first.people == 1 { "person" } else { "people" }, if first.position.is_empty() { String::new() } else { format!(" {}", first.position) });
-                }
-                if !first.objects.is_empty() {
-                    let _ = write!(s, " with {}", first.objects.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
-                }
-                if distinct.len() > 1 {
-                    let _ = write!(s, " (+{} other framings)", distinct.len() - 1);
-                }
+                s.push_str(&t);
             }
         }
         if let Some(audio) = &self.audio {
             if !s.is_empty() {
                 s.push_str("  ");
             }
+            // The file's loudness, said as the file's: it is measured over
+            // the whole file, not the clip's stretch (#724).
             match audio.integrated_lufs {
                 Some(l) => {
-                    let _ = write!(s, "{l:.1} LUFS");
+                    let _ = write!(s, "file {l:.1} LUFS");
                 }
                 None => s.push_str("no loudness"),
             }
@@ -267,5 +285,34 @@ impl MediaAnalysis {
             out.push_str("No analysis yet.\n");
         }
         out
+    }
+}
+
+#[cfg(all(test, feature = "framing"))]
+mod clip_summary_tests {
+    use super::*;
+    use crate::framing::{FrameSample, Framing, ShotFraming};
+
+    /// #724: a clip cut from a long take is summed up from its own range.
+    /// One detected "shot" runs 0.5-218 s with a person and objects in it;
+    /// a clip of an empty street at 100-105 s, where the frames sampled
+    /// show nobody, is not said to hold them. The loudness is labelled as
+    /// the file's.
+    #[test]
+    fn a_clip_is_summed_up_from_its_own_range() {
+        let shot = ShotFraming { start_secs: 0.5, end_secs: 218.0, framing: "wide".into(), people: 1, position: "centre".into(), objects: vec!["cell phone".into(), "traffic light".into()] };
+        let person = FrameSample { secs: 10.0, people: vec![(0.4, 0.2, 0.2, 0.7)], faces: vec![] };
+        let empty = FrameSample { secs: 102.0, people: vec![], faces: vec![] };
+        let analysis = MediaAnalysis {
+            framing: Some(Framing { duration_secs: 554.0, shots: vec![shot], samples: vec![person, empty], ..Default::default() }),
+            audio: Some(crate::audio::AudioEnvelope { integrated_lufs: Some(-20.9), ..Default::default() }),
+            ..Default::default()
+        };
+        let street = analysis.clip_summary(100.0, 105.0);
+        assert!(street.contains("framing no people"), "{street}");
+        assert!(!street.contains("cell phone") && !street.contains("person"), "{street}");
+        assert!(street.contains("file -20.9 LUFS"), "{street}");
+        let walk = analysis.clip_summary(8.0, 12.0);
+        assert!(walk.contains("1 person"), "{walk}");
     }
 }

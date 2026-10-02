@@ -217,7 +217,10 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
             // Parse failures answer on id 0 rather than dropping the
             // line: a client that sent malformed JSON should be told so,
             // not left waiting.
-            Err(e) => Response::err(0, format!("bad request: {e}")),
+            Err(e) => {
+                let id = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v["id"].as_u64()).unwrap_or(0);
+                Response::err(id, explain_bad_request(&line, &e))
+            }
         };
         let mut text = match serde_json::to_string(&response) {
             Ok(t) => t,
@@ -630,6 +633,24 @@ fn restore_transport(ctx: &ControlContext, held: HeldTransport) {
     let cmds = restore_commands(held);
     if !cmds.is_empty() {
         let _ = send_envelope(ctx, cmds, false);
+    }
+}
+
+#[cfg(test)]
+mod next_step_tests {
+    use super::*;
+
+    /// #743: the next step after the selects follows the brief: a piece
+    /// that is not captioned is not told to caption or to cover joins.
+    #[test]
+    fn the_next_step_reads_the_brief() {
+        let place: klipp_document::ops::Op = serde_json::from_value(json!({ "op": "place", "media_id": "00000000-0000-0000-0000-000000000000", "track": "video", "at": { "secs": 0 } })).unwrap();
+        let ops = vec![place.clone(), place];
+        let told = next_after_ops(&ops, None).unwrap();
+        assert!(told.contains("captions"), "{told}");
+        let brief = klipp_timeline::Brief { captions: false, music: true, ..Default::default() };
+        let told = next_after_ops(&ops, Some(&brief)).unwrap();
+        assert!(!told.contains("captions") && !told.contains("jump cut") && told.contains("beat"), "{told}");
     }
 }
 
@@ -1723,11 +1744,17 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
 /// What to do after a batch of ops was applied, from the ops in it: the
 /// reply points at the next step so a session follows a trail rather
 /// than recalling a recipe.
-fn next_after_ops(ops: &[klipp_document::ops::Op]) -> Option<&'static str> {
+/// The brief shapes it (#743): a piece that is not captioned is not told
+/// to caption, nor a montage cut to music to cover its joins like an
+/// interview's.
+fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline::Brief>) -> Option<&'static str> {
     use klipp_document::ops::Op;
     let has = |f: &dyn Fn(&Op) -> bool| ops.iter().any(f);
+    let uncaptioned = brief.is_some_and(|b| !b.captions);
     if has(&|o| matches!(o, Op::Redact { .. })) {
         Some("Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again.")
+    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned {
+        Some("The selects are down. Look at them together (frame_at across the cut), cut them to the music's beat (klipp_beats), then titles in the brief's type styles, the grade, and check.")
     } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
         Some("The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check.")
     } else if has(&|o| matches!(o, Op::Captions { .. })) {
@@ -2292,6 +2319,7 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
                     })),
             });
             surfaces_json(c, fps, &mut v);
+            sound_json(seq, c, true, &mut v);
             return v;
         }
         let mut v = json!({
@@ -2320,6 +2348,7 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
             v["effects"] = json!(fx);
         }
         surfaces_json(c, fps, &mut v);
+        sound_json(seq, c, false, &mut v);
         v
     };
     let tracks: Vec<serde_json::Value> = seq
@@ -2378,6 +2407,74 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
         reply["note"] = json!("short form: pass full true for source ranges, frames, blend, grade group and file paths; get_grade for a clip's grade");
     }
     Ok(reply)
+}
+
+/// Why a request could not be read, in terms an agent can act on (#729).
+/// A whole request's parse error points at a byte offset in the line and
+/// at serde's names ("untagged enum ClipRef"); a list of ops is read one
+/// op at a time instead, so the reply names the step, its op and what
+/// went wrong in it, with what a clip can be named by.
+fn explain_bad_request(line: &str, e: &serde_json::Error) -> String {
+    let fallback = format!("bad request: {e}");
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return fallback };
+    let ops = value.get("ops").or_else(|| value.get("command").and_then(|c| c.get("ops"))).and_then(|o| o.as_array());
+    let Some(ops) = ops else { return fallback };
+    for (i, op) in ops.iter().enumerate() {
+        if let Err(err) = serde_json::from_value::<klipp_document::ops::Op>(op.clone()) {
+            let name = op.get("op").and_then(|n| n.as_str()).unwrap_or("?");
+            let why = err.to_string();
+            let hint = if why.contains("ClipRef") {
+                " A clip is named by its id (a string from the timeline view) or by {\"track\": index, \"secs\": time}; a grade group or the whole timeline is graded with \"on\": {\"group\": name, \"stage\": \"pre\" or \"post\"} or \"on\": \"timeline\", not clip_id."
+            } else if why.contains("unknown variant") {
+                " klipp_guide lists the ops and what each takes."
+            } else {
+                ""
+            };
+            return format!("step {} ({name}) could not be read: {}.{hint}", i + 1, why.split(" at line ").next().unwrap_or(&why));
+        }
+    }
+    fallback
+}
+
+/// The clip a sound's settings live on: the picture an audio clip is
+/// linked to, as the `audio` and `clean_audio` ops keep them, else the
+/// clip itself.
+fn sound_owner<'a>(seq: &'a klipp_timeline::Sequence, c: &'a klipp_timeline::Clip) -> &'a klipp_timeline::Clip {
+    c.linked_clip_id
+        .and_then(|id| seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).flat_map(|t| t.clips.iter()).find(|p| p.id == id))
+        .unwrap_or(c)
+}
+
+/// A clip's sound as set (#740): its level and gain in decibels, pan,
+/// fades, how many volume keys it has, its role and its audio effects —
+/// what `audio`, `duck`, `role` and `clean_audio` wrote, read back. In
+/// the full form for every clip of media; in the brief only what differs
+/// from as it came in. A sound linked to a picture keeps its settings on
+/// the picture clip, and is read from there on either half.
+fn sound_json(seq: &klipp_timeline::Sequence, c: &klipp_timeline::Clip, full: bool, v: &mut serde_json::Value) {
+    if !matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) {
+        return;
+    }
+    let c = sound_owner(seq, c);
+    let db = |linear: f32| if linear > 0.0 { ((20.0 * linear.log10()) * 10.0).round() / 10.0 } else { -144.0 };
+    let mut sound = serde_json::Map::new();
+    let mut put = |key: &str, value: serde_json::Value, set: bool| {
+        if full || set {
+            sound.insert(key.into(), value);
+        }
+    };
+    put("volume_db", json!(db(c.volume)), (c.volume - 1.0).abs() > 1e-4);
+    put("gain_db", json!(db(c.gain)), (c.gain - 1.0).abs() > 1e-4);
+    put("pan", json!((c.pan * 100.0).round() / 100.0), c.pan.abs() > 1e-4);
+    put("fade_in_secs", json!((c.fade_in_secs * 1000.0).round() / 1000.0), c.fade_in_secs > 0.0);
+    put("fade_out_secs", json!((c.fade_out_secs * 1000.0).round() / 1000.0), c.fade_out_secs > 0.0);
+    put("volume_keys", json!(c.volume_keyframes.len()), !c.volume_keyframes.is_empty());
+    put("role", json!(format!("{:?}", c.role).to_lowercase()), c.role != klipp_core::ClipRole::default());
+    let effects: Vec<&str> = c.audio_effects.iter().filter(|e| e.enabled).map(|e| e.effect_type.as_str()).collect();
+    put("effects", json!(effects), !effects.is_empty());
+    if !sound.is_empty() {
+        v["sound"] = serde_json::Value::Object(sound);
+    }
 }
 
 /// A clip's tracked surfaces and what it is pinned to (#684), on its
@@ -5073,7 +5170,8 @@ fn handle(
                 v["steps"] = json!(plan.report());
             }
             v["duration_secs"] = json!(plan.duration_secs);
-            if let Some(next) = next_after_ops(&ops) {
+            let brief = ctx.sequence.read().ok().and_then(|s| s.brief.clone());
+            if let Some(next) = next_after_ops(&ops, brief.as_ref()) {
                 v["next"] = json!(next);
             }
             let wants_voice = ops.iter().any(|o| matches!(o, klipp_document::ops::Op::CleanAudio { voice: true, .. }));
@@ -5908,7 +6006,10 @@ reference:   {}",
                         // playing its own sound. A picture whose sound is its
                         // linked audio clip is not where the sound is fixed.
                         let heard = t.kind == klipp_timeline::TrackKind::Audio || (c.linked_clip_id.is_none() && c.volume > 0.0);
-                        let fixes = if heard { AudioFixes::on(&c.audio_effects) } else { AudioFixes::ALL };
+                        // A sound linked to a picture keeps its settings — the
+                        // cleaners among them — on the picture clip, so they
+                        // are read there (#725).
+                        let fixes = if heard { AudioFixes::on(&sound_owner(&seq, c).audio_effects) } else { AudioFixes::ALL };
                         match audio_media.iter_mut().find(|m| m.0 == item.path) {
                             Some(m) => m.3 = m.3.and(fixes),
                             None => audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, fixes)),
@@ -6033,8 +6134,32 @@ reference:   {}",
             Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
-        ControlCommand::Undo => send(AppCommand::Undo),
-        ControlCommand::Redo => send(AppCommand::Redo),
+        // Said what they did (#741): the step taken back or put back, as
+        // the history names it, and what the next one would be.
+        which @ (ControlCommand::Undo | ControlCommand::Redo) => {
+            let undo = matches!(which, ControlCommand::Undo);
+            let labels = || ctx.shared.project.lock().map(|p| (p.undo.clone(), p.redo.clone())).unwrap_or_default();
+            let (was_undo, was_redo) = labels();
+            let step = if undo { was_undo } else { was_redo };
+            let mut v = send(if undo { AppCommand::Undo } else { AppCommand::Redo })?;
+            let Some(step) = step else {
+                v["text"] = json!(if undo { "Nothing to undo." } else { "Nothing to redo." });
+                return Ok(v);
+            };
+            let (next_undo, next_redo) = labels();
+            let mut text = format!("{} \u{201c}{step}\u{201d}.", if undo { "Undid" } else { "Redid" });
+            match (&next_undo, &next_redo) {
+                (Some(u), _) if undo => text.push_str(&format!(" Next undo would take back \u{201c}{u}\u{201d}.")),
+                (_, Some(r)) if !undo => text.push_str(&format!(" Next redo would put back \u{201c}{r}\u{201d}.")),
+                _ if undo => text.push_str(" Nothing more to undo."),
+                _ => text.push_str(" Nothing more to redo."),
+            }
+            v[if undo { "undid" } else { "redid" }] = json!(step);
+            v["next_undo"] = json!(next_undo);
+            v["next_redo"] = json!(next_redo);
+            v["text"] = json!(text);
+            Ok(v)
+        }
 
         ControlCommand::Batch { commands } => {
             if in_batch {

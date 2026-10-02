@@ -2017,6 +2017,8 @@ impl KlippApp {
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
+                    project.undo = self.state.active_history().undo_label().map(str::to_owned);
+                    project.redo = self.state.active_history().redo_label().map(str::to_owned);
                     if self.state.dirty && !was_dirty && refused.is_none() {
                         project.changed_by = Some("edits".into());
                     }
@@ -32350,6 +32352,8 @@ impl KlippApp {
         if let Ok(mut project) = self.state.control_shared.project.lock() {
             project.path = self.state.project_path.clone();
             project.dirty = self.state.dirty;
+            project.undo = self.state.active_history().undo_label().map(str::to_owned);
+            project.redo = self.state.active_history().redo_label().map(str::to_owned);
         }
         // And where the user is, so a frame read can put the playhead back.
         // Not while a seek is on its way: the playhead has not reached it

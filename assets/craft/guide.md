@@ -226,8 +226,11 @@ exist until the plan runs.
   -60 near silence) at timeline
   seconds with straight moves between. It replaces the clip's volume
   keyframes. For the dip `duck` cannot find, or a swell into a moment.
-- `grade {clip_id, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:
+- `grade {clip_id | on, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, gain?, highlights?, shadows?, reset?}`:
   a picture clip's primary grade. What you give is set, the rest stays.
+  Instead of `clip_id`, `on: {group, stage}` grades a grade group (`stage`
+  `pre` or `post`, as `grade_group` made it) and `on: "timeline"` the
+  timeline grade, after every clip's own.
   Every knob is 0 at neutral, except `saturation` and `contrast`, whose
   neutral is 1. `exposure` is in stops; `temperature` and `tint` are the
   white balance; `lift`, `gamma`, `gain` move the shadows, mids and

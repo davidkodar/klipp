@@ -4261,11 +4261,18 @@ pub struct ProjectStatus {
     /// that changed it on its own, such as analysis markers arriving.
     #[serde(default)]
     pub changed_by: Option<String>,
+    /// What Undo would take back and Redo put back now, as the edit
+    /// history names them ("Compose", "Add Title"): an undo can say what
+    /// it undid (#741).
+    #[serde(default)]
+    pub undo: Option<String>,
+    #[serde(default)]
+    pub redo: Option<String>,
 }
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None }
     }
 }
 
