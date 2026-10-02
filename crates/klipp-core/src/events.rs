@@ -2970,6 +2970,12 @@ pub enum AppCommand {
     /// set on the surface, then Track. With `surface`, they start where
     /// that surface is at the playhead, to correct and track it again.
     OpenSurfaceTool { clip_id: ClipId, surface: Option<uuid::Uuid> },
+    /// Find the four corners of the flat surface round `click` (fractions
+    /// of the frame as shown) in the clip's picture at timeline second
+    /// `at_secs` (the playhead when `None`), in the background (#684). The
+    /// viewer's surface tool takes them; with `then_track` they are
+    /// tracked from at once, which is how the assistant's click works.
+    SnapSurface { clip_id: ClipId, click: [f32; 2], at_secs: Option<f64>, then_track: bool, name: Option<String> },
     /// Take a tracked surface off a clip, one undo step; what is pinned to
     /// it stays where it was on the reference frame.
     RemoveSurface { clip_id: ClipId, surface: uuid::Uuid },
@@ -3751,6 +3757,9 @@ pub enum AppEvent {
     /// `direction` and `interactive` are the request's.
     SurfaceTracked { clip_id: ClipId, surface: uuid::Uuid, name: String, corners: [[f32; 2]; 4], reference_secs: f64, keys: Vec<(f64, [[f32; 2]; 4])>, source_size: [u32; 2], media_fps: f64, held_secs: (f64, f64), direction: i8, interactive: bool },
     SurfaceTrackFailed { clip_id: ClipId, surface: uuid::Uuid, error: String },
+    /// The corners a [`AppCommand::SnapSurface`] found, as fractions of the
+    /// clip's own picture, or `None` where nothing had an edge all round.
+    SurfaceSnapped { clip_id: ClipId, at_secs: f64, corners: Option<[[f32; 2]; 4]>, then_track: bool, name: Option<String> },
 
     // Audio sync (#61)
     /// Background cross-correlation finished. `offset_samples` at 48 kHz —

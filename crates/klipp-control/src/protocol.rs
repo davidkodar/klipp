@@ -200,7 +200,13 @@ pub enum ControlCommand {
     /// what is pinned to it follows.
     TrackSurface {
         clip_id: String,
-        corners: [[f32; 2]; 4],
+        /// The four corners; or leave them out and give `click`.
+        #[serde(default)]
+        corners: Option<[[f32; 2]; 4]>,
+        /// A point inside the surface, fractions of the frame: its corners
+        /// are found from the edges round it, and tracked from.
+        #[serde(default)]
+        click: Option<[f32; 2]>,
         #[serde(default)]
         at_secs: Option<f64>,
         #[serde(default)]
