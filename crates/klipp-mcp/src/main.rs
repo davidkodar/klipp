@@ -382,8 +382,12 @@ fn control_call(command: Value) -> Result<Value, String> {
     // Some tools deliberately hold their control reply until the work is
     // done. Keep that reply intact; the stdio read worker leaves ping and
     // other tools responsive while it waits.
+    // The colour tools read every shot they grade, each clip rendered
+    // alone (#719, #720): a whole piece is a minute or more on a busy
+    // machine.
     let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
-        | "search_music" | "search_sfx" | "add_music")
+        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes")
+        || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
     let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
         .and_then(|value| value.parse::<u64>().ok())

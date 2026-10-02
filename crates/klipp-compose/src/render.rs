@@ -205,6 +205,12 @@ pub struct Inspect {
     /// A clip whose track-matte mask to return (the inspector's matte
     /// preview). Independent of `clip`.
     pub matte_of: Option<ClipId>,
+    /// Render this clip alone: its picture graded, with its effects and
+    /// placement, at full opacity, without its track matte or anything
+    /// above or below it. What a colour measurement of the clip reads, so
+    /// a title, a matte or a colour card over it is not taken for the
+    /// footage (#719).
+    pub only: Option<ClipId>,
 }
 
 /// What an inspected render found. Fields are empty when not asked for,
@@ -927,6 +933,7 @@ impl Renderer {
             || i.matte_view.is_some()
             || i.solo.is_some()
             || i.matte_of.is_some()
+            || i.only.is_some()
         {
             return Single::Refused;
         }
@@ -1141,7 +1148,7 @@ impl Renderer {
             return self.gpu_stack_declines("working space is not Rec.709");
         }
         let i = &self.inspect;
-        if i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() {
+        if i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() || i.only.is_some() {
             return self.gpu_stack_declines("inspection");
         }
         let t0 = Instant::now();
@@ -1727,7 +1734,21 @@ impl Renderer {
     ) -> Vec<f32> {
         let fps = seq.fps.as_f64();
         // Bottom of the stack first.
-        let stack = stack(seq, time);
+        let mut stack = stack(seq, time);
+        // One clip alone for a measurement of it (#719): the clip, out of
+        // a transition when it is one side of it, and nothing else.
+        if let Some(only) = self.inspect.only {
+            stack = stack
+                .into_iter()
+                .filter_map(|(i, t, item)| match item {
+                    TrackItem::Clip(c) if c.id == only => Some((i, t, TrackItem::Clip(c))),
+                    TrackItem::Transition { a, .. } if a.id == only => Some((i, t, TrackItem::Clip(a))),
+                    TrackItem::Transition { b, .. } if b.id == only => Some((i, t, TrackItem::Clip(b))),
+                    _ => None,
+                })
+                .collect();
+        }
+        let only = self.inspect.only.is_some();
 
         // Transforms for every clip in play, links and focal points
         // resolved once against the whole sequence.
@@ -1770,6 +1791,11 @@ impl Renderer {
         for (i, (_, track, item)) in stack.iter().enumerate() {
             let layer = match item {
                 TrackItem::Clip(c) if matches!(c.kind, ClipKind::AdjustmentLayer) => None,
+                // Measured alone, the clip is read at full strength: a fade
+                // or a track's opacity is not the footage's colour.
+                TrackItem::Clip(c) if only => self
+                    .render_clip(c, time, fps, width, height, src, &transforms)
+                    .map(|(pixels, _)| Layer { pixels, opacity: 1.0, blend: BlendMode::Normal }),
                 TrackItem::Clip(c) => self
                     .render_clip(c, time, fps, width, height, src, &transforms)
                     .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode }),
@@ -1847,7 +1873,9 @@ impl Renderer {
                 apply_matte(&mut layer.pixels, &rendered, &binding, width, height,
                     klipp_color::linear::luma_coefs(self.working));
             }
-            if let TrackItem::Clip(c) = item {
+            // Measured alone, a matted clip is read without its matte:
+            // its source is not in the frame, and the footage is wanted.
+            if let (TrackItem::Clip(c), false) = (item, only) {
                 if let Some(binding) = self.matte_binding(c, time) {
                     if self.inspect.matte_of == Some(c.id) {
                         self.found.matte_mask = matte_mask(&rendered, &binding, width, height,

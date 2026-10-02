@@ -1871,6 +1871,10 @@ pub enum AppCommand {
     /// is set; the inspector renders the latest as a small grayscale
     /// preview in the COMPOSITING section.
     SetInspectorMattePreviewTarget(Option<ClipId>),
+    /// Render this clip alone, graded and placed, with nothing over or
+    /// under it, until set back to `None`: what a colour measurement of
+    /// the clip reads (#719). Engine-only.
+    SetMeasureOnlyClip(Option<ClipId>),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
     /// How some media decodes has changed (its camera log format). Frames
     /// decoded before the change are stale — the engine's frame cache, its
