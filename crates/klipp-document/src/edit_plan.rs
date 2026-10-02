@@ -253,7 +253,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                     y: Some(p.y),
                     width: Some(p.width),
                     height: Some(p.height),
-                    rotation_deg: p.rotation_deg,
+                    rotation_deg: Some(p.rotation_deg),
                     opacity: p.opacity.unwrap_or(1.0),
                     ..Default::default()
                 }],
@@ -574,7 +574,7 @@ mod tests {
         };
         assert_eq!(poses.len(), 1);
         assert!((poses[0].x.unwrap() - 0.25).abs() < 1e-6 && (poses[0].width.unwrap() - 0.5).abs() < 1e-6);
-        assert!((poses[0].rotation_deg + 6.0).abs() < 1e-6 && (poses[0].opacity - 0.5).abs() < 1e-6);
+        assert!((poses[0].rotation_deg.unwrap() + 6.0).abs() < 1e-6 && (poses[0].opacity - 0.5).abs() < 1e-6);
         // And it builds: the op is one the timeline accepts.
         assert!(resolve(&seq, &pool, &ops).is_ok(), "{:?}", resolve(&seq, &pool, &ops).err());
 

@@ -3809,7 +3809,7 @@ fn fit_block_ratio(font: &fontdue::Font, text: &str, px_at: impl Fn(usize) -> f3
     }
     // A big title set on the lines its author gave reads better than one
     // the box broke: when keeping each line whole costs no more than a
-    // sixth of the size, keep them whole.
+    // 15% of the size, keep them whole.
     let mut widest_line = 0.0f32;
     let mut offset = 0usize;
     for line in text.split('\n') {
