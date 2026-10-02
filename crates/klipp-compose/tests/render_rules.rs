@@ -617,6 +617,43 @@ fn a_track_matte_masks_its_consumer() {
     }
 }
 
+/// #718: a dissolve out of a matted clip blends it as it is seen,
+/// through its matte. The outgoing green clip is matted by a black luma
+/// matte, so it shows nowhere; the dissolve to red must show no green.
+/// It used to blend the outgoing side unmatted: full green popped in for
+/// the length of the transition.
+#[test]
+fn a_dissolve_out_of_a_matted_clip_keeps_the_matte() {
+    let mut source = solid([0, 0, 0], 0.0, 4.0);
+    source.consumed_as_matte = true;
+    let mut a = solid([0, 255, 0], 0.0, 2.0);
+    let mut binding = klipp_timeline::MatteBinding::new(source.id);
+    binding.channel = klipp_nodes::params::MatteChannel::Luminance;
+    a.matte_source = Some(binding);
+    let b = solid([255, 0, 0], 2.0, 4.0);
+    let tr = Transition {
+        id: TransitionId::new(),
+        kind: klipp_core::TransitionKind::CrossDissolve,
+        duration: tc(1.0),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        user_params: Default::default(),
+        alignment: klipp_core::TransitionAlignment::Center,
+    };
+    let mut seq = sequence(vec![vec![source], vec![a, b]]);
+    seq.tracks[1].transitions.push(tr);
+    for t in [1.6, 1.75, 2.0, 2.25] {
+        for (i, img) in render(&seq, t, &mut Flat::default()).iter().enumerate() {
+            let [_, g, _] = px(img, 16, 9);
+            assert!(g < 0.01, "t={t}, run {i}: the matted clip shows through the dissolve, green {g}");
+        }
+    }
+    // Before the transition, the matted clip is hidden as well.
+    for (i, img) in render(&seq, 1.0, &mut Flat::default()).iter().enumerate() {
+        assert!(px(img, 16, 9)[1] < 0.01, "run {i}");
+    }
+}
+
 /// An adjustment layer grades everything beneath it, mixed by its opacity.
 #[test]
 fn an_adjustment_layer_grades_what_is_below_it() {

@@ -1763,14 +1763,22 @@ impl Renderer {
         // the clip it masks.
         let mut layers: Vec<Option<Layer>> = Vec::with_capacity(stack.len());
         let mut rendered: HashMap<ClipId, Vec<f32>> = HashMap::new();
-        for (_, track, item) in &stack {
+        // A transition out of or into a matted clip waits until every
+        // matte source is rendered, so each side is matted before the
+        // blend; it used to blend both sides unmatted (#718).
+        let mut matted_transitions: Vec<usize> = Vec::new();
+        for (i, (_, track, item)) in stack.iter().enumerate() {
             let layer = match item {
                 TrackItem::Clip(c) if matches!(c.kind, ClipKind::AdjustmentLayer) => None,
                 TrackItem::Clip(c) => self
                     .render_clip(c, time, fps, width, height, src, &transforms)
                     .map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode }),
+                TrackItem::Transition { a, b, .. } if a.matte_source.is_some() || b.matte_source.is_some() => {
+                    matted_transitions.push(i);
+                    None
+                }
                 TrackItem::Transition { a, b, kind, progress, params } => {
-                    self.render_transition(a, b, *kind, *progress, params, time, fps, width, height, src, &transforms)
+                    self.render_transition(a, b, *kind, *progress, params, time, fps, width, height, src, &transforms, None)
                         .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal })
                 }
             };
@@ -1780,6 +1788,13 @@ impl Renderer {
                 }
             }
             layers.push(layer);
+        }
+        for i in matted_transitions {
+            if let (_, track, TrackItem::Transition { a, b, kind, progress, params }) = &stack[i] {
+                layers[i] = self
+                    .render_transition(a, b, *kind, *progress, params, time, fps, width, height, src, &transforms, Some(&rendered))
+                    .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal });
+            }
         }
 
         // Stencils mask every layer below them.
@@ -1833,15 +1848,7 @@ impl Renderer {
                     klipp_color::linear::luma_coefs(self.working));
             }
             if let TrackItem::Clip(c) = item {
-                if let Some(b) = &c.matte_source {
-                    let t = eval_clip_time(c, time);
-                    let binding = klipp_timeline::MatteBinding {
-                        source_clip_id: b.source_clip_id,
-                        channel: b.channel,
-                        invert: b.invert,
-                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, t, b.feather_px) * self.px_scale,
-                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px) * self.px_scale,
-                    };
+                if let Some(binding) = self.matte_binding(c, time) {
                     if self.inspect.matte_of == Some(c.id) {
                         self.found.matte_mask = matte_mask(&rendered, &binding, width, height,
                             klipp_color::linear::luma_coefs(self.working));
@@ -2688,6 +2695,7 @@ impl Renderer {
         height: u32,
         src: &mut dyn FrameSource,
         transforms: &HashMap<ClipId, ResolvedTransform>,
+        mattes: Option<&HashMap<ClipId, Vec<f32>>>,
     ) -> Option<Vec<f32>> {
         let n = (width as usize) * (height as usize) * 4;
         let side = |this: &mut Self, c: &Clip, src: &mut dyn FrameSource| {
@@ -2695,19 +2703,35 @@ impl Renderer {
                 .map(|(mut p, opacity)| {
                     // Opacity is the clip's alpha within the transition.
                     p.chunks_exact_mut(4).for_each(|px| px[3] *= opacity);
+                    // A matted side is seen through its matte here too (#718).
+                    if let (Some(rendered), Some(binding)) = (mattes, this.matte_binding(c, time)) {
+                        apply_matte(&mut p, rendered, &binding, width, height, klipp_color::linear::luma_coefs(this.working));
+                    }
                     p
                 })
                 .unwrap_or_else(|| vec![0.0; n])
         };
-        let from = side(self, a, src);
-        let to = side(self, b, src);
+        let mut from = side(self, a, src);
+        let mut to = side(self, b, src);
         let kind_id = klipp_core::spec_for_kind(kind).kind_id as u32;
         let eased = if matches!(kind, klipp_core::TransitionKind::CrossDissolve) {
             klipp_transitions::apply_easing(progress, params.param0)
         } else {
             progress
         };
-        Some(match self.gpu() {
+        // The transitions mix straight colour, so a side that is partly or
+        // wholly transparent (matted out, faded) would still lend its
+        // colour by the blend's weight, not its alpha: a clip hidden by
+        // its matte tinted the dissolve (#718). With transparency on
+        // either side, mix premultiplied and divide back after.
+        let see_through = |p: &[f32]| p.chunks_exact(4).any(|px| px[3] < 0.9999);
+        let premultiplied = see_through(&from) || see_through(&to);
+        if premultiplied {
+            for p in [&mut from, &mut to] {
+                p.chunks_exact_mut(4).for_each(|px| { px[0] *= px[3]; px[1] *= px[3]; px[2] *= px[3]; });
+            }
+        }
+        let mut mixed = match self.gpu() {
             Some(gpu) => gpu.render_transition_linear(
                 &from, &to, kind_id, eased, width, height,
                 params.param0, params.param1, params.param2, params.param3, params.color,
@@ -2717,6 +2741,28 @@ impl Renderer {
                 &from, &to, kind_id, eased, width, height,
                 params.param0, params.param1, params.param2, params.param3, params.color,
             ),
+        };
+        if premultiplied {
+            mixed.chunks_exact_mut(4).for_each(|px| {
+                if px[3] > 1e-6 {
+                    let inv = 1.0 / px[3];
+                    px[0] *= inv; px[1] *= inv; px[2] *= inv;
+                }
+            });
+        }
+        Some(mixed)
+    }
+
+    /// The track matte `c` is seen through at `time`, at render scale.
+    fn matte_binding(&self, c: &Clip, time: Timecode) -> Option<klipp_timeline::MatteBinding> {
+        let b = c.matte_source.as_ref()?;
+        let t = eval_clip_time(c, time);
+        Some(klipp_timeline::MatteBinding {
+            source_clip_id: b.source_clip_id,
+            channel: b.channel,
+            invert: b.invert,
+            feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, t, b.feather_px) * self.px_scale,
+            choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, t, b.choke_px) * self.px_scale,
         })
     }
 
