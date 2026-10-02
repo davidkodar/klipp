@@ -2177,6 +2177,16 @@ impl Renderer {
         }
     }
 
+    /// Drop the motion data of the clip rendered last, on the CPU side and
+    /// on the GPU pipeline.
+    fn forget_motion(&mut self) {
+        self.motion = klipp_effects::MotionData::default();
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.clear_stabilization_homography();
+            gpu.clear_rsc_row_transforms();
+        }
+    }
+
     /// Work out the per-frame data the stabilisation and rolling-shutter
     /// effects warp by: the stabilisation correction for this frame, and
     /// the row transforms from motion between the neighbouring source
@@ -2712,6 +2722,11 @@ impl Renderer {
         let graded = self.ofx(clip, graded, clip_time, width, height, None);
         let (mut fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied());
         self.at_render_scale(&mut fx);
+        // An adjustment layer has no footage of its own to analyse, so its
+        // stabilisation and rolling-shutter correction have no motion data
+        // and pass through, on both arms; they must not warp by the clip
+        // rendered before it (#698).
+        self.forget_motion();
         let mut after = self.effects(&fx, graded, clip_time, width, height);
         if let Some(before) = before {
             for (a, b) in after.iter_mut().zip(&before) {

@@ -1825,3 +1825,31 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
     let worst = cpu.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(worst < 2e-3, "CPU and GPU stabilise differently, by {worst}");
 }
+
+/// #698 follow-up: an adjustment layer has no footage to analyse, so its
+/// stabilisation has no motion data and passes through. It used to warp
+/// by the motion data of the clip rendered just below it.
+#[test]
+fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
+    use klipp_effects::homography::Homography;
+    use klipp_effects::stabilization::SmoothedTrajectory;
+    let mut c = media(0.0, 2.0);
+    c.builtin_effects = vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }];
+    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+    c.smoothed_trajectory = Some(SmoothedTrajectory {
+        smoothed: Vec::new(),
+        corrections: vec![shift; 48],
+        smoothing_window_secs: 1.0,
+        raw_jitter_px: 1.0,
+        smoothed_jitter_px: 0.1,
+    });
+    let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
+    adj.builtin_effects = c.builtin_effects.clone();
+    let mut src = Flat::default().ramp(&c);
+    let alone = render(&sequence(vec![vec![c.clone()]]), 0.5, &mut src);
+    let under = render(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src);
+    for (arm, (a, u)) in ["CPU", "GPU"].iter().zip(alone.iter().zip(&under)) {
+        let worst = a.iter().zip(u).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 2e-3, "{arm}: the adjustment layer stabilised by the clip below's motion, by {worst}");
+    }
+}
