@@ -54,7 +54,7 @@ fn status_and_ping_respond_while_analysis_waits_on_the_same_session() {
         }
     });
     for request in [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"klipp_analysis_status","arguments":{"wait":true}}}),
         json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
         json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"klipp_status","arguments":{}}}),
@@ -64,7 +64,13 @@ fn status_and_ping_respond_while_analysis_waits_on_the_same_session() {
     let mut prompt_ids = Vec::new();
     while prompt_ids.len() < 2 {
         let reply = reply_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        if reply["id"] == 3 || reply["id"] == 4 { prompt_ids.push(reply["id"].as_u64().unwrap()); }
+        if reply["id"] == 3 || reply["id"] == 4 {
+            if reply["id"] == 4 {
+                assert_eq!(reply["result"]["structuredContent"]["revision"], 1,
+                    "modern status must retain structured output during concurrent calls");
+            }
+            prompt_ids.push(reply["id"].as_u64().unwrap());
+        }
     }
     assert!(started.elapsed() < Duration::from_millis(900), "ping and status were blocked by analysis");
     assert!(prompt_ids.contains(&3) && prompt_ids.contains(&4));
