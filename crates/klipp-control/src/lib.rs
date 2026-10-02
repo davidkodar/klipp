@@ -2397,6 +2397,21 @@ fn describe_step(from: &klipp_color::measure::PrimaryStep, to: &klipp_color::mea
     if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
 }
 
+/// Shots of one piece of media, two or more, as scenes to grade
+/// together: `{file, media_id, clips}` each. Keyed by the media, not the
+/// file name, so two cards' IMG_0001.mov are two scenes (#770 review).
+fn scene_groups(shots: &[(String, f64, String)], media_of: &std::collections::HashMap<String, klipp_core::MediaId>) -> Vec<serde_json::Value> {
+    let mut by_media: Vec<(klipp_core::MediaId, &str, Vec<&str>)> = Vec::new();
+    for (id, _, name) in shots {
+        let Some(media) = media_of.get(id).copied() else { continue };
+        match by_media.iter_mut().find(|(m, _, _)| *m == media) {
+            Some(g) => g.2.push(id.as_str()),
+            None => by_media.push((media, name.as_str(), vec![id.as_str()])),
+        }
+    }
+    by_media.iter().filter(|(_, _, ids)| ids.len() >= 2).map(|(media, name, ids)| json!({ "file": name, "media_id": media.0.to_string(), "clips": ids })).collect()
+}
+
 /// The clip's Corrector knobs as they are: what a grade step adds to.
 fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimaryStep {
     let mut s = klipp_color::measure::PrimaryStep { saturation: 1.0, ..Default::default() };
@@ -4355,18 +4370,11 @@ fn handle(
             // chasing the target shot by shot (#742).
             // Grouped by the media itself, not its file name: two cards'
             // IMG_0001.mov are two scenes (#770 review).
-            let media_of: std::collections::HashMap<String, klipp_core::MediaId> = ctx.sequence.read().map(|seq| {
+            let media_of: std::collections::HashMap<String, klipp_core::MediaId> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().map(|m| (c.id.0.to_string(), m))).collect()
-            }).unwrap_or_default();
-            let mut by_file: Vec<(klipp_core::MediaId, &str, Vec<&str>)> = Vec::new();
-            for (id, _, name) in &shots {
-                let Some(media) = media_of.get(id).copied() else { continue };
-                match by_file.iter_mut().find(|(m, _, _)| *m == media) {
-                    Some(g) => g.2.push(id.as_str()),
-                    None => by_file.push((media, name.as_str(), vec![id.as_str()])),
-                }
-            }
-            let groups: Vec<serde_json::Value> = by_file.iter().filter(|(_, _, ids)| ids.len() >= 2).map(|(media, name, ids)| json!({ "file": name, "media_id": media.0.to_string(), "clips": ids })).collect();
+            };
+            let groups = scene_groups(&shots, &media_of);
             for g in &groups {
                 lines.push(format!(
                     "{} shots come from {}: one scene. Grade them together (grade_group with these clips, then grade on the group) and keep per-shot moves small; a primary each, chasing the target alone, pulls them apart at the cuts.",
@@ -7227,6 +7235,24 @@ mod audio_fixes_tests {
         assert!(wind.and(AudioFixes::ALL).covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
         let off = klipp_core::AudioEffectInstance { enabled: false, ..fx("voice_isolation", &[]) };
         assert!(!AudioFixes::on(&[off]).covers("high-frequency hiss or air is loud against the sound"));
+    }
+}
+
+#[cfg(test)]
+mod scene_group_tests {
+    /// #772 review: shots of two files that share a name are two scenes,
+    /// and a file with one shot is no scene to group.
+    #[test]
+    fn same_name_different_files_are_two_scenes() {
+        let (a, b) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+        let shot = |id: &str| (id.to_string(), 0.0, "IMG_0001.mov".to_string());
+        let shots = vec![shot("1"), shot("2"), shot("3"), shot("4"), shot("5")];
+        let media_of = [("1", a), ("2", a), ("3", b), ("4", b), ("5", klipp_core::MediaId::new())].into_iter().map(|(k, m)| (k.to_string(), m)).collect();
+        let groups = super::scene_groups(&shots, &media_of);
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups[0]["clips"], serde_json::json!(["1", "2"]));
+        assert_eq!(groups[1]["clips"], serde_json::json!(["3", "4"]));
+        assert_ne!(groups[0]["media_id"], groups[1]["media_id"]);
     }
 }
 
