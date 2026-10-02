@@ -6710,7 +6710,7 @@ impl GpuEffectsPipeline {
                 }
                 BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => {
                     if !self.has_stabilization_data() { continue; }
-                    let crop_zoom = if *zoom { 1.0 / (1.0 - 2.0 * crop_ratio) } else { 1.0 };
+                    let crop_zoom = crate::stabilization_crop_zoom(*crop_ratio, *zoom);
                     self.write_params(&StabilizationParams { width, height, crop_zoom, _pad: 0 });
                     let input = if current_in_a { buf_a } else { buf_b };
                     let output = if current_in_a { buf_b } else { buf_a };
@@ -6935,6 +6935,20 @@ impl GpuEffectsPipeline {
             self.stabilization_buf_size = byte_size;
         }
         self.upload(self.stabilization_buf.as_ref().unwrap(), 0, bytemuck::cast_slice(h));
+    }
+
+    /// Forget the stabilisation correction, so the effect passes the
+    /// frame through until another is uploaded: a clip without analysis
+    /// must not be warped by the last clip's (#698).
+    pub fn clear_stabilization_homography(&mut self) {
+        self.stabilization_buf = None;
+    }
+
+    /// Forget the rolling-shutter row transforms, as
+    /// [`Self::clear_stabilization_homography`] does.
+    pub fn clear_rsc_row_transforms(&mut self) {
+        self.rsc_row_buf = None;
+        self.rsc_row_buf_size = 0;
     }
 
     pub fn has_stabilization_data(&self) -> bool {

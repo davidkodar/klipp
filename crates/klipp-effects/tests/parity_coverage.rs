@@ -46,10 +46,9 @@ const GRADE: Cover = Test("klipp-compose/tests/grade_cpu_gpu_parity.rs", "every_
 const SECONDARY: &str = "klipp-nodes/tests/secondary_gpu_parity.rs";
 const GLOW: Cover = Test("klipp-compose/tests/vector_glow_parity.rs", "revealed_stroke_halo_matches_cpu_and_gpu");
 
-/// The motion-compensation effects: the compositor uploads their motion
-/// data to the GPU pipeline and the CPU arm passes the frame through, so
-/// there is no CPU twin to compare. A GPU is required (see CONTRIBUTING).
-const GPU_ONLY_MOTION: &str = "GPU-only: the compositor uploads its motion data to the GPU pipeline and the CPU arm passes the frame through; there is no CPU twin";
+/// The motion-compensation effects: the compositor works out their motion
+/// data per frame and gives the same to both arms (#698).
+const MOTION: Cover = Test("klipp-effects/tests/motion_warp_parity.rs", "stabilisation_and_rolling_shutter_match_between_cpu_and_gpu");
 
 const EFFECTS: &[(&str, Cover)] = &[
     ("Crop", Case("Crop")),
@@ -99,10 +98,10 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("TiltShift", Case("TiltShift")),
     ("OldFilm", Case("OldFilm")),
     ("Vhs", Case("Vhs")),
-    ("RollingShutterCorrection", Exempt(GPU_ONLY_MOTION)),
+    ("RollingShutterCorrection", MOTION),
     ("TemporalDenoise", Exempt("CPU-only by design: the compositor lifts it out of the chain and averages the source with its neighbours at the head of the clip's pipeline; both chain arms pass through")),
     ("Deflicker", Case("Deflicker")),
-    ("VideoStabilization", Exempt(GPU_ONLY_MOTION)),
+    ("VideoStabilization", MOTION),
     ("SpeedRamp", Exempt("not a picture pass: the engine blends frames for it in the frame queue, and both chain arms pass through")),
     ("Frei0r", Exempt("CPU-only plugins: frei0r 1.x has no GPU surface, and chain_supports_gpu sends any chain holding one to the CPU")),
     ("CornerPin", Case("CornerPin")),
@@ -173,8 +172,8 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_EQUALIZE", EVERY_EFFECT),
     ("SHADER_LETTERBOX", EVERY_EFFECT),
     ("SHADER_CHROMATIC_ABERRATION", EVERY_EFFECT),
-    ("SHADER_ROLLING_SHUTTER", Exempt(GPU_ONLY_MOTION)),
-    ("SHADER_STABILIZATION", Exempt(GPU_ONLY_MOTION)),
+    ("SHADER_ROLLING_SHUTTER", MOTION),
+    ("SHADER_STABILIZATION", MOTION),
     ("SHADER_COLOR_BALANCE", GRADE),
     ("SHADER_WHEEL_SAT_BRI", GRADE),
     ("SHADER_RGB_CURVES", GRADE),

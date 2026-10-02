@@ -887,7 +887,41 @@ pub fn apply_effects_with_luma(
     clip_time_secs: f64,
     luma: [f32; 3],
 ) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma)
+    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma, &MotionData::default())
+}
+
+/// The per-frame motion data stabilisation and rolling-shutter correction
+/// warp by. The compositor works it out for the frame and gives it to
+/// whichever arm runs the chain: uploaded to the GPU pipeline, or passed
+/// here to the CPU one. Without it both effects pass the frame through,
+/// on either arm, as before analysis.
+#[derive(Clone, Default)]
+pub struct MotionData {
+    /// This frame's stabilisation correction: a row-major 3x3
+    /// homography, padded to 12 as the GPU buffer holds it.
+    pub stabilization: Option<[f32; 12]>,
+    /// One transform per row of the frame, for rolling-shutter
+    /// correction, its strength already applied.
+    pub rsc_rows: Option<Vec<rolling_shutter::RowTransform>>,
+}
+
+/// [`apply_effects_with_luma`] with the frame's motion data, so the CPU
+/// arm stabilises and corrects rolling shutter as the GPU does (#698).
+pub fn apply_effects_with_motion(
+    effects: &[BuiltinEffect],
+    linear_rgba: Vec<f32>,
+    width: u32,
+    height: u32,
+    clip_time_secs: f64,
+    luma: [f32; 3],
+    motion: &MotionData,
+) -> Vec<f32> {
+    apply_chain(effects, linear_rgba, width, height, clip_time_secs, luma, motion)
+}
+
+/// How far stabilisation zooms in to hide the edges its warp uncovers.
+pub(crate) fn stabilization_crop_zoom(crop_ratio: f32, zoom: bool) -> f32 {
+    if zoom { 1.0 / (1.0 - 2.0 * crop_ratio) } else { 1.0 }
 }
 
 /// Time-aware sibling of [`apply_effects`]. `clip_time_secs` is forwarded
@@ -902,7 +936,7 @@ pub fn apply_effects_with_time(
     height: u32,
     clip_time_secs: f64,
 ) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, clip_time_secs, BT709_LUMA_WEIGHTS)
+    apply_chain(effects, linear_rgba, width, height, clip_time_secs, BT709_LUMA_WEIGHTS, &MotionData::default())
 }
 
 fn apply_chain(
@@ -912,6 +946,7 @@ fn apply_chain(
     height: u32,
     clip_time_secs: f64,
     luma: [f32; 3],
+    motion: &MotionData,
 ) -> Vec<f32> {
     let mut frame = linear_rgba;
     let mut i = 0;
@@ -929,6 +964,14 @@ fn apply_chain(
                 let u8s = linear_f32_rgba_to_srgb_u8(&frame);
                 srgb_u8_to_linear_f32_rgba(&frei0r_effect::apply(type_id, params, u8s, width, height, clip_time_secs))
             }
+            BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => match &motion.stabilization {
+                Some(m) => cpu::stabilize(&frame, width, height, m, stabilization_crop_zoom(*crop_ratio, *zoom)),
+                None => frame,
+            },
+            BuiltinEffect::RollingShutterCorrection { strength, .. } => match &motion.rsc_rows {
+                Some(rows) if *strength >= f32::EPSILON && !rows.is_empty() => cpu::rolling_shutter(&frame, width, height, rows),
+                _ => frame,
+            },
             e => cpu::apply(e, frame, width, height, luma),
         };
         i += 1;
