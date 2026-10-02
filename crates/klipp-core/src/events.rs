@@ -4352,6 +4352,9 @@ pub struct ExportStatus {
     pub fps: Option<f32>,
     #[serde(default)]
     pub eta_secs: Option<u64>,
+    /// The size the file will be, from what is written so far (#19).
+    #[serde(default)]
+    pub projected_bytes: Option<u64>,
 }
 
 #[cfg(test)]

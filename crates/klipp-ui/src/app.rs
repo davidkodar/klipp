@@ -27753,6 +27753,30 @@ fn intra_frame_mbps(codec: klipp_core::ExportVideoCodec, px: f64, fps: f64) -> O
     Some(at_1080p29 * (px / reference_px) * (fps / 29.97))
 }
 
+/// What a quality (CRF) encode spends, low and high, in Mbps: from a
+/// calm, still picture to busy handheld footage. At 1080p30 and the
+/// encoder's default quality H.264 spends roughly 3 to 12 Mbps; six
+/// steps of CRF halve or double it; HEVC, VP9 and AV1 need less for the
+/// same picture. Pixels count for less than linearly (a 4K frame has
+/// more redundancy) and frame rate for less again (frames repeat
+/// themselves). `None` for what has no CRF to speak of (#19).
+fn crf_mbps_range(codec: klipp_core::ExportVideoCodec, crf: u32, px: f64, fps: f64) -> Option<(f64, f64)> {
+    use klipp_core::ExportVideoCodec as C;
+    // The codec's own default quality, where its CRF scale sits.
+    let (default_crf, efficiency) = match codec {
+        C::H264 => (23.0, 1.0),
+        C::H265 => (28.0, 0.6),
+        C::Vp9 => (31.0, 0.65),
+        C::Av1 => (35.0, 0.5),
+        _ => return None,
+    };
+    let scale = efficiency
+        * (px / (1920.0 * 1080.0)).powf(0.75)
+        * (fps.max(1.0) / 30.0).powf(0.6)
+        * 2f64.powf((default_crf - crf as f64) / 6.0);
+    Some((3.0 * scale, 12.0 * scale))
+}
+
 /// Seconds, as a length someone reads rather than a number.
 fn humanise_secs(secs: f64) -> String {
     // Clamped once, at the top. Clamping only the minute count let a
@@ -32411,6 +32435,7 @@ impl KlippApp {
                     .map(|t| t.elapsed().as_secs_f32())
                     .filter(|s| *s > 2.0 && j.frames_done > 0 && j.status == klipp_export::RenderJobStatus::Rendering)
                     .map(|s| ((j.total_frames.saturating_sub(j.frames_done)) as f32 * s / j.frames_done as f32) as u64),
+                projected_bytes: j.projected_bytes(),
             }));
         }
         for event in events {
@@ -33418,6 +33443,16 @@ impl KlippApp {
             if secs > 0.0 {
                 let bytes = (v + audio_mbps) * 1_000_000.0 / 8.0 * secs;
                 parts.push(format!("~{}", humanise_bytes(bytes)));
+            }
+        } else if let (klipp_core::RateControl::Crf, Some((lo, hi))) =
+            (self.export_dialog.rate_control, crf_mbps_range(self.export_dialog.video_codec, self.export_dialog.crf, px, fps))
+        {
+            // Quality has no one size: a range, from a still picture to
+            // busy handheld footage, true where a single number would not
+            // be. The queue measures the real one as it renders (#19).
+            if secs > 0.0 {
+                let at = |v: f64| (v + audio_mbps) * 1_000_000.0 / 8.0 * secs;
+                parts.push(format!("{}\u{2013}{} by the picture", humanise_bytes(at(lo)), humanise_bytes(at(hi))));
             }
         }
 
@@ -43060,7 +43095,22 @@ mod export_foot_tests {
 
 #[cfg(test)]
 mod export_summary_tests {
-    use super::{humanise_bytes, humanise_secs, intra_frame_mbps};
+    use super::{crf_mbps_range, humanise_bytes, humanise_secs, intra_frame_mbps};
+
+    /// #19: a quality encode gets a range; better quality and more
+    /// pixels cost more; HEVC less than H.264; a GIF has none.
+    #[test]
+    fn a_quality_export_is_sized_as_a_range() {
+        use klipp_core::ExportVideoCodec as C;
+        let hd = 1920.0 * 1080.0;
+        let (lo, hi) = crf_mbps_range(C::H264, 23, hd, 30.0).unwrap();
+        assert!((lo - 3.0).abs() < 1e-9 && (hi - 12.0).abs() < 1e-9);
+        assert!(crf_mbps_range(C::H264, 17, hd, 30.0).unwrap().0 > lo * 1.9, "six steps better doubles it");
+        assert!(crf_mbps_range(C::H264, 23, 3840.0 * 2160.0, 30.0).unwrap().1 > hi * 2.0, "4K costs more");
+        assert!(crf_mbps_range(C::H265, 28, hd, 30.0).unwrap().1 < hi, "HEVC needs less");
+        assert!(crf_mbps_range(C::Gif, 23, hd, 30.0).is_none());
+        assert!(crf_mbps_range(C::ProRes422, 23, hd, 30.0).is_none(), "intra codecs are sized from their tables");
+    }
     use klipp_core::ExportVideoCodec as C;
 
     /// The rule the whole feature rests on: a number is only shown

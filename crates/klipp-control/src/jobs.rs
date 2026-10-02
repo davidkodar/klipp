@@ -153,7 +153,7 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             "job_id": render.job_id, "kind": "render", "state": state,
             "phase": render.stage, "progress": render.progress.clamp(0.0, 1.0),
             "completed_units": render.frames_done, "total_units": render.total_frames,
-            "unit": "frames", "eta_secs": render.eta_secs, "error": render.error,
+            "unit": "frames", "eta_secs": render.eta_secs, "projected_bytes": render.projected_bytes, "error": render.error,
             "artifact": if state == "completed" { Some(render.path.to_string_lossy().to_string()) } else { None },
             "loudness": render.loudness,
         })
@@ -306,6 +306,9 @@ pub(super) fn summary(jobs: &[Value]) -> String {
         }
         if let Some(eta) = job["eta_secs"].as_u64().filter(|_| state == "running") {
             line.push_str(&format!(", about {}:{:02} left", eta / 60, eta % 60));
+        }
+        if let Some(bytes) = job["projected_bytes"].as_u64().filter(|_| state == "running") {
+            line.push_str(&format!(", about {:.0} MB when done", bytes as f64 / 1e6));
         }
         if let Some(error) = job["error"].as_str() {
             line.push_str(&format!("; {error}"));

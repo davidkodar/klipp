@@ -59,7 +59,7 @@ pub mod gif_filter;
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};
 pub use encoder::Encoder;
-pub use export_job::ExportJob;
+pub use export_job::{partial_path_for, ExportJob};
 pub use error::RenderError;
 pub use snapshot::{
     AudioClipSnapshot, AudioTrackSnapshot, MediaFile, SequenceSnapshot, SubtitleClipSnapshot,

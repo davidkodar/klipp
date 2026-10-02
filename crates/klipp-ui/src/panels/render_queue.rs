@@ -271,6 +271,10 @@ impl RenderQueuePanel {
             if elapsed_secs > 0 {
                 parts.push(format!("{} elapsed", Self::duration(elapsed_secs)));
             }
+            // The size it will be, measured from what is written (#19).
+            if let Some(bytes) = job.projected_bytes() {
+                parts.push(format!("\u{2248} {} when done", Self::size(bytes)));
+            }
             if !job.hw_info.is_empty() {
                 parts.push(job.hw_info.replace("Decode: ", "").replace("Encode: ", "").replace(" | ", " \u{2022} "));
             }
@@ -378,6 +382,11 @@ impl RenderQueuePanel {
         } else {
             format!("{}:{:02}", secs / 60, secs % 60)
         }
+    }
+
+    /// `1.2 GB`, or `340 MB` under a gigabyte.
+    fn size(bytes: u64) -> String {
+        if bytes >= 1_000_000_000 { format!("{:.1} GB", bytes as f64 / 1e9) } else { format!("{:.0} MB", bytes as f64 / 1e6) }
     }
 
     /// `1m 05s`, or `42s` under a minute.

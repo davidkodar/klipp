@@ -706,6 +706,7 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
             hardware: "Decode: CUDA (NVDEC) | Encode: h264_nvenc".into(),
             fps: Some(28.0),
             eta_secs: Some(2),
+            projected_bytes: None,
         });
     });
     let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
@@ -777,7 +778,7 @@ fn a_render_cancellation_names_the_job_it_stops() {
         h.shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
             job_id:id.clone(), path:"/tmp/render.mp4".into(), status:"rendering".into(),
             progress:0.4, frames_done:40, total_frames:100, stage:"Encoding".into(),
-            error:None, loudness:None, hardware:String::new(), fps:None, eta_secs:None,
+            error:None, loudness:None, hardware:String::new(), fps:None, eta_secs:None, projected_bytes:None,
         });
     }
     let reply = h.ok(json!({"method":"cancel_job","job_id":requested}));

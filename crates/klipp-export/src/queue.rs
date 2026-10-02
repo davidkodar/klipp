@@ -53,6 +53,26 @@ pub struct RenderJob {
     pub sequence_id: klipp_core::SequenceId,
 }
 
+impl RenderJob {
+    /// The size the file will be, from what the encoder has written so
+    /// far against how far it has got: the measured answer for a quality
+    /// (CRF) export, whose size nothing can say in advance (#19). `None`
+    /// until a twentieth of the job is done, the early part too small a
+    /// sample, and for a job not rendering.
+    pub fn projected_bytes(&self) -> Option<u64> {
+        if self.status != RenderJobStatus::Rendering {
+            return None;
+        }
+        let written = std::fs::metadata(klipp_render::partial_path_for(&self.output_path)).ok()?.len();
+        projected(written, self.progress)
+    }
+}
+
+/// `written` bytes at `progress` (0 to 1), carried to the end.
+fn projected(written: u64, progress: f32) -> Option<u64> {
+    (progress >= 0.05 && written > 0).then(|| (written as f64 / progress.min(1.0) as f64) as u64)
+}
+
 pub enum RenderQueueEvent {
     Progress { id: Uuid, progress: f32 },
     Complete { id: Uuid, output_path: PathBuf },
@@ -509,6 +529,17 @@ impl RenderQueue {
             render_stage,
         });
         true
+    }
+}
+
+#[cfg(test)]
+mod projected_tests {
+    /// #19: a size carried forward from what is written, once enough is.
+    #[test]
+    fn a_size_is_projected_from_what_is_written() {
+        assert_eq!(super::projected(50_000_000, 0.25), Some(200_000_000));
+        assert_eq!(super::projected(1_000_000, 0.02), None, "too early to say");
+        assert_eq!(super::projected(0, 0.5), None);
     }
 }
 
