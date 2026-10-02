@@ -236,7 +236,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         if let Some(z) = &s.zoom {
             if (z.from - z.to).abs() < 1e-4 {
                 // No movement asked for: a reframe, held.
-                ops.push(Op::Reframe { clip_id: clip(i), scale: z.from, x: z.x, y: z.y });
+                ops.push(Op::Reframe { clip_id: clip(i), scale: Some(z.from), x: Some(z.x), y: Some(z.y) });
             } else {
                 ops.push(Op::Zoom { clip_id: clip(i), from: z.from, to: z.to, x: z.x, y: z.y, ease: z.ease });
             }
@@ -249,10 +249,10 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                 clip_id: clip(i),
                 poses: vec![ComposePose {
                     secs: 0.0,
-                    x: p.x,
-                    y: p.y,
-                    width: p.width,
-                    height: p.height,
+                    x: Some(p.x),
+                    y: Some(p.y),
+                    width: Some(p.width),
+                    height: Some(p.height),
                     rotation_deg: p.rotation_deg,
                     opacity: p.opacity.unwrap_or(1.0),
                     ..Default::default()
@@ -573,7 +573,7 @@ mod tests {
             panic!("a placement lowers to a compose op")
         };
         assert_eq!(poses.len(), 1);
-        assert!((poses[0].x - 0.25).abs() < 1e-6 && (poses[0].width - 0.5).abs() < 1e-6);
+        assert!((poses[0].x.unwrap() - 0.25).abs() < 1e-6 && (poses[0].width.unwrap() - 0.5).abs() < 1e-6);
         assert!((poses[0].rotation_deg + 6.0).abs() < 1e-6 && (poses[0].opacity - 0.5).abs() < 1e-6);
         // And it builds: the op is one the timeline accepts.
         assert!(resolve(&seq, &pool, &ops).is_ok(), "{:?}", resolve(&seq, &pool, &ops).err());

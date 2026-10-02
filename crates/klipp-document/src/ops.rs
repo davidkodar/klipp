@@ -494,12 +494,15 @@ pub enum Op {
     /// `frame_stats` or the framing analysis to know where the subject is.
     Reframe {
         clip_id: ClipRef,
-        #[serde(default = "default_reframe_scale")]
-        scale: f32,
+        /// Left out, the clip keeps the scale it is reframed at (1 when it
+        /// is not), so a re-pan need not repeat it (#727).
         #[serde(default)]
-        x: f32,
+        scale: Option<f32>,
+        /// Left out, the pan it has.
         #[serde(default)]
-        y: f32,
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
     },
     /// Animate a picture's zoom over the clip: scale `from` at the start
     /// to `to` at the end — a slow push-in (`from` 1, `to` 1.15) or a
@@ -1075,14 +1078,18 @@ impl Default for CameraKey {
 pub struct ComposePose {
     #[serde(default)]
     pub secs: f64,
-    #[serde(default = "half")]
-    pub x: f32,
-    #[serde(default = "half")]
-    pub y: f32,
-    #[serde(default = "one")]
-    pub width: f32,
-    #[serde(default = "one")]
-    pub height: f32,
+    /// Where the picture's centre goes, fractions of the frame. Left
+    /// out, with `width` and `height`, the pose keeps where the clip is
+    /// and how large, as reframed or composed before (#728): an opacity
+    /// ramp needs no geometry.
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub width: Option<f32>,
+    #[serde(default)]
+    pub height: Option<f32>,
     #[serde(default)]
     pub rotation_deg: f32,
     #[serde(default = "one")]
@@ -1102,7 +1109,7 @@ pub struct ComposePose {
 
 impl Default for ComposePose {
     fn default() -> Self {
-        Self { secs: 0.0, x: 0.5, y: 0.5, width: 1.0, height: 1.0, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: 0.0, tilt_y_deg: 0.0 }
+        Self { secs: 0.0, x: None, y: None, width: None, height: None, rotation_deg: 0.0, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: 0.0, tilt_y_deg: 0.0 }
     }
 }
 
@@ -3924,8 +3931,19 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     Ok((what, edit, vec![clip.id]))
 }
 
-fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, scale: f32, x: f32, y: f32) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, scale: Option<f32>, x: Option<f32>, y: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "reframe")?;
+    // What is not given stays as the clip has it: its scale, and its pan
+    // as a share of how far that scale lets it go (#727).
+    let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let (now_scale, now_x, now_y) = clip.builtin_effects.iter().find_map(|e| match e {
+        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, .. } => {
+            let share = |pos: f32, dim: f32| { let r = reach(*scale_x, dim); if r > 0.0 { (-pos / r).clamp(-1.0, 1.0) } else { 0.0 } };
+            Some((*scale_x, share(*position_x, w), share(*position_y, h)))
+        }
+        _ => None,
+    }).unwrap_or((1.0, 0.0, 0.0));
+    let (scale, x, y) = (scale.unwrap_or(now_scale), x.unwrap_or(now_x), y.unwrap_or(now_y));
     if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
         return Err(refuse(i, format!("a scale of {scale}"), "give scale between 1 and 4"));
     }
@@ -3944,7 +3962,6 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     // `x` and `y` are how far the frame goes toward that edge, as a
     // share of how far it can: at 1 the picture's edge meets the
     // frame's. Moving the frame right moves the picture left.
-    let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
     let fx = E::Transform { position_x: -x * reach(scale, w), position_y: -y * reach(scale, h), scale_x: scale, scale_y: scale, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
     let mut effects: Vec<E> = clip.builtin_effects.iter().filter(|e| !matches!(e, E::Transform { .. })).cloned().collect();
     // Transform goes first, so a crop or effect after it sees the reframed picture.
@@ -4062,29 +4079,60 @@ fn cropped_centre(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
 /// and may sit anywhere in it, including past its edge; what shows
 /// behind is whatever is on a lower track.
 fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, poses: &[ComposePose]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    require_picture(seq, pool, i, ti, clip, "compose")?;
+    // A generator is a picture too: a colour card fades in like footage (#728).
+    if !matches!(clip.kind, ClipKind::Generator(_)) {
+        require_picture(seq, pool, i, ti, clip, "compose")?;
+    } else if seq.tracks[ti].locked {
+        return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
     if poses.is_empty() {
         return Err(refuse(i, "a compose needs a pose", "give at least one pose: where the picture sits and how much of the frame it covers"));
     }
     let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+    // Where the clip is now at each pose's time, in the units the keyframes
+    // hold: its compose keyframes if it has them, else its static
+    // transform (a reframe's scale and pan), else full frame and centred.
+    let (still_x, still_y, still_scale) = clip.builtin_effects.iter().find_map(|e| match e {
+        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, .. } => Some((*position_x, *position_y, *scale_x)),
+        _ => None,
+    }).unwrap_or((0.0, 0.0, 1.0));
+    let now_at = |t: f64| -> (f32, f32, f32) {
+        let at = |kf: &[klipp_core::Keyframe], still: f32| if kf.is_empty() { still } else { klipp_core::keyframe::evaluate(kf, t, still) };
+        (at(&clip.transform_pos_x_keyframes, still_x), at(&clip.transform_pos_y_keyframes, still_y), at(&clip.transform_scale_keyframes, still_scale))
+    };
+    // Each pose with its size settled: what it gives, else what the clip has.
+    // A pose that gives no geometry keeps the clip's (an opacity ramp
+    // over a reframe); one that gives some is placed as it says, the rest
+    // at the defaults, centred and the frame's size.
+    let poses: Vec<ComposePose> = poses.iter().map(|p| {
+        if p.x.is_none() && p.y.is_none() && p.width.is_none() && p.height.is_none() {
+            let size = now_at(p.secs).2;
+            ComposePose { width: Some(size), height: Some(size), ..*p }
+        } else {
+            let size = p.width.or(p.height).unwrap_or(1.0);
+            ComposePose { x: Some(p.x.unwrap_or(0.5)), y: Some(p.y.unwrap_or(0.5)), width: Some(p.width.unwrap_or(size)), height: Some(p.height.unwrap_or(size)), ..*p }
+        }
+    }).collect();
+    let poses = poses.as_slice();
     for p in poses {
         if !p.secs.is_finite() || p.secs < 0.0 || p.secs > dur + 1e-6 {
             return Err(refuse(i, format!("a pose at {:.2} s is outside the clip", p.secs), format!("poses are seconds into the clip, 0 to {dur:.2}")));
         }
-        for (name, v) in [("x", p.x), ("y", p.y)] {
+        for (name, v) in [("x", p.x), ("y", p.y)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))) {
             if !v.is_finite() || !(-1.0..=2.0).contains(&v) {
                 return Err(refuse(i, format!("{name} {v} is out of range"), format!("{name} is a fraction of the frame, -1 to 2 so a picture can start off screen")));
             }
         }
-        for (name, v) in [("width", p.width), ("height", p.height)] {
+        let (pw, ph) = (p.width.unwrap_or(1.0), p.height.unwrap_or(1.0));
+        for (name, v) in [("width", pw), ("height", ph)] {
             if !v.is_finite() || !(0.01..=4.0).contains(&v) {
                 return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between 0.01 and 4, a fraction of the frame")));
             }
         }
         // The engine scales a picture on one axis, the same on x and y,
         // so an uneven rectangle would silently be squared off.
-        if (p.width - p.height).abs() > 1e-4 {
-            return Err(refuse(i, format!("width {:.2} and height {:.2} differ", p.width, p.height), "give the same width and height: a picture is scaled evenly, never stretched"));
+        if (pw - ph).abs() > 1e-4 {
+            return Err(refuse(i, format!("width {pw:.2} and height {ph:.2} differ"), "give the same width and height: a picture is scaled evenly, never stretched"));
         }
         if !p.rotation_deg.is_finite() || !(-360.0..=360.0).contains(&p.rotation_deg) {
             return Err(refuse(i, format!("a turn of {} degrees", p.rotation_deg), "give rotation_deg between -360 and 360"));
@@ -4112,11 +4160,14 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     for p in &sorted {
         // What is placed is the visible picture: its centre, turned and
         // scaled with the rest about the frame's middle, lands on x, y.
+        let width = p.width.unwrap_or(1.0);
         let (sin, cos) = p.rotation_deg.to_radians().sin_cos();
-        let (cx, cy) = (p.width * (ox * cos - oy * sin), p.width * (ox * sin + oy * cos));
-        klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, (p.x - 0.5) * fw - cx);
-        klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, (p.y - 0.5) * fh - cy);
-        klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, p.width);
+        let (cx, cy) = (width * (ox * cos - oy * sin), width * (ox * sin + oy * cos));
+        // A pose that does not say where keeps where the clip is.
+        let (now_x, now_y, _) = now_at(p.secs);
+        klipp_core::keyframe::upsert_keyframe(&mut px, p.secs, p.x.map_or(now_x, |x| (x - 0.5) * fw - cx));
+        klipp_core::keyframe::upsert_keyframe(&mut py, p.secs, p.y.map_or(now_y, |y| (y - 0.5) * fh - cy));
+        klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, width);
         klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg);
         klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
     }
@@ -4145,7 +4196,11 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
             let turn = if p.rotation_deg.abs() > 1e-4 { format!(" turned {:.0} degrees", p.rotation_deg) } else { String::new() };
             let fade = if p.opacity < 0.999 { format!(" at {:.0}%", p.opacity * 100.0) } else { String::new() };
             let lean = if p.tilt_x_deg != 0.0 || p.tilt_y_deg != 0.0 { format!(" tilted {:.0},{:.0}", p.tilt_x_deg, p.tilt_y_deg) } else { String::new() };
-            format!("{:.2}s {:.2} of the frame at {:.2},{:.2}{turn}{lean}{fade}", p.secs, p.width, p.x, p.y)
+            let at = match (p.x, p.y) {
+                (None, None) => "where it is".to_string(),
+                (x, y) => format!("at {},{}", x.map_or("its x".into(), |x| format!("{x:.2}")), y.map_or("its y".into(), |y| format!("{y:.2}"))),
+            };
+            format!("{:.2}s {:.2} of the frame {at}{turn}{lean}{fade}", p.secs, p.width.unwrap_or(1.0))
         })
         .collect();
     let what = format!("compose {}: {}", clip_name(seq, pool, clip), poses_text.join(" \u{2192} "));
@@ -4344,7 +4399,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
             }
             Some(ti)
         }
-        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+        None => text_track_in_view(seq, tl_in, tl_out),
     };
     let mut clip = title_clip(td, tl_in, tl_out, fps);
     // In and out over a fifth of a second.
@@ -5772,7 +5827,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             }
             Some(ti)
         }
-        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+        None => text_track_in_view(seq, tl_in, tl_out),
     };
     let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
@@ -5851,7 +5906,7 @@ fn lower_third(
             }
             Some(ti)
         }
-        None => (0..seq.tracks.len()).find(|ti| seq.tracks[*ti].kind == TrackKind::Text && fits(*ti)),
+        None => text_track_in_view(seq, tl_in, tl_out),
     };
     let clip = title_clip(lower_third_title(name, role, place), tl_in, tl_out, fps);
     let id = clip.id;
@@ -5868,6 +5923,23 @@ fn lower_third(
     );
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
     Ok((what, edit, vec![id]))
+}
+
+/// A text track with room from `from` to `to` where what is put there
+/// will be seen: no picture on a video track above it plays then (#726).
+/// Titles used to land on any text track with room, one below a colour
+/// card among them, and were covered. `None` means make one on top.
+fn text_track_in_view(seq: &Sequence, from: Timecode, to: Timecode) -> Option<usize> {
+    let covers = |t: &klipp_timeline::Track| {
+        t.kind == TrackKind::Video && t.visible
+            && t.clips.iter().any(|c| c.enabled && !c.consumed_as_matte && c.timeline_in < to && c.timeline_out > from)
+    };
+    (0..seq.tracks.len()).find(|&ti| {
+        seq.tracks[ti].kind == TrackKind::Text
+            && !seq.tracks[ti].locked
+            && overlapping(seq, ti, from, to, None).is_none()
+            && !seq.tracks[..ti].iter().any(covers)
+    })
 }
 
 /// A J-cut (`j`) on the cut into `clip` or an L-cut out of it, `frames`
@@ -6132,7 +6204,7 @@ mod tests {
 
         // A reframe pushed all the way right brings the picture's right
         // edge to the frame's and no further.
-        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.5, x: 1.0, y: 0.0 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.5), x: Some(1.0), y: Some(0.0) }]).unwrap();
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         let Some(klipp_effects::BuiltinEffect::Transform { position_x, position_y, .. }) = new_effects.first() else { panic!("a transform") };
         let (right_edge, _) = on_screen(1.5, (*position_x, *position_y), (1.0, 0.5));
@@ -6234,6 +6306,28 @@ mod tests {
 
     /// A 25 fps sequence with a video track holding two clips of a
     /// 10-second media item, at 0-4 s and 4-8 s, and an audio track.
+    /// #726: a title with no track named goes where it is seen. A free
+    /// text track under a video track holding a colour card is covered
+    /// there; the title gets a new text track on top instead. Where the
+    /// card is not up, the free text track is used.
+    #[test]
+    fn a_title_is_not_put_under_a_picture() {
+        let (mut seq, pool, _, _, _) = fixture();
+        let mut card = Track::new("Card", TrackKind::Video);
+        let mut colour = Clip::media(MediaId::new(), tc(2.0), tc(6.0), tc(0.0), tc(4.0));
+        colour.kind = ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [30, 90, 110, 255] });
+        card.clips = vec![colour];
+        seq.tracks.insert(0, card);
+        seq.tracks.insert(1, Track::new("T1", TrackKind::Text));
+        let title = |at: f64| -> Op { serde_json::from_value(serde_json::json!({ "op": "title", "text": "SALT AND SUN", "at": { "secs": at }, "secs": 1.5 })).unwrap() };
+        let plan = resolve(&seq, &pool, &[title(3.0)]).unwrap();
+        let EditCommand::AddTitleClip { track_index, created_track, .. } = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        assert_eq!((*track_index, *created_track), (0, true), "under the card: a new text track on top. {}", plan.steps[0].what);
+        let plan = resolve(&seq, &pool, &[title(6.2)]).unwrap();
+        let EditCommand::AddTitleClip { track_index, created_track, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!((*track_index, *created_track), (1, false), "after the card: the free text track");
+    }
+
     fn fixture() -> (Sequence, MediaPool, MediaId, ClipId, ClipId) {
         let mut seq = Sequence::new_default();
         seq.fps = Fps::new(25, 1);
@@ -7291,11 +7385,11 @@ mod tests {
         use klipp_core::Interpolation;
         let (seq, pool, _media, a, _) = fixture();
         let slide = |ease: Option<Ease>| {
-            let mut to = ComposePose { secs: 2.0, x: 0.25, width: 0.5, height: 0.5, ..Default::default() };
+            let mut to = ComposePose { secs: 2.0, x: Some(0.25), width: Some(0.5), height: Some(0.5), ..Default::default() };
             if let Some(e) = ease {
                 to.ease = e;
             }
-            let from = ComposePose { secs: 0.0, x: 1.5, width: 0.5, height: 0.5, ..Default::default() };
+            let from = ComposePose { secs: 0.0, x: Some(1.5), width: Some(0.5), height: Some(0.5), ..Default::default() };
             let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![from, to] }]).unwrap();
             let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
             new_state.transform_pos_x_keyframes
@@ -7358,14 +7452,14 @@ mod tests {
             let EditCommand::EditKeyframes { new_state, .. } = plan.steps[0].edit.clone() else { panic!("keyframes") };
             (plan.steps[0].what.clone(), new_state)
         };
-        let half = ComposePose { width: 0.5, height: 0.5, ..Default::default() };
+        let half = ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() };
         let (what, state) = card(ComposePose { tilt_y_deg: 55.0, ..half }, ComposePose { secs: 1.5, ..half });
         assert!(what.contains("tilted 0,55"), "{what}");
         let ys: Vec<f32> = state.transform_tilt_y_keyframes.iter().map(|k| k.value).collect();
         assert_eq!(ys, vec![55.0, 0.0], "it swings from 55 degrees to square");
         assert_eq!(state.transform_tilt_y_keyframes[0].interpolation, klipp_core::Interpolation::Bezier, "eased like the rest of the move");
 
-        let (_, flat) = card(half, ComposePose { secs: 1.5, x: 0.3, ..half });
+        let (_, flat) = card(half, ComposePose { secs: 1.5, x: Some(0.3), ..half });
         assert!(flat.transform_tilt_x_keyframes.is_empty() && flat.transform_tilt_y_keyframes.is_empty(), "a flat card is not drawn in perspective");
 
         let bad = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![ComposePose { tilt_x_deg: 90.0, ..half }] }]).unwrap_err();
@@ -7388,10 +7482,10 @@ mod tests {
         };
         // What is left sits 480 px right of the middle; at half size, 240.
         // Placed in the middle, the picture moves 240 px left to put it there.
-        let (x, y) = place(ComposePose { width: 0.5, height: 0.5, ..Default::default() });
+        let (x, y) = place(ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() });
         assert!((x + 240.0).abs() < 1e-3 && y.abs() < 1e-3, "{x}, {y}");
         // Turned a quarter, the offset turns with it: down, not right.
-        let (x, y) = place(ComposePose { width: 0.5, height: 0.5, rotation_deg: 90.0, ..Default::default() });
+        let (x, y) = place(ComposePose { width: Some(0.5), height: Some(0.5), rotation_deg: 90.0, ..Default::default() });
         assert!(x.abs() < 1e-2 && (y + 240.0).abs() < 1e-2, "{x}, {y}");
     }
 
@@ -7495,9 +7589,9 @@ mod tests {
         for rate in [24.0, 30.0, 60.0, 120.0, 24000.0 / 1001.0, 60000.0 / 1001.0] {
             let (seq, mut pool, _, clip_id, _) = fixture();
             let poses = vec![
-                ComposePose { secs: 0.0, x: 0.25, ..Default::default() },
-                ComposePose { secs: 1.0 / rate, x: 0.5, ease: Ease::Out, ..Default::default() },
-                ComposePose { secs: 2.0 / rate, x: 0.75, ease: Ease::In, ..Default::default() },
+                ComposePose { secs: 0.0, x: Some(0.25), ..Default::default() },
+                ComposePose { secs: 1.0 / rate, x: Some(0.5), ease: Ease::Out, ..Default::default() },
+                ComposePose { secs: 2.0 / rate, x: Some(0.75), ease: Ease::In, ..Default::default() },
             ];
             let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(clip_id), poses }]).unwrap();
             let mut fps = seq.fps;
@@ -7525,7 +7619,7 @@ mod tests {
         // One pose: a half-size picture left of centre and low in a
         // 1920x1080 frame, turned, half seen. Position is pixels from the
         // middle of the frame, which is where the anchor sits.
-        let pose = ComposePose { x: 0.25, y: 0.75, width: 0.5, height: 0.5, rotation_deg: 15.0, opacity: 0.5, ..Default::default() };
+        let pose = ComposePose { x: Some(0.25), y: Some(0.75), width: Some(0.5), height: Some(0.5), rotation_deg: 15.0, opacity: 0.5, ..Default::default() };
         let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] }]).unwrap();
         assert!(plan.steps[0].what.contains("0.50 of the frame at 0.25,0.75"), "{}", plan.steps[0].what);
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframe edit") };
@@ -7538,8 +7632,8 @@ mod tests {
 
         // Two poses animate between them, in time order whichever order
         // they arrive in: this one slides in from off the right.
-        let landed = ComposePose { secs: 2.0, x: 0.5, width: 0.4, height: 0.4, ..Default::default() };
-        let offscreen = ComposePose { secs: 0.0, x: 1.5, width: 0.4, height: 0.4, ..Default::default() };
+        let landed = ComposePose { secs: 2.0, x: Some(0.5), width: Some(0.4), height: Some(0.4), ..Default::default() };
+        let offscreen = ComposePose { secs: 0.0, x: Some(1.5), width: Some(0.4), height: Some(0.4), ..Default::default() };
         let plan = resolve(&seq, &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![landed, offscreen] }]).unwrap();
         let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframe edit") };
         let times: Vec<f64> = new_state.transform_pos_x_keyframes.iter().map(|k| k.time_secs).collect();
@@ -7562,7 +7656,7 @@ mod tests {
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
         let just = |pose: ComposePose| Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose] };
         assert!(bad(Op::Compose { clip_id: ClipRef::Id(a), poses: vec![] }).why.contains("needs a pose"));
-        assert!(bad(just(ComposePose { width: 0.5, height: 0.25, ..Default::default() })).why.contains("differ"));
+        assert!(bad(just(ComposePose { width: Some(0.5), height: Some(0.25), ..Default::default() })).why.contains("differ"));
         assert!(bad(just(ComposePose { secs: 9.0, ..Default::default() })).why.contains("outside the clip"));
         assert!(bad(just(ComposePose { opacity: 2.0, ..Default::default() })).why.contains("opacity"));
 
@@ -7570,7 +7664,7 @@ mod tests {
         // leaves out is the frame as shot.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"compose","clip_id":{"track":0,"secs":2.0},"poses":[{"width":0.5,"height":0.5}]}]"#).unwrap();
         let Op::Compose { poses, .. } = &ops[0] else { panic!("a compose") };
-        assert_eq!(poses[0], ComposePose { width: 0.5, height: 0.5, ..Default::default() });
+        assert_eq!(poses[0], ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() });
     }
 
     #[test]
@@ -7655,13 +7749,66 @@ mod tests {
         let _ = media;
     }
 
+    /// #728: fading a reframed shot in with compose keeps its framing:
+    /// poses that give only opacity hold the reframe's scale and pan. A
+    /// colour card (a generator) can be composed and faded too.
+    #[test]
+    fn a_compose_fade_keeps_the_reframe_and_works_on_a_card() {
+        let (seq, pool, _, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(3.17), x: None, y: Some(-0.5) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let reframed = view.sequences[0].tracks[0].clips[0].clone();
+        let Some(klipp_effects::BuiltinEffect::Transform { position_y, scale_x, .. }) = reframed.builtin_effects.first().cloned() else { panic!("reframed") };
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1.2,"opacity":1}}]}}]"#, a.0)).unwrap();
+        let plan = resolve(&view.sequences[0], view.media_pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("3.17 of the frame where it is"), "{}", plan.steps[0].what);
+        view.apply_forward(&plan.steps[0].edit);
+        let c = &view.sequences[0].tracks[0].clips[0];
+        let at = |kf: &[klipp_core::Keyframe], t: f64| klipp_core::keyframe::evaluate(kf, t, f32::NAN);
+        assert!((at(&c.transform_scale_keyframes, 0.6) - scale_x).abs() < 1e-4, "the scale holds");
+        assert!((at(&c.transform_pos_y_keyframes, 0.6) - position_y).abs() < 1e-3, "the pan holds");
+        assert!(at(&c.opacity_keyframes, 0.0) < 1e-4 && (at(&c.opacity_keyframes, 1.2) - 1.0).abs() < 1e-4, "and it fades in");
+
+        // A colour card fades in the same way.
+        let (mut seq, pool, _, _, _) = fixture();
+        let mut card = Track::new("Card", TrackKind::Video);
+        let mut colour = Clip::media(MediaId::new(), tc(2.0), tc(6.0), tc(0.0), tc(4.0));
+        colour.kind = ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [30, 90, 110, 255] });
+        let card_id = colour.id;
+        card.clips = vec![colour];
+        seq.tracks.insert(0, card);
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":0,"opacity":0}},{{"secs":1.8,"opacity":1}}]}}]"#, card_id.0)).unwrap();
+        assert!(resolve(&seq, &pool, &ops).is_ok(), "a generator can be composed");
+    }
+
+    /// #727: a re-pan keeps what it does not name. Reframed at 3.17 and
+    /// panned right, a second reframe with only `y` keeps the scale and the
+    /// sideways pan; before, it took the scale for 1 and refused.
+    #[test]
+    fn a_reframe_keeps_what_it_is_not_given() {
+        let (seq, pool, _, a, _) = fixture();
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(3.17), x: Some(0.4), y: None }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"reframe","clip_id":"{}","y":-0.5}}]"#, a.0)).unwrap();
+        let plan = resolve(&seqs[0], &p, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("scale 3.17, pan 0.40, -0.50"), "{}", plan.steps[0].what);
+    }
+
     #[test]
     fn reframe_punches_in_with_a_transform_first_and_undoes() {
         let (seq, pool, _media, a, _) = fixture();
         use klipp_effects::BuiltinEffect as E;
 
         // A punch-in with a pan inserts a Transform at the front of the chain.
-        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.5, x: 0.2, y: -0.1 }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.5), x: Some(0.2), y: Some(-0.1) }]).unwrap();
         assert!(plan.steps[0].what.contains("scale 1.50") && plan.steps[0].what.contains("pan 0.20, -0.10"), "{}", plan.steps[0].what);
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         let Some(E::Transform { scale_x, position_x, position_y, .. }) = new_effects.first() else { panic!("transform first") };
@@ -7680,7 +7827,7 @@ mod tests {
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
             view.apply_forward(&plan.steps[0].edit);
         }
-        let plan2 = resolve(&seqs[0], &p, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: 2.0, x: 0.0, y: 0.0 }]).unwrap();
+        let plan2 = resolve(&seqs[0], &p, &[Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(2.0), x: Some(0.0), y: Some(0.0) }]).unwrap();
         let EditCommand::SetBuiltinEffects { new_effects: e2, .. } = &plan2.steps[0].edit else { panic!("effects edit") };
         assert_eq!(e2.iter().filter(|e| matches!(e, E::Transform { .. })).count(), 1, "one transform, not two");
         {
@@ -7691,10 +7838,10 @@ mod tests {
 
         // Out of range and a no-op reframe are refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 9.0, x: 0.0, y: 0.0 }).why.contains("scale"));
-        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.0, y: 0.0 }).why.contains("nothing to reframe"));
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(9.0), x: Some(0.0), y: Some(0.0) }).why.contains("scale"));
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.0), x: Some(0.0), y: Some(0.0) }).why.contains("nothing to reframe"));
         // At scale 1 there is nothing past the frame to pan into.
-        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: 1.0, x: 0.5, y: 0.0 }).why.contains("nowhere to go"));
+        assert!(bad(Op::Reframe { clip_id: ClipRef::Id(a), scale: Some(1.0), x: Some(0.5), y: Some(0.0) }).why.contains("nowhere to go"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"reframe","clip_id":{"track":0,"secs":1.0},"scale":1.3}]"#).unwrap();
     }
 
