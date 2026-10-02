@@ -5319,6 +5319,18 @@ impl PlaybackEngine {
             }
             (cur_info, next_info)
         };
+        // A shot whose source has run out has been played. The decoder
+        // reports the end of the file as the last frame is decoded, with
+        // the playhead still on that frame: left there, the shot was
+        // found under it again, reopened at its last frame, ran out
+        // again, and playback never reached the end (#773).
+        let current_out = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).map(|c| c.timeline_out);
+        if let Some(out) = current_out {
+            let short = out.to_secs_f64() - self.playhead.to_secs_f64();
+            if short > 0.0 && short <= self.fps.frame_duration_secs() * GAP_AS_CUT_FRAMES {
+                self.playhead = out;
+            }
+        }
         drop(seq);
 
         let Some((actual_idx, next_clip)) = next_clip_info else {

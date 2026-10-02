@@ -214,3 +214,57 @@ fn a_loop_through_the_end_card_wraps_back_to_the_shot() {
     let after_wrap = moves.windows(2).position(|w| w[0].1 > 1.8 && w[1].1 < 0.4).unwrap();
     assert!(moves[after_wrap + 1..].iter().any(|m| m.1 > 0.5 && m.1 < 0.8), "the shot did not play after the wrap");
 }
+
+/// The ramp as FFV1 in AVI and as H.264 in MP4: how a file reports its
+/// end differs by container and decoder, and the bug was met on an MP4
+/// (#773).
+fn whole_file_sources() -> Vec<std::path::PathBuf> {
+    [common::ffv1_avi_ramp(), common::ramp("h264", &["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"], "mp4")]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// The last shot uses its file to the final frame. The decoder reports
+/// the end of the file as that frame is decoded, a frame short of the
+/// timeline's end; the same shot was then found under the playhead,
+/// reopened at its last frame, ended again, and playback never stopped
+/// (#773).
+#[test]
+fn a_shot_played_to_its_files_end_stops_at_the_end() {
+    for src in whole_file_sources() {
+        eprintln!("{}", src.display());
+    let fps = Fps::new(common::FPS, 1);
+    let id = MediaId::new();
+    let n = common::RAMP_N as i64;
+    let end = n as f64 / common::FPS as f64;
+    let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, n, fps)])], fps);
+    let e = Engine::start(seq, pool_of(id, &src, fps));
+
+    let (moves, stopped) = e.play_from(end - 0.6, fps, Duration::from_secs(4));
+    assert!(stopped, "playback did not stop at the end of a shot played to its file's end");
+    assert!(furthest(&moves) <= end + 1e-6, "played past the end: {:.2} s", furthest(&moves));
+    }
+}
+
+/// The same shot with an end card running on past it: the card plays
+/// to its end and playback stops there (#773).
+#[test]
+fn an_end_card_after_a_shot_played_to_its_files_end_is_reached() {
+    for src in whole_file_sources() {
+        eprintln!("{}", src.display());
+    let fps = Fps::new(common::FPS, 1);
+    let id = MediaId::new();
+    let n = common::RAMP_N as i64;
+    let tc = |f| common::frame_tc(f, fps);
+    let card = Clip { kind: ClipKind::Title(TitleData::default()), ..Clip::gap(tc(n - 10), tc(n + 15)) };
+    let end = (n + 15) as f64 / common::FPS as f64;
+    let seq = sequence(vec![track("Text 1", TrackKind::Text, vec![card]), track("V1", TrackKind::Video, vec![shot(id, 0, n, fps)])], fps);
+    let e = Engine::start(seq, pool_of(id, &src, fps));
+
+    let (moves, stopped) = e.play_from(1.0, fps, Duration::from_secs(5));
+    let reached = furthest(&moves);
+    assert!(reached > end - 0.1, "playback reached only {reached:.2} s of the end card running to {end:.2} s");
+    assert!(stopped, "playback did not stop at the end card's end");
+    }
+}
