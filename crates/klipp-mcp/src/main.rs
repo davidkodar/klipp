@@ -1257,7 +1257,7 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
     if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
         properties["idempotency_key"] = json!({
             "type": "string",
-            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp will not run it twice"
+            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp keeps keys only while this app run lasts"
         });
     }
     // Keep every tool's guidance discoverable. For the few large argument
@@ -1324,7 +1324,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               viewer resolution and the latest performance sample. Start here.",
              json!({}), vec![]),
         tool("klipp_operation_status",
-             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
+             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Outcomes are kept only while Klipp runs; an ID from before a restart says so. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
              json!({ "operation_id": { "type": "string" } }), vec!["operation_id"]),
         tool("klipp_job_status",
              "Read live render and analysis jobs in one shape, including phase, progress, result and error. Give job_id to follow one job. With wait true, return on a progress change or after a bounded long poll; call again until completed, failed or cancelled.",
