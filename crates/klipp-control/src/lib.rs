@@ -707,13 +707,9 @@ fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<klipp_core::
     seek.push(AppCommand::SeekTo(target));
     send_envelope(ctx, seek, false)?;
     // Whole again before the transport is put back, so the frame the
-    // viewer is left on is the composite.
-    let finish = |held| {
-        if only.is_some() {
-            let _ = send_envelope(ctx, vec![AppCommand::SetMeasureOnlyClip(None)], false);
-        }
-        restore_transport(ctx, held);
-    };
+    // viewer is left on is the composite — on every way out, an early
+    // return among them, as the guard clears it when dropped.
+    let mut solo = SoloRead { ctx, active: only.is_some(), repaint_at: held.at.is_none().then_some(target) };
     let wait = std::time::Duration::from_millis(timeout_ms.unwrap_or(FRAME_READ_TIMEOUT_MS));
     let deadline = std::time::Instant::now() + wait;
     loop {
@@ -725,7 +721,8 @@ fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<klipp_core::
             break;
         }
         if std::time::Instant::now() >= deadline {
-            finish(held);
+            solo.end();
+            restore_transport(ctx, held);
             return Err(format!("no frame at {secs:.3} s within {} ms; give a longer timeout_ms", wait.as_millis()));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -743,7 +740,8 @@ fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<klipp_core::
             break (data, width, height);
         }
         if std::time::Instant::now() >= deadline {
-            finish(held);
+            solo.end();
+            restore_transport(ctx, held);
             return Err(format!(
                 "the viewer has no picture of {secs:.3} s to measure yet (its copy of the frame is empty); \
                  a window that is not on screen renders slowly, so give a longer timeout_ms"
@@ -751,9 +749,39 @@ fn grab_frame_rgba_of(ctx: &ControlContext, secs: f64, only: Option<klipp_core::
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    finish(held);
+    solo.end();
+            restore_transport(ctx, held);
     let expected = (width as usize) * (height as usize) * 4;
     Ok((data[..expected].to_vec(), width, height))
+}
+
+/// A clip-alone read in progress (#719): ending it, or dropping it on an
+/// early return, puts the engine back to rendering the whole picture.
+/// With no playhead to go back to, it repaints the frame it read, so the
+/// viewer is never left on the clip alone (#749 review).
+struct SoloRead<'a> {
+    ctx: &'a ControlContext,
+    active: bool,
+    repaint_at: Option<klipp_core::Timecode>,
+}
+
+impl SoloRead<'_> {
+    fn end(&mut self) {
+        if !std::mem::take(&mut self.active) {
+            return;
+        }
+        let mut cmds = vec![AppCommand::SetMeasureOnlyClip(None)];
+        if let Some(t) = self.repaint_at {
+            cmds.push(AppCommand::SeekTo(t));
+        }
+        let _ = send_envelope(self.ctx, cmds, false);
+    }
+}
+
+impl Drop for SoloRead<'_> {
+    fn drop(&mut self) {
+        self.end();
+    }
 }
 
 /// A GPU-drawn scope image (`mode`: 0 waveform, 1 parade, 2 vectorscope,

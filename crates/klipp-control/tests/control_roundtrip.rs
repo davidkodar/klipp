@@ -1714,3 +1714,31 @@ fn detect_scene_cuts_refuses_what_the_app_would() {
     assert_eq!(r["ok"], json!(false), "{r}");
     assert!(r["error"].as_str().is_some_and(|e| e.contains("only a video clip")), "{r}");
 }
+
+/// #749 review: a clip-alone read that fails (no frame comes; here no
+/// app answers at all) still puts the engine back on the whole picture,
+/// and, with no playhead to return to, repaints: the solo clip is set,
+/// then cleared, then a seek redraws the frame.
+#[test]
+fn a_failed_clip_alone_read_still_clears_and_repaints() {
+    let mut h = harness();
+    let fps = h.sequence.read().unwrap().fps;
+    let time = |secs| klipp_core::Timecode::from_secs_f64(secs, fps.num);
+    let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), time(0.0), time(2.0), time(0.0), time(2.0));
+    let id = clip.id;
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        seq.tracks[v].clips = vec![clip];
+    }
+    let reply = h.call(json!({ "method": "grade_to_target", "clip_id": id.0.to_string() }));
+    assert_eq!(reply["ok"], json!(false), "no frame can come: {reply}");
+    let mut sent = Vec::new();
+    while let Ok(cmd) = h.cmd_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+        sent.push(cmd);
+    }
+    let set = sent.iter().position(|c| matches!(c, klipp_core::AppCommand::SetMeasureOnlyClip(Some(c)) if *c == id)).expect("the clip was set alone");
+    let cleared = sent.iter().position(|c| matches!(c, klipp_core::AppCommand::SetMeasureOnlyClip(None))).expect("and cleared");
+    assert!(cleared > set, "{sent:?}");
+    assert!(sent[cleared..].iter().any(|c| matches!(c, klipp_core::AppCommand::SeekTo(_))), "and the frame redrawn: {sent:?}");
+}
