@@ -18,7 +18,7 @@ pub const ID: &str = "framing";
 // view (walking away) is not read for skin by the back of their head.
 // v9 counts only what the detectors are sure of: a cat was a person, its
 // head a face graded to skin, and a street held a toilet (#462, #501).
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// The face detector, when downloaded: a face box with landmarks per
 /// face on every sampled frame.
@@ -242,6 +242,34 @@ pub fn shot_framing(start_secs: f64, end_secs: f64, frames: &[FrameFacts]) -> Sh
     objects.retain(|(_, best, frames)| *frames >= 2 || *best >= OBJECT_SURE);
     objects.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     ShotFraming { start_secs, end_secs, framing, people, position, objects: objects.into_iter().take(5).map(|(l, _, _)| l).collect() }
+}
+
+/// What is only ever outdoors, on or by a street.
+const STREET: &[&str] = &["car", "bus", "truck", "train", "motorcycle", "bicycle", "traffic light", "fire hydrant", "stop sign", "parking meter", "boat", "airplane"];
+/// Fixtures of a room: the detector's indoor classes that do not leave
+/// the house the way a chair or a cup can.
+const FIXTURES: &[&str] = &["bed", "toilet", "microwave", "oven", "sink", "refrigerator", "toaster", "couch", "tv", "hair drier"];
+/// What a real room shows besides its fixtures.
+const ROOM: &[&str] = &["chair", "dining table", "potted plant", "book", "clock", "vase", "laptop", "keyboard", "mouse", "remote", "cup", "bottle", "wine glass"];
+
+/// Room fixtures named where they cannot be: a street walk read as a
+/// toilet, a microwave, a bed and a couch beside its car and traffic
+/// light (#762), each seen twice at a confidence the real objects of
+/// other footage also score. In footage that shows the street anywhere,
+/// a fixture is named only in a shot that is plainly a room, one with two
+/// fixtures or a fixture and two other things of a room: the walk named
+/// the street in three of its eleven shots, and a lone toilet, couch or
+/// bed in six others. The walk that goes into a café keeps its café; a
+/// house filmed with no street in view keeps everything.
+pub fn drop_out_of_place(shots: &mut [ShotFraming]) {
+    let named = |s: &ShotFraming, set: &[&str]| s.objects.iter().filter(|o| set.contains(&o.as_str())).count();
+    let outdoors = shots.iter().any(|s| named(s, STREET) > 0);
+    for s in shots.iter_mut() {
+        let room = named(s, FIXTURES) >= 2 || (named(s, FIXTURES) >= 1 && named(s, ROOM) >= 2);
+        if outdoors && !room {
+            s.objects.retain(|o| !FIXTURES.contains(&o.as_str()));
+        }
+    }
 }
 
 /// The faces that are people's: sure enough, and centred inside a
@@ -472,7 +500,8 @@ impl crate::Analyser for FramingAnalyser {
             times.len(),
             t1.elapsed().as_millis()
         );
-        let shots = chosen.iter().zip(&facts).map(|((a, b), f)| shot_framing(*a, *b, f)).collect();
+        let mut shots: Vec<ShotFraming> = chosen.iter().zip(&facts).map(|((a, b), f)| shot_framing(*a, *b, f)).collect();
+        drop_out_of_place(&mut shots);
         let face_model = faces_model.as_ref().map(|_| FACE_MODEL_ID.to_string());
         let out = Framing { duration_secs: duration, model: model_id.into(), frames_looked_at: times.len() as u32, shots, samples, face_model };
         serde_json::to_value(out).map_err(|e| e.to_string())
@@ -514,6 +543,34 @@ mod tests {
         // The cat twice, the chair once but sure; the couch too unsure,
         // the surfboard seen once.
         assert_eq!(s.objects, vec!["chair".to_string(), "cat".to_string()]);
+    }
+
+    /// #762: the street walk's toilet, microwave, bed and couch go; its
+    /// car, traffic light and plant stay; a room in the same walk keeps
+    /// its own; and indoor footage keeps its fixtures.
+    #[test]
+    fn room_fixtures_are_not_named_in_the_street() {
+        let shot = |objects: &[&str]| ShotFraming { start_secs: 0.0, end_secs: 1.0, framing: "no people".into(), people: 0, position: String::new(), objects: objects.iter().map(|o| o.to_string()).collect() };
+        let mut walk = vec![
+            shot(&["car", "toilet", "traffic light"]),
+            shot(&["potted plant", "microwave"]),
+            shot(&["car", "bed"]),
+            shot(&["couch", "bicycle"]),
+            shot(&["chair", "dining table", "couch", "cup"]),
+        ];
+        drop_out_of_place(&mut walk);
+        let objects: Vec<Vec<&str>> = walk.iter().map(|s| s.objects.iter().map(|o| o.as_str()).collect()).collect();
+        assert_eq!(objects, vec![
+            vec!["car", "traffic light"],
+            vec!["potted plant"],
+            vec!["car"],
+            vec!["bicycle"],
+            vec!["chair", "dining table", "couch", "cup"],
+        ]);
+        let mut home = vec![shot(&["couch", "tv"]), shot(&["microwave", "potted plant"]), shot(&["bed"])];
+        let before = home.clone();
+        drop_out_of_place(&mut home);
+        assert_eq!(home, before, "indoors, nothing is out of place");
     }
 
     #[test]
