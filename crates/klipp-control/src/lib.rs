@@ -1177,6 +1177,11 @@ impl PreviewListen {
 /// is imported or kept.
 fn listen_to_preview(url: &str) -> Result<PreviewListen, String> {
     const SR: u32 = 22_050;
+    // Only a library's own https stream goes to ffmpeg, never a file, a
+    // pipe or another protocol a result could name (#767 review).
+    if !url.starts_with("https://") {
+        return Err("the preview is not an https address".into());
+    }
     let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), std::path::Path::new(url), SR, 0.0, 420.0)
         .map_err(|_| "the preview could not be read".to_string())?;
     if pcm.len() < SR as usize * 2 {
@@ -1220,7 +1225,15 @@ fn energy_shape(pcm: &[f32]) -> (Vec<f32>, &'static str) {
 
 #[cfg(test)]
 mod preview_tests {
-    use super::energy_shape;
+    use super::{energy_shape, listen_to_preview};
+
+    /// #767 review: only an https stream is handed to ffmpeg.
+    #[test]
+    fn only_an_https_preview_is_listened_to() {
+        for url in ["file:///etc/passwd", "/etc/passwd", "http://example.com/a.mp3", "pipe:0"] {
+            assert!(listen_to_preview(url).is_err_and(|e| e.contains("https")), "{url}");
+        }
+    }
 
     fn tone(levels: &[f32]) -> Vec<f32> {
         levels.iter().flat_map(|a| (0..1000).map(move |i| a * ((i as f32) * 0.3).sin())).collect()
@@ -5635,11 +5648,26 @@ reference:   {}",
             // judged before it is imported (#739).
             let heard: Vec<Option<Result<PreviewListen, String>>> = {
                 let n = listen.unwrap_or(0).min(5) as usize;
-                let handles: Vec<_> = tracks.iter().enumerate().map(|(i, t)| {
+                // Each listen answers on a channel, and all of them together
+                // get thirty seconds: a stalled stream is reported as not
+                // heard rather than holding the reply (#767 review). A listen
+                // still running is left to end on ffmpeg's read timeout.
+                let receivers: Vec<_> = tracks.iter().enumerate().map(|(i, t)| {
                     let url = t.preview_url.clone();
-                    (i < n && !url.is_empty()).then(|| std::thread::spawn(move || listen_to_preview(&url)))
+                    (i < n && !url.is_empty()).then(|| {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(listen_to_preview(&url));
+                        });
+                        rx
+                    })
                 }).collect();
-                handles.into_iter().map(|h| h.map(|h| h.join().unwrap_or_else(|_| Err("the listen failed".into())))).collect()
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                receivers.into_iter().map(|r| r.map(|r| match r.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(heard) => heard,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("the preview did not answer within thirty seconds".into()),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the listen failed".into()),
+                })).collect()
             };
             let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
             for (t, h) in tracks.iter().zip(&heard) {
