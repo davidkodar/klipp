@@ -31,6 +31,7 @@
 
 pub mod audio_cache;
 pub mod disk_cache;
+pub mod made;
 pub mod exif_read;
 pub mod field;
 pub mod card;
