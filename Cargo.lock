@@ -3079,6 +3079,7 @@ dependencies = [
  "klipp-document",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

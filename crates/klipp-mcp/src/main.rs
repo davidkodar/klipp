@@ -16,15 +16,20 @@
 //! tool answers with a clear "is Klipp running?" error if it is not,
 //! since that is the overwhelmingly common cause.
 
+#![forbid(unsafe_code)]
+
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
 
 use serde_json::{json, Value};
 
 mod edit_schema;
+mod socket_connect;
 
 const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
 const STRUCTURED_PROTOCOL_VERSION: &str = "2025-06-18";
+const MAX_CONCURRENT_READS: usize = 8;
+const MAX_QUEUED_WRITES: usize = 8;
 /// Inline a screenshot in the reply only when it is small enough to be
 /// worth a client's context window. Bigger ones come back as a path.
 const INLINE_IMAGE_MAX_BYTES: usize = 1_000_000;
@@ -66,6 +71,7 @@ const RETRYABLE_TOOLS: &[&str] = &[
     "klipp_switch_angle", "klipp_set_multicam_sound", "klipp_add_marker",
     "klipp_update_marker", "klipp_remove_marker", "klipp_new_project", "klipp_new_sequence",
     "klipp_save_project", "klipp_relink_media", "klipp_tag_media",
+    "klipp_cancel_job",
 ];
 
 fn main() {
@@ -90,47 +96,85 @@ fn main() {
         println!("klipp-mcp {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    let reader = BufReader::new(stdin.lock());
-    let mut structured = false;
-
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
+    let structured = Arc::new(AtomicBool::new(false));
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Value>(MAX_QUEUED_WRITES);
+    let write_stdout = Arc::clone(&stdout);
+    let write_structured = Arc::clone(&structured);
+    // The channel preserves input order for writes, including edits that
+    // refer to clips created by an earlier request. Reads can run while a
+    // slow write waits for the UI or a background job.
+    let write_worker = std::thread::spawn(move || {
+        for req in write_rx {
+            send_response(&write_stdout, &response_for(&req, &write_stdout, &write_structured));
         }
+    });
+    let active_reads = Arc::new(AtomicUsize::new(0));
+    let mut read_workers = Vec::new();
+    let stdin = std::io::stdin();
+    for line in BufReader::new(stdin.lock()).lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() { continue; }
         let req: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                // Parse error, JSON-RPC code -32700. No id available.
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": Value::Null,
-                        "error": { "code": -32700, "message": format!("parse error: {e}") }
-                    })
-                );
-                let _ = stdout.flush();
+            Ok(req) => req,
+            Err(error) => {
+                send_response(&stdout, &json!({ "jsonrpc":"2.0", "id":null,
+                    "error":{"code":-32700,"message":format!("parse error: {error}")} }));
                 continue;
             }
         };
-
-        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let id = req.get("id").cloned();
-
         // Notifications carry no id and must get no response at all.
-        if id.is_none() {
-            continue;
+        let Some(id) = req.get("id").cloned() else { continue; };
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        if method == "tools/call" {
+            let name = req["params"]["name"].as_str().unwrap_or("");
+            if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
+                if write_tx.try_send(req).is_err() {
+                    send_response(&stdout, &busy_response(id, "write queue is full; retry shortly"));
+                }
+            } else if active_reads.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                |count| (count < MAX_CONCURRENT_READS).then_some(count + 1)).is_ok() {
+                let output = Arc::clone(&stdout);
+                let count = Arc::clone(&active_reads);
+                let read_structured = Arc::clone(&structured);
+                read_workers.push(std::thread::spawn(move || {
+                    struct ReadSlot(Arc<AtomicUsize>);
+                    impl Drop for ReadSlot { fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); } }
+                    let _slot = ReadSlot(count);
+                    send_response(&output, &response_for(&req, &output, &read_structured));
+                }));
+            } else {
+                send_response(&stdout, &busy_response(id, "eight reads are already in progress; retry shortly"));
+            }
+            read_workers.retain(|worker| !worker.is_finished());
+        } else {
+            send_response(&stdout, &response_for(&req, &stdout, &structured));
         }
-        let id = id.unwrap();
+    }
+    drop(write_tx);
+    let _ = write_worker.join();
+    for worker in read_workers { let _ = worker.join(); }
+}
 
-        let response = match method {
+fn send_response(stdout: &Mutex<std::io::Stdout>, response: &Value) {
+    let Ok(mut stdout) = stdout.lock() else { return; };
+    let _ = writeln!(stdout, "{response}");
+    let _ = stdout.flush();
+}
+
+fn busy_response(id: Value, message: &str) -> Value {
+    json!({ "jsonrpc":"2.0", "id":id, "result":{
+        "content":[{"type":"text","text":message}], "isError":true
+    }})
+}
+
+fn response_for(req: &Value, stdout: &Mutex<std::io::Stdout>, structured: &AtomicBool) -> Value {
+    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    match method {
             "initialize" => {
                 let version = negotiated_version(req.get("params").and_then(|p| p.get("protocolVersion")).and_then(Value::as_str));
-                structured = version == STRUCTURED_PROTOCOL_VERSION;
+                structured.store(version == STRUCTURED_PROTOCOL_VERSION, Ordering::Release);
                 json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -145,16 +189,20 @@ fn main() {
             "tools/list" => json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": { "tools": tool_definitions_for(structured) },
+                "result": { "tools": tool_definitions_for(structured.load(Ordering::Acquire)) },
             }),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                match call_tool(name, &args) {
+                let progress_token = params.get("_meta").and_then(|meta| meta.get("progressToken"));
+                let result = if name == "klipp_follow_job" {
+                    follow_job(&args, progress_token, stdout).map(|content| (content, None))
+                } else { call_tool(name, &args) };
+                match result {
                     Ok((content, raw)) => {
                         let mut result = json!({ "content": content, "isError": false });
-                        if structured && has_structured_output(name) {
+                        if structured.load(Ordering::Acquire) && has_structured_output(name) {
                             if let Some(raw) = raw { result["structuredContent"] = raw; }
                         }
                         json!({ "jsonrpc": "2.0", "id": id, "result": result })
@@ -177,10 +225,55 @@ fn main() {
                 "id": id,
                 "error": { "code": -32601, "message": format!("method not found: {other}") },
             }),
-        };
+    }
+}
 
-        let _ = writeln!(stdout, "{response}");
-        let _ = stdout.flush();
+/// Follow a job through bounded control reads. MCP clients that supplied a
+/// progress token receive throttled notifications; other clients get one
+/// changed snapshot so they can report it and call again.
+fn follow_job(args: &Value, token: Option<&Value>, stdout: &Mutex<std::io::Stdout>) -> Result<Vec<Value>, String> {
+    let job_id = arg_str(args, "job_id")?;
+    let token = token.filter(|value| value.is_string() || value.is_number());
+    let max_wait = std::time::Duration::from_millis(args.get("max_wait_ms").and_then(Value::as_u64).unwrap_or(60_000).clamp(1, 600_000));
+    let started = std::time::Instant::now();
+    let mut last_sent: Option<(String, String, i64)> = None;
+    let mut last_notification = std::time::Instant::now() - std::time::Duration::from_secs(6);
+    let mut first = true;
+    loop {
+        let remaining = max_wait.saturating_sub(started.elapsed()).as_millis().min(10_000) as u64;
+        let result = control_call(json!({ "method":"job_status", "job_id":job_id,
+            "wait": token.is_none() || !first, "timeout_ms":remaining }))?;
+        first = false;
+        let job = result["jobs"].as_array().and_then(|jobs| jobs.first()).ok_or("job status had no job")?;
+        let state = job["state"].as_str().unwrap_or("unknown");
+        let phase = job["phase"].as_str().unwrap_or(state);
+        let kind = job["kind"].as_str().unwrap_or("job");
+        let percent = job["progress"].as_f64().map(|fraction| (fraction * 100.0).round() as i64);
+        let signature = (state.to_owned(), phase.to_owned(), percent.unwrap_or(-1));
+        let terminal = matches!(state, "completed" | "failed" | "cancelled" | "unavailable");
+        if let Some(token) = token {
+            let phase_changed = last_sent.as_ref().is_some_and(|sent| sent.0 != state || sent.1 != phase);
+            let progress_step = last_sent.as_ref().is_some_and(|sent| (sent.2 - signature.2).abs() >= 5);
+            if terminal || last_sent.is_none() || phase_changed
+                || (progress_step && last_notification.elapsed() >= std::time::Duration::from_secs(1))
+                || last_notification.elapsed() >= std::time::Duration::from_secs(5) {
+                let message = match percent { Some(percent) => format!("{kind} {percent}%: {phase} ({state})"),
+                    None => format!("{kind}: {phase} ({state}; percentage unavailable)") };
+                let mut params = json!({ "progressToken":token, "progress":percent.unwrap_or(0), "message":message });
+                if percent.is_some() { params["total"] = json!(100); }
+                send_response(stdout, &json!({ "jsonrpc":"2.0", "method":"notifications/progress", "params":params }));
+                last_sent = Some(signature);
+                last_notification = std::time::Instant::now();
+            }
+        }
+        if terminal || token.is_none() || started.elapsed() >= max_wait {
+            let mut summary = format!("{kind} {state}: {phase}");
+            if let Some(percent) = percent { summary.push_str(&format!(" ({percent}%)")); }
+            if let Some(error) = job["error"].as_str() { summary.push_str(&format!("; {error}")); }
+            if let Some(artifact) = job["artifact"].as_str() { summary.push_str(&format!("; output {artifact}")); }
+            summary.push_str(&format!("\nJob ID: {job_id}. Read klipp_job_status for the latest state."));
+            return Ok(vec![json!({ "type":"text", "text":summary })]);
+        }
     }
 }
 
@@ -200,9 +293,20 @@ fn negotiated_version(client: Option<&str>) -> &'static str {
 /// on every Klipp restart — which, during development, is constant.
 fn control_call(command: Value) -> Result<Value, String> {
     let path = klipp_control::protocol::socket_path();
+    let method = command.get("method").and_then(Value::as_str).unwrap_or("");
+    let job_poll = method == "job_status";
+    // Some tools deliberately hold their control reply until the work is
+    // done. Keep that reply intact; the stdio read worker leaves ping and
+    // other tools responsive while it waits.
+    let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
+        | "search_music" | "search_sfx" | "add_music")
+        || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
+    let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(250, 120_000)).unwrap_or(32_000);
     // Said so it can be passed on as it is: what the person should do
     // first, the detail after (#626).
-    let stream = UnixStream::connect(&path).map_err(|e| {
+    let stream = socket_connect::connect(&path, std::time::Duration::from_secs(2)).map_err(|e| {
         format!(
             "Klipp does not seem to be running: start Klipp, then try again. \
              (Technical detail: no answer on {}: {e}. The connection opens once \
@@ -210,10 +314,22 @@ fn control_call(command: Value) -> Result<Value, String> {
             path.display(),
         )
     })?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| format!("setting Klipp socket write timeout failed: {e}"))?;
+    stream.set_read_timeout((!long_call).then(|| std::time::Duration::from_millis(read_timeout_ms)))
+        .map_err(|e| format!("setting Klipp socket read timeout failed: {e}"))?;
     let mut writer = stream.try_clone().map_err(|e| format!("socket clone failed: {e}"))?;
     let mut reader = BufReader::new(stream);
 
     let mut payload = command;
+    // Only job polling is short and repeatable. Other wait:true calls keep
+    // the caller's timeout, since transcription and recording may take minutes.
+    if job_poll && payload.get("wait").and_then(Value::as_bool) == Some(true) {
+        let bounded = payload.get("timeout_ms").and_then(Value::as_u64).unwrap_or(10_000)
+            .min(10_000).min(read_timeout_ms.saturating_sub(200));
+        payload["timeout_ms"] = json!(bounded);
+    }
+    let retry_key = payload.get("idempotency_key").and_then(Value::as_str).map(str::to_owned);
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("id".into(), json!(1));
     }
@@ -221,15 +337,15 @@ fn control_call(command: Value) -> Result<Value, String> {
     text.push('\n');
     writer
         .write_all(text.as_bytes())
-        .map_err(|e| format!("sending to Klipp failed: {e}"))?;
+        .map_err(|e| uncertain_socket_error("sending", &e, retry_key.as_deref()))?;
     writer.flush().ok();
 
     let mut line = String::new();
     reader
         .read_line(&mut line)
-        .map_err(|e| format!("reading from Klipp failed: {e}"))?;
+        .map_err(|e| uncertain_socket_error("reading", &e, retry_key.as_deref()))?;
     if line.trim().is_empty() {
-        return Err("Klipp closed the connection without replying".into());
+        return Err(uncertain_socket_error("reading", &std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Klipp closed the connection without replying"), retry_key.as_deref()));
     }
     let reply: Value =
         serde_json::from_str(&line).map_err(|e| format!("bad reply from Klipp: {e}"))?;
@@ -241,6 +357,13 @@ fn control_call(command: Value) -> Result<Value, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown error")
             .to_string())
+    }
+}
+
+fn uncertain_socket_error(phase: &str, error: &std::io::Error, key: Option<&str>) -> String {
+    match key {
+        Some(key) => format!("{phase} from Klipp failed: {error}. The write outcome is unknown; retry the same call with idempotency_key {key:?}, then read klipp_operation_status using the returned operation_id. Do not send a new key for the same edit."),
+        None => format!("{phase} from Klipp failed: {error}. If this was a write, its outcome is unknown; inspect the timeline before retrying."),
     }
 }
 
@@ -292,6 +415,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
     let mut command = match name {
         "klipp_status" => json!({ "method": "status" }),
         "klipp_operation_status" => json!({ "method": "operation_status", "operation_id": arg_str(args, "operation_id")? }),
+        "klipp_job_status" => json!({ "method": "job_status", "job_id": args.get("job_id"),
+            "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false),
+            "timeout_ms": args.get("timeout_ms") }),
+        "klipp_follow_job" => json!({ "method": "job_status", "job_id": arg_str(args, "job_id")?,
+            "wait": true, "timeout_ms": args.get("max_wait_ms") }),
+        "klipp_cancel_job" => json!({ "method":"cancel_job", "job_id":arg_str(args, "job_id")? }),
         "klipp_play" => json!({ "method": "play" }),
         "klipp_pause" => json!({ "method": "pause" }),
         "klipp_stop" => json!({ "method": "stop" }),
@@ -903,7 +1032,12 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         };
         return Ok((vec![json!({ "type": "text", "text": text })], None));
     }
-    let cmd = tool_to_command(name, args)?;
+    let mut cmd = tool_to_command(name, args)?;
+    if (WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name))
+        && cmd.get("idempotency_key").is_none()
+    {
+        cmd["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
+    }
     let result = control_call(cmd)?;
     // The project changed under this session — made new, opened or saved
     // as — since its last call: said, so what it knew about the timeline
@@ -1123,7 +1257,7 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
     if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
         properties["idempotency_key"] = json!({
             "type": "string",
-            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp will not run it twice"
+            "description": "Reuse the same key when retrying this exact write after a lost reply; Klipp keeps keys only while this app run lasts"
         });
     }
     // Keep every tool's guidance discoverable. For the few large argument
@@ -1190,8 +1324,19 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               viewer resolution and the latest performance sample. Start here.",
              json!({}), vec![]),
         tool("klipp_operation_status",
-             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
+             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Outcomes are kept only while Klipp runs; an ID from before a restart says so. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
              json!({ "operation_id": { "type": "string" } }), vec!["operation_id"]),
+        tool("klipp_job_status",
+             "Read live render and analysis jobs in one shape, including phase, progress, result and error. Give job_id to follow one job. With wait true, return on a progress change or after a bounded long poll; call again until completed, failed or cancelled.",
+             json!({ "job_id": { "type": "string" }, "wait": { "type": "boolean" },
+                     "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 10000 } }), vec![]),
+        tool("klipp_follow_job",
+             "Follow one render or analysis job. With an MCP progress token, send throttled progress notifications until it ends or max_wait_ms expires. Without a token, return after one status change so the agent can report progress and call again.",
+             json!({ "job_id": { "type": "string" },
+                     "max_wait_ms": { "type": "integer", "minimum": 1, "maximum": 600000 } }), vec!["job_id"]),
+        tool("klipp_cancel_job",
+             "Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.",
+             json!({ "job_id": { "type": "string" } }), vec!["job_id"]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),
         tool("klipp_stop", "Stop playback and return to the start.", json!({}), vec![]),

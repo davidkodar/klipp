@@ -681,41 +681,59 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     assert_eq!(reply["ok"], json!(false));
     assert!(reply["error"].as_str().unwrap().contains("container"));
 
-    let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
-    assert_eq!(r["applied"], json!(true));
-    match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)) {
-        Ok(klipp_core::AppCommand::ExportSequence { settings }) => {
-            assert_eq!(settings.output_path, std::path::PathBuf::from("/tmp/klipp-control-test-out.mp4"));
-            assert_eq!(settings.target_lufs, Some(-14.0));
-            assert_eq!(settings.crf, 20);
-            assert!(matches!(settings.format, klipp_core::ExportFormat::Mp4));
+    let shared = h.shared.clone();
+    let commands = h.cmd_rx.clone();
+    let queue = std::thread::spawn(move || {
+        match commands.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => {
+                assert_eq!(settings.output_path, std::path::PathBuf::from("/tmp/klipp-control-test-out.mp4"));
+                assert_eq!(settings.target_lufs, Some(-14.0));
+                assert_eq!(settings.crf, 20);
+                assert!(matches!(settings.format, klipp_core::ExportFormat::Mp4));
+            }
+            other => panic!("expected ExportSequence, got {other:?}"),
         }
-        other => panic!("expected ExportSequence, got {other:?}"),
-    }
-
-    h.shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
-        job_id: "j1".into(),
-        path: "/tmp/klipp-control-test-out.mp4".into(),
-        status: "rendering".into(),
-        progress: 0.5,
-        frames_done: 50,
-        total_frames: 100,
-        stage: "Encoding".into(),
-        error: None,
-        loudness: None,
-        hardware: "Decode: CUDA (NVDEC) | Encode: h264_nvenc".into(),
-        fps: Some(28.0),
-        eta_secs: Some(2),
+        shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
+            job_id: "j1".into(),
+            path: "/tmp/klipp-control-test-out.mp4".into(),
+            status: "rendering".into(),
+            progress: 0.5,
+            frames_done: 50,
+            total_frames: 100,
+            stage: "Encoding".into(),
+            error: None,
+            loudness: None,
+            hardware: "Decode: CUDA (NVDEC) | Encode: h264_nvenc".into(),
+            fps: Some(28.0),
+            eta_secs: Some(2),
+        });
     });
+    let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
+    queue.join().unwrap();
+    assert_eq!(r["applied"], json!(true));
+    assert_eq!(r["job_id"], "j1");
     let st = h.ok(json!({ "method": "export_status" }));
     assert_eq!(st["jobs"][0]["status"], json!("rendering"));
     assert_eq!(st["jobs"][0]["progress"], json!(0.5));
+    let unified = h.ok(json!({ "method": "job_status", "job_id": "j1" }));
+    assert_eq!(unified["jobs"][0]["kind"], "render");
+    assert_eq!(unified["jobs"][0]["state"], "running");
+    assert_eq!(unified["jobs"][0]["progress"], json!(0.5));
+    assert_eq!(unified["jobs"][0]["completed_units"], 50);
+    assert!(unified["jobs"][0]["first_seen_at_ms"].as_u64().is_some());
+    let status = h.ok(json!({ "method": "status" }));
+    assert!(status["active_jobs"].as_array().unwrap().iter().any(|job| job["job_id"] == "j1"));
     let timeout = h.ok(json!({ "method": "export_status", "wait": true, "job_id": "j1", "timeout_ms": 1 }));
     assert_eq!(timeout["finished"], false);
     assert_eq!(timeout["timed_out"], true);
     let shared = h.shared.clone();
     let worker = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut jobs = shared.exports.lock().unwrap_or_else(|e| e.into_inner());
+        jobs[0].progress = 0.75;
+        jobs[0].frames_done = 75;
+        drop(jobs);
+        std::thread::sleep(std::time::Duration::from_millis(350));
         let mut jobs = shared.exports.lock().unwrap_or_else(|e| e.into_inner());
         jobs[0].status = "complete".into();
         jobs[0].progress = 1.0;
@@ -726,8 +744,14 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
         later.status = "rendering".into();
         jobs.push(later);
     });
+    let progress = h.ok(json!({ "method": "job_status", "job_id": "j1", "wait": true, "timeout_ms": 2000 }));
+    assert_eq!(progress["changed"], true);
+    assert_eq!(progress["jobs"][0]["progress"], json!(0.75));
     let done = h.ok(json!({ "method": "export_status", "wait": true, "timeout_ms": 2000 }));
     worker.join().unwrap();
+    let terminal = h.ok(json!({ "method": "job_status", "job_id": "j1" }));
+    assert_eq!(terminal["jobs"][0]["state"], "completed");
+    assert_eq!(terminal["jobs"][0]["artifact"], "/tmp/klipp-control-test-out.mp4");
     assert_eq!(done["finished"], true);
     assert_eq!(done["succeeded"], true);
     assert_eq!(done["timed_out"], false);
@@ -742,6 +766,94 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     let missing = h.call(json!({ "method": "export_status", "wait": true, "job_id": "missing" }));
     assert_eq!(missing["ok"], false);
 
+}
+
+#[test]
+fn a_render_cancellation_names_the_job_it_stops() {
+    let mut h = harness();
+    let requested = uuid::Uuid::new_v4().to_string();
+    let another = uuid::Uuid::new_v4().to_string();
+    for id in [&requested, &another] {
+        h.shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
+            job_id:id.clone(), path:"/tmp/render.mp4".into(), status:"rendering".into(),
+            progress:0.4, frames_done:40, total_frames:100, stage:"Encoding".into(),
+            error:None, loudness:None, hardware:String::new(), fps:None, eta_secs:None,
+        });
+    }
+    let reply = h.ok(json!({"method":"cancel_job","job_id":requested}));
+    assert_eq!(reply["job_id"], requested);
+    assert_eq!(reply["cancel_requested"], true);
+    match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        Ok(klipp_core::AppCommand::CancelExportJob { job_id }) => assert_eq!(job_id, requested),
+        other => panic!("expected named cancellation, got {other:?}"),
+    }
+    h.shared.exports.lock().unwrap()[0].status = "cancelled".into();
+    let status = h.ok(json!({"method":"job_status","job_id":requested}));
+    assert_eq!(status["jobs"][0]["state"], "cancelled");
+    assert_eq!(h.shared.exports.lock().unwrap()[1].status, "rendering");
+}
+
+#[test]
+fn import_returns_a_trackable_job_and_its_media_result() {
+    let mut h = harness();
+    let path = std::env::temp_dir().join(format!("klipp-import-job-{}.wav", uuid::Uuid::new_v4()));
+    let samples = 16_000u32;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + samples * 2).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples * 2).to_le_bytes());
+    for frame in 0..samples {
+        let sample: i16 = if frame % 32 < 16 { 1000 } else { -1000 };
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    std::fs::write(&path, wav).unwrap();
+    let imported = h.ok(json!({"method":"import_media","path":path.to_string_lossy().to_string(),"analyze":false}));
+    assert!(imported["job_id"].as_str().is_some());
+    assert!(imported["media_id"].as_str().is_some());
+    let job = h.ok(json!({"method":"job_status","job_id":imported["job_id"]}));
+    assert_eq!(job["jobs"][0]["kind"], "import");
+    assert_eq!(job["jobs"][0]["state"], "completed");
+    assert_eq!(job["jobs"][0]["result"]["media_id"], imported["media_id"]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn sync_job_completes_only_after_its_multicam_group_appears() {
+    let mut h = harness();
+    let (first, second) = {
+        let mut pool = h.media_pool.write().unwrap();
+        (pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/sync-one.mov".into(), None)),
+         pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/sync-two.mov".into(), None)))
+    };
+    let queued = h.ok(json!({"method":"create_multicam",
+        "media_ids":[first.0.to_string(), second.0.to_string()]}));
+    let job_id = queued["job_id"].as_str().expect("sync has a job ID").to_owned();
+    let pending = h.ok(json!({"method":"job_status","job_id":job_id}));
+    assert_eq!(pending["jobs"][0]["kind"], "sync");
+    assert_eq!(pending["jobs"][0]["state"], "running");
+    let group = klipp_core::GroupId::new();
+    let time = |secs| klipp_core::Timecode::from_secs_f64(secs, 24);
+    let mut clips = vec![
+        klipp_timeline::Clip::media(first, time(0.0), time(2.0), time(0.0), time(2.0)),
+        klipp_timeline::Clip::media(second, time(0.0), time(2.0), time(0.0), time(2.0)),
+    ];
+    for (angle, clip) in clips.iter_mut().enumerate() {
+        clip.multicam_group = Some(group);
+        clip.multicam_angle = angle as u8;
+    }
+    h.sequence.write().unwrap().tracks[0].clips = clips;
+    let done = h.ok(json!({"method":"job_status","job_id":job_id}));
+    assert_eq!(done["jobs"][0]["state"], "completed");
+    assert!(done["jobs"][0]["result"]["group_id"].as_str().is_some());
 }
 
 /// The text view carries what a model needs to plan and respects its

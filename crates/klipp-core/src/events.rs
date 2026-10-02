@@ -1165,6 +1165,8 @@ pub enum AppCommand {
     ShowExportDialog,
     ExportSequence { settings: ExportSettings },
     CancelExport,
+    /// Cancel exactly this render, even if another render became active.
+    CancelExportJob { job_id: String },
     /// Delete a user-defined export preset by id.
     DeleteExportPreset { preset_id: String },
     /// Rename a user-defined export preset.

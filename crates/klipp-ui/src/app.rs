@@ -21918,6 +21918,14 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::CancelExportJob { job_id } => {
+                if let Ok(id) = uuid::Uuid::parse_str(job_id) {
+                    self.state.render_queue.cancel_job(id);
+                } else {
+                    tracing::warn!("invalid render job ID {job_id:?} in cancellation command");
+                }
+                true
+            }
             AppCommand::DeleteExportPreset { preset_id } => {
                 let id = preset_id.clone();
                 let before = self.prefs.export.custom_presets.len();

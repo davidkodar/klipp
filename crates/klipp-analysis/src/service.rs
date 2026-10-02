@@ -275,6 +275,29 @@ pub fn manage_queue(priority: Option<MediaId>, cancel_pending: bool) -> Result<V
     Ok(cancelled)
 }
 
+/// Cancel only one queued analysis. A running analyser owns decoder state
+/// and cannot be interrupted safely; tell the caller instead of claiming it
+/// stopped. No timeline edit is involved.
+pub fn cancel_queued(media_id: MediaId) -> Result<(), String> {
+    let mut service = service().lock().unwrap_or_else(|e| e.into_inner());
+    cancel_queued_in(&mut service, media_id)
+}
+
+fn cancel_queued_in(service: &mut Service, media_id: MediaId) -> Result<(), String> {
+    let state = service.statuses.get(&media_id).map(|status| &status.state)
+        .ok_or_else(|| format!("no analysis for {}", media_id.0))?;
+    if *state != State::Queued {
+        return Err(format!("analysis {} is {state:?}; only queued analysis can be cancelled", media_id.0));
+    }
+    let Some(position) = service.queue.iter().position(|item| item.id == media_id) else {
+        return Err(format!("analysis {} left the queue; read its current status", media_id.0));
+    };
+    service.queue.remove(position);
+    service.force_transcript.remove(&media_id);
+    if let Some(status) = service.statuses.get_mut(&media_id) { status.state = State::Cancelled; }
+    Ok(())
+}
+
 fn edit_queue(s: &mut Service, priority: Option<MediaId>, cancel_pending: bool) -> Result<Vec<String>, String> {
     if let Some(id) = priority {
         let st = s.statuses.get(&id).ok_or_else(|| format!("no analysis for {}; call analyze first", id.0))?;
@@ -304,6 +327,30 @@ fn edit_queue(s: &mut Service, priority: Option<MediaId>, cancel_pending: bool) 
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+
+    #[test]
+    fn cancel_one_queued_analysis_without_touching_other_work() {
+        let mut service = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1,
+            running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(),
+            force_transcript: std::collections::HashSet::new() };
+        let first = MediaItem::new_synthetic_title(MediaId::new(), "first".into(),
+            klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
+        let second = MediaItem::new_synthetic_title(MediaId::new(), "second".into(),
+            klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
+        for item in [&first, &second] {
+            service.statuses.insert(item.id, Status { media_id:item.id.0.to_string(), filename:item.filename.clone(),
+                state:State::Queued, done:Vec::new(), failed:Vec::new(), current:None,
+                current_for_secs:None, current_since:None });
+            service.queue.push(item.clone());
+        }
+        assert!(cancel_queued_in(&mut service, first.id).is_ok());
+        assert_eq!(service.statuses[&first.id].state, State::Cancelled);
+        assert_eq!(service.queue.len(), 1);
+        assert_eq!(service.queue[0].id, second.id);
+        service.statuses.get_mut(&second.id).unwrap().state = State::Running;
+        assert!(cancel_queued_in(&mut service, second.id).unwrap_err().contains("only queued"));
+        assert_eq!(service.statuses[&second.id].state, State::Running);
+    }
 
     #[test]
     fn prioritize_and_cancel_preserve_running_work_and_reject_invalid_ids() {

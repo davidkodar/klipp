@@ -25,6 +25,7 @@
 pub mod protocol;
 mod operations;
 mod cut_prep;
+mod jobs;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -2060,7 +2061,11 @@ fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure::PrimarySt
 /// The pool item for a file just imported, waited for: the import is
 /// the app's to finish, and it answers before the item is in the pool.
 fn imported_id(ctx: &ControlContext, path: &std::path::Path) -> Option<String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    imported_id_within(ctx, path, std::time::Duration::from_secs(10))
+}
+
+fn imported_id_within(ctx: &ControlContext, path: &std::path::Path, wait: std::time::Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + wait;
     loop {
         if let Ok(pool) = ctx.media_pool.read() {
             if let Some(item) = pool.find_by_path(path) {
@@ -2625,10 +2630,40 @@ fn handle(
             operations::status(&operation_id)
         }
 
+        ControlCommand::JobStatus { job_id, wait, timeout_ms } => {
+            if in_batch { return read_in_batch("job_status"); }
+            jobs::status(ctx, job_id.as_deref(), wait, timeout_ms)
+        }
+
+        ControlCommand::CancelJob { job_id } => {
+            if in_batch { return Err("cancel_job must be sent on its own".into()); }
+            let render = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner()).iter()
+                .find(|job| job.job_id == job_id).cloned();
+            if let Some(render) = render {
+                if matches!(render.status.as_str(), "complete" | "failed" | "cancelled") {
+                    return Err(format!("render {job_id} is already {}; nothing cancelled", render.status));
+                }
+                let mut response = send(AppCommand::CancelExportJob { job_id: job_id.clone() })?;
+                response["job_id"] = json!(job_id);
+                response["cancel_requested"] = json!(response["applied"] == true);
+                response["next"] = json!(if response["applied"] == true {
+                    "Read job_status until this render reports cancelled or another terminal state."
+                } else {
+                    "Cancellation is queued for the UI. Resolve operation_id before assuming the render stopped."
+                });
+                return Ok(response);
+            }
+            let media_id = klipp_core::MediaId(parse_uuid(&job_id, "job_id")?);
+            klipp_analysis::service::cancel_queued(media_id)?;
+            Ok(json!({ "job_id":job_id, "kind":"analysis", "state":"cancelled", "cancelled":true,
+                "next":"Read job_status to confirm the terminal analysis state." }))
+        }
+
         ControlCommand::Status => {
             if in_batch {
                 return read_in_batch("status");
             }
+            let active_jobs = jobs::active(ctx);
             let project = project_status(ctx)?;
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
@@ -2637,7 +2672,7 @@ fn handle(
             let presented = fb.shown_presented().map(|t| t.to_secs_f64());
             let playing = ctx.shared.transport.lock().map(|t| t.playing).unwrap_or(false);
             let media = ctx.media_pool.read().map(|p| p.all().count()).unwrap_or(0);
-            let text = status_text(&StatusFacts {
+            let mut text = status_text(&StatusFacts {
                 build: klipp_core::build_info::get(),
                 project: project.path.as_deref(),
                 unsaved: project.dirty,
@@ -2646,6 +2681,19 @@ fn handle(
                 playhead_secs: presented.unwrap_or(0.0),
                 playing,
             });
+            if !active_jobs.is_empty() {
+                text.push_str("\nActive work:");
+                for job in active_jobs.iter().take(3) {
+                    let kind = job["kind"].as_str().unwrap_or("job");
+                    let phase = job["phase"].as_str().unwrap_or("working");
+                    if let Some(progress) = job["progress"].as_f64() {
+                        text.push_str(&format!(" {kind} {:.0}% ({phase});", progress * 100.0));
+                    } else {
+                        text.push_str(&format!(" {kind} ({phase});"));
+                    }
+                }
+                text.push('\n');
+            }
             Ok(json!({
                 // What a person is told when they ask whether Klipp is
                 // there: in their words, read live (#626).
@@ -2655,6 +2703,7 @@ fn handle(
                 // socket, a client can tell them apart.
                 "pid": std::process::id(),
                 "revision": ctx.shared.revision(),
+                "active_jobs": active_jobs,
                 "project": {
                     "path": project.path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "unsaved_changes": project.dirty,
@@ -4283,25 +4332,33 @@ fn handle(
                 return Err(format!("{name} could not be imported: {why}. Is it a complete video, audio or image file?"));
             }
             let mut v = send(if analyze { AppCommand::ImportMedia { path: p.clone() } } else { AppCommand::ImportMediaWithAnalysis { path: p.clone(), analyze } })?;
+            if let Some(operation_id) = v["operation_id"].as_str().map(str::to_owned) {
+                jobs::register_import(ctx, &operation_id, p.clone(), analyze);
+                v["job_id"] = json!(operation_id);
+            }
             // The id it just made, waited for. Without this the first
             // call answers with no media_id at all and only a *second*
             // one finds the path in the pool — so an agent importing a
             // batch gets a list of nothing and has to ask again for
             // every file.
-            match imported_id(ctx, &p) {
+            match if v["applied"] == true { imported_id_within(ctx, &p, std::time::Duration::from_secs(10)) } else { None } {
                 Some(id) => {
                     v["media_id"] = json!(id);
                 }
                 None => {
-                    v["note"] = json!("the import was sent but the item has not reached the pool yet; list_media will show it");
+                    v["note"] = json!("the import is queued or still probing; follow job_id until the media ID appears");
                 }
             }
             v["analysis_requested"] = json!(analyze);
-            if !analyze {
-                v["next"] = json!("Imported without analysis. Call analyze with this media_id and wait true when results are needed.");
+            if v["applied"] != true {
+                v["next"] = json!("The UI has not acknowledged import yet. Resolve operation_id first, then follow job_id for the media pool result.");
                 return Ok(v);
             }
-            v["next"] = json!("Imported. Analysis runs on import; set the brief first (set_brief) so the transcript gets the cast's names and the spellings. Watch analysis_status, then read the transcript and shots.");
+            if !analyze {
+                v["next"] = json!("Follow job_id until import completes. Call analyze with the resulting media_id if analysis is needed.");
+                return Ok(v);
+            }
+            v["next"] = json!("Follow job_id until media enters the pool, then follow its analysis_job_id for analysis progress. Read transcript and shots only after analysis completes.");
             Ok(v)
         }
 
@@ -4322,8 +4379,18 @@ fn handle(
                     return Err(format!("no media item {}", missing.0));
                 }
             }
+            let before_groups = jobs::existing_multicam_groups(ctx);
+            let requested_ids: Vec<_> = ids.iter().map(|id| id.0.to_string()).collect();
             let mut v = send(AppCommand::CreateSyncedMulticam { media_ids: ids, method })?;
-            v["next"] = json!("The sync runs in the background: read status (its multicam entry) or timeline once the group is laid out, then switch_angle to cut.");
+            if let Some(operation_id) = v["operation_id"].as_str().map(str::to_owned) {
+                jobs::register_sync(ctx, &operation_id, requested_ids, before_groups);
+                v["job_id"] = json!(operation_id);
+            }
+            v["next"] = json!(if v["applied"] == true {
+                "Sync is running. Follow job_id until the new multicam group appears, then switch_angle to cut."
+            } else {
+                "The UI has not acknowledged sync yet. Resolve operation_id first, then follow job_id."
+            });
             Ok(v)
         }
 
@@ -5815,7 +5882,7 @@ reference:   {}",
                 Some("webm") => klipp_core::ExportFormat::WebM,
                 Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm")),
             };
-            let mut settings = klipp_core::ExportSettings { output_path: out, format, ..Default::default() };
+            let mut settings = klipp_core::ExportSettings { output_path: out.clone(), format, ..Default::default() };
             // The default H.264 and AAC do not go in WebM.
             settings.fit_codecs_to_format();
             if let (Some(w), Some(h)) = (width, height) {
@@ -5866,12 +5933,29 @@ reference:   {}",
                 "audio_codec": settings.audio_codec.label(),
             });
             let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);
+            let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
+                .iter().map(|job| job.job_id.clone()).collect();
             let mut v = send(AppCommand::ExportSequence { settings })?;
             v["export"] = said;
-            v["next"] = json!(format!(
-                "Rendering. Read export_status for the job_id, then call it with that job_id and wait true. A finished job may have failed or been cancelled: only succeeded true means the file is ready.{}",
-                if burnt { "" } else { " Captions are not burnt in: write export_subtitles for a sidecar SRT." }
-            ));
+            if v["applied"] != true {
+                v["next"] = json!("Export submission is still queued for the UI. Resolve its operation_id with operation_status before looking for a render job.");
+                return Ok(v);
+            }
+            let started = std::time::Instant::now();
+            let job_id = loop {
+                let found = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner()).iter()
+                    .find(|job| job.path == out && !known_jobs.contains(&job.job_id))
+                    .map(|job| job.job_id.clone());
+                if found.is_some() || started.elapsed() >= std::time::Duration::from_millis(300) { break found; }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            if let Some(job_id) = job_id {
+                v["job_id"] = json!(job_id);
+                v["next"] = json!(format!("Render submitted. Follow job_id {job_id} with job_status or follow_job; only completed means the file is ready.{}",
+                    if burnt { "" } else { " Captions are not burnt in: write export_subtitles for a sidecar SRT." }));
+            } else {
+                v["next"] = json!("The UI acknowledged export, but no render job appeared. It may be awaiting a confirmation dialog or the snapshot may have failed. Read status and export_status before reporting a render as started.");
+            }
             Ok(v)
         }
 
