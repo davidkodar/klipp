@@ -36,6 +36,7 @@ pub mod service;
 pub mod shots;
 pub mod store;
 pub(crate) mod videopass;
+pub mod worker;
 #[cfg(feature = "transcript")]
 pub mod transcript;
 #[cfg(feature = "framing")]
@@ -60,6 +61,11 @@ pub trait Analyser: Send + Sync {
     /// again all the same: a better model has been installed since, or
     /// what the analyser was told has changed.
     fn stale(&self, _stored: &serde_json::Value) -> bool {
+        false
+    }
+    /// Whether it runs native model or inference code, which can bring
+    /// the process down with it: run in a [`worker`] then (#689).
+    fn native(&self) -> bool {
         false
     }
 }
@@ -192,6 +198,19 @@ pub fn analysers() -> Vec<Box<dyn Analyser>> {
     if screen_text_enabled() {
         v.push(Box::new(screentext::ScreenTextAnalyser));
     }
+    v
+}
+
+/// Every analyser that runs native code, whatever the preferences: what
+/// a [`worker`] may be asked to run.
+// Pushed one by one, each under its feature.
+#[allow(unused_mut, clippy::vec_init_then_push)]
+pub(crate) fn native_analysers() -> Vec<Box<dyn Analyser>> {
+    let mut v: Vec<Box<dyn Analyser>> = Vec::new();
+    #[cfg(feature = "framing")]
+    v.push(Box::new(framing::FramingAnalyser));
+    #[cfg(feature = "ocr")]
+    v.push(Box::new(screentext::ScreenTextAnalyser));
     v
 }
 

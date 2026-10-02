@@ -64,23 +64,19 @@ Options:
 
 static STARTUP_PATHS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
 
-/// When this process was started as a transcription worker (#640), run
-/// the job and give the exit code; `None` for a normal start. Checked
-/// first, before anything of the app's is set up.
-pub fn transcription_worker() -> Option<i32> {
-    let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() != Some(std::ffi::OsStr::new(klipp_analysis::transcript::WORKER_FLAG)) {
-        return None;
-    }
-    let spec = args.next().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
-    Some(klipp_analysis::transcript::worker_main(&spec))
+/// When this process was started as a worker of the app's — speech
+/// recognition (#640), an analyser that runs native code (#689) — do its
+/// job and give the exit code; `None` for a normal start. Checked first,
+/// before anything of the app's is set up.
+pub fn worker() -> Option<i32> {
+    klipp_analysis::worker::main()
 }
 
-/// Run transcriptions in a worker of this executable, so a crash in
-/// whisper.cpp ends the worker and not the editor (#640).
-pub fn use_transcription_worker() {
+/// Run native analysis code in workers of this executable, so a crash
+/// in it ends the worker and not the editor (#640, #689).
+pub fn use_workers() {
     if let Ok(exe) = std::env::current_exe() {
-        klipp_analysis::transcript::run_in_worker(exe);
+        klipp_analysis::worker::use_workers(exe);
     }
 }
 
