@@ -1561,7 +1561,14 @@ pub struct Finding {
 
 fn graded(rule: &'static str, reading: f32, target: f32, warn: f32, fail: f32, what: String, fix: &'static str) -> Finding {
     let off = (reading - target).abs();
-    let verdict = if off > fail { Verdict::Fail } else if off > warn { Verdict::Warn } else { Verdict::Pass };
+    // A look's black and white points, median, contrast and chroma are
+    // its taste: a sunlit street cannot sit at a preset's numbers without
+    // clipping its sky or pinning its colours, which are the faults (and
+    // judged as such). Off the taste is a warning, until it is so far off
+    // (three times the fail distance) that no look explains it: a frame
+    // gone to black. A face blown or lost is a fault (#461).
+    let fails_at = if rule == "skin_exposure" { fail } else { fail * 3.0 };
+    let verdict = if off > fails_at { Verdict::Fail } else if off > warn { Verdict::Warn } else { Verdict::Pass };
     Finding { rule, verdict, reading, target, tolerance: warn, what, fix }
 }
 
@@ -2520,5 +2527,27 @@ mod memory_tests {
         assert!(olive.contains("sky leaves blue"), "{olive}");
         let neon = memory_colours_broken(&start, &frame([120, 170, 230], [60, 170, 20])).unwrap();
         assert!(neon.contains("foliage goes neon") || neon.contains("garish"), "{neon}");
+    }
+}
+
+#[cfg(test)]
+mod taste_tests {
+    use super::*;
+
+    /// #461: a sunlit frame far off web_punchy's numbers is off the look's
+    /// taste, a warning; clipping in the same frame is still a fault.
+    #[test]
+    fn off_a_looks_taste_is_a_warning_and_clipping_a_fault() {
+        let t = LookTarget::preset("web_punchy").unwrap();
+        let sunlit = FrameMeasure { l_p1: 20.0, l_p50: 70.0, l_p99: 80.0, contrast_range: 45.0, chroma_mean: 12.0, clip_hi_pct: 5.0, ..FrameMeasure::default() };
+        let found = judge(&sunlit, &t);
+        let verdict = |rule: &str| found.iter().find(|f| f.rule == rule).map(|f| f.verdict);
+        for rule in ["white_point", "mid_grey", "contrast", "saturation", "black_point"] {
+            assert_eq!(verdict(rule), Some(Verdict::Warn), "{rule}: {found:?}");
+        }
+        assert_eq!(verdict("clipped_white"), Some(Verdict::Fail));
+        // A frame gone to black is no look's taste.
+        let black = FrameMeasure { l_p1: 0.0, l_p50: 2.0, l_p99: 4.0, contrast_range: 3.0, ..FrameMeasure::default() };
+        assert_eq!(judge(&black, &t).iter().find(|f| f.rule == "mid_grey").map(|f| f.verdict), Some(Verdict::Fail));
     }
 }

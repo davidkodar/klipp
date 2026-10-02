@@ -1323,6 +1323,12 @@ pub trait Transcripts {
     fn faces(&self, _item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         Vec::new()
     }
+    /// How much `item`'s picture moves between two of its times, as the
+    /// mean frame-to-frame difference (the motion analyser's YDIF; 4 and
+    /// up is a moving camera); `None` when it was not analysed.
+    fn motion_between(&self, _item: &klipp_media::MediaItem, _from: f64, _to: f64) -> Option<f32> {
+        None
+    }
 }
 
 /// The faces under a stretch of the timeline: every picture clip that

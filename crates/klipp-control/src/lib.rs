@@ -1831,6 +1831,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).shots.map(|s| s.boundaries).unwrap_or_default()
     }
 
+    fn motion_between(&self, item: &klipp_media::MediaItem, from: f64, to: f64) -> Option<f32> {
+        klipp_analysis::report::MediaAnalysis::load(&item.path).motion?.mean_within(from, to)
+    }
+
     fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<klipp_document::ops::SensitiveText> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
     }
