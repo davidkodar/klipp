@@ -234,11 +234,20 @@ pub struct GradeGroup {
     pub pre: Option<klipp_nodes::NodeGraph>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post: Option<klipp_nodes::NodeGraph>,
+    /// The look this group's shots are graded and judged to instead of
+    /// the brief's: a film warm in the south and cool in the north is two
+    /// looks, and one target pulled every shot toward its own (#793).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<klipp_color::measure::LookTarget>,
+    /// The group leaves the look on purpose: its shots are judged for
+    /// faults (clipping, cast, black point, faces) and not for taste.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub departs: bool,
 }
 
 impl GradeGroup {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: GradeGroupId::new(), name: name.into(), pre: None, post: None }
+        Self { id: GradeGroupId::new(), name: name.into(), pre: None, post: None, look: None, departs: false }
     }
 
     pub fn stage(&self, stage: GradeStage) -> Option<&klipp_nodes::NodeGraph> {

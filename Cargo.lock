@@ -2948,6 +2948,7 @@ dependencies = [
 name = "klipp-document"
 version = "0.1.0"
 dependencies = [
+ "klipp-color",
  "klipp-core",
  "klipp-effects",
  "klipp-media",

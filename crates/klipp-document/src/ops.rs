@@ -609,13 +609,20 @@ pub enum Op {
     /// that name, taking each out of any group it was in (#237); with
     /// `leave`, take them out of it instead. The members share the
     /// group's pre-clip and post-clip grades, set with `look` or `grade`
-    /// `on` the group.
+    /// `on` the group. `look_target` names a preset the group's shots are
+    /// graded and judged to instead of the brief's ("none" clears it);
+    /// `departs` true says the group leaves the look on purpose, judged
+    /// for faults only (#793). Either works on an existing group alone.
     GradeGroup {
         group: String,
         #[serde(default)]
         clips: Vec<ClipRef>,
         #[serde(default)]
         leave: bool,
+        #[serde(default)]
+        look_target: Option<String>,
+        #[serde(default)]
+        departs: Option<bool>,
     },
     /// Remove the grade group `group` and its grades; its clips keep
     /// their own.
@@ -1991,7 +1998,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "put a look on")?;
             apply_look(i, target, lut_path, name.as_deref(), *opacity, *remove)
         }
-        Op::GradeGroup { group, clips, leave } => grade_group(seq, pool, fps, i, group, clips, *leave),
+        Op::GradeGroup { group, clips, leave, look_target, departs } => grade_group(seq, pool, fps, i, group, clips, *leave, look_target.as_deref(), *departs),
         Op::RemoveGradeGroup { group } => {
             let g = find_grade_group(seq, i, group)?;
             let changes: Vec<_> = seq.all_clips().filter(|c| c.grade_group == Some(g.id)).map(|c| (c.id, Some(g.id), None)).collect();
@@ -4778,14 +4785,25 @@ fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: O
 
 /// `grade_group`: put clips in a group (made when there is none by that
 /// name) or, with `leave`, take them out of it.
-fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str, clips: &[ClipRef], leave: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str, clips: &[ClipRef], leave: bool, look_target: Option<&str>, departs: Option<bool>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let name = name.trim();
     if name.is_empty() {
         return Err(refuse(i, "a grade group needs a name", "give group, such as \"Day exterior\" or \"Camera B\""));
     }
-    if clips.is_empty() {
+    let sets_look = look_target.is_some() || departs.is_some();
+    if clips.is_empty() && !sets_look {
         return Err(refuse(i, "no clips given", "give the clips to put in the group, or to take out of it with leave"));
     }
+    if leave && sets_look {
+        return Err(refuse(i, "leave takes clips out; it sets no look", "set look_target or departs in an op of its own"));
+    }
+    // The preset first: a misspelt look refuses before anything changes.
+    let look = match look_target.map(str::trim) {
+        None => None,
+        Some(n) if n.is_empty() || n.eq_ignore_ascii_case("none") => Some(None),
+        Some(n) => Some(Some(klipp_color::measure::LookTarget::preset(n).ok_or_else(|| refuse(i, format!("\"{n}\" is not a look"), format!("use one of {}, or \"none\" to judge the group by the brief's", klipp_color::measure::LookTarget::PRESETS.join(", "))))?)),
+    };
     let mut members = Vec::new();
     for r in clips {
         let (ti, _, clip) = resolve_clip(seq, fps, r, i)?;
@@ -4807,22 +4825,45 @@ fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str,
         }
         return Ok((format!("{names} out of grade group \"{}\"", g.name), EditCommand::SetClipGradeGroups { changes }, touched));
     }
-    let existing = seq.grade_groups.iter().find(|g| g.name.eq_ignore_ascii_case(name));
-    let (group_id, made) = match existing {
-        Some(g) => (g.id, None),
-        None => {
-            let g = klipp_timeline::GradeGroup::new(name);
-            let mut groups = seq.grade_groups.clone();
-            groups.push(g.clone());
-            (g.id, Some(EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups }))
+    let mut groups = seq.grade_groups.clone();
+    let made = !groups.iter().any(|g| g.name.eq_ignore_ascii_case(name));
+    if made {
+        if members.is_empty() {
+            return Err(refuse(i, format!("there is no grade group \"{name}\""), "give clips to make it, or name a group that exists"));
         }
-    };
-    let changes: Vec<_> = members.iter().filter(|c| c.grade_group != Some(group_id)).map(|c| (c.id, c.grade_group, Some(group_id))).collect();
-    if changes.is_empty() && made.is_none() {
-        return Err(refuse(i, format!("{names} already in \"{name}\""), "nothing to change"));
+        groups.push(klipp_timeline::GradeGroup::new(name));
     }
-    let what = format!("{names} in grade group \"{}\"{}", existing.map_or(name, |g| g.name.as_str()), if made.is_some() { " (new)" } else { "" });
-    let edit = EditCommand::Batch(made.into_iter().chain([EditCommand::SetClipGradeGroups { changes }]).collect());
+    let g = groups.iter_mut().find(|g| g.name.eq_ignore_ascii_case(name)).expect("found or made above");
+    let (group_id, group_name) = (g.id, g.name.clone());
+    let mut said: Vec<String> = Vec::new();
+    if let Some(look) = look {
+        said.push(match &look {
+            Some(t) => format!("graded and judged to {}", t.name),
+            None => "judged by the brief's look".into(),
+        });
+        g.look = look;
+    }
+    if let Some(d) = departs {
+        said.push(if d { "leaving the look on purpose, judged for faults only".into() } else { "held to its look".into() });
+        g.departs = d;
+    }
+    let changes: Vec<_> = members.iter().filter(|c| c.grade_group != Some(group_id)).map(|c| (c.id, c.grade_group, Some(group_id))).collect();
+    let groups_changed = groups != seq.grade_groups;
+    if changes.is_empty() && !groups_changed {
+        return Err(refuse(i, if names.is_empty() { format!("\"{group_name}\" is already so") } else { format!("{names} already in \"{group_name}\"") }, "nothing to change"));
+    }
+    let mut what = if names.is_empty() { format!("grade group \"{group_name}\"") } else { format!("{names} in grade group \"{group_name}\"{}", if made { " (new)" } else { "" }) };
+    if !said.is_empty() {
+        what = format!("{what}, {}", said.join(", "));
+    }
+    let mut edits = Vec::new();
+    if groups_changed {
+        edits.push(EditCommand::SetGradeGroups { old: seq.grade_groups.clone(), new: groups });
+    }
+    if !changes.is_empty() {
+        edits.push(EditCommand::SetClipGradeGroups { changes });
+    }
+    let edit = if edits.len() == 1 { edits.pop().expect("one") } else { EditCommand::Batch(edits) };
     Ok((what, edit, touched))
 }
 
@@ -8212,6 +8253,45 @@ mod tests {
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"compose","clip_id":{"track":0,"secs":2.0},"poses":[{"width":0.5,"height":0.5}]}]"#).unwrap();
         let Op::Compose { poses, .. } = &ops[0] else { panic!("a compose") };
         assert_eq!(poses[0], ComposePose { width: Some(0.5), height: Some(0.5), ..Default::default() });
+    }
+
+    /// #793: a grade group takes a look target of its own, made with its
+    /// clips or set on it alone, and can leave the look on purpose; a
+    /// look that is no preset, or a group that is not there, refuses.
+    #[test]
+    fn a_grade_group_takes_its_own_look_and_can_leave_it() {
+        let (mut seq, pool, _, a, b) = fixture();
+        let op = |clips: Vec<ClipRef>, look: Option<&str>, departs: Option<bool>| Op::GradeGroup { group: "South".into(), clips, leave: false, look_target: look.map(String::from), departs };
+        let groups_after = |plan: &Plan| -> Vec<klipp_timeline::GradeGroup> {
+            let edits = match &plan.steps[0].edit {
+                EditCommand::Batch(e) => e.clone(),
+                one => vec![one.clone()],
+            };
+            edits.into_iter().find_map(|e| match e { EditCommand::SetGradeGroups { new, .. } => Some(new), _ => None }).expect("the groups change")
+        };
+
+        // Made with its clips and its look in one step.
+        let plan = resolve(&seq, &pool, &[op(vec![ClipRef::Id(a)], Some("warm_interview"), None)]).unwrap();
+        let groups = groups_after(&plan);
+        assert_eq!(groups[0].look.as_ref().map(|l| l.name.as_str()), Some("warm_interview"));
+        assert!(plan.steps[0].what.contains("graded and judged to warm_interview"), "{}", plan.steps[0].what);
+
+        // On an existing group alone: leave the look on purpose, then clear its look.
+        seq.grade_groups = groups;
+        seq.tracks[0].clips[0].grade_group = Some(seq.grade_groups[0].id);
+        let plan = resolve(&seq, &pool, &[op(vec![], None, Some(true))]).unwrap();
+        assert!(groups_after(&plan)[0].departs);
+        assert!(plan.steps[0].what.contains("judged for faults only"), "{}", plan.steps[0].what);
+        let plan = resolve(&seq, &pool, &[op(vec![], Some("none"), None)]).unwrap();
+        assert!(groups_after(&plan)[0].look.is_none());
+
+        // A clip joins without touching the group's look.
+        let plan = resolve(&seq, &pool, &[op(vec![ClipRef::Id(b)], None, None)]).unwrap();
+        assert!(matches!(plan.steps[0].edit, EditCommand::SetClipGradeGroups { .. }), "{:?}", plan.steps[0].edit);
+
+        assert!(resolve(&seq, &pool, &[op(vec![], Some("sunny"), None)]).unwrap_err().why.contains("not a look"));
+        assert!(resolve(&seq, &pool, &[Op::GradeGroup { group: "North".into(), clips: vec![], leave: false, look_target: Some("cool_tech".into()), departs: None }]).unwrap_err().why.contains("no grade group"));
+        assert!(resolve(&seq, &pool, &[op(vec![], Some("warm_interview"), None)]).unwrap_err().why.contains("already so"));
     }
 
     #[test]

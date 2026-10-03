@@ -1923,8 +1923,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
-              grade_group {group, clips:[clip_id…], leave?} — picture clips into a named grade group \
-              (made when new; a clip is in one group at most), or out of it with leave; \
+              grade_group {group, clips:[clip_id…], leave?, look_target?, departs?} — picture clips into a named grade group \
+              (made when new; a clip is in one group at most), or out of it with leave; look_target names a \
+              preset its shots are graded and judged to instead of the brief's (\"none\" clears it), departs true \
+              judges them for faults only, a section off the look on purpose; either works on a group alone; \
               remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
               share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
               post-clip grade (after it: the scene's look). grade and look take on in place of \
@@ -2120,8 +2122,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               vibrance is skin-safe saturation; \
               reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
               for continuity first — shots that follow each other should match — then the look.\n\
-              grade_group {group, clips:[clip_id…], leave?} — picture clips into a named grade group \
-              (made when new; a clip is in one group at most), or out of it with leave; \
+              grade_group {group, clips:[clip_id…], leave?, look_target?, departs?} — picture clips into a named grade group \
+              (made when new; a clip is in one group at most), or out of it with leave; look_target names a \
+              preset its shots are graded and judged to instead of the brief's (\"none\" clears it), departs true \
+              judges them for faults only, a section off the look on purpose; either works on a group alone; \
               remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
               share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
               post-clip grade (after it: the scene's look). grade and look take on in place of \
