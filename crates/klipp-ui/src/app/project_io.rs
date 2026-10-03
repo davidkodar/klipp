@@ -175,26 +175,15 @@ impl KlippApp {
                 self.lose_lock(taker);
             }
         }
-        if self.read_only_project.as_deref() == Some(path) {
-            self.state.toast.show(
-                "This project is open read-only, so it was not saved. Save As keeps your changes in a copy.".to_string(),
-            );
-            return false;
-        }
-        // Save As over a project someone else has open would replace
-        // their work as surely as two saves of one project.
+        let read_only = self.read_only_project.as_deref() == Some(path);
         let ours = self.lock_keeper.as_ref().is_some_and(|k| k.project() == path);
-        if !ours {
-            use klipp_project::lock::{self, Liveness, LockState};
-            if let LockState::Held(info, Liveness::Active | Liveness::Stale) = lock::inspect(path, &self.lock_holder) {
-                self.state.toast.show(format!(
-                    "{} has that project open, so it was not saved over. Choose another name.",
-                    info.who()
-                ));
-                return false;
+        match save_refusal(read_only, ours, || self.lock_held_elsewhere(path)) {
+            Some(why) => {
+                self.state.toast.show(why);
+                false
             }
+            None => true,
         }
-        true
     }
 
     /// Ask what to do about a project someone else has open.
@@ -295,7 +284,7 @@ impl KlippApp {
     /// Runs every frame, but touches the disk only when the open project
     /// changes: the heartbeat runs on the keeper's thread.
     pub(super) fn sync_project_lock(&mut self) {
-        use klipp_project::lock::{self, Liveness};
+        use klipp_project::lock;
         if let Some(taker) = self.lock_keeper.as_ref().and_then(|k| k.lost()) {
             self.lose_lock(taker);
         }
@@ -314,23 +303,19 @@ impl KlippApp {
             return;
         };
         let decision = self.lock_decision.take().filter(|(p, _)| *p == path).map(|(_, d)| d);
-        match decision {
-            _ if self.read_only_project.as_ref() == Some(&path) => {}
-            Some(LockDecision::ReadOnly) => self.read_only_project = Some(path),
-            Some(LockDecision::TakeOver(from)) => self.take_over_lock(path, from.as_ref()),
-            None => match lock::acquire(&path, &self.lock_holder).map_err(|held| *held) {
-                Ok(()) => self.lock_keeper = Some(lock::Keeper::start(path, self.lock_holder.clone())),
-                Err((info, Liveness::Dead)) => self.take_over_lock(path, Some(&info)),
-                // Opened by a route that did not ask (an agent, a
-                // restore), or someone opened it in the same instant.
-                Err((info, _)) => {
-                    self.read_only_project = Some(path);
-                    self.state.toast.show(format!(
-                        "{} has this project open, so it is read-only here. Save As keeps your changes in a copy.",
-                        info.who()
-                    ));
-                }
-            },
+        let already_read_only = self.read_only_project.as_ref() == Some(&path);
+        match opened_lock_step(already_read_only, decision, || lock::acquire(&path, &self.lock_holder)) {
+            LockStep::Nothing => {}
+            LockStep::Held => self.lock_keeper = Some(lock::Keeper::start(path, self.lock_holder.clone())),
+            LockStep::ReadOnly => self.read_only_project = Some(path),
+            LockStep::TakeOver(from) => self.take_over_lock(path, from.as_ref()),
+            LockStep::HeldElsewhere(info) => {
+                self.read_only_project = Some(path);
+                self.state.toast.show(format!(
+                    "{} has this project open, so it is read-only here. Save As keeps your changes in a copy.",
+                    info.who()
+                ));
+            }
         }
     }
 
@@ -904,6 +889,7 @@ impl KlippApp {
         }
 
         let mut open = true;
+        let mut answer: Option<UnsavedAnswer> = None;
         let project_name = self.state.project_path.as_ref()
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().to_string())
@@ -930,55 +916,11 @@ impl KlippApp {
                     if ui.button("Don't Save").clicked() {
                         eprintln!("unsaved dialog: Don't Save clicked");
                         tracing::info!("unsaved dialog: Don't Save clicked");
-                        self.unsaved_save_waiting = false;
-                        self.state.dirty = false;
-                        self.state.show_unsaved_dialog = false;
-                        // Clean up autosave backup since user chose not to save
-                        // — only our own: read-only, it is the holder's
-                        // crash recovery.
-                        if let Some(ref path) = self.writable_project_dir() {
-                            let autosave = autosave_path_for(path);
-                            if autosave.exists() {
-                                let _ = std::fs::remove_dir_all(&autosave);
-                            }
-                        }
-                        let action = self.state.unsaved_dialog_action.clone();
-                        self.state.unsaved_dialog_action = UnsavedAction::None;
-                        match action {
-                            UnsavedAction::NewProject => self.do_new_project(),
-                            UnsavedAction::OpenNewProjectDialog => {
-                                self.new_project_dialog.reset(
-                                    self.prefs.general.default_project_dir.as_ref(),
-                                );
-                                self.state.show_new_project_dialog = true;
-                            }
-                            UnsavedAction::OpenProject(p) => self.do_open_project(&p),
-                            UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => {
-                                // HARD EXIT — bypass eframe's
-                                // window-close/wgpu-teardown chain
-                                // entirely. After 8+ rounds of
-                                // plugging specific wgpu drop-order
-                                // races, the SIGSEGV during teardown
-                                // turns out to be unfixable from app
-                                // code (engine thread's GpuEffectsPipeline
-                                // drop races eframe's wgpu state). The
-                                // OS reaps us cleanly.
-                                eprintln!(
-                                    "Klipp: Don't Save → exit(0) (skipping eframe teardown to avoid wgpu drop-race SEGV)"
-                                );
-                                self.kill_children_for_exit();
-                                self.layout.save();
-                                self.exit_after_engine_shutdown();
-                            }
-                            UnsavedAction::None => {}
-                        }
+                        answer = Some(UnsavedAnswer::DontSave);
                     }
                     if ui.button("Cancel").clicked() {
                         tracing::info!("unsaved dialog: Cancel clicked");
-                        self.state.show_unsaved_dialog = false;
-                        self.state.unsaved_dialog_action = UnsavedAction::None;
-                        self.unsaved_save_waiting = false;
+                        answer = answer.or(Some(UnsavedAnswer::Cancel));
                     }
                     let save_clicked = ui
                         .add_enabled(!self.unsaved_save_waiting, egui::Button::new("Save"))
@@ -986,7 +928,7 @@ impl KlippApp {
                     if save_clicked {
                         tracing::info!("unsaved dialog: Save clicked");
                     }
-                    if save_clicked || self.unsaved_save_waiting {
+                    if answer.is_none() && (save_clicked || self.unsaved_save_waiting) {
                         // The save happens here, now, and the action
                         // follows only if it succeeded. It used to be
                         // queued as a command and the action taken at
@@ -995,58 +937,78 @@ impl KlippApp {
                         // replaced the project first, so the save wrote
                         // the *new* one. Either way the edits the user
                         // had just chosen to keep were gone.
-                        let outcome = self.save_project_interactively(save_clicked);
-                        match outcome {
-                            // The Save As picker is still open.
-                            None => {}
-                            Some(SaveOutcome::Saved) => {
-                                self.state.show_unsaved_dialog = false;
-                                let action = self.state.unsaved_dialog_action.clone();
-                                self.state.unsaved_dialog_action = UnsavedAction::None;
-                                match action {
-                                    UnsavedAction::NewProject => self.do_new_project(),
-                                    UnsavedAction::OpenNewProjectDialog => {
-                                        self.new_project_dialog.reset(
-                                            self.prefs.general.default_project_dir.as_ref(),
-                                        );
-                                        self.state.show_new_project_dialog = true;
-                                    }
-                                    UnsavedAction::OpenProject(p) => self.do_open_project(&p),
-                                    UnsavedAction::CloseProject => self.do_close_project(),
-                                    UnsavedAction::Quit => {
-                                        // Saved; the same hard exit as Don't
-                                        // Save (see there for why).
-                                        eprintln!("Klipp: Save → saved, exit(0)");
-                                        self.kill_children_for_exit();
-                                        self.layout.save();
-                                        self.exit_after_engine_shutdown();
-                                    }
-                                    UnsavedAction::None => {}
-                                }
-                            }
-                            // The picker was dismissed: the user changed
-                            // their mind about the whole thing. Nothing
-                            // closes.
-                            Some(SaveOutcome::Cancelled) => {
-                                self.state.show_unsaved_dialog = false;
-                                self.state.unsaved_dialog_action = UnsavedAction::None;
-                            }
-                            // The save failed and said so in a toast; the
-                            // question is still open, and so is the
-                            // project.
-                            Some(SaveOutcome::Failed) => {}
-                        }
+                        answer = Some(UnsavedAnswer::Save(self.save_project_interactively(save_clicked)));
                     }
                 });
             });
 
-        if !open {
-            self.state.show_unsaved_dialog = false;
-            self.state.unsaved_dialog_action = UnsavedAction::None;
-            self.unsaved_save_waiting = false;
+        // The window's close button answers unless the project was just
+        // saved or let go in the same frame.
+        if !open && !matches!(answer, Some(UnsavedAnswer::DontSave | UnsavedAnswer::Save(Some(SaveOutcome::Saved)))) {
+            answer = Some(UnsavedAnswer::Dismissed);
+        }
+        match answer.map(unsaved_step) {
+            None | Some(UnsavedStep::Ask) => {}
+            Some(UnsavedStep::Drop) => {
+                self.state.show_unsaved_dialog = false;
+                self.state.unsaved_dialog_action = UnsavedAction::None;
+                self.unsaved_save_waiting = false;
+            }
+            Some(UnsavedStep::Proceed { discard }) => {
+                self.unsaved_save_waiting = false;
+                self.state.show_unsaved_dialog = false;
+                if discard {
+                    self.state.dirty = false;
+                    // Clean up autosave backup since user chose not to save
+                    // — only our own: read-only, it is the holder's
+                    // crash recovery.
+                    if let Some(ref path) = self.writable_project_dir() {
+                        let autosave = autosave_path_for(path);
+                        if autosave.exists() {
+                            let _ = std::fs::remove_dir_all(&autosave);
+                        }
+                    }
+                }
+                let action = std::mem::replace(&mut self.state.unsaved_dialog_action, UnsavedAction::None);
+                self.take_unsaved_action(action, discard);
+            }
         }
 
         cmds
+    }
+
+    /// Go on with what the unsaved-changes dialog held back, once the
+    /// changes are saved or let go (`discarded`).
+    fn take_unsaved_action(&mut self, action: UnsavedAction, discarded: bool) {
+        match action {
+            UnsavedAction::NewProject => self.do_new_project(),
+            UnsavedAction::OpenNewProjectDialog => {
+                self.new_project_dialog.reset(self.prefs.general.default_project_dir.as_ref());
+                self.state.show_new_project_dialog = true;
+            }
+            UnsavedAction::OpenProject(p) => self.do_open_project(&p),
+            UnsavedAction::CloseProject => self.do_close_project(),
+            UnsavedAction::Quit => {
+                // HARD EXIT — bypass eframe's
+                // window-close/wgpu-teardown chain
+                // entirely. After 8+ rounds of
+                // plugging specific wgpu drop-order
+                // races, the SIGSEGV during teardown
+                // turns out to be unfixable from app
+                // code (engine thread's GpuEffectsPipeline
+                // drop races eframe's wgpu state). The
+                // OS reaps us cleanly.
+                if discarded {
+                    eprintln!("Klipp: Don't Save → exit(0) (skipping eframe teardown to avoid wgpu drop-race SEGV)");
+                } else {
+                    eprintln!("Klipp: Save → saved, exit(0)");
+                }
+                self.kill_children_for_exit();
+                self.layout.save();
+                self.exit_after_engine_shutdown();
+            }
+            UnsavedAction::None => {}
+        }
     }
 }
 
@@ -1097,5 +1059,141 @@ mod project_identity_tests {
     fn a_failed_save_or_open_moves_nothing() {
         assert!(!project_identity_moves(Saved, Some(Path::new("/p/a.klipp")), Some(Path::new("/p/b.klipp")), true));
         assert!(!project_identity_moves(Replaced, None, Some(Path::new("/p/a.klipp")), true));
+    }
+}
+
+/// Why a save may not write a project, or `None` when it may: not one
+/// open read-only here, and not one someone else has open (`holder`,
+/// asked only when the lock is not ours), whose work a Save As over it
+/// would replace as surely as two saves of one project.
+fn save_refusal(read_only: bool, ours: bool, holder: impl FnOnce() -> Option<String>) -> Option<String> {
+    if read_only {
+        return Some("This project is open read-only, so it was not saved. Save As keeps your changes in a copy.".to_string());
+    }
+    if ours {
+        return None;
+    }
+    holder().map(|who| format!("{who} has that project open, so it was not saved over. Choose another name."))
+}
+
+/// What to do about the lock of a project just opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LockStep {
+    /// Already read-only here: leave it so.
+    Nothing,
+    /// The lock was free and is ours now: keep it alive.
+    Held,
+    /// The user chose to look without editing.
+    ReadOnly,
+    /// Take the lock, recording whom from.
+    TakeOver(Option<klipp_project::lock::LockInfo>),
+    /// Someone has it open and nobody asked the user (an agent or a
+    /// restore opened it, or they opened it in the same instant): open
+    /// read-only and say who.
+    HeldElsewhere(klipp_project::lock::LockInfo),
+}
+
+/// The lock step for a project just opened: a read-only open stays so,
+/// the user's answer to the lock prompt is followed, and only without
+/// one is the lock tried (`acquire`), a dead holder's being taken over.
+fn opened_lock_step(
+    already_read_only: bool,
+    decision: Option<LockDecision>,
+    acquire: impl FnOnce() -> Result<(), Box<(klipp_project::lock::LockInfo, klipp_project::lock::Liveness)>>,
+) -> LockStep {
+    use klipp_project::lock::Liveness;
+    match decision {
+        _ if already_read_only => LockStep::Nothing,
+        Some(LockDecision::ReadOnly) => LockStep::ReadOnly,
+        Some(LockDecision::TakeOver(from)) => LockStep::TakeOver(from),
+        None => match acquire().map_err(|held| *held) {
+            Ok(()) => LockStep::Held,
+            Err((info, Liveness::Dead)) => LockStep::TakeOver(Some(info)),
+            Err((info, _)) => LockStep::HeldElsewhere(info),
+        },
+    }
+}
+
+/// How the unsaved-changes dialog was answered this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnsavedAnswer {
+    DontSave,
+    Cancel,
+    /// Closed with the window's close button.
+    Dismissed,
+    /// Save, and what came of it: `None` while its Save As picker is
+    /// open, or when there was nothing to wait for.
+    Save(Option<SaveOutcome>),
+}
+
+/// What follows an answer to the unsaved-changes dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnsavedStep {
+    /// The question stays open.
+    Ask,
+    /// The dialog closes and what it held back (a close, an open, a
+    /// quit) does not happen.
+    Drop,
+    /// The dialog closes and what it held back goes ahead; `discard`
+    /// when the changes, and their auto-save, are let go.
+    Proceed { discard: bool },
+}
+
+/// The unsaved-changes dialog's rule: the project is closed, replaced or
+/// quit only once its changes are saved or the user lets them go. A
+/// failed save keeps the question open (the failure was said in a
+/// toast), and a dismissed Save As picker is a change of mind about the
+/// whole thing.
+fn unsaved_step(answer: UnsavedAnswer) -> UnsavedStep {
+    match answer {
+        UnsavedAnswer::DontSave => UnsavedStep::Proceed { discard: true },
+        UnsavedAnswer::Save(Some(SaveOutcome::Saved)) => UnsavedStep::Proceed { discard: false },
+        UnsavedAnswer::Cancel | UnsavedAnswer::Dismissed | UnsavedAnswer::Save(Some(SaveOutcome::Cancelled)) => UnsavedStep::Drop,
+        UnsavedAnswer::Save(None | Some(SaveOutcome::Failed)) => UnsavedStep::Ask,
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use klipp_project::lock::{LockInfo, Liveness};
+
+    fn someone() -> LockInfo {
+        LockInfo { user: "ana".into(), host: "studio".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn the_project_goes_only_once_its_changes_are_saved_or_let_go() {
+        assert_eq!(unsaved_step(UnsavedAnswer::DontSave), UnsavedStep::Proceed { discard: true });
+        assert_eq!(unsaved_step(UnsavedAnswer::Save(Some(SaveOutcome::Saved))), UnsavedStep::Proceed { discard: false });
+        // A failed save must not close, replace or quit the project.
+        assert_eq!(unsaved_step(UnsavedAnswer::Save(Some(SaveOutcome::Failed))), UnsavedStep::Ask);
+        assert_eq!(unsaved_step(UnsavedAnswer::Save(None)), UnsavedStep::Ask, "the picker is still open");
+        for answer in [UnsavedAnswer::Cancel, UnsavedAnswer::Dismissed, UnsavedAnswer::Save(Some(SaveOutcome::Cancelled))] {
+            assert_eq!(unsaved_step(answer), UnsavedStep::Drop, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_save_refuses_a_read_only_project_and_one_someone_else_has_open() {
+        let read_only = save_refusal(true, false, || panic!("a read-only project needs no lock check")).unwrap();
+        assert!(read_only.contains("read-only"), "{read_only}");
+        assert_eq!(save_refusal(false, true, || panic!("our own lock needs no check")), None);
+        let theirs = save_refusal(false, false, || Some(someone().who())).unwrap();
+        assert!(theirs.starts_with("ana@studio has that project open"), "{theirs}");
+        assert_eq!(save_refusal(false, false, || None), None, "nobody has it open");
+    }
+
+    #[test]
+    fn an_opened_project_follows_the_users_answer_and_tries_the_lock_only_without_one() {
+        let untried = || -> Result<(), Box<(LockInfo, Liveness)>> { panic!("the lock is not tried") };
+        assert_eq!(opened_lock_step(true, Some(LockDecision::TakeOver(None)), untried), LockStep::Nothing, "read-only stays so");
+        assert_eq!(opened_lock_step(false, Some(LockDecision::ReadOnly), untried), LockStep::ReadOnly);
+        assert_eq!(opened_lock_step(false, Some(LockDecision::TakeOver(Some(someone()))), untried), LockStep::TakeOver(Some(someone())));
+        assert_eq!(opened_lock_step(false, None, || Ok(())), LockStep::Held);
+        assert_eq!(opened_lock_step(false, None, || Err(Box::new((someone(), Liveness::Dead)))), LockStep::TakeOver(Some(someone())), "a dead holder's lock is taken");
+        for alive in [Liveness::Active, Liveness::Stale] {
+            assert_eq!(opened_lock_step(false, None, || Err(Box::new((someone(), alive)))), LockStep::HeldElsewhere(someone()), "{alive:?}");
+        }
     }
 }
