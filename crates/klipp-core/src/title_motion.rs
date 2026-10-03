@@ -262,6 +262,17 @@ impl StaggerUnit {
     }
 }
 
+/// Where a scaling motion grows or shrinks about (#787): a point of the
+/// title's covered box, as fractions (0.5, 0.5 its centre), or the
+/// deepest point inside the letters, so a word grown past the frame
+/// fills it with a stroke rather than the gap between its lines.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionAnchor {
+    Point { x: f32, y: f32 },
+    Solid,
+}
+
 /// One motion: an entrance or an exit.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Motion {
@@ -281,6 +292,9 @@ pub struct Motion {
     /// of the resting size; `None` for the kind's own (#736).
     #[serde(default)]
     pub amount: Option<f32>,
+    /// What a scaling motion scales about; the box's centre when `None`.
+    #[serde(default)]
+    pub anchor: Option<MotionAnchor>,
 }
 
 impl Default for Motion {
@@ -294,6 +308,7 @@ impl Default for Motion {
             stagger_secs: 0.05,
             distance: 0.6,
             amount: None,
+            anchor: None,
         }
     }
 }
@@ -377,6 +392,16 @@ impl TitleMotion {
     pub fn both(enter: Motion, exit: Motion) -> Self {
         Self { enter: Some(enter), exit: Some(exit) }
     }
+    /// The anchor of the motion under way at eased progress (`pe`, `px`):
+    /// the exit's while it runs, else the entrance's.
+    pub fn anchor_at(&self, pe: f32, px: f32) -> Option<MotionAnchor> {
+        match (self.enter, self.exit) {
+            (_, Some(m)) if px < 1.0 => m.anchor,
+            (Some(m), _) if pe < 1.0 => m.anchor,
+            _ => None,
+        }
+    }
+
     /// The eased progress of unit `unit` at `t` seconds into a clip of
     /// `window` seconds (unknown window: no exit). 1 = resting.
     pub fn progress(&self, t: f32, window: Option<f32>, unit: usize) -> (f32, f32) {

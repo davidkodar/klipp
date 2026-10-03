@@ -337,6 +337,20 @@ pub struct TitleMotionSpec {
     /// shrink and scale_up (#736). Other kinds reject this field.
     #[serde(default)]
     pub scale: Option<f32>,
+    /// What grow, shrink, scale_up, scale_down, pop, slam and focus_in
+    /// scale about: "solid" (the point deepest inside the letters, so a
+    /// word grown past the frame fills it with a stroke), "centre", or
+    /// {x, y} as fractions of the title's box (#787).
+    #[serde(default)]
+    pub anchor: Option<MotionAnchorSpec>,
+}
+
+/// A motion anchor as written: a name, or a point of the title's box.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MotionAnchorSpec {
+    Named(String),
+    Point { x: f32, y: f32 },
 }
 
 impl TitleMotionSpec {

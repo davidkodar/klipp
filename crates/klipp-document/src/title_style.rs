@@ -80,8 +80,9 @@ fn parse_motion(
             || spec.stagger_secs.is_some()
             || spec.distance.is_some()
             || spec.scale.is_some()
+            || spec.anchor.is_some()
         {
-            return Err("motion kind none cannot have timing, easing, stagger, distance or scale".into());
+            return Err("motion kind none cannot have timing, easing, stagger, distance, scale or anchor".into());
         }
         return Ok(None);
     }
@@ -137,6 +138,25 @@ fn parse_motion(
             ));
         }
         m.amount = Some(v);
+    }
+    if let Some(a) = &spec.anchor {
+        use klipp_core::title_motion::MotionAnchor;
+        if !matches!(kind, MotionKind::ScaleUp | MotionKind::ScaleDown | MotionKind::Larger | MotionKind::Smaller | MotionKind::Pop | MotionKind::Slam | MotionKind::FocusIn) {
+            return Err("anchor is only for motions that scale: grow, shrink, scale_up, scale_down, pop, slam and focus_in".into());
+        }
+        m.anchor = Some(match a {
+            klipp_timeline::MotionAnchorSpec::Named(n) => match n.to_lowercase().as_str() {
+                "solid" | "letter" | "stroke" => MotionAnchor::Solid,
+                "centre" | "center" => MotionAnchor::Point { x: 0.5, y: 0.5 },
+                other => return Err(format!("anchor {other:?} is not one; use \"solid\", \"centre\" or {{x, y}} in the title's box (0 to 1)")),
+            },
+            klipp_timeline::MotionAnchorSpec::Point { x, y } => {
+                if !(x.is_finite() && y.is_finite() && (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y)) {
+                    return Err(format!("anchor {{x: {x}, y: {y}}} must be inside the title's box, 0 to 1 on each axis"));
+                }
+                MotionAnchor::Point { x: *x, y: *y }
+            }
+        });
     }
     if let Some(v) = &spec.stagger {
         m.stagger = stagger_unit(v)?;

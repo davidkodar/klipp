@@ -1085,6 +1085,7 @@ fn rising_letters() -> klipp_core::title_motion::Motion {
         stagger_secs: 0.08,
         distance: 1.0,
         amount: None,
+        anchor: None,
     }
 }
 
@@ -1955,5 +1956,42 @@ fn a_word_matte_that_grows_opens_onto_its_picture() {
         // it dimmed everywhere (the edges are soft, the letters' own
         // edges magnified).
         assert!(full > 0.2, "gpu {gpu}: the grown matte does not fade: only {full} of the frame shows the shot whole");
+    }
+}
+
+/// #787: a two-line word matte grown far past the frame. About its box's
+/// centre it grows into the gap between the lines and the frame goes
+/// dark; about its solid point it grows into a stroke and the shot fills
+/// the frame, on the CPU and the GPU alike.
+#[test]
+fn a_word_matte_grown_about_its_solid_point_fills_the_frame() {
+    let shown = |anchor: Option<klipp_core::title_motion::MotionAnchor>, gpu: bool| -> f32 {
+        let tb = klipp_timeline::TextBox { text: "TWO\nSHORES".into(), font_size: 300.0, color: [255, 255, 255, 255], ..Default::default() };
+        let mut grow = klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Larger).duration(1.0).amount(40.0);
+        grow.anchor = anchor;
+        let fx = klipp_timeline::LayerFx { motion: klipp_timeline::TitleMotion { enter: None, exit: Some(grow) }, ..Default::default() };
+        let mut matte = clip(ClipKind::Title(klipp_timeline::TitleData::single_text_fx(tb, fx)), 0.0, 5.0);
+        matte.consumed_as_matte = true;
+        let mut shot = solid([0, 255, 0], 0.0, 5.0);
+        let mut binding = klipp_timeline::MatteBinding::new(matte.id);
+        binding.channel = klipp_nodes::params::MatteChannel::Alpha;
+        shot.matte_source = Some(binding);
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: 270, height: 480 };
+        let mut text = Track::new("Text 1", TrackKind::Text);
+        text.clips = vec![matte];
+        let mut video = Track::new("V1", TrackKind::Video);
+        video.clips = vec![shot];
+        seq.tracks = vec![text, video];
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        let img = r.render(&seq, tc(119.0 / 24.0), 270, 480, &mut White, RenderOptions::default());
+        img.chunks_exact(4).filter(|p| p[1] > 0.5).count() as f32 / (270.0 * 480.0)
+    };
+    for gpu in [false, true] {
+        let (centre, solid_point) = (shown(None, gpu), shown(Some(klipp_core::title_motion::MotionAnchor::Solid), gpu));
+        eprintln!("gpu {gpu}: about the centre {centre:.3}, about the solid point {solid_point:.3}");
+        assert!(solid_point > 0.7, "gpu {gpu}: grown into a stroke, the shot fills most of the frame (0.79 measured on the last frame, at about 35x): {solid_point}");
+        assert!(solid_point > centre + 0.3, "gpu {gpu}: the centre is the gap between the lines: {centre} against {solid_point}");
     }
 }

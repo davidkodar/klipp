@@ -21,7 +21,7 @@ fn strict_motion_spec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<k
     value.map(|v| {
         if let Some(object) = v.as_object() {
             for key in object.keys() {
-                if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance", "scale"].contains(&key.as_str()) {
+                if !["kind", "duration_secs", "delay_secs", "easing", "stagger", "stagger_secs", "distance", "scale", "anchor"].contains(&key.as_str()) {
                     return Err(serde::de::Error::custom(format!("unknown motion field {key:?}")));
                 }
             }

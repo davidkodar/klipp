@@ -221,6 +221,11 @@ exist until the plan runs.
   or `bold`) with `over_faces: true`, since a window may cover a face
   where a caption must not, then `matte` on the clip by its id. Anything below the
   clip shows around the letters; nothing there is black.
+  To open onto the shot, give the title `exit: {kind: grow, scale: 30,
+  anchor: "solid"}`: the letters fly into their most solid stroke until
+  the picture fills the frame, and the cut to the full shot is seamless.
+  Without `anchor` a word grows about its centre, which for two lines (or
+  two words) is the gap between them: the frame goes black instead.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
   levels in decibels from the clip's own level (0 as set, -9 a duck,
   -60 near silence) at timeline
