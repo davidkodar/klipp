@@ -14,8 +14,9 @@ pub const ID: &str = "transcript";
 /// Bumped whenever what a transcript says can change for the same
 /// sound, so a stored one made before is made again (#731): 6 drops a
 /// segment whose words all lie in measured silence, and takes in the
-/// confidence filtering of #593, which changed transcripts without a bump.
-pub const VERSION: u32 = 6;
+/// confidence filtering of #593, which changed transcripts without a bump;
+/// 7 drops a phrase whisper repeats back to back over noise (#779).
+pub const VERSION: u32 = 7;
 
 /// The models the analyser can run with, best first; it uses the best
 /// one installed. The small one is what came first; on real speech it
@@ -268,6 +269,71 @@ pub fn hallucinated_spans(segments: &[Segment]) -> Vec<(f64, f64)> {
     out
 }
 
+/// A phrase of at least this many words, said this many times back to
+/// back, is whisper looping over noise: wind on a beach came out as "The
+/// wind is blowing up." three times in one segment, whose text gave it
+/// once (#779). People repeat a word or two ("no, no, no"); not a
+/// sentence three times over.
+const LOOP_PHRASE_WORDS: usize = 4;
+const LOOP_REPEATS: usize = 3;
+/// The longest phrase looked for: whisper loops a sentence, not a
+/// paragraph, and the search is linear in the transcript only with a cap
+/// (an hour's interview is nine thousand words, #803 review).
+const LOOP_PHRASE_MAX_WORDS: usize = 24;
+
+/// Drops the words of every phrase repeated back to back as above, and
+/// the segments left without words by it. Returns how many words went.
+pub fn drop_repeated_phrases(t: &mut Transcript) -> usize {
+    let keys: Vec<String> = t.words.iter().map(|w| plain(&w.text)).collect();
+    let n = keys.len();
+    let mut looped = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        // The longest stretch from here that is one phrase over and over.
+        let mut best = 0;
+        for k in LOOP_PHRASE_WORDS..=((n - i) / LOOP_REPEATS).min(LOOP_PHRASE_MAX_WORDS) {
+            if keys[i..i + k].iter().all(|w| w.is_empty()) {
+                continue;
+            }
+            let mut reps = 1;
+            while i + (reps + 1) * k <= n && keys[i + reps * k..i + (reps + 1) * k] == keys[i..i + k] {
+                reps += 1;
+            }
+            if reps >= LOOP_REPEATS {
+                best = best.max(k * reps);
+            }
+        }
+        if best > 0 {
+            looped[i..i + best].iter_mut().for_each(|l| *l = true);
+            i += best;
+        } else {
+            i += 1;
+        }
+    }
+    let dropped = looped.iter().filter(|l| **l).count();
+    if dropped == 0 {
+        return 0;
+    }
+    let words_in = |s: &Segment, words: &[Word]| words.iter().any(|w| w.start_secs >= s.start_secs - 0.05 && w.start_secs < s.end_secs + 0.05);
+    let had: Vec<bool> = t.segments.iter().map(|s| words_in(s, &t.words)).collect();
+    let mut k = 0;
+    t.words.retain(|_| {
+        k += 1;
+        !looped[k - 1]
+    });
+    let mut j = 0;
+    let words = t.words.clone();
+    t.segments.retain(|s| {
+        j += 1;
+        !had[j - 1] || words_in(s, &words)
+    });
+    if t.segments.is_empty() {
+        t.language = None;
+    }
+    tracing::info!("transcript: {dropped} words of a phrase repeated back to back dropped as hallucination");
+    dropped
+}
+
 /// Letters and digits, lower case: what two spellings of a name share.
 fn plain(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
@@ -423,6 +489,7 @@ impl crate::Analyser for TranscriptAnalyser {
             return serde_json::to_value(t).map_err(|e| e.to_string());
         }
         let mut transcript = transcribe_safely(model_id, &model, &audio, item.duration.to_secs_f64(), &words)?;
+        drop_repeated_phrases(&mut transcript);
         // The sound analyser has already found where the file is silent;
         // words whisper places there are its invention, whatever it
         // thinks of them.
@@ -852,6 +919,59 @@ mod tests {
 
     fn tok(text: &str, t0: f64, t1: f64, p: f32) -> Token {
         Token { text: text.into(), t0, t1, p }
+    }
+
+    /// #779: the beach take's transcript as stored, the wind heard as one
+    /// sentence three times over, is dropped whole; a line that repeats a
+    /// short phrase, or says a sentence twice, is kept.
+    #[test]
+    fn a_sentence_looped_over_wind_is_dropped() {
+        let word = |text: &str, at: f64| Word { start_secs: at, end_secs: at + 0.2, text: text.into(), confidence: 1.0 };
+        let said = |text: &str, from: f64| text.split(' ').enumerate().map(|(k, w)| word(w, from + k as f64 * 0.3)).collect::<Vec<_>>();
+        let mut beach = Transcript {
+            duration_secs: 23.6,
+            language: Some("en".into()),
+            segments: vec![Segment { start_secs: 7.58, end_secs: 13.58, text: "The wind is blowing up.".into() }],
+            words: [said("The wind is blowing up.", 8.9), said("The wind is blowing up.", 10.5), said("The wind is blowing up.", 12.1)].concat(),
+            ..Default::default()
+        };
+        assert_eq!(drop_repeated_phrases(&mut beach), 15);
+        assert!(beach.words.is_empty() && beach.segments.is_empty() && beach.language.is_none(), "{beach:?}");
+
+        let line = "No, no, no, we have to go back. We have to go back.";
+        let mut speech = Transcript {
+            segments: vec![Segment { start_secs: 1.0, end_secs: 6.0, text: line.into() }],
+            words: said(line, 1.0),
+            ..Default::default()
+        };
+        assert_eq!(drop_repeated_phrases(&mut speech), 0);
+        assert_eq!(speech.words.len(), 13);
+
+        // A loop after real speech takes only the loop.
+        let mut mixed = Transcript {
+            segments: vec![Segment { start_secs: 0.0, end_secs: 3.0, text: "Look at that.".into() }, Segment { start_secs: 4.0, end_secs: 9.0, text: "Thank you for watching.".into() }],
+            words: [said("Look at that.", 0.5), said("Thank you for watching.", 4.0), said("Thank you for watching.", 5.5), said("Thank you for watching.", 7.0)].concat(),
+            ..Default::default()
+        };
+        assert_eq!(drop_repeated_phrases(&mut mixed), 12);
+        assert_eq!(mixed.segments.len(), 1);
+        assert_eq!(mixed.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Look", "at", "that."]);
+    }
+
+    /// #803 review: the search is bounded by the phrase cap, not the
+    /// transcript's length: a hundred thousand words of talk (some eight
+    /// hours), and as many of one word over and over, each well under a
+    /// second. Uncapped, the talk took four.
+    #[test]
+    fn looking_for_loops_in_a_long_transcript_is_quick() {
+        let talk: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: format!("w{}", (k * 7919) % 5003), confidence: 1.0 }).collect();
+        let same: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: "so".into(), confidence: 1.0 }).collect();
+        for (what, words) in [("talk", talk), ("one word", same)] {
+            let mut t = Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 30_000.0, text: String::new() }], words, ..Default::default() };
+            let start = std::time::Instant::now();
+            drop_repeated_phrases(&mut t);
+            assert!(start.elapsed() < std::time::Duration::from_secs(1), "{what}: {:?}", start.elapsed());
+        }
     }
 
     #[test]
