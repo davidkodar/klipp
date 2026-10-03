@@ -299,6 +299,11 @@ in `.git/klipp-pre-push.logs/` (the last 50 runs), and the history line
 names its log, so a failure can be read after the push that hit it has
 gone.
 
+The gate also runs `cargo deny check advisories` when cargo-deny is
+installed, and reports a finding without refusing the push. A new
+advisory is fixed by updating, or recorded in `deny.toml` with the
+reason it cannot reach Klipp.
+
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
 is not for getting a red suite past the gate.

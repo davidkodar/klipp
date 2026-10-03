@@ -545,6 +545,18 @@ case "$_available" in
     fi ;;
 esac
 
+# Known advisories in the dependencies, reported but not refused (#825):
+# a new one should be fixed or recorded in deny.toml with its reason,
+# not block unrelated work, and a failed fetch of the advisory list must
+# not stop a push. Skipped without cargo-deny.
+_step=advisories
+if command -v cargo-deny >/dev/null 2>&1; then
+    if ! timeout 120 cargo deny check advisories >/dev/null 2>&1 9>&-; then
+        printf '\n  pre-push: cargo deny check advisories reports something (not refused):\n' >&2
+        printf '            run it to see; fix it, or add it to deny.toml with a reason.\n\n' >&2
+    fi
+fi
+
 _step=lint
 if ! _logged cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
