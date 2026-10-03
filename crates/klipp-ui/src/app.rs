@@ -18100,6 +18100,11 @@ impl KlippApp {
             AppCommand::AddTitleObject { clip_id, kind } => {
                 let old = self.snapshot_title(*clip_id);
                 let mut new_id: Option<klipp_timeline::TitleObjectId> = None;
+                // A ready-made shape is as wide as it is tall on screen,
+                // a line long and thin (#67).
+                let res = self.state.sequences[self.state.active_sequence_idx].resolution;
+                let tall = res.height as f32 / res.width.max(1) as f32;
+                let preset = crate::inspector::title_shape_preset(*kind);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -18111,7 +18116,12 @@ impl KlippApp {
                                 center: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
                                 center_x_keyframes: Vec::new(),
                                 center_y_keyframes: Vec::new(),
-                                size: klipp_timeline::TitlePosition { x: 0.5, y: 0.3 },
+                                size: match preset {
+                                    None => klipp_timeline::TitlePosition { x: 0.5, y: 0.3 },
+                                    Some(klipp_timeline::ShapePreset::Line) => klipp_timeline::TitlePosition { x: 0.4, y: 0.02 },
+                                    Some(klipp_timeline::ShapePreset::Arrow) => klipp_timeline::TitlePosition { x: 0.3 * tall * 2.0, y: 0.3 },
+                                    Some(_) => klipp_timeline::TitlePosition { x: 0.3 * tall, y: 0.3 },
+                                },
                                 rotation: 0.0,
                                 rotation_keyframes: Vec::new(),
                                 anchor_norm: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
@@ -18119,6 +18129,17 @@ impl KlippApp {
                                 anchor_x_keyframes: Vec::new(), anchor_y_keyframes: Vec::new(),
                             };
                             let content = match kind {
+                                _ if preset.is_some() => klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
+                                    kind: klipp_timeline::ShapeKind::Path(klipp_timeline::VectorPath::preset(
+                                        preset.expect("checked"),
+                                        [0.92, 0.92, 0.95, 1.0],
+                                        [0.92, 0.92, 0.95, 1.0],
+                                        if preset == Some(klipp_timeline::ShapePreset::Line) { 6.0 } else { 0.0 },
+                                    )),
+                                    fit: None,
+                                    fill: None,
+                                    stroke: None,
+                                }),
                                 1 => klipp_timeline::TitleObjectContent::Shape(
                                     klipp_timeline::Shape {
                                         kind: klipp_timeline::ShapeKind::Rectangle {

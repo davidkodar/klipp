@@ -104,3 +104,43 @@ fn a_path_drag_is_one_undo_with_original_and_final_title() {
     assert_eq!(h.undo_count(),1);
     assert!(matches!(&h.undo_entries()[0].command,EditCommand::EditTitle{old_data,new_data,..} if *old_data==old && *new_data==new));
 }
+
+/// #67: a ready-made shape is added by name, sized square on screen and
+/// placed where asked; asking for both a path and a shape is refused.
+#[test]
+fn a_ready_made_shape_is_added_by_name() {
+    let mut sequences = vec![Sequence::new_default()];
+    let mut pool = MediaPool::new();
+    let mut fps = sequences[0].fps;
+    sequences[0].tracks[0].clips.push(klipp_timeline::Clip::gap(
+        klipp_core::Timecode::from_secs_f64(0.0, 24),
+        klipp_core::Timecode::from_secs_f64(4.0, 24),
+    ));
+    let title: Op = serde_json::from_value(json!({"op":"title","text":"Five","at":{"secs":0},"secs":4})).unwrap();
+    let planned = ops::resolve(&sequences[0], &pool, &[title]).unwrap();
+    let mut doc = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+    for s in &planned.steps {
+        doc.apply_forward(&s.edit);
+    }
+    let id = doc.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.title_data().is_some()).unwrap().id;
+    let star: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":{"star":{"points":5,"inner":0.4}},"color":"#ffcc00","x":0.8,"y":0.2})).unwrap();
+    let plan = ops::resolve(&doc.sequences[0], doc.media_pool, &[star]).unwrap();
+    for s in &plan.steps {
+        doc.apply_forward(&s.edit);
+    }
+    let data = doc.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == id).unwrap().title_data().unwrap();
+    let layer = data.objects.last().unwrap();
+    let TitleObjectContent::Shape(shape) = &layer.content else { panic!("a shape layer") };
+    let ShapeKind::Path(path) = &shape.kind else { panic!("a path") };
+    assert_eq!(path.pose.contours[0].vertices.len(), 10, "five points, five inner corners");
+    assert_eq!(path.pose.fill, [1.0, 0.8, 0.0, 1.0]);
+    assert_eq!((layer.transform.center.x, layer.transform.center.y), (0.8, 0.2));
+    let res = doc.sequences[0].resolution;
+    let on_screen = (layer.transform.size.x * res.width as f32, layer.transform.size.y * res.height as f32);
+    assert!((on_screen.0 - on_screen.1).abs() < 1.0, "as wide as it is tall on screen: {on_screen:?}");
+
+    let both: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"ellipse","path":VectorPath::default()})).unwrap();
+    assert!(ops::resolve(&doc.sequences[0], doc.media_pool, &[both]).unwrap_err().why.contains("not both"));
+    let wrong: Result<Op, _> = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"blob"}));
+    assert!(wrong.is_err(), "an unknown shape is refused when read");
+}

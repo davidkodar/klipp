@@ -510,8 +510,14 @@ exist until the plan runs.
   `shutter_deg` is the open shutter's share of a frame (180 is the film
   look, 360 a full frame, 0 off); `samples` defaults to 8, and higher
   values are smoother and slower.
-- `vector_path {clip_id, object_id?, path}`: add or replace a title's
-  editable path layer. `path` has `pose:{contours:[{closed,vertices:
+- `vector_path {clip_id, object_id?, path | shape, color?, stroke_width?, x?, y?, w?, h?}`:
+  add or replace a title's editable path layer. `shape` is a ready-made
+  one instead of a `path`: `"ellipse"`, `"triangle"`, `"arrow"` (pointing
+  right), `"line"`, `{"polygon":{"sides":6}}` or
+  `{"star":{"points":5,"inner":0.45}}`, painted `color` (`#rrggbb`), its
+  box centred at `x`,`y` and `w`,`h` wide and tall (fractions of the
+  frame; a new one is as wide as it is tall on screen). Turn it with the
+  layer's rotation, morph it with keyframes like any path. `path` has `pose:{contours:[{closed,vertices:
   [{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],
   stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}}`,
   optional `keyframes:[{time_secs,pose,easing}]` and optional
