@@ -1880,3 +1880,54 @@ fn audio_spectrum_does_not_judge_music_by_the_dialogue_rules() {
     assert!(scored["text"].as_str().unwrap().contains("its clips play as music"), "{scored}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// #792: the mix metered over the timeline. A quiet tone with a loud
+/// half-second burst at 4 s, written as float samples four times past
+/// full scale (#812 review): the steps around it stand out from the bed,
+/// read unclamped as the export's loudness pass reads them; the ones far
+/// from it do not.
+#[test]
+fn mix_loudness_finds_the_hit_over_the_bed() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-mix-loudness-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("bed-and-hit.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+               "-i", "aevalsrc=exprs='if(between(t,4,4.5),3*sin(2*PI*1000*t),0.03*sin(2*PI*440*t))':s=48000:d=8",
+               "-ac", "2", "-c:a", "pcm_f32le"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.duration = klipp_core::RationalTime::from_secs_f64(8.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    {
+        let fps = h.sequence.read().unwrap().fps;
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, fps.num);
+        let clip = klipp_timeline::Clip::media(media, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        let mut seq = h.sequence.write().unwrap();
+        if !seq.tracks.iter().any(|t| t.kind == klipp_timeline::TrackKind::Audio) {
+            seq.tracks.push(klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio));
+        }
+        let a = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio).unwrap();
+        seq.tracks[a].clips = vec![clip];
+    }
+    let r = h.ok(json!({ "method": "mix_loudness", "from_secs": 0.0, "to_secs": 8.0, "step_secs": 0.5 }));
+    let steps = r["steps"].as_array().unwrap();
+    let median = r["median_short_term_lufs"].as_f64().unwrap();
+    let stands_out = |s: &serde_json::Value| s["momentary_max_lufs"].as_f64().unwrap() > median + 4.0;
+    let at = |t: f64| steps.iter().find(|s| (s["secs"].as_f64().unwrap() - t).abs() < 0.01).unwrap();
+    assert!(stands_out(at(4.0)) || stands_out(at(4.5)), "the hit at 4 s: {}", r["text"]);
+    assert!(!stands_out(at(1.0)) && !stands_out(at(7.0)), "the bed alone does not: {}", r["text"]);
+    assert!(r["text"].as_str().unwrap().contains("stands out"), "{}", r["text"]);
+    // Past full scale, read unclamped: the burst meters +6.5 LUFS so, and
+    // +2.2 clamped, near-square at full scale; the line sits between.
+    let peak = [at(4.0), at(4.5)].iter().map(|s| s["momentary_max_lufs"].as_f64().unwrap()).fold(f64::MIN, f64::max);
+    assert!(peak > 4.5, "the burst is metered over full scale, not clamped: {peak:.1} LUFS (+6.5 unclamped, +2.2 clamped)");
+    std::fs::remove_dir_all(&dir).ok();
+}

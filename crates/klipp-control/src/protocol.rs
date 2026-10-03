@@ -375,6 +375,18 @@ pub enum ControlCommand {
         #[serde(default)]
         apply: bool,
     },
+    /// The mix's loudness over a stretch of the timeline (#792): the
+    /// sound as the export mixes it, before loudness normalisation,
+    /// metered every `step_secs` (0.5 s): its short-term loudness and the
+    /// loudest 400 ms in the step, where a whoosh or a hit shows. A read.
+    MixLoudness {
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        step_secs: Option<f64>,
+    },
     /// The cut as an editor scrubs it: a draft render of the whole
     /// timeline at `max_width` (640), a contact sheet of it (`frames`
     /// tiles in `cols` columns), and the check with the colour pass.
