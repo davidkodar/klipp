@@ -177,6 +177,34 @@ pub fn detect_from_pcm(pcm: &[f32], sample_rate: u32) -> BeatData {
     BeatData { bpm: bpm as f32, confidence, beat_times }
 }
 
+/// The store's name and schema version for a file's beat read.
+pub const CACHE_ID: &str = "beats";
+pub const CACHE_VERSION: u32 = 1;
+
+/// A file's beats as read before, if they were: kept in the analysis store
+/// beside its other analyses, keyed by the file, so reading them again
+/// costs nothing (#785 review: the next-step hint asks on every apply).
+pub fn cached(path: &Path) -> Option<BeatData> {
+    let key = crate::store::key_for(path)?;
+    serde_json::from_value(crate::store::load(&key, CACHE_ID, CACHE_VERSION)?).ok()
+}
+
+/// Reads `path`'s beats with ffmpeg and keeps them in the analysis store
+/// for [`cached`]; a store that cannot be written is logged, not an error.
+/// Slow: a whole decode of the opening minutes.
+pub fn read_and_cache(ffmpeg: &Path, path: &Path) -> Result<BeatData, String> {
+    let beats = detect(ffmpeg, path, 0.0)?;
+    // The read is what was asked for; a cache that cannot be written only
+    // costs the next caller a read of its own.
+    if let Some(key) = crate::store::key_for(path) {
+        match serde_json::to_value(&beats).map_err(|e| e.to_string()).and_then(|v| crate::store::save(&key, CACHE_ID, CACHE_VERSION, &v)) {
+            Ok(()) => {}
+            Err(e) => tracing::warn!("beats of {} read but not kept: {e}", path.display()),
+        }
+    }
+    Ok(beats)
+}
+
 /// Tempo and beats from a media file, decoded through ffmpeg. Reads up to
 /// `max_secs` (0 for the default cap) from the start.
 pub fn detect(ffmpeg: &Path, path: &Path, max_secs: f64) -> Result<BeatData, String> {
