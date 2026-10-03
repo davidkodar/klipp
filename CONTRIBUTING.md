@@ -291,6 +291,11 @@ merged. The gate runs at the lowest CPU and disk priority, so the machine
 stays usable while it builds; it takes longer when you are using it, not
 the other way round.
 
+Each gate that runs adds a line to `.git/klipp-pre-push.history` (start,
+end, pass/fail/stopped, the step it ended in, branch, worktree; the last
+200 kept), so what passed and what failed can be read after the queue
+has moved on, and how long a gate takes.
+
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
 is not for getting a red suite past the gate.
