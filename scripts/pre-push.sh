@@ -431,6 +431,63 @@ QUEUE
     printf '%s %s %s %s\n' "$$" "${_branch:-?}" "$ROOT" "$(date +%s)" >"$_holder"
 fi
 
+# A line per gate that ran, kept beside the queue, so whoever watches it
+# can see what passed and what failed after the queue has moved on, and
+# how long a gate takes: "start end result step branch worktree", result
+# pass, fail or stopped, step where it ended. The last 200 are kept.
+_started=$(date +%s)
+_step=setup
+_record() {
+    _status=$1
+    [ -n "$_queue" ] || return 0
+    case "$_status" in
+        0) _result=pass ;;
+        130|143) _result=stopped ;;
+        *) _result=fail ;;
+    esac
+    _history="$_common/klipp-pre-push.history"
+    printf '%s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "$ROOT" >>"$_history" 2>/dev/null || return 0
+    if [ "$(wc -l <"$_history" 2>/dev/null || echo 0)" -gt 400 ]; then
+        tail -n 200 "$_history" >"$_history.new" 2>/dev/null && mv -f "$_history.new" "$_history" 2>/dev/null || true
+    fi
+    return 0
+}
+trap '_s=$?; _record "$_s"; _leave_queue; exit "$_s"' EXIT
+
+# A worktree's first gate starts from the main checkout's build, not an
+# empty target/. Each push built the whole workspace from nothing, all
+# cores for half an hour and some 90 GB written, and a day of pushes from
+# three sessions left fourteen such folders and the machine unusable.
+# The copy is copy-on-write (reflink), so it costs next to no disk until
+# something is rebuilt. Sharing one target/ across worktrees instead is
+# not sound: cargo names a workspace crate by its path within the
+# workspace, the same in every worktree, and judges it fresh by file
+# times, so one tree's build linked another tree's crates. Touching
+# every tracked file here makes all of this tree's own crates rebuild
+# from its own sources; only the dependencies come from the copy. A
+# deliberate CARGO_TARGET_DIR still wins, and without reflink support
+# the target starts empty as before.
+if [ -z "${CARGO_TARGET_DIR:-}" ] && [ -n "$_queue" ]; then
+    _main=$(dirname "$_common")
+    if [ "$_main" != "$ROOT" ] && [ ! -d "$ROOT/target/debug" ] && [ -d "$_main/target/debug" ]; then
+        mkdir -p "$ROOT/target"
+        if cp -a --reflink=always "$_main/target/debug" "$ROOT/target/" 2>/dev/null; then
+            git ls-files -z | xargs -0 touch -c --
+            printf '  pre-push: build started from the main checkout'"'"'s (copy-on-write); this tree'"'"'s crates rebuild\n'
+        else
+            rm -rf "$ROOT/target/debug"
+        fi
+    fi
+fi
+
+# The gate yields to whoever is at the machine: the build takes every
+# core and writes gigabytes, and at normal priority it made the desktop
+# and the app crawl for the half hour it ran. At the lowest CPU priority
+# and the lowest best-effort disk priority it uses what is spare; cargo,
+# the compilers and the tests inherit both.
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+ionice -c 2 -n 7 -p $$ >/dev/null 2>&1 || true
+
 # Match klipp_testing::scratch, and keep compiler/linker temporary files
 # off a small system tmpfs too. A deliberate TMPDIR always wins.
 TMPDIR=${TMPDIR:-${CARGO_TARGET_DIR:-$ROOT/target}/test-scratch}
@@ -460,6 +517,7 @@ case "$_available" in
     fi ;;
 esac
 
+_step=lint
 if ! cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
     printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
@@ -468,6 +526,7 @@ if ! cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
     exit 1
 fi
 
+_step=docs
 if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-; then
     printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
     printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
@@ -478,6 +537,7 @@ fi
 # Built first and separately, so a compile error is reported as one
 # rather than as "tests FAILED" — which sends you reading test names
 # for a problem that is not in any of them.
+_step=build
 if ! cargo test --workspace --no-run 9>&-; then
     printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
     printf '            Nothing ran. This is a compile or link error, not a\n' >&2
@@ -489,6 +549,7 @@ if ! cargo test --workspace --no-run 9>&-; then
     exit 1
 fi
 
+_step=tests
 if cargo test --workspace 9>&-; then
     printf '\n  pre-push: tests pass.\n\n'
     exit 0
