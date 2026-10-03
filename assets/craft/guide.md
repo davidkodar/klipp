@@ -240,6 +240,10 @@ exist until the plan runs.
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
   clip. `amount` is 0 to 1; a second of the same kind replaces the first.
+  With `on: "timeline"` or `on: {"group": name}` instead of `clip_id` it
+  goes on every picture clip there in one step (a vignette and grain over
+  the whole film); each clip gets its own copy, so a shot added later
+  needs it too.
   Kinds: `vignette`, `grain` (`film_grain`), `glow`, `bloom`, `diffusion`
   (`pro_mist`), `halation` (`film_halation`), `light_rays` (`god_rays`),
   `lens_flare`, `anamorphic` (`anamorphic_streak`, `streak`), `light_wrap`,

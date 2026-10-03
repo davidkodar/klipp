@@ -1953,7 +1953,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
+              effect {clip_id | on: \"timeline\" | {group}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline or a grade group in one step: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
@@ -2150,7 +2150,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               onto a surface klipp_track_surface followed in the clip: on a video track above, following \
               it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
               shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              effect {clip_id, kind, amount?} — a finishing effect on a picture: vignette, grain, glow, \
+              effect {clip_id | on: \"timeline\" | {group}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline or a grade group in one step: vignette, grain, glow, \
               bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
               directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
               mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
@@ -2300,7 +2300,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
                  "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
-                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85 or Netflix" },
+                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt into the picture; on unless you say otherwise. The reply says which it was, so you know whether a sidecar subtitle file is needed." },
              }),
              vec!["path"]),
