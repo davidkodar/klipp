@@ -124,17 +124,60 @@ fn read_builtin_effects(value: &serde_json::Value, whose: &str) -> Result<Vec<kl
         .collect()
 }
 
+/// The generation a project or manifest file was written with, read
+/// without parsing the rest.
+fn generation_of(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text).ok()?.get("generation")?.as_str().map(str::to_string)
+}
+
+/// The project.json and manifest.json to open, as text (#840). A save
+/// copies the pair it replaces into `.recovery/` and marks itself
+/// `pending` with its generation until both new files are written; a mark
+/// still there means it stopped:
+///
+/// - both files of the new generation: it finished all but the mark;
+/// - only the manifest new: it stopped between them, and the recovery
+///   copy, the pair from before, is opened;
+/// - neither new: it stopped before its manifest, and the files are the
+///   pair from before already.
+///
+/// This holds whatever the backup setting and for a project saved before
+/// generations, since the mark carries the save's own.
+fn pair_to_open(dir: &Path) -> Result<(String, String), String> {
+    let project = read_to_string_capped(&dir.join("project.json"), MAX_INPUT_FILE_BYTES)
+        .map_err(|e| format!("Failed to read project.json: {e}"))?;
+    let manifest = read_to_string_capped(&dir.join("media").join("manifest.json"), MAX_INPUT_FILE_BYTES)
+        .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
+    let recovery = dir.join(crate::save::RECOVERY_DIR);
+    let Ok(pending) = std::fs::read_to_string(recovery.join("pending")) else { return Ok((project, manifest)) };
+    let pending = pending.trim();
+    let new_manifest = generation_of(&manifest).as_deref() == Some(pending);
+    let new_project = generation_of(&project).as_deref() == Some(pending);
+    if new_manifest && !new_project {
+        let kept = (
+            read_to_string_capped(&recovery.join("project.json"), MAX_INPUT_FILE_BYTES),
+            read_to_string_capped(&recovery.join("manifest.json"), MAX_INPUT_FILE_BYTES),
+        );
+        if let (Ok(p), Ok(m)) = kept {
+            warn!("the last save stopped between its two files; opening the pair from before it, kept in {}", recovery.display());
+            return Ok((p, m));
+        }
+    }
+    Ok((project, manifest))
+}
+
 /// The media manifest that belongs with the timeline (#821). A save
 /// writes the manifest and then `project.json`, both stamped with the same
-/// generation; a crash between them leaves the new manifest beside the old
-/// timeline. When the generations differ, the backed-up manifest whose
-/// generation is the timeline's is used instead (backups of the two rotate
-/// together). Files from before generations, or a pair with no match, are
-/// read as they are.
-fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaManifestJson) -> MediaManifestJson {
-    let Some(wanted) = project_generation else { return manifest };
+/// generation. When the generations still differ (a stop the recovery
+/// copy could not cover), the backed-up manifest whose generation is the
+/// timeline's is used instead (backups of the two rotate together). Files
+/// from before generations are read as they are; a pair from different
+/// saves with nothing to mend it is refused rather than opened as if it
+/// were whole (#840).
+fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaManifestJson) -> Result<MediaManifestJson, String> {
+    let Some(wanted) = project_generation else { return Ok(manifest) };
     if manifest.generation.as_deref().is_none_or(|g| g == wanted) {
-        return manifest;
+        return Ok(manifest);
     }
     let base = dir.join("media").join("manifest.json");
     for n in 1..=64 {
@@ -149,19 +192,18 @@ fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaMa
                 "the media manifest is from a later save than project.json (a save stopped between its two files); using {} instead, which matches the timeline",
                 backup.display()
             );
-            return candidate;
+            return Ok(candidate);
         }
     }
-    warn!("the media manifest and project.json are from different saves and no backup matches; reading them as they are");
-    manifest
+    Err(format!(
+        "project.json and media/manifest.json in {} are from different saves, and neither the recovery copy nor a backup matches the timeline. Opening them together would put clips on the wrong media. Restore a matching pair from the .bak files beside them (project.json.bak.N with media/manifest.json.bak.N), or from a copy of the project.",
+        dir.display()
+    ))
 }
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
-    let project_path = dir.join("project.json");
-    let manifest_path = dir.join("media").join("manifest.json");
-
-    let project_str = read_to_string_capped(&project_path, MAX_INPUT_FILE_BYTES)
-        .map_err(|e| format!("Failed to read project.json: {e}"))?;
+    // The pair a save left whole, from its recovery copy if it stopped (#840).
+    let (project_str, manifest_str) = pair_to_open(dir)?;
 
     // Two-step deserialization: handle old singular "sequence" vs new plural "sequences"
     let mut value: serde_json::Value = serde_json::from_str(&project_str)
@@ -179,11 +221,9 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project: ProjectJson = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize project: {e}"))?;
 
-    let manifest_str = read_to_string_capped(&manifest_path, MAX_INPUT_FILE_BYTES)
-        .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
     let manifest: MediaManifestJson = serde_json::from_str(&manifest_str)
         .map_err(|e| format!("Failed to parse manifest.json: {e}"))?;
-    let manifest = mend_manifest(dir, project.generation.as_deref(), manifest);
+    let manifest = mend_manifest(dir, project.generation.as_deref(), manifest)?;
 
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();
