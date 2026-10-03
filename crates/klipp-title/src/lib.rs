@@ -406,6 +406,10 @@ pub struct TitleRenderer {
     /// A placed frame's focus band gone soft: (blur radius in frame
     /// pixels, axis, band), for the caller to blur the placed layer by.
     last_focus_blur: Option<(f32, RampAxis, f32)>,
+    /// The solid point of the last resting sprite a motion scaled about
+    /// (#787): the sprite is fixed while it moves, so the box scan and
+    /// distance pass run once per sprite, not once a frame.
+    solid_point: Option<(u64, Option<(f32, f32)>)>,
     /// The unit map the last `render_inner` made, for `cache_store`.
     last_units: Option<std::sync::Arc<UnitMap>>,
     /// The next `CachedRender::id`.
@@ -456,6 +460,7 @@ impl TitleRenderer {
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
+            solid_point: None,
             last_units: None,
             next_cache_id: 1,
             motion_window: None,
@@ -1881,10 +1886,20 @@ impl TitleRenderer {
                 clip = c;
             }
             let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
-            let anchor = if motion_pose.is_some() && motion_anchor.is_some() {
-                resolve_anchor(motion_anchor, &sprite.pixels, width, sprite.cols, sprite.rows)
-            } else {
-                sprite.anchor()
+            let anchor = match motion_anchor.filter(|_| motion_pose.is_some()) {
+                Some(klipp_core::title_motion::MotionAnchor::Solid) => {
+                    let solid = match self.solid_point {
+                        Some((id, p)) if id == sprite.id => p,
+                        _ => {
+                            let p = solid_point(&sprite.pixels, width, sprite.cols, sprite.rows);
+                            self.solid_point = Some((sprite.id, p));
+                            p
+                        }
+                    };
+                    solid.unwrap_or_else(|| sprite.anchor())
+                }
+                Some(a) => resolve_anchor(Some(a), &sprite.pixels, width, sprite.cols, sprite.rows),
+                None => sprite.anchor(),
             };
             // One layer: its fade goes on where it is placed; the resting
             // render was made without it. More layers: each was faded in
@@ -4753,10 +4768,6 @@ fn blur_rgba(layer: &mut [u8], width: u32, height: u32, sigma: f32) {
     }
 }
 
-/// A layer's motion as a shape or a picture takes it: as one, with no
-/// stagger — a stagger is per glyph, and a layer that is not glyphs has
-/// nothing to stagger. Authoring refuses one; data that arrives with one
-/// anyway is played whole, and the log says so once.
 /// The point, in frame pixels, a scaling motion scales about: the centre
 /// of the covered box `cols` x `rows` unless the motion names one (#787).
 /// `Solid` finds the point deepest inside the letters: the covered box is
@@ -4833,6 +4844,10 @@ fn solid_point(rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> O
     Some((cols.0 as f32 + (gx as f32 + 0.5) * cell as f32, rows.0 as f32 + (gy as f32 + 0.5) * cell as f32))
 }
 
+/// A layer's motion as a shape or a picture takes it: as one, with no
+/// stagger — a stagger is per glyph, and a layer that is not glyphs has
+/// nothing to stagger. Authoring refuses one; data that arrives with one
+/// anyway is played whole, and the log says so once.
 fn whole_layer_motion(motion: &klipp_timeline::TitleMotion) -> klipp_timeline::TitleMotion {
     let whole = |m: Option<klipp_timeline::Motion>| {
         m.map(|mut m| {
@@ -8259,5 +8274,31 @@ mod default_title_probe {
         let buf = r.render_with_window(&td, 2160, 3840, None, 1.3, Some(5.0));
         let visible = buf.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(visible > 1000, "visible pixels: {visible}");
+    }
+}
+
+#[cfg(test)]
+mod solid_point_tests {
+    /// #787: two bars with a gap between them, as two lines of a word: the
+    /// solid point is inside the thicker bar, not in the gap at the box's
+    /// centre; an empty box has none.
+    #[test]
+    fn the_solid_point_is_in_a_stroke_not_the_gap() {
+        let (w, h) = (200usize, 100usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        let mut fill = |y0: usize, y1: usize| {
+            for y in y0..y1 {
+                for x in 10..190 {
+                    rgba[(y * w + x) * 4 + 3] = 255;
+                }
+            }
+        };
+        fill(10, 30);
+        fill(55, 95);
+        let (x, y) = super::solid_point(&rgba, w as u32, (10, 190), (10, 95)).unwrap();
+        assert!((55.0..95.0).contains(&y) && (10.0..190.0).contains(&x), "({x}, {y}) is not in the thick bar");
+        let centre = super::resolve_anchor(None, &rgba, w as u32, (10, 190), (10, 95));
+        assert!((30.0..55.0).contains(&centre.1), "the box's centre is the gap: {centre:?}");
+        assert_eq!(super::solid_point(&vec![0u8; w * h * 4], w as u32, (10, 190), (10, 95)), None);
     }
 }
