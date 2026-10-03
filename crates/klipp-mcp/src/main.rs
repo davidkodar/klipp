@@ -872,6 +872,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(l) = args.get("target_lufs").and_then(|v| v.as_f64()) {
                 v["target_lufs"] = json!(l);
             }
+            if let Some(c) = args.get("true_peak_dbtp").and_then(|v| v.as_f64()) {
+                v["true_peak_dbtp"] = json!(c);
+            }
             if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
                 v["burn_captions"] = json!(b);
             }
@@ -2297,6 +2300,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
                  "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
+                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85 or Netflix" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt into the picture; on unless you say otherwise. The reply says which it was, so you know whether a sidecar subtitle file is needed." },
              }),
              vec!["path"]),
