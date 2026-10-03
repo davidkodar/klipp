@@ -386,7 +386,7 @@ fn control_call(command: Value) -> Result<Value, String> {
     // alone (#719, #720): a whole piece is a minute or more on a busy
     // machine.
     let long_call = matches!(method, "review" | "record" | "analyze" | "narrate"
-        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet")
+        | "search_music" | "search_sfx" | "add_music" | "grade_to_target" | "match_scenes" | "timeline_sheet" | "mix_loudness")
         || (method == "check" && command.get("color").and_then(Value::as_bool) == Some(true))
         || (!job_poll && command.get("wait").and_then(Value::as_bool) == Some(true));
     let read_timeout_ms = std::env::var("KLIPP_MCP_SOCKET_TIMEOUT_MS").ok()
@@ -752,6 +752,12 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "fps": args.get("fps").cloned().unwrap_or(serde_json::Value::Null),
             "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
             "import": args.get("import").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        "klipp_mix_loudness" => json!({
+            "method": "mix_loudness",
+            "from_secs": args.get("from_secs").cloned().unwrap_or(serde_json::Value::Null),
+            "to_secs": args.get("to_secs").cloned().unwrap_or(serde_json::Value::Null),
+            "step_secs": args.get("step_secs").cloned().unwrap_or(serde_json::Value::Null),
         }),
         "klipp_auto_sfx" => json!({
             "method": "auto_sfx",
@@ -1816,6 +1822,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               is false, so the footage of the product can be made from here: ask the user to bring \
               the window up, record, analyze, cut.",
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
+        tool("klipp_mix_loudness",
+             "How loud the mix is over a stretch of the timeline, as the export mixes it (before \
+              loudness normalisation): every step_secs (0.5) its short-term loudness and the \
+              loudest 400 ms inside the step, with the steps that stand out 4 dB over the median \
+              marked. Use it to hear whether a whoosh or a hit lands over the music at its cut, \
+              and whether music sits under speech. A read; about a tenth of the stretch's length.",
+             json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),
         tool("klipp_auto_sfx",
              "Sound design from the cut, as one undo step with apply true (a preview without): \
               a whoosh on cuts, a click on reveals, a riser into the last cut. on picks the cuts a \
@@ -1825,7 +1838,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               ids choose your effects. With no ids, previews short built-in whooshes; apply \
               synthesizes and imports the sound automatically. Conflicting placements are \
               skipped so a dense montage does not abort the sound pass. Effects go on the \
-              SFX track, marked sfx, at -6/-8 dB. Existing clips are preserved.",
+              SFX track, marked sfx, each levelled against what plays under it (a whoosh 3 dB over \
+              the loudest sound there, a click 3 dB under) when both are analysed, else at -6/-8 dB. \
+              Existing clips are preserved.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \

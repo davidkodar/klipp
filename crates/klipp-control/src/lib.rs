@@ -2511,6 +2511,69 @@ fn colour_report(m: &klipp_color::measure::FrameMeasure, look: &klipp_color::mea
         .collect()
 }
 
+/// The mix metered from `from` to `to` in `step`s: (step start, short-term
+/// LUFS at its end, loudest momentary LUFS inside it). Metering starts
+/// three seconds early, where there are three, so the first short-term
+/// reading has its window (#792).
+fn mix_loudness(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, step: f64) -> Result<Vec<(f64, f32, f32)>, String> {
+    let fps = snapshot.fps.max(1.0);
+    let mut mix = klipp_render::AudioMixdown::new(snapshot).map_err(|e| format!("the mix could not be read: {e}"))?;
+    let mut meter = klipp_audio::LufsMeter::new(snapshot.sample_rate as f32, false);
+    let first = ((from - 3.0).max(0.0) * fps).floor() as u64;
+    let last = (to * fps).ceil() as u64;
+    let floor_db = |v: f32| if v.is_finite() { v.max(-70.0) } else { -70.0 };
+    let mut rows = Vec::new();
+    let mut step_start = from;
+    let mut peak = f32::MIN;
+    for frame in first..last {
+        let audio = mix.get_frame_audio(frame);
+        meter.process(&audio);
+        let t = (frame + 1) as f64 / fps;
+        if t <= from {
+            continue;
+        }
+        let r = meter.readings();
+        peak = peak.max(floor_db(r.momentary));
+        if t >= step_start + step - 1e-6 || frame + 1 == last {
+            rows.push(((step_start * 100.0).round() / 100.0, floor_db(r.short_term), peak));
+            step_start += step;
+            peak = f32::MIN;
+        }
+    }
+    Ok(rows)
+}
+
+/// The level an effect is set to so it sits `over_db` above the loudest
+/// sound already heard under it (#792): files a dozen decibels apart, all
+/// set to the same volume, left one whoosh shouting over the intro and
+/// another lost under the music. Each heard clip under it counts by its
+/// file's integrated loudness and its own volume and gain; effects on the
+/// SFX track do not count. `None` when either side has not been measured.
+fn level_over_bed(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, effect: klipp_core::MediaId, at: f64, secs: f64, over_db: f32) -> Option<f32> {
+    let loudness = |id: klipp_core::MediaId| -> Option<f32> {
+        let item = pool.get(&id)?;
+        let audio = klipp_analysis::report::MediaAnalysis::load(&item.path).audio?;
+        // A clip shorter than the meter's gate measures nothing; its
+        // true peak, twelve under, stands in for a short hit.
+        audio.integrated_lufs.filter(|l| *l > -60.0).or(audio.true_peak_dbtp.map(|p| p - 12.0))
+    };
+    let bed = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Audio && !t.name.eq_ignore_ascii_case("sfx") && !t.muted)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled && c.timeline_in.to_secs_f64() < at + secs && c.timeline_out.to_secs_f64() > at)
+        .filter_map(|c| {
+            let id = c.media_id()?;
+            let owner = sound_owner(seq, c);
+            let db = 20.0 * (owner.volume.max(1e-4) * owner.gain.max(1e-4)).log10();
+            Some(loudness(id)? + db)
+        })
+        .fold(None, |m: Option<f32>, v| Some(m.map_or(v, |m| m.max(v))))?;
+    let own = loudness(effect)?;
+    Some((bed + over_db - own).clamp(-30.0, 12.0))
+}
+
 /// How far grade_to_target may move each knob from where a shot
 /// started (#742). Gentle by default: chasing a look's chroma on vivid
 /// phone footage took saturation to 1.3x and turned a sky olive.
@@ -3688,7 +3751,16 @@ fn handle(
                 let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).map(|b| b.reveals).unwrap_or_default();
                 let loudest = |id: klipp_core::MediaId| if synthesized && Some(id) == whoosh { Some(0.15) } else { pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs) };
                 let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser, on };
-                let placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);
+                let mut placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);
+                // Each effect against what plays under it, not at one level
+                // for files a dozen decibels apart (#792): a whoosh a little
+                // over the bed, a click a little under, a riser level.
+                for p in placements.iter_mut() {
+                    let over = match p.what { "whoosh" => 3.0, "click" => -3.0, _ => 0.0 };
+                    if let Some(v) = level_over_bed(&seq, &pool, p.media_id, p.at_secs, p.secs, over) {
+                        p.volume_db = v;
+                    }
+                }
                 let ops = klipp_document::sound_design::ops(&seq, &placements);
                 (placements, ops)
             };
@@ -3714,6 +3786,49 @@ fn handle(
             v["synthesized_whoosh"] = json!(synthesized);
             v["steps_resolved"] = json!(plan.steps.len());
             Ok(v)
+        }
+
+        ControlCommand::MixLoudness { from_secs, to_secs, step_secs } => {
+            if in_batch {
+                return read_in_batch("mix_loudness");
+            }
+            let snapshot = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
+                    .map_err(|e| format!("the mix could not be read: {e}"))?
+            };
+            let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
+            let from = from_secs.unwrap_or(0.0).clamp(0.0, end);
+            let to = to_secs.unwrap_or(end).clamp(from, end);
+            let step = step_secs.unwrap_or(0.5).clamp(0.1, 10.0);
+            if to - from < step {
+                return Err(format!("{from:.2}-{to:.2} s is shorter than one step of {step:.2} s"));
+            }
+            let rows = mix_loudness(&snapshot, from, to, step)?;
+            let bed = {
+                let mut st: Vec<f32> = rows.iter().map(|r| r.1).filter(|v| v.is_finite() && *v > -70.0).collect();
+                st.sort_by(f32::total_cmp);
+                st.get(st.len() / 2).copied()
+            };
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|(t, short, peak)| {
+                    let rise = bed.is_some_and(|b| *peak > b + 4.0);
+                    format!("{t:7.2} s  short-term {short:6.1} LUFS  loudest 400 ms {peak:6.1}{}", if rise { "  ← stands out" } else { "" })
+                })
+                .collect();
+            Ok(json!({
+                "text": format!(
+                    "The mix from {from:.1} to {to:.1} s, metered every {step:.2} s as the export mixes it, before loudness normalisation{}:\n{}",
+                    bed.map(|b| format!(" (median short-term {b:.1} LUFS; a step whose loudest 400 ms is 4 dB over that stands out)")).unwrap_or_default(),
+                    lines.join("\n"),
+                ),
+                "from_secs": from, "to_secs": to, "step_secs": step,
+                "median_short_term_lufs": bed,
+                "steps": rows.iter().map(|(t, s, p)| json!({ "secs": t, "short_term_lufs": s, "momentary_max_lufs": p })).collect::<Vec<_>>(),
+                "next": "A whoosh or a hit should stand out by a few dB at its cut; an effect that does not is buried. audio sets a clip's level; mix_loudness again to hear the change.",
+            }))
         }
 
         ControlCommand::AudioSpectrum { media_id, from_secs, to_secs } => {
