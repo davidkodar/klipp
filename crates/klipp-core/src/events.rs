@@ -965,6 +965,19 @@ impl CameraParam {
         }
     }
 }
+
+/// Which clips of a track a selection command takes, by the playhead
+/// (#844).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SelectRange {
+    /// Every clip.
+    All,
+    /// The clips starting at or after the playhead.
+    Forward,
+    /// The clips ending at or before the playhead.
+    Backward,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     // Transport
@@ -1247,6 +1260,13 @@ pub enum AppCommand {
     SelectClipsForward,
     /// Select all clips that end before or at the playhead.
     SelectClipsBackward,
+    /// Select the clips of one track, or of every track when `track` is
+    /// `None`, in `range` of the playhead. Clips on locked tracks are
+    /// left out (#844).
+    SelectClipsIn { track: Option<usize>, range: SelectRange },
+    /// [`AppCommand::SelectClipsIn`] on the track of the selected clip:
+    /// for a key binding, which has no track of its own to name.
+    SelectClipsOnSelectedTrack { range: SelectRange },
     /// Save current viewer frame as PNG via a file dialog.
     FrameGrab,
     /// Save the current viewer frame as a PNG under `<project>/media/stills/`

@@ -327,6 +327,13 @@ impl KeyBindings {
         bind(&mut b, "duplicate_clip", vec![KeyCombo::ctrl("D")]);
         bind(&mut b, "select_all", vec![KeyCombo::ctrl("A")]);
         bind(&mut b, "deselect_all", vec![KeyCombo::ctrl_shift("A")]);
+        // The selected clip's track, all of it or from the playhead on or
+        // back; and every track from the playhead (#844).
+        bind(&mut b, "select_track_clips", vec![KeyCombo::ctrl_alt("A")]);
+        bind(&mut b, "select_track_forward", vec![KeyCombo::ctrl_alt("ArrowRight")]);
+        bind(&mut b, "select_track_backward", vec![KeyCombo::ctrl_alt("ArrowLeft")]);
+        bind(&mut b, "select_forward", vec![]);
+        bind(&mut b, "select_backward", vec![]);
         bind(&mut b, "delete_clip", vec![KeyCombo::new("Delete"), KeyCombo::new("Backspace")]);
         bind(&mut b, "lift_clip", vec![KeyCombo::shift("Delete"), KeyCombo::shift("Backspace")]);
         bind(&mut b, "split_at_playhead", vec![KeyCombo::ctrl("B")]);
@@ -574,6 +581,11 @@ impl KeyBindings {
             "duplicate_clip" => "Duplicate Clip",
             "select_all" => "Select All",
             "deselect_all" => "Deselect All",
+            "select_track_clips" => "Select All on Track",
+            "select_track_forward" => "Select Forward on Track",
+            "select_track_backward" => "Select Backward on Track",
+            "select_forward" => "Select Forward (All Tracks)",
+            "select_backward" => "Select Backward (All Tracks)",
             "delete_clip" => "Delete Clip",
             "lift_clip" => "Lift Clip (Leave Gap)",
             "split_at_playhead" => "Split at Playhead",
@@ -670,7 +682,7 @@ impl KeyBindings {
     pub fn categories() -> &'static [(&'static str, &'static [&'static str])] {
         &[
             ("File", &["new_project", "open_project", "save_project", "save_project_as", "close_project", "import_media", "export", "preferences", "quit"]),
-            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
+            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),
