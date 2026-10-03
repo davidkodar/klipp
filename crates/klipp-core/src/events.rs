@@ -978,6 +978,9 @@ pub enum AppCommand {
     SetPlayheadFromTimecode { input: String },
     RequestWhiteBalanceSample { nx: f32, ny: f32 },
     RequestQualifierSample { nx: f32, ny: f32 },
+    /// The viewer click for an armed hue-curve eyedropper
+    /// (`PickHueCurve`), as a fraction of the frame.
+    RequestHueCurveSample { nx: f32, ny: f32 },
     BeginTitleEdit { clip_id: ClipId },
     EndTitleEdit,
 
@@ -1893,6 +1896,10 @@ pub enum AppCommand {
     /// next click keys the node on the colour picked
     /// (`RequestQualifierSample`).
     PickQualifierColour { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Arm the viewer's eyedropper for a Hue/Sat Curves node's `curve`
+    /// (0 Hue vs Hue, 1 Hue vs Sat, 2 Hue vs Lum): the next click puts
+    /// a range on that curve round the hue picked (#612).
+    PickHueCurve { clip_id: ClipId, node_id: uuid::Uuid, curve: u8 },
 
     // Global LUT
     LoadGlobalLut { path: PathBuf },

@@ -2428,18 +2428,28 @@ impl NodeInspectorPanel {
                         if remaining > 60.0 {
                             ui.add_space(remaining - 56.0);
 
-                            // Eyedropper icon button (Phosphor)
+                            // Eyedropper: on the three curves read by hue, a
+                            // click in the viewer puts a range round the hue
+                            // picked (#612). The others read brightness or
+                            // saturation and keep the space empty.
+                            let picks_hue = *curve_idx <= 2;
                             let ed_resp = ui.allocate_rect(
                                 ui.cursor().with_max_x(ui.cursor().min.x + 22.0).with_max_y(ui.cursor().min.y + 18.0),
-                                egui::Sense::click(),
+                                if picks_hue { egui::Sense::click() } else { egui::Sense::hover() },
                             );
-                            let ed_tint = if ed_resp.hovered() {
-                                theme.text_accent
-                            } else {
-                                theme.overlay(100)
-                            };
-                            let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
-                            Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
+                            if picks_hue {
+                                let ed_tint = if ed_resp.hovered() {
+                                    theme.text_accent
+                                } else {
+                                    theme.overlay(100)
+                                };
+                                let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
+                                Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
+                                let ed_resp = ed_resp.clone().on_hover_text("Pick a colour in the viewer: three points round its hue, the middle one to drag");
+                                if ed_resp.clicked() {
+                                    cmds.push(AppCommand::PickHueCurve { clip_id, node_id, curve: *curve_idx as u8 });
+                                }
+                            }
                             ui.advance_cursor_after_rect(ed_resp.rect);
 
                             ui.add_space(4.0);

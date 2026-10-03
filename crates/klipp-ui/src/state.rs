@@ -1977,6 +1977,12 @@ pub struct AppState {
     pub wb_pick_clip: Option<ClipId>,
     /// The clip and Qualifier node the qualifier eyedropper was armed for.
     pub qualifier_pick: Option<(ClipId, uuid::Uuid)>,
+    /// The clip, Hue/Sat Curves node and curve the hue eyedropper was
+    /// armed for, until it is clicked (#612).
+    pub hue_curve_pick: Option<(ClipId, uuid::Uuid, u8)>,
+    /// The same once clicked, until the engine's sample of the node's
+    /// input comes back.
+    pub hue_curve_awaiting: Option<(ClipId, uuid::Uuid, u8)>,
     /// Matte preview — show B&W qualifier/mask matte in viewer
     pub matte_preview_active: bool,
     /// Node-graph solo target — when set, the engine returns this
@@ -2666,6 +2672,8 @@ pub enum EyedropperMode {
     None,
     WhiteBalance,
     Qualifier,
+    /// A hue for a Hue/Sat curve (#612).
+    HueCurve,
 }
 
 /// Messages sent from the consolidation background thread to the UI thread.
@@ -3971,6 +3979,8 @@ impl Default for AppState {
             library_recent: Default::default(),
             wb_pick_clip: None,
             qualifier_pick: None,
+            hue_curve_pick: None,
+            hue_curve_awaiting: None,
             matte_preview_active: false,
             solo_node: None,
             before_after_active: false,
