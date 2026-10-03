@@ -786,8 +786,10 @@ pub struct ExportPrefs {
     #[serde(default = "default_parallel_jobs")]
     pub parallel_render_jobs: usize,
     /// Shell command to run after an export completes. Placeholders:
-    /// `{file}` = output file path, `{dir}` = output directory.
-    /// Runs via `bash -c` in the background. Leave empty to skip.
+    /// `{file}` = output file path, `{dir}` = output directory, passed to
+    /// the command as `$KLIPP_EXPORT_FILE` and `$KLIPP_EXPORT_DIR` rather
+    /// than written into it (see `crate::export_hook`). Runs via `bash -c`
+    /// in the background. Leave empty to skip.
     #[serde(default)]
     pub post_export_command: String,
 }
@@ -2935,24 +2937,6 @@ mod tests {
         // #63 Tier-1: pref defaults to empty (no command run).
         let p = ExportPrefs::default();
         assert!(p.post_export_command.is_empty());
-    }
-
-    #[test]
-    fn post_export_command_placeholder_substitution() {
-        // {file} placeholder replaces with full path.
-        let cmd = "notify-send {file}"
-            .replace("{file}", "/tmp/out.mp4")
-            .replace("{dir}", "/tmp");
-        assert_eq!(cmd, "notify-send /tmp/out.mp4");
-    }
-
-    #[test]
-    fn post_export_dir_placeholder() {
-        // {dir} placeholder replaces with parent directory — both can appear.
-        let cmd = "rsync {file} server:{dir}/archive"
-            .replace("{file}", "/tmp/out.mp4")
-            .replace("{dir}", "/tmp");
-        assert_eq!(cmd, "rsync /tmp/out.mp4 server:/tmp/archive");
     }
 
     #[test]
