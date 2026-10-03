@@ -434,11 +434,6 @@ fn transition_alignment(a: klipp_core::TransitionAlignment) -> (&'static str, &'
     }
 }
 
-/// The timeline as text: what a model reads before it plans. Tracks top
-/// first; every clip with its range in seconds and frames at the
-/// sequence's rate; the clip's kind and source; its grade and effects in
-/// a word; the transitions on each track; the markers. Ids are there because an operation needs them,
-/// at the end of the line where they cost the least attention.
 /// Part of the timeline to read: one track, and what plays in a stretch
 /// (#796). The default is all of it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -458,6 +453,11 @@ impl TimelineView {
     }
 }
 
+/// The timeline as text: what a model reads before it plans. Tracks top
+/// first; every clip with its range in seconds and frames at the
+/// sequence's rate; the clip's kind and source; its grade and effects in
+/// a word; the transitions on each track; the markers. Ids are there because an operation needs them,
+/// at the end of the line where they cost the least attention.
 fn timeline_text(
     seq: &klipp_timeline::Sequence,
     pool: &klipp_media::MediaPool,
