@@ -6070,6 +6070,16 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
         if let Some(a) = look.align {
             tb.alignment = a;
         }
+        // The text's own fill and edge, not its layer stack.
+        if let Some([top, bottom]) = look.gradient {
+            tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
+        }
+        if let Some(g) = look.glitch {
+            tb.glitch_intensity = g;
+        }
+        if let Some(c) = look.chromatic {
+            tb.chromatic_aberration_px = c * 12.0;
+        }
         // A layer's stack is made only when something in it is asked for:
         // made for a change of place alone, a style that changed nothing
         // else still differed from the title it was given.
@@ -6104,15 +6114,6 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
             }
             if let Some(shadow) = &look.shadow {
                 fx.shadows = shadow.iter().cloned().collect();
-            }
-            if let Some([top, bottom]) = look.gradient {
-                tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
-            }
-            if let Some(g) = look.glitch {
-                tb.glitch_intensity = g;
-            }
-            if let Some(c) = look.chromatic {
-                tb.chromatic_aberration_px = c * 12.0;
             }
             if let Some(m) = &motion {
                 fx.motion = *m;
@@ -9397,6 +9398,15 @@ mod tests {
         let centre = td.objects[0].transform.center;
         let same_place = Look { x: Some(centre.x), y: Some(centre.y), ..Default::default() };
         assert_eq!(restyle(&td, &same_place, 3.0).unwrap(), td, "nothing to change, nothing changed");
+        // The text's own fields land alone, with no layer stack asked for
+        // (the first fix put them inside the stack's branch).
+        let alone = restyle(&td, &Look { gradient: Some([[255; 4], [0, 0, 0, 255]]), ..Default::default() }, 3.0).unwrap();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &alone.objects[0].content else { panic!("text") };
+        assert!(tb.gradient.is_some(), "a gradient alone is applied");
+        assert!(alone.objects[0].fx.is_none(), "and makes no layer stack");
+        let alone = restyle(&td, &Look { glitch: Some(0.3), chromatic: Some(0.5), ..Default::default() }, 3.0).unwrap();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &alone.objects[0].content else { panic!("text") };
+        assert_eq!((tb.glitch_intensity, tb.chromatic_aberration_px), (0.3, 6.0), "glitch and chromatic alone are applied");
         let glow = Look { glow: Some(0.5), ..Default::default() };
         assert!(restyle(&td, &glow, 3.0).unwrap().objects[0].fx.is_some(), "asked for, it is made");
         // A delay that fits a long title but not ten seconds.
