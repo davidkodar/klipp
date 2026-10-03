@@ -8,12 +8,41 @@ use klipp_core::MediaId;
 use klipp_media::MediaPool;
 use klipp_timeline::{Sequence, TrackKind};
 
-/// The effects to use, by media id.
+/// The effects to use, by media id, and which cuts take a whoosh.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SfxKit {
     pub whoosh: Option<MediaId>,
     pub click: Option<MediaId>,
     pub riser: Option<MediaId>,
+    pub on: SfxOn,
+}
+
+/// Which cuts a whoosh goes on (#791): every cut, the cuts carrying a
+/// transition, or only the stylised ones (a zoom, a whip, a glitch, a
+/// film burn), never a dissolve or a dip, which want quiet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SfxOn {
+    #[default]
+    Cuts,
+    Transitions,
+    Stylised,
+}
+
+impl SfxOn {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.to_lowercase().as_str() {
+            "cuts" | "cut" => Ok(Self::Cuts),
+            "transitions" | "transition" => Ok(Self::Transitions),
+            "stylised" | "stylized" => Ok(Self::Stylised),
+            other => Err(format!("on {other:?} is not one of cuts, transitions or stylised")),
+        }
+    }
+}
+
+/// A transition that marks time or place quietly: no whoosh on it.
+fn is_calm(kind: klipp_core::TransitionKind) -> bool {
+    use klipp_core::TransitionKind as K;
+    matches!(kind, K::CrossDissolve | K::FilmDissolve | K::LuminanceDissolve | K::AdditiveDissolve | K::DipToBlack | K::DipToWhite | K::FadeToColor)
 }
 
 /// One placement the pass decided on.
@@ -46,8 +75,8 @@ pub fn placements(
 
 /// Preview a generated whoosh without creating a file or importing media.
 /// The placeholder media ID is local to this preview and must not be applied.
-pub fn preview_whoosh(seq: &Sequence, duration_secs: f64) -> Vec<SfxPlacement> {
-    placements_with_lengths(seq, SfxKit { whoosh: Some(MediaId::new()), ..Default::default() }, &|_| Vec::new(), &|_| Some(duration_secs / 2.0), &|_| duration_secs)
+pub fn preview_whoosh(seq: &Sequence, duration_secs: f64, on: SfxOn) -> Vec<SfxPlacement> {
+    placements_with_lengths(seq, SfxKit { whoosh: Some(MediaId::new()), on, ..Default::default() }, &|_| Vec::new(), &|_| Some(duration_secs / 2.0), &|_| duration_secs)
 }
 
 fn placements_with_lengths(
@@ -73,7 +102,13 @@ fn placements_with_lengths(
         let (a, b) = (w[0], w[1]);
         let adjacent = (b.timeline_in.to_secs_f64() - a.timeline_out.to_secs_f64()).abs() < 0.02;
         let carries_on = a.media_id() == b.media_id() && (a.source_out.to_secs_f64() - b.source_in.to_secs_f64()).abs() < 0.02;
-        if adjacent && !carries_on {
+        let transition = video.transitions.iter().find(|t| t.clip_a_id == a.id && t.clip_b_id == b.id).map(|t| t.kind);
+        let wanted = match kit.on {
+            SfxOn::Cuts => true,
+            SfxOn::Transitions => transition.is_some(),
+            SfxOn::Stylised => transition.is_some_and(|k| !is_calm(k)),
+        };
+        if adjacent && !carries_on && wanted {
             cuts.push(b.timeline_in.to_secs_f64());
         }
     }
@@ -202,11 +237,56 @@ mod tests {
                 video.clips.push(Clip::media(screen, Timecode::from_secs_f64(n as f64 * 0.85, 1000), Timecode::from_secs_f64((n + 1) as f64 * 0.85, 1000), tc(0.0), tc(0.85)));
             }
             seq.tracks.push(video);
-            let placements = placements(&seq, &pool, SfxKit { whoosh: Some(whoosh), click: None, riser: Some(whoosh) }, &|_| Vec::new(), &|_| Some(duration / 2.0));
+            let placements = placements(&seq, &pool, SfxKit { whoosh: Some(whoosh), click: None, riser: Some(whoosh), on: SfxOn::Cuts }, &|_| Vec::new(), &|_| Some(duration / 2.0));
             assert!(!placements.is_empty());
             let plan = crate::ops::resolve(&seq, &pool, &ops(&seq, &placements));
             assert!(plan.is_ok(), "duration {duration}: {plan:?}");
         }
+    }
+
+    /// #791: four cuts, one bare, one dissolved, one zoomed, one whipped:
+    /// on cuts all four take a whoosh, on transitions the three carrying
+    /// one, on stylised only the zoom and the whip.
+    #[test]
+    fn whooshes_go_on_the_cuts_asked_for() {
+        let mut pool = MediaPool::new();
+        let mut footage = klipp_media::MediaItem::synthetic_for_test("/tmp/walk.mp4".into(), None);
+        footage.duration = tc(60.0);
+        let footage = pool.add(footage);
+        let mut fx = klipp_media::MediaItem::synthetic_for_test("/tmp/whoosh.wav".into(), None);
+        fx.duration = tc(1.0);
+        fx.has_audio = true;
+        let whoosh = pool.add(fx);
+        let mut seq = Sequence::new_default();
+        seq.tracks.clear();
+        let mut video = Track::new("V1", TrackKind::Video);
+        for n in 0..5 {
+            // A different part of the file each time: real cuts.
+            video.clips.push(Clip::media(footage, tc(n as f64 * 3.0), tc((n + 1) as f64 * 3.0), tc(n as f64 * 10.0), tc(n as f64 * 10.0 + 3.0)));
+        }
+        let ids: Vec<_> = video.clips.iter().map(|c| c.id).collect();
+        for (i, kind) in [(1, klipp_core::TransitionKind::CrossDissolve), (2, klipp_core::TransitionKind::ZoomInDissolve), (3, klipp_core::TransitionKind::WhipPan)] {
+            video.transitions.push(klipp_timeline::Transition {
+                id: klipp_core::TransitionId::new(),
+                kind,
+                duration: tc(0.4),
+                clip_a_id: ids[i],
+                clip_b_id: ids[i + 1],
+                user_params: Default::default(),
+                alignment: klipp_core::TransitionAlignment::Center,
+            });
+        }
+        seq.tracks.push(video);
+        let at = |on: SfxOn| -> Vec<f64> {
+            placements(&seq, &pool, SfxKit { whoosh: Some(whoosh), on, ..Default::default() }, &|_| Vec::new(), &|_| Some(0.3))
+                .iter()
+                .map(|p| (p.at_secs + 0.3).round())
+                .collect()
+        };
+        assert_eq!(at(SfxOn::Cuts), vec![3.0, 6.0, 9.0, 12.0]);
+        assert_eq!(at(SfxOn::Transitions), vec![6.0, 9.0, 12.0]);
+        assert_eq!(at(SfxOn::Stylised), vec![9.0, 12.0], "no whoosh on the dissolve");
+        assert!(SfxOn::parse("whips").is_err());
     }
 
     #[test]
@@ -234,7 +314,7 @@ mod tests {
         seq.tracks.push(v);
         let reveals = |id: MediaId| if id == screen { vec![2.0, 21.0, 23.9, 42.0] } else { vec![] };
         let loudest = |id: MediaId| if id == riser { Some(4.5) } else { Some(0.4) };
-        let kit = SfxKit { whoosh: Some(whoosh), click: Some(click), riser: Some(riser) };
+        let kit = SfxKit { whoosh: Some(whoosh), click: Some(click), riser: Some(riser), on: SfxOn::Cuts };
         let got = placements(&seq, &pool, kit, &reveals, &loudest);
         let whooshes: Vec<f64> = got.iter().filter(|p| p.what == "whoosh").map(|p| p.at_secs).collect();
         assert_eq!(whooshes, vec![7.7, 11.7], "a whoosh leads each cut by its loudest moment: {got:?}");

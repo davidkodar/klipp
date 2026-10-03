@@ -3568,14 +3568,15 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::AutoSfx { whoosh, click, riser, apply } => {
+        ControlCommand::AutoSfx { whoosh, click, riser, on, apply } => {
             if in_batch {
                 return Err("auto_sfx is its own batch; send it on its own".into());
             }
+            let on = on.as_deref().map(klipp_document::sound_design::SfxOn::parse).transpose()?.unwrap_or_default();
             let synthesized = whoosh.is_none() && click.is_none() && riser.is_none();
             if synthesized && !apply {
                 let seq = ctx.sequence.read().unwrap_or_else(|e| e.into_inner());
-                let placements = klipp_document::sound_design::preview_whoosh(&seq, f64::from(klipp_audio::WhooshVariant::Short.duration_secs()));
+                let placements = klipp_document::sound_design::preview_whoosh(&seq, f64::from(klipp_audio::WhooshVariant::Short.duration_secs()), on);
                 let summary: Vec<_> = placements.iter().map(|p| format!("whoosh at {:.2} s", p.at_secs)).collect();
                 return Ok(json!({ "text": format!("Would synthesize a short whoosh and place {} sounds: {}. Run auto_sfx with apply true to create the audio and place it.", summary.len(), summary.join("; ")), "placements": summary, "applied": false, "synthesized_whoosh": false }));
             }
@@ -3614,13 +3615,17 @@ fn handle(
                 }
                 let reveals = |id: klipp_core::MediaId| pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).beatsheet).map(|b| b.reveals).unwrap_or_default();
                 let loudest = |id: klipp_core::MediaId| if synthesized && Some(id) == whoosh { Some(0.15) } else { pool.get(&id).and_then(|it| klipp_analysis::report::MediaAnalysis::load(&it.path).audio).and_then(|a| a.loudest_secs) };
-                let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser };
+                let kit = klipp_document::sound_design::SfxKit { whoosh, click, riser, on };
                 let placements = klipp_document::sound_design::placements(&seq, &pool, kit, &reveals, &loudest);
                 let ops = klipp_document::sound_design::ops(&seq, &placements);
                 (placements, ops)
             };
             if ops.is_empty() {
-                return Ok(json!({ "text": "Nothing to place: no cut on the top picture track without an effect there already, and no reveal inside its clips (analyze gives the beat sheet).", "steps_resolved": 0, "applied": false }));
+                return Ok(json!({ "text": match on {
+                    klipp_document::sound_design::SfxOn::Cuts => "Nothing to place: no cut on the top picture track without an effect there already, and no reveal inside its clips (analyze gives the beat sheet).",
+                    klipp_document::sound_design::SfxOn::Transitions => "Nothing to place: no cut on the top picture track carries a transition without an effect there already.",
+                    klipp_document::sound_design::SfxOn::Stylised => "Nothing to place: no cut on the top picture track carries a stylised transition (zoom, whip, glitch, film burn…) without an effect there already.",
+                }, "steps_resolved": 0, "applied": false }));
             }
             let (plan, revision) = resolve_plan(ctx, &ops)?;
             let summary: Vec<String> = placements.iter().map(|p| format!("{} at {:.2} s", p.what, p.at_secs)).collect();

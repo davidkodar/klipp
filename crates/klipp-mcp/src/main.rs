@@ -750,6 +750,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "whoosh": args.get("whoosh").cloned().unwrap_or(serde_json::Value::Null),
             "click": args.get("click").cloned().unwrap_or(serde_json::Value::Null),
             "riser": args.get("riser").cloned().unwrap_or(serde_json::Value::Null),
+            "on": args.get("on").cloned().unwrap_or(serde_json::Value::Null),
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
         "klipp_search_transcripts" => {
@@ -1796,12 +1797,15 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
         tool("klipp_auto_sfx",
              "Sound design from the cut, as one undo step with apply true (a preview without): \
-              a whoosh on cuts, a click on reveals, a riser into the last cut. Optional media \
+              a whoosh on cuts, a click on reveals, a riser into the last cut. on picks the cuts a \
+              whoosh goes on: cuts (every one, the default), transitions (cuts carrying one) or \
+              stylised (zoom, whip, glitch, film burn and the like; never a dissolve or a dip, \
+              which want quiet). Optional media \
               ids choose your effects. With no ids, previews short built-in whooshes; apply \
               synthesizes and imports the sound automatically. Conflicting placements are \
               skipped so a dense montage does not abort the sound pass. Effects go on the \
               SFX track, marked sfx, at -6/-8 dB. Existing clips are preserved.",
-             json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "apply": { "type": "boolean" } }), vec![]),
+             json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
              "Hide everything the screen text found sensitive — emails, keys, passwords, card \
               numbers — wherever the timeline shows it: one redact op per finding (a cropped, \
