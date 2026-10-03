@@ -295,6 +295,14 @@ pub enum ControlCommand {
     Timeline {
         #[serde(default)]
         max_chars: Option<usize>,
+        /// One track only, by index (#796).
+        #[serde(default)]
+        track: Option<usize>,
+        /// Only what plays between these timeline seconds (#796).
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
     },
 
     // ── Analysis ──────────────────────────────────────────────────
@@ -571,6 +579,11 @@ pub enum ControlCommand {
         tile_width: Option<u32>,
         #[serde(default)]
         path: Option<String>,
+        /// The picture in the reply as well as at `path`. Left out, it is
+        /// inline only when no `path` was given, so a sheet written where
+        /// it was asked costs no context (#796).
+        #[serde(default)]
+        inline: Option<bool>,
     },
     /// The sound of a range of a media file (at most sixty seconds) as
     /// 16 kHz mono WAV: what a model that can hear is given.
@@ -1030,6 +1043,11 @@ pub enum ControlCommand {
         tile_width: Option<u32>,
         #[serde(default)]
         path: Option<String>,
+        /// The picture in the reply as well as at `path`. Left out, it is
+        /// inline only when no `path` was given, so a sheet written where
+        /// it was asked costs no context (#796).
+        #[serde(default)]
+        inline: Option<bool>,
     },
     FrameAt {
         secs: f64,

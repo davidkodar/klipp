@@ -649,6 +649,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(n) = args.get("max_chars").and_then(|v| v.as_u64()) {
                 v["max_chars"] = json!(n as usize);
             }
+            if let Some(n) = args.get("track").and_then(|v| v.as_u64()) {
+                v["track"] = json!(n as usize);
+            }
+            for key in ["from_secs", "to_secs"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_f64()) {
+                    v[key] = json!(x);
+                }
+            }
             v
         }
         "klipp_analyze" => {
@@ -804,6 +812,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
                 v["path"] = json!(p);
+            }
+            if let Some(b) = args.get("inline").and_then(|v| v.as_bool()) {
+                v["inline"] = json!(b);
             }
             v
         }
@@ -1084,7 +1095,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_timeline_sheet" => {
             let mut v = json!({ "method": "timeline_sheet" });
-            for key in ["from_secs", "to_secs", "frames", "cols", "tile_width", "path"] {
+            for key in ["from_secs", "to_secs", "frames", "cols", "tile_width", "path", "inline"] {
                 if let Some(x) = args.get(key).filter(|x| !x.is_null()) {
                     v[key] = x.clone();
                 }
@@ -1335,6 +1346,10 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     if let Some((kind, mime)) = inline {
         if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
             let mut content = text_content(&result);
+            // A sheet written where it was asked stays there (#796).
+            if result.get("inline").and_then(Value::as_bool) == Some(false) {
+                return Ok(content);
+            }
             if let Ok(bytes) = std::fs::read(path) {
                 if bytes.len() <= INLINE_IMAGE_MAX_BYTES {
                     content.push(json!({
@@ -1643,8 +1658,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               seconds and frames, what it is (media file, title text, generator), its \
               grade and effects in a word, its id, the transitions on each track, and \
               the markers. Read this before \
-              planning an edit; klipp_list_clips is the same as JSON with more fields.",
-             json!({ "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" } }),
+              planning an edit; klipp_list_clips is the same as JSON with more fields. On a long cut, \
+              read one track or a stretch at a time with track, from_secs and to_secs.",
+             json!({
+                 "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" },
+                 "track": { "type": "integer", "description": "One track only, by index (0 is the top)" },
+                 "from_secs": { "type": "number", "description": "Only what plays from here on the timeline" },
+                 "to_secs": { "type": "number", "description": "Only what plays before here" },
+             }),
              vec![]),
         tool("klipp_analyze",
              "Find what is in the footage, in the background: shot boundaries (where the \
@@ -1868,6 +1889,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "frames": { "type": "integer" }, "cols": { "type": "integer" },
                  "tile_width": { "type": "integer" },
                  "path": { "type": "string", "description": "Absolute JPEG path; temp dir when omitted" },
+                 "inline": { "type": "boolean", "description": "Also return the picture in the reply; by default only when no path is given" },
              }),
              vec!["media_id"]),
         tool("klipp_audio_excerpt",
@@ -2679,6 +2701,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "cols": { "type": "integer", "description": "Tiles to a row (default 6)" },
                  "tile_width": { "type": "integer", "description": "Pixels (default 320)" },
                  "path": { "type": "string", "description": "Absolute PNG path; temp dir when omitted" },
+                 "inline": { "type": "boolean", "description": "Also return the picture in the reply; by default only when no path is given" },
              }), vec![]),
         tool("klipp_frame_at",
              "The frame at a time on the timeline, as a PNG, without leaving the playhead \
@@ -2713,6 +2736,27 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         }
     }
     tools
+}
+
+#[cfg(test)]
+mod sheet_inline_tests {
+    use super::*;
+
+    /// #796: a sheet written where it was asked comes back as its path
+    /// and tiles, not a megabyte of picture.
+    #[test]
+    fn a_sheet_with_a_path_is_not_inlined() {
+        let dir = std::env::temp_dir().join(format!("klipp-mcp-sheet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("sheet.png");
+        std::fs::write(&png, [0x89u8, b'P', b'N', b'G', 0, 0, 0, 0]).unwrap();
+        let reply = |inline: bool| json!({ "text": "sheet", "path": png.to_string_lossy(), "tiles": [], "inline": inline });
+        let kept = content_for("klipp_timeline_sheet", &reply(false)).unwrap();
+        assert!(kept.iter().all(|c| c["type"] == "text"), "{kept:?}");
+        let shown = content_for("klipp_timeline_sheet", &reply(true)).unwrap();
+        assert!(shown.iter().any(|c| c["type"] == "image"), "{shown:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]
