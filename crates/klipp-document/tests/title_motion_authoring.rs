@@ -465,3 +465,22 @@ fn grow_and_shrink_exits_scale_by_an_amount_without_fading() {
     assert!(exit_of("fade", Some(2.0)).is_err(), "fade does not scale");
     assert_eq!(exit_of("scale_up", Some(0.0)).unwrap().amount, Some(0.0), "scale_up from nothing");
 }
+
+/// #787: a scaling motion takes an anchor, "solid" or a point of the
+/// title's box; a motion that does not scale, a point outside the box
+/// and an unknown name are refused.
+#[test]
+fn a_scaling_motion_takes_an_anchor() {
+    use klipp_core::title_motion::MotionAnchor;
+    let exit = |v: serde_json::Value| {
+        let spec: klipp_timeline::TitleMotionSpec = serde_json::from_value(v).unwrap();
+        let style = TypeStyle { exit: Some(spec), ..Default::default() };
+        klipp_document::title_style::resolve_motion(&style).map(|m| m.exit.unwrap().anchor)
+    };
+    assert_eq!(exit(json!({"kind": "grow", "scale": 30, "anchor": "solid"})).unwrap(), Some(MotionAnchor::Solid));
+    assert_eq!(exit(json!({"kind": "grow", "anchor": {"x": 0.3, "y": 0.25}})).unwrap(), Some(MotionAnchor::Point { x: 0.3, y: 0.25 }));
+    assert_eq!(exit(json!({"kind": "shrink", "anchor": "centre"})).unwrap(), Some(MotionAnchor::Point { x: 0.5, y: 0.5 }));
+    assert!(exit(json!({"kind": "fade", "anchor": "solid"})).is_err(), "a fade does not scale");
+    assert!(exit(json!({"kind": "grow", "anchor": {"x": 1.5, "y": 0.5}})).is_err(), "outside the box");
+    assert!(exit(json!({"kind": "grow", "anchor": "middle"})).is_err(), "not a name it knows");
+}

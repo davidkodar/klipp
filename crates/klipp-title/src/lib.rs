@@ -406,6 +406,10 @@ pub struct TitleRenderer {
     /// A placed frame's focus band gone soft: (blur radius in frame
     /// pixels, axis, band), for the caller to blur the placed layer by.
     last_focus_blur: Option<(f32, RampAxis, f32)>,
+    /// The solid point of the last resting sprite a motion scaled about
+    /// (#787): the sprite is fixed while it moves, so the box scan and
+    /// distance pass run once per sprite, not once a frame.
+    solid_point: Option<(u64, Option<(f32, f32)>)>,
     /// The unit map the last `render_inner` made, for `cache_store`.
     last_units: Option<std::sync::Arc<UnitMap>>,
     /// The next `CachedRender::id`.
@@ -456,6 +460,7 @@ impl TitleRenderer {
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
+            solid_point: None,
             last_units: None,
             next_cache_id: 1,
             motion_window: None,
@@ -1442,11 +1447,13 @@ impl TitleRenderer {
         // The pose, on the numbers: entrance and exit combined, then
         // the loops on top. (alpha, dx, dy, scale, blur sigma, clip)
         let mut pose = (1.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, false);
+        let mut anchor_at = None;
         if let Some(t) = time_secs {
             let unit_px = (y1 - y0) as f32;
             let motion = whole_layer_motion(&fx.motion);
             if motion.is_active() {
                 let (pe, px) = motion.progress(t, window, 0);
+                anchor_at = motion.anchor_at(pe, px);
                 let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
                 let a = motion.enter.map(|m| m.pose(pe, unit_px)).unwrap_or(rest);
                 let b = motion.exit.map(|m| m.pose(px, unit_px)).unwrap_or(rest);
@@ -1493,7 +1500,7 @@ impl TitleRenderer {
         }
         let at_rest = (pose.0 - 1.0).abs() < 1e-6 && pose.1.abs() < 0.5 && pose.2.abs() < 0.5 && (pose.3 - 1.0).abs() < 1e-6 && !pose.5;
         if !at_rest {
-            let anchor = ((x0 + x1) as f32 * 0.5, (y0 + y1) as f32 * 0.5);
+            let anchor = resolve_anchor(anchor_at, &layer, width, (x0 as u32, x1 as u32), (y0 as u32, y1 as u32));
             let rows = if pose.5 { (y0 as u32, y1 as u32) } else { (0, height) };
             layer = pose_sprite(&layer, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, None, rows);
         }
@@ -1707,6 +1714,7 @@ impl TitleRenderer {
         // the compositor keeps it. Rastered afresh, it cost 30 ms a
         // frame at 4K for the whole of a half-second rise.
         // (opacity, dx, dy, scale, blur sigma, clip to the resting box)
+        let mut motion_anchor = None;
         let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
@@ -1717,6 +1725,7 @@ impl TitleRenderer {
                 }
                 let font_px = tb.font_size * scale;
                 let (pe, px) = fx.motion.progress(time_secs, window, 0);
+                motion_anchor = fx.motion.anchor_at(pe, px);
                 let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
                 let (a1, dx1, dy1, s1, b1, c1) = fx.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
                 let (a2, dx2, dy2, s2, b2, c2) = fx.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
@@ -1877,7 +1886,21 @@ impl TitleRenderer {
                 clip = c;
             }
             let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
-            let anchor = sprite.anchor();
+            let anchor = match motion_anchor.filter(|_| motion_pose.is_some()) {
+                Some(klipp_core::title_motion::MotionAnchor::Solid) => {
+                    let solid = match self.solid_point {
+                        Some((id, p)) if id == sprite.id => p,
+                        _ => {
+                            let p = solid_point(&sprite.pixels, width, sprite.cols, sprite.rows);
+                            self.solid_point = Some((sprite.id, p));
+                            p
+                        }
+                    };
+                    solid.unwrap_or_else(|| sprite.anchor())
+                }
+                Some(a) => resolve_anchor(Some(a), &sprite.pixels, width, sprite.cols, sprite.rows),
+                None => sprite.anchor(),
+            };
             // One layer: its fade goes on where it is placed; the resting
             // render was made without it. More layers: each was faded in
             // the resting render where it stands, since none moves here —
@@ -4743,6 +4766,82 @@ fn blur_rgba(layer: &mut [u8], width: u32, height: u32, sigma: f32) {
         }
         p[3] = q[3].round().clamp(0.0, 255.0) as u8;
     }
+}
+
+/// The point, in frame pixels, a scaling motion scales about: the centre
+/// of the covered box `cols` x `rows` unless the motion names one (#787).
+/// `Solid` finds the point deepest inside the letters: the covered box is
+/// read in cells, each solid when most of it is covered, and a two-pass
+/// chamfer distance gives the cell furthest from any gap. Grown past the
+/// frame about it, the word fills the frame with a stroke, never with the
+/// gap between its lines or words.
+fn resolve_anchor(anchor: Option<klipp_core::title_motion::MotionAnchor>, rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> (f32, f32) {
+    use klipp_core::title_motion::MotionAnchor;
+    let (x0, x1, y0, y1) = (cols.0 as f32, cols.1 as f32, rows.0 as f32, rows.1 as f32);
+    let centre = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    match anchor {
+        None => centre,
+        Some(MotionAnchor::Point { x, y }) => (x0 + x.clamp(0.0, 1.0) * (x1 - x0), y0 + y.clamp(0.0, 1.0) * (y1 - y0)),
+        Some(MotionAnchor::Solid) => solid_point(rgba, width, cols, rows).unwrap_or(centre),
+    }
+}
+
+/// The centre of the most covered cell furthest from any uncovered one,
+/// in frame pixels; `None` for a box with nothing in it.
+fn solid_point(rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> Option<(f32, f32)> {
+    let (bw, bh) = (cols.1.saturating_sub(cols.0) as usize, rows.1.saturating_sub(rows.0) as usize);
+    if bw == 0 || bh == 0 {
+        return None;
+    }
+    // About 160 cells across the longer side: a stroke is several cells.
+    let cell = (bw.max(bh) / 160).max(1);
+    let (gw, gh) = (bw.div_ceil(cell), bh.div_ceil(cell));
+    let w = width as usize;
+    let alpha = |x: usize, y: usize| rgba.get(((rows.0 as usize + y) * w + cols.0 as usize + x) * 4 + 3).copied().unwrap_or(0);
+    // Distance to the nearest uncovered cell, 3 a step and 4 a diagonal;
+    // outside the box counts as uncovered.
+    const FAR: u32 = u32::MAX / 4;
+    let mut d: Vec<u32> = (0..gw * gh)
+        .map(|i| {
+            let (gx, gy) = (i % gw, i / gw);
+            let mut covered = 0usize;
+            let mut n = 0usize;
+            for y in (gy * cell)..((gy + 1) * cell).min(bh) {
+                for x in (gx * cell)..((gx + 1) * cell).min(bw) {
+                    n += 1;
+                    covered += usize::from(alpha(x, y) >= 128);
+                }
+            }
+            if covered * 2 > n { FAR } else { 0 }
+        })
+        .collect();
+    let at = |d: &Vec<u32>, x: isize, y: isize| if x < 0 || y < 0 || x >= gw as isize || y >= gh as isize { 0 } else { d[y as usize * gw + x as usize] };
+    for y in 0..gh as isize {
+        for x in 0..gw as isize {
+            let i = y as usize * gw + x as usize;
+            if d[i] == 0 {
+                continue;
+            }
+            let v = [at(&d, x - 1, y) + 3, at(&d, x, y - 1) + 3, at(&d, x - 1, y - 1) + 4, at(&d, x + 1, y - 1) + 4];
+            d[i] = d[i].min(*v.iter().min().unwrap());
+        }
+    }
+    for y in (0..gh as isize).rev() {
+        for x in (0..gw as isize).rev() {
+            let i = y as usize * gw + x as usize;
+            if d[i] == 0 {
+                continue;
+            }
+            let v = [at(&d, x + 1, y) + 3, at(&d, x, y + 1) + 3, at(&d, x + 1, y + 1) + 4, at(&d, x - 1, y + 1) + 4];
+            d[i] = d[i].min(*v.iter().min().unwrap());
+        }
+    }
+    let (best, &depth) = d.iter().enumerate().max_by_key(|(_, v)| **v)?;
+    if depth == 0 {
+        return None;
+    }
+    let (gx, gy) = (best % gw, best / gw);
+    Some((cols.0 as f32 + (gx as f32 + 0.5) * cell as f32, rows.0 as f32 + (gy as f32 + 0.5) * cell as f32))
 }
 
 /// A layer's motion as a shape or a picture takes it: as one, with no
@@ -8175,5 +8274,31 @@ mod default_title_probe {
         let buf = r.render_with_window(&td, 2160, 3840, None, 1.3, Some(5.0));
         let visible = buf.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(visible > 1000, "visible pixels: {visible}");
+    }
+}
+
+#[cfg(test)]
+mod solid_point_tests {
+    /// #787: two bars with a gap between them, as two lines of a word: the
+    /// solid point is inside the thicker bar, not in the gap at the box's
+    /// centre; an empty box has none.
+    #[test]
+    fn the_solid_point_is_in_a_stroke_not_the_gap() {
+        let (w, h) = (200usize, 100usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        let mut fill = |y0: usize, y1: usize| {
+            for y in y0..y1 {
+                for x in 10..190 {
+                    rgba[(y * w + x) * 4 + 3] = 255;
+                }
+            }
+        };
+        fill(10, 30);
+        fill(55, 95);
+        let (x, y) = super::solid_point(&rgba, w as u32, (10, 190), (10, 95)).unwrap();
+        assert!((55.0..95.0).contains(&y) && (10.0..190.0).contains(&x), "({x}, {y}) is not in the thick bar");
+        let centre = super::resolve_anchor(None, &rgba, w as u32, (10, 190), (10, 95));
+        assert!((30.0..55.0).contains(&centre.1), "the box's centre is the gap: {centre:?}");
+        assert_eq!(super::solid_point(&vec![0u8; w * h * 4], w as u32, (10, 190), (10, 95)), None);
     }
 }
