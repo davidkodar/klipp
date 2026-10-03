@@ -345,6 +345,16 @@ impl<T: Clone + Send + 'static> SkimBatchWorker<T> {
                     .or_else(|e| match &job.fallback_path {
                         Some(original) => decoders.frame_at(original, job.rotation, job.secs, job.max_height, Duration::from_millis(400)),
                         None => Err(e),
+                    })
+                    // As the single skim does: a frame no decoder here will
+                    // make (a file NVDEC refuses) is made by a one-off
+                    // software decode, so a tile is never left blank (#84).
+                    .or_else(|e| {
+                        let source = job.fallback_path.as_deref().unwrap_or(&job.path);
+                        tracing::debug!("skim batch: decoders failed for {:?} @ {:.3}s ({e}); software fallback", source, job.secs);
+                        crate::generate_thumbnail_at_size_with_rotation(source, job.secs, job.max_height.max(240), job.rotation)
+                            .map(|(rgba, width, height)| SkimFrame { rgba, width, height, reused_decoder: false, repeated: false })
+                            .map_err(|soft| format!("{e}; software decode: {soft}"))
                     });
                 deliver(job, result);
             }

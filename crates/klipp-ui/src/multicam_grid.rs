@@ -75,9 +75,13 @@ pub fn angle_sources(seq: &Sequence, pool: &MediaPool, group: GroupId, playhead:
             let decode = under.and_then(|c| {
                 let item = pool.get(&c.media_id()?)?;
                 let secs = c.source_time_for_sequence_time(playhead, fps)?.to_secs_f64();
-                let (path, fallback) = if let Some(skim) = item.skim_file.as_ref().filter(|p| p.exists()) {
+                // No file checks here, on the UI thread, for every angle of
+                // every batch (#84: they could stall on network footage):
+                // a skim file or proxy that is gone fails to open in the
+                // worker, which then decodes the original.
+                let (path, fallback) = if let Some(skim) = item.skim_file.as_ref() {
                     (skim.clone(), Some(item.path.clone()))
-                } else if let Some(proxy) = item.proxy_path.as_ref().filter(|p| item.proxy_ready && p.exists()) {
+                } else if let Some(proxy) = item.proxy_path.as_ref().filter(|_| item.proxy_ready) {
                     (proxy.clone(), Some(item.path.clone()))
                 } else {
                     (item.path.clone(), None)
@@ -100,9 +104,26 @@ pub fn grid_shape(n: usize) -> (usize, usize) {
 /// A decoded tile frame, tagged with the batch that asked for it.
 type Delivered = (u64, u8, Result<klipp_engine::skim::SkimFrame, String>);
 
+/// Decoders the grid starts with; a group with more angles gets one each.
+const MIN_DECODERS: usize = 10;
+/// And no more than this: past it, decoders are evicted and reopened.
+const MAX_DECODERS: usize = 25;
+
+/// How many decoders a grid of `angles` keeps open: one per angle, so
+/// eleven angles or more do not evict each other's decoder every batch
+/// (#84), within [`MIN_DECODERS`] and [`MAX_DECODERS`].
+pub fn decoders_for(angles: usize) -> usize {
+    angles.clamp(MIN_DECODERS, MAX_DECODERS)
+}
+
 /// The grid's decoder, its pacing and its tiles.
 pub struct GridRuntime {
     worker: klipp_engine::skim::SkimBatchWorker<(u64, u8)>,
+    /// How many decoders `worker` has room for.
+    decoders: usize,
+    /// For a new worker when a group needs more decoders.
+    ctx: egui::Context,
+    tx: crossbeam_channel::Sender<Delivered>,
     rx: crossbeam_channel::Receiver<Delivered>,
     generation: u64,
     asked: usize,
@@ -118,6 +139,19 @@ pub struct GridRuntime {
     tile_generation: HashMap<u8, u64>,
     /// Tiles of a group no longer shown, for the caller to let go.
     retired: Vec<egui::TextureHandle>,
+    /// Why an angle's frame could not be made, last time it was asked
+    /// for: shown on its tile rather than leaving it blank (#84).
+    pub failed: HashMap<u8, String>,
+}
+
+/// A batch worker with room for `decoders`, delivering into `tx`.
+fn spawn_worker(ctx: &egui::Context, tx: &crossbeam_channel::Sender<Delivered>, decoders: usize) -> klipp_engine::skim::SkimBatchWorker<(u64, u8)> {
+    let (tx, repaint) = (tx.clone(), ctx.clone());
+    klipp_engine::skim::SkimBatchWorker::spawn(decoders, move |job, result| {
+        let (generation, angle) = job.tag;
+        let _ = tx.send((generation, angle, result));
+        repaint.request_repaint();
+    })
 }
 
 /// While playing, a new batch at most this often.
@@ -131,14 +165,11 @@ const TILE_MAX_HEIGHT: u32 = 540;
 impl GridRuntime {
     pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded::<Delivered>();
-        let repaint = ctx.clone();
-        let worker = klipp_engine::skim::SkimBatchWorker::spawn(10, move |job, result| {
-            let (generation, angle) = job.tag;
-            let _ = tx.send((generation, angle, result));
-            repaint.request_repaint();
-        });
         Self {
-            worker,
+            worker: spawn_worker(ctx, &tx, MIN_DECODERS),
+            decoders: MIN_DECODERS,
+            ctx: ctx.clone(),
+            tx,
             rx,
             generation: 0,
             asked: 0,
@@ -150,6 +181,7 @@ impl GridRuntime {
             tiles: HashMap::new(),
             tile_generation: HashMap::new(),
             retired: Vec::new(),
+            failed: HashMap::new(),
         }
     }
 
@@ -163,6 +195,7 @@ impl GridRuntime {
         if self.last_key.is_some_and(|(g, _, _)| g != group) {
             self.retired.extend(self.tiles.drain().map(|(_, t)| t));
             self.tile_generation.clear();
+            self.failed.clear();
         }
         self.playing = playing;
         let due = if playing {
@@ -176,6 +209,13 @@ impl GridRuntime {
         }
         self.last_key = Some(key);
         self.sources = angle_sources(seq, pool, group, playhead);
+        // More angles than decoders: a worker with one each. The old one
+        // ends when it is dropped.
+        let wanted = decoders_for(self.sources.len());
+        if wanted > self.decoders {
+            self.worker = spawn_worker(&self.ctx, &self.tx, wanted);
+            self.decoders = wanted;
+        }
         self.generation += 1;
         let batch: Vec<_> = self
             .sources
@@ -206,7 +246,16 @@ impl GridRuntime {
             if generation == self.generation {
                 self.answered += 1;
             }
-            let Ok(frame) = result else { continue };
+            let frame = match result {
+                Ok(frame) => frame,
+                Err(e) => {
+                    if generation == self.generation {
+                        self.failed.insert(angle, e);
+                    }
+                    continue;
+                }
+            };
+            self.failed.remove(&angle);
             // A frame for a group no longer shown (its batch was asked
             // for before the switch) is not this group's.
             if !self.sources.iter().any(|s| s.angle == angle) {
@@ -247,6 +296,7 @@ impl GridRuntime {
             drop_old(tex);
         }
         self.tile_generation.clear();
+        self.failed.clear();
         self.sources.clear();
         self.last_key = None;
     }
@@ -288,7 +338,14 @@ pub fn show(ui: &mut egui::Ui, rect: egui::Rect, runtime: &GridRuntime, active: 
             (_, None) => {
                 painter.text(cell_rect.center(), egui::Align2::CENTER_CENTER, "No picture here", egui::FontId::proportional(12.0), theme.text_dim);
             }
-            (None, Some(_)) => {}
+            (None, Some(_)) => {
+                // Nothing could make this angle's frame: say so, and why
+                // on hover, rather than leave the tile blank (#84).
+                if let Some(why) = runtime.failed.get(&source.angle) {
+                    painter.text(cell_rect.center(), egui::Align2::CENTER_CENTER, "Can't decode this angle", egui::FontId::proportional(12.0), theme.text_dim);
+                    resp.clone().on_hover_text(why.as_str());
+                }
+            }
         }
         // The angle's number, as keys 1-9 cut to it, and its name.
         // The angle being cut to reads at a glance: its label bar in the
@@ -397,6 +454,27 @@ mod tests {
         let d1 = sources[1].decode.as_ref().expect("angle 1 started at 1 s");
         assert!((d1.secs - 1.0).abs() < 1e-6, "its own source time: {}", d1.secs);
         assert!(sources[2].decode.is_none(), "angle 2 starts at 3 s");
+    }
+
+    /// #84: a skim file or proxy is chosen without asking the disk (the
+    /// worker falls back to the original when it is gone), and a group of
+    /// more than ten angles keeps a decoder for each.
+    #[test]
+    fn sources_are_chosen_without_file_checks_and_decoders_fit_the_group() {
+        let g = GroupId::new();
+        let mut pool = MediaPool::default();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(PathBuf::from("/nonexistent/a.mov"), None);
+        item.skim_file = Some(PathBuf::from("/nonexistent/a.skim.mkv"));
+        let m = pool.add(item);
+        let mut c = angle(g, 0, 0.0, 10.0);
+        c.kind = klipp_timeline::ClipKind::Media { media_id: m };
+        let mut other = angle(g, 1, 0.0, 10.0);
+        other.kind = klipp_timeline::ClipKind::Media { media_id: m };
+        let seq = synced(vec![(c, TrackKind::Video), (other, TrackKind::Video)]);
+        let d = angle_sources(&seq, &pool, g, tc(1.0))[0].decode.clone().expect("a picture");
+        assert_eq!(d.path, PathBuf::from("/nonexistent/a.skim.mkv"), "the skim file, though it is not on disk");
+        assert_eq!(d.fallback, Some(PathBuf::from("/nonexistent/a.mov")), "the original behind it");
+        assert_eq!((decoders_for(2), decoders_for(10), decoders_for(16), decoders_for(40)), (10, 10, 16, 25));
     }
 
     #[test]
