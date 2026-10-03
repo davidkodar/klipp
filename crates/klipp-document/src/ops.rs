@@ -394,9 +394,15 @@ pub enum Op {
     /// the edges), "grain" (film grain), "glow" (soften the highlights, a
     /// dreamy diffusion), "blur", or "sharpen". `amount` is 0 to 1, the
     /// strength; left out, a tasteful default. A second effect of the
-    /// same kind replaces the first.
+    /// same kind replaces the first. With `on` — "timeline" or a grade
+    /// group — it goes on every picture clip there in one step (#794).
     Effect {
-        clip_id: ClipRef,
+        /// The clip; not needed with `on`.
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        /// Every picture clip on the timeline, or in a grade group.
+        #[serde(default)]
+        on: Option<GradeOn>,
         kind: String,
         #[serde(default)]
         amount: Option<f32>,
@@ -1858,10 +1864,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
         }
-        Op::Effect { clip_id, kind, amount } => {
-            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            picture_effect(seq, pool, i, ti, clip, kind, *amount)
-        }
+        Op::Effect { clip_id, on, kind, amount } => match (on, clip_id) {
+            (Some(on), _) => effect_on_many(seq, pool, i, clip_id.as_ref(), on, kind, *amount),
+            (None, Some(clip_id)) => {
+                let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+                picture_effect(seq, pool, i, ti, clip, kind, *amount)
+            }
+            (None, None) => Err(refuse(i, "no clip given", "give clip_id, or on: \"timeline\" or {\"group\": name}")),
+        },
         Op::Stabilize { clip_id, smoothing } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             stabilize(seq, pool, i, ti, clip, *smoothing)
@@ -4100,6 +4110,51 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
     let what = format!("{} {a:.2} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
     let edit = set_builtin_effects(clip, effects);
     Ok((what, edit, vec![clip.id]))
+}
+
+/// `effect` on every picture clip of the timeline or of a grade group,
+/// as one step: a vignette and grain over a 36-shot film took 72 ops and
+/// lowering the vignette 36 more (#794). Each clip gets its own copy, as
+/// the op on one clip gives it, so a clip added later has none; a grade
+/// group's stage is not asked, the effect sits on its clips.
+#[allow(clippy::too_many_arguments)]
+fn effect_on_many(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: Option<&ClipRef>, on: &GradeOn, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if clip_id.is_some() {
+        return Err(refuse(i, "both a clip and on given", "give clip_id for one clip, or on for many"));
+    }
+    let is_picture = |t: &klipp_timeline::Track, c: &Clip| t.kind == TrackKind::Video && c.media_id().is_some_and(|m| pool.get(&m).is_some_and(|item| !item.video_codec.is_empty() || item.is_still));
+    let (whose, members): (String, Vec<(usize, &Clip)>) = match on {
+        GradeOn::Named(n) if n.eq_ignore_ascii_case("timeline") => (
+            "the timeline".into(),
+            seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.clips.iter().filter(move |c| is_picture(t, c)).map(move |c| (ti, c))).collect(),
+        ),
+        GradeOn::Named(n) => return Err(refuse(i, format!("\"{n}\" is not somewhere to add an effect"), "give on: \"timeline\", or {\"group\": name}, or a clip_id alone")),
+        GradeOn::Group { group, .. } => {
+            let g = find_grade_group(seq, i, group)?;
+            (
+                format!("group \"{}\"", g.name),
+                seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.clips.iter().filter(move |c| c.grade_group == Some(g.id) && is_picture(t, c)).map(move |c| (ti, c))).collect(),
+            )
+        }
+    };
+    if members.is_empty() {
+        return Err(refuse(i, format!("{whose} has no picture clips"), "place the shots first, or name a clip"));
+    }
+    let mut edits = Vec::with_capacity(members.len());
+    let mut touched = Vec::with_capacity(members.len());
+    let mut what = String::new();
+    for (ti, clip) in &members {
+        let (one, edit, ids) = picture_effect(seq, pool, i, *ti, clip, kind, amount)?;
+        if what.is_empty() {
+            what = one;
+        }
+        edits.push(edit);
+        touched.extend(ids);
+    }
+    // "vignette 0.50 on A001.mov" said once for all of them.
+    let effect = what.split(" on ").next().unwrap_or(kind).to_string();
+    let n = members.len();
+    Ok((format!("{effect} on {n} clip{} of {whose}", if n == 1 { "" } else { "s" }), EditCommand::Batch(edits), touched))
 }
 
 fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, scale: Option<f32>, x: Option<f32>, y: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
@@ -6975,6 +7030,48 @@ mod tests {
         assert!(!what.contains("marked"), "{what}");
     }
 
+    /// #794: an effect on the timeline goes on every picture clip in one
+    /// step, the sound under them left alone; on a grade group, on its
+    /// members only; asking again replaces it on each.
+    #[test]
+    fn an_effect_on_the_timeline_or_a_group_goes_on_each_picture() {
+        use klipp_effects::BuiltinEffect as E;
+        let (mut seq, pool, _, a, b) = fixture();
+        let effect = |on: GradeOn, amount: f32| Op::Effect { clip_id: None, on: Some(on), kind: "vignette".into(), amount: Some(amount) };
+        let vignetted = |plan: &Plan| -> Vec<ClipId> {
+            let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+            edits.iter().map(|e| match e {
+                EditCommand::SetBuiltinEffects { clip_id, new_effects, .. } => {
+                    assert_eq!(new_effects.iter().filter(|e| matches!(e, E::Vignette { .. })).count(), 1, "{new_effects:?}");
+                    *clip_id
+                }
+                other => panic!("{other:?}"),
+            }).collect()
+        };
+
+        let plan = resolve(&seq, &pool, &[effect(GradeOn::Named("timeline".into()), 0.5)]).unwrap();
+        assert_eq!(vignetted(&plan), vec![a, b], "the pictures, not their linked sound");
+        assert_eq!(plan.steps[0].what, "vignette 0.50 on 2 clips of the timeline");
+
+        let group = klipp_timeline::GradeGroup::new("Night");
+        let gid = group.id;
+        seq.grade_groups.push(group);
+        seq.tracks[0].clips[1].grade_group = Some(gid);
+        let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.3)]).unwrap();
+        assert_eq!(vignetted(&plan), vec![b]);
+        assert_eq!(plan.steps[0].what, "vignette 0.30 on 1 clip of group \"Night\"");
+
+        // A second time replaces each clip's vignette rather than adding one.
+        seq.tracks[0].clips[1].builtin_effects.push(E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 });
+        let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.1)]).unwrap();
+        assert_eq!(vignetted(&plan), vec![b]);
+
+        let both = Op::Effect { clip_id: Some(ClipRef::Id(a)), on: Some(GradeOn::Named("timeline".into())), kind: "grain".into(), amount: None };
+        assert!(resolve(&seq, &pool, &[both]).unwrap_err().why.contains("both"));
+        assert!(resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Day".into(), stage: None }, 0.3)]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None }]).unwrap_err().why.contains("no clip"));
+    }
+
     #[test]
     fn a_long_plan_folds_its_runs_and_says_long_names_once_shortly() {
         let (seq, pool, media, _, _) = fixture();
@@ -8102,16 +8199,16 @@ mod tests {
         use klipp_effects::BuiltinEffect as E;
 
         // An effect appends a builtin effect; the same kind replaces it.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "vignette".into(), amount: Some(0.6) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6) }]).unwrap();
         assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
 
         // The layer treatment reaches the same op by name.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "shadow".into(), amount: Some(0.5) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5) }]).unwrap();
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         assert!(matches!(new_effects.last(), Some(E::DropShadow { color, .. }) if *color == [0, 0, 0]));
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: ClipRef::Id(a), kind: "corners".into(), amount: Some(0.2) }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2) }]).unwrap();
         let EditCommand::SetBuiltinEffects { new_effects, .. } = &plan.steps[0].edit else { panic!("effects edit") };
         assert!(matches!(new_effects.last(), Some(E::RoundedCorners { .. })));
 
@@ -8188,7 +8285,7 @@ mod tests {
 
         // Refusals and the JSON shape.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Effect { clip_id: ClipRef::Id(a), kind: "sparkle".into(), amount: None }).why.contains("not an effect"));
+        assert!(bad(Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "sparkle".into(), amount: None }).why.contains("not an effect"));
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;
