@@ -30,6 +30,12 @@ pub fn script(template: &str) -> String {
     }
     let mut out = String::with_capacity(template.len() + 32);
     let mut quote = Quote::None;
+    // Command substitutions, `$( )` and backticks, start their quoting
+    // afresh: a placeholder in "…$(basename {file})…" is unquoted inside
+    // the substitution, whatever the quotes around it. Each open one keeps
+    // the quoting outside it (to restore at its end), how it closes, and
+    // how many plain parentheses are open inside it (#830 review).
+    let mut frames: Vec<(Quote, char, u32)> = Vec::new();
     let mut rest = template;
     while let Some(c) = rest.chars().next() {
         let var = if rest.starts_with("{file}") {
@@ -50,7 +56,30 @@ pub fn script(template: &str) -> String {
         }
         out.push(c);
         rest = &rest[c.len_utf8()..];
+        let in_paren = frames.last().is_some_and(|f| f.1 == ')');
         match (quote, c) {
+            (Quote::None | Quote::Double, '$') if rest.starts_with('(') => {
+                out.push('(');
+                rest = &rest[1..];
+                frames.push((quote, ')', 0));
+                quote = Quote::None;
+            }
+            (Quote::None, '(') if in_paren => {
+                if let Some(f) = frames.last_mut() {
+                    f.2 += 1;
+                }
+            }
+            (Quote::None, ')') if in_paren => match frames.last_mut() {
+                Some(f) if f.2 > 0 => f.2 -= 1,
+                _ => quote = frames.pop().map_or(Quote::None, |f| f.0),
+            },
+            (Quote::None, '`') if frames.last().is_some_and(|f| f.1 == '`') => {
+                quote = frames.pop().map_or(Quote::None, |f| f.0);
+            }
+            (Quote::None | Quote::Double, '`') => {
+                frames.push((quote, '`', 0));
+                quote = Quote::None;
+            }
             (Quote::None, '\'') => quote = Quote::Single,
             (Quote::Single, '\'') => quote = Quote::None,
             (Quote::None, '"') => quote = Quote::Double,
@@ -129,6 +158,11 @@ mod tests {
         assert_eq!(received(r#"echo -n "{file} -> {dir}/archive" > "$OUT""#, &output, &out), format!("{} -> {}/archive", output.display(), dir.display()));
         assert_eq!(received(r#"echo -n 'saved: {file}' > "$OUT""#, &output, &out), format!("saved: {}", output.display()));
         assert_eq!(received(r#"printf '%s|' {file} {dir} > "$OUT""#, &output, &out), format!("{}|{}|", output.display(), dir.display()));
+        // Inside a command substitution quoting starts afresh: the path is
+        // still one word there, double-quoted around it or not.
+        assert_eq!(received(r#"echo -n "saved $(basename {file})" > "$OUT""#, &output, &out), "saved my film.mp4");
+        assert_eq!(received(r#"echo -n "in `basename {dir}`" > "$OUT""#, &output, &out), format!("in {}", dir.file_name().unwrap().to_string_lossy()));
+        assert_eq!(received(r#"echo -n $(basename {file}) > "$OUT""#, &output, &out), "my film.mp4");
         assert!(command("   ", &output).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
