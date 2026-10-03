@@ -7,7 +7,7 @@ use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, TitleObjectContent, TrackKind};
 use serde::Serialize;
 
-use crate::ops::{is_heard, linear_to_db, sound_settings_clip, spoken_spans, ScreenBeats, SensitiveText, SpokenWord, Transcripts};
+use crate::ops::{is_heard, linear_to_db, not_speech, sound_role, sound_settings_clip, spoken_spans, ScreenBeats, SensitiveText, SpokenWord, Transcripts};
 
 /// A cut this close to a settle point is a cut to the settle.
 const SETTLE_NEAR_SECS: f64 = 0.6;
@@ -405,23 +405,31 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let mut musics: Vec<&Clip> = Vec::new();
     let mut cache: std::collections::HashMap<klipp_core::MediaId, Option<Vec<SpokenWord>>> = std::collections::HashMap::new();
     let mut silence_cache: std::collections::HashMap<klipp_core::MediaId, Vec<(f64, f64)>> = std::collections::HashMap::new();
+    let mut unspoken: std::collections::HashSet<klipp_core::MediaId> = std::collections::HashSet::new();
     for t in &seq.tracks {
         for c in t.clips.iter().filter(|c| is_heard(seq, pool, t, c)) {
             let Some(media_id) = c.media_id() else { continue };
             let Some(item) = pool.get(&media_id) else { continue };
             // A clip's role settles what it is before any transcript does:
-            // a bed is music, an effect is neither speech nor music.
-            match c.role {
-                klipp_core::ClipRole::Music => {
-                    musics.push(c);
-                    continue;
-                }
-                klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley => continue,
-                _ => {}
+            // a bed is music, an effect or a room's air is neither speech
+            // nor music, whichever of a pair carries the role (#777).
+            let role = sound_role(seq, c);
+            if role == klipp_core::ClipRole::Music {
+                musics.push(c);
+                continue;
             }
             let words = cache.entry(media_id).or_insert_with(|| transcripts.words(item));
             let (s_in, s_out) = (secs(c.source_in), secs(c.source_out));
             let inside: Vec<&SpokenWord> = words.as_deref().unwrap_or(&[]).iter().filter(|w| w.end_secs > s_in && w.start_secs < s_out).collect();
+            if not_speech(role) {
+                // Its transcript is what the recogniser made of the noise:
+                // said once, so the words in the clip summaries are read
+                // for what they are.
+                if !inside.is_empty() && unspoken.insert(media_id) {
+                    add(Severity::Note, "words_not_speech", Some(secs(c.timeline_in)), format!("{} is marked {}, so the words its transcript hears are not taken as speech", clip_label(pool, c), format!("{role:?}").to_lowercase()), "Mark it dialogue if someone does speak there");
+                }
+                continue;
+            }
             if inside.is_empty() {
                 if words.is_some() || item.video_codec.is_empty() {
                     musics.push(c);
@@ -966,6 +974,27 @@ mod tests {
         seq.tracks.pop();
         seq.tracks.push(bed(&[(0.0, 3.0, 0.0), (3.0, 8.0, 0.0)]));
         assert!(level(&seq, &phrase));
+    }
+
+    /// #777: a take whose wind was transcribed as words, marked ambience
+    /// on its picture or on its sound, is not speech: no duck asked of
+    /// the bed over it, and one note saying its words were set aside.
+    #[test]
+    fn a_take_marked_ambience_is_not_speech_whichever_side_carries_the_role() {
+        let (mut seq, pool, talk, music) = piece();
+        let mut bed = Track::new("A2", TrackKind::Audio);
+        bed.clips = vec![Clip::media(music, tc(0.0), tc(8.0), tc(0.0), tc(8.0))];
+        seq.tracks.push(bed);
+        assert!(rules(&check(&seq, &pool, &Spoken(talk))).contains(&"music_level"), "unmarked, the take is speech");
+        for side in [0, 1] {
+            let mut marked = seq.clone();
+            for c in marked.tracks[side].clips.iter_mut() {
+                c.role = klipp_core::ClipRole::Ambience;
+            }
+            let found = rules(&check(&marked, &pool, &Spoken(talk)));
+            assert!(!found.contains(&"music_level"), "role on track {side}: {found:?}");
+            assert_eq!(found.iter().filter(|r| **r == "words_not_speech").count(), 1, "role on track {side}: {found:?}");
+        }
     }
 
     #[test]

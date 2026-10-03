@@ -2565,6 +2565,21 @@ pub(crate) fn sound_settings_clip<'a>(seq: &'a Sequence, clip: &'a Clip) -> &'a 
         .unwrap_or(clip)
 }
 
+/// What `clip`'s sound is, by its role: its own when one was set, else
+/// that of the clip holding its sound settings. A role is set on the clip
+/// addressed, the picture or its sound, so either can say the pair is
+/// ambience; read from one side only, a beach's wind marked ambience on
+/// its picture was speech to the check (#777).
+pub(crate) fn sound_role(seq: &Sequence, clip: &Clip) -> klipp_core::ClipRole {
+    if clip.role != klipp_core::ClipRole::Dialogue { clip.role } else { sound_settings_clip(seq, clip).role }
+}
+
+/// Whether `role` says a sound is not speech: music, effects, ambience,
+/// foley, B-roll. A duck and the check's speech rules pass it by.
+pub(crate) fn not_speech(role: klipp_core::ClipRole) -> bool {
+    matches!(role, klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn audio_settings(
     seq: &Sequence,
@@ -2681,11 +2696,7 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         // at -15 under music at -3 ducked it for 100 s, #457). A hundredth
         // of a dB takes the rounding of two levels set in dB.
         let quiet = s.volume * s.gain <= music_level * db_to_linear(-12.0 + 0.01);
-        let not_speech = matches!(
-            s.role,
-            klipp_core::ClipRole::Music | klipp_core::ClipRole::SFX | klipp_core::ClipRole::Ambience | klipp_core::ClipRole::Foley | klipp_core::ClipRole::BRoll
-        );
-        !quiet && !not_speech
+        !quiet && !not_speech(sound_role(seq, c))
     };
     // Where speech is heard over the music, merged where the gaps are
     // too short to come up and go down again. A clip with a transcript is
