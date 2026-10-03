@@ -297,7 +297,10 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             // or a title does: a card hides the join, a heading carries the
             // eye across it.
             let title_over = seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible).flat_map(|t| t.clips.iter()).any(|c| c.enabled && matches!(c.kind, ClipKind::Title(_)) && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
-            let covered = title_over || pictures.iter().any(|(tj, c)| tj < ti && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
+            // A transition on the cut carries the eye across it too: a
+            // dissolve, a zoom, a whip is what covers a jump (#778).
+            let transition_on_cut = t.transitions.iter().any(|tr| tr.clip_a_id == a.id && tr.clip_b_id == b.id);
+            let covered = title_over || transition_on_cut || pictures.iter().any(|(tj, c)| tj < ti && secs(c.timeline_in) <= cut - 0.2 && secs(c.timeline_out) >= cut + 0.2);
             if !covered {
                 add(Severity::Warning, "jump_cut", Some(cut), format!("a jump cut: {} cuts to itself, {:.1} s later in the file, with nothing over the join", clip_label(pool, a), secs(b.source_in) - secs(a.source_out)), "Cover the join with B-roll or a reaction, or keep it if jump cuts are the piece's style");
             }
@@ -610,6 +613,31 @@ mod tests {
         assert!(rules(&check(&seq, &pool, &Moving(talk, 1.0))).contains(&"jump_cut"), "20 s on a still camera: a jump");
         skip_to(&mut seq, 5.0);
         assert!(rules(&check(&seq, &pool, &Moving(talk, 6.5))).contains(&"jump_cut"), "a second along a walk: still a jump");
+    }
+
+    /// #778: a transition on the cut covers the jump as a picture over it
+    /// does: a dissolve between two selects of one take is no jump cut.
+    #[test]
+    fn a_transition_on_the_cut_covers_a_jump() {
+        let (mut seq, pool, talk, _) = piece();
+        for t in seq.tracks.iter_mut() {
+            let c = &mut t.clips[1];
+            (c.timeline_in, c.timeline_out, c.source_in, c.source_out) = (tc(4.0), tc(8.0), tc(20.0), tc(24.0));
+        }
+        assert!(rules(&check(&seq, &pool, &Spoken(talk))).contains(&"jump_cut"), "bare, it jumps");
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let (a, b) = (seq.tracks[v].clips[0].id, seq.tracks[v].clips[1].id);
+        seq.tracks[v].transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.5),
+            clip_a_id: a,
+            clip_b_id: b,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        });
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(!rules(&r).contains(&"jump_cut"), "{}", r.text());
     }
 
     /// Two selects of one interview meeting at 4 s, their sound linked under them.
