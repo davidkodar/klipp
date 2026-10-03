@@ -732,10 +732,14 @@ mod next_step_tests {
         assert!(!sound.contains("selects") && sound.contains("Hear it"), "{sound}");
         let fresh = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, ..Default::default() }).unwrap();
         assert!(fresh.ends_with("then titles in the brief's type styles, the grade, and check."), "{fresh}");
-        let titled = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, titled: true, graded: false }).unwrap();
+        let titled = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, titled: true, ..Default::default() }).unwrap();
         assert!(!titled.contains("titles") && titled.ends_with("then the grade and check."), "{titled}");
-        let done = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, titled: true, graded: true }).unwrap();
+        let titled = Trail { pictures_placed: true, titled: true, ..Default::default() };
+        let done = next_after_ops(&ops, Some(&brief), Trail { graded: true, ..titled }).unwrap();
         assert!(done.ends_with("(klipp_beats), then check."), "{done}");
+        // Music already on a track: the cut is to it, not advised again.
+        let scored = next_after_ops(&ops, Some(&brief), Trail { graded: true, music_on_track: true, ..titled }).unwrap();
+        assert!(!scored.contains("beat") && scored.ends_with("(frame_at across the cut), then check."), "{scored}");
     }
 }
 
@@ -2010,6 +2014,10 @@ struct Trail {
     titled: bool,
     /// A picture clip is graded, alone or in a grade group.
     graded: bool,
+    /// Music is on a track: a clip playing as music, or a library track.
+    /// The cut is then to it already, and the beat is not advised again
+    /// (#785 review).
+    music_on_track: bool,
 }
 
 impl Trail {
@@ -2026,6 +2034,13 @@ impl Trail {
             pictures_placed,
             titled: clips().any(|(t, c)| t.kind == klipp_timeline::TrackKind::Text && matches!(c.kind, klipp_timeline::ClipKind::Title(_))),
             graded: clips().any(|(_, c)| is_picture_clip(c) && (!c.own_grade().is_identity() || c.grade_group.is_some())),
+            music_on_track: ctx.media_pool.read().is_ok_and(|pool| {
+                clips().any(|(t, c)| {
+                    t.kind == klipp_timeline::TrackKind::Audio
+                        && (sound_owner(&seq, c).role == klipp_core::ClipRole::Music
+                            || c.media_id().and_then(|m| pool.get(&m)).is_some_and(|m| klipp_analysis::is_licensed_audio(&m.path)))
+                })
+            }),
         }
     }
 }
@@ -2060,7 +2075,8 @@ fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline
     let said: &str = if has(&|o| matches!(o, Op::Redact { .. })) {
         "Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again."
     } else if selects && uncaptioned && brief.is_some_and(|b| b.music) {
-        return Some(format!("The selects are down. Look at them together (frame_at across the cut), cut them to the music's beat (klipp_beats){}", then()));
+        let beat = if trail.music_on_track { "" } else { ", cut them to the music's beat (klipp_beats)" };
+        return Some(format!("The selects are down. Look at them together (frame_at across the cut){beat}{}", then()));
     } else if selects && uncaptioned {
         return Some(format!("The selects are down. Look at them together (frame_at across the cut) and tighten each cut{}", then()));
     } else if selects {
