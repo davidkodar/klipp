@@ -1882,8 +1882,10 @@ fn audio_spectrum_does_not_judge_music_by_the_dialogue_rules() {
 }
 
 /// #792: the mix metered over the timeline. A quiet tone with a loud
-/// half-second burst at 4 s: the steps around the burst stand out from
-/// the bed, the ones far from it do not.
+/// half-second burst at 4 s, written as float samples four times past
+/// full scale (#812 review): the steps around it stand out from the bed,
+/// read unclamped as the export's loudness pass reads them; the ones far
+/// from it do not.
 #[test]
 fn mix_loudness_finds_the_hit_over_the_bed() {
     let mut h = harness();
@@ -1891,10 +1893,9 @@ fn mix_loudness_finds_the_hit_over_the_bed() {
     std::fs::create_dir_all(&dir).unwrap();
     let wav = dir.join("bed-and-hit.wav");
     let made = std::process::Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
-               "-f", "lavfi", "-i", "anoisesrc=d=8:c=pink:a=0.9",
-               "-filter_complex", "[0]volume=0.03[a];[1]volume=enable='between(t,4,4.5)':volume=1,volume=enable='not(between(t,4,4.5))':volume=0[b];[a][b]amix=inputs=2:normalize=0",
-               "-ar", "48000", "-ac", "2"])
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+               "-i", "aevalsrc=exprs='if(between(t,4,4.5),3*sin(2*PI*1000*t),0.03*sin(2*PI*440*t))':s=48000:d=8",
+               "-ac", "2", "-c:a", "pcm_f32le"])
         .arg(&wav)
         .status();
     if !made.is_ok_and(|s| s.success()) {
@@ -1924,5 +1925,9 @@ fn mix_loudness_finds_the_hit_over_the_bed() {
     assert!(stands_out(at(4.0)) || stands_out(at(4.5)), "the hit at 4 s: {}", r["text"]);
     assert!(!stands_out(at(1.0)) && !stands_out(at(7.0)), "the bed alone does not: {}", r["text"]);
     assert!(r["text"].as_str().unwrap().contains("stands out"), "{}", r["text"]);
+    // Past full scale, read unclamped: the burst meters +6.5 LUFS so, and
+    // +2.2 clamped, near-square at full scale; the line sits between.
+    let peak = [at(4.0), at(4.5)].iter().map(|s| s["momentary_max_lufs"].as_f64().unwrap()).fold(f64::MIN, f64::max);
+    assert!(peak > 4.5, "the burst is metered over full scale, not clamped: {peak:.1} LUFS (+6.5 unclamped, +2.2 clamped)");
     std::fs::remove_dir_all(&dir).ok();
 }

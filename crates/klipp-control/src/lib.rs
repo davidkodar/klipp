@@ -2526,7 +2526,10 @@ fn mix_loudness(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, s
     let mut step_start = from;
     let mut peak = f32::MIN;
     for frame in first..last {
-        let audio = mix.get_frame_audio(frame);
+        // Unclamped, as the export's loudness pass meters it (R-3): a hit
+        // summed over music is where the mix runs past full scale, and a
+        // clamp would read the step that should stand out as quieter (#812).
+        let audio = mix.get_frame_audio_unclamped(frame);
         meter.process(&audio);
         let t = (frame + 1) as f64 / fps;
         if t <= from {
