@@ -358,6 +358,33 @@ fn revealed_segments(points: &[[f32; 2]], closed: bool, range: TrimRange) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// #67: the ready-made shapes paint as their names say: an ellipse
+    /// fills its middle but not its box's corners, a line only its stroke.
+    #[test]
+    fn ready_made_shapes_paint_their_outline() {
+        use klipp_core::vector_path::{ShapePreset, VectorPath};
+        let (w, h) = (100u32, 100u32);
+        let transform = ObjectTransform {
+            center: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+            size: klipp_timeline::TitlePosition { x: 0.8, y: 0.8 },
+            ..klipp_timeline::default_text_transform()
+        };
+        let alpha = |preset: ShapePreset, width: f32, x: usize, y: usize| {
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            let path = VectorPath::preset(preset, [1.0; 4], [1.0; 4], width);
+            paint(&mut buf, &path.pose, &transform, w, h, None, None);
+            buf[(y * w as usize + x) * 4 + 3]
+        };
+        // The box runs from 10 to 90.
+        assert!(alpha(ShapePreset::Ellipse, 0.0, 50, 50) > 200, "the middle is filled");
+        assert_eq!(alpha(ShapePreset::Ellipse, 0.0, 14, 14), 0, "the box's corner is outside the ellipse");
+        assert!(alpha(ShapePreset::Star { points: 5, inner: 0.45 }, 0.0, 50, 50) > 200);
+        assert_eq!(alpha(ShapePreset::Triangle, 0.0, 14, 14), 0, "a triangle's top corners are empty");
+        assert!(alpha(ShapePreset::Triangle, 0.0, 50, 85) > 200, "its base is filled");
+        assert!(alpha(ShapePreset::Line, 20.0, 50, 50) > 200, "a line draws its stroke");
+        assert_eq!(alpha(ShapePreset::Line, 20.0, 50, 25), 0, "and nothing else");
+    }
+
     #[test]
     fn scanline_capsules_match_distance_coverage_including_a_dot() {
         for points in [

@@ -3487,7 +3487,7 @@ fn show_title_layers_panel(
         ui.spacing_mut().item_spacing.x = gap;
         for (kind, label, hover) in [
             (0u8, "\u{002B} Text", "Add a text layer"),
-            (1u8, "\u{002B} Shape", "Add a shape layer (rectangle)"),
+            (1u8, "\u{002B} Shape", "Add a shape layer: a rectangle, ellipse, triangle, hexagon, star, arrow or line"),
             (2u8, "\u{002B} Image", "Add an image layer: a logo, a bug, a still"),
         ] {
             let (rect, resp) = ui.allocate_exact_size(
@@ -3513,7 +3513,21 @@ fn show_title_layers_panel(
                 egui::FontId::proportional(11.0),
                 label_color,
             );
-            if resp.clicked() {
+            if kind == 1 {
+                // The shape is chosen from a menu under the button (#67).
+                let popup_id = ui.make_persistent_id(("title_shape_menu", clip_id));
+                if resp.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(popup_id));
+                }
+                egui::popup::popup_below_widget(ui, popup_id, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                    ui.set_min_width(140.0);
+                    for (shape_kind, name) in TITLE_SHAPES {
+                        if ui.button(*name).clicked() {
+                            cmds.push(AppCommand::AddTitleObject { clip_id, kind: *shape_kind });
+                        }
+                    }
+                });
+            } else if resp.clicked() {
                 if kind == 2 {
                     crate::file_dialog::spawn(move || {
                         pick_image_file()
@@ -3912,6 +3926,26 @@ fn pill_toggle_icon_button(
         ui.add(icon.image(icon_size).tint(tint));
     });
     resp
+}
+
+/// The shapes the title tab's Shape button offers, by the `kind` its
+/// `AddTitleObject` carries: 1 the rectangle, the rest ready-made paths
+/// (#67).
+const TITLE_SHAPES: &[(u8, &str)] = &[(1, "Rectangle"), (3, "Ellipse"), (4, "Triangle"), (5, "Hexagon"), (6, "Star"), (7, "Arrow"), (8, "Line")];
+
+/// The ready-made path for a shape `kind` from [`TITLE_SHAPES`], or
+/// `None` for the rectangle and the other layer kinds.
+pub(crate) fn title_shape_preset(kind: u8) -> Option<klipp_timeline::ShapePreset> {
+    use klipp_timeline::ShapePreset;
+    Some(match kind {
+        3 => ShapePreset::Ellipse,
+        4 => ShapePreset::Triangle,
+        5 => ShapePreset::Polygon { sides: 6 },
+        6 => ShapePreset::Star { points: 5, inner: 0.45 },
+        7 => ShapePreset::Arrow,
+        8 => ShapePreset::Line,
+        _ => return None,
+    })
 }
 
 /// Paint a dashed rectangle outline. egui's `Stroke` only supports

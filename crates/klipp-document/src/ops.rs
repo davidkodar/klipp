@@ -193,8 +193,31 @@ pub enum Edge {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
-    /// Add or replace an editable path layer on an existing title clip.
-    VectorPath { clip_id: ClipRef, #[serde(default)] object_id: Option<u32>, path: klipp_timeline::VectorPath },
+    /// Add or replace an editable path layer on an existing title clip:
+    /// a `path` of its own, or a ready-made `shape` (#67) painted `color`
+    /// with `stroke_width`, its box at `x`,`y` (centre) and `w`,`h`
+    /// (fractions of the frame).
+    VectorPath {
+        clip_id: ClipRef,
+        #[serde(default)]
+        object_id: Option<u32>,
+        #[serde(default)]
+        path: Option<klipp_timeline::VectorPath>,
+        #[serde(default)]
+        shape: Option<klipp_timeline::ShapePreset>,
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        stroke_width: Option<f32>,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+        #[serde(default)]
+        w: Option<f32>,
+        #[serde(default)]
+        h: Option<f32>,
+    },
     /// A media item onto a track at an anchor, the whole file unless
     /// `source_in` and `source_out` (seconds in the file) say otherwise.
     /// For still images these name the hold range: the import duration
@@ -2055,20 +2078,67 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
             pan(seq, pool, i, ti, clip, &keys, "follow")
         }
-        Op::VectorPath { clip_id, object_id, path } => {
+        Op::VectorPath { clip_id, object_id, path, shape, color, stroke_width, x, y, w, h } => {
+            let path = match (path, shape) {
+                (Some(path), None) => path.clone(),
+                (None, Some(shape)) => {
+                    let paint = match color.as_deref() {
+                        Some(c) => parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write it as #rrggbb or #rrggbbaa"))?,
+                        None => [235, 235, 242, 255],
+                    };
+                    let paint = paint.map(|c| f32::from(c) / 255.0);
+                    let width = stroke_width.unwrap_or(if *shape == klipp_timeline::ShapePreset::Line { 6.0 } else { 0.0 });
+                    if !width.is_finite() || !(0.0..=100.0).contains(&width) {
+                        return Err(refuse(i, format!("stroke_width {width} is out of range"), "give a stroke width 0 to 100"));
+                    }
+                    // A line has no fill: without a stroke it draws nothing.
+                    if *shape == klipp_timeline::ShapePreset::Line && width <= 0.0 {
+                        return Err(refuse(i, "a line with no stroke draws nothing", "give the line a stroke_width above 0"));
+                    }
+                    klipp_timeline::VectorPath::preset(*shape, paint, paint, width)
+                }
+                _ => return Err(refuse(i, "a path layer needs a path or a shape, not both or neither", "give path (your own contours) or shape (ellipse, triangle, {\"polygon\":{\"sides\":6}}, {\"star\":{\"points\":5,\"inner\":0.45}}, arrow or line)")),
+            };
+            for (name, v) in [("x", x), ("y", y), ("w", w), ("h", h)] {
+                if let Some(v) = v {
+                    // A box of no width or height draws nothing.
+                    let zero_ok = matches!(name, "x" | "y");
+                    if !v.is_finite() || *v > 1.0 || *v < 0.0 || (!zero_ok && *v <= 0.0) {
+                        return Err(refuse(i, format!("{name} {v} is out of range"), "x and y are fractions of the frame from 0 to 1, w and h above 0 and up to 1"));
+                    }
+                }
+            }
             path.validate().map_err(|e|refuse(i,e,"use matching normalized cubic contours and sorted morph keys"))?;
             let (ti,_,clip)=resolve_clip(seq,fps,clip_id,i)?;
             if seq.tracks[ti].locked { return Err(refuse(i,"track is locked","unlock the title track")); }
             let old=clip.title_data().ok_or_else(||refuse(i,"vector_path needs a title clip","create a title first"))?;
             let mut new=old.clone();
-            let content=klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {kind:klipp_timeline::ShapeKind::Path(path.clone()),fill:None,stroke:None,fit:None});
+            let content=klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {kind:klipp_timeline::ShapeKind::Path(path),fill:None,stroke:None,fit:None});
+            // A shape's box: where it was asked for; a new ready-made shape
+            // is as wide as it is tall on screen, a line long and thin.
+            let tall = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
+            let place = |t: &mut klipp_timeline::ObjectTransform| {
+                if let Some(x) = x { t.center.x = *x; }
+                if let Some(y) = y { t.center.y = *y; }
+                if let Some(w) = w { t.size.x = *w; }
+                if let Some(h) = h { t.size.y = *h; }
+            };
             if let Some(id)=object_id {
                 let object=new.object_mut(klipp_timeline::TitleObjectId(*id)).ok_or_else(||refuse(i,"path object not found","use a title layer id"))?;
                 if object.locked {return Err(refuse(i,"path object is locked","unlock it before editing"));}
                 if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {return Err(refuse(i,"object is not a shape","add a new path or name a shape layer"));}
                 object.content=content;
+                place(&mut object.transform);
             } else {
-                new.add_object(content,klipp_timeline::ObjectTransform {center:klipp_timeline::TitlePosition{x:0.5,y:0.5},size:klipp_timeline::TitlePosition{x:1.0,y:1.0},..klipp_timeline::default_text_transform()});
+                let size = match shape {
+                    None => klipp_timeline::TitlePosition{x:1.0,y:1.0},
+                    Some(klipp_timeline::ShapePreset::Line) => klipp_timeline::TitlePosition{x:0.4,y:0.02},
+                    Some(klipp_timeline::ShapePreset::Arrow) => klipp_timeline::TitlePosition{x:0.6*tall,y:0.3},
+                    Some(_) => klipp_timeline::TitlePosition{x:0.3*tall,y:0.3},
+                };
+                let mut t = klipp_timeline::ObjectTransform {center:klipp_timeline::TitlePosition{x:0.5,y:0.5},size,..klipp_timeline::default_text_transform()};
+                place(&mut t);
+                new.add_object(content,t);
             }
             Ok(("Edit vector path geometry and paint".into(),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
         }

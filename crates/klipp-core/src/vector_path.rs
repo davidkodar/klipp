@@ -80,6 +80,94 @@ impl Default for VectorPath {
         }
     }
 }
+
+/// A ready-made shape for a title's shape layer (#67): drawn as a path
+/// filling the layer's box, so it rotates, scales, strokes and morphs as
+/// any path does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapePreset {
+    Ellipse,
+    Triangle,
+    /// A regular polygon of `sides` (3 to 64), a point at the top.
+    Polygon { sides: u32 },
+    /// A star of `points` (3 to 64); `inner` is the inner radius as a
+    /// fraction of the outer (0.1 to 0.95).
+    Star { points: u32, inner: f32 },
+    /// An arrow pointing right, the shaft a third of the box's height.
+    Arrow,
+    /// A straight line across the middle of the box: stroke only.
+    Line,
+}
+
+/// A corner: both handles on the point.
+fn corner(x: f32, y: f32) -> PathVertex {
+    PathVertex { point: [x, y], incoming: [x, y], outgoing: [x, y] }
+}
+
+/// Points round the box's centre, the first at the top, clockwise on
+/// screen: `radius(k)` is point `k`'s distance as a fraction of the half box.
+fn ring(n: usize, radius: impl Fn(usize) -> f32) -> Vec<PathVertex> {
+    (0..n)
+        .map(|k| {
+            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * k as f32 / n as f32;
+            let r = radius(k) * 0.5;
+            corner(0.5 + r * a.cos(), 0.5 + r * a.sin())
+        })
+        .collect()
+}
+
+impl VectorPath {
+    /// `preset` as a path in a layer's box, painted with `fill` and
+    /// `stroke` (straight RGBA 0..1) at `stroke_width` pixels of 1080.
+    /// A line has no fill.
+    pub fn preset(preset: ShapePreset, fill: [f32; 4], stroke: [f32; 4], stroke_width: f32) -> Self {
+        // A circle from four cubic arcs: each handle this far along the
+        // tangent, as a fraction of the radius.
+        const KAPPA: f32 = 0.552_284_8;
+        let (closed, vertices) = match preset {
+            ShapePreset::Ellipse => {
+                let h = 0.5 * KAPPA;
+                let v = |p: [f32; 2], inc: [f32; 2], out: [f32; 2]| PathVertex { point: p, incoming: inc, outgoing: out };
+                (
+                    true,
+                    vec![
+                        v([0.5, 0.0], [0.5 - h, 0.0], [0.5 + h, 0.0]),
+                        v([1.0, 0.5], [1.0, 0.5 - h], [1.0, 0.5 + h]),
+                        v([0.5, 1.0], [0.5 + h, 1.0], [0.5 - h, 1.0]),
+                        v([0.0, 0.5], [0.0, 0.5 + h], [0.0, 0.5 - h]),
+                    ],
+                )
+            }
+            ShapePreset::Triangle => (true, vec![corner(0.5, 0.0), corner(1.0, 1.0), corner(0.0, 1.0)]),
+            ShapePreset::Polygon { sides } => (true, ring(sides.clamp(3, 64) as usize, |_| 1.0)),
+            ShapePreset::Star { points, inner } => {
+                let inner = if inner.is_finite() { inner.clamp(0.1, 0.95) } else { 0.45 };
+                (true, ring(2 * points.clamp(3, 64) as usize, |k| if k % 2 == 0 { 1.0 } else { inner }))
+            }
+            ShapePreset::Arrow => (
+                true,
+                vec![
+                    corner(0.0, 0.333),
+                    corner(0.6, 0.333),
+                    corner(0.6, 0.0),
+                    corner(1.0, 0.5),
+                    corner(0.6, 1.0),
+                    corner(0.6, 0.667),
+                    corner(0.0, 0.667),
+                ],
+            ),
+            ShapePreset::Line => (false, vec![corner(0.0, 0.5), corner(1.0, 0.5)]),
+        };
+        let fill = if preset == ShapePreset::Line { [0.0; 4] } else { fill };
+        Self {
+            trim: None,
+            pose: PathPose { stroke_glow: None, contours: vec![PathContour { closed, vertices }], fill, stroke, stroke_width },
+            keyframes: Vec::new(),
+        }
+    }
+}
+
 impl VectorPath {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(t) = &self.trim {
@@ -357,6 +445,40 @@ impl PathTrim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #67: every ready-made shape is a valid path inside its box, a
+    /// closed outline except the line, with the vertex count it promises.
+    #[test]
+    fn presets_are_valid_paths_in_their_box() {
+        use super::ShapePreset::*;
+        for (preset, count, closed) in [
+            (Ellipse, 4, true),
+            (Triangle, 3, true),
+            (Polygon { sides: 6 }, 6, true),
+            (Polygon { sides: 1 }, 3, true),
+            (Star { points: 5, inner: 0.4 }, 10, true),
+            (Arrow, 7, true),
+            (Line, 2, false),
+        ] {
+            let p = VectorPath::preset(preset, [1.0; 4], [0.0, 0.0, 0.0, 1.0], 2.0);
+            p.validate().unwrap_or_else(|e| panic!("{preset:?}: {e}"));
+            let c = &p.pose.contours[0];
+            assert_eq!((c.vertices.len(), c.closed), (count, closed), "{preset:?}");
+            for v in &c.vertices {
+                for xy in [v.point, v.incoming, v.outgoing] {
+                    assert!(xy.iter().all(|c| (-1e-4..=1.0 + 1e-4).contains(c)), "{preset:?} leaves its box at {xy:?}");
+                }
+            }
+        }
+        assert_eq!(VectorPath::preset(Line, [1.0; 4], [1.0; 4], 2.0).pose.fill[3], 0.0, "a line is not filled");
+        // A star alternates between the outer and the inner radius.
+        let star = VectorPath::preset(Star { points: 5, inner: 0.4 }, [1.0; 4], [1.0; 4], 0.0);
+        let r = |v: &PathVertex| ((v.point[0] - 0.5).powi(2) + (v.point[1] - 0.5).powi(2)).sqrt();
+        let v = &star.pose.contours[0].vertices;
+        assert!((r(&v[0]) - 0.5).abs() < 1e-5 && (r(&v[1]) - 0.2).abs() < 1e-5);
+        assert!(v[0].point[1].abs() < 1e-6, "its first point is at the top");
+    }
+
     #[test]
     fn static_glow_and_keyed_glow_do_not_require_trim() {
         let mut p = VectorPath::default();
