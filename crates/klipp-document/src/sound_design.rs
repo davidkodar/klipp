@@ -42,7 +42,7 @@ impl SfxOn {
 /// A transition that marks time or place quietly: no whoosh on it.
 fn is_calm(kind: klipp_core::TransitionKind) -> bool {
     use klipp_core::TransitionKind as K;
-    matches!(kind, K::CrossDissolve | K::FilmDissolve | K::LuminanceDissolve | K::AdditiveDissolve | K::DipToBlack | K::DipToWhite | K::FadeToColor)
+    matches!(kind, K::CrossDissolve | K::FilmDissolve | K::BlurDissolve | K::LuminanceDissolve | K::AdditiveDissolve | K::DipToBlack | K::DipToWhite | K::FadeToColor)
 }
 
 /// One placement the pass decided on.
@@ -97,7 +97,10 @@ fn placements_with_lengths(
     let mut out = Vec::new();
     // The cuts: a boundary that is not the same file carrying on.
     let clips: Vec<_> = video.clips.iter().filter(|c| c.enabled).collect();
+    // Every cut (the riser and the clicks read these), and those `on`
+    // asks a whoosh for (#810 review).
     let mut cuts: Vec<f64> = Vec::new();
+    let mut whoosh_cuts: Vec<f64> = Vec::new();
     for w in clips.windows(2) {
         let (a, b) = (w[0], w[1]);
         let adjacent = (b.timeline_in.to_secs_f64() - a.timeline_out.to_secs_f64()).abs() < 0.02;
@@ -108,13 +111,16 @@ fn placements_with_lengths(
             SfxOn::Transitions => transition.is_some(),
             SfxOn::Stylised => transition.is_some_and(|k| !is_calm(k)),
         };
-        if adjacent && !carries_on && wanted {
+        if adjacent && !carries_on {
             cuts.push(b.timeline_in.to_secs_f64());
+            if wanted {
+                whoosh_cuts.push(b.timeline_in.to_secs_f64());
+            }
         }
     }
     if let Some(id) = kit.whoosh {
         let len = file_len(id);
-        for cut in &cuts {
+        for cut in &whoosh_cuts {
             let loud = loudest_of(id).unwrap_or(0.3).min(len);
             let lead = loud.min(0.3);
             let source_in = (loud - lead).max(0.0);
@@ -286,6 +292,13 @@ mod tests {
         assert_eq!(at(SfxOn::Cuts), vec![3.0, 6.0, 9.0, 12.0]);
         assert_eq!(at(SfxOn::Transitions), vec![6.0, 9.0, 12.0]);
         assert_eq!(at(SfxOn::Stylised), vec![9.0, 12.0], "no whoosh on the dissolve");
+        // The riser rises into the film's last cut whatever on says: a
+        // bare cut after the last stylised one is still the last (#810 review).
+        let mut bare_last = seq.clone();
+        bare_last.tracks[0].transitions.retain(|t| t.kind != klipp_core::TransitionKind::WhipPan);
+        let riser = placements(&bare_last, &pool, SfxKit { riser: Some(whoosh), on: SfxOn::Stylised, ..Default::default() }, &|_| Vec::new(), &|_| Some(1.0));
+        assert_eq!(riser.len(), 1);
+        assert!((riser[0].at_secs + 1.0 - 12.0).abs() < 1e-6, "the riser ends on the last cut at 12 s: {:?}", riser[0]);
         assert!(SfxOn::parse("whips").is_err());
     }
 
