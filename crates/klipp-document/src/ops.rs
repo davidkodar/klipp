@@ -5288,11 +5288,42 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
     let src_in = snap(s_in, fps);
     let mut edits = Vec::new();
     let mut ids = vec![clip.id];
+    // A tracked surface of this clip that another clip is pinned to goes
+    // with the old footage: the pin would follow nothing (#814 review).
+    let pinned: Vec<&Clip> = seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.surface_pin.as_ref().is_some_and(|p| p.host == clip.id)).collect();
+    if let Some(p) = pinned.first() {
+        return Err(refuse(
+            i,
+            format!("{} is pinned to a surface tracked in this clip, which the new footage does not have", clip_name(seq, pool, p)),
+            "remove the pinned clip first, or replace it and track the surface again",
+        ));
+    }
+    // What was measured on the old footage, and its turn, describe that
+    // picture, not this one (#814 review): the new file's rotation is
+    // taken, and the measurements are cleared and said.
+    let mut cleared: Vec<&str> = Vec::new();
+    if clip.stabilization_data.is_some() || clip.smoothed_trajectory.is_some() {
+        cleared.push("its stabilisation");
+    }
+    if clip.deflicker_data.is_some() || clip.deflicker_gains.is_some() {
+        cleared.push("its deflicker");
+    }
+    if !clip.track_points.is_empty() || !clip.surfaces.is_empty() {
+        cleared.push("its tracking");
+    }
+    let rotation = item.source_rotation;
     let swap = |c: &Clip, from: Timecode| {
         let mut new = c.clone();
         new.kind = ClipKind::Media { media_id };
         new.source_out = from + (c.source_out - c.source_in);
         new.source_in = from;
+        new.source_rotation = rotation;
+        new.stabilization_data = None;
+        new.smoothed_trajectory = None;
+        new.deflicker_data = None;
+        new.deflicker_gains = None;
+        new.track_points.clear();
+        new.surfaces.clear();
         EditCommand::ReplaceClip { description: "Replace Media", old: Box::new(c.clone()), new: Box::new(new) }
     };
     edits.push(swap(clip, src_in));
@@ -5310,7 +5341,7 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
         ids.push(p.id);
     }
     let what = format!(
-        "replace {} with {} ({:.2}-{:.2} s of the file) in its place at {:.2}-{:.2} s, its grade, effects and settings kept{}",
+        "replace {} with {} ({:.2}-{:.2} s of the file) in its place at {:.2}-{:.2} s, its grade, effects and settings kept{}{}",
         clip_name(seq, pool, clip),
         item.filename,
         secs(src_in),
@@ -5318,6 +5349,7 @@ fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Cl
         secs(clip.timeline_in),
         secs(clip.timeline_out),
         if ids.len() > 1 { ", its linked sound with it" } else { "" },
+        if cleared.is_empty() { String::new() } else { format!("; {} cleared, measured on the old footage: run it again", cleared.join(", ")) },
     );
     let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
     Ok((what, edit, ids))
@@ -6944,6 +6976,25 @@ mod tests {
         assert!(past.why.contains("runs past its end") && past.hint.contains("2.00 s"), "{} / {}", past.why, past.hint);
         let silent = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: mute, source_in: None }]).unwrap_err();
         assert!(silent.why.contains("no sound"), "{}", silent.why);
+
+        // #814 review: a turned file is turned as its own; a surface
+        // tracked in the old footage is cleared and said; a clip pinned
+        // to it refuses the swap, the pin would follow nothing.
+        pool.get_mut(&other).unwrap().source_rotation = 90;
+        let surface: klipp_timeline::Surface = serde_json::from_value(serde_json::json!({
+            "id": klipp_core::ClipId::new().0, "name": "screen", "corners": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], "reference_secs": 4.5
+        })).unwrap();
+        let sid = surface.id;
+        seq.tracks[0].clips[1].surfaces.push(surface);
+        let plan = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: other, source_in: None }]).unwrap();
+        assert!(plan.steps[0].what.contains("its tracking cleared"), "{}", plan.steps[0].what);
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
+        let EditCommand::ReplaceClip { new, .. } = &edits[0] else { panic!("{:?}", edits[0]) };
+        assert_eq!((new.source_rotation, new.surfaces.len()), (90, 0), "the new file's turn, the old surface gone");
+        let pin: klipp_timeline::SurfacePin = serde_json::from_value(serde_json::json!({ "host": b, "surface": sid })).unwrap();
+        seq.tracks[0].clips[0].surface_pin = Some(pin);
+        let pinned = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: other, source_in: None }]).unwrap_err();
+        assert!(pinned.why.contains("pinned to a surface"), "{}", pinned.why);
     }
 
     /// #506: shots placed one after another at a bar's length each stay
