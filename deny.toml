@@ -30,12 +30,30 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # treat as warn so they surface in CI logs without failing the build
 # when the only fix is upstream.
 yanked = "warn"
-# A handful of unmaintained / soundness advisories inherited from
-# transitive deps we can't bump without an upstream egui/winit/eframe
-# release. Add specific RUSTSEC-XXXX-NNNN ids here as they surface;
-# blanket "ignore" is intentionally empty so new advisories DO break
-# the build.
-ignore = []
+# Advisories that cannot reach Klipp, or have no fix yet, each with why
+# (#825). Everything else is fixed by updating; a new advisory still
+# fails the check until it is fixed or added here with a reason.
+ignore = [
+  # quick-xml 0.30 (accesskit's D-Bus layer) and 0.39 (the Wayland
+  # protocol scanner, at build time): both parse trusted local XML, the
+  # bus's introspection data and the protocol files, never a user's or
+  # the network's. The fix (0.41) needs accesskit, zbus and winit to move.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml parses only trusted local XML (D-Bus introspection, Wayland protocol files); fix waits on accesskit/zbus/winit" },
+  { id = "RUSTSEC-2026-0195", reason = "as RUSTSEC-2026-0194" },
+  # ringbuf: the double free needs an element whose Drop panics. Klipp's
+  # engine buffers f32 samples and livi's LV2 worker plain bytes; neither
+  # has a Drop at all. The fix (0.5) changes ringbuf's API.
+  { id = "RUSTSEC-2026-0293", reason = "ring buffers hold f32 (klipp-engine) and u8 (livi); no Drop can panic; fix is the 0.5 API" },
+  # tract-nnef, under tract-onnx for the voice isolation effect: the
+  # overflow is in the NNEF parser. Klipp loads ONNX models, fetched by
+  # hash from its model manifest, never NNEF. The fix needs tract 0.21+.
+  { id = "RUSTSEC-2026-0217", reason = "only hash-verified ONNX models are loaded, never NNEF; fix needs tract 0.21+" },
+  # Unmaintained, with no maintained release to move to yet.
+  { id = "RUSTSEC-2026-0319", reason = "anymap2, unmaintained, via egui; no replacement upstream yet" },
+  { id = "RUSTSEC-2024-0384", reason = "instant, unmaintained, transitive; no fix" },
+  { id = "RUSTSEC-2024-0436", reason = "paste, unmaintained, transitive; no fix" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser, unmaintained, via font crates; no fix" },
+]
 
 # ─── Licenses ───────────────────────────────────────────────────────
 [licenses]
