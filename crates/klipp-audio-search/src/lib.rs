@@ -387,13 +387,24 @@ pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::
     let base = format!("{}-{}-{}", safe_name(&track.artist), safe_name(&track.title), track.id);
     let audio_path = dest_dir.join(format!("{base}.mp3"));
     let resp = ureq::get(url).timeout(std::time::Duration::from_secs(45)).call().map_err(|e| format!("download failed: {e}"))?;
-    let mut reader = resp.into_reader();
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut reader, &mut bytes).map_err(|e| format!("reading audio: {e}"))?;
-    if bytes.len() < 1024 {
-        return Err(format!("\"{}\" downloaded empty", track.title));
+    refuse_announced_size(&resp, MAX_TRACK_BYTES)?;
+    // Streamed to a file beside it, capped, and moved into place whole:
+    // never held in memory, and never a half track under the real name.
+    let part = audio_path.with_extension("mp3.part");
+    let written = std::fs::File::create(&part)
+        .map_err(|e| format!("writing {}: {e}", part.display()))
+        .and_then(|file| {
+            let mut out = std::io::BufWriter::new(file);
+            let n = copy_capped(resp.into_reader(), &mut out, MAX_TRACK_BYTES).map_err(|e| format!("reading audio: {e}"))?;
+            std::io::Write::flush(&mut out).map_err(|e| format!("writing {}: {e}", part.display()))?;
+            Ok(n)
+        })
+        .and_then(|n| if n < 1024 { Err(format!("\"{}\" downloaded empty", track.title)) } else { Ok(n) });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
     }
-    std::fs::write(&audio_path, &bytes).map_err(|e| format!("writing {}: {e}", audio_path.display()))?;
+    std::fs::rename(&part, &audio_path).map_err(|e| format!("writing {}: {e}", audio_path.display()))?;
     // The credit line, kept next to the file for export attribution.
     let credit = format!("{}
 Licence: {} ({})
@@ -424,10 +435,36 @@ pub fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
         return Err("nothing to preview".into());
     }
     let resp = ureq::get(url).timeout(std::time::Duration::from_secs(30)).call().map_err(|e| format!("preview download failed: {e}"))?;
-    let mut reader = resp.into_reader();
+    refuse_announced_size(&resp, MAX_PREVIEW_BYTES)?;
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut reader, &mut bytes).map_err(|e| format!("reading preview: {e}"))?;
+    copy_capped(resp.into_reader(), &mut bytes, MAX_PREVIEW_BYTES).map_err(|e| format!("reading preview: {e}"))?;
     Ok(bytes)
+}
+
+/// The largest track downloaded (#824): an hour at 320 kb/s is about
+/// 144 MB. The timeouts bound how long a download takes, not its size.
+pub const MAX_TRACK_BYTES: u64 = 256 * 1024 * 1024;
+/// The largest preview held in memory: previews are short, low-rate
+/// streams of a few megabytes.
+pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Refuses a response that announces more than `limit` bytes, before any
+/// of it is read. A response that announces nothing is capped while read.
+fn refuse_announced_size(resp: &ureq::Response, limit: u64) -> Result<(), String> {
+    match resp.header("Content-Length").and_then(|n| n.trim().parse::<u64>().ok()) {
+        Some(n) if n > limit => Err(format!("the server offers {} MiB, more than the {} MiB allowed", n / (1024 * 1024), limit / (1024 * 1024))),
+        _ => Ok(()),
+    }
+}
+
+/// Copies `from` into `to`, failing once more than `limit` bytes arrive.
+/// Returns the bytes copied.
+fn copy_capped(from: impl std::io::Read, to: &mut impl std::io::Write, limit: u64) -> std::io::Result<u64> {
+    let n = std::io::copy(&mut from.take(limit + 1), to)?;
+    if n > limit {
+        return Err(std::io::Error::other(format!("more than the {} MiB allowed", limit / (1024 * 1024))));
+    }
+    Ok(n)
 }
 
 /// A one-clip audio previewer, held per-thread so its (non-Send) audio
@@ -539,6 +576,19 @@ pub fn download_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// #824: a download stops at its limit instead of reading on, however
+    /// much the server sends.
+    #[test]
+    fn a_download_past_its_limit_is_refused() {
+        let mut out = Vec::new();
+        assert_eq!(super::copy_capped(&[7u8; 100][..], &mut out, 100).unwrap(), 100);
+        assert_eq!(out.len(), 100);
+        let mut out = Vec::new();
+        let err = super::copy_capped(std::io::repeat(7), &mut out, 4096).unwrap_err();
+        assert!(err.to_string().contains("allowed"), "{err}");
+        assert!(out.len() <= 4097, "read {} bytes past a 4096-byte limit", out.len());
+    }
+
     /// #797: the credit beside a download says which library it came
     /// from; a file without one is no library's.
     #[test]
