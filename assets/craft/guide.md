@@ -343,7 +343,7 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, shadow?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given. `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -357,6 +357,12 @@ exist until the plan runs.
   (0.6), and opacity 0 takes it off. Bright text over a bright sky or
   sand wants the shadow; a dark glow barely shows. Lift the captions with it for as long as
   a lower third is up, so the two do not share the bottom of the frame.
+  Everything else `title` takes for a look or a motion restyles in place
+  too, the title keeping its id: never remove a title and make it again
+  to change its glow, gradient or entrance. `glow`, `glitch` and
+  `chromatic` 0 take them off; `outline_color` or `glow_color` alone
+  recolours (or adds) one; the motion is fitted to each title's length;
+  `loop: "none"` stops a loop.
 - `lower_third {name, role?, at, secs?, track?, side?, x?, y?}`: a name
   and a role bottom left in title-safe, four seconds unless you say
   otherwise, fading in and out, on a text track with room (one is made
