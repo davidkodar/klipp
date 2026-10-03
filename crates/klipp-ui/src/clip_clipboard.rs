@@ -1,0 +1,322 @@
+//! Cut, Copy, Paste and Duplicate of a selection (#845): every selected
+//! clip with its linked partner and the transitions between them, kept
+//! on their tracks at their offsets, pasted over what is there or
+//! inserted with every track cut and moved along, into this sequence or
+//! another, undone in one step that gives back what the paste covered.
+
+use klipp_core::{ClipId, Timecode};
+use klipp_document::history::{EditCommand, TrackContents};
+use klipp_timeline::{Clip, ClipKind, Sequence, TrackKind, Transition};
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+/// One copied clip and where it came from.
+#[derive(Debug, Clone)]
+pub struct CopiedClip {
+    pub clip: Clip,
+    /// Its track's index, and the kind of track, for a sequence whose
+    /// tracks are not the same.
+    pub track: usize,
+    pub kind: TrackKind,
+}
+
+/// What Cut and Copy put on the clipboard.
+#[derive(Debug, Clone, Default)]
+pub struct ClipboardContent {
+    /// In timeline order, then track order.
+    pub clips: Vec<CopiedClip>,
+    /// Transitions whose two clips were both copied, with their track.
+    pub transitions: Vec<(Transition, usize)>,
+}
+
+impl ClipboardContent {
+    /// From the earliest start to the latest end.
+    pub fn span(&self) -> Timecode {
+        let start = self.clips.iter().map(|c| c.clip.timeline_in).min();
+        let end = self.clips.iter().map(|c| c.clip.timeline_out).max();
+        match (start, end) {
+            (Some(s), Some(e)) => e - s,
+            _ => Timecode::zero(),
+        }
+    }
+}
+
+/// The clips `ids` with their linked partners and the transitions between
+/// them; `None` when none of them is on the timeline. Gaps are left out.
+pub fn copy(seq: &Sequence, ids: &[ClipId]) -> Option<ClipboardContent> {
+    let mut wanted: HashSet<ClipId> = HashSet::new();
+    for &id in ids {
+        if let Some((ti, ci)) = seq.find_clip(id) {
+            let clip = &seq.tracks[ti].clips[ci];
+            wanted.insert(id);
+            if let Some(partner) = clip.linked_clip_id {
+                wanted.insert(partner);
+            }
+        }
+    }
+    let mut clips: Vec<CopiedClip> = Vec::new();
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        for clip in &track.clips {
+            if wanted.contains(&clip.id) && !matches!(clip.kind, ClipKind::Gap) {
+                clips.push(CopiedClip { clip: clip.clone(), track: ti, kind: track.kind });
+            }
+        }
+    }
+    if clips.is_empty() {
+        return None;
+    }
+    clips.sort_by_key(|c| (c.clip.timeline_in, c.track));
+    let copied: HashSet<ClipId> = clips.iter().map(|c| c.clip.id).collect();
+    let transitions = seq
+        .tracks
+        .iter()
+        .enumerate()
+        .flat_map(|(ti, t)| t.transitions.iter().map(move |tr| (tr, ti)))
+        .filter(|(tr, _)| copied.contains(&tr.clip_a_id) && copied.contains(&tr.clip_b_id))
+        .map(|(tr, ti)| (*tr, ti))
+        .collect();
+    Some(ClipboardContent { clips, transitions })
+}
+
+/// Whether a paste lays the clips over what is there, or cuts every
+/// unlocked track at the playhead and moves everything after it along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteMode {
+    Overwrite,
+    Insert,
+}
+
+/// What a paste made: the sequence after it, the tracks it changed, the
+/// new clips, and how many copied clips found no track to go on.
+pub struct Pasted {
+    pub sequence: Sequence,
+    pub touched: BTreeSet<usize>,
+    pub ids: Vec<ClipId>,
+    pub skipped: usize,
+}
+
+/// The track a copied clip goes on in `seq`: its own, when it is still a
+/// track of its kind and unlocked; else the first unlocked track of its
+/// kind; else none.
+fn target_track(seq: &Sequence, copied: &CopiedClip) -> Option<usize> {
+    let usable = |ti: usize| seq.tracks.get(ti).is_some_and(|t| t.kind == copied.kind && !t.locked);
+    if usable(copied.track) {
+        return Some(copied.track);
+    }
+    (0..seq.tracks.len()).find(|&ti| usable(ti))
+}
+
+/// `cb` pasted into `seq` at `at`: new ids, each clip at its own offset
+/// from the first, a linked pair linked again and to nothing else, what
+/// belongs to the original alone left behind.
+pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMode) -> Pasted {
+    let mut out = seq.clone();
+    let mut touched = BTreeSet::new();
+    let first = cb.clips.iter().map(|c| c.clip.timeline_in).min().unwrap_or(at);
+    let new_ids: HashMap<ClipId, ClipId> = cb.clips.iter().map(|c| (c.clip.id, ClipId::new())).collect();
+    let targets: Vec<Option<usize>> = cb.clips.iter().map(|c| target_track(&out, c)).collect();
+    if mode == PasteMode::Insert {
+        // Room for the whole paste: a gap of its length inserted on the
+        // first track it goes to cuts every unlocked track at the
+        // playhead and moves what follows, as an insert edit does; the
+        // gap itself is then taken out again.
+        if let Some(ti) = targets.iter().flatten().next().copied() {
+            let span = cb.span();
+            if span > Timecode::zero() {
+                let gap = Clip::gap(at, at + span);
+                let gap_id = gap.id;
+                if out.insert_edit(ti, gap, at).is_some() {
+                    out.tracks[ti].remove_clip(gap_id);
+                    touched.extend(out.tracks.iter().enumerate().filter(|(_, t)| !t.locked).map(|(i, _)| i));
+                }
+            }
+        }
+    }
+    let mut ids = Vec::new();
+    let mut skipped = 0;
+    for (copied, target) in cb.clips.iter().zip(&targets) {
+        let Some(ti) = *target else {
+            skipped += 1;
+            continue;
+        };
+        let clip = &copied.clip;
+        let timeline_in = at + (clip.timeline_in - first);
+        let mut pasted = Clip {
+            id: new_ids[&clip.id],
+            timeline_in,
+            timeline_out: timeline_in + clip.duration(),
+            linked_clip_id: clip.linked_clip_id.and_then(|l| new_ids.get(&l).copied()),
+            linked_title_asset_id: None,
+            group_id: None,
+            magnetic_anchor: None,
+            transform_link: None,
+            deflicker_data: None,
+            deflicker_gains: None,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            track_points: Vec::new(),
+            // The keys are in file time: a pasted copy keeps the track,
+            // and a pinned copy pasted with its host follows the copy.
+            surfaces: clip.surfaces.clone(),
+            surface_pin: clip.surface_pin.map(|p| klipp_timeline::SurfacePin { host: new_ids.get(&p.host).copied().unwrap_or(p.host), ..p }),
+            precomp: None,
+            ..clip.clone()
+        };
+        // A grade group is the sequence's: in another sequence the clip
+        // is in none (#237).
+        if pasted.grade_group.is_some_and(|g| out.grade_group(g).is_none()) {
+            pasted.grade_group = None;
+        }
+        ids.push(pasted.id);
+        crate::app::KlippApp::overwrite_insert_clip_on_track(&mut out.tracks[ti], pasted);
+        touched.insert(ti);
+    }
+    // The transitions between pasted clips, on the track their clips went to.
+    for (tr, _) in &cb.transitions {
+        let (Some(&a), Some(&b)) = (new_ids.get(&tr.clip_a_id), new_ids.get(&tr.clip_b_id)) else { continue };
+        let Some(ti) = out.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == a) && t.clips.iter().any(|c| c.id == b)) else { continue };
+        out.tracks[ti].transitions.push(Transition { id: klipp_core::TransitionId::new(), clip_a_id: a, clip_b_id: b, ..*tr });
+    }
+    Pasted { sequence: out, touched, ids, skipped }
+}
+
+/// The undo records that take `before` to `after` on the `touched` tracks.
+pub fn track_edits(before: &Sequence, after: &Sequence, touched: &BTreeSet<usize>, description: &'static str) -> Vec<EditCommand> {
+    touched
+        .iter()
+        .filter_map(|&ti| {
+            let (old, new) = (before.tracks.get(ti)?, after.tracks.get(ti)?);
+            Some(EditCommand::SetTrackContents {
+                description,
+                track_index: ti,
+                old: Box::new(TrackContents::of(old)),
+                new: Box::new(TrackContents::of(new)),
+            })
+        })
+        .collect()
+}
+
+/// The clips a Cut, Copy or Duplicate of `clip` takes: the selection when
+/// `clip` is part of one of several clips, else `clip` alone.
+pub fn selection_for(clip: ClipId, primary: Option<ClipId>, selected: &[ClipId]) -> Vec<ClipId> {
+    let mut sel: Vec<ClipId> = Vec::new();
+    for id in selected.iter().copied().chain(primary) {
+        if !sel.contains(&id) {
+            sel.push(id);
+        }
+    }
+    if sel.len() > 1 && sel.contains(&clip) { sel } else { vec![clip] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Track, TransitionKind};
+
+    fn tc(s: f64) -> RationalTime {
+        RationalTime::from_secs_f64(s, 25)
+    }
+
+    fn clip(from: f64, to: f64) -> Clip {
+        Clip::media(MediaId::new(), tc(from), tc(to), tc(0.0), tc(to - from))
+    }
+
+    /// V1: a 0-2, b 2-4 with a transition between them, c 6-8. A1: the
+    /// sound of a, linked to it, 0-2; and d 4-6.
+    fn timeline() -> (Sequence, [ClipId; 5]) {
+        let mut seq = Sequence::new_default();
+        let (mut a, b, c) = (clip(0.0, 2.0), clip(2.0, 4.0), clip(6.0, 8.0));
+        let (mut sa, d) = (clip(0.0, 2.0), clip(4.0, 6.0));
+        a.linked_clip_id = Some(sa.id);
+        sa.linked_clip_id = Some(a.id);
+        let ids = [a.id, b.id, c.id, sa.id, d.id];
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.transitions = vec![Transition { id: klipp_core::TransitionId::new(), kind: TransitionKind::CrossDissolve, duration: tc(0.5), clip_a_id: a.id, clip_b_id: b.id, user_params: Default::default(), alignment: Default::default() }];
+        v1.clips = vec![a, b, c];
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips = vec![sa, d];
+        seq.tracks = vec![v1, a1];
+        (seq, ids)
+    }
+
+    #[test]
+    fn a_selection_is_copied_with_its_partners_and_its_transitions() {
+        let (seq, [a, b, _, sa, _]) = timeline();
+        let cb = copy(&seq, &[a, b]).unwrap();
+        let got: Vec<(ClipId, usize)> = cb.clips.iter().map(|c| (c.clip.id, c.track)).collect();
+        assert_eq!(got, vec![(a, 0), (sa, 1), (b, 0)], "a's sound comes with it, in time order");
+        assert_eq!(cb.transitions.len(), 1, "the dissolve between a and b");
+        assert_eq!(cb.span(), tc(4.0));
+        assert!(copy(&seq, &[ClipId::new()]).is_none());
+    }
+
+    #[test]
+    fn a_paste_keeps_its_layout_links_and_transitions_and_undoes_whole() {
+        let (seq, [a, b, c, ..]) = timeline();
+        let cb = copy(&seq, &[a, b]).unwrap();
+        // Over c and the empty space after it, at 6 s.
+        let p = paste(&seq, &cb, tc(6.0), PasteMode::Overwrite);
+        assert_eq!(p.ids.len(), 3);
+        assert_eq!(p.skipped, 0);
+        let v1 = &p.sequence.tracks[0];
+        assert!(v1.clips.iter().all(|x| x.id != c), "c was under the paste");
+        let pasted: Vec<&Clip> = p.ids.iter().filter_map(|id| p.sequence.all_clips().find(|x| x.id == *id)).collect();
+        let starts: Vec<f64> = pasted.iter().map(|x| x.timeline_in.to_secs_f64()).collect();
+        assert_eq!(starts, vec![6.0, 6.0, 8.0], "each at its own offset");
+        let (pa, psa) = (pasted[0], pasted[1]);
+        assert_eq!((pa.linked_clip_id, psa.linked_clip_id), (Some(psa.id), Some(pa.id)), "linked to each other, not to the originals");
+        assert_eq!(v1.transitions.len(), 2, "the dissolve came too");
+        // Undo gives c back.
+        let edits = track_edits(&seq, &p.sequence, &p.touched, "Paste");
+        let mut seqs = vec![p.sequence.clone()];
+        let mut pool = klipp_media::MediaPool::default();
+        let mut fps = seq.fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        for e in edits.iter().rev() {
+            view.apply_inverse(e);
+        }
+        assert!(view.sequences[0].tracks[0].clips.iter().any(|x| x.id == c), "c is back");
+        assert_eq!(view.sequences[0].all_clips().count(), seq.all_clips().count());
+    }
+
+    #[test]
+    fn a_paste_insert_moves_everything_after_the_playhead_along() {
+        let (seq, [a, b, c, _, d]) = timeline();
+        let cb = copy(&seq, &[b]).unwrap();
+        // Insert b's copy (2 s) at 6 s: c on V1 moves to 8 s; d on A1 ends
+        // at 6, so it stays.
+        let p = paste(&seq, &cb, tc(6.0), PasteMode::Insert);
+        let at = |id: ClipId| p.sequence.all_clips().find(|x| x.id == id).map(|x| x.timeline_in.to_secs_f64());
+        assert_eq!(at(c), Some(8.0));
+        assert_eq!(at(d), Some(4.0));
+        assert_eq!(at(a), Some(0.0));
+        assert_eq!(p.sequence.all_clips().filter(|x| matches!(x.kind, ClipKind::Gap)).count(), 0, "the room left no gap clip behind");
+        assert_eq!(at(p.ids[0]), Some(6.0));
+    }
+
+    #[test]
+    fn into_another_sequence_each_clip_finds_a_track_of_its_kind() {
+        let (seq, [a, ..]) = timeline();
+        let cb = copy(&seq, &[a]).unwrap();
+        // A sequence with its audio track first and its video second.
+        let mut other = Sequence::new_default();
+        other.tracks = vec![Track::new("A", TrackKind::Audio), Track::new("V", TrackKind::Video)];
+        let p = paste(&other, &cb, tc(0.0), PasteMode::Overwrite);
+        assert_eq!(p.skipped, 0);
+        let kind_of = |id: ClipId| p.sequence.tracks.iter().find(|t| t.clips.iter().any(|c| c.id == id)).map(|t| t.kind);
+        assert_eq!(kind_of(p.ids[0]), Some(TrackKind::Video));
+        assert_eq!(kind_of(p.ids[1]), Some(TrackKind::Audio));
+        // No audio track at all: the sound is skipped and counted.
+        let mut picture_only = Sequence::new_default();
+        picture_only.tracks = vec![Track::new("V", TrackKind::Video)];
+        assert_eq!(paste(&picture_only, &cb, tc(0.0), PasteMode::Overwrite).skipped, 1);
+    }
+
+    #[test]
+    fn the_selection_is_taken_only_when_the_clip_is_part_of_it() {
+        let (x, y, z) = (ClipId::new(), ClipId::new(), ClipId::new());
+        assert_eq!(selection_for(x, Some(x), &[x, y]), vec![x, y]);
+        assert_eq!(selection_for(z, Some(x), &[x, y]), vec![z]);
+        assert_eq!(selection_for(x, Some(x), &[]), vec![x]);
+    }
+}

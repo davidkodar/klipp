@@ -324,6 +324,9 @@ impl KeyBindings {
         bind(&mut b, "paste_color_nodes", vec![KeyCombo::ctrl("V")]);
         bind(&mut b, "copy_attributes", vec![KeyCombo::ctrl_shift("C")]);
         bind(&mut b, "paste_attributes", vec![KeyCombo::ctrl_shift("V")]);
+        // Every combo that would suit it is taken here or in a preset;
+        // bindable in Preferences (#845).
+        bind(&mut b, "paste_insert", vec![]);
         bind(&mut b, "duplicate_clip", vec![KeyCombo::ctrl("D")]);
         bind(&mut b, "select_all", vec![KeyCombo::ctrl("A")]);
         bind(&mut b, "deselect_all", vec![KeyCombo::ctrl_shift("A")]);
@@ -574,6 +577,7 @@ impl KeyBindings {
             "cut_clip" => "Cut Clip",
             "copy_clip" => "Copy Clip",
             "paste_clip" => "Paste Clip",
+            "paste_insert" => "Paste Insert",
             "copy_color_nodes" => "Copy Colour Nodes",
             "paste_color_nodes" => "Paste Colour Nodes",
             "copy_attributes" => "Copy Attributes",
@@ -682,7 +686,7 @@ impl KeyBindings {
     pub fn categories() -> &'static [(&'static str, &'static [&'static str])] {
         &[
             ("File", &["new_project", "open_project", "save_project", "save_project_as", "close_project", "import_media", "export", "preferences", "quit"]),
-            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
+            ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "paste_insert", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "select_track_clips", "select_track_forward", "select_track_backward", "select_forward", "select_backward", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip", "match_frame_program_to_source", "match_frame_source_to_program"]),

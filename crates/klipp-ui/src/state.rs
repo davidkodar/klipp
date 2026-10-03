@@ -1,8 +1,8 @@
 use crate::history::{CommandHistory, EditCommand, HistoryEntry};
 use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
-use klipp_media::{MediaItem, MediaPool, ThumbnailCache};
-use klipp_timeline::{Clip, Sequence};
+use klipp_media::{MediaPool, ThumbnailCache};
+use klipp_timeline::Sequence;
 use std::path::PathBuf;
 
 /// Identifies which panel is currently the user's primary interaction
@@ -3462,12 +3462,8 @@ impl PlayheadFollow {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ClipboardContent {
-    /// Each clip with its file and the track it came from: a clip and its
-    /// linked sound go back to their own tracks, linked (#458).
-    pub clips: Vec<(Clip, MediaItem, usize)>,
-}
+/// What Cut and Copy put on the clipboard (#458, #845).
+pub use crate::clip_clipboard::ClipboardContent;
 
 /// Snapshot of a clip's attributes for Paste Attributes.
 #[derive(Debug, Clone)]

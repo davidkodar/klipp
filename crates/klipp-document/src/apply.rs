@@ -128,6 +128,12 @@ impl DocumentView<'_> {
             EditCommand::SetMarkers { old, .. } => {
                 self.sequences[self.active].markers = old.clone();
             }
+            EditCommand::SetTrackContents { track_index, old, .. } => {
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.clips = old.clips.clone();
+                    track.transitions = old.transitions.clone();
+                }
+            }
             EditCommand::SetGradeGroups { old, .. } => {
                 self.sequences[self.active].grade_groups = old.clone();
             }
@@ -786,6 +792,12 @@ impl DocumentView<'_> {
             }
             EditCommand::SetMarkers { new, .. } => {
                 self.sequences[self.active].markers = new.clone();
+            }
+            EditCommand::SetTrackContents { track_index, new, .. } => {
+                if let Some(track) = self.sequences[self.active].tracks.get_mut(*track_index) {
+                    track.clips = new.clips.clone();
+                    track.transitions = new.transitions.clone();
+                }
             }
             EditCommand::SetGradeGroups { new, .. } => {
                 self.sequences[self.active].grade_groups = new.clone();
