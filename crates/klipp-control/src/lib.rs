@@ -2359,16 +2359,21 @@ fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::Value) -> R
     protocol::brief_from_value(serde_json::Value::Object(merged))
 }
 
-/// The look a frame is judged against: the brief's, else neutral; a
-/// screen recording (the beat sheet found holds) is judged as one when
-/// the brief names no look.
+/// The look a frame is judged against: its grade group's when the group
+/// has one, or none past faults when the group leaves the look on
+/// purpose (#793); else the brief's, else neutral; a screen recording
+/// (the beat sheet found holds) is judged as one when the brief names no
+/// look.
 fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget {
     use klipp_color::measure::LookTarget;
     if let Ok(seq) = ctx.sequence.read() {
+        let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+        if let Some(look) = group_look(&seq, tc) {
+            return look;
+        }
         if let Some(look) = seq.brief.as_ref().and_then(|b| b.look.clone()) {
             return resolve_look_target(look);
         }
-        let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
         if let Ok(pool) = ctx.media_pool.read() {
             // A screen recording, judged only for cast and clipping. A
             // still picture held on screen also "never changes", and a
@@ -2386,6 +2391,19 @@ fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget
         }
     }
     LookTarget::unbriefed()
+}
+
+/// The look the grade group of the picture on top at `tc` holds it to:
+/// the group's own, or faults only for a group that leaves the look on
+/// purpose; `None` when the picture is in no group or its group names
+/// neither, and the brief decides (#793).
+fn group_look(seq: &klipp_timeline::Sequence, tc: klipp_core::Timecode) -> Option<klipp_color::measure::LookTarget> {
+    let clip = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))?;
+    let g = seq.grade_groups.iter().find(|g| Some(g.id) == clip.grade_group)?;
+    if g.departs {
+        return Some(klipp_color::measure::LookTarget::unbriefed());
+    }
+    g.look.clone().map(resolve_look_target)
 }
 
 /// A look given by name alone takes the preset's numbers.
@@ -6559,6 +6577,10 @@ reference:   {}",
                 }
                 color_findings.extend(found);
             }
+            let departing: Vec<String> = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                seq.grade_groups.iter().filter(|g| g.departs && seq.all_clips().any(|c| c.grade_group == Some(g.id))).map(|g| g.name.clone()).collect()
+            };
             // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
             let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
             for (path, name, at, fixes) in &audio_media {
@@ -6616,6 +6638,11 @@ reference:   {}",
                         text.push_str(&format!("\n[{}] {:.2} s  {}. {}", f.0, f.1, f.2, f.3));
                     }
                 }
+                // A group that leaves the look on purpose is said once, not
+                // as a taste finding on every shot of it (#793).
+                for name in &departing {
+                    text.push_str(&format!("\n[note] grade group \"{name}\" leaves the look on purpose: its shots are judged for clipping, cast, black point and faces only"));
+                }
                 // A shot that could not be read is not one that passed.
                 if !unread.is_empty() {
                     text.push_str(&format!("\n[warning] {} shot{} could not be read, so are not judged: {}", unread.len(), if unread.len() == 1 { "" } else { "s" }, unread.join("; ")));
@@ -6629,7 +6656,7 @@ reference:   {}",
             }
             let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
             let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
-            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         // Said what they did (#741): the step taken back or put back, as
@@ -7333,6 +7360,37 @@ mod audio_fixes_tests {
         assert!(wind.and(AudioFixes::ALL).covers("a strong low-frequency rumble — wind or handling — sits under the sound"));
         let off = klipp_core::AudioEffectInstance { enabled: false, ..fx("voice_isolation", &[]) };
         assert!(!AudioFixes::on(&[off]).covers("high-frequency hiss or air is loud against the sound"));
+    }
+}
+
+#[cfg(test)]
+mod group_look_tests {
+    use klipp_color::measure::LookTarget;
+    use klipp_timeline::{Clip, GradeGroup, Sequence, Track, TrackKind};
+
+    /// #793: a shot in a group with its own look is held to it, a shot in
+    /// a group that leaves the look to faults only, any other to the brief.
+    #[test]
+    fn a_group_holds_its_shots_to_its_own_look() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
+        let id = klipp_core::MediaId::new();
+        let mut seq = Sequence::new_default();
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.clips = (0..3).map(|k| Clip::media(id, tc(k as f64 * 2.0), tc(k as f64 * 2.0 + 2.0), tc(0.0), tc(2.0))).collect();
+        seq.tracks = vec![v];
+        let mut south = GradeGroup::new("South");
+        south.look = Some(LookTarget { name: "warm_interview".into(), ..Default::default() });
+        let mut north = GradeGroup::new("North");
+        north.look = Some(LookTarget::preset("cool_tech").unwrap());
+        north.departs = true;
+        seq.tracks[0].clips[0].grade_group = Some(south.id);
+        seq.tracks[0].clips[1].grade_group = Some(north.id);
+        seq.grade_groups = vec![south, north];
+
+        let south_look = super::group_look(&seq, tc(1.0)).expect("the south group's look");
+        assert_eq!(south_look, LookTarget::preset("warm_interview").unwrap(), "a look by name takes the preset's numbers");
+        assert_eq!(super::group_look(&seq, tc(3.0)), Some(LookTarget::unbriefed()), "leaving the look on purpose outranks its own look");
+        assert_eq!(super::group_look(&seq, tc(5.0)), None, "a shot in no group goes by the brief");
     }
 }
 

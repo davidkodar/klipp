@@ -437,7 +437,12 @@ exist until the plan runs.
   group, or take them out with `leave`. Group grades run before (`pre`)
   or after (`post`) each clip's own grade. `grade` and `look` can target
   `{group, stage}` instead of a clip, or `"timeline"` after all clips.
-  Use one group look for a scene.
+  Use one group look for a scene. `look_target` (a preset name, `"none"`
+  to clear) holds the group's shots to their own look target instead of
+  the brief's, in `grade_to_target` and `check`: a film warm in the south
+  and cool in the north is two groups with two targets. `departs: true`
+  says a group leaves the look on purpose; its shots are judged for
+  faults only and the check says so once. Either works on a group alone.
 - `remove_grade_group {group}`: end a group and leave its clips' own
   grades in place.
 - `zoom {clip_id, from?, to, x?, y?}`: animate a zoom over the clip,

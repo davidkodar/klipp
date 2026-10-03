@@ -18,6 +18,7 @@ publish = false
 [dependencies]
 klipp-core = { workspace = true }
 klipp-timeline = { workspace = true }
+klipp-color = { workspace = true }
 klipp-media = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-effects = { workspace = true }
