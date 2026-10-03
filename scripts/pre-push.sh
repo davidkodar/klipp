@@ -545,16 +545,48 @@ case "$_available" in
     fi ;;
 esac
 
-# Known advisories in the dependencies, reported but not refused (#825):
-# a new one should be fixed or recorded in deny.toml with its reason,
-# not block unrelated work, and a failed fetch of the advisory list must
-# not stop a push. Skipped without cargo-deny.
+# Advisories in the dependencies (#825, #841). One that deny.toml does
+# not record refuses the push until it is fixed, or recorded there with
+# its reason; the ones recorded pass. The advisory list is refreshed
+# first, and a refresh that fails does not stop a push: the check runs
+# against the list already on disk, and with none at all it is reported,
+# not refused. An entry in deny.toml that no longer matches anything is
+# pointed at, to be dropped. Without cargo-deny the step says so, with
+# the line that installs it, and the push goes on.
 _step=advisories
 if command -v cargo-deny >/dev/null 2>&1; then
-    if ! timeout 120 cargo deny check advisories >/dev/null 2>&1 9>&-; then
-        printf '\n  pre-push: cargo deny check advisories reports something (not refused):\n' >&2
-        printf '            run it to see; fix it, or add it to deny.toml with a reason.\n\n' >&2
+    if ! timeout 60 cargo deny fetch db >/dev/null 2>&1 9>&-; then
+        printf '\n  pre-push: the advisory list could not be refreshed; checking against the one on disk.\n' >&2
     fi
+    # Under set -e a failing $(...) would end the gate unsaid: keep its status.
+    _deny_status=0
+    _deny_out=$(timeout 120 cargo deny --offline check advisories 2>&1 9>&-) || _deny_status=$?
+    # Each advisory found as "ID  crate version: title"; each stale
+    # entry in deny.toml by its ID.
+    _found=$(printf '%s\n' "$_deny_out" | awk '
+        /^error\[(vulnerability|unsound|unmaintained|notice)\]/ { title = $0; sub(/^error\[[a-z]+\]: /, "", title); crate = ""; want = 1; next }
+        want && crate == "" && / registry\+/ { line = $0; sub(/^ *[0-9]+ [^ ]+ /, "", line); split(line, f, " "); crate = f[1] " " f[2] }
+        want && /ID: RUSTSEC/ { id = $0; sub(/.*ID: /, "", id); print id "  " crate ": " title; want = 0 }' | sort -u)
+    _stale=$(printf '%s\n' "$_deny_out" | awk '/advisory-not-detected/ { s = 1; next } s && match($0, /RUSTSEC-[0-9]+-[0-9]+/) { print substr($0, RSTART, RLENGTH); s = 0 }' | sort -u)
+    if [ -n "$_stale" ]; then
+        printf '\n  pre-push: deny.toml ignores advisories nothing has any more; drop them:\n' >&2
+        printf '%s\n' "$_stale" | sed 's/^/            /' >&2
+    fi
+    if [ -n "$_found" ]; then
+        printf '\n  pre-push: a dependency has an advisory deny.toml does not record — push refused.\n' >&2
+        printf '%s\n' "$_found" | sed 's/^/            /' >&2
+        printf '            Update the crate, or if it cannot reach Klipp or has no fix yet,\n' >&2
+        printf '            add it to [advisories] ignore in deny.toml with the reason and\n' >&2
+        printf '            what would let it go. cargo deny check advisories shows the detail.\n\n' >&2
+        exit 1
+    elif [ "$_deny_status" -ne 0 ]; then
+        printf '\n  pre-push: cargo deny could not check the advisories (not refused):\n' >&2
+        printf '%s\n' "$_deny_out" | tail -n 3 | sed 's/^/            /' >&2
+        printf '\n' >&2
+    fi
+else
+    printf '\n  pre-push: cargo-deny is not installed, so the dependencies were not checked\n' >&2
+    printf '            for advisories. Install it: cargo install --locked cargo-deny\n\n' >&2
 fi
 
 _step=lint
