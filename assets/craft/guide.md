@@ -140,8 +140,9 @@ frames.
   A split makes two new clips with new ids, reported in the reply.
 - Within one apply, `"@N"` names the clip step N made or changed (0 is
   the first step): place a shot and set its role, level and effects on
-  `"@0"` in the same apply, one undo step, without reading ids back. A
-  title's own words are never read as a reference.
+  `"@0"` in the same apply, one undo step, without reading ids back. Only
+  a field that names a clip reads it so; a name, a role or a title's
+  words spelled "@0" stay as written.
 - Every write returns the document revision after it. Pass the revision
   from a plan to apply, with its project identity when available; if
   either moved, plan again.

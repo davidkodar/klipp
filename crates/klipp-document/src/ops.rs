@@ -101,13 +101,18 @@ impl<'de> Deserialize<'de> for StepRef {
     }
 }
 
-/// The op with every `"@N"` replaced by the id of the clip step N made
-/// (`made[N]`), read through the op's own JSON so every field that names
-/// a clip is covered. A title's words are never touched.
+/// The fields that name a clip (#809 review): only their `"@N"` is a
+/// step reference. A name, a role or a group spelled "@0" is left as
+/// written; a clip field missed here fails safe, as "@N was not bound".
+const CLIP_REF_KEYS: &[&str] = &["clip_id", "clips", "from", "source", "incoming_clip", "outgoing_clip", "clip_start", "clip_end"];
+
+/// The op with every `"@N"` in a field that names a clip replaced by the
+/// id of the clip step N made (`made[N]`), read through the op's own
+/// JSON so every such field is covered.
 fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refusal> {
     fn walk(v: &mut serde_json::Value, key: Option<&str>, i: usize, made: &[Option<ClipId>]) -> Result<(), Refusal> {
         match v {
-            serde_json::Value::String(s) if key != Some("text") => {
+            serde_json::Value::String(s) if key.is_some_and(|k| CLIP_REF_KEYS.contains(&k)) => {
                 if let Some(n) = s.strip_prefix('@').and_then(|n| n.parse::<usize>().ok()) {
                     let id = match made.get(n) {
                         Some(Some(id)) => *id,
@@ -6915,6 +6920,14 @@ mod tests {
             assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: ClipRef::Id(id), .. } if *id == placed), "{:?}", step.op);
         }
         assert!(plan.steps[3].what.contains("\"@0\""), "a title's words are its own: {}", plan.steps[3].what);
+        // A name spelled like a reference is a name (#809 review).
+        let named: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 6.0},
+            {"op": "lower_third", "name": "@0", "at": {"secs": 8.5}, "secs": 4.0}
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &named).unwrap();
+        assert!(matches!(&plan.steps[1].op, Op::LowerThird { name, .. } if name == "@0"), "{:?}", plan.steps[1].op);
 
         let refuse_ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "role", "clip_id": "@0", "role": "music"}])).unwrap();
         let later = resolve(&seq, &pool, &refuse_ops).unwrap_err();
