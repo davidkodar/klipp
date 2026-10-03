@@ -6899,48 +6899,6 @@ mod tests {
         (seq, pool, media_id, ia, ib)
     }
 
-    /// #790: a clip a step made is named "@N" by the steps after it: a
-    /// place, its role and its level in one apply, each on the clip the
-    /// place made (the picture, its sound linked); a step that made no clip
-    /// and a step still to come are refused; a title's words are left as
-    /// they are.
-    #[test]
-    fn a_step_names_the_clip_an_earlier_step_made() {
-        let (seq, pool, media, _, _) = fixture();
-        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
-            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 2.0},
-            {"op": "role", "clip_id": "@0", "role": "broll"},
-            {"op": "audio", "clip_id": "@0", "volume_db": -12.0},
-            {"op": "title", "text": "@0", "at": {"secs": 8.0}, "secs": 1.0}
-        ]))
-        .unwrap();
-        let plan = resolve(&seq, &pool, &ops).unwrap();
-        let placed = plan.steps[0].after[0].clip_id;
-        for step in &plan.steps[1..3] {
-            assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: ClipRef::Id(id), .. } if *id == placed), "{:?}", step.op);
-        }
-        assert!(plan.steps[3].what.contains("\"@0\""), "a title's words are its own: {}", plan.steps[3].what);
-        // A name spelled like a reference is a name (#809 review).
-        let named: Vec<Op> = serde_json::from_value(serde_json::json!([
-            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 6.0},
-            {"op": "lower_third", "name": "@0", "at": {"secs": 8.5}, "secs": 4.0}
-        ]))
-        .unwrap();
-        let plan = resolve(&seq, &pool, &named).unwrap();
-        assert!(matches!(&plan.steps[1].op, Op::LowerThird { name, .. } if name == "@0"), "{:?}", plan.steps[1].op);
-
-        let refuse_ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "role", "clip_id": "@0", "role": "music"}])).unwrap();
-        let later = resolve(&seq, &pool, &refuse_ops).unwrap_err();
-        assert!(later.why.contains("comes at or after"), "{}", later.why);
-        let nothing: Vec<Op> = serde_json::from_value(serde_json::json!([
-            {"op": "add_track", "kind": "audio"},
-            {"op": "role", "clip_id": "@0", "role": "music"}
-        ]))
-        .unwrap();
-        let none = resolve(&seq, &pool, &nothing).unwrap_err();
-        assert!(none.why.contains("made or changed no clip"), "{}", none.why);
-    }
-
     /// #506: shots placed one after another at a bar's length each stay
     /// on the bars: each cut within half a frame of its bar line, not
     /// drifting by each clip's rounding.
@@ -7068,6 +7026,48 @@ mod tests {
         let names = ["IMG_1702.mov on track 3", "IMG_1702.mov on track 3", "IMG_1703.mov on track 3", "IMG_1702.mov on track 3"].map(String::from);
         assert_eq!(folded_names(names.into_iter()), "3 clips of IMG_1702.mov on track 3, IMG_1703.mov on track 3");
         assert_eq!(folded_names(["a.mov on track 0".to_string()].into_iter()), "a.mov on track 0");
+    }
+
+    /// #790: a clip a step made is named "@N" by the steps after it: a
+    /// place, its role and its level in one apply, each on the clip the
+    /// place made (the picture, its sound linked); a step that made no clip
+    /// and a step still to come are refused; a title's words are left as
+    /// they are.
+    #[test]
+    fn a_step_names_the_clip_an_earlier_step_made() {
+        let (seq, pool, media, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 2.0},
+            {"op": "role", "clip_id": "@0", "role": "broll"},
+            {"op": "audio", "clip_id": "@0", "volume_db": -12.0},
+            {"op": "title", "text": "@0", "at": {"secs": 8.0}, "secs": 1.0}
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let placed = plan.steps[0].after[0].clip_id;
+        for step in &plan.steps[1..3] {
+            assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: ClipRef::Id(id), .. } if *id == placed), "{:?}", step.op);
+        }
+        assert!(plan.steps[3].what.contains("\"@0\""), "a title's words are its own: {}", plan.steps[3].what);
+        // A name spelled like a reference is a name (#809 review).
+        let named: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 6.0},
+            {"op": "lower_third", "name": "@0", "at": {"secs": 8.5}, "secs": 4.0}
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &named).unwrap();
+        assert!(matches!(&plan.steps[1].op, Op::LowerThird { name, .. } if name == "@0"), "{:?}", plan.steps[1].op);
+
+        let refuse_ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "role", "clip_id": "@0", "role": "music"}])).unwrap();
+        let later = resolve(&seq, &pool, &refuse_ops).unwrap_err();
+        assert!(later.why.contains("comes at or after"), "{}", later.why);
+        let nothing: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "add_track", "kind": "audio"},
+            {"op": "role", "clip_id": "@0", "role": "music"}
+        ]))
+        .unwrap();
+        let none = resolve(&seq, &pool, &nothing).unwrap_err();
+        assert!(none.why.contains("made or changed no clip"), "{}", none.why);
     }
 
     /// #684: a picture pinned to a tracked surface goes on the track
