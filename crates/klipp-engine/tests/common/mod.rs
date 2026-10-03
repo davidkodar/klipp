@@ -292,6 +292,22 @@ impl Parked {
         self.fb.lock().unwrap().nits_at(nx, ny)
     }
 
+    /// `nits_at`, waited for up to `limit`: the light map is published
+    /// with the frame monitoring renders, and on a loaded machine the
+    /// frame that settled can be one from before it.
+    pub fn wait_nits_at(&self, nx: f32, ny: f32, limit: Duration) -> Option<f32> {
+        let t0 = Instant::now();
+        loop {
+            if let Some(n) = self.nits_at(nx, ny) {
+                return Some(n);
+            }
+            if t0.elapsed() >= limit {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn perf(&self) -> Vec<PerfSample> {
         self.perf.lock().unwrap().iter_chronological().cloned().collect()
     }
