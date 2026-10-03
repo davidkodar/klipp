@@ -876,6 +876,14 @@ pub enum Op {
     /// is how dark a panel sits behind the text as the eye sees it, 0
     /// (none) to 1 (black); `outline` is a width in pixels, 0 for none;
     /// `shadow` a drop shadow behind the text, opacity 0 taking it off.
+    /// The rest of `title`'s look and motion restyles a title in place,
+    /// keeping its id (#509): `backing_color`, `outline_color` (an
+    /// outline's colour, one made if there is none), `glow` (0 for none)
+    /// with `glow_color`, `gradient` (#top, #bottom), `glitch` and
+    /// `chromatic` (0..1, 0 for none); `animate`, `enter`, `exit`,
+    /// `animate_secs` and `stagger` as `title` takes them, fitted to each
+    /// title's own length; `loop` (or "none" to stop one), `roll_shape`
+    /// and `edge_fade`. Every text in a title takes them.
     Style {
         #[serde(default)]
         clip_id: Option<ClipRef>,
@@ -909,6 +917,36 @@ pub enum Op {
         full_frame: Option<String>,
         #[serde(default)]
         shadow: Option<ShadowSpec>,
+        #[serde(default)]
+        backing_color: Option<String>,
+        #[serde(default)]
+        outline_color: Option<String>,
+        #[serde(default)]
+        glow: Option<f32>,
+        #[serde(default)]
+        glow_color: Option<String>,
+        #[serde(default)]
+        gradient: Option<[String; 2]>,
+        #[serde(default)]
+        glitch: Option<f32>,
+        #[serde(default)]
+        chromatic: Option<f32>,
+        #[serde(default)]
+        animate: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict_motion_spec")]
+        enter: Option<klipp_timeline::TitleMotionSpec>,
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict_motion_spec")]
+        exit: Option<klipp_timeline::TitleMotionSpec>,
+        #[serde(default)]
+        animate_secs: Option<f32>,
+        #[serde(default)]
+        stagger: Option<String>,
+        #[serde(default, rename = "loop")]
+        loop_effect: Option<String>,
+        #[serde(default)]
+        roll_shape: Option<klipp_core::title_motion::RollShape>,
+        #[serde(default)]
+        edge_fade: Option<klipp_core::title_motion::EdgeFade>,
     },
     /// Create a title from scratch with any look and motion — the way to
     /// put a heading, a callout or a hero card on screen. `text` is the
@@ -1147,6 +1185,74 @@ struct Look {
     outline: Option<f32>,
     /// `Some(None)` takes the shadow off.
     shadow: Option<Option<klipp_timeline::TitleShadow>>,
+    backing_color: Option<[u8; 4]>,
+    outline_color: Option<[u8; 4]>,
+    glow: Option<f32>,
+    glow_color: Option<[u8; 4]>,
+    gradient: Option<[[u8; 4]; 2]>,
+    glitch: Option<f32>,
+    chromatic: Option<f32>,
+    /// The motion asked for, fitted to each title's length when applied.
+    motion: Option<MotionAsk>,
+    /// A loop by name, "none" taking any loop off.
+    loop_effect: Option<String>,
+    roll_shape: Option<klipp_core::title_motion::RollShape>,
+    edge_fade: Option<klipp_core::title_motion::EdgeFade>,
+}
+
+/// A `style` op's motion fields, as `title` takes them.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct MotionAsk {
+    enter: Option<klipp_timeline::TitleMotionSpec>,
+    exit: Option<klipp_timeline::TitleMotionSpec>,
+    animate: Option<String>,
+    animate_secs: Option<f32>,
+    stagger: Option<String>,
+}
+
+impl MotionAsk {
+    /// The motion for a title `secs` long.
+    fn fit(&self, secs: f64) -> Result<klipp_core::title_motion::TitleMotion, String> {
+        crate::title_style::effective_motion(
+            &klipp_timeline::TypeStyle::default(),
+            self.enter.as_ref(),
+            self.exit.as_ref(),
+            self.animate.as_deref(),
+            self.animate_secs.map(f64::from),
+            self.stagger.as_deref(),
+            secs,
+        )
+    }
+}
+
+/// A title loop by name: its colours from the text and its glow, a roll
+/// or crawl shaped by `shape`. `Ok(None)` for "none" or "off".
+fn title_loop(
+    name: &str,
+    color: [u8; 4],
+    glow: Option<[u8; 4]>,
+    shape: Option<klipp_core::title_motion::RollShape>,
+    i: usize,
+) -> Result<Option<klipp_core::title_motion::TitleLoop>, Refusal> {
+    use klipp_core::title_motion::TitleLoop;
+    Ok(Some(match name.to_lowercase().as_str() {
+        "none" | "off" => return Ok(None),
+        "pulse" | "breathe" => TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
+        "flash" | "blink" => TitleLoop::Blink { rate_hz: 2.0, duty: 0.6 },
+        "neon" => TitleLoop::ColorBlend { color_a: color, color_b: glow.unwrap_or([255, 40, 120, 255]), rate_hz: 1.5 },
+        "wave" => TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
+        "shake" => TitleLoop::Shake { amplitude: 0.04, rate_hz: 10.0 },
+        "color_cycle" | "colour_cycle" | "rainbow" => TitleLoop::ColorCycle { rate_hz: 0.4 },
+        // A credits roll and a ticker, fitted to the title's length
+        // (#588): the speed is set in the Title tab.
+        "scroll" | "roll" | "credits" => TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0, shape: shape.unwrap_or_default() },
+        "float" | "bob" => TitleLoop::Float { amplitude: 0.08, rate_hz: 0.5 },
+        "sway" => TitleLoop::Sway { amplitude: 0.1, rate_hz: 0.4 },
+        "neon_flicker" | "flicker_loop" => TitleLoop::Flicker { rate_hz: 6.0, depth: 0.25 },
+        "drift" => TitleLoop::Drift { dx: -0.04, dy: 0.0 },
+        "crawl" | "ticker" => TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false, shape: shape.unwrap_or_default() },
+        other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, float, sway, neon_flicker, drift, scroll (a credits roll), crawl (a ticker), or none")),
+    }))
 }
 
 fn default_caption_chars() -> usize {
@@ -2228,7 +2334,18 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ];
             grade(i, target, &knobs, *reset)
         }
-        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow } => {
+        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow, backing_color, outline_color, glow, glow_color, gradient, glitch, chromatic, animate, enter, exit, animate_secs, stagger, loop_effect, roll_shape, edge_fade } => {
+            let col = |c: &Option<String>, what: &str| c.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), format!("write {what} as #rrggbb or #rrggbbaa")))).transpose();
+            let motion = MotionAsk { enter: enter.clone(), exit: exit.clone(), animate: animate.clone(), animate_secs: *animate_secs, stagger: stagger.clone() };
+            let motion = (motion != MotionAsk::default()).then_some(motion);
+            // A wrong name is refused before anything is looked at; whether
+            // the motion fits is each title's own length's to say.
+            if let Some(m) = &motion {
+                m.fit(1.0e6).map_err(|e| refuse(i, format!("title motion: {e}"), "correct animate, enter, exit, animate_secs or stagger"))?;
+            }
+            if let Some(name) = loop_effect {
+                title_loop(name, [255; 4], None, None, i)?;
+            }
             let look = Look {
                 full_frame: full_frame.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write the full-frame colour as #rrggbb"))).transpose()?,
                 size: *size,
@@ -2249,6 +2366,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 backing: *backing,
                 outline: *outline,
                 shadow: shadow.as_ref().map(|s| title_shadow(s, i)).transpose()?,
+                backing_color: col(backing_color, "the backing colour")?,
+                outline_color: col(outline_color, "the outline colour")?,
+                glow: *glow,
+                glow_color: col(glow_color, "the glow colour")?,
+                gradient: gradient
+                    .as_ref()
+                    .map(|[top, bottom]| Ok::<_, Refusal>([col(&Some(top.clone()), "the gradient colours")?.unwrap_or_default(), col(&Some(bottom.clone()), "the gradient colours")?.unwrap_or_default()]))
+                    .transpose()?,
+                glitch: *glitch,
+                chromatic: *chromatic,
+                motion,
+                loop_effect: loop_effect.clone(),
+                roll_shape: *roll_shape,
+                edge_fade: *edge_fade,
             };
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
@@ -5970,9 +6101,13 @@ fn parse_color(c: &str) -> Option<[u8; 4]> {
 
 /// `look` on one title: its text boxes take the size, colour, face and
 /// alignment, every layer moves with the first text's centre, the
-/// panel behind it is as dark as asked.
-fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::TitleData {
-    use klipp_timeline::{FontStyle, TitleBackground, TitleObjectContent};
+/// panel behind it is as dark as asked, and every text's layer takes
+/// the outline, glow, shadow, fill effects, motion and loop. `secs` is
+/// the title's length, which its motion is fitted to; an error is a
+/// motion that cannot fit it.
+fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<klipp_timeline::TitleData, String> {
+    use klipp_timeline::{FontStyle, TextGlow, TextGradient, TextOutline, TitleBackground, TitleObjectContent};
+    let motion = look.motion.as_ref().map(|m| m.fit(secs)).transpose()?;
     let mut new = td.clone();
     let first_centre = new.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).map(|o| (o.transform.center.x, o.transform.center.y));
     // Sizes keep their proportions: a lower third's role stays smaller than its name.
@@ -6005,19 +6140,74 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
         if let Some(a) = look.align {
             tb.alignment = a;
         }
-        if let Some(w) = look.outline {
-            let fx = fx.get_or_insert_with(Default::default);
-            fx.outlines.clear();
-            if w > 0.0 {
-                fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: w, enabled: true, width_keyframes: Vec::new() });
-            }
+        // The text's own fill and edge, not its layer stack.
+        if let Some([top, bottom]) = look.gradient {
+            tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
         }
-        if let Some(shadow) = &look.shadow {
-            fx.get_or_insert_with(Default::default).shadows = shadow.iter().cloned().collect();
+        if let Some(g) = look.glitch {
+            tb.glitch_intensity = g;
+        }
+        if let Some(c) = look.chromatic {
+            tb.chromatic_aberration_px = c * 12.0;
+        }
+        // A layer's stack is made only when something in it is asked for:
+        // made for a change of place alone, a style that changed nothing
+        // else still differed from the title it was given.
+        let fx_asked = look.outline.is_some() || look.outline_color.is_some() || look.glow.is_some() || look.glow_color.is_some() || look.shadow.is_some()
+            || motion.is_some() || look.loop_effect.is_some() || look.roll_shape.is_some() || look.edge_fade.is_some();
+        if fx_asked {
+            let fx = fx.get_or_insert_with(Default::default);
+            if let Some(w) = look.outline {
+                let color = look.outline_color.or(fx.outlines.first().map(|o| o.color)).unwrap_or([0, 0, 0, 200]);
+                fx.outlines.clear();
+                if w > 0.0 {
+                    fx.outlines.push(TextOutline { color, width: w, enabled: true, width_keyframes: Vec::new() });
+                }
+            } else if let Some(color) = look.outline_color {
+                // A colour alone recolours the outline, or gives it one.
+                if fx.outlines.is_empty() {
+                    fx.outlines.push(TextOutline { color, width: 4.0, enabled: true, width_keyframes: Vec::new() });
+                }
+                fx.outlines.iter_mut().for_each(|o| o.color = color);
+            }
+            if let Some(g) = look.glow {
+                let color = look.glow_color.or(fx.glows.first().map(|g| g.color)).unwrap_or(tb.color);
+                fx.glows.clear();
+                if g > 0.0 {
+                    fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: g, intensity_keyframes: Vec::new() });
+                }
+            } else if let Some(color) = look.glow_color {
+                if fx.glows.is_empty() {
+                    fx.glows.push(TextGlow { enabled: true, color, radius: 18.0, radius_keyframes: Vec::new(), intensity: 0.6, intensity_keyframes: Vec::new() });
+                }
+                fx.glows.iter_mut().for_each(|g| g.color = color);
+            }
+            if let Some(shadow) = &look.shadow {
+                fx.shadows = shadow.iter().cloned().collect();
+            }
+            if let Some(m) = &motion {
+                fx.motion = *m;
+            }
+            if let Some(name) = &look.loop_effect {
+                // Already checked by name, so a refusal here cannot happen.
+                fx.loops = title_loop(name, tb.color, fx.glows.first().map(|g| g.color), look.roll_shape, 0).ok().flatten().into_iter().collect();
+            } else if let Some(shape) = look.roll_shape {
+                for l in fx.loops.iter_mut() {
+                    if let klipp_core::title_motion::TitleLoop::Scroll { shape: s, .. } | klipp_core::title_motion::TitleLoop::Crawl { shape: s, .. } = l {
+                        *s = shape;
+                    }
+                }
+            }
+            if let Some(e) = look.edge_fade {
+                fx.edge_fade = e;
+            }
         }
     }
     if let Some(color) = look.full_frame {
         new.background = TitleBackground::FullFrame { color };
+    } else if let Some(color) = look.backing_color {
+        let padding = match new.background { TitleBackground::Color { padding, .. } => padding, _ => 12.0 };
+        new.background = TitleBackground::Color { color, padding };
     } else if let Some(dark) = look.backing {
         new.background = if dark <= 0.0 {
             TitleBackground::None
@@ -6029,7 +6219,7 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look) -> klipp_timeline::Title
             TitleBackground::Color { color: [0, 0, 0, (alpha * 255.0).round() as u8], padding: 12.0 }
         };
     }
-    new
+    Ok(new)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6044,9 +6234,18 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give size, color, font, bold, align, x, y, backing or outline"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic) or a motion (animate, enter, exit, loop)"));
     }
-    for (name, v, lo, hi) in [("size", look.size, 6.0, 1000.0), ("x", look.x, 0.0, 1.0), ("y", look.y, 0.0, 1.0), ("backing", look.backing, 0.0, 1.0), ("outline", look.outline, 0.0, 40.0)] {
+    for (name, v, lo, hi) in [
+        ("size", look.size, 6.0, 1000.0),
+        ("x", look.x, 0.0, 1.0),
+        ("y", look.y, 0.0, 1.0),
+        ("backing", look.backing, 0.0, 1.0),
+        ("outline", look.outline, 0.0, 40.0),
+        ("glow", look.glow, 0.0, 1.0),
+        ("glitch", look.glitch, 0.0, 1.0),
+        ("chromatic", look.chromatic, 0.0, 1.0),
+    ] {
         if let Some(v) = v {
             if !v.is_finite() || v < lo || v > hi {
                 return Err(refuse(i, format!("{name} {v} is out of range"), format!("give {name} between {lo} and {hi}")));
@@ -6077,7 +6276,8 @@ fn style(
         if seq.tracks[*ti].locked {
             return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
         }
-        let new = restyle(old, look);
+        let new = restyle(old, look, secs(c.timeline_out - c.timeline_in))
+            .map_err(|e| refuse(i, format!("title motion for {}: {e}", clip_name(seq, pool, c)), "give a motion that fits the title's length"))?;
         if new != *old {
             edits.push(EditCommand::EditTitle { clip_id: c.id, description: "Restyle Title", old_data: old.clone(), new_data: new });
             ids.push(c.id);
@@ -6096,6 +6296,15 @@ fn style(
     if let Some(d) = look.backing { said.push(if d <= 0.0 { "no backing".into() } else { format!("backing {:.0}% dark", d * 100.0) }); }
     if let Some(w) = look.outline { said.push(if w <= 0.0 { "no outline".into() } else { format!("outline {w:.0} px") }); }
     if let Some(sh) = &look.shadow { said.push(if sh.is_none() { "no shadow".into() } else { "a drop shadow".into() }); }
+    if let Some(c) = look.backing_color { said.push(format!("backing #{:02x}{:02x}{:02x}", c[0], c[1], c[2])); }
+    if look.outline.is_none() && look.outline_color.is_some() { said.push("outline recoloured".into()); }
+    if let Some(g) = look.glow { said.push(if g <= 0.0 { "no glow".into() } else { format!("glow {g:.2}") }); } else if look.glow_color.is_some() { said.push("glow recoloured".into()); }
+    if look.gradient.is_some() { said.push("a gradient fill".into()); }
+    if let Some(g) = look.glitch { said.push(format!("glitch {g:.2}")); }
+    if let Some(c) = look.chromatic { said.push(format!("chromatic {c:.2}")); }
+    if look.motion.is_some() { said.push("new motion".into()); }
+    if let Some(l) = &look.loop_effect { said.push(if matches!(l.to_lowercase().as_str(), "none" | "off") { "no loop".into() } else { format!("loop {l}") }); }
+    if look.edge_fade.is_some() { said.push("edge fade".into()); }
     let first = targets.first().map(|(_, c)| secs(c.timeline_in)).unwrap_or(0.0);
     let last = targets.last().map(|(_, c)| secs(c.timeline_out)).unwrap_or(0.0);
     let what = format!("restyle {} title{} from {first:.2} to {last:.2} s: {}", edits.len(), if edits.len() == 1 { "" } else { "s" }, said.join(", "));
@@ -6239,7 +6448,6 @@ struct TitleArgs<'a> {
 /// Build a styled, animated title from scratch and place it on a text
 /// track — the general-purpose sibling of `lower_third`/`captions`.
 fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    use klipp_core::title_motion::TitleLoop;
     use klipp_timeline::{FontStyle, TextAlignment, TextBox, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData};
     let text = a.text.trim();
     if text.is_empty() {
@@ -6320,24 +6528,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     }
     fx.motion = a.motion;
     if let Some(lp) = a.loop_effect {
-        let l = match lp.to_lowercase().as_str() {
-            "pulse" | "breathe" => TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 },
-            "flash" | "blink" => TitleLoop::Blink { rate_hz: 2.0, duty: 0.6 },
-            "neon" => TitleLoop::ColorBlend { color_a: tb.color, color_b: fx.glows.first().map(|g| g.color).unwrap_or([255, 40, 120, 255]), rate_hz: 1.5 },
-            "wave" => TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 },
-            "shake" => TitleLoop::Shake { amplitude: 0.04, rate_hz: 10.0 },
-            "color_cycle" | "colour_cycle" | "rainbow" => TitleLoop::ColorCycle { rate_hz: 0.4 },
-            // A credits roll and a ticker, fitted to the title's length
-            // (#588): the speed is set in the Title tab.
-            "scroll" | "roll" | "credits" => TitleLoop::Scroll { direction: klipp_timeline::ScrollDirection::Up, speed_px_per_sec: 0.0, shape: a.roll_shape.unwrap_or_default() },
-            "float" | "bob" => TitleLoop::Float { amplitude: 0.08, rate_hz: 0.5 },
-            "sway" => TitleLoop::Sway { amplitude: 0.1, rate_hz: 0.4 },
-            "neon_flicker" | "flicker_loop" => TitleLoop::Flicker { rate_hz: 6.0, depth: 0.25 },
-            "drift" => TitleLoop::Drift { dx: -0.04, dy: 0.0 },
-            "crawl" | "ticker" => TitleLoop::Crawl { direction: klipp_timeline::CrawlDirection::Left, speed_px_per_sec: 0.0, repeat: false, shape: a.roll_shape.unwrap_or_default() },
-            other => return Err(refuse(i, format!("\"{other}\" is not a loop"), "use pulse, flash, neon, wave, shake, color_cycle, float, sway, neon_flicker, drift, scroll (a credits roll) or crawl (a ticker)")),
-        };
-        fx.loops = vec![l];
+        fx.loops = title_loop(lp, tb.color, fx.glows.first().map(|g| g.color), a.roll_shape, i)?.into_iter().collect();
     }
     if let Some(e) = a.edge_fade {
         fx.edge_fade = e;
@@ -9211,6 +9402,87 @@ mod tests {
         assert_eq!((on[0].offset_x, on[0].offset_y, on[0].blur, on[0].color), (0.0, 4.0, 8.0, [0, 0, 0, 153]), "the defaults");
         view.apply_forward(&plan.steps[2].edit);
         assert!(shadows(&view).is_empty(), "opacity 0 takes it off");
+    }
+
+    /// #509: everything `title` takes for a look or a motion restyles a
+    /// title in place, keeping its id, so nothing has to be remade.
+    #[test]
+    fn style_takes_every_look_and_motion_field_title_does() {
+        let (seq, pool, _, _, _) = fixture();
+        let made: Vec<Op> = serde_json::from_str(r##"[{"op":"title","text":"Sand","at":{"secs":0.5},"secs":3.0,"outline":3}]"##).unwrap();
+        let plan = resolve(&seq, &pool, &made).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let id = clip.id;
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let after_title = view.sequences[0].clone();
+
+        let ops: Vec<Op> = serde_json::from_str(&format!(r##"[{{"op":"style","clip_id":"{}",
+            "outline_color":"#ff0000","glow":0.7,"glow_color":"#00ff00","gradient":["#ffffff","#000080"],
+            "glitch":0.4,"chromatic":0.5,"backing_color":"#202020","animate":"rise","loop":"pulse",
+            "edge_fade":{{"top":0.2}}}}]"##, id.0)).unwrap();
+        let plan = resolve(&after_title, &pool, &ops).unwrap();
+        let EditCommand::EditTitle { clip_id, new_data, .. } = &plan.steps[0].edit else { panic!("an edit in place, {:?}", plan.steps[0].edit) };
+        assert_eq!(*clip_id, id, "the same title, not a new one");
+        let what = &plan.steps[0].what;
+        for said in ["outline recoloured", "glow 0.70", "a gradient fill", "glitch 0.40", "new motion", "loop pulse", "edge fade"] {
+            assert!(what.contains(said), "{said} in {what}");
+        }
+        let fx = new_data.objects[0].fx();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &new_data.objects[0].content else { panic!("text") };
+        assert_eq!((fx.outlines.len(), fx.outlines[0].color, fx.outlines[0].width), (1, [255, 0, 0, 255], 3.0), "the outline recoloured, its width kept");
+        assert_eq!((fx.glows.len(), fx.glows[0].color, fx.glows[0].intensity), (1, [0, 255, 0, 255], 0.7));
+        assert_eq!(tb.gradient.as_ref().map(|g| (g.top_color, g.bottom_color)), Some(([255; 4], [0, 0, 0x80, 255])));
+        assert_eq!((tb.glitch_intensity, tb.chromatic_aberration_px), (0.4, 6.0));
+        assert!(matches!(new_data.background, klipp_timeline::TitleBackground::Color { color: [0x20, 0x20, 0x20, 255], .. }), "{:?}", new_data.background);
+        assert_ne!(fx.motion, klipp_core::title_motion::TitleMotion::default(), "it rises in");
+        assert!(matches!(fx.loops.as_slice(), [klipp_core::title_motion::TitleLoop::Pulse { .. }]), "{:?}", fx.loops);
+        assert_eq!(fx.edge_fade.top, 0.2);
+
+        // A loop or a glow taken off again.
+        view.apply_forward(&plan.steps[0].edit);
+        let styled = view.sequences[0].clone();
+        let off: Vec<Op> = serde_json::from_str(&format!(r##"[{{"op":"style","clip_id":"{}","loop":"none","glow":0}}]"##, id.0)).unwrap();
+        let plan = resolve(&styled, &pool, &off).unwrap();
+        let EditCommand::EditTitle { new_data, .. } = &plan.steps[0].edit else { panic!("an edit") };
+        assert!(new_data.objects[0].fx().loops.is_empty() && new_data.objects[0].fx().glows.is_empty());
+        assert!(plan.steps[0].what.contains("no loop") && plan.steps[0].what.contains("no glow"), "{}", plan.steps[0].what);
+
+        // Refused: a loop that is not one, a glow out of range, a motion that is not one.
+        let bad = |json: String| resolve(&styled, &pool, &serde_json::from_str::<Vec<Op>>(&json).unwrap()).unwrap_err();
+        assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","loop":"spin"}}]"##, id.0)).why.contains("not a loop"));
+        assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","glow":3}}]"##, id.0)).why.contains("out of range"));
+        assert!(bad(format!(r##"[{{"op":"style","clip_id":"{}","animate":"cartwheel"}}]"##, id.0)).why.contains("motion"));
+    }
+
+    /// #836 review: a change of place alone leaves a text with no layer
+    /// stack without one, so restyling it to where it is changes nothing;
+    /// and a long motion is judged by the title's length, not a guess.
+    #[test]
+    fn restyle_makes_no_layer_stack_it_was_not_asked_for() {
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Cue".into(), ..Default::default() });
+        td.objects[0].fx = None;
+        let centre = td.objects[0].transform.center;
+        let same_place = Look { x: Some(centre.x), y: Some(centre.y), ..Default::default() };
+        assert_eq!(restyle(&td, &same_place, 3.0).unwrap(), td, "nothing to change, nothing changed");
+        // The text's own fields land alone, with no layer stack asked for
+        // (the first fix put them inside the stack's branch).
+        let alone = restyle(&td, &Look { gradient: Some([[255; 4], [0, 0, 0, 255]]), ..Default::default() }, 3.0).unwrap();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &alone.objects[0].content else { panic!("text") };
+        assert!(tb.gradient.is_some(), "a gradient alone is applied");
+        assert!(alone.objects[0].fx.is_none(), "and makes no layer stack");
+        let alone = restyle(&td, &Look { glitch: Some(0.3), chromatic: Some(0.5), ..Default::default() }, 3.0).unwrap();
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &alone.objects[0].content else { panic!("text") };
+        assert_eq!((tb.glitch_intensity, tb.chromatic_aberration_px), (0.3, 6.0), "glitch and chromatic alone are applied");
+        let glow = Look { glow: Some(0.5), ..Default::default() };
+        assert!(restyle(&td, &glow, 3.0).unwrap().objects[0].fx.is_some(), "asked for, it is made");
+        // A delay that fits a long title but not ten seconds.
+        let late = MotionAsk { enter: Some(serde_json::from_str(r#"{"kind":"fade","delay_secs":12.0}"#).unwrap()), ..Default::default() };
+        assert!(late.fit(1.0e6).is_ok(), "the early check does not guess a length");
+        assert!(late.fit(30.0).is_ok() && late.fit(5.0).is_err(), "each title's own length decides");
     }
 
     /// The `k`th caption as the plan's captions step made it.
