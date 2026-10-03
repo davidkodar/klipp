@@ -124,6 +124,38 @@ fn read_builtin_effects(value: &serde_json::Value, clip_id: &str) -> Result<Vec<
         .collect()
 }
 
+/// The media manifest that belongs with the timeline (#821). A save
+/// writes the manifest and then `project.json`, both stamped with the same
+/// generation; a crash between them leaves the new manifest beside the old
+/// timeline. When the generations differ, the backed-up manifest whose
+/// generation is the timeline's is used instead (backups of the two rotate
+/// together). Files from before generations, or a pair with no match, are
+/// read as they are.
+fn mend_manifest(dir: &Path, project_generation: Option<&str>, manifest: MediaManifestJson) -> MediaManifestJson {
+    let Some(wanted) = project_generation else { return manifest };
+    if manifest.generation.as_deref().is_none_or(|g| g == wanted) {
+        return manifest;
+    }
+    let base = dir.join("media").join("manifest.json");
+    for n in 1..=64 {
+        let backup = base.with_extension(format!("json.bak.{n}"));
+        if !backup.exists() {
+            break;
+        }
+        let Ok(text) = read_to_string_capped(&backup, MAX_INPUT_FILE_BYTES) else { continue };
+        let Ok(candidate) = serde_json::from_str::<MediaManifestJson>(&text) else { continue };
+        if candidate.generation.as_deref() == Some(wanted) {
+            warn!(
+                "the media manifest is from a later save than project.json (a save stopped between its two files); using {} instead, which matches the timeline",
+                backup.display()
+            );
+            return candidate;
+        }
+    }
+    warn!("the media manifest and project.json are from different saves and no backup matches; reading them as they are");
+    manifest
+}
+
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
     let manifest_path = dir.join("media").join("manifest.json");
@@ -151,6 +183,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
     let manifest: MediaManifestJson = serde_json::from_str(&manifest_str)
         .map_err(|e| format!("Failed to parse manifest.json: {e}"))?;
+    let manifest = mend_manifest(dir, project.generation.as_deref(), manifest);
 
     // Reconstruct media pool — resolve stored paths (relative or absolute) to absolute
     let mut media_pool = MediaPool::new();

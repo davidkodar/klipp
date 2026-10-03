@@ -5,6 +5,11 @@ use std::collections::HashMap;
 pub struct ProjectJson {
     pub version: String,
     pub klipp_version_min: String,
+    /// The save that wrote this file, shared with the media manifest it
+    /// was written with, so a pair from two different saves is told apart
+    /// on open (#821). Absent from files written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
     /// The Klipp build version that wrote this file.
     #[serde(default)]
     pub klipp_version: Option<String>,
@@ -705,6 +710,9 @@ impl<'de> serde::Deserialize<'de> for OfxValueJson {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MediaManifestJson {
     pub version: String,
+    /// The save that wrote it; see [`ProjectJson::generation`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
     pub items: Vec<MediaItemJson>,
     #[serde(default)]
     pub bins: Vec<BinJson>,
@@ -882,6 +890,7 @@ mod tests {
         let project = ProjectJson {
             version: "1.0.0".to_string(),
             klipp_version_min: "0.1.0".to_string(),
+            generation: None,
             klipp_version: None,
             saved_at: None,
             created_at: None,
