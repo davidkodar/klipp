@@ -433,10 +433,38 @@ fi
 
 # A line per gate that ran, kept beside the queue, so whoever watches it
 # can see what passed and what failed after the queue has moved on, and
-# how long a gate takes: "start end result step branch worktree", result
-# pass, fail or stopped, step where it ended. The last 200 are kept.
+# how long a gate takes: "start end result step branch worktree log",
+# result pass, fail or stopped, step where it ended, log its output (- if
+# none was kept). The last 200 are kept.
 _started=$(date +%s)
 _step=setup
+# And its output, so a failure can be read after the push that hit it has
+# gone: the checks' output is copied to a log beside the history while
+# it still goes to the terminal; the last 50 logs are kept.
+_log=
+if [ -n "$_queue" ] && mkdir -p "$_common/klipp-pre-push.logs" 2>/dev/null; then
+    _log="$_common/klipp-pre-push.logs/$_started-$$.log"
+    : >"$_log" 2>/dev/null || _log=
+    # Oldest first by name (the start time leads it), all but the last 50.
+    ls "$_common/klipp-pre-push.logs" 2>/dev/null | sort | head -n -50 | while read -r _old; do
+        rm -f "$_common/klipp-pre-push.logs/$_old"
+    done
+fi
+# A check's output, to the terminal and to the log; its exit status is
+# the check's, not tee's.
+_logged() {
+    if [ -z "$_log" ]; then
+        "$@"
+        return
+    fi
+    # Through tee cargo sees no terminal and drops its colours; keep them
+    # for a push run from one.
+    [ -t 1 ] && [ -z "${CARGO_TERM_COLOR:-}" ] && CARGO_TERM_COLOR=always && export CARGO_TERM_COLOR
+    { "$@" 2>&1; echo $? >"$_log.status"; } | tee -a "$_log"
+    _rc=$(cat "$_log.status" 2>/dev/null || echo 1)
+    rm -f "$_log.status"
+    return "$_rc"
+}
 _record() {
     _status=$1
     [ -n "$_queue" ] || return 0
@@ -446,7 +474,7 @@ _record() {
         *) _result=fail ;;
     esac
     _history="$_common/klipp-pre-push.history"
-    printf '%s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "$ROOT" >>"$_history" 2>/dev/null || return 0
+    printf '%s %s %s %s %s %s %s\n' "$_started" "$(date +%s)" "$_result" "$_step" "${_branch:-?}" "$ROOT" "${_log:--}" >>"$_history" 2>/dev/null || return 0
     if [ "$(wc -l <"$_history" 2>/dev/null || echo 0)" -gt 400 ]; then
         tail -n 200 "$_history" >"$_history.new" 2>/dev/null && mv -f "$_history.new" "$_history" 2>/dev/null || true
     fi
@@ -518,7 +546,7 @@ case "$_available" in
 esac
 
 _step=lint
-if ! cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
+if ! _logged cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
     printf '\n  pre-push: clippy warned — push refused.\n' >&2
     printf '            Fix it, or if the lint is wrong for this code, decline\n' >&2
     printf '            it with a reason: in place with #[allow], or for the\n' >&2
@@ -527,7 +555,7 @@ if ! cargo clippy --workspace --all-targets -- -D warnings 9>&-; then
 fi
 
 _step=docs
-if ! RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-; then
+if ! _logged env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps 9>&-; then
     printf '\n  pre-push: rustdoc warned — push refused.\n' >&2
     printf '            Usually a [`link`] to something renamed or private, or a\n' >&2
     printf '            bare [0,1] or Vec<T> in prose that needs backticks.\n\n' >&2
@@ -538,7 +566,7 @@ fi
 # rather than as "tests FAILED" — which sends you reading test names
 # for a problem that is not in any of them.
 _step=build
-if ! cargo test --workspace --no-run 9>&-; then
+if ! _logged cargo test --workspace --no-run 9>&-; then
     printf '\n  pre-push: the tests did not BUILD — push refused.\n' >&2
     printf '            Nothing ran. This is a compile or link error, not a\n' >&2
     printf '            failing assertion.\n\n' >&2
@@ -550,7 +578,7 @@ if ! cargo test --workspace --no-run 9>&-; then
 fi
 
 _step=tests
-if cargo test --workspace 9>&-; then
+if _logged cargo test --workspace 9>&-; then
     printf '\n  pre-push: tests pass.\n\n'
     exit 0
 fi
