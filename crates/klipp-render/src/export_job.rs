@@ -202,36 +202,25 @@ impl ExportJob {
             if let Ok(mut r) = self.loudness_result.lock() {
                 *r = Some(format!("Loudness: {target_lufs:.1} LUFS requested\u{2026}"));
             }
-            // A limiter takes loudness with the peaks it holds, so the gain
-            // that reaches the target through it is a little more than the
-            // arithmetic says. Measured, not guessed: the mix goes through
-            // the chain again and the gain takes up the shortfall.
-            let mut gain_db = analysis.applied_gain_db;
-            if analysis.peak_limited {
-                for pass in 0..LIMITED_GAIN_PASSES {
-                    let mut trial = DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, gain_db, true, ceiling_dbtp);
-                    let mut trial_mix = AudioMixdown::new(&self.snapshot)?;
+            // A limited delivery's gain and limiter margin are measured
+            // through the chain, not taken from the arithmetic (#781).
+            let (gain_db, margin_db) = if analysis.peak_limited {
+                let (snapshot, cancel, id) = (&self.snapshot, &self.cancel, self.id);
+                fit_limited(snapshot.sample_rate, target_lufs, ceiling_dbtp, analysis.applied_gain_db, id, |trial| {
+                    let mut trial_mix = AudioMixdown::new(snapshot)?;
                     for frame_num in start_frame..end_frame {
-                        if self.cancel.load(Ordering::Relaxed) {
+                        if cancel.load(Ordering::Relaxed) {
                             return Err(RenderError::Cancelled);
                         }
                         let mut audio = trial_mix.get_frame_audio(frame_num);
                         trial.process(&mut audio);
                     }
-                    let Some(got) = trial.measured_lufs().filter(|l| l.is_finite()) else { break };
-                    let shortfall = target_lufs - got;
-                    info!(
-                        "ExportJob {}: limited pass {}: {gain_db:.2} dB of gain measures {got:.2} LUFS, {shortfall:+.2} from the target",
-                        self.id, pass + 1,
-                    );
-                    if shortfall.abs() < 0.1 {
-                        break;
-                    }
-                    // Never more than the limiter can take without pumping.
-                    gain_db = (gain_db + shortfall).min(analysis.applied_gain_db + LIMITED_GAIN_EXTRA_DB);
-                }
-            }
-            DeliveryChain::normalising(self.snapshot.sample_rate, target_lufs, gain_db, analysis.peak_limited, ceiling_dbtp)
+                    Ok(())
+                })?
+            } else {
+                (analysis.applied_gain_db, LIMITER_CEILING_MARGIN_DB)
+            };
+            DeliveryChain::limited_by(self.snapshot.sample_rate, target_lufs, gain_db, analysis.peak_limited, ceiling_dbtp, margin_db)
         } else {
             DeliveryChain::unity()
         };
@@ -684,6 +673,54 @@ const LIMITER_KNEE_DB: f32 = 1.3;
 /// gain the corrections may take it.
 const LIMITED_GAIN_PASSES: usize = 3;
 const LIMITED_GAIN_EXTRA_DB: f32 = 3.0;
+/// How far under the true-peak ceiling the limiter's own ceiling may be
+/// pushed when a pass through it measures true peaks over: bright
+/// transients (a whoosh, a hi-hat) run further over their samples than
+/// the margin allows for (#781).
+const LIMITER_CEILING_MARGIN_MAX_DB: f32 = 3.0;
+/// Taken off with each correction on top of the overshoot measured, so
+/// the next pass lands under the ceiling rather than on it.
+const LIMITER_OVERSHOOT_PAD_DB: f32 = 0.05;
+
+/// The gain and the limiter margin that bring a limited delivery to
+/// `target_lufs` with its true peak under `ceiling_dbtp`, starting from
+/// the arithmetic gain. A limiter takes loudness with the peaks it
+/// holds, so the gain that reaches the target through it is a little
+/// more than the arithmetic says; and it holds sample peaks, so the true
+/// peak between them can pass its ceiling. Measured, not guessed: `run`
+/// sends the whole mix through a trial chain, the gain takes up the
+/// loudness shortfall and the margin the true peak over the ceiling.
+fn fit_limited(
+    sample_rate: u32,
+    target_lufs: f32,
+    ceiling_dbtp: f32,
+    arithmetic_gain_db: f32,
+    id: impl std::fmt::Display,
+    mut run: impl FnMut(&mut DeliveryChain) -> Result<(), RenderError>,
+) -> Result<(f32, f32), RenderError> {
+    let (mut gain_db, mut margin_db) = (arithmetic_gain_db, LIMITER_CEILING_MARGIN_DB);
+    for pass in 0..LIMITED_GAIN_PASSES {
+        let mut trial = DeliveryChain::limited_by(sample_rate, target_lufs, gain_db, true, ceiling_dbtp, margin_db);
+        run(&mut trial)?;
+        let Some(got) = trial.measured_lufs().filter(|l| l.is_finite()) else { break };
+        let shortfall = target_lufs - got;
+        let over = trial.measured_true_peak_dbtp().map_or(0.0, |p| p - ceiling_dbtp);
+        info!(
+            "ExportJob {id}: limited pass {}: {gain_db:.2} dB of gain under a {:.2} dB margin measures {got:.2} LUFS, \
+             {shortfall:+.2} from the target, true peak {over:+.2} dB from the ceiling",
+            pass + 1, margin_db,
+        );
+        if shortfall.abs() < 0.1 && over <= 0.0 {
+            break;
+        }
+        if over > 0.0 {
+            margin_db = (margin_db + over + LIMITER_OVERSHOOT_PAD_DB).min(LIMITER_CEILING_MARGIN_MAX_DB);
+        }
+        // Never more than the limiter can take without pumping.
+        gain_db = (gain_db + shortfall).min(arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB);
+    }
+    Ok((gain_db, margin_db))
+}
 
 /// The delivery's sound: the normalisation gain, a limiter when that
 /// gain would push the peaks past the ceiling, and a meter on what is
@@ -711,13 +748,20 @@ impl DeliveryChain {
         }
     }
 
-    /// `gain_db` towards `target_lufs`; with `limit`, a limiter after it
-    /// holding the peaks under `ceiling_dbtp`.
+    /// `limited_by` with the limiter's usual margin.
+    #[cfg(test)]
     fn normalising(sample_rate: u32, target_lufs: f32, gain_db: f32, limit: bool, ceiling_dbtp: f32) -> Self {
+        Self::limited_by(sample_rate, target_lufs, gain_db, limit, ceiling_dbtp, LIMITER_CEILING_MARGIN_DB)
+    }
+
+    /// `gain_db` towards `target_lufs`; with `limit`, a limiter after it
+    /// holding the peaks under `ceiling_dbtp`, its own ceiling `margin_db`
+    /// under that (`fit_limited` widens it for bright transients).
+    fn limited_by(sample_rate: u32, target_lufs: f32, gain_db: f32, limit: bool, ceiling_dbtp: f32, margin_db: f32) -> Self {
         use klipp_audio::dsp::AudioEffect;
         let limiter = limit.then(|| {
             let mut l = klipp_audio::dsp::limiter::Limiter::new(sample_rate);
-            let ceiling = ceiling_dbtp - LIMITER_CEILING_MARGIN_DB;
+            let ceiling = ceiling_dbtp - margin_db;
             l.set_param("threshold", ceiling - LIMITER_KNEE_DB);
             l.set_param("ceiling", ceiling);
             // No lookahead: it would delay the sound against the picture.
@@ -757,6 +801,11 @@ impl DeliveryChain {
     /// The integrated loudness of what went through so far.
     fn measured_lufs(&self) -> Option<f32> {
         self.meter.as_ref().map(|m| m.readings().integrated)
+    }
+
+    /// The true peak of what went through so far, in dBTP.
+    fn measured_true_peak_dbtp(&self) -> Option<f32> {
+        self.meter.as_ref().map(|m| m.readings().true_peak_dbfs)
     }
 
     /// What was written, measured. `None` without normalisation.
@@ -1001,6 +1050,48 @@ mod tests {
         plain.process(&mut audio);
         assert!(audio.iter().all(|s| (*s - 0.25).abs() < 1e-6));
         assert!(DeliveryChain::unity().report().is_none());
+    }
+
+    /// #781: bright transients whose true peak runs further over their
+    /// samples than the limiter's margin. A bed at about the target with
+    /// a 5 ms burst of 12 kHz four times a second, sampled 33° off its
+    /// crests so it peaks 1.5 dB above every sample: the fixed margin lets
+    /// the bursts through over the ceiling; the fitted one holds them and
+    /// the loudness stays on the target.
+    #[test]
+    fn a_limited_delivery_holds_its_true_peak_under_the_ceiling() {
+        let sr = 48000;
+        let mix: Vec<f32> = (0..sr as usize * 4)
+            .flat_map(|i| {
+                let bed = 0.2 * (std::f32::consts::TAU * 200.0 * i as f32 / sr as f32).sin();
+                let burst = if i % (sr as usize / 4) < 240 { (std::f32::consts::FRAC_PI_2 * i as f32 + 33f32.to_radians()).sin() } else { 0.0 };
+                [bed + burst, bed + burst]
+            })
+            .collect();
+        let feed = |chain: &mut DeliveryChain| {
+            for block in mix.chunks(3200) {
+                let mut audio = block.to_vec();
+                chain.process(&mut audio);
+            }
+        };
+
+        let mut fixed = DeliveryChain::normalising(sr, -14.0, 0.0, true, -1.0);
+        feed(&mut fixed);
+        assert!(fixed.report().unwrap().contains("over the -1.0 dBTP ceiling"), "the case needs the fit: {}", fixed.report().unwrap());
+
+        let (gain_db, margin_db) = fit_limited(sr, -14.0, -1.0, 0.0, "test", |trial| {
+            feed(trial);
+            Ok(())
+        })
+        .unwrap();
+        assert!(margin_db > LIMITER_CEILING_MARGIN_DB, "the margin was not widened: {margin_db}");
+        let mut fitted = DeliveryChain::limited_by(sr, -14.0, gain_db, true, -1.0, margin_db);
+        feed(&mut fitted);
+        let peak = fitted.measured_true_peak_dbtp().unwrap();
+        assert!(peak <= -1.0, "true peak {peak:.2} dBTP over the -1.0 ceiling");
+        let lufs = fitted.measured_lufs().unwrap();
+        assert!((lufs + 14.0).abs() < 0.3, "the loudness left the target: {lufs:.2} LUFS");
+        assert!(!fitted.report().unwrap().contains("over the"), "{}", fitted.report().unwrap());
     }
 
     #[test]
