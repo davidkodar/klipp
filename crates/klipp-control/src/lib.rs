@@ -2408,14 +2408,13 @@ fn group_look(seq: &klipp_timeline::Sequence, tc: klipp_core::Timecode) -> Optio
 
 /// What a group that leaves the look on purpose is judged against:
 /// faults only. Clipping, crushed blacks, log left ungraded, noise and
-/// banding are judged whatever the target; a face lost or blown is a
-/// fault too (#461), so the unbriefed skin exposure stays. No cast, black
-/// point or taste numbers: the unbriefed target's neutral cast told a
-/// group warm on purpose that its neutrals sat toward orange, shot after
-/// shot (#811 review).
+/// banding are judged whatever the target, and so is a face lost or
+/// blown (skin_lightness). No cast, black point, face exposure or taste
+/// numbers: the unbriefed target's neutral cast told a group warm on
+/// purpose that its neutrals sat toward orange shot after shot, and its
+/// face exposure would fail a section dark on purpose (#811 review).
 fn departing_look() -> klipp_color::measure::LookTarget {
-    use klipp_color::measure::LookTarget;
-    LookTarget { name: "off the look on purpose".into(), skin_l: LookTarget::unbriefed().skin_l, ..Default::default() }
+    klipp_color::measure::LookTarget { name: "off the look on purpose".into(), ..Default::default() }
 }
 
 /// A look given by name alone takes the preset's numbers.
