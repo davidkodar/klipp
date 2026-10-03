@@ -737,7 +737,6 @@ mod next_step_tests {
         let titled = Trail { pictures_placed: true, titled: true, ..Default::default() };
         let done = next_after_ops(&ops, Some(&brief), Trail { graded: true, ..titled }).unwrap();
         assert!(done.ends_with("(klipp_beats), then check."), "{done}");
-        // Music already on a track: the cut is to it, not advised again.
         // Music on a track and the cut on its beats: not advised again.
         let scored = next_after_ops(&ops, Some(&brief), Trail { graded: true, music_on_track: true, cut_to_beat: true, ..titled }).unwrap();
         assert!(!scored.contains("beat") && scored.ends_with("(frame_at across the cut), then check."), "{scored}");
@@ -760,17 +759,18 @@ mod next_step_tests {
             .iter()
             .map(|&(a, b)| klipp_timeline::Clip::media(shot, tc(a), tc(b), tc(10.0 + a), tc(10.0 + b)))
             .collect();
-        // The bed starts a quarter second into the timeline and plays its
-        // file from a quarter second in: only a mapping that takes both
-        // into account puts its beats on the cuts.
-        let bed = klipp_timeline::Clip::media(song, tc(0.25), tc(8.25), tc(0.25), tc(8.25));
-        let beats = |offset: f64| klipp_analysis::beats::BeatData { bpm: 120.0, confidence: 0.9, beat_times: (0..16).map(|i| offset + i as f64 * 0.5).collect() };
-        // Beats every half second of the file, so on the cuts at 2, 4 and 6 s: on.
-        assert!(cuts_on_beat(&seq, &bed, &beats(0.0)));
-        // A quarter second off the beat: off.
-        assert!(!cuts_on_beat(&seq, &bed, &beats(0.25)));
+        // The bed sits 0.75 s into the timeline and plays its file from
+        // 0.25 s in; its beats fall every second of the file from 0.5 s, so
+        // on the timeline at 1, 2, 3 s… only when both offsets are taken
+        // into account. Ignoring either, or both, puts them a quarter or a
+        // half second off the cuts at 2, 4 and 6 s.
+        let bed = klipp_timeline::Clip::media(song, tc(0.75), tc(8.75), tc(0.25), tc(8.25));
+        let beats = |first: f64| klipp_analysis::beats::BeatData { bpm: 60.0, confidence: 0.9, beat_times: (0..9).map(|i| first + i as f64).collect() };
+        assert!(cuts_on_beat(&seq, &bed, &beats(0.5)));
+        // The same beats half a second later: off.
+        assert!(!cuts_on_beat(&seq, &bed, &beats(1.0)));
         // A read the detector was unsure of says nothing.
-        assert!(!cuts_on_beat(&seq, &bed, &klipp_analysis::beats::BeatData { confidence: 0.2, ..beats(0.0) }));
+        assert!(!cuts_on_beat(&seq, &bed, &klipp_analysis::beats::BeatData { confidence: 0.2, ..beats(0.5) }));
         // Two cuts are too few to call a cut to the music.
         seq.tracks[v].clips.truncate(3);
         assert!(!cuts_on_beat(&seq, &bed, &beats(0.0)));
@@ -6404,7 +6404,9 @@ reference:   {}",
             if !has_audio {
                 return Err(format!("{filename} has no sound to find a beat in"));
             }
-            let b = klipp_analysis::beats::detect(std::path::Path::new("ffmpeg"), &path, 0.0)?;
+            // Kept in the analysis store too, so the next-step hint can tell
+            // whether the cut is on these beats without reading them again.
+            let b = klipp_analysis::beats::read_and_cache(std::path::Path::new("ffmpeg"), &path)?;
             let text = if b.confidence < 0.3 {
                 format!("{filename}: no clear beat (match {:.0}%). Probably speech or ambience, not music.", b.confidence * 100.0)
             } else {

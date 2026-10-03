@@ -177,8 +177,6 @@ pub fn detect_from_pcm(pcm: &[f32], sample_rate: u32) -> BeatData {
     BeatData { bpm: bpm as f32, confidence, beat_times }
 }
 
-/// Tempo and beats from a media file, decoded through ffmpeg. Reads up to
-/// `max_secs` (0 for the default cap) from the start.
 /// The store's name and schema version for a file's beat read.
 pub const CACHE_ID: &str = "beats";
 pub const CACHE_VERSION: u32 = 1;
@@ -202,6 +200,8 @@ pub fn read_and_cache(ffmpeg: &Path, path: &Path) -> Result<BeatData, String> {
     Ok(beats)
 }
 
+/// Tempo and beats from a media file, decoded through ffmpeg. Reads up to
+/// `max_secs` (0 for the default cap) from the start.
 pub fn detect(ffmpeg: &Path, path: &Path, max_secs: f64) -> Result<BeatData, String> {
     const SR: u32 = 22_050;
     let cap = if max_secs > 0.0 { max_secs } else { 180.0 };
