@@ -206,6 +206,25 @@ pub struct TrackJson {
     pub magnetic_role: Option<klipp_timeline::TrackRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storyline_anchor: Option<klipp_timeline::MagneticAnchor>,
+    /// The track's own effects, grade and audio chain (#846). Skipped
+    /// when it has none, so a project without them is written as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<TrackEffectsJson>,
+}
+
+/// A track's own effects (#846). The picture effects are kept as JSON and
+/// read one by one on load, as a clip's are, so an effect from a newer
+/// Klipp refuses the load by name instead of costing the track the rest.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct TrackEffectsJson {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_enabled: Vec<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<klipp_nodes::NodeGraph>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio: Vec<klipp_core::AudioEffectInstance>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1117,6 +1136,7 @@ mod tests {
             let track = TrackJson {
                 magnetic_role: None,
                 storyline_anchor: None,
+                effects: None,
                 id: "t1".to_string(),
                 name: "A1".to_string(),
                 kind: "Audio".to_string(),
@@ -1160,6 +1180,7 @@ mod tests {
         let track = TrackJson {
             magnetic_role: None,
             storyline_anchor: None,
+            effects: None,
             id: "t1".to_string(),
             name: "A1".to_string(),
             kind: "Audio".to_string(),
@@ -1190,6 +1211,7 @@ mod tests {
         let track = TrackJson {
             magnetic_role: None,
             storyline_anchor: None,
+            effects: None,
             id: "t1".to_string(),
             name: "A1".to_string(),
             kind: "Audio".to_string(),

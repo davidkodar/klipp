@@ -506,6 +506,20 @@ fn timeline_text(
         if t.locked {
             head.push_str("  locked");
         }
+        // What the track does to every clip on it (#846), not repeated on
+        // each clip below, which lists only its own.
+        let fx = &t.effects;
+        if !fx.is_empty() {
+            let mut said: Vec<String> = fx.video.iter().map(|e| {
+                let d = format!("{e:?}");
+                d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
+            }).collect();
+            if fx.grade.as_ref().is_some_and(|g| !g.is_identity()) {
+                said.push("grade".into());
+            }
+            said.extend(fx.audio.iter().map(|e| if e.enabled { e.effect_type.clone() } else { format!("{} (bypassed)", e.effect_type) }));
+            let _ = write!(head, "  track effects: {}", said.join(", "));
+        }
         if t.clips.is_empty() {
             head.push_str("  (empty)");
         }
@@ -3776,7 +3790,9 @@ fn handle(
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
-            list_clips(&seq, &pool, ctx.shared.revision(), &ClipFilter { full, track, from_secs, to_secs, media_id })
+            // Each clip as the document has it: the engine's copy carries
+            // its track's effects and its group's grade too (#846).
+            list_clips(&seq.with_own_grades(), &pool, ctx.shared.revision(), &ClipFilter { full, track, from_secs, to_secs, media_id })
         }
 
         ControlCommand::Analyze { media_id, download_models, wait, timeout_ms } => {
@@ -5350,7 +5366,7 @@ fn handle(
             }
             let presented = ctx.frame_buffer.lock().ok().and_then(|fb| fb.shown_presented()).map(|t| t.to_secs_f64());
             let view = TimelineView { track, from_secs, to_secs };
-            let full = timeline_text(&seq, &pool, presented, ctx.shared.revision(), view);
+            let full = timeline_text(&seq.with_own_grades(), &pool, presented, ctx.shared.revision(), view);
             let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(12_000));
             Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
         }
@@ -6676,7 +6692,7 @@ reference:   {}",
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
-                (timeline_text(&seq, &pool, None, ctx.shared.revision(), TimelineView::default()), clips)
+                (timeline_text(&seq.with_own_grades(), &pool, None, ctx.shared.revision(), TimelineView::default()), clips)
             };
             // What to do next, from where the work stands.
             let next = if media.is_empty() {

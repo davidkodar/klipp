@@ -280,6 +280,12 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 automation_lane_height: t.automation_lane_height,
                 magnetic_role: Some(t.magnetic_role.clone()),
                 storyline_anchor: t.storyline_anchor.clone(),
+                effects: (!t.effects.is_empty()).then(|| crate::format::TrackEffectsJson {
+                    video: if t.effects.video.is_empty() { None } else { serde_json::to_value(&t.effects.video).ok() },
+                    video_enabled: t.effects.video_enabled.clone(),
+                    grade: t.effects.grade.clone().filter(|g| !g.is_identity()),
+                    audio: t.effects.audio.clone(),
+                }),
                 transitions: t.transitions.iter().map(|tr| {
                     TransitionJson {
                         id: tr.id.to_string(),

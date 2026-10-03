@@ -387,6 +387,15 @@ impl SequenceSnapshot {
         use_marked_range: bool,
         working_colorspace: klipp_core::WorkingColorspace,
     ) -> Result<Self, RenderError> {
+        // The render copy, made here as the viewer makes it: grade groups
+        // and each track's effects baked onto the clips (#846). The sound
+        // below is read from this sequence before it is flattened, so it
+        // must carry its tracks' audio chains already; flattening it again
+        // finds every clip baked and leaves it.
+        let baked_all: Option<Vec<Sequence>> = all_sequences.iter().any(Sequence::bakes_for_render).then(|| all_sequences.iter().map(|s| s.baked_for_render().into_owned()).collect());
+        let all_sequences = baked_all.as_deref().unwrap_or(all_sequences);
+        let baked = seq.baked_for_render();
+        let seq: &Sequence = &baked;
         // The delivery frame rate. When the export overrides the
         // sequence's, every frame count below is at the override:
         // the render loop asks the timeline for frame `n` at
@@ -1138,6 +1147,45 @@ mod tests {
         assert_eq!(at.pan, -0.5);
         assert_eq!(at.clips.len(), 1);
         assert_eq!(at.clips[0].source_start_secs, 1.0);
+    }
+
+    /// #846: the export carries each track's effects on its clips as the
+    /// viewer's render copy does: a sound with its track's audio chain
+    /// after its own, a picture with its track's effects after its own, in
+    /// the same order as the flattened sequence the viewer is given.
+    #[test]
+    fn the_export_carries_each_tracks_effects_as_the_viewer_does() {
+        use klipp_effects::BuiltinEffect as E;
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip.mp4"));
+        let clip = || Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Media { media_id },
+            timeline_in: make_rational(0, 24),
+            timeline_out: make_rational(48, 24),
+            source_in: make_rational(24, 24),
+            source_out: make_rational(72, 24),
+            ..Clip::gap(make_rational(0, 24), make_rational(48, 24))
+        };
+        let fx = |kind: &str| klipp_core::AudioEffectInstance { effect_type: kind.into(), enabled: true, wet_dry: 1.0, params: vec![] };
+        let mut seq = make_sequence();
+        let mut picture = clip();
+        picture.builtin_effects = vec![E::Opacity { value: 0.9 }];
+        seq.tracks[0].clips.push(picture); // V1
+        seq.tracks[0].effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
+        let mut sound = clip();
+        sound.audio_effects = vec![fx("eq")];
+        seq.tracks[1].clips.push(sound); // A1
+        seq.tracks[1].effects.audio = vec![fx("limiter")];
+
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &make_settings(), None, false, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let chain: Vec<&str> = snap.audio_tracks[0].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(chain, vec!["eq", "limiter"], "the clip's chain, then its track's");
+        let exported = &snap.video.sequence.tracks[0].clips[0].builtin_effects;
+        assert!(matches!(exported.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{exported:?}");
+        let viewer = klipp_timeline::flatten::flatten_sequence(&seq, std::slice::from_ref(&seq));
+        assert_eq!(format!("{:?}", viewer.tracks[0].clips[0].builtin_effects), format!("{exported:?}"), "the viewer's render copy has the same");
     }
 
     /// #642: a retimed clip's sound is in the export, read at its speed

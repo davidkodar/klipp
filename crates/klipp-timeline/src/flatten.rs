@@ -33,7 +33,7 @@
 //! within those instances may be incorrect. Re-IDing flattened clips is
 //! deferred to a follow-up PRD.
 
-use crate::{Clip, ClipKind, GradeGroup, Sequence, Track, TrackKind};
+use crate::{Clip, ClipKind, Sequence, Track, TrackKind};
 use klipp_core::{ClipId, RationalTime, SequenceId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -129,13 +129,10 @@ pub const MAX_COMPOUND_DEPTH: u8 = 8;
 pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence {
     // Grade groups wrap each member's grade before anything is expanded,
     // each sequence with its own groups, so a scene inside a compound
-    // grades as it does on its own (#237).
-    if seq.grade_groups.iter().any(GradeGroup::grades) || all_sequences.iter().any(|s| s.grade_groups.iter().any(GradeGroup::grades)) {
-        let bake = |s: &Sequence| {
-            let mut s = s.clone();
-            s.bake_grade_groups();
-            s
-        };
+    // grades as it does on its own (#237); then each track's effects go
+    // onto its clips the same way (#846).
+    if seq.bakes_for_render() || all_sequences.iter().any(Sequence::bakes_for_render) {
+        let bake = |s: &Sequence| s.baked_for_render().into_owned();
         let all: Vec<Sequence> = all_sequences.iter().map(bake).collect();
         return flatten_within(&bake(seq), &all, &mut Vec::new(), None);
     }
@@ -610,7 +607,7 @@ pub fn slice_inner_clip_to_compound(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Sequence, Track, TrackKind};
+    use crate::{GradeGroup, Sequence, Track, TrackKind};
     use klipp_core::{Fps, MediaId, RationalTime, Resolution, SequenceId};
     use std::collections::BTreeMap;
 
@@ -633,6 +630,75 @@ mod tests {
             brief: None,
             edit_plan: None,
         }
+    }
+
+    /// #846: the render copy puts each track's effects on its clips after
+    /// their own: picture effects after the clip's, the track's grade after
+    /// the clip's and its group's, the audio chain after the clip's. A clip
+    /// added later takes them, gaps and adjustment layers take nothing,
+    /// baking again changes nothing, and the document is untouched.
+    #[test]
+    fn a_tracks_effects_go_on_every_clip_of_it_in_the_render_copy() {
+        use klipp_effects::BuiltinEffect as E;
+        let exposed = |ev: f32| {
+            let mut g = klipp_nodes::NodeGraph::default();
+            g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector).for_each(|n| n.params.exposure = Some(ev));
+            g
+        };
+        let corrector = |g: &klipp_nodes::NodeGraph| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+        let fx = |kind: &str| klipp_core::AudioEffectInstance { effect_type: kind.into(), enabled: true, wet_dry: 1.0, params: vec![] };
+        let mut seq = make_seq("scene");
+        let mut group = GradeGroup::new("Night");
+        group.post = Some(exposed(-1.0));
+        let group_node = corrector(group.post.as_ref().unwrap());
+        let track_grade = exposed(0.3);
+        let track_node = corrector(&track_grade);
+
+        let mut v = Track::new("V1", TrackKind::Video);
+        v.effects.video = vec![E::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.7 }];
+        v.effects.grade = Some(track_grade);
+        let mut a = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
+        a.builtin_effects = vec![E::Opacity { value: 0.5 }];
+        a.builtin_effects_enabled = vec![false];
+        a.grade_group = Some(group.id);
+        let own_node = corrector(&a.node_graph);
+        let mut adjustment = Clip::media(MediaId::new(), t(24), t(48), t(0), t(24));
+        adjustment.kind = ClipKind::AdjustmentLayer;
+        v.clips = vec![a, adjustment];
+        let mut sound = Track::new("A1", TrackKind::Audio);
+        sound.effects.audio = vec![fx("compressor")];
+        let mut line = Clip::media(MediaId::new(), t(0), t(24), t(0), t(24));
+        line.audio_effects = vec![fx("eq")];
+        sound.clips = vec![line];
+        seq.tracks = vec![v, sound];
+        seq.grade_groups = vec![group];
+        let before = seq.clone();
+
+        let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
+        let a = &flat.tracks[0].clips[0];
+        assert!(matches!(a.builtin_effects.as_slice(), [E::Opacity { .. }, E::Vignette { .. }]), "{:?}", a.builtin_effects);
+        assert_eq!(a.builtin_effects_enabled, vec![false, true], "the clip's own switch kept, the track's on");
+        let order: Vec<_> = a.node_graph.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
+        assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
+        assert!(flat.tracks[0].clips[1].builtin_effects.is_empty() && flat.tracks[0].clips[1].own_effects.is_none(), "an adjustment layer takes nothing");
+        let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
+        assert_eq!(chain, vec!["eq", "compressor"], "the clip's chain, then the track's");
+
+        // Baking the render copy again changes nothing.
+        let mut again = flat.clone();
+        again.bake_grade_groups();
+        again.bake_track_effects();
+        let effects = |s: &Sequence| s.all_clips().map(|c| (c.builtin_effects.clone(), c.audio_effects.clone(), c.node_graph.clone())).collect::<Vec<_>>();
+        assert!(effects(&again) == effects(&flat), "baked once, however often it is baked");
+
+        // The document keeps its own, and the render copy gives them back.
+        assert!(effects(&seq) == effects(&before), "the document is untouched");
+        assert!(effects(&flat.with_own_grades()) == effects(&seq), "the render copy gives back each clip's own");
+
+        // A clip added to the track later takes its effects too.
+        seq.tracks[1].clips.push(Clip::media(MediaId::new(), t(24), t(48), t(0), t(24)));
+        let flat = flatten_sequence(&seq, std::slice::from_ref(&seq));
+        assert_eq!(flat.tracks[1].clips[1].audio_effects.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), vec!["compressor"]);
     }
 
     /// #237: the render copy grades a group's members pre-clip, own,
