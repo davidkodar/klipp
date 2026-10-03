@@ -491,6 +491,10 @@ impl DiskRenderCache {
 /// the LZ4 payload's own size prefix are checked against each other
 /// before anything is decompressed, so a damaged file cannot ask for
 /// gigabytes (#823): its prefix must be exactly the frame's RGBA length.
+/// The most an LZ4 block expands: a match's length grows by 255 for each
+/// byte that encodes it.
+const MAX_LZ4_RATIO: u64 = 255;
+
 fn decode_entry(file: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     let header = |at: usize| file.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let (Some(width), Some(height), Some(prefix)) = (header(0), header(4), header(8)) else {
@@ -500,6 +504,14 @@ fn decode_entry(file: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         .ok_or_else(|| format!("a frame of {width}x{height}"))?;
     if prefix as usize != expected {
         return Err(format!("{width}x{height} wants {expected} bytes, the payload says {prefix}"));
+    }
+    // LZ4 expands at most 255 times, so a payload too short to hold the
+    // frame is refused before the frame's memory is reserved for it: a
+    // damaged entry could otherwise claim 16384x16384 with a matching
+    // prefix and a few bytes of payload, and reserve a gigabyte.
+    let payload = (file.len() - 12) as u64;
+    if (payload + 1) * MAX_LZ4_RATIO < expected as u64 {
+        return Err(format!("{payload} bytes of payload cannot hold a {width}x{height} frame"));
     }
     let rgba = lz4_flex::decompress_size_prepended(&file[8..]).map_err(|e| e.to_string())?;
     if rgba.len() != expected {
@@ -557,6 +569,17 @@ mod tests {
         assert!(decode_entry(&entry(4, 4, &[0; 8])).is_err());
         assert!(decode_entry(&entry(u32::MAX, u32::MAX, &[0; 8])).is_err());
         assert!(decode_entry(&good[..10]).is_err());
+        // The largest frame, its prefix agreeing, over a few bytes of
+        // payload: refused before a gigabyte is reserved for it.
+        let edge = klipp_media::disk_cache::MAX_CACHED_EDGE;
+        let mut claim = edge.to_le_bytes().to_vec();
+        claim.extend(edge.to_le_bytes());
+        claim.extend((edge * edge * 4).to_le_bytes());
+        claim.extend([0u8; 16]);
+        assert!(decode_entry(&claim).unwrap_err().contains("cannot hold"));
+        // The densest real payload, a frame of one colour, still passes.
+        let flat = vec![0u8; 2048 * 2048 * 4];
+        assert_eq!(decode_entry(&entry(2048, 2048, &flat)).unwrap().0.len(), flat.len());
         assert!(decode_entry(&good[..good.len() - 1]).is_err());
     }
 
