@@ -111,7 +111,7 @@ const MAX_DECODERS: usize = 25;
 
 /// How many decoders a grid of `angles` keeps open: one per angle, so
 /// eleven angles or more do not evict each other's decoder every batch
-/// (#84), within [`MIN_DECODERS`] and [`MAX_DECODERS`].
+/// (#84), never fewer than ten nor more than 25.
 pub fn decoders_for(angles: usize) -> usize {
     angles.clamp(MIN_DECODERS, MAX_DECODERS)
 }
