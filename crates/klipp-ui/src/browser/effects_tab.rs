@@ -543,112 +543,20 @@ pub fn show(
                             }
 
                             if resp.double_clicked() {
-                                if let Some(clip_id) = state.selected_clip {
-                                    push_recent(recent_effects, &fx.name);
-                                    match &fx.source {
-                                        EffectSource::Builtin(effect) => {
-                                            cmds.push(AppCommand::AddBuiltinEffect {
-                                                clip_id,
-                                                effect: effect.clone(),
-                                            });
-                                            state.toast.show(format!("\"{}\" applied", fx.name));
-                                        }
-                                        EffectSource::Look(effects) => {
-                                            for effect in effects {
-                                                cmds.push(AppCommand::AddBuiltinEffect {
-                                                    clip_id,
-                                                    effect: effect.clone(),
-                                                });
-                                            }
-                                            state.toast.show(format!("\"{}\" look applied ({} effects)", fx.name, effects.len()));
-                                        }
-                                        EffectSource::Ofx(plugin_name) => {
-                                            cmds.push(AppCommand::AddEffect {
-                                                clip_id,
-                                                plugin_name: plugin_name.clone(),
-                                            });
-                                            state.toast.show(format!("\"{}\" applied", fx.name));
-                                        }
-                                        EffectSource::Audio(_) => {
-                                            // Audio effects not yet applicable via double-click
-                                        }
-                                        EffectSource::Ladspa(plugin) => {
-                                            let type_id = format!(
-                                                "ladspa:{}:{}",
-                                                plugin.path.display(),
-                                                plugin.label
-                                            );
-                                            cmds.push(AppCommand::AddAudioEffect {
-                                                clip_id,
-                                                effect_type: type_id,
-                                            });
-                                            state.toast.show(format!(
-                                                "\"{}\" applied",
-                                                fx.name
-                                            ));
-                                        }
-                                        EffectSource::Frei0r(plugin) => {
-                                            let type_id = plugin.type_id();
-                                            // Hydrate default param values from the
-                                            // plugin's declared kinds so the inspector
-                                            // has something sensible to show
-                                            // immediately.
-                                            let params: Vec<klipp_frei0r::Frei0rValue> =
-                                                plugin
-                                                    .params
-                                                    .iter()
-                                                    .map(|p| {
-                                                        klipp_frei0r::Frei0rValue::default_for(
-                                                            p.kind,
-                                                        )
-                                                    })
-                                                    .collect();
-                                            cmds.push(AppCommand::AddBuiltinEffect {
-                                                clip_id,
-                                                effect: klipp_effects::BuiltinEffect::Frei0r {
-                                                    type_id,
-                                                    params,
-                                                },
-                                            });
-                                            state.toast.show(format!(
-                                                "\"{}\" applied",
-                                                fx.name
-                                            ));
-                                        }
-                                        EffectSource::Lv2(plugin) => {
-                                            // LV2 audio plugins ride the same
-                                            // AudioEffectInstance pipeline as
-                                            // LADSPA. type_id = "lv2:{uri}",
-                                            // params filled with plugin defaults
-                                            // keyed by stable lv2:symbol.
-                                            let type_id = plugin.type_id();
-                                            cmds.push(AppCommand::AddAudioEffect {
-                                                clip_id,
-                                                effect_type: type_id,
-                                            });
-                                            state.toast.show(format!(
-                                                "\"{}\" applied",
-                                                fx.name
-                                            ));
-                                        }
-                                        EffectSource::Clap(plugin) => {
-                                            // CLAP audio plugins ride the same
-                                            // pipeline. type_id = "clap:{plugin_id}",
-                                            // params keyed by stable u32 ParamID
-                                            // (hex-encoded).
-                                            let type_id = plugin.type_id();
-                                            cmds.push(AppCommand::AddAudioEffect {
-                                                clip_id,
-                                                effect_type: type_id,
-                                            });
-                                            state.toast.show(format!(
-                                                "\"{}\" applied",
-                                                fx.name
-                                            ));
-                                        }
-                                    }
-                                } else {
+                                // Every selected clip that can take it, as
+                                // one undo step (#842).
+                                let kind = match &fx.source {
+                                    EffectSource::Audio(_) | EffectSource::Ladspa(_) | EffectSource::Lv2(_) | EffectSource::Clap(_) => crate::effect_targets::EffectKind::Sound,
+                                    _ => crate::effect_targets::EffectKind::Picture,
+                                };
+                                let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, None, kind);
+                                if targets.clips.is_empty() {
                                     state.toast.show("Select a clip first".to_string());
+                                } else {
+                                    push_recent(recent_effects, &fx.name);
+                                    let source = fx.source.clone();
+                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| effect_commands(&source, clip_id)));
+                                    state.toast.show(crate::effect_targets::said(&fx.name, &targets));
                                 }
                             }
 
@@ -2030,6 +1938,27 @@ fn paint_effect_preview(
         _ => {
             painter.rect_filled(rect, 0.0, dim);
         }
+    }
+}
+
+/// The commands that put `source` on `clip_id`: a look's every effect, a
+/// frei0r plugin with its declared defaults, an audio plugin by its type.
+fn effect_commands(source: &EffectSource, clip_id: klipp_core::ClipId) -> Vec<AppCommand> {
+    match source {
+        EffectSource::Builtin(effect) => vec![AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }],
+        EffectSource::Look(effects) => effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect(),
+        EffectSource::Ofx(plugin_name) => vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_name.clone() }],
+        EffectSource::Audio(type_id) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }],
+        EffectSource::Ladspa(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: format!("ladspa:{}:{}", plugin.path.display(), plugin.label) }],
+        EffectSource::Frei0r(plugin) => {
+            // Its declared defaults, so the inspector has something
+            // sensible to show at once.
+            let params: Vec<klipp_frei0r::Frei0rValue> = plugin.params.iter().map(|p| klipp_frei0r::Frei0rValue::default_for(p.kind)).collect();
+            vec![AppCommand::AddBuiltinEffect { clip_id, effect: klipp_effects::BuiltinEffect::Frei0r { type_id: plugin.type_id(), params } }]
+        }
+        // LV2 and CLAP ride the same audio pipeline as LADSPA.
+        EffectSource::Lv2(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],
+        EffectSource::Clap(plugin) => vec![AppCommand::AddAudioEffect { clip_id, effect_type: plugin.type_id() }],
     }
 }
 

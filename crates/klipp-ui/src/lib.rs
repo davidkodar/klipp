@@ -47,6 +47,7 @@
 pub mod app;
 pub mod audio_plugins_disabled;
 pub mod browser;
+pub mod effect_targets;
 pub mod ai_tools;
 pub mod assistant_clients;
 pub mod cache_manager;

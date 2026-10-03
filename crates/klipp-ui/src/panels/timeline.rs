@@ -3004,7 +3004,11 @@ impl TimelinePanel {
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
                             if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
-                                if state.selected_clip != Some(clip_id) {
+                                // Dropped on a clip of the selection: the
+                                // whole selection takes it (#842), and stays
+                                // selected; dropped elsewhere, that clip.
+                                let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip_id), crate::effect_targets::EffectKind::Picture);
+                                if (!targets.clips.contains(&clip_id) || targets.clips.len() == 1) && state.selected_clip != Some(clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
                                 if is_builtin {
@@ -3049,14 +3053,14 @@ impl TimelinePanel {
                                         })
                                         .unwrap_or_default();
                                     if !effects.is_empty() {
-                                        for effect in effects {
-                                            cmds.push(AppCommand::AddBuiltinEffect { clip_id, effect });
-                                        }
-                                        state.toast.show(format!("\"{}\" applied to clip", name));
+                                        cmds.extend(crate::effect_targets::commands(&targets, |clip_id| {
+                                            effects.iter().map(|effect| AppCommand::AddBuiltinEffect { clip_id, effect: effect.clone() }).collect()
+                                        }));
+                                        state.toast.show(crate::effect_targets::said(&name, &targets));
                                     }
                                 } else {
-                                    cmds.push(AppCommand::AddEffect { clip_id, plugin_name: plugin_id });
-                                    state.toast.show(format!("\"{}\" applied to clip", name));
+                                    cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddEffect { clip_id, plugin_name: plugin_id.clone() }]));
+                                    state.toast.show(crate::effect_targets::said(&name, &targets));
                                 }
                             }
                         } else {
@@ -3108,11 +3112,14 @@ impl TimelinePanel {
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
                             if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
-                                if state.selected_clip != Some(clip_id) {
+                                // As a picture effect's drop: the selection
+                                // when dropped on it (#842).
+                                let targets = crate::effect_targets::targets(state.sequence(), state.selected_clip, &state.selected_clips, Some(clip_id), crate::effect_targets::EffectKind::Sound);
+                                if (!targets.clips.contains(&clip_id) || targets.clips.len() == 1) && state.selected_clip != Some(clip_id) {
                                     cmds.push(AppCommand::SelectClip(Some(clip_id)));
                                 }
-                                cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
-                                state.toast.show(format!("\"{}\" applied to clip", name));
+                                cmds.extend(crate::effect_targets::commands(&targets, |clip_id| vec![AppCommand::AddAudioEffect { clip_id, effect_type: type_id.clone() }]));
+                                state.toast.show(crate::effect_targets::said(&name, &targets));
                             }
                         } else {
                             state.drag_drop.end();
