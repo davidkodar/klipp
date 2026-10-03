@@ -693,7 +693,14 @@ pub enum Op {
     /// the track keep their place, so a gap or an overlap is yours to close.
     Retime {
         clip_id: ClipRef,
+        /// Left out (or 0) with `fit`.
+        #[serde(default)]
         speed: f64,
+        /// Fit to fill: the speed that makes the clip end where the next
+        /// clip on its track begins, in place of `speed` (#788). The
+        /// clip keeps its direction.
+        #[serde(default)]
+        fit: bool,
         /// Move the clips after it on its track, and on its linked sound's,
         /// by the change in length. Without it a clip made longer than the
         /// room before the next one is refused rather than laid over it.
@@ -1971,9 +1978,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather };
             qualify(seq, pool, i, ti, clip, q)
         }
-        Op::Retime { clip_id, speed, ripple } => {
-            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            retime(seq, pool, fps, i, clip.id, *speed, *ripple)
+        Op::Retime { clip_id, speed, fit, ripple } => {
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            let speed = if *fit {
+                if *speed != 0.0 {
+                    return Err(refuse(i, "both a speed and fit", "give speed, or fit to take the speed that fills the gap"));
+                }
+                fit_speed(seq, pool, i, ti, clip)?
+            } else {
+                *speed
+            };
+            retime(seq, pool, fps, i, clip.id, speed, *ripple)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -5070,6 +5085,24 @@ pub fn retime_at(seq: &Sequence, pool: &MediaPool, clip_id: ClipId, speed: f64, 
     retime(seq, pool, seq.fps, 0, clip_id, speed, ripple).map(|(what, edit, _)| (what, edit))
 }
 
+/// Fit to fill (#788): the speed at which `clip` runs from where it starts
+/// to where the next clip on its track begins, its direction kept. The
+/// room is whole frames, so the retimed clip lands on that frame; worked
+/// out by hand from a rounded speed it overran by one and was refused.
+fn fit_speed(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip) -> Result<f64, Refusal> {
+    let next = seq.tracks[ti].clips.iter().filter(|c| c.id != clip.id && c.timeline_in >= clip.timeline_out).map(|c| c.timeline_in).min();
+    let Some(next) = next else {
+        return Err(refuse(i, format!("nothing follows {} on its track to fit it to", clip_name(seq, pool, clip)), "give speed instead, or place the clip that should follow first"));
+    };
+    let room = secs(next - clip.timeline_in);
+    let source = secs(clip.source_out - clip.source_in);
+    if room <= 0.0 || source <= 0.0 {
+        return Err(refuse(i, "no room to fit the clip into", "give speed instead"));
+    }
+    let speed = source / room;
+    Ok(if clip.speed < 0.0 { -speed } else { speed })
+}
+
 /// The clip and its linked sound (or picture) take `speed` together, so
 /// the pair stays the same length and in step. Each grows or shrinks
 /// from its start. What follows on their tracks moves by the change with
@@ -8001,14 +8034,30 @@ mod tests {
 
         // Retime to 2x halves the clip (clip a is 0-4, clip b starts at 4;
         // 2x makes a 0-2, a gap opens), its linked sound with it.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, ripple: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 2.0, fit: false, ripple: false }]).unwrap();
         assert!(plan.steps[0].what.contains("2.00x") && plan.steps[0].what.contains("0.00-2.00 s") && plan.steps[0].what.contains("its sound at that speed"), "{}", plan.steps[0].what);
+        // Fit to fill (#788): sped up to leave a gap, then fitted, a lands
+        // back on b's first frame at 1x; b has nothing after it to fill to,
+        // and a speed with fit is one too many.
+        let ops = [
+            Op::Retime { clip_id: ClipRef::Id(a), speed: 1.7, fit: false, ripple: false },
+            Op::Retime { clip_id: ClipRef::Id(a), speed: 0.0, fit: true, ripple: false },
+        ];
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[1].what.contains("1.00x") && plan.steps[1].what.contains("0.00-4.00 s"), "{}", plan.steps[1].what);
+        let b = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.timeline_in == tc(4.0) && matches!(c.kind, ClipKind::Media { .. }))).unwrap().id;
+        let last = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(b), speed: 0.0, fit: true, ripple: false }]);
+        assert!(last.is_err_and(|r| r.why.contains("nothing follows")), "b is last on its track");
+        let both = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: true, ripple: false }]).unwrap_err();
+        assert!(both.why.contains("both a speed and fit"), "{}", both.why);
+        let as_sent: Vec<Op> = serde_json::from_str(r#"[{"op":"retime","clip_id":{"track":0,"secs":1.0},"fit":true}]"#).unwrap();
+        assert!(matches!(as_sent[0], Op::Retime { fit: true, speed, .. } if speed == 0.0), "fit alone parses");
         // Half speed would run over b: refused, not laid over it (#639).
-        let refused = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, ripple: false }]).unwrap_err();
+        let refused = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: false }]).unwrap_err();
         assert!(refused.why.contains("would run over") && refused.hint.contains("ripple"), "{}", refused.why);
         // With ripple, b and everything after it on both tracks move on by
         // the four seconds a grew, and undo puts them back.
-        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, ripple: true }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Retime { clip_id: ClipRef::Id(a), speed: 0.5, fit: false, ripple: true }]).unwrap();
         assert!(plan.steps[0].what.contains("later clip(s) moved +4.00 s"), "{}", plan.steps[0].what);
         let mut seqs = vec![seq.clone()];
         let (mut p, mut f) = (pool.clone(), seq.fps);

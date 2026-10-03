@@ -260,9 +260,12 @@ exist until the plan runs.
   and darker. Put it on every such clip when asked to fill the bars.
 - `stabilize {clip_id, smoothing?}`: steady a shaky clip; it crops the
   edges a little to hide the movement.
-- `retime {clip_id, speed, ripple?}`: change a clip's speed, its linked
+- `retime {clip_id, speed | fit, ripple?}`: change a clip's speed, its linked
   sound with it. Above 1 is faster and shorter, below 1 slower and
-  longer, negative plays it reversed. Its sound plays at the speed, its
+  longer, negative plays it reversed. `fit: true` in place of `speed` is
+  fit to fill: the speed that makes the clip end exactly where the next
+  clip on its track begins, worked out for you (a shot slowed to fill a
+  bar, a slot left for it in a cut to music). Its sound plays at the speed, its
   pitch moving with it as tape's does, backward when reversed; music and
   other tracks are untouched. (A speed ramp's own sound is silent.)
   With `ripple` the clips after it on its tracks move by the change in
