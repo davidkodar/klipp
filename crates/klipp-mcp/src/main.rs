@@ -2377,7 +2377,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Download a searched music track OR sound effect into the media pool, keeping its licence and \
               attribution beside the file for your export credits. Pass the fields from a \
               klipp_search_music result (title, artist, download_url, license, license_url, \
-              page_url). Then place it on an audio track, mark the track Music, and duck it \
+              page_url). Then place it on an audio track (place marks it music) and duck it \
               under speech. Honour the licence — keep non-commercial tracks out of commercial work.",
              json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" } }),
              vec![]),

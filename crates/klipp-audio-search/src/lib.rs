@@ -392,6 +392,20 @@ Source page: {}
     Ok(audio_path)
 }
 
+/// Which library `audio` was fetched from, read from the credit file
+/// `download_track` wrote beside it: its source page names the library.
+/// `None` for a file with no credit beside it, or one naming neither.
+pub fn library_source(audio: &std::path::Path) -> Option<Source> {
+    let credit = std::fs::read_to_string(audio.with_extension("klipp-credit.txt")).ok()?;
+    let page = credit.lines().find_map(|l| l.strip_prefix("Source page:"))?.trim();
+    let host = page.split("://").nth(1)?.split('/').next()?;
+    match host.trim_start_matches("www.") {
+        "jamendo.com" => Some(Source::JamendoMusic),
+        "freesound.org" => Some(Source::Freesound),
+        _ => None,
+    }
+}
+
 /// Download a URL's bytes into memory — for a quick preview that plays
 /// without touching disk.
 pub fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -514,6 +528,24 @@ pub fn download_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// #797: the credit beside a download says which library it came
+    /// from; a file without one is no library's.
+    #[test]
+    fn the_credit_names_the_library() {
+        let dir = std::env::temp_dir().join(format!("klipp-library-source-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let credit = |name: &str, page: &str| {
+            let audio = dir.join(format!("{name}.mp3"));
+            std::fs::write(audio.with_extension("klipp-credit.txt"), format!("\"x\" by y — CC BY ({page})\nLicence: CC BY (https://creativecommons.org/licenses/by/4.0/)\nSource page: {page}\n")).unwrap();
+            audio
+        };
+        assert_eq!(library_source(&credit("song", "https://www.jamendo.com/track/123/song")), Some(Source::JamendoMusic));
+        assert_eq!(library_source(&credit("whip", "https://freesound.org/people/a/sounds/734692/")), Some(Source::Freesound));
+        assert_eq!(library_source(&credit("other", "https://example.com/a")), None);
+        assert_eq!(library_source(&dir.join("bare.mp3")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn track(title: &str, tags: &[&str]) -> Track {
