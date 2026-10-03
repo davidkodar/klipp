@@ -280,6 +280,12 @@ exist until the plan runs.
   With `ripple` the clips after it on its tracks move by the change in
   length; without it a gap is left where it shrinks, and a clip that
   would grow into the next one is refused.
+- `replace {clip_id, media_id, source_in?}`: another file, or another part
+  of one, in a clip's slot: the same place, length and speed, with its
+  grade, effects, role, volume, links and transitions kept and its linked
+  sound moved to the same file. `source_in` is where in the file it starts:
+  the clip's own when that fits, else the start. For the shot that turns
+  out wrong after it is graded and dressed.
 - `reframe {clip_id, scale?, x?, y?}`: punch in and reposition a
   picture. `scale` zooms (1 as shot, up to 4); `x` and `y` pan the frame
   from -1 to 1. What you leave out stays as the clip has it, so a re-pan

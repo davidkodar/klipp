@@ -720,6 +720,17 @@ pub enum Op {
         #[serde(default)]
         ripple: bool,
     },
+    /// Replace a clip's media in its slot (#789): the same place, length
+    /// and speed, its grade, effects, role, volume, links and transitions
+    /// kept, showing `media_id` from `source_in` (the clip's own source
+    /// in when it fits, else the file's start). Its linked sound moves to
+    /// the same file, keeping any J or L offset.
+    Replace {
+        clip_id: ClipRef,
+        media_id: MediaId,
+        #[serde(default)]
+        source_in: Option<f64>,
+    },
     /// Clean a clip's sound. Each flag adds the tool for it: `voice`
     /// Voice Isolation, the AI model that separates speech from wind,
     /// traffic and room noise (the best cleanup for dialogue; it also
@@ -978,7 +989,7 @@ pub const OP_NAMES: &[&str] = &[
     "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
-    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "clean_audio",
+    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "motion_blur",
 ];
 
@@ -2026,6 +2037,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 *speed
             };
             retime(seq, pool, fps, i, clip.id, speed, *ripple)
+        }
+        Op::Replace { clip_id, media_id, source_in } => {
+            let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+            replace_media(seq, pool, fps, i, clip, *media_id, *source_in)
         }
         Op::CleanAudio { clip_id, voice, reduction_db, wind, hiss, hum, deess } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -5247,6 +5262,67 @@ fn fit_speed(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip)
     Ok(if clip.speed < 0.0 { -speed } else { speed })
 }
 
+/// The clip, and its linked sound, showing another file in the same slot
+/// (#789). One snapshot either side per clip, so undo puts back the media
+/// and the source range with everything else as it was.
+fn replace_media(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip: &Clip, media_id: MediaId, source_in: Option<f64>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if !matches!(clip.kind, ClipKind::Media { .. }) {
+        return Err(refuse(i, format!("{} is not a media clip", clip_name(seq, pool, clip)), "replace a clip that shows a file; a title or a generator is changed with its own op"));
+    }
+    let item = pool.get(&media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
+    if item.offline {
+        return Err(refuse(i, format!("{} is offline", item.filename), "relink the media first"));
+    }
+    let len = clip.source_out - clip.source_in;
+    let media_dur = secs(item.duration);
+    let own_fits = secs(clip.source_in) + secs(len) <= media_dur + 1e-6;
+    let s_in = source_in.unwrap_or(if own_fits { secs(clip.source_in) } else { 0.0 });
+    let fits = |a: f64| item.is_still || (a >= 0.0 && a + secs(len) <= media_dur + 1e-6);
+    if !s_in.is_finite() || !fits(s_in) {
+        return Err(refuse(
+            i,
+            format!("{:.2} s of {} from {s_in:.2} s runs past its end ({media_dur:.2} s)", secs(len), item.filename),
+            format!("give source_in no later than {:.2} s", (media_dur - secs(len)).max(0.0)),
+        ));
+    }
+    let src_in = snap(s_in, fps);
+    let mut edits = Vec::new();
+    let mut ids = vec![clip.id];
+    let swap = |c: &Clip, from: Timecode| {
+        let mut new = c.clone();
+        new.kind = ClipKind::Media { media_id };
+        new.source_out = from + (c.source_out - c.source_in);
+        new.source_in = from;
+        EditCommand::ReplaceClip { description: "Replace Media", old: Box::new(c.clone()), new: Box::new(new) }
+    };
+    edits.push(swap(clip, src_in));
+    let partner = clip.linked_clip_id.and_then(|lid| find_clip(seq, lid)).map(|(_, _, p)| p).filter(|p| matches!(p.kind, ClipKind::Media { .. }));
+    if let Some(p) = partner {
+        if !item.has_audio {
+            return Err(refuse(i, format!("{} has no sound for the linked sound clip", item.filename), "remove the linked sound first (remove with linked: false), or choose a file with sound"));
+        }
+        // A J or L cut keeps its offset between picture and sound.
+        let p_in = secs(src_in) + secs(p.source_in) - secs(clip.source_in);
+        if !fits(p_in) || p_in + secs(p.source_out - p.source_in) > media_dur + 1e-6 {
+            return Err(refuse(i, format!("the linked sound would run outside {}", item.filename), "give a source_in with room either side for the sound's J or L cut"));
+        }
+        edits.push(swap(p, snap(p_in, fps)));
+        ids.push(p.id);
+    }
+    let what = format!(
+        "replace {} with {} ({:.2}-{:.2} s of the file) in its place at {:.2}-{:.2} s, its grade, effects and settings kept{}",
+        clip_name(seq, pool, clip),
+        item.filename,
+        secs(src_in),
+        secs(src_in + len),
+        secs(clip.timeline_in),
+        secs(clip.timeline_out),
+        if ids.len() > 1 { ", its linked sound with it" } else { "" },
+    );
+    let edit = if edits.len() == 1 { edits.remove(0) } else { EditCommand::Batch(edits) };
+    Ok((what, edit, ids))
+}
+
 /// The clip and its linked sound (or picture) take `speed` together, so
 /// the pair stays the same length and in step. Each grows or shrinks
 /// from its start. What follows on their tracks moves by the change with
@@ -6822,6 +6898,52 @@ mod tests {
             kind: klipp_core::MarkerKind::None,
         });
         (seq, pool, media_id, ia, ib)
+    }
+
+    /// #789: a clip shows another file in its own slot: the same place,
+    /// length, role and links, the linked sound moved with it; a range
+    /// past the file's end and a file with no sound for a linked sound are
+    /// refused; undo puts the first file back.
+    #[test]
+    fn a_clip_is_replaced_in_its_slot() {
+        let (mut seq, mut pool, _, _, b) = fixture();
+        let mut other = klipp_media::MediaItem::synthetic_for_test("/tmp/other.mov".into(), None);
+        other.duration = tc(6.0);
+        other.video_codec = "hevc".into();
+        other.has_audio = true;
+        let other = pool.add(other);
+        let mut mute = klipp_media::MediaItem::synthetic_for_test("/tmp/mute.mov".into(), None);
+        mute.duration = tc(6.0);
+        mute.video_codec = "hevc".into();
+        mute.has_audio = false;
+        let mute = pool.add(mute);
+        seq.tracks[0].clips[1].role = klipp_core::ClipRole::BRoll;
+        let before = seq.clone();
+
+        // b shows 4-8 s; the other file is 6 s long, so it starts at 0.
+        let plan = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: other, source_in: None }]).unwrap();
+        assert!(plan.steps[0].what.contains("0.00-4.00 s of the file") && plan.steps[0].what.contains("its linked sound with it"), "{}", plan.steps[0].what);
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut f) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut f };
+        view.apply_forward(&plan.steps[0].edit);
+        for t in &view.sequences[0].tracks {
+            let c = &t.clips[1];
+            assert_eq!(c.media_id(), Some(other), "track {}", t.name);
+            assert_eq!((c.timeline_in, c.timeline_out, c.source_in, c.source_out), (tc(4.0), tc(8.0), tc(0.0), tc(4.0)), "track {}", t.name);
+        }
+        assert_eq!(view.sequences[0].tracks[0].clips[1].role, klipp_core::ClipRole::BRoll, "its settings stay");
+        assert_eq!(view.sequences[0].tracks[0].clips[1].id, b, "the same clip");
+        view.apply_inverse(&plan.steps[0].edit);
+        for (t, was) in view.sequences[0].tracks.iter().zip(&before.tracks) {
+            let (c, w) = (&t.clips[1], &was.clips[1]);
+            assert_eq!((c.media_id(), c.source_in, c.source_out, c.timeline_in, c.timeline_out), (w.media_id(), w.source_in, w.source_out, w.timeline_in, w.timeline_out), "undo puts the first file back on {}", t.name);
+        }
+
+        let past = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: other, source_in: Some(3.0) }]).unwrap_err();
+        assert!(past.why.contains("runs past its end") && past.hint.contains("2.00 s"), "{} / {}", past.why, past.hint);
+        let silent = resolve(&seq, &pool, &[Op::Replace { clip_id: ClipRef::Id(b), media_id: mute, source_in: None }]).unwrap_err();
+        assert!(silent.why.contains("no sound"), "{}", silent.why);
     }
 
     /// #506: shots placed one after another at a bar's length each stay

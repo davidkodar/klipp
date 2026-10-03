@@ -1969,6 +1969,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
+              replace {clip_id, media_id, source_in?} — another file in the clip's slot: same place, length and speed, its grade, effects, role, volume, links and transitions kept, its linked sound moved with it; source_in defaults to the clip's own when it fits, else the file's start. \
               retime {clip_id, speed | fit, ripple?} — change speed, its linked sound with it; fit true instead of speed fills the room to the next clip on its track exactly, the speed worked out (fit to fill) (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
               shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
@@ -2168,6 +2169,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
               wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
               stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
+              replace {clip_id, media_id, source_in?} — another file in the clip's slot: same place, length and speed, its grade, effects, role, volume, links and transitions kept, its linked sound moved with it; source_in defaults to the clip's own when it fits, else the file's start. \
               retime {clip_id, speed | fit, ripple?} — change speed, its linked sound with it; fit true instead of speed fills the room to the next clip on its track exactly, the speed worked out (fit to fill) (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
               shrunk one leaves a gap. \
               generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
