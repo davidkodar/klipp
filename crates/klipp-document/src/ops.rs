@@ -2161,10 +2161,15 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let media_dur = secs(item.duration);
             let s_in = source_in.unwrap_or(0.0);
             let s_out = source_out.unwrap_or(media_dur);
+            // The tools report a file's length rounded (0.42 s for 0.4186):
+            // an end that far past the file's is its end, not outside it
+            // (#782). Half a frame, and never less than the rounding step.
+            let slack = (0.5 / fps.as_f64()).max(0.005);
             if !s_in.is_finite() || !s_out.is_finite() || s_in < 0.0 || s_out <= s_in
-                || (!item.is_still && (s_in >= media_dur || s_out > media_dur + 1e-6)) {
-                return Err(refuse(i, format!("source {s_in:.2}-{s_out:.2} s is not inside {} ({media_dur:.2} s)", item.filename), "give source_in and source_out within the file, in order"));
+                || (!item.is_still && (s_in >= media_dur || s_out > media_dur + slack)) {
+                return Err(refuse(i, format!("source {s_in:.2}-{s_out:.2} s is not inside {} ({media_dur:.3} s)", item.filename), "give source_in and source_out within the file, in order"));
             }
+            let s_out = if item.is_still { s_out } else { s_out.min(media_dur) };
             // An empty sequence takes the first picture's size and rate,
             // as an append in the app does, by the same rule: only what was
             // left automatic, and only from a picture on a picture track. A
@@ -7070,6 +7075,22 @@ mod tests {
         assert!(resolve(&seq, &pool, &[both]).unwrap_err().why.contains("both"));
         assert!(resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Day".into(), stage: None }, 0.3)]).is_err());
         assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None }]).unwrap_err().why.contains("no clip"));
+    }
+
+    /// #782: a sound effect 0.4186 s long, reported as 0.42 s, placed
+    /// with that end: taken as the file's end, not refused; an end past
+    /// it by more than the rounding is still outside the file.
+    #[test]
+    fn a_source_end_rounded_past_the_files_end_is_its_end() {
+        let (seq, mut pool, _, _, _) = fixture();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/whoosh.mp3".into(), None);
+        item.duration = RationalTime::from_secs_f64(0.4186, 48000);
+        item.has_audio = true;
+        let sfx = pool.add(item);
+        let place = |end: f64| Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(end), insert: false, with_audio: false };
+        let plan = resolve(&seq, &pool, &[place(0.42)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        assert!(plan.duration_secs <= 8.0 + 0.4186 + 1e-6, "ran past the file's end: {}", plan.duration_secs);
+        assert!(resolve(&seq, &pool, &[place(0.45)]).unwrap_err().why.contains("is not inside"));
     }
 
     #[test]

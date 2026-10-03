@@ -96,7 +96,7 @@ fn the_viewer_measures_what_the_export_writes() {
     let measured: Vec<f32> = (0..5)
         .map(|b| {
             let nx = (b as f32 + 0.5) / 5.0;
-            parked.nits_at(nx, 0.5).expect("HDR monitoring publishes the light")
+            parked.wait_nits_at(nx, 0.5, Duration::from_secs(5)).expect("HDR monitoring publishes the light")
         })
         .collect();
     for (b, want) in common::BAND_NITS.iter().enumerate() {
@@ -172,7 +172,7 @@ fn the_viewer_measures_what_the_export_writes() {
     wide.settle_after(g, Duration::from_secs(5)).expect("monitoring on showed no frame");
     for b in 0..5 {
         let nx = (b as f32 + 0.5) / 5.0;
-        let got = wide.nits_at(nx, 0.5).expect("HDR monitoring publishes the light") as f64;
+        let got = wide.wait_nits_at(nx, 0.5, Duration::from_secs(5)).expect("HDR monitoring publishes the light") as f64;
         let want = measured[b] as f64;
         eprintln!("band {b}: BT.709 project {want:.1} cd/m², BT.2020 project {got:.1}");
         assert!(
