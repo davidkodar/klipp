@@ -68,6 +68,8 @@ pub enum LutError {
     InvalidSize(usize),
     NotEnoughEntries { expected: usize, got: usize },
     ParseFloat { line_num: usize, text: String },
+    /// The file is larger than any real LUT ([`MAX_LUT_BYTES`]).
+    TooLarge { limit: u64 },
 }
 
 impl std::fmt::Display for LutError {
@@ -82,6 +84,9 @@ impl std::fmt::Display for LutError {
             Self::ParseFloat { line_num, text } => {
                 write!(f, "line {line_num}: cannot parse float: {text}")
             }
+            Self::TooLarge { limit } => {
+                write!(f, "larger than any LUT ({} MiB at most)", limit / (1024 * 1024))
+            }
         }
     }
 }
@@ -92,9 +97,31 @@ impl From<std::io::Error> for LutError {
     }
 }
 
+/// The largest LUT file read (#824). A 129-point cube written at full
+/// float precision is about 90 MB; real LUTs are 17 to 65 points, a few
+/// megabytes. Anything larger is refused before it is read into memory.
+pub const MAX_LUT_BYTES: u64 = 128 * 1024 * 1024;
+
+/// A LUT file's text, read only up to [`MAX_LUT_BYTES`]: the length is
+/// checked while reading, not only from the file's size, which a file
+/// still being written (or a pipe) does not tell truly.
+fn read_lut_text(path: &Path) -> Result<String, LutError> {
+    read_text_capped(std::fs::File::open(path)?, MAX_LUT_BYTES)
+}
+
+fn read_text_capped(file: impl std::io::Read, limit: u64) -> Result<String, LutError> {
+    use std::io::Read;
+    let mut text = String::new();
+    file.take(limit + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > limit {
+        return Err(LutError::TooLarge { limit });
+    }
+    Ok(text)
+}
+
 /// Parse an Adobe .cube 3D LUT file.
 pub fn load_cube(path: &Path) -> Result<LutData, LutError> {
-    let text = std::fs::read_to_string(path)?;
+    let text = read_lut_text(path)?;
     parse_cube(&text)
 }
 
@@ -166,7 +193,7 @@ pub fn load_lut(path: &Path) -> Result<LutData, LutError> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    let text = std::fs::read_to_string(path)?;
+    let text = read_lut_text(path)?;
     match ext.as_str() {
         "cube" => parse_cube(&text),
         "3dl" => parse_3dl(&text),
@@ -646,6 +673,20 @@ pub fn write_cube(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #824: a LUT is read only up to the limit, and one past it is
+    /// refused rather than held whole in memory.
+    #[test]
+    fn a_lut_past_the_limit_is_refused() {
+        let cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        let limit = cube.len() as u64;
+        let text = read_text_capped(cube.as_bytes(), limit).unwrap();
+        assert_eq!(parse_cube(&text).unwrap().size, 2);
+        let past = format!("{cube}# one byte more than the limit allows\n");
+        assert!(matches!(read_text_capped(past.as_bytes(), limit), Err(LutError::TooLarge { .. })));
+        // An endless stream stops at the limit too.
+        assert!(matches!(read_text_capped(std::io::repeat(b'0'), 1024), Err(LutError::TooLarge { limit: 1024 })));
+    }
 
     fn identity_lut(size: usize) -> LutData {
         // Existing tests below use this local helper; it now just defers
