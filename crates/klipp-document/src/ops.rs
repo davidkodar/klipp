@@ -156,7 +156,9 @@ pub enum JoinSide {
 /// Where a `look` or a `grade` goes, when not on one clip (#237): the
 /// timeline grade, over every clip after its own ("timeline"), or a grade
 /// group's post-clip grade, after each member's own, or its pre-clip
-/// grade, before it (`{"group": name, "stage": "pre"}`).
+/// grade, before it (`{"group": name, "stage": "pre"}`). With
+/// `{"track": index or kind}` it goes on every clip of that track that
+/// can take it, between `from` and `to` when given, as one step (#847).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GradeOn {
@@ -164,6 +166,13 @@ pub enum GradeOn {
         group: String,
         #[serde(default)]
         stage: Option<klipp_timeline::GradeStage>,
+    },
+    Track {
+        track: TrackRef,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
     },
     Named(String),
 }
@@ -339,9 +348,18 @@ pub enum Op {
     /// pan (-1 left to 1 right), a fade in and out in seconds. What is
     /// left out stays as it is. For an audio clip linked to a video
     /// clip the settings live on the video clip, where the app and the
-    /// render read them, and that is the clip changed.
+    /// render read them, and that is the clip changed. With `track` in
+    /// place of `clip_id`, every clip heard on that track (between `from`
+    /// and `to` when given) takes them, as one step (#847).
     Audio {
-        clip_id: ClipRef,
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        from: Option<Anchor>,
+        #[serde(default)]
+        to: Option<Anchor>,
         #[serde(default)]
         volume_db: Option<f32>,
         #[serde(default)]
@@ -1937,10 +1955,25 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             captions(seq, pool, fps, i, transcripts, track.as_ref(), from, to, (*max_chars).max(8), (*max_lines).max(1), *replace)
         }
-        Op::Audio { clip_id, volume_db, gain_db, pan, fade_in, fade_out } => {
-            let (_, _, given) = resolve_clip(seq, fps, clip_id, i)?;
-            audio_settings(seq, pool, i, given, *volume_db, *gain_db, *pan, *fade_in, *fade_out)
-        }
+        Op::Audio { clip_id, track, from, to, volume_db, gain_db, pan, fade_in, fade_out } => match (clip_id, track) {
+            (Some(clip_id), None) => {
+                if from.is_some() || to.is_some() {
+                    return Err(refuse(i, "from and to are for a track", "give clip_id alone, or track with from and to"));
+                }
+                let (_, _, given) = resolve_clip(seq, fps, clip_id, i)?;
+                audio_settings(seq, pool, i, given, *volume_db, *gain_db, *pan, *fade_in, *fade_out)
+            }
+            (None, Some(track)) => {
+                let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?;
+                // A picture and its linked sound share one set of settings:
+                // changed once, however many of the pair are on the track.
+                let mut seen = std::collections::HashSet::new();
+                let (members, skipped) = on.members(seq, |t, c| is_heard(seq, pool, t, c) && seen.insert(sound_settings_clip(seq, c).id));
+                on_each(i, &on, "heard", members, skipped, |_, clip| audio_settings(seq, pool, i, clip, *volume_db, *gain_db, *pan, *fade_in, *fade_out))
+            }
+            (Some(_), Some(_)) => Err(refuse(i, "both a clip and a track given", "give clip_id for one clip, or track for all of its clips")),
+            (None, None) => Err(refuse(i, "no clip given", "give clip_id, or track for every clip heard on it")),
+        },
         Op::Volume { clip_id, keys } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             volume_keys(seq, pool, i, ti, clip, keys)
@@ -1958,7 +1991,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
         }
         Op::Effect { clip_id, on, kind, amount } => match (on, clip_id) {
-            (Some(on), _) => effect_on_many(seq, pool, i, clip_id.as_ref(), on, kind, *amount),
+            (Some(on), _) => effect_on_many(seq, pool, fps, i, clip_id.as_ref(), on, kind, *amount),
             (None, Some(clip_id)) => {
                 let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
                 picture_effect(seq, pool, i, ti, clip, kind, *amount)
@@ -2080,6 +2113,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             ramp(seq, pool, fps, i, ti, ci, clip, *from, *to, *over)
         }
+        Op::Look { clip_id, on: Some(GradeOn::Track { track, from, to }), lut_path, name, opacity, remove } => {
+            let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?.alone(i, clip_id.as_ref())?;
+            let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
+            let whose = on.whose(members.len());
+            on_each(i, &on, "pictures", members, skipped, |_, clip| {
+                apply_look(i, GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: whose.clone(), touched: vec![clip.id] }, lut_path, name.as_deref(), *opacity, *remove)
+            })
+        }
         Op::Look { clip_id, on, lut_path, name, opacity, remove } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "put a look on")?;
             apply_look(i, target, lut_path, name.as_deref(), *opacity, *remove)
@@ -2121,42 +2162,21 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             clean_audio(seq, pool, i, clip, CleanFlags { voice: *voice, reduction_db: *reduction_db, wind: *wind, hiss: *hiss, hum: *hum, deess: *deess })
         }
-        Op::Grade { clip_id, on, exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } => {
+        Op::Grade { clip_id, on: Some(GradeOn::Track { track, from: span_from, to: span_to }), exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from } => {
+            let on = TrackSpan::resolve(seq, fps, i, track, span_from.as_ref(), span_to.as_ref())?.alone(i, clip_id.as_ref())?;
+            let source = from.as_ref().map(|f| resolve_clip(seq, fps, f, i).map(|(_, _, c)| c)).transpose()?;
+            // The clip a grade is copied from is not graded as itself.
+            let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c) && source.is_none_or(|s| s.id != c.id));
+            let whose = on.whose(members.len());
+            on_each(i, &on, "pictures", members, skipped, |_, clip| {
+                let target = GradeTarget { id: clip.id, graph: clip.node_graph.clone(), name: whose.clone(), touched: vec![clip.id] };
+                let one = Op::Grade { clip_id: None, on: None, exposure: *exposure, contrast: *contrast, saturation: *saturation, temperature: *temperature, tint: *tint, lift: *lift, gamma: *gamma, gain: *gain, highlights: *highlights, shadows: *shadows, vibrance: *vibrance, reset: *reset, from: from.clone() };
+                grade_op(seq, pool, fps, i, target, &one)
+            })
+        }
+        Op::Grade { clip_id, on, .. } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
-            if let Some(from) = from {
-                let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
-                if knobs.iter().any(|k| k.is_some()) || *reset {
-                    return Err(refuse(i, "a grade copied from another clip takes no knobs", "copy it in one op, then grade the knobs in the next"));
-                }
-                let (_, _, source) = resolve_clip(seq, fps, from, i)?;
-                if source.id == target.id {
-                    return Err(refuse(i, "a clip's grade copied onto itself", "name another clip in from"));
-                }
-                let what = format!("grade {} as {} is graded", target.name, clip_name(seq, pool, source));
-                let edit = EditCommand::SetNodeGraph { clip_id: target.id, old_graph: target.graph, new_graph: source.node_graph.clone() };
-                return Ok((what, edit, target.touched));
-            }
-            let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
-                ("exposure", "exposure", *exposure, -6.0, 6.0),
-                // The grade's contrast is 0 at neutral (+1 doubles the distance
-                // from mid grey); the op speaks in the multiplier the UI shows,
-                // 1 as shot, like saturation.
-                ("contrast", "contrast", contrast.map(|c| c - 1.0), -1.0, 3.0),
-                ("saturation", "saturation", *saturation, 0.0, 4.0),
-                // Mireds of assumed light, as the node and the app's own
-                // slider use them: about 5 Lab b* at 25, 10 at 50. The
-                // old -1..1 was a fiftieth of a visible step — a white
-                // balance that did nothing at all.
-                ("temperature", "temperature", *temperature, -50.0, 50.0),
-                ("tint", "tint", *tint, -50.0, 50.0),
-                ("lift", "lift_master", *lift, -1.0, 1.0),
-                ("gamma", "gamma_master", *gamma, -1.0, 1.0),
-                ("gain", "gain_master", *gain, -1.0, 1.0),
-                ("highlights", "highlights", *highlights, -1.0, 1.0),
-                ("shadows", "shadows", *shadows, -1.0, 1.0),
-                ("vibrance", "vibrance", *vibrance, -1.0, 1.0),
-            ];
-            grade(i, target, &knobs, *reset)
+            grade_op(seq, pool, fps, i, target, op)
         }
         Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow } => {
             let look = Look {
@@ -4220,17 +4240,126 @@ fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &
 /// the op on one clip gives it, so a clip added later has none; a grade
 /// group's stage is not asked, the effect sits on its clips.
 #[allow(clippy::too_many_arguments)]
-fn effect_on_many(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: Option<&ClipRef>, on: &GradeOn, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+/// Whether `clip` on `t` is a picture an effect, a look or a grade can
+/// take: a video or still on a video track.
+fn takes_picture(pool: &MediaPool, t: &klipp_timeline::Track, c: &Clip) -> bool {
+    t.kind == TrackKind::Video && c.media_id().is_some_and(|m| pool.get(&m).is_some_and(|item| !item.video_codec.is_empty() || item.is_still))
+}
+
+/// A track, or the stretch of it between `from` and `to`, as an op's
+/// target for every clip on it (#847).
+struct TrackSpan {
+    ti: usize,
+    from: Option<Timecode>,
+    to: Option<Timecode>,
+    name: String,
+}
+
+impl TrackSpan {
+    fn resolve(seq: &Sequence, fps: Fps, i: usize, track: &TrackRef, from: Option<&Anchor>, to: Option<&Anchor>) -> Result<Self, Refusal> {
+        let ti = resolve_track(seq, track, i)?;
+        let from = from.map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+        let to = to.map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
+        if let (Some(f), Some(t)) = (from, to) {
+            if t <= f {
+                return Err(refuse(i, format!("to {:.2} s is not after from {:.2} s", secs(t), secs(f)), "give from before to"));
+            }
+        }
+        let t = &seq.tracks[ti];
+        let name = if t.name.trim().is_empty() { format!("track {ti}") } else { format!("track {ti} \"{}\"", t.name) };
+        Ok(Self { ti, from, to, name })
+    }
+
+    /// Refused alongside a clip: a track's clips, or one clip.
+    fn alone(self, i: usize, clip_id: Option<&ClipRef>) -> Result<Self, Refusal> {
+        match clip_id {
+            Some(_) => Err(refuse(i, "both a clip and a track given", "give clip_id for one clip, or on: {\"track\": n} for all of its clips")),
+            None => Ok(self),
+        }
+    }
+
+    /// The track's clips within the span that `takes`, and how many
+    /// other clips there were (gaps are not counted).
+    fn members<'a>(&self, seq: &'a Sequence, mut takes: impl FnMut(&klipp_timeline::Track, &Clip) -> bool) -> (Vec<(usize, &'a Clip)>, usize) {
+        let t = &seq.tracks[self.ti];
+        let mut members = Vec::new();
+        let mut skipped = 0;
+        for c in t.clips.iter().filter(|c| !matches!(c.kind, ClipKind::Gap)) {
+            let inside = self.from.is_none_or(|f| c.timeline_out > f) && self.to.is_none_or(|to| c.timeline_in < to);
+            if !inside {
+                continue;
+            }
+            if takes(t, c) {
+                members.push((self.ti, c));
+            } else {
+                skipped += 1;
+            }
+        }
+        (members, skipped)
+    }
+
+    /// "3 clips of track 1 \"V2\"".
+    fn whose(&self, n: usize) -> String {
+        format!("{n} clip{} of {}", if n == 1 { "" } else { "s" }, self.name)
+    }
+}
+
+/// `one` on every clip of a track's span, as one step: said once, with
+/// how many clips it took and how many it left (not `what` they need).
+fn on_each<'a>(
+    i: usize,
+    on: &TrackSpan,
+    what: &str,
+    members: Vec<(usize, &'a Clip)>,
+    skipped: usize,
+    mut one: impl FnMut(usize, &'a Clip) -> Result<(String, EditCommand, Vec<ClipId>), Refusal>,
+) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    if members.is_empty() {
+        let range = if on.from.is_some() || on.to.is_some() { " in that stretch" } else { "" };
+        return Err(refuse(i, format!("{} has no {what}{range}", on.name), "name another track, or widen from and to"));
+    }
+    let n = members.len();
+    let mut edits = Vec::with_capacity(n);
+    let mut touched = Vec::with_capacity(n);
+    let mut said = String::new();
+    for (ti, clip) in members {
+        let (line, edit, ids) = one(ti, clip)?;
+        if said.is_empty() {
+            said = line;
+        }
+        edits.push(edit);
+        touched.extend(ids);
+    }
+    // Said once for them all: the first clip's line, its own name swapped
+    // for the track's when it named itself.
+    let whose = on.whose(n);
+    if !said.contains(&whose) {
+        said = match said.split_once(" on ") {
+            Some((head, _)) if !said.starts_with("sound of ") => format!("{head} on {whose}"),
+            _ => format!("{whose}: {said}"),
+        };
+    }
+    let left = if skipped > 0 { format!("; {skipped} other clip{} left as {}", if skipped == 1 { "" } else { "s" }, if skipped == 1 { "it was" } else { "they were" }) } else { String::new() };
+    Ok((format!("{said}{left}"), EditCommand::Batch(edits), touched))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Option<&ClipRef>, on: &GradeOn, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if clip_id.is_some() {
         return Err(refuse(i, "both a clip and on given", "give clip_id for one clip, or on for many"));
     }
-    let is_picture = |t: &klipp_timeline::Track, c: &Clip| t.kind == TrackKind::Video && c.media_id().is_some_and(|m| pool.get(&m).is_some_and(|item| !item.video_codec.is_empty() || item.is_still));
+    let is_picture = |t: &klipp_timeline::Track, c: &Clip| takes_picture(pool, t, c);
     let (whose, members): (String, Vec<(usize, &Clip)>) = match on {
         GradeOn::Named(n) if n.eq_ignore_ascii_case("timeline") => (
             "the timeline".into(),
             seq.tracks.iter().enumerate().flat_map(|(ti, t)| t.clips.iter().filter(move |c| is_picture(t, c)).map(move |c| (ti, c))).collect(),
         ),
-        GradeOn::Named(n) => return Err(refuse(i, format!("\"{n}\" is not somewhere to add an effect"), "give on: \"timeline\", or {\"group\": name}, or a clip_id alone")),
+        GradeOn::Named(n) => return Err(refuse(i, format!("\"{n}\" is not somewhere to add an effect"), "give on: \"timeline\", {\"group\": name} or {\"track\": n}, or a clip_id alone")),
+        GradeOn::Track { track, from, to } => {
+            let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?;
+            let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
+            return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount));
+        }
         GradeOn::Group { group, .. } => {
             let g = find_grade_group(seq, i, group)?;
             (
@@ -4840,6 +4969,47 @@ fn find_grade_group<'a>(seq: &'a Sequence, i: usize, name: &str) -> Result<&'a k
     })
 }
 
+/// A `grade` op's knobs, or its `from`, on one target.
+fn grade_op(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, target: GradeTarget, op: &Op) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let Op::Grade { exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance, reset, from, .. } = op else {
+        unreachable!("grade_op is given a grade")
+    };
+    if let Some(from) = from {
+        let knobs = [exposure, contrast, saturation, temperature, tint, lift, gamma, gain, highlights, shadows, vibrance];
+        if knobs.iter().any(|k| k.is_some()) || *reset {
+            return Err(refuse(i, "a grade copied from another clip takes no knobs", "copy it in one op, then grade the knobs in the next"));
+        }
+        let (_, _, source) = resolve_clip(seq, fps, from, i)?;
+        if source.id == target.id {
+            return Err(refuse(i, "a clip's grade copied onto itself", "name another clip in from"));
+        }
+        let what = format!("grade {} as {} is graded", target.name, clip_name(seq, pool, source));
+        let edit = EditCommand::SetNodeGraph { clip_id: target.id, old_graph: target.graph, new_graph: source.node_graph.clone() };
+        return Ok((what, edit, target.touched));
+    }
+    let knobs: [(&str, &str, Option<f32>, f32, f32); 11] = [
+        ("exposure", "exposure", *exposure, -6.0, 6.0),
+        // The grade's contrast is 0 at neutral (+1 doubles the distance
+        // from mid grey); the op speaks in the multiplier the UI shows,
+        // 1 as shot, like saturation.
+        ("contrast", "contrast", contrast.map(|c| c - 1.0), -1.0, 3.0),
+        ("saturation", "saturation", *saturation, 0.0, 4.0),
+        // Mireds of assumed light, as the node and the app's own
+        // slider use them: about 5 Lab b* at 25, 10 at 50. The
+        // old -1..1 was a fiftieth of a visible step — a white
+        // balance that did nothing at all.
+        ("temperature", "temperature", *temperature, -50.0, 50.0),
+        ("tint", "tint", *tint, -50.0, 50.0),
+        ("lift", "lift_master", *lift, -1.0, 1.0),
+        ("gamma", "gamma_master", *gamma, -1.0, 1.0),
+        ("gain", "gain_master", *gain, -1.0, 1.0),
+        ("highlights", "highlights", *highlights, -1.0, 1.0),
+        ("shadows", "shadows", *shadows, -1.0, 1.0),
+        ("vibrance", "vibrance", *vibrance, -1.0, 1.0),
+    ];
+    grade(i, target, &knobs, *reset)
+}
+
 /// The target `clip_id` or `on` names: `on` wins; a clip must be a
 /// picture on an unlocked track.
 fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: Option<&ClipRef>, on: Option<&GradeOn>, verb: &str) -> Result<GradeTarget, Refusal> {
@@ -4852,7 +5022,8 @@ fn grade_target(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id: O
             touched: Vec::new(),
         }),
         Some(GradeOn::Named(n)) if n.eq_ignore_ascii_case("clip") => grade_target(seq, pool, fps, i, clip_id, None, verb),
-        Some(GradeOn::Named(n)) => Err(refuse(i, format!("\"{n}\" is not somewhere to {verb}"), "give on: \"timeline\", or {\"group\": name, \"stage\": \"pre\" or \"post\"}, or a clip_id alone")),
+        Some(GradeOn::Named(n)) => Err(refuse(i, format!("\"{n}\" is not somewhere to {verb}"), "give on: \"timeline\", {\"group\": name, \"stage\": \"pre\" or \"post\"} or {\"track\": n}, or a clip_id alone")),
+        Some(GradeOn::Track { .. }) => Err(refuse(i, format!("a track is not one place to {verb}"), "a track's clips are taken one by one by effect, look and grade")),
         Some(GradeOn::Group { group, stage }) => {
             let g = find_grade_group(seq, i, group)?;
             let stage = stage.unwrap_or(klipp_timeline::GradeStage::Post);
@@ -7219,7 +7390,7 @@ mod tests {
         let plan = resolve(&seq, &pool, &ops).unwrap();
         let placed = plan.steps[0].after[0].clip_id;
         for step in &plan.steps[1..3] {
-            assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: ClipRef::Id(id), .. } if *id == placed), "{:?}", step.op);
+            assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: Some(ClipRef::Id(id)), .. } if *id == placed), "{:?}", step.op);
         }
         assert!(plan.steps[3].what.contains("\"@0\""), "a title's words are its own: {}", plan.steps[3].what);
         // A name spelled like a reference is a name (#809 review).
@@ -7408,6 +7579,59 @@ mod tests {
         assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None }]).unwrap_err().why.contains("no clip"));
     }
 
+    /// #847: effect, look, grade and audio take every clip of a track,
+    /// or of a stretch of it, as one step, and say how many they took and
+    /// how many they left; a track and a clip together are refused.
+    #[test]
+    fn effects_looks_grades_and_sound_take_a_whole_track() {
+        let (mut seq, mut pool, _, a, b) = fixture();
+        // Sound alone on the picture track: no picture to take a look.
+        let mut tone = klipp_media::MediaItem::synthetic_for_test("/tmp/tone.wav".into(), None);
+        tone.duration = tc(4.0);
+        tone.has_audio = true;
+        tone.video_codec = String::new();
+        let tone = pool.add(tone);
+        seq.tracks[0].clips.push(Clip::media(tone, tc(8.0), tc(10.0), tc(0.0), tc(2.0)));
+        let ops = |json: &str| -> Vec<Op> { serde_json::from_str(json).unwrap() };
+        let ids = |plan: &Plan| -> Vec<ClipId> {
+            let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("one step: {:?}", plan.steps[0].edit) };
+            edits.iter().map(|e| match e {
+                EditCommand::SetBuiltinEffects { clip_id, .. } | EditCommand::SetNodeGraph { clip_id, .. } | EditCommand::EditClipAudio { clip_id, .. } => *clip_id,
+                other => panic!("{other:?}"),
+            }).collect()
+        };
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"effect","on":{"track":0},"kind":"vignette","amount":0.5}]"#)).unwrap();
+        assert_eq!(ids(&plan), vec![a, b]);
+        assert_eq!(plan.steps[0].what, "vignette 0.50 on 2 clips of track 0 \"V1\"; 1 other clip left as it was");
+
+        // From 4.5 s on: the second picture only.
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"effect","on":{"track":"video","from":{"secs":4.5}},"kind":"grain"}]"#)).unwrap();
+        assert_eq!(ids(&plan), vec![b]);
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"look","on":{"track":0},"lut_path":"/luts/kodak.cube","name":"Kodak"}]"#)).unwrap();
+        assert_eq!(ids(&plan), vec![a, b]);
+        assert!(plan.steps[0].what.starts_with("look on 2 clips of track 0 \"V1\": Kodak"), "{}", plan.steps[0].what);
+
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"grade","on":{"track":0},"exposure":0.5}]"#)).unwrap();
+        assert_eq!(ids(&plan), vec![a, b]);
+        // A grade copied from a clip of the track goes on the others.
+        let plan = resolve(&seq, &pool, &ops(&format!(r#"[{{"op":"grade","on":{{"track":0}},"from":"{}"}}]"#, a.0))).unwrap();
+        assert_eq!(ids(&plan), vec![b]);
+
+        // The sound of a picture lives on the picture: set once per pair.
+        let plan = resolve(&seq, &pool, &ops(r#"[{"op":"audio","track":"audio","volume_db":-3}]"#)).unwrap();
+        assert_eq!(ids(&plan), vec![a, b]);
+        assert!(plan.steps[0].what.starts_with("2 clips of track 1 \"A1\": sound of"), "{}", plan.steps[0].what);
+
+        let bad = |json: &str| resolve(&seq, &pool, &ops(json)).unwrap_err().why;
+        assert!(bad(&format!(r#"[{{"op":"effect","clip_id":"{}","on":{{"track":0}},"kind":"grain"}}]"#, a.0)).contains("both"));
+        assert!(bad(&format!(r#"[{{"op":"audio","clip_id":"{}","track":1,"volume_db":-3}}]"#, a.0)).contains("both"));
+        assert!(bad(r#"[{"op":"effect","on":{"track":0,"from":{"secs":20}},"kind":"grain"}]"#).contains("no pictures in that stretch"));
+        assert!(bad(r#"[{"op":"grade","on":{"track":0,"from":{"secs":5},"to":{"secs":4}},"exposure":1}]"#).contains("not after"));
+        assert!(bad(r#"[{"op":"look","on":{"track":9},"lut_path":"/x.cube"}]"#).contains("no track 9"));
+    }
+
     /// #782: a sound effect 0.4186 s long, reported as 0.42 s, placed
     /// with that end: taken as the file's end, not refused; an end past
     /// it by more than the rounding is still outside the file.
@@ -7526,21 +7750,21 @@ mod tests {
 
         // Named by its audio clip, the speech's settings go on the video
         // clip it is linked to: that is where playback and the render read them.
-        let plan = resolve(&seq, &pool, &[Op::Audio { clip_id: ClipRef::At { track: 1, secs: 1.0 }, volume_db: Some(-6.0), gain_db: None, pan: Some(-0.5), fade_in: Some(0.5), fade_out: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Audio { clip_id: Some(ClipRef::At { track: 1, secs: 1.0 }), track: None, from: None, to: None, volume_db: Some(-6.0), gain_db: None, pan: Some(-0.5), fade_in: Some(0.5), fade_out: None }]).unwrap();
         let EditCommand::EditClipAudio { clip_id, new_volume, new_pan, new_fade_in, new_fade_out, new_gain, .. } = &plan.steps[0].edit else { panic!("an audio edit") };
         assert_eq!(*clip_id, a, "{}", plan.steps[0].what);
         assert!((new_volume - 0.5012).abs() < 1e-3 && *new_pan == -0.5 && *new_fade_in == 0.5 && *new_fade_out == 0.0 && *new_gain == 1.0);
         assert!(plan.steps[0].what.contains("linked"), "{}", plan.steps[0].what);
         // Fades that do not fit, a level out of range, nothing to change: refused.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: None, gain_db: None, pan: None, fade_in: Some(3.0), fade_out: Some(2.0) }).why.contains("do not fit"));
-        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: Some(40.0), gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("out of range"));
-        assert!(bad(Op::Audio { clip_id: ClipRef::Id(a), volume_db: None, gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("nothing"));
+        assert!(bad(Op::Audio { clip_id: Some(ClipRef::Id(a)), track: None, from: None, to: None, volume_db: None, gain_db: None, pan: None, fade_in: Some(3.0), fade_out: Some(2.0) }).why.contains("do not fit"));
+        assert!(bad(Op::Audio { clip_id: Some(ClipRef::Id(a)), track: None, from: None, to: None, volume_db: Some(40.0), gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("out of range"));
+        assert!(bad(Op::Audio { clip_id: Some(ClipRef::Id(a)), track: None, from: None, to: None, volume_db: None, gain_db: None, pan: None, fade_in: None, fade_out: None }).why.contains("nothing"));
 
         // The duck: speech runs 0 to 8 s in two clips that meet, one stretch;
         // the music comes back up over half a second after it.
         let plan = resolve(&seq, &pool, &[
-            Op::Audio { clip_id: ClipRef::Id(music_id), volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: None, fade_out: Some(1.0) },
+            Op::Audio { clip_id: Some(ClipRef::Id(music_id)), track: None, from: None, to: None, volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: None, fade_out: Some(1.0) },
             Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 12.0, fade_secs: 0.5 },
         ]).unwrap();
         assert!(plan.steps[1].what.contains("1 stretch") && plan.steps[1].what.contains("0.00-8.00"), "{}", plan.steps[1].what);

@@ -211,7 +211,7 @@ pub fn ops(seq: &Sequence, placements: &[SfxPlacement]) -> Vec<Op> {
         });
         let mid = ClipRef::At { track, secs: p.at_secs + p.secs / 2.0 };
         ops.push(Op::Role { clip_id: mid.clone(), role: "sfx".into() });
-        ops.push(Op::Audio { clip_id: mid, volume_db: Some(p.volume_db), gain_db: None, pan: None, fade_in: None, fade_out: None });
+        ops.push(Op::Audio { clip_id: Some(mid), track: None, from: None, to: None, volume_db: Some(p.volume_db), gain_db: None, pan: None, fade_in: None, fade_out: None });
     }
     ops
 }
