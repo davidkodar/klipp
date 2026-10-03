@@ -72,6 +72,30 @@ pub struct Request {
     pub command: ControlCommand,
 }
 
+/// Which search results to listen to (#795): the first this-many, or
+/// those with these ids.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Listen {
+    First(u32),
+    Ids(Vec<String>),
+}
+
+impl Listen {
+    /// Whether the result at `index` with `id` is to be heard; at most
+    /// five in all, counted by the caller.
+    pub fn picks(&self, index: usize, id: &str) -> bool {
+        match self {
+            Listen::First(n) => index < (*n).min(5) as usize,
+            Listen::Ids(ids) => ids.iter().any(|w| w.trim() == id),
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, Listen::First(0)) || matches!(self, Listen::Ids(v) if v.is_empty())
+    }
+}
+
 // One of these is deserialised per request off a socket, used, and
 // dropped. It is never stored in a collection and never on a hot path,
 // so the gap between the smallest variant and the largest costs one
@@ -808,11 +832,12 @@ pub enum ControlCommand {
         /// Only instrumental tracks.
         #[serde(default)]
         instrumental: bool,
-        /// Listen to the first this-many results' previews (at most 5):
-        /// tempo, how sure the beat is, and the energy over the track,
-        /// read without importing anything (#739).
+        /// Listen to results' previews (at most 5): the first this-many,
+        /// or those with these track ids (#795). Tempo, how sure the beat
+        /// is, and the energy over the track, read without importing
+        /// anything (#739).
         #[serde(default)]
-        listen: Option<u32>,
+        listen: Option<Listen>,
     },
     /// Search royalty-free sound effects (Freesound) by keyword. A read;
     /// needs a Freesound token in the user's key config.
@@ -820,6 +845,14 @@ pub enum ControlCommand {
         query: String,
         #[serde(default)]
         limit: Option<u32>,
+        /// Only sounds this long or shorter, seconds (#795).
+        #[serde(default)]
+        max_secs: Option<f64>,
+        /// Listen to results' previews, the first this-many or those with
+        /// these ids (at most 5): each one's length, when it peaks and how
+        /// loud it is, which is what placing it needs (#795).
+        #[serde(default)]
+        listen: Option<Listen>,
     },
     /// Download a searched track into the media pool, with its licence and
     /// attribution kept beside it. Pass the fields from a search result.

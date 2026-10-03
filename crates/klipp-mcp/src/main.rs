@@ -487,6 +487,19 @@ fn text_content(v: &Value) -> Vec<Value> {
     })]
 }
 
+/// A search's `listen`: a count, or a list of result ids (#795).
+fn listen_arg(args: &Value) -> Option<Value> {
+    match args.get("listen")? {
+        Value::Number(n) => n.as_u64().map(|n| json!(n)),
+        Value::Array(ids) => Some(json!(ids.iter().filter_map(|i| match i {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }).collect::<Vec<_>>())),
+        _ => None,
+    }
+}
+
 fn arg_str(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -935,12 +948,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
             if let Some(c) = args.get("instrumental").and_then(|v| v.as_bool()) { v["instrumental"] = json!(c); }
-            if let Some(x) = args.get("listen").and_then(|v| v.as_u64()) { v["listen"] = json!(x); }
+            if let Some(x) = listen_arg(args) { v["listen"] = x; }
             v
         }
         "klipp_search_sfx" => {
             let mut v = json!({ "method": "search_sfx", "query": arg_str(args, "query")? });
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
+            if let Some(x) = args.get("max_secs").and_then(|v| v.as_f64()) { v["max_secs"] = json!(x); }
+            if let Some(x) = listen_arg(args) { v["listen"] = x; }
             v
         }
         "klipp_add_music" => {
@@ -2411,19 +2426,21 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Search royalty-free music by mood or genre (e.g. \"upbeat electronic\", \"calm \
               piano\", \"cinematic\") from Jamendo, best match to the words first. Each result \
               shows its title, artist, length, tags, pace and licence — including whether it \
-              clears commercial use. Pass listen: 3 to hear the first three previews without \
-              importing them: tempo, how clear the beat is, and the energy over the track \
-              (steady, builds, falls away). Then add one with klipp_add_music. Needs a Jamendo \
+              clears commercial use. Pass listen: 3 to hear the first three previews, or \
+              listen: [track_id, …] for results further down, without importing them: tempo, how \
+              clear the beat is, and the energy over the track (steady, builds, falls away). Then add one with klipp_add_music. Needs a Jamendo \
               client id in the user's key config. Use the reference's feel (style_profile) to \
               pick music of matching energy — never the reference's own track.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "type": "integer", "description": "hear the first this-many previews (at most 5): tempo, beat and energy, nothing imported" } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
               \"impact\") from Freesound. Each result shows its licence and whether it clears \
-              commercial use; preview a result's preview_url, then add it with klipp_add_music \
-              (it takes a sound effect the same as a track). Good for transitions, cuts and \
-              atmosphere. Needs a Freesound token in the user's key config.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" } }), vec!["query"]),
+              commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long \
+              design file); listen (a count, or [track_id, …], at most 5) hears previews and says \
+              each one's length, when it peaks and how loud it is, which is where it goes: the peak \
+              on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a \
+              track). Needs a Freesound token in the user's key config.",
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
              "Download a searched music track OR sound effect into the media pool, keeping its licence and \
               attribution beside the file for your export credits. Pass the fields from a \
@@ -2781,6 +2798,19 @@ mod sheet_inline_tests {
         let shown = content_for("klipp_timeline_sheet", &reply(true)).unwrap();
         assert!(shown.iter().any(|c| c["type"] == "image"), "{shown:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod listen_arg_tests {
+    use super::*;
+
+    /// #795: listen goes through as a count or as a list of ids.
+    #[test]
+    fn listen_is_a_count_or_ids() {
+        assert_eq!(listen_arg(&json!({ "listen": 3 })), Some(json!(3)));
+        assert_eq!(listen_arg(&json!({ "listen": ["12", 34] })), Some(json!(["12", "34"])));
+        assert_eq!(listen_arg(&json!({})), None);
     }
 }
 

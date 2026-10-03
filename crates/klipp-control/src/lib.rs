@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use klipp_core::{AppCommand, ControlShared};
 use klipp_document::control::{ControlAck, ControlEnvelope};
-use protocol::{ControlCommand, Request, Response};
+use protocol::{ControlCommand, Listen, Request, Response};
 use serde_json::json;
 
 /// Everything the server needs to read state and send commands. Built
@@ -1071,6 +1071,49 @@ mod timeline_view_tests {
 }
 
 #[cfg(test)]
+mod listen_tests {
+    use super::*;
+
+    /// #795: listen names results by count or by id, five at most.
+    #[test]
+    fn listen_picks_by_count_or_id() {
+        let req: ControlCommand = serde_json::from_value(json!({ "method": "search_sfx", "query": "whoosh", "listen": ["42", "7"], "max_secs": 3.0 })).unwrap();
+        let ControlCommand::SearchSfx { listen: Some(listen), max_secs: Some(m), .. } = req else { panic!("{req:?}") };
+        assert_eq!(m, 3.0);
+        assert!(listen.picks(9, "7") && listen.picks(0, "42") && !listen.picks(0, "8"));
+        let req: ControlCommand = serde_json::from_value(json!({ "method": "search_music", "query": "folk", "listen": 9 })).unwrap();
+        let ControlCommand::SearchMusic { listen: Some(listen), .. } = req else { panic!() };
+        assert!(listen.picks(4, "x") && !listen.picks(5, "x"), "at most five");
+        assert!(Listen::First(0).is_none() && Listen::Ids(Vec::new()).is_none());
+    }
+
+    /// A short sound's length, when it peaks and how loud: silence, then
+    /// a burst at 0.40 s.
+    #[test]
+    fn a_sound_effect_is_heard_for_where_it_peaks() {
+        let sr = 22_050u32;
+        let mut pcm = vec![0.001f32; sr as usize];
+        for (i, x) in pcm.iter_mut().enumerate().skip((0.40 * sr as f32) as usize).take((0.05 * sr as f32) as usize) {
+            *x = 0.8 * ((i as f32) * 0.3).sin();
+        }
+        let l = SfxListen::from_pcm(&pcm, sr);
+        assert!((l.secs - 1.0).abs() < 1e-3, "{l:?}");
+        assert!((l.peak_secs - 0.45).abs() < 0.06, "{l:?}");
+        assert!(l.peak_db > -3.0 && l.peak_db < 0.0, "{l:?}");
+        assert!(l.describe().contains("loudest at"));
+    }
+
+    /// No more than five previews are fetched, whatever is asked.
+    #[test]
+    fn at_most_five_previews_are_heard() {
+        let urls: Vec<Option<String>> = (0..8).map(|i| Some(format!("https://example.invalid/{i}"))).collect();
+        let heard = hear_previews(urls, |_| Ok::<u8, String>(1));
+        assert_eq!(heard.iter().filter(|h| h.is_some()).count(), 5);
+        assert!(heard[5..].iter().all(|h| h.is_none()));
+    }
+}
+
+#[cfg(test)]
 mod look_name_tests {
     use super::pick_look;
 
@@ -1296,6 +1339,82 @@ fn listen_to_preview(url: &str) -> Result<PreviewListen, String> {
     let beats = klipp_analysis::beats::detect_from_pcm(&pcm, SR);
     let (energy_db, shape) = energy_shape(&pcm);
     Ok(PreviewListen { bpm: beats.bpm, beat_confidence: beats.confidence, loudness_db: rms_db(&pcm), energy_db, shape })
+}
+
+/// Listen to the previews given, each on a thread of its own, all of
+/// them together within thirty seconds: a stalled stream is reported as
+/// not heard rather than holding the reply (#767 review), and a listen
+/// still running is left to end on ffmpeg's read timeout. `None` where
+/// no preview was asked for.
+fn hear_previews<T: Send + 'static>(urls: Vec<Option<String>>, hear: fn(&str) -> Result<T, String>) -> Vec<Option<Result<T, String>>> {
+    let mut asked = 0;
+    let receivers: Vec<_> = urls
+        .into_iter()
+        .map(|url| {
+            // At most five heard, in the order the results came.
+            let url = url.filter(|u| !u.is_empty() && asked < 5)?;
+            asked += 1;
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(hear(&url));
+            });
+            Some(rx)
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    receivers
+        .into_iter()
+        .map(|r| {
+            r.map(|r| match r.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                Ok(heard) => heard,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("the preview did not answer within thirty seconds".into()),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the listen failed".into()),
+            })
+        })
+        .collect()
+}
+
+/// A sound effect's preview heard: how long it is, when it is loudest,
+/// and how loud (#795).
+#[derive(Debug, Clone, PartialEq)]
+struct SfxListen {
+    secs: f32,
+    /// When the loudest tenth of a second is, from the start.
+    peak_secs: f32,
+    loudness_db: f32,
+    peak_db: f32,
+}
+
+impl SfxListen {
+    fn from_pcm(pcm: &[f32], sr: u32) -> SfxListen {
+        let window = (sr as usize / 10).max(1);
+        let (peak_at, _) = pcm.chunks(window).enumerate().map(|(i, w)| (i, rms_db(w))).fold((0, f32::MIN), |b, c| if c.1 > b.1 { c } else { b });
+        let peak = pcm.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        SfxListen {
+            secs: pcm.len() as f32 / sr as f32,
+            peak_secs: (peak_at * window + window / 2).min(pcm.len()) as f32 / sr as f32,
+            loudness_db: rms_db(pcm),
+            peak_db: 20.0 * peak.max(1e-6).log10(),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("{:.2} s, loudest at {:.2} s, {:.0} dB (peak {:.0} dB)", self.secs, self.peak_secs, self.loudness_db, self.peak_db)
+    }
+}
+
+fn listen_to_sfx(url: &str) -> Result<SfxListen, String> {
+    const SR: u32 = 22_050;
+    // Only a library's own https stream goes to ffmpeg (#767 review).
+    if !url.starts_with("https://") {
+        return Err("the preview is not an https address".into());
+    }
+    let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), std::path::Path::new(url), SR, 0.0, 120.0)
+        .map_err(|_| "the preview could not be read".to_string())?;
+    if pcm.is_empty() {
+        return Err("the preview has no sound".into());
+    }
+    Ok(SfxListen::from_pcm(&pcm, SR))
 }
 
 fn rms_db(pcm: &[f32]) -> f32 {
@@ -6167,6 +6286,7 @@ reference:   {}",
         }
 
         ControlCommand::SearchMusic { query, limit, commercial_only, instrumental, listen } => {
+            let listen = listen.unwrap_or(Listen::First(0));
             if in_batch {
                 return read_in_batch("search_music");
             }
@@ -6174,31 +6294,10 @@ reference:   {}",
                 return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
             }
             let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental })?;
-            // The first few previews heard, side by side, so a candidate is
-            // judged before it is imported (#739).
-            let heard: Vec<Option<Result<PreviewListen, String>>> = {
-                let n = listen.unwrap_or(0).min(5) as usize;
-                // Each listen answers on a channel, and all of them together
-                // get thirty seconds: a stalled stream is reported as not
-                // heard rather than holding the reply (#767 review). A listen
-                // still running is left to end on ffmpeg's read timeout.
-                let receivers: Vec<_> = tracks.iter().enumerate().map(|(i, t)| {
-                    let url = t.preview_url.clone();
-                    (i < n && !url.is_empty()).then(|| {
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        std::thread::spawn(move || {
-                            let _ = tx.send(listen_to_preview(&url));
-                        });
-                        rx
-                    })
-                }).collect();
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                receivers.into_iter().map(|r| r.map(|r| match r.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-                    Ok(heard) => heard,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("the preview did not answer within thirty seconds".into()),
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the listen failed".into()),
-                })).collect()
-            };
+            // The previews asked for heard, side by side, so a candidate is
+            // judged before it is imported (#739): the first few, or those
+            // named by id (#795).
+            let heard = hear_previews(tracks.iter().enumerate().map(|(i, t)| listen.picks(i, &t.id).then(|| t.preview_url.clone())).collect(), listen_to_preview);
             let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
             for (t, h) in tracks.iter().zip(&heard) {
                 let pace = if t.pace.is_empty() { String::new() } else { format!(", {} pace", t.pace) };
@@ -6221,33 +6320,50 @@ reference:   {}",
                 }
                 v
             }).collect();
-            let next = if listen.unwrap_or(0) == 0 {
-                "Judge candidates before importing: search again with listen: 3 to hear the first three (tempo, beat, energy over the track). Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
+            let next = if listen.is_none() {
+                "Judge candidates before importing: search again with listen: 3 to hear the first three, or listen: [track_id, …] for those you name (tempo, beat, energy over the track). Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
             } else {
                 "Pick by the brief's energy: a steady or gently building track sits under a calm piece, a driving one under a fast montage. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
             };
             Ok(json!({ "text": text, "results": results, "next": next }))
         }
 
-        ControlCommand::SearchSfx { query, limit } => {
+        ControlCommand::SearchSfx { query, limit, max_secs, listen } => {
             if in_batch {
                 return read_in_batch("search_sfx");
             }
             if !klipp_audio_search::sfx_available() {
                 return Err("sound-effect search is not set up: put freesound_token in ~/.config/klipp/keys.toml (or set KLIPP_FREESOUND_TOKEN)".into());
             }
-            let tracks = klipp_audio_search::search_sfx(&query, limit.unwrap_or(12))?;
-            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound):\n", tracks.len());
-            for t in &tracks {
-                text.push_str(&format!("  {} — {}  ({}, {:.1}s){}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }));
+            if max_secs.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
+                return Err("max_secs is a length in seconds, above zero".into());
             }
-            let results: Vec<serde_json::Value> = tracks.iter().map(|t| json!({
-                "title": t.title, "artist": t.artist, "track_id": t.id,
-                "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
-                "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
-                "page_url": t.page_url, "tags": t.tags,
-            })).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Preview a sound's preview_url, then add it with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url). The credit is kept; honour the licence." }))
+            let listen = listen.unwrap_or(Listen::First(0));
+            let tracks = klipp_audio_search::search_sfx_within(&query, limit.unwrap_or(12), max_secs)?;
+            let heard = hear_previews(tracks.iter().enumerate().map(|(i, t)| listen.picks(i, &t.id).then(|| t.preview_url.clone())).collect(), listen_to_sfx);
+            let within = max_secs.map(|m| format!(", {m:.1} s or shorter")).unwrap_or_default();
+            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound){within}:\n", tracks.len());
+            for (t, h) in tracks.iter().zip(&heard) {
+                text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
+                match h {
+                    Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
+                    Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
+                    None => {}
+                }
+            }
+            let results: Vec<serde_json::Value> = tracks.iter().zip(&heard).map(|(t, h)| {
+                let mut v = json!({
+                    "title": t.title, "artist": t.artist, "track_id": t.id,
+                    "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
+                    "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                    "page_url": t.page_url, "tags": t.tags,
+                });
+                if let Some(Ok(l)) = h {
+                    v["heard"] = json!({ "secs": l.secs, "peak_secs": l.peak_secs, "loudness_db": l.loudness_db, "peak_db": l.peak_db });
+                }
+                v
+            }).collect();
+            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url). The credit is kept; honour the licence." }))
         }
 
         ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
