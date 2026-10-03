@@ -1835,6 +1835,13 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         klipp_analysis::report::MediaAnalysis::load(&item.path).motion?.mean_within(from, to)
     }
 
+    fn library_role(&self, item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
+        match klipp_audio_search::library_source(&item.path)? {
+            klipp_audio_search::Source::JamendoMusic => Some(klipp_core::ClipRole::Music),
+            klipp_audio_search::Source::Freesound => Some(klipp_core::ClipRole::SFX),
+        }
+    }
+
     fn screen_sensitive(&self, item: &klipp_media::MediaItem) -> Vec<klipp_document::ops::SensitiveText> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).screentext.map(|st| st.sensitive.into_iter().map(|s| klipp_document::ops::SensitiveText { kind: s.kind, masked: s.masked, start_secs: s.start_secs, end_secs: s.end_secs, x: s.x, y: s.y, w: s.w, h: s.h }).collect()).unwrap_or_default()
     }
@@ -5932,7 +5939,7 @@ reference:   {}",
             };
             let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
             let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string(), analyze: true }, &mut None)?;
-            v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track, mark the track Music, and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
+            v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
             v["attribution"] = json!(track.attribution());
             v["next"] = json!("Place it on an audio track (append_clip), set the track's role to Music so the loudness check treats it right, and duck it under any speech. The credit is saved beside the file for your export notes.");
             Ok(v)

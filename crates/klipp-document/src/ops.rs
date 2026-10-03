@@ -1336,6 +1336,12 @@ pub trait Transcripts {
     fn motion_between(&self, _item: &klipp_media::MediaItem, _from: f64, _to: f64) -> Option<f32> {
         None
     }
+    /// The role `item` has by where it came from: music for a track the
+    /// music library supplied, an effect for one from the effects
+    /// library; `None` for anything else.
+    fn library_role(&self, _item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
+        None
+    }
 }
 
 /// The faces under a stretch of the timeline: every picture clip that
@@ -2185,6 +2191,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let src_out = src_in + (tl_out - tl_in).rescale_to(src_in.rate);
             carry.0.insert(ti, (tl_out.value, if (secs(tl_out) - exact_end).abs() < 1.0 / fps.as_f64() { exact_end } else { secs(tl_out) }));
             let mut clip = Clip::media(*media_id, tl_in, tl_out, src_in, src_out);
+            // A library's music is music and its effects are effects from
+            // the start: left unmarked, a bed was unknown sound to duck and
+            // to the check until a role op said otherwise (#797).
+            let library = transcripts.library_role(item);
+            if let Some(role) = library {
+                clip.role = role;
+            }
             // The sound with the picture, linked both ways, on the first
             // audio track — made at the bottom when there is none.
             let bring_audio = *with_audio && item.has_audio && t.kind != TrackKind::Audio;
@@ -2224,6 +2237,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 (Some((_, ati)), None) => format!(", its sound linked on track {ati}"),
                 _ if muted => ", its sound muted".to_string(),
                 _ => String::new(),
+            };
+            let sound_note = match library {
+                Some(klipp_core::ClipRole::Music) => format!("{sound_note}, marked music (from the music library)"),
+                Some(klipp_core::ClipRole::SFX) => format!("{sound_note}, marked sfx (from the effects library)"),
+                _ => sound_note,
             };
             let format_note = autoset.map(|(_, (r, f))| format!("; the sequence becomes {}x{} at {:.3} fps", r.width, r.height, f.as_f64())).unwrap_or_default();
             let ids: Vec<ClipId> = std::iter::once(clip.id).chain(audio.iter().map(|(a, _)| a.id)).collect();
@@ -6890,6 +6908,49 @@ mod tests {
         assert!(resolve(&seq, &pool, &[mk(5.0, 9.0, 0.3, "mosaic")]).unwrap_err().why.contains("not a stretch inside"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.0, "mosaic")]).unwrap_err().why.contains("no size"));
         assert!(resolve(&seq, &pool, &[mk(1.0, 3.0, 0.3, "paint")]).unwrap_err().hint.contains("mosaic or blur"));
+    }
+
+    /// #797: a track from the music library is placed as music and an
+    /// effect from the effects library as sfx, and the plan says so; any
+    /// other file keeps the default role.
+    #[test]
+    fn a_library_track_is_placed_with_its_role() {
+        struct Library(MediaId, MediaId);
+        impl Transcripts for Library {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn library_role(&self, item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
+                [(self.0, klipp_core::ClipRole::Music), (self.1, klipp_core::ClipRole::SFX)].into_iter().find(|(id, _)| *id == item.id).map(|(_, r)| r)
+            }
+        }
+        let (seq, mut pool, media, _, _) = fixture();
+        let mut sound = |path: &str| {
+            let mut item = klipp_media::MediaItem::synthetic_for_test(path.into(), None);
+            item.duration = tc(30.0);
+            item.has_audio = true;
+            pool.add(item)
+        };
+        let (song, whip) = (sound("/tmp/song.mp3"), sound("/tmp/whip.mp3"));
+        let lib = Library(song, whip);
+        let place = |id: MediaId| Op::Place { media_id: id, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false };
+        let placed = |id: MediaId| {
+            let plan = resolve_with(&seq, &pool, &[place(id)], &lib).unwrap_or_else(|r| panic!("refused: {}", r.why));
+            let role = match &plan.steps[0].edit {
+                EditCommand::LegacyAppendClip { clip, .. } => clip.role,
+                other => panic!("{other:?}"),
+            };
+            (role, plan.steps[0].what.clone())
+        };
+        let (role, what) = placed(song);
+        assert_eq!(role, klipp_core::ClipRole::Music);
+        assert!(what.contains("marked music"), "{what}");
+        let (role, what) = placed(whip);
+        assert_eq!(role, klipp_core::ClipRole::SFX);
+        assert!(what.contains("marked sfx"), "{what}");
+        let (role, what) = placed(media);
+        assert_eq!(role, klipp_core::ClipRole::Dialogue);
+        assert!(!what.contains("marked"), "{what}");
     }
 
     #[test]
