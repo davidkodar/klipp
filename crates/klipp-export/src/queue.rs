@@ -58,9 +58,12 @@ impl RenderJob {
     /// far against how far it has got: the measured answer for a quality
     /// (CRF) export, whose size nothing can say in advance (#19). `None`
     /// until a twentieth of the job is done, the early part too small a
-    /// sample, and for a job not rendering.
+    /// sample, and for a job not rendering. Only while the video is being
+    /// encoded: in the loudness pass before it the progress counts the
+    /// measurement and the file holds a header, which carried forward
+    /// read as "about 0 MB when done" (#780).
     pub fn projected_bytes(&self) -> Option<u64> {
-        if self.status != RenderJobStatus::Rendering {
+        if self.status != RenderJobStatus::Rendering || !self.render_stage.starts_with("Encoding video") {
             return None;
         }
         let written = std::fs::metadata(klipp_render::partial_path_for(&self.output_path)).ok()?.len();
@@ -68,9 +71,12 @@ impl RenderJob {
     }
 }
 
-/// `written` bytes at `progress` (0 to 1), carried to the end.
+/// `written` bytes at `progress` (0 to 1), carried to the end; nothing
+/// from under a quarter of a megabyte, a container's header and little
+/// more.
 fn projected(written: u64, progress: f32) -> Option<u64> {
-    (progress >= 0.05 && written > 0).then(|| (written as f64 / progress.min(1.0) as f64) as u64)
+    const MIN_SAMPLE: u64 = 256 * 1024;
+    (progress >= 0.05 && written >= MIN_SAMPLE).then(|| (written as f64 / progress.min(1.0) as f64) as u64)
 }
 
 pub enum RenderQueueEvent {
@@ -540,6 +546,8 @@ mod projected_tests {
         assert_eq!(super::projected(50_000_000, 0.25), Some(200_000_000));
         assert_eq!(super::projected(1_000_000, 0.02), None, "too early to say");
         assert_eq!(super::projected(0, 0.5), None);
+        // #780: a header's worth is no sample.
+        assert_eq!(super::projected(4_096, 0.09), None);
     }
 }
 
@@ -578,6 +586,24 @@ mod tests {
             export_range: None,
             sequence_id: klipp_core::SequenceId::new(),
         }
+    }
+
+    /// #780: no projection while the loudness is measured, though the
+    /// progress has moved and a header is on disk; one once the video is
+    /// being encoded.
+    #[test]
+    fn the_size_is_projected_only_while_the_video_is_encoded() {
+        let dir = std::env::temp_dir().join(format!("klipp-projection-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut job = fake_job(RenderJobStatus::Rendering);
+        job.output_path = dir.join("film.mp4");
+        std::fs::write(klipp_render::partial_path_for(&job.output_path), vec![0u8; 1_000_000]).unwrap();
+        job.progress = 0.5;
+        job.render_stage = "Measuring loudness\u{2026}".into();
+        assert_eq!(job.projected_bytes(), None, "the measurement pass is no sample of the encode");
+        job.render_stage = "Encoding video (H.264)\u{2026}".into();
+        assert_eq!(job.projected_bytes(), Some(2_000_000));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A range narrowed after the snapshot was taken counts its own
