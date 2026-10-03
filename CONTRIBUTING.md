@@ -279,6 +279,18 @@ filesystem or set `TMPDIR` to a disk-backed directory; `df` cannot detect
 every per-user quota. Worktrees on tmpfs should point `CARGO_TARGET_DIR`
 at a disk-backed build directory too.
 
+A worktree's first gate does not start from an empty `target/`: it takes
+a copy-on-write copy of the main checkout's `target/debug` (on btrfs or
+any filesystem with reflinks) and rebuilds this tree's own crates from
+its sources, so only the dependencies come from the copy. Do not point
+several worktrees at one `CARGO_TARGET_DIR`: cargo names a workspace
+crate by its path within the workspace, the same in every worktree, and
+judges freshness by file times, so one tree's build can link another
+tree's crates. A worktree's `target/` can be deleted once its branch is
+merged. The gate runs at the lowest CPU and disk priority, so the machine
+stays usable while it builds; it takes longer when you are using it, not
+the other way round.
+
 `KLIPP_SKIP_TESTS=1 git push` bypasses the hook for a genuine reason (a
 work-in-progress branch, a mid-bisect push, a machine with no GPU). It
 is not for getting a red suite past the gate.
