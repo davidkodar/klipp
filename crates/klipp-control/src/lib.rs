@@ -2401,9 +2401,21 @@ fn group_look(seq: &klipp_timeline::Sequence, tc: klipp_core::Timecode) -> Optio
     let clip = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c))?;
     let g = seq.grade_groups.iter().find(|g| Some(g.id) == clip.grade_group)?;
     if g.departs {
-        return Some(klipp_color::measure::LookTarget::unbriefed());
+        return Some(departing_look());
     }
     g.look.clone().map(resolve_look_target)
+}
+
+/// What a group that leaves the look on purpose is judged against:
+/// faults only. Clipping, crushed blacks, log left ungraded, noise and
+/// banding are judged whatever the target; a face lost or blown is a
+/// fault too (#461), so the unbriefed skin exposure stays. No cast, black
+/// point or taste numbers: the unbriefed target's neutral cast told a
+/// group warm on purpose that its neutrals sat toward orange, shot after
+/// shot (#811 review).
+fn departing_look() -> klipp_color::measure::LookTarget {
+    use klipp_color::measure::LookTarget;
+    LookTarget { name: "off the look on purpose".into(), skin_l: LookTarget::unbriefed().skin_l, ..Default::default() }
 }
 
 /// A look given by name alone takes the preset's numbers.
@@ -6641,7 +6653,7 @@ reference:   {}",
                 // A group that leaves the look on purpose is said once, not
                 // as a taste finding on every shot of it (#793).
                 for name in &departing {
-                    text.push_str(&format!("\n[note] grade group \"{name}\" leaves the look on purpose: its shots are judged for clipping, cast, black point and faces only"));
+                    text.push_str(&format!("\n[note] grade group \"{name}\" leaves the look on purpose: its shots are judged for faults only (clipping, crushed blacks, faces, noise), not for its colour or contrast"));
                 }
                 // A shot that could not be read is not one that passed.
                 if !unread.is_empty() {
@@ -7389,8 +7401,22 @@ mod group_look_tests {
 
         let south_look = super::group_look(&seq, tc(1.0)).expect("the south group's look");
         assert_eq!(south_look, LookTarget::preset("warm_interview").unwrap(), "a look by name takes the preset's numbers");
-        assert_eq!(super::group_look(&seq, tc(3.0)), Some(LookTarget::unbriefed()), "leaving the look on purpose outranks its own look");
+        assert_eq!(super::group_look(&seq, tc(3.0)), Some(super::departing_look()), "leaving the look on purpose outranks its own look");
         assert_eq!(super::group_look(&seq, tc(5.0)), None, "a shot in no group goes by the brief");
+    }
+
+    /// #811 review: a frame warm on purpose in a group that leaves the look
+    /// gets no cast finding, though the unbriefed target gives it one; a
+    /// clipped frame there is still a fault.
+    #[test]
+    fn a_group_off_the_look_is_judged_for_faults_only() {
+        use klipp_color::measure::{judge, FrameMeasure, Verdict};
+        let warm = FrameMeasure { l_p1: 6.0, l_p50: 55.0, l_p99: 90.0, cast_a: 4.0, cast_b: 14.0, neutral_pct: 20.0, neutral_solid: true, ..FrameMeasure::default() };
+        let rules = |m: &FrameMeasure, t: &LookTarget| judge(m, t).into_iter().filter(|f| f.verdict != Verdict::Pass).map(|f| f.rule).collect::<Vec<_>>();
+        assert!(rules(&warm, &LookTarget::unbriefed()).contains(&"cast"), "the unbriefed target calls the warmth a cast");
+        assert!(!rules(&warm, &super::departing_look()).contains(&"cast"), "{:?}", rules(&warm, &super::departing_look()));
+        let clipped = FrameMeasure { clip_hi_pct: 6.0, ..warm.clone() };
+        assert!(rules(&clipped, &super::departing_look()).contains(&"clipped_white"));
     }
 }
 
