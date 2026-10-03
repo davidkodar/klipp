@@ -190,12 +190,17 @@ pub fn cached(path: &Path) -> Option<BeatData> {
 }
 
 /// Reads `path`'s beats with ffmpeg and keeps them in the analysis store
-/// for [`cached`]. Slow: a whole decode of the opening minutes.
+/// for [`cached`]; a store that cannot be written is logged, not an error.
+/// Slow: a whole decode of the opening minutes.
 pub fn read_and_cache(ffmpeg: &Path, path: &Path) -> Result<BeatData, String> {
     let beats = detect(ffmpeg, path, 0.0)?;
+    // The read is what was asked for; a cache that cannot be written only
+    // costs the next caller a read of its own.
     if let Some(key) = crate::store::key_for(path) {
-        let value = serde_json::to_value(&beats).map_err(|e| e.to_string())?;
-        crate::store::save(&key, CACHE_ID, CACHE_VERSION, &value)?;
+        match serde_json::to_value(&beats).map_err(|e| e.to_string()).and_then(|v| crate::store::save(&key, CACHE_ID, CACHE_VERSION, &v)) {
+            Ok(()) => {}
+            Err(e) => tracing::warn!("beats of {} read but not kept: {e}", path.display()),
+        }
     }
     Ok(beats)
 }

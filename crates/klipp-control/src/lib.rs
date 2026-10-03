@@ -773,7 +773,7 @@ mod next_step_tests {
         assert!(!cuts_on_beat(&seq, &bed, &klipp_analysis::beats::BeatData { confidence: 0.2, ..beats(0.5) }));
         // Two cuts are too few to call a cut to the music.
         seq.tracks[v].clips.truncate(3);
-        assert!(!cuts_on_beat(&seq, &bed, &beats(0.0)));
+        assert!(!cuts_on_beat(&seq, &bed, &beats(0.5)), "both cuts on the beat, but two are too few");
     }
 }
 
