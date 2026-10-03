@@ -24,7 +24,7 @@ pub(super) fn ops_schema() -> Value {
         {"type":"object","properties":{"offset":{"type":"object","properties":{"from":{"$ref":"#/properties/ops/$defs/anchor"},"secs":{"type":"number"}},"required":["from","secs"],"additionalProperties":false}},"required":["offset"],"additionalProperties":false}
     ]});
     let clip_ref = json!({"oneOf":[
-        {"type":"string","minLength":1},
+        {"type":"string","minLength":1,"description":"A clip id, or \"@N\": the clip step N of this apply made or changed (0 is the first step)"},
         {"type":"object","properties":{"track":{"type":"integer","minimum":0},"secs":{"type":"number","minimum":0}},"required":["track","secs"],"additionalProperties":false}
     ]});
     let track_ref = json!({"oneOf":[{"type":"integer","minimum":0},{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"}]});

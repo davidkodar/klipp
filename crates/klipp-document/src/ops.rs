@@ -70,12 +70,78 @@ pub enum Anchor {
 
 /// A clip, by its id or by where it is: the clip covering `secs` on
 /// track `track`, as the document stands when the op runs. The latter
-/// is how a step names the halves a split before it made.
+/// is how a step names the halves a split before it made. Or `"@N"`: the
+/// clip step N of the same apply made or changed, its first (#790), so a
+/// place and the role, level and effects of what it placed are one apply.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ClipRef {
     Id(ClipId),
     At { track: usize, secs: f64 },
+    Made(StepRef),
+}
+
+/// `"@N"`: step N of the same apply, counted from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepRef(pub usize);
+
+impl Serialize for StepRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("@{}", self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for StepRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.strip_prefix('@')
+            .and_then(|n| n.parse().ok())
+            .map(StepRef)
+            .ok_or_else(|| serde::de::Error::custom(format!("{s:?} is not a clip id, {{track, secs}} or \"@N\" (the clip step N of this apply made)")))
+    }
+}
+
+/// The fields that name a clip (#809 review): only their `"@N"` is a
+/// step reference. A name, a role or a group spelled "@0" is left as
+/// written; a clip field missed here fails safe, as "@N was not bound".
+const CLIP_REF_KEYS: &[&str] = &["clip_id", "clips", "from", "source", "incoming_clip", "outgoing_clip", "clip_start", "clip_end"];
+
+/// The op with every `"@N"` in a field that names a clip replaced by the
+/// id of the clip step N made (`made[N]`), read through the op's own
+/// JSON so every such field is covered.
+fn bind_step_refs(op: &Op, i: usize, made: &[Option<ClipId>]) -> Result<Op, Refusal> {
+    fn walk(v: &mut serde_json::Value, key: Option<&str>, i: usize, made: &[Option<ClipId>]) -> Result<(), Refusal> {
+        match v {
+            serde_json::Value::String(s) if key.is_some_and(|k| CLIP_REF_KEYS.contains(&k)) => {
+                if let Some(n) = s.strip_prefix('@').and_then(|n| n.parse::<usize>().ok()) {
+                    let id = match made.get(n) {
+                        Some(Some(id)) => *id,
+                        Some(None) => return Err(refuse(i, format!("@{n} names step {n}, which made or changed no clip"), "name a step that places, titles or edits a clip")),
+                        None => return Err(refuse(i, format!("@{n} names step {n}, which comes at or after this one"), "a step can only name a clip an earlier step made")),
+                    };
+                    *s = id.0.to_string();
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for x in a {
+                    walk(x, key, i, made)?;
+                }
+            }
+            serde_json::Value::Object(o) => {
+                for (k, x) in o.iter_mut() {
+                    walk(x, Some(k.as_str()), i, made)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut v = serde_json::to_value(op).map_err(|e| refuse(i, format!("the op could not be read back: {e}"), "name clips by id"))?;
+    if !v.to_string().contains("\"@") {
+        return Ok(op.clone());
+    }
+    walk(&mut v, None, i, made)?;
+    serde_json::from_value(v).map_err(|e| refuse(i, format!("the op could not be read back: {e}"), "name clips by id"))
 }
 
 /// Which neighbour a [`Op::Join`] closes the edit with.
@@ -1638,7 +1704,8 @@ fn find_clip(seq: &Sequence, id: ClipId) -> Option<(usize, usize, &Clip)> {
 /// The clip a step names, by id or by place, or a refusal saying which.
 fn resolve_clip<'a>(seq: &'a Sequence, fps: Fps, r: &ClipRef, step: usize) -> Result<(usize, usize, &'a Clip), Refusal> {
     match r {
-        ClipRef::Id(id) => find_clip(seq, *id).ok_or_else(|| refuse(step, format!("no clip {}", id.0), "clip ids are in the timeline view; a clip made by an earlier step can be named by {track, secs}")),
+        ClipRef::Id(id) => find_clip(seq, *id).ok_or_else(|| refuse(step, format!("no clip {}", id.0), "clip ids are in the timeline view; a clip made by an earlier step is \"@N\", N its step")),
+        ClipRef::Made(StepRef(n)) => Err(refuse(step, format!("@{n} was not bound to a clip"), "name the clip by id")),
         ClipRef::At { track, secs: at } => {
             let t = seq.tracks.get(*track).ok_or_else(|| refuse(step, format!("no track {track}"), format!("the sequence has tracks 0 to {}", seq.tracks.len().saturating_sub(1))))?;
             let tc = snap(*at, fps);
@@ -1792,11 +1859,15 @@ pub fn resolve_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcripts: &
     let mut sim_fps = seq.fps;
     let mut steps = Vec::with_capacity(ops.len());
     let mut carry = PlaceCarry::default();
+    let mut made: Vec<Option<ClipId>> = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
+        let bound = bind_step_refs(op, i, &made)?;
+        let op = &bound;
         // The rate as the plan stands at this step: a place that set an
         // empty sequence's format changed it for every step after.
         let (what, edit, touched) = resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry)?;
+        made.push(touched.first().copied());
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
@@ -1818,15 +1889,19 @@ pub fn resolve_each_with(seq: &Sequence, pool: &MediaPool, ops: &[Op], transcrip
     let mut steps = Vec::with_capacity(ops.len());
     let mut refused = Vec::new();
     let mut carry = PlaceCarry::default();
+    let mut made: Vec<Option<ClipId>> = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         let sim = &sims[0];
-        let (what, edit, touched) = match resolve_one(sim, &sim_pool, sim.fps, op, i, transcripts, &mut carry) {
+        let resolved = bind_step_refs(op, i, &made).and_then(|op| resolve_one(sim, &sim_pool, sim.fps, &op, i, transcripts, &mut carry));
+        let (what, edit, touched) = match resolved {
             Ok(resolved) => resolved,
             Err(r) => {
                 refused.push(r);
+                made.push(None);
                 continue;
             }
         };
+        made.push(touched.first().copied());
         let mut view = crate::apply::DocumentView { sequences: &mut sims, active: 0, media_pool: &mut sim_pool, fps: &mut sim_fps };
         view.apply_forward(&edit);
         let after = after_of(&sims[0], &touched);
@@ -6951,6 +7026,48 @@ mod tests {
         let names = ["IMG_1702.mov on track 3", "IMG_1702.mov on track 3", "IMG_1703.mov on track 3", "IMG_1702.mov on track 3"].map(String::from);
         assert_eq!(folded_names(names.into_iter()), "3 clips of IMG_1702.mov on track 3, IMG_1703.mov on track 3");
         assert_eq!(folded_names(["a.mov on track 0".to_string()].into_iter()), "a.mov on track 0");
+    }
+
+    /// #790: a clip a step made is named "@N" by the steps after it: a
+    /// place, its role and its level in one apply, each on the clip the
+    /// place made (the picture, its sound linked); a step that made no clip
+    /// and a step still to come are refused; a title's words are left as
+    /// they are.
+    #[test]
+    fn a_step_names_the_clip_an_earlier_step_made() {
+        let (seq, pool, media, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 2.0},
+            {"op": "role", "clip_id": "@0", "role": "broll"},
+            {"op": "audio", "clip_id": "@0", "volume_db": -12.0},
+            {"op": "title", "text": "@0", "at": {"secs": 8.0}, "secs": 1.0}
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let placed = plan.steps[0].after[0].clip_id;
+        for step in &plan.steps[1..3] {
+            assert!(matches!(&step.op, Op::Role { clip_id: ClipRef::Id(id), .. } | Op::Audio { clip_id: ClipRef::Id(id), .. } if *id == placed), "{:?}", step.op);
+        }
+        assert!(plan.steps[3].what.contains("\"@0\""), "a title's words are its own: {}", plan.steps[3].what);
+        // A name spelled like a reference is a name (#809 review).
+        let named: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "place", "media_id": media.0.to_string(), "track": 0, "at": {"secs": 8.0}, "source_in": 0.0, "source_out": 6.0},
+            {"op": "lower_third", "name": "@0", "at": {"secs": 8.5}, "secs": 4.0}
+        ]))
+        .unwrap();
+        let plan = resolve(&seq, &pool, &named).unwrap();
+        assert!(matches!(&plan.steps[1].op, Op::LowerThird { name, .. } if name == "@0"), "{:?}", plan.steps[1].op);
+
+        let refuse_ops: Vec<Op> = serde_json::from_value(serde_json::json!([{"op": "role", "clip_id": "@0", "role": "music"}])).unwrap();
+        let later = resolve(&seq, &pool, &refuse_ops).unwrap_err();
+        assert!(later.why.contains("comes at or after"), "{}", later.why);
+        let nothing: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "add_track", "kind": "audio"},
+            {"op": "role", "clip_id": "@0", "role": "music"}
+        ]))
+        .unwrap();
+        let none = resolve(&seq, &pool, &nothing).unwrap_err();
+        assert!(none.why.contains("made or changed no clip"), "{}", none.why);
     }
 
     /// #684: a picture pinned to a tracked surface goes on the track
