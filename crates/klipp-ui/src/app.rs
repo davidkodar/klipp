@@ -2506,7 +2506,13 @@ impl KlippApp {
                     self.state.playback = PlaybackState::Paused;
                 }
                 AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample } => {
-                    self.key_qualifier_on_sample(clip_id, node_id, nx, ny, sample);
+                    match self.state.hue_curve_awaiting {
+                        Some((c, n, curve)) if (c, n) == (clip_id, node_id) => {
+                            self.state.hue_curve_awaiting = None;
+                            self.range_hue_curve_on_sample(clip_id, node_id, curve, nx, ny, sample);
+                        }
+                        _ => self.key_qualifier_on_sample(clip_id, node_id, nx, ny, sample),
+                    }
                 }
                 AppEvent::PlaybackStopped => {
                     self.state.playback = PlaybackState::Stopped;
@@ -15107,6 +15113,52 @@ impl KlippApp {
         *needs_refresh = true;
     }
 
+    /// The hue eyedropper's answer: three points on `curve` of the node,
+    /// round the hue picked, as one change (#612).
+    fn range_hue_curve_on_sample(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        node_id: uuid::Uuid,
+        curve: u8,
+        nx: f32,
+        ny: f32,
+        sample: Result<[f32; 3], klipp_core::NodeSampleRefusal>,
+    ) {
+        let rgb = match sample {
+            Ok(rgb) => rgb,
+            Err(klipp_core::NodeSampleRefusal::Why(why)) => {
+                self.state.toast.show(format!("Hue picker: {why}"));
+                return;
+            }
+            Err(klipp_core::NodeSampleRefusal::Placed) => match self.shown_frame_for_balance(clip_id).ok().and_then(|(bytes, fw, fh)| picked_linear(&bytes, fw, fh, nx, ny)) {
+                Some(rgb) => rgb,
+                None => {
+                    self.state.toast.show("Hue picker: nothing to read there");
+                    return;
+                }
+            },
+        };
+        let hsl = klipp_effects::cpu_grade::picture_hsl(rgb);
+        if hsl.s < 0.05 {
+            self.state.toast.show("Hue picker: that is almost grey, so it has no hue to change; pick a coloured patch");
+            return;
+        }
+        let mut huesat = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.node_graph.nodes.iter().find(|n| n.id == node_id))
+            .and_then(|n| n.params.huesat.clone())
+            .unwrap_or_default();
+        let points = match curve {
+            0 => &mut huesat.hue_vs_hue,
+            1 => &mut huesat.hue_vs_sat,
+            _ => &mut huesat.hue_vs_lum,
+        };
+        *points = hue_range_points(points, hsl.h);
+        self.state.toast.show(format!("Three points round {:.0}°: drag the middle one", hsl.h * 360.0));
+        self.send_commands(vec![AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat }]);
+    }
+
     /// Key a Qualifier node on the eyedropper's sample: the colour it
     /// receives there, or, for a clip moved in the frame, the colour on
     /// screen, since the point clicked is not the same point of its
@@ -15170,6 +15222,15 @@ impl KlippApp {
                         }
                     },
                 }
+                true
+            }
+            AppCommand::RequestHueCurveSample { nx, ny } => {
+                // Read, as the qualifier is, from the picture the node
+                // receives: the curve acts on that hue, not the graded one
+                // on screen (#612). Answered by `NodeInputSampled`.
+                let Some((clip_id, node_id, curve)) = self.state.hue_curve_pick.take() else { return true };
+                self.state.hue_curve_awaiting = Some((clip_id, node_id, curve));
+                let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, nx: *nx, ny: *ny });
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
@@ -16389,6 +16450,12 @@ impl KlippApp {
                         }
                     }
                 }
+                true
+            }
+            AppCommand::PickHueCurve { clip_id, node_id, curve } => {
+                self.state.eyedropper_mode = crate::state::EyedropperMode::HueCurve;
+                self.state.hue_curve_pick = Some((*clip_id, *node_id, *curve));
+                self.state.toast.show("Click the colour to change in the viewer (Esc cancels)");
                 true
             }
             AppCommand::PickQualifierColour { clip_id, node_id } => {
@@ -41441,6 +41508,13 @@ fn qualifier_from_pick(
     ny: f32,
     base: klipp_core::QualifierSettings,
 ) -> Option<klipp_core::QualifierSettings> {
+    Some(qualifier_keyed_on(picked_linear(rgba, width, height, nx, ny)?, base))
+}
+
+/// The colour at `(nx, ny)` (0..=1 over the frame) of an sRGB frame, in
+/// linear light: the mean of a 5×5 patch, so one noisy pixel does not
+/// decide it. `None` when the frame is empty.
+fn picked_linear(rgba: &[u8], width: u32, height: u32, nx: f32, ny: f32) -> Option<[f32; 3]> {
     if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
         return None;
     }
@@ -41454,8 +41528,28 @@ fn qualifier_from_pick(
     }
     let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&patch);
     let n = (linear.len() / 4) as f32;
-    let mean = [0, 1, 2].map(|c| linear.chunks_exact(4).map(|p| p[c]).sum::<f32>() / n);
-    Some(qualifier_keyed_on(mean, base))
+    Some([0, 1, 2].map(|c| linear.chunks_exact(4).map(|p| p[c]).sum::<f32>() / n))
+}
+
+/// How far either side of a picked hue its range reaches: 30°.
+const HUE_PICK_HALF_WIDTH: f32 = 1.0 / 12.0;
+
+/// `points` with a range round `hue` (0..1): a point at the hue and one
+/// either side of it, all neutral, so nothing changes until the middle
+/// one is dragged; the points already inside that range give way to it,
+/// the rest stay. Near red the range stops at the curve's end rather
+/// than wrapping round to the other (#612).
+fn hue_range_points(points: &[[f32; 2]], hue: f32) -> Vec<[f32; 2]> {
+    let hue = hue.rem_euclid(1.0);
+    let (lo, hi) = ((hue - HUE_PICK_HALF_WIDTH).max(0.0), (hue + HUE_PICK_HALF_WIDTH).min(1.0));
+    let mut out: Vec<[f32; 2]> = points.iter().copied().filter(|p| p[0] < lo || p[0] > hi).collect();
+    for x in [lo, hue, hi] {
+        if !out.iter().any(|p| (p[0] - x).abs() < 1e-4) {
+            out.push([x, 0.5]);
+        }
+    }
+    out.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    out
 }
 
 /// `base` keyed on a colour in linear light, read as the qualifier reads
@@ -41475,7 +41569,29 @@ fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSettings) -> kli
 
 #[cfg(test)]
 mod qualifier_pick_tests {
-    use super::qualifier_from_pick;
+    use super::{hue_range_points, picked_linear, qualifier_from_pick};
+
+    /// #612: a pick puts three neutral points round the hue, the middle
+    /// one on it; points inside the range give way, the rest stay; near
+    /// red the range stops at the curve's end.
+    #[test]
+    fn a_hue_pick_puts_a_neutral_range_round_the_hue() {
+        let picked = hue_range_points(&[], 0.5);
+        assert_eq!(picked.len(), 3);
+        assert!((picked[1][0] - 0.5).abs() < 1e-6 && picked.iter().all(|p| p[1] == 0.5), "{picked:?}");
+        assert!((picked[2][0] - picked[0][0] - 2.0 / 12.0).abs() < 1e-6, "30° either side");
+        let kept = hue_range_points(&[[0.1, 0.7], [0.52, 0.9], [0.9, 0.3]], 0.5);
+        assert!(kept.contains(&[0.1, 0.7]) && kept.contains(&[0.9, 0.3]), "outside the range they stay: {kept:?}");
+        assert!(!kept.iter().any(|p| p[1] == 0.9), "inside it they give way: {kept:?}");
+        assert!(kept.windows(2).all(|w| w[0][0] < w[1][0]), "in order");
+        let red = hue_range_points(&[], 0.01);
+        assert_eq!(red[0], [0.0, 0.5], "stops at the curve's start: {red:?}");
+        // And the hue the pick reads is the one the curve acts on: an
+        // orange patch reads as orange.
+        let frame: Vec<u8> = (0..16 * 8).flat_map(|_| [230u8, 120, 30, 255]).collect();
+        let hue = klipp_effects::cpu_grade::picture_hsl(picked_linear(&frame, 16, 8, 0.5, 0.5).unwrap()).h * 360.0;
+        assert!((hue - 28.0).abs() < 2.0, "orange: {hue}");
+    }
 
     /// A frame of `left` on its left half and `right` on its right.
     fn halves(left: [u8; 3], right: [u8; 3]) -> Vec<u8> {
