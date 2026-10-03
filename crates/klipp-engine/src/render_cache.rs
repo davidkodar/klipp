@@ -343,21 +343,15 @@ impl DiskRenderCache {
         if !path.exists() { return None; }
 
         match std::fs::read(&path) {
-            Ok(compressed) => {
-                if compressed.len() < 8 { return None; }
-                // Header: width (u32) + height (u32) + LZ4 compressed RGBA
-                let width = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
-                let height = u32::from_le_bytes([compressed[4], compressed[5], compressed[6], compressed[7]]);
-                match lz4_flex::decompress_size_prepended(&compressed[8..]) {
-                    Ok(rgba) => Some((rgba, width, height)),
-                    Err(e) => {
-                        warn!("Render cache decompress failed: {e}");
-                        // Remove the corrupt file from disk AND index.
-                        self.remove_entry(&path);
-                        None
-                    }
+            Ok(compressed) => match decode_entry(&compressed) {
+                Ok(frame) => Some(frame),
+                Err(e) => {
+                    warn!("Render cache entry {filename} unreadable: {e}");
+                    // Remove the corrupt file from disk AND index.
+                    self.remove_entry(&path);
+                    None
                 }
-            }
+            },
             Err(_) => None,
         }
     }
@@ -493,6 +487,27 @@ impl DiskRenderCache {
     }
 }
 
+/// A cache file's frame: (rgba, width, height). The header's edges and
+/// the LZ4 payload's own size prefix are checked against each other
+/// before anything is decompressed, so a damaged file cannot ask for
+/// gigabytes (#823): its prefix must be exactly the frame's RGBA length.
+fn decode_entry(file: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let header = |at: usize| file.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let (Some(width), Some(height), Some(prefix)) = (header(0), header(4), header(8)) else {
+        return Err(format!("{} bytes is shorter than a header", file.len()));
+    };
+    let expected = klipp_media::disk_cache::cached_rgba_len(width, height)
+        .ok_or_else(|| format!("a frame of {width}x{height}"))?;
+    if prefix as usize != expected {
+        return Err(format!("{width}x{height} wants {expected} bytes, the payload says {prefix}"));
+    }
+    let rgba = lz4_flex::decompress_size_prepended(&file[8..]).map_err(|e| e.to_string())?;
+    if rgba.len() != expected {
+        return Err(format!("decompressed to {} bytes, {expected} expected", rgba.len()));
+    }
+    Ok((rgba, width, height))
+}
+
 #[cfg(test)]
 mod tests {
     /// The coverage bar's count must come from the entries, not from
@@ -519,6 +534,31 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// #823: an entry is read back only when its edges, its payload's
+    /// size prefix and what that payload decompresses to all agree.
+    #[test]
+    fn a_damaged_entry_is_refused_before_it_is_decompressed() {
+        let entry = |w: u32, h: u32, rgba: &[u8]| {
+            let mut b = w.to_le_bytes().to_vec();
+            b.extend(h.to_le_bytes());
+            b.extend(lz4_flex::compress_prepend_size(rgba));
+            b
+        };
+        let good = entry(2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(decode_entry(&good).unwrap(), (vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1));
+        // Twelve bytes whose size prefix asks for 4 GiB.
+        let mut huge = 1u32.to_le_bytes().to_vec();
+        huge.extend(1u32.to_le_bytes());
+        huge.extend(u32::MAX.to_le_bytes());
+        assert!(decode_entry(&huge).unwrap_err().contains("payload says"));
+        // Edges that disagree with the payload, edges past any picture,
+        // a header cut short, and a payload cut short.
+        assert!(decode_entry(&entry(4, 4, &[0; 8])).is_err());
+        assert!(decode_entry(&entry(u32::MAX, u32::MAX, &[0; 8])).is_err());
+        assert!(decode_entry(&good[..10]).is_err());
+        assert!(decode_entry(&good[..good.len() - 1]).is_err());
+    }
 
     static NONCE: AtomicU64 = AtomicU64::new(0);
 

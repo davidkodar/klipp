@@ -7,6 +7,41 @@ use crate::FilmstripFrame;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
+// ── Reading a cache file back ──
+//
+// A cache file is trusted for nothing: a damaged one (a crash mid-write,
+// a full disk, a stray edit) can say it holds any count of anything. Every
+// count and size a header gives is checked against the file's length, with
+// checked arithmetic, before anything is allocated for it (#823); a file
+// that fails is an error, and the callers then rebuild it as if missing.
+
+/// The largest edge a cached picture may claim. Far above any real
+/// thumbnail, filmstrip frame or frame, far below what overflows.
+pub const MAX_CACHED_EDGE: u32 = 16_384;
+
+/// The byte length of a `width` × `height` RGBA picture, when both edges
+/// are within [`MAX_CACHED_EDGE`].
+pub fn cached_rgba_len(width: u32, height: u32) -> Option<usize> {
+    if width > MAX_CACHED_EDGE || height > MAX_CACHED_EDGE {
+        return None;
+    }
+    (width as usize).checked_mul(height as usize)?.checked_mul(4)
+}
+
+fn invalid(what: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, what)
+}
+
+/// Fails unless `header + count × each` is exactly the file's `len`.
+fn expect_len(len: u64, header: u64, count: u64, each: u64, what: &str) -> std::io::Result<()> {
+    let want = count.checked_mul(each).and_then(|b| b.checked_add(header));
+    if want == Some(len) {
+        Ok(())
+    } else {
+        Err(invalid(format!("{what}: the header asks for {count} entries of {each} bytes, the file is {len} bytes")))
+    }
+}
+
 // ── Cache key ──
 
 /// Deterministic FNV-1a hash (stable across Rust versions, unlike DefaultHasher).
@@ -158,7 +193,7 @@ pub fn write_filmstrip_cache(
     }
 
     // RGBA data
-    let expected_size = (width * height * 4) as usize;
+    let expected_size = cached_rgba_len(width, height).ok_or_else(|| invalid(format!("filmstrip frame {width}x{height} is too large to cache")))?;
     for frame in frames {
         if frame.rgba.len() == expected_size {
             w.write_all(&frame.rgba)?;
@@ -177,9 +212,13 @@ pub fn write_filmstrip_cache(
 }
 
 pub fn load_filmstrip_cache(cache_key: &str, height: u32) -> std::io::Result<Vec<FilmstripFrame>> {
-    let path = filmstrip_path(cache_key, height);
-    let file = std::fs::File::open(&path)?;
-    let mut r = BufReader::new(file);
+    let file = std::fs::File::open(filmstrip_path(cache_key, height))?;
+    let len = file.metadata()?.len();
+    read_filmstrip(BufReader::new(file), len)
+}
+
+/// A filmstrip cache file of `len` bytes, from `r`.
+fn read_filmstrip(mut r: impl Read, len: u64) -> std::io::Result<Vec<FilmstripFrame>> {
 
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
@@ -206,6 +245,9 @@ pub fn load_filmstrip_cache(cache_key: &str, height: u32) -> std::io::Result<Vec
     let width = u32::from_le_bytes(buf4);
     r.read_exact(&mut buf4)?;
     let height = u32::from_le_bytes(buf4);
+    let frame_size = cached_rgba_len(width, height).ok_or_else(|| invalid(format!("filmstrip frames of {width}x{height}")))?;
+    // Magic, version, count, width, height; then a time and a picture per frame.
+    expect_len(len, 20, frame_count as u64, 8 + frame_size as u64, "filmstrip")?;
 
     // Read time index
     let mut times = Vec::with_capacity(frame_count);
@@ -216,7 +258,6 @@ pub fn load_filmstrip_cache(cache_key: &str, height: u32) -> std::io::Result<Vec
     }
 
     // Read RGBA data
-    let frame_size = (width * height * 4) as usize;
     let mut frames = Vec::with_capacity(frame_count);
     for time_secs in times {
         let mut rgba = vec![0u8; frame_size];
@@ -278,9 +319,13 @@ pub fn write_thumbnail_cache(
 }
 
 pub fn load_thumbnail_cache(cache_key: &str, max_width: u32) -> std::io::Result<(Vec<u8>, u32, u32)> {
-    let path = thumbnail_path(cache_key, max_width);
-    let file = std::fs::File::open(&path)?;
-    let mut r = BufReader::new(file);
+    let file = std::fs::File::open(thumbnail_path(cache_key, max_width))?;
+    let len = file.metadata()?.len();
+    read_thumbnail(BufReader::new(file), len)
+}
+
+/// A thumbnail cache file of `len` bytes, from `r`.
+fn read_thumbnail(mut r: impl Read, len: u64) -> std::io::Result<(Vec<u8>, u32, u32)> {
 
     let mut buf4 = [0u8; 4];
     r.read_exact(&mut buf4)?;
@@ -288,16 +333,10 @@ pub fn load_thumbnail_cache(cache_key: &str, max_width: u32) -> std::io::Result<
     r.read_exact(&mut buf4)?;
     let height = u32::from_le_bytes(buf4);
 
-    let mut rgba = Vec::new();
-    r.read_to_end(&mut rgba)?;
-
-    let expected = (width * height * 4) as usize;
-    if rgba.len() != expected {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("thumbnail size mismatch: got {} expected {}", rgba.len(), expected),
-        ));
-    }
+    let expected = cached_rgba_len(width, height).ok_or_else(|| invalid(format!("thumbnail of {width}x{height}")))?;
+    expect_len(len, 8, 1, expected as u64, "thumbnail")?;
+    let mut rgba = vec![0u8; expected];
+    r.read_exact(&mut rgba)?;
 
     Ok((rgba, width, height))
 }
@@ -355,9 +394,13 @@ pub fn write_audio_peaks_cache(
 }
 
 pub fn load_audio_peaks_cache(cache_key: &str) -> std::io::Result<Vec<(f32, f32)>> {
-    let path = audio_peaks_path(cache_key);
-    let file = std::fs::File::open(&path)?;
-    let mut r = BufReader::new(file);
+    let file = std::fs::File::open(audio_peaks_path(cache_key))?;
+    let len = file.metadata()?.len();
+    read_audio_peaks(BufReader::new(file), len)
+}
+
+/// An audio peaks cache file of `len` bytes, from `r`.
+fn read_audio_peaks(mut r: impl Read, len: u64) -> std::io::Result<Vec<(f32, f32)>> {
 
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
@@ -380,6 +423,8 @@ pub fn load_audio_peaks_cache(cache_key: &str) -> std::io::Result<Vec<(f32, f32)
 
     r.read_exact(&mut buf4)?;
     let count = u32::from_le_bytes(buf4) as usize;
+    // Magic, version, count; then a (min, max) pair of f32 per bucket.
+    expect_len(len, 12, count as u64, 8, "audio peaks")?;
 
     let mut peaks = Vec::with_capacity(count);
     for _ in 0..count {
@@ -495,5 +540,87 @@ mod skim_key_tests {
     fn a_skim_path_is_the_key_alone() {
         let p = skim_transcode_path("abc.hdrtm");
         assert_eq!(p.file_name().unwrap(), "abc.hdrtm.mkv");
+    }
+}
+
+#[cfg(test)]
+mod damaged_file_tests {
+    //! #823: a damaged cache file is refused before anything is allocated
+    //! for what its header claims.
+    use super::*;
+
+    fn read_all<T>(bytes: &[u8], read: impl Fn(&[u8], u64) -> std::io::Result<T>) -> std::io::Result<T> {
+        read(bytes, bytes.len() as u64)
+    }
+
+    fn peaks_file(count: u32, pairs: usize) -> Vec<u8> {
+        let mut b = AUDIO_PEAKS_MAGIC.to_vec();
+        b.extend(AUDIO_PEAKS_VERSION.to_le_bytes());
+        b.extend(count.to_le_bytes());
+        for i in 0..pairs {
+            b.extend((-(i as f32)).to_le_bytes());
+            b.extend((i as f32).to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn peaks_read_back_and_a_header_count_past_the_file_is_refused() {
+        let peaks = read_all(&peaks_file(3, 3), |b, l| read_audio_peaks(b, l)).unwrap();
+        assert_eq!(peaks, vec![(0.0, 0.0), (-1.0, 1.0), (-2.0, 2.0)]);
+        // The 12-byte file of the report: a header and nothing else, the
+        // count saying four thousand million pairs (about 32 GiB).
+        let err = read_all(&peaks_file(u32::MAX, 0), |b, l| read_audio_peaks(b, l)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+        // Truncated mid-pair, and longer than its count says.
+        let mut cut = peaks_file(3, 3);
+        cut.truncate(cut.len() - 4);
+        assert!(read_all(&cut, |b, l| read_audio_peaks(b, l)).is_err());
+        assert!(read_all(&peaks_file(2, 3), |b, l| read_audio_peaks(b, l)).is_err());
+    }
+
+    fn thumb_file(w: u32, h: u32, bytes: usize) -> Vec<u8> {
+        let mut b = w.to_le_bytes().to_vec();
+        b.extend(h.to_le_bytes());
+        b.extend(std::iter::repeat_n(7u8, bytes));
+        b
+    }
+
+    #[test]
+    fn a_thumbnail_must_be_the_size_its_edges_say() {
+        let (rgba, w, h) = read_all(&thumb_file(2, 3, 24), |b, l| read_thumbnail(b, l)).unwrap();
+        assert_eq!((rgba.len(), w, h), (24, 2, 3));
+        assert!(read_all(&thumb_file(2, 3, 20), |b, l| read_thumbnail(b, l)).is_err());
+        // Edges whose product overflows u32 (it panicked in a debug build)
+        // and edges past any picture are refused, not multiplied.
+        assert!(read_all(&thumb_file(65_536, 65_536, 0), |b, l| read_thumbnail(b, l)).is_err());
+        assert!(read_all(&thumb_file(MAX_CACHED_EDGE + 1, 1, 0), |b, l| read_thumbnail(b, l)).is_err());
+    }
+
+    fn strip_file(count: u32, w: u32, h: u32, frames: usize) -> Vec<u8> {
+        let mut b = FILMSTRIP_MAGIC.to_vec();
+        b.extend(FILMSTRIP_VERSION.to_le_bytes());
+        b.extend(count.to_le_bytes());
+        b.extend(w.to_le_bytes());
+        b.extend(h.to_le_bytes());
+        for i in 0..frames {
+            b.extend((i as f64).to_le_bytes());
+        }
+        b.extend(std::iter::repeat_n(9u8, frames * w as usize * h as usize * 4));
+        b
+    }
+
+    #[test]
+    fn a_filmstrip_must_hold_the_frames_its_header_counts() {
+        let frames = read_all(&strip_file(2, 2, 2, 2), |b, l| read_filmstrip(b, l)).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!((frames[1].time_secs, frames[1].rgba.len()), (1.0, 16));
+        // A header claiming millions of frames over a file that holds one.
+        assert!(read_all(&strip_file(u32::MAX, 2, 2, 1), |b, l| read_filmstrip(b, l)).is_err());
+        // Frames of an edge past any picture.
+        assert!(read_all(&strip_file(1, u32::MAX, u32::MAX, 0), |b, l| read_filmstrip(b, l)).is_err());
+        let mut cut = strip_file(2, 2, 2, 2);
+        cut.pop();
+        assert!(read_all(&cut, |b, l| read_filmstrip(b, l)).is_err());
     }
 }
