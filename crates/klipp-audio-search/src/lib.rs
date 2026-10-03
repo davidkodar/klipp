@@ -369,8 +369,10 @@ fn jamendo_tracks(extra: &str, limit: u32, offset: u32, filter: MusicFilter) -> 
 
 /// Sanitise a string into a safe file-name fragment.
 fn safe_name(s: &str) -> String {
-    let mut out: String = s.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect();
-    out.truncate(60);
+    // Sixty characters, not bytes: String::truncate(60) panicked when byte
+    // 60 fell inside a multi-byte letter, and a release build closes on a
+    // panic (#822).
+    let out: String = s.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).take(60).collect();
     out.trim().replace(' ', "_")
 }
 
@@ -587,6 +589,17 @@ mod tests {
         let err = super::copy_capped(std::io::repeat(7), &mut out, 4096).unwrap_err();
         assert!(err.to_string().contains("allowed"), "{err}");
         assert!(out.len() <= 4097, "read {} bytes past a 4096-byte limit", out.len());
+    }
+
+    /// #822: a long name with a multi-byte letter where the cut falls is
+    /// shortened to sixty characters instead of panicking.
+    #[test]
+    fn a_long_unicode_name_is_shortened_by_characters() {
+        let name = format!("{}é and more", "a".repeat(59));
+        let safe = safe_name(&name);
+        assert_eq!(safe.chars().count(), 60);
+        assert!(safe.ends_with('é'), "{safe}");
+        assert_eq!(safe_name("Sigur Rós – Hoppípolla"), "Sigur_Rós___Hoppípolla");
     }
 
     /// #797: the credit beside a download says which library it came

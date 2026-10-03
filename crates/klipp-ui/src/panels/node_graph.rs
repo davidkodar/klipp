@@ -119,11 +119,7 @@ impl NodeGraphPanel {
                     painter.rect_stroke(node_rect, 2.0, egui::Stroke::new(border_width, border_color));
 
                     // Label
-                    let label = if node.label.len() > 10 {
-                        format!("{}...", &node.label[..8])
-                    } else {
-                        node.label.clone()
-                    };
+                    let label = crate::ui_util::elide(&node.label, 11);
                     let label_color = if node.enabled { theme.text_primary } else { theme.text_dim };
                     painter.text(
                         egui::pos2(node_rect.center().x, node_rect.min.y + STRIP_LABEL_H * 0.5),

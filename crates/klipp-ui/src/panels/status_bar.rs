@@ -163,11 +163,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             if show_skim_active || show_skim_done {
                 let (label_text, progress, alpha) = if show_skim_active {
                     let (ref filename, prog) = state.skim_transcode_status.as_ref().unwrap();
-                    let short = if filename.len() > 20 {
-                        format!("{}...", &filename[..17])
-                    } else {
-                        filename.clone()
-                    };
+                    let short = crate::ui_util::elide(filename, 20);
                     (format!("Pre-rendering: {short}"), *prog, 1.0_f32)
                 } else {
                     let fade = skim_done_fade.unwrap();
