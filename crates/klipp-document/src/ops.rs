@@ -2091,14 +2091,20 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     if !width.is_finite() || !(0.0..=100.0).contains(&width) {
                         return Err(refuse(i, format!("stroke_width {width} is out of range"), "give a stroke width 0 to 100"));
                     }
+                    // A line has no fill: without a stroke it draws nothing.
+                    if *shape == klipp_timeline::ShapePreset::Line && width <= 0.0 {
+                        return Err(refuse(i, "a line with no stroke draws nothing", "give the line a stroke_width above 0"));
+                    }
                     klipp_timeline::VectorPath::preset(*shape, paint, paint, width)
                 }
                 _ => return Err(refuse(i, "a path layer needs a path or a shape, not both or neither", "give path (your own contours) or shape (ellipse, triangle, {\"polygon\":{\"sides\":6}}, {\"star\":{\"points\":5,\"inner\":0.45}}, arrow or line)")),
             };
             for (name, v) in [("x", x), ("y", y), ("w", w), ("h", h)] {
                 if let Some(v) = v {
-                    if !v.is_finite() || !(0.0..=1.0).contains(v) {
-                        return Err(refuse(i, format!("{name} {v} is out of range"), "x, y, w and h are fractions of the frame, 0 to 1"));
+                    // A box of no width or height draws nothing.
+                    let zero_ok = matches!(name, "x" | "y");
+                    if !v.is_finite() || *v > 1.0 || *v < 0.0 || (!zero_ok && *v <= 0.0) {
+                        return Err(refuse(i, format!("{name} {v} is out of range"), "x and y are fractions of the frame from 0 to 1, w and h above 0 and up to 1"));
                     }
                 }
             }

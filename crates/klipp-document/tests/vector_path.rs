@@ -141,6 +141,11 @@ fn a_ready_made_shape_is_added_by_name() {
 
     let both: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"ellipse","path":VectorPath::default()})).unwrap();
     assert!(ops::resolve(&doc.sequences[0], doc.media_pool, &[both]).unwrap_err().why.contains("not both"));
+    // Nothing to see is refused: a line with no stroke, a box of no width.
+    let bare_line: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"line","stroke_width":0})).unwrap();
+    assert!(ops::resolve(&doc.sequences[0], doc.media_pool, &[bare_line]).unwrap_err().why.contains("draws nothing"));
+    let flat: Op = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"ellipse","w":0})).unwrap();
+    assert!(ops::resolve(&doc.sequences[0], doc.media_pool, &[flat]).unwrap_err().why.contains("out of range"));
     let wrong: Result<Op, _> = serde_json::from_value(json!({"op":"vector_path","clip_id":id,"shape":"blob"}));
     assert!(wrong.is_err(), "an unknown shape is refused when read");
 }

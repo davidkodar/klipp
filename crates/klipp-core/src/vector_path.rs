@@ -80,6 +80,7 @@ impl Default for VectorPath {
         }
     }
 }
+
 /// A ready-made shape for a title's shape layer (#67): drawn as a path
 /// filling the layer's box, so it rotates, scales, strokes and morphs as
 /// any path does.
@@ -443,6 +444,8 @@ impl PathTrim {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// #67: every ready-made shape is a valid path inside its box, a
     /// closed outline except the line, with the vertex count it promises.
     #[test]
@@ -476,7 +479,6 @@ mod tests {
         assert!(v[0].point[1].abs() < 1e-6, "its first point is at the top");
     }
 
-    use super::*;
     #[test]
     fn static_glow_and_keyed_glow_do_not_require_trim() {
         let mut p = VectorPath::default();

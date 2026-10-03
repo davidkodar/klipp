@@ -2073,7 +2073,10 @@ pub enum AppCommand {
     SelectTitleObject { clip_id: ClipId, object_id: Option<u32> },
     /// Add a new object to the title's object stack. `kind`:
     /// 0 = TextBox (default styling, "New Text" placeholder),
-    /// 1 = Shape (rectangle filling the centre of the frame).
+    /// 1 = Shape (rectangle filling the centre of the frame),
+    /// 3 to 8 = a ready-made shape (ellipse, triangle, hexagon, star,
+    /// arrow, line; the UI's `inspector::title_shape_preset` maps them,
+    /// #67). 2 is not used here: an image comes by `AddTitleImageObject`.
     /// The new object is appended at the top of the stack and
     /// becomes the selected object so the user can immediately
     /// drag / edit it.
