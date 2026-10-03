@@ -487,14 +487,14 @@ impl DiskRenderCache {
     }
 }
 
-/// A cache file's frame: (rgba, width, height). The header's edges and
-/// the LZ4 payload's own size prefix are checked against each other
-/// before anything is decompressed, so a damaged file cannot ask for
-/// gigabytes (#823): its prefix must be exactly the frame's RGBA length.
 /// The most an LZ4 block expands: a match's length grows by 255 for each
 /// byte that encodes it.
 const MAX_LZ4_RATIO: u64 = 255;
 
+/// A cache file's frame: (rgba, width, height). The header's edges and
+/// the LZ4 payload's own size prefix are checked against each other
+/// before anything is decompressed, so a damaged file cannot ask for
+/// gigabytes (#823): its prefix must be exactly the frame's RGBA length.
 fn decode_entry(file: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     let header = |at: usize| file.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let (Some(width), Some(height), Some(prefix)) = (header(0), header(4), header(8)) else {
