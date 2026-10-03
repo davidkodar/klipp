@@ -276,6 +276,10 @@ pub fn hallucinated_spans(segments: &[Segment]) -> Vec<(f64, f64)> {
 /// sentence three times over.
 const LOOP_PHRASE_WORDS: usize = 4;
 const LOOP_REPEATS: usize = 3;
+/// The longest phrase looked for: whisper loops a sentence, not a
+/// paragraph, and the search is linear in the transcript only with a cap
+/// (an hour's interview is nine thousand words, #803 review).
+const LOOP_PHRASE_MAX_WORDS: usize = 24;
 
 /// Drops the words of every phrase repeated back to back as above, and
 /// the segments left without words by it. Returns how many words went.
@@ -287,7 +291,7 @@ pub fn drop_repeated_phrases(t: &mut Transcript) -> usize {
     while i < n {
         // The longest stretch from here that is one phrase over and over.
         let mut best = 0;
-        for k in LOOP_PHRASE_WORDS..=(n - i) / LOOP_REPEATS {
+        for k in LOOP_PHRASE_WORDS..=((n - i) / LOOP_REPEATS).min(LOOP_PHRASE_MAX_WORDS) {
             if keys[i..i + k].iter().all(|w| w.is_empty()) {
                 continue;
             }
@@ -952,6 +956,22 @@ mod tests {
         assert_eq!(drop_repeated_phrases(&mut mixed), 12);
         assert_eq!(mixed.segments.len(), 1);
         assert_eq!(mixed.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Look", "at", "that."]);
+    }
+
+    /// #803 review: the search is bounded by the phrase cap, not the
+    /// transcript's length: a hundred thousand words of talk (some eight
+    /// hours), and as many of one word over and over, each well under a
+    /// second. Uncapped, the talk took four.
+    #[test]
+    fn looking_for_loops_in_a_long_transcript_is_quick() {
+        let talk: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: format!("w{}", (k * 7919) % 5003), confidence: 1.0 }).collect();
+        let same: Vec<Word> = (0..100_000).map(|k| Word { start_secs: k as f64 * 0.3, end_secs: k as f64 * 0.3 + 0.2, text: "so".into(), confidence: 1.0 }).collect();
+        for (what, words) in [("talk", talk), ("one word", same)] {
+            let mut t = Transcript { segments: vec![Segment { start_secs: 0.0, end_secs: 30_000.0, text: String::new() }], words, ..Default::default() };
+            let start = std::time::Instant::now();
+            drop_repeated_phrases(&mut t);
+            assert!(start.elapsed() < std::time::Duration::from_secs(1), "{what}: {:?}", start.elapsed());
+        }
     }
 
     #[test]
