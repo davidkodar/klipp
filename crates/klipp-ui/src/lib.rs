@@ -76,6 +76,7 @@ pub mod templates_tab;
 pub mod prefs;
 pub mod presets;
 pub mod effect_presets;
+pub mod export_hook;
 pub mod title_templates;
 pub mod state;
 pub mod theme;

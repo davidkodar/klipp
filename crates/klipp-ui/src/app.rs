@@ -32551,19 +32551,11 @@ impl KlippApp {
                     // users can diagnose a broken hook instead of
                     // wondering why the file never appeared on their
                     // rsync target.
-                    let tmpl = self.prefs.export.post_export_command.trim();
-                    if !tmpl.is_empty() {
-                        let dir = output_path
-                            .parent()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let file = output_path.to_string_lossy();
-                        let cmd = tmpl
-                            .replace("{file}", &file)
-                            .replace("{dir}", &dir);
-                        match std::process::Command::new("bash")
-                            .arg("-c")
-                            .arg(&cmd)
+                    // The paths go in environment variables, never into
+                    // the command's text (#820, crate::export_hook).
+                    if let Some(mut hook) = crate::export_hook::command(&self.prefs.export.post_export_command, &output_path) {
+                        let cmd = format!("{} (file {})", self.prefs.export.post_export_command.trim(), output_path.display());
+                        match hook
                             .stdout(std::process::Stdio::piped())
                             .stderr(std::process::Stdio::piped())
                             .spawn()
