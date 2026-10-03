@@ -4107,11 +4107,7 @@ impl TimelinePanel {
 
                 // Filename label
                 let label_x = ghost_rect.left() + ghost_h + 2.0;
-                let truncated = if item_name.len() > 20 {
-                    format!("{}...", &item_name[..17])
-                } else {
-                    item_name
-                };
+                let truncated = crate::ui_util::elide(&item_name, 20);
                 ghost_painter.text(
                     egui::pos2(label_x, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4209,7 +4205,7 @@ impl TimelinePanel {
                 );
 
                 // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = crate::ui_util::elide(name, 14);
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 32.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4253,7 +4249,7 @@ impl TimelinePanel {
                 );
 
                 // Effect name
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = crate::ui_util::elide(name, 14);
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -4287,7 +4283,7 @@ impl TimelinePanel {
                 ghost_painter.rect_stroke(ghost_rect, 4.0,
                     egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(255, 210, 100, 230)));
 
-                let truncated = if name.len() > 16 { format!("{}...", &name[..13]) } else { name.clone() };
+                let truncated = crate::ui_util::elide(name, 16);
                 ghost_painter.text(
                     ghost_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -4359,7 +4355,7 @@ impl TimelinePanel {
                     text_color,
                 );
 
-                let truncated = if name.len() > 14 { format!("{}...", &name[..11]) } else { name.clone() };
+                let truncated = crate::ui_util::elide(name, 14);
                 ghost_painter.text(
                     egui::pos2(ghost_rect.left() + 28.0, ghost_rect.center().y),
                     egui::Align2::LEFT_CENTER,

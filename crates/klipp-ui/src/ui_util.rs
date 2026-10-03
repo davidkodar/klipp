@@ -20,6 +20,20 @@ pub fn allocate_clipped_ui<R>(
     .inner
 }
 
+/// `s` cut to at most `max` characters, the last three a "...", or as it
+/// is when it fits. Counted in characters, never bytes: slicing a name at
+/// a byte count split a multi-byte letter (å, é) and panicked, which a
+/// release build turns into a closed app (#822).
+pub fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(3);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
 /// Decode a PNG into an `egui::ColorImage`, returning a 1×1 transparent
 /// placeholder on any decode failure or unsupported pixel format.
 ///
@@ -78,6 +92,16 @@ pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
 
 #[cfg(test)]
 mod tests {
+    /// #822: names are cut by characters, so a multi-byte letter at the
+    /// cut point is kept whole instead of panicking.
+    #[test]
+    fn elide_cuts_by_characters_not_bytes() {
+        assert_eq!(super::elide("short", 14), "short");
+        assert_eq!(super::elide("Göteborg kväll vid hamnen", 14), "Göteborg kv...");
+        assert_eq!(super::elide(&format!("{}é tail", "a".repeat(10)), 14), "aaaaaaaaaaé...");
+        assert_eq!(super::elide("ååååååååååååååå", 10).chars().count(), 10);
+    }
+
     use super::*;
 
     // ═══════════════════════════════════════════════════════════════

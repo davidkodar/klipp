@@ -4519,7 +4519,7 @@ impl PreferencesPanel {
                 .and_then(|l| l.split(':').nth(1))
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|| "Unknown".into());
-            let display = if model.len() > 40 { format!("{}...", &model[..37]) } else { model };
+            let display = crate::ui_util::elide(&model, 40);
             ui.label(egui::RichText::new(display).color(theme.text_dim).size(11.0));
         });
 
