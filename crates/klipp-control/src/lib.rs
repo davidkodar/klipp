@@ -26,6 +26,7 @@ pub mod protocol;
 mod operations;
 mod cut_prep;
 mod jobs;
+mod json_path;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -652,21 +653,42 @@ mod made_media_tests {
 mod next_step_tests {
     use super::*;
 
+    fn placed() -> Vec<klipp_document::ops::Op> {
+        let place: klipp_document::ops::Op = serde_json::from_value(json!({ "op": "place", "media_id": "00000000-0000-0000-0000-000000000000", "track": "video", "at": { "secs": 0 } })).unwrap();
+        vec![place.clone(), place]
+    }
+
     /// #743: the next step after the selects follows the brief: a piece
     /// that is not captioned is not told to caption or to cover joins.
     #[test]
     fn the_next_step_reads_the_brief() {
-        let place: klipp_document::ops::Op = serde_json::from_value(json!({ "op": "place", "media_id": "00000000-0000-0000-0000-000000000000", "track": "video", "at": { "secs": 0 } })).unwrap();
-        let ops = vec![place.clone(), place];
-        let told = next_after_ops(&ops, None).unwrap();
+        let ops = placed();
+        let trail = Trail { pictures_placed: true, ..Default::default() };
+        let told = next_after_ops(&ops, None, trail).unwrap();
         assert!(told.contains("captions"), "{told}");
         let brief = klipp_timeline::Brief { captions: false, music: true, ..Default::default() };
-        let told = next_after_ops(&ops, Some(&brief)).unwrap();
+        let told = next_after_ops(&ops, Some(&brief), trail).unwrap();
         assert!(!told.contains("captions") && !told.contains("jump cut") && told.contains("beat"), "{told}");
         // Without music, nothing about a beat (#758 review).
         let silent = klipp_timeline::Brief { captions: false, music: false, ..Default::default() };
-        let told = next_after_ops(&ops, Some(&silent)).unwrap();
+        let told = next_after_ops(&ops, Some(&silent), trail).unwrap();
         assert!(!told.contains("captions") && !told.contains("beat"), "{told}");
+    }
+
+    /// #785: sound effects placed are not the selects, and what the
+    /// timeline already has (titles, a grade) is not advised again.
+    #[test]
+    fn the_next_step_reads_the_timeline() {
+        let ops = placed();
+        let brief = klipp_timeline::Brief { captions: false, music: true, ..Default::default() };
+        let sound = next_after_ops(&ops, Some(&brief), Trail::default()).unwrap();
+        assert!(!sound.contains("selects") && sound.contains("Hear it"), "{sound}");
+        let fresh = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, ..Default::default() }).unwrap();
+        assert!(fresh.ends_with("then titles in the brief's type styles, the grade, and check."), "{fresh}");
+        let titled = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, titled: true, graded: false }).unwrap();
+        assert!(!titled.contains("titles") && titled.ends_with("then the grade and check."), "{titled}");
+        let done = next_after_ops(&ops, Some(&brief), Trail { pictures_placed: true, titled: true, graded: true }).unwrap();
+        assert!(done.ends_with("(klipp_beats), then check."), "{done}");
     }
 }
 
@@ -1906,35 +1928,85 @@ fn with_warnings(v: &mut serde_json::Value, warnings: Vec<String>) {
     v["warnings"] = json!(warnings);
 }
 
+/// What the timeline holds that the next step would otherwise advise
+/// again (#785).
+#[derive(Debug, Clone, Copy, Default)]
+struct Trail {
+    /// The ops placed pictures, not only sound: selects, not effects.
+    pictures_placed: bool,
+    /// A title is on a text track.
+    titled: bool,
+    /// A picture clip is graded, alone or in a grade group.
+    graded: bool,
+}
+
+impl Trail {
+    fn read(ctx: &ControlContext, ops: &[klipp_document::ops::Op]) -> Trail {
+        let Ok(seq) = ctx.sequence.read() else { return Trail::default() };
+        let pictures_placed = ctx.media_pool.read().is_ok_and(|pool| {
+            ops.iter().any(|o| match o {
+                klipp_document::ops::Op::Place { media_id, .. } => pool.get(media_id).is_some_and(|m| m.is_still || !m.video_codec.is_empty()),
+                _ => false,
+            })
+        });
+        let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c)));
+        Trail {
+            pictures_placed,
+            titled: clips().any(|(t, c)| t.kind == klipp_timeline::TrackKind::Text && matches!(c.kind, klipp_timeline::ClipKind::Title(_))),
+            graded: clips().any(|(_, c)| is_picture_clip(c) && (!c.own_grade().is_identity() || c.grade_group.is_some())),
+        }
+    }
+}
+
 /// What to do after a batch of ops was applied, from the ops in it: the
 /// reply points at the next step so a session follows a trail rather
 /// than recalling a recipe.
 /// The brief shapes it (#743): a piece that is not captioned is not told
 /// to caption, nor a montage cut to music to cover its joins like an
-/// interview's.
-fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline::Brief>) -> Option<&'static str> {
+/// interview's. And the timeline does (#785): sound effects placed are
+/// not selects, and titles or a grade already there are not advised.
+fn next_after_ops(ops: &[klipp_document::ops::Op], brief: Option<&klipp_timeline::Brief>, trail: Trail) -> Option<String> {
     use klipp_document::ops::Op;
     let has = |f: &dyn Fn(&Op) -> bool| ops.iter().any(f);
     let uncaptioned = brief.is_some_and(|b| !b.captions);
-    if has(&|o| matches!(o, Op::Redact { .. })) {
-        Some("Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again.")
-    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned && brief.is_some_and(|b| b.music) {
-        Some("The selects are down. Look at them together (frame_at across the cut), cut them to the music's beat (klipp_beats), then titles in the brief's type styles, the grade, and check.")
-    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 && uncaptioned {
-        Some("The selects are down. Look at them together (frame_at across the cut) and tighten each cut, then titles in the brief's type styles, the grade, and check.")
-    } else if has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2 {
-        Some("The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check.")
+    let selects = trail.pictures_placed && has(&|o| matches!(o, Op::Place { with_audio: true, .. })) && ops.len() >= 2;
+    // What is left after the cut, in order, ending in the check.
+    let then = || {
+        let mut left: Vec<&str> = Vec::new();
+        if !trail.titled {
+            left.push("titles in the brief's type styles");
+        }
+        if !trail.graded {
+            left.push("the grade");
+        }
+        match left.as_slice() {
+            [] => ", then check.".to_string(),
+            [one] => format!(", then {one} and check."),
+            many => format!(", then {}, and check.", many.join(", ")),
+        }
+    };
+    let said: &str = if has(&|o| matches!(o, Op::Redact { .. })) {
+        "Redacted. Look at a frame inside the stretch (frame_at) to see the box covers what it should — the copy on the track above hides it — then check again."
+    } else if selects && uncaptioned && brief.is_some_and(|b| b.music) {
+        return Some(format!("The selects are down. Look at them together (frame_at across the cut), cut them to the music's beat (klipp_beats){}", then()));
+    } else if selects && uncaptioned {
+        return Some(format!("The selects are down. Look at them together (frame_at across the cut) and tighten each cut{}", then()));
+    } else if selects {
+        "The selects are down. Where two from the same set-up meet is a jump cut: cover the joins with B-roll on a track above (place with_audio false), or j_cut the sound. Then captions, then check."
     } else if has(&|o| matches!(o, Op::Captions { .. })) {
-        Some("Captions are down. Read the cues in the reply and correct any the transcript misheard with set_text. Then check, and export with the brief's loudness.")
+        "Captions are down. Read the cues in the reply and correct any the transcript misheard with set_text. Then check, and export with the brief's loudness."
     } else if has(&|o| matches!(o, Op::LowerThird { .. })) {
-        Some("The lower third is placed. Look at a frame with frame_at to see it sits clear of anything burnt into the picture, then move it with style if not.")
+        "The lower third is placed. Look at a frame with frame_at to see it sits clear of anything burnt into the picture, then move it with style if not."
     } else if has(&|o| matches!(o, Op::Duck { .. } | Op::Audio { .. })) {
-        Some("The sound is set. Check holds the mix to the craft; then export at the brief's loudness.")
+        "The sound is set. Check holds the mix to the craft; then export at the brief's loudness."
+    } else if has(&|o| matches!(o, Op::Place { .. })) && !trail.pictures_placed {
+        "Placed. Hear it against the picture (audio_excerpt across where it lands), and run check when the cut is together."
     } else if has(&|o| matches!(o, Op::Place { .. })) {
-        Some("Placed. Look with frame_at or contact_sheet, and run check when the cut is together.")
+        "Placed. Look with frame_at or contact_sheet, and run check when the cut is together."
     } else {
-        Some("Run check to hold the cut to the brief and the craft before you export.")
-    }
+        "Run check to hold the cut to the brief and the craft before you export."
+    };
+    Some(said.to_string())
 }
 
 /// A media item's file and duration, by id.
@@ -2667,7 +2739,11 @@ fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, rev
 /// op at a time instead, so the reply names the step, its op and what
 /// went wrong in it, with what a clip can be named by.
 fn explain_bad_request(line: &str, e: &serde_json::Error) -> String {
-    let fallback = format!("bad request: {e}");
+    // Any other request: the field the error is in, by its path (#783).
+    let fallback = match json_path::explain(line, e) {
+        Some(why) => format!("bad request: {why}"),
+        None => format!("bad request: {e}"),
+    };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return fallback };
     let ops = value.get("ops").or_else(|| value.get("command").and_then(|c| c.get("ops"))).and_then(|o| o.as_array());
     let Some(ops) = ops else { return fallback };
@@ -5121,10 +5197,21 @@ fn handle(
             if let Some(e) = after.last_error {
                 return Err(e);
             }
+            // The project is made before its first save has landed: answer
+            // once the file is there, as save_project does, so what reads
+            // the folder straight after finds it (#784).
+            let file = dir.join("project.json");
+            let waited = std::time::Instant::now();
+            while !file.exists() && waited.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let saved = file.exists();
+            let made = if width == 0 { "Empty project made; its size and rate follow the first clip placed." } else { "Empty project made." };
             Ok(json!({
                 "created": true,
+                "saved": saved,
                 "path": dir.to_string_lossy(),
-                "text": if width == 0 { "Empty project made; its size and rate follow the first clip placed." } else { "Empty project made." },
+                "text": if saved { made.to_string() } else { format!("{made} Its first save has not landed yet: wait before reading the folder.") },
             }))
         }
 
@@ -5524,7 +5611,7 @@ fn handle(
             }
             v["duration_secs"] = json!(plan.duration_secs);
             let brief = ctx.sequence.read().ok().and_then(|s| s.brief.clone());
-            if let Some(next) = next_after_ops(&ops, brief.as_ref()) {
+            if let Some(next) = next_after_ops(&ops, brief.as_ref(), Trail::read(ctx, &ops)) {
                 v["next"] = json!(next);
             }
             let wants_voice = ops.iter().any(|o| matches!(o, klipp_document::ops::Op::CleanAudio { voice: true, .. }));

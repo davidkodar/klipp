@@ -1656,6 +1656,20 @@ fn short_name(filename: &str) -> String {
     format!("{}…{}{ext}", head.trim_end(), if ext.is_empty() { "" } else { "." })
 }
 
+/// Clip names as a list with repeats counted: twelve shots of one file
+/// read "12 clips of IMG_1702.mov on track 3", not the name twelve times
+/// (#786). In the order each name is first met.
+fn folded_names(names: impl Iterator<Item = String>) -> String {
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for n in names {
+        match counted.iter_mut().find(|(m, _)| *m == n) {
+            Some(c) => c.1 += 1,
+            None => counted.push((n, 1)),
+        }
+    }
+    counted.into_iter().map(|(n, k)| if k > 1 { format!("{k} clips of {n}") } else { n }).collect::<Vec<_>>().join(", ")
+}
+
 fn clip_name(seq: &Sequence, pool: &MediaPool, clip: &Clip) -> String {
     match &clip.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| short_name(&m.filename)).unwrap_or_else(|| "media".into()),
@@ -4723,7 +4737,7 @@ fn grade_group(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, name: &str,
             members.push(clip);
         }
     }
-    let names = members.iter().map(|c| clip_name(seq, pool, c)).collect::<Vec<_>>().join(", ");
+    let names = folded_names(members.iter().map(|c| clip_name(seq, pool, c)));
     let touched: Vec<ClipId> = members.iter().map(|c| c.id).collect();
     if leave {
         let g = find_grade_group(seq, i, name)?;
@@ -6828,6 +6842,14 @@ mod tests {
         // Alone, when asked.
         let plan = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false, linked: false }]).unwrap();
         assert_eq!(plan.steps[0].after.len(), 1);
+    }
+
+    /// #786: a list of clip names counts repeats rather than saying them.
+    #[test]
+    fn repeated_clip_names_are_counted() {
+        let names = ["IMG_1702.mov on track 3", "IMG_1702.mov on track 3", "IMG_1703.mov on track 3", "IMG_1702.mov on track 3"].map(String::from);
+        assert_eq!(folded_names(names.into_iter()), "3 clips of IMG_1702.mov on track 3, IMG_1703.mov on track 3");
+        assert_eq!(folded_names(["a.mov on track 0".to_string()].into_iter()), "a.mov on track 0");
     }
 
     /// #684: a picture pinned to a tracked surface goes on the track
