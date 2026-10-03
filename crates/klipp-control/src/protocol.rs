@@ -368,6 +368,10 @@ pub enum ControlCommand {
         click: Option<klipp_core::MediaId>,
         #[serde(default)]
         riser: Option<klipp_core::MediaId>,
+        /// Which cuts take a whoosh: cuts (every one, the default),
+        /// transitions, or stylised (#791).
+        #[serde(default)]
+        on: Option<String>,
         #[serde(default)]
         apply: bool,
     },
