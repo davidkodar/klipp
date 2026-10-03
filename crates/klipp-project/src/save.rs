@@ -122,9 +122,12 @@ pub fn save_project_full(
         })
         .collect();
 
+    // One id for this save, written into both files (#821).
+    let generation = new_generation();
     let project = ProjectJson {
         version: "1.0.0".to_string(),
         klipp_version_min: "0.1.0".to_string(),
+        generation: Some(generation.clone()),
         klipp_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         saved_at: Some(now),
         created_at: created_at.map(|s| s.to_string()),
@@ -143,18 +146,10 @@ pub fn save_project_full(
     let project_json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {e}"))?;
 
-    // Rotate backup versions before overwriting
-    let project_file = dir.join("project.json");
-    if project_file.exists() && backup_count > 0 {
-        rotate_backups(&project_file, backup_count);
-    }
-
-    atomic_write(&project_file, project_json.as_bytes())
-        .map_err(|e| format!("Failed to write project.json: {e}"))?;
-
     // Build media/manifest.json — store paths relative to project dir
     let manifest = MediaManifestJson {
         version: "1.0.0".to_string(),
+        generation: Some(generation),
         items: media_pool.all().map(|item| media_item_to_json(item, dir)).collect(),
         bins: media_pool.bins.iter().map(|b| BinJson {
             id: b.id.to_string(),
@@ -163,13 +158,58 @@ pub fn save_project_full(
         }).collect(),
         smart_bins: media_pool.smart_bins.clone(),
     };
-
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize media manifest: {e}"))?;
-    atomic_write(&dir.join("media").join("manifest.json"), manifest_json.as_bytes())
-        .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
+
+    commit_pair(dir, project_json.as_bytes(), manifest_json.as_bytes(), backup_count)?;
 
     info!("Project saved to {:?}", dir);
+    Ok(())
+}
+
+/// A fresh id for one save: the time to the nanosecond and the process,
+/// unique enough that two saves never share one.
+fn new_generation() -> String {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// Writes a save's two files as one step that can be recovered (#821).
+/// Each write is atomic on its own; the pair was not, so a failure between
+/// them left the new timeline beside the old media list, or none. Now:
+///
+/// - both files' backups rotate together, so `.bak.N` of each is the same
+///   earlier save;
+/// - the manifest is written first and `project.json` last, the commit
+///   point: if the manifest fails nothing has changed, and if
+///   `project.json` fails the previous manifest is put back;
+/// - a crash in between (nothing left to put it back) leaves a pair whose
+///   generations differ, which [`crate::load::load_project`] mends from
+///   the backups.
+fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32) -> Result<(), String> {
+    let project_file = dir.join("project.json");
+    let manifest_file = dir.join("media").join("manifest.json");
+    if backup_count > 0 {
+        if project_file.exists() {
+            rotate_backups(&project_file, backup_count);
+        }
+        if manifest_file.exists() {
+            rotate_backups(&manifest_file, backup_count);
+        }
+    }
+    let previous_manifest = std::fs::read(&manifest_file).ok();
+    atomic_write(&manifest_file, manifest).map_err(|e| format!("Failed to write manifest.json: {e}"))?;
+    if let Err(e) = atomic_write(&project_file, project) {
+        // Put the media list back with the timeline it belongs to.
+        let restored = match &previous_manifest {
+            Some(old) => atomic_write(&manifest_file, old).is_ok(),
+            None => std::fs::remove_file(&manifest_file).is_ok(),
+        };
+        if !restored {
+            tracing::warn!("project.json failed and the previous media manifest could not be put back; it will be mended from the backups on open");
+        }
+        return Err(format!("Failed to write project.json: {e}"));
+    }
     Ok(())
 }
 
