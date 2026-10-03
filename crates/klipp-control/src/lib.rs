@@ -434,6 +434,25 @@ fn transition_alignment(a: klipp_core::TransitionAlignment) -> (&'static str, &'
     }
 }
 
+/// Part of the timeline to read: one track, and what plays in a stretch
+/// (#796). The default is all of it.
+#[derive(Debug, Clone, Copy, Default)]
+struct TimelineView {
+    track: Option<usize>,
+    from_secs: Option<f64>,
+    to_secs: Option<f64>,
+}
+
+impl TimelineView {
+    fn shows(&self, a: f64, b: f64) -> bool {
+        self.from_secs.is_none_or(|f| b > f) && self.to_secs.is_none_or(|t| a < t)
+    }
+
+    fn narrowed(&self) -> bool {
+        self.track.is_some() || self.from_secs.is_some() || self.to_secs.is_some()
+    }
+}
+
 /// The timeline as text: what a model reads before it plans. Tracks top
 /// first; every clip with its range in seconds and frames at the
 /// sequence's rate; the clip's kind and source; its grade and effects in
@@ -444,6 +463,7 @@ fn timeline_text(
     pool: &klipp_media::MediaPool,
     playhead_secs: Option<f64>,
     revision: u64,
+    view: TimelineView,
 ) -> String {
     use std::fmt::Write as _;
     let fps = seq.fps.as_f64();
@@ -462,7 +482,23 @@ fn timeline_text(
         let _ = writeln!(out, "Playhead {:.2} s ({} f)", p, (p * fps).round() as i64);
     }
     let _ = writeln!(out, "Tracks, top first. Times are seconds and frames at {:.3} fps.", fps);
+    if view.narrowed() {
+        let mut said = Vec::new();
+        if let Some(t) = view.track {
+            said.push(format!("track {t} only"));
+        }
+        match (view.from_secs, view.to_secs) {
+            (Some(a), Some(b)) => said.push(format!("what plays from {a:.2} to {b:.2} s")),
+            (Some(a), None) => said.push(format!("what plays from {a:.2} s on")),
+            (None, Some(b)) => said.push(format!("what plays before {b:.2} s")),
+            (None, None) => {}
+        }
+        let _ = writeln!(out, "Showing {}.", said.join(", "));
+    }
     for (i, t) in seq.tracks.iter().enumerate() {
+        if view.track.is_some_and(|w| w != i) {
+            continue;
+        }
         let mut head = format!("\n[{i}] {:?} \"{}\"", t.kind, t.name);
         if (t.opacity - 1.0).abs() > 1e-6 {
             let _ = write!(head, "  opacity {:.2}", t.opacity);
@@ -474,7 +510,7 @@ fn timeline_text(
             head.push_str("  (empty)");
         }
         let _ = writeln!(out, "{head}");
-        for c in &t.clips {
+        for c in t.clips.iter().filter(|c| view.shows(c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())) {
             let what = match &c.kind {
                 klipp_timeline::ClipKind::Media { media_id } => match pool.get(media_id) {
                     Some(m) => {
@@ -554,6 +590,9 @@ fn timeline_text(
         // The transitions on the track's cuts (#711): what an agent that
         // made a dissolve reads back to see it there.
         for tr in &t.transitions {
+            if transition_span(t, tr).is_some_and(|(_, from, to)| !view.shows(from, to)) {
+                continue;
+            }
             let spec = klipp_core::spec_for_kind(tr.kind);
             let d = tr.duration.to_secs_f64();
             let (words, _) = transition_alignment(tr.alignment);
@@ -572,9 +611,17 @@ fn timeline_text(
             let _ = writeln!(out, "{line}");
         }
     }
-    if !seq.markers.is_empty() {
+    let marker_span = |m: &klipp_timeline::Marker| {
+        let a = m.position.to_secs_f64();
+        (a, m.duration.map_or(a, |d| (m.position + d).to_secs_f64()))
+    };
+    let markers: Vec<&klipp_timeline::Marker> = seq.markers.iter().filter(|m| {
+        let (a, b) = marker_span(m);
+        view.from_secs.is_none_or(|f| b >= f) && view.to_secs.is_none_or(|t| a < t)
+    }).collect();
+    if !markers.is_empty() {
         let _ = writeln!(out, "\nMarkers");
-        for m in &seq.markers {
+        for m in markers {
             let at = match m.duration {
                 Some(d) => format!("{:.2}-{:.2} s", m.position.to_secs_f64(), (m.position + d).to_secs_f64()),
                 None => format!("{:.2} s", m.position.to_secs_f64()),
@@ -995,6 +1042,31 @@ fn pick_look(looks: &[(String, String, std::path::PathBuf)], q: &str) -> Result<
             let names: Vec<String> = matches.iter().take(10).map(|(c, s, _)| format!("{c}/{s}")).collect();
             Err(format!("\"{q}\" matches {} looks; be more specific: {}", matches.len(), names.join(", ")))
         }
+    }
+}
+
+#[cfg(test)]
+mod timeline_view_tests {
+    use super::*;
+
+    /// #796: one track and one stretch of the timeline can be read alone,
+    /// so a long cut stays readable inside the reply's budget.
+    #[test]
+    fn the_timeline_reads_a_track_and_a_stretch() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let scene = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![
+            klipp_timeline::Clip::sequence(scene.id, tc(0.0), tc(2.0)),
+            klipp_timeline::Clip::sequence(scene.id, tc(2.0), tc(4.0)),
+        ];
+        let (first, second) = (seq.tracks[0].clips[0].id.0.to_string(), seq.tracks[0].clips[1].id.0.to_string());
+        let pool = klipp_media::MediaPool::new();
+        let all = timeline_text(&seq, &pool, None, 1, TimelineView::default());
+        assert!(all.contains(&first) && all.contains(&second) && all.contains("[1] Audio"));
+        let late = timeline_text(&seq, &pool, None, 1, TimelineView { track: Some(0), from_secs: Some(2.5), to_secs: None });
+        assert!(!late.contains(&first) && late.contains(&second), "{late}");
+        assert!(!late.contains("[1] Audio") && late.contains("Showing track 0 only, what plays from 2.50 s on."), "{late}");
     }
 }
 
@@ -4867,7 +4939,8 @@ fn handle(
             Ok(v)
         }
 
-        ControlCommand::ContactSheet { media_id, from_secs, to_secs, frames, cols, tile_width, path } => {
+        ControlCommand::ContactSheet { media_id, from_secs, to_secs, frames, cols, tile_width, path, inline } => {
+            let inline = inline.unwrap_or(path.is_none());
             if in_batch {
                 return read_in_batch("contact_sheet");
             }
@@ -4878,7 +4951,9 @@ fn handle(
             let sheet = klipp_analysis::sheet::contact_sheet(
                 std::path::Path::new("ffmpeg"), &media_path, from, to, frames.unwrap_or(12), cols.unwrap_or(4), tile_width.unwrap_or(240), &out,
             )?;
-            Ok(serde_json::to_value(sheet).map_err(|e| e.to_string())?)
+            let mut v = serde_json::to_value(sheet).map_err(|e| e.to_string())?;
+            v["inline"] = json!(inline);
+            Ok(v)
         }
 
         ControlCommand::AudioExcerpt { media_id, from_secs, to_secs, path } => {
@@ -4894,14 +4969,23 @@ fn handle(
             Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit" }))
         }
 
-        ControlCommand::Timeline { max_chars } => {
+        ControlCommand::Timeline { max_chars, track, from_secs, to_secs } => {
             if in_batch {
                 return read_in_batch("timeline");
             }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+            if let Some(t) = track.filter(|t| *t >= seq.tracks.len()) {
+                return Err(format!("no track {t}: the sequence has {} (0 is the top)", seq.tracks.len()));
+            }
+            if let (Some(a), Some(b)) = (from_secs, to_secs) {
+                if b <= a {
+                    return Err(format!("from_secs {a:.2} is not before to_secs {b:.2}"));
+                }
+            }
             let presented = ctx.frame_buffer.lock().ok().and_then(|fb| fb.shown_presented()).map(|t| t.to_secs_f64());
-            let full = timeline_text(&seq, &pool, presented, ctx.shared.revision());
+            let view = TimelineView { track, from_secs, to_secs };
+            let full = timeline_text(&seq, &pool, presented, ctx.shared.revision(), view);
             let (text, cut) = cut_to_budget(&full, max_chars.unwrap_or(12_000));
             Ok(json!({ "text": text, "cut": cut, "chars": full.len(), "revision": ctx.shared.revision() }))
         }
@@ -6228,7 +6312,7 @@ reference:   {}",
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
-                (timeline_text(&seq, &pool, None, ctx.shared.revision()), clips)
+                (timeline_text(&seq, &pool, None, ctx.shared.revision(), TimelineView::default()), clips)
             };
             // What to do next, from where the work stands.
             let next = if media.is_empty() {
@@ -6959,7 +7043,8 @@ reference:   {}",
             Ok(v)
         }
 
-        ControlCommand::TimelineSheet { from_secs, to_secs, frames, cols, tile_width, path } => {
+        ControlCommand::TimelineSheet { from_secs, to_secs, frames, cols, tile_width, path, inline } => {
+            let inline = inline.unwrap_or(path.is_none());
             if in_batch {
                 return read_in_batch("timeline_sheet");
             }
@@ -7032,7 +7117,7 @@ reference:   {}",
                 tiles.len(),
                 tiles.iter().zip(&names).enumerate().map(|(k, (t, n))| format!("  {:>2}. {t:.2} s  {n}", k + 1)).collect::<Vec<_>>().join("\n"),
             );
-            Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed }))
+            Ok(json!({ "text": text, "path": out.to_string_lossy(), "width": sw, "height": sh, "tiles": listed, "inline": inline }))
         }
 
         ControlCommand::FrameAt { secs, path, max_width, timeout_ms } => {
