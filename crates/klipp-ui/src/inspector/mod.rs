@@ -106,7 +106,7 @@ impl NewInspectorPanel {
         let (clip_name, name_dim) = if let Some((_, c)) = clip_info {
             let name = match &c.kind {
                 klipp_timeline::ClipKind::Title(td) => {
-                    let text_preview = if td.text().len() > 30 { format!("{}...", &td.text()[..27]) } else { td.text().clone() };
+                    let text_preview = crate::ui_util::elide(&td.text(), 30);
                     format!("Title: {}", text_preview)
                 }
                 klipp_timeline::ClipKind::Gap => "Gap".into(),

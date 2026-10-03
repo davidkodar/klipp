@@ -20,13 +20,6 @@ pub fn allocate_clipped_ui<R>(
     .inner
 }
 
-/// Decode a PNG into an `egui::ColorImage`, returning a 1×1 transparent
-/// placeholder on any decode failure or unsupported pixel format.
-///
-/// Used for logo / icon assets where a broken or stripped PNG should not
-/// crash the UI on open. The asset is baked in via `include_bytes!` today,
-/// but a corrupted file in the tree (or a future move to runtime asset
-/// loading) would otherwise take the whole app down at startup.
 /// `s` cut to at most `max` characters, the last three a "...", or as it
 /// is when it fits. Counted in characters, never bytes: slicing a name at
 /// a byte count split a multi-byte letter (å, é) and panicked, which a
@@ -41,6 +34,13 @@ pub fn elide(s: &str, max: usize) -> String {
     out
 }
 
+/// Decode a PNG into an `egui::ColorImage`, returning a 1×1 transparent
+/// placeholder on any decode failure or unsupported pixel format.
+///
+/// Used for logo / icon assets where a broken or stripped PNG should not
+/// crash the UI on open. The asset is baked in via `include_bytes!` today,
+/// but a corrupted file in the tree (or a future move to runtime asset
+/// loading) would otherwise take the whole app down at startup.
 pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
     fn fallback() -> egui::ColorImage {
         egui::ColorImage {
