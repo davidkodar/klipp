@@ -5941,7 +5941,7 @@ reference:   {}",
             let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string(), analyze: true }, &mut None)?;
             v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
             v["attribution"] = json!(track.attribution());
-            v["next"] = json!("Place it on an audio track (append_clip), set the track's role to Music so the loudness check treats it right, and duck it under any speech. The credit is saved beside the file for your export notes.");
+            v["next"] = json!("Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes.");
             Ok(v)
         }
 
