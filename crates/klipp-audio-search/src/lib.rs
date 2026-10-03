@@ -156,11 +156,22 @@ pub fn sfx_available() -> bool {
 /// and tags. Previews are public CDN MP3s, so a result plays and imports
 /// without any login.
 pub fn search_sfx(query: &str, limit: u32) -> Result<Vec<Track>, String> {
+    search_sfx_within(query, limit, None)
+}
+
+/// [`search_sfx`], only sounds no longer than `max_secs`: a transition's
+/// whoosh, not a twenty-second design file (#795). Freesound filters by
+/// duration itself, so a page of results is a page of short ones.
+pub fn search_sfx_within(query: &str, limit: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
     let token = freesound_token().ok_or_else(|| "no Freesound token set — put freesound_token in ~/.config/klipp/keys.toml or set KLIPP_FREESOUND_TOKEN".to_string())?;
     let limit = limit.clamp(1, 50);
     let q = encode(query.trim());
+    let filter = match max_secs.filter(|m| m.is_finite() && *m > 0.0) {
+        Some(m) => format!("&filter={}", encode(&format!("duration:[0 TO {m}]"))),
+        None => String::new(),
+    };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={limit}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={limit}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
